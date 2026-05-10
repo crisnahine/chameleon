@@ -143,9 +143,15 @@ def select_canonicals(
             continue
 
         if not chosen.all_scans_passed:
+            # Fail-closed: a failed-scan canonical must NOT reach
+            # get_canonical_excerpt / get_pattern_context, because the model
+            # will trust whatever ends up in <chameleon-context>. Surface the
+            # cluster in `clusters_with_only_failing_canonicals` for
+            # /chameleon-status diagnostics, but DO NOT add to active
+            # selections. Downstream: orchestrator skips clusters without an
+            # entry in selections, so this archetype simply has no canonical.
             only_failing.append(cluster)
-            # Still record the selection so /chameleon-status can surface "all
-            # candidates failed scanners" as actionable feedback.
+            continue
 
         selections[cluster_id] = chosen
 
