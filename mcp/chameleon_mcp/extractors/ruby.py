@@ -18,6 +18,7 @@ from pathlib import Path
 import xxhash
 
 from chameleon_mcp.extractors._base import Extractor, ParsedFile, ParseResult
+from chameleon_mcp.plugin_paths import plugin_root
 
 
 class RubyExtractor:
@@ -29,10 +30,7 @@ class RubyExtractor:
 
     def __init__(self, prism_dump_script: Path | None = None) -> None:
         if prism_dump_script is None:
-            here = Path(__file__).resolve()
-            self._prism_dump_script = (
-                here.parent.parent.parent.parent / "scripts" / "prism_dump.rb"
-            )
+            self._prism_dump_script = plugin_root() / "scripts" / "prism_dump.rb"
         else:
             self._prism_dump_script = prism_dump_script
 

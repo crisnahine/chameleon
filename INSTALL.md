@@ -44,37 +44,14 @@ claude --plugin-dir ./chameleon --plugin-dir ./other-plugin
 
 When a `--plugin-dir` plugin shares a name with an installed marketplace plugin, the local copy wins for that session.
 
-## Post-install setup (required for both methods)
+## How dependencies are resolved (no manual setup)
 
-Chameleon ships a Python MCP server and a Node-based TypeScript extractor. Claude Code's plugin installer does **not** build those dependencies for you — you must do it once after installing.
+Chameleon ships a Python MCP server and a Node-based TypeScript extractor. Starting with **v0.1.1**, both are resolved automatically:
 
-Find where the plugin lives:
+- **Python side:** the plugin's `.mcp.json` invokes `uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp`. The first time Claude Code starts the MCP server, `uv` builds an isolated venv in its own cache (~5–10s); subsequent starts are instant.
+- **Node side:** the first `/chameleon-init` against a TypeScript repo runs `npm install` lazily inside `${CLAUDE_PLUGIN_ROOT}/mcp/` (~10s, one-time per plugin install). Ruby-only users never trigger this.
 
-| Method | Plugin location |
-|---|---|
-| Method A (marketplace) | `~/.claude/plugins/cache/chameleon/chameleon/<version>/` (e.g. `…/0.1.0/`) |
-| Method B (local clone) | the directory you cloned into |
-
-For Method A, the easiest way to discover the exact path is to look at the failing MCP server error in Claude Code's `/mcp` panel — the `Command:` line names the full path.
-
-Then build the deps:
-
-```bash
-cd <plugin-path>/mcp
-uv sync          # Python venv for the MCP server
-npm install      # Node deps for the TypeScript AST extractor
-```
-
-> `npm install` is required even if you only plan to use Ruby support — it installs the `typescript` package that `scripts/ts_dump.mjs` resolves via `require("typescript")`. Skipping it makes TS bootstrap fail at runtime.
-
-Verify:
-
-```bash
-ls -l <plugin-path>/mcp/.venv/bin/chameleon-mcp        # Python entry point
-ls -d <plugin-path>/mcp/node_modules/typescript        # TypeScript package
-```
-
-Restart Claude Code so it picks up the freshly-built MCP server.
+You only need `uv`, Node.js ≥ 20, and (optionally) Ruby ≥ 3.0 on your `PATH`. No `uv sync`, no `npm install` to run by hand.
 
 ## Verifying chameleon works
 
@@ -130,23 +107,16 @@ Most-temporary
 /plugin marketplace update chameleon
 ```
 
-Then re-run the post-install setup if the dependencies changed (path includes the new version):
-
-```bash
-cd ~/.claude/plugins/cache/chameleon/chameleon/<new-version>/mcp
-uv sync
-npm install
-```
+Restart Claude Code. `uv` and the lazy `npm install` will pick up the new versions on next launch / next `/chameleon-init`.
 
 **Method B (local clone):**
 
 ```bash
 cd ~/path/to/chameleon
 git pull
-cd mcp && uv sync && npm install
 ```
 
-Restart Claude Code either way.
+Restart Claude Code.
 
 ## Uninstalling
 
@@ -167,20 +137,17 @@ rm -rf ~/.local/share/chameleon
 
 ## Troubleshooting
 
-### "chameleon-mcp not found" or MCP server doesn't connect
+### "chameleon-mcp not found" or `uvx: command not found`
 
-The Python venv was never built. Open `/mcp` in Claude Code, copy the path on the `Command:` line, strip `/.venv/bin/chameleon-mcp`, then run `uv sync && npm install` in that directory. Press **Reconnect** in the `/mcp` panel afterward.
+Install `uv`: `curl -LsSf https://astral.sh/uv/install.sh | sh` (see [uv docs](https://docs.astral.sh/uv/)). Then restart Claude Code.
 
-Example (Method A, v0.1.0):
+### "npm not found on PATH" during `/chameleon-init` against a TS repo
 
-```bash
-cd ~/.claude/plugins/cache/chameleon/chameleon/0.1.0/mcp
-uv sync && npm install
-```
+Install Node.js ≥ 20 and make sure `npm` is on your shell's PATH. Then retry `/chameleon-init`.
 
-### TypeScript bootstrap fails with `Cannot find module 'typescript'`
+### MCP server slow on first start
 
-The Node deps were never installed. Run `cd <plugin-path>/mcp && npm install`, then retry `/chameleon-init`.
+Expected. The first launch builds a venv via `uv` (~5–10s). Subsequent starts are instant. The first `/chameleon-init` against a TS repo also runs `npm install` once (~10s).
 
 ### `detect_repo` returns `trust_state: untrusted` after `/chameleon-trust`
 

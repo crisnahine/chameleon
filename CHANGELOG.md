@@ -4,6 +4,22 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-05-11
+
+### Changed
+
+- **Zero-touch install.** `.mcp.json` now invokes `uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp` instead of pointing at a pre-built `.venv/bin/chameleon-mcp`. uv builds the Python venv on first launch (~5–10s), eliminating the manual `uv sync` step after marketplace install.
+- **Lazy Node dep install.** The TypeScript extractor now runs `npm install` automatically inside `${CLAUDE_PLUGIN_ROOT}/mcp/` the first time it's invoked against a TS repo, instead of requiring users to run `npm install` manually. Ruby-only users never trigger this path.
+- Path resolution in `extractors/typescript.py` and `extractors/ruby.py` now goes through a `plugin_root()` helper that prefers `CLAUDE_PLUGIN_ROOT` over file-relative resolution, so the MCP server works correctly when run from `uvx`'s isolated cache.
+
+### Added
+
+- `mcp/chameleon_mcp/plugin_paths.py` — single source of truth for plugin-root resolution. Honors `CLAUDE_PLUGIN_ROOT` (Claude Code), `CHAMELEON_PLUGIN_ROOT` (test override), then falls back to file-relative.
+
+### Fixed
+
+- README and INSTALL.md no longer instruct users to run `uv sync` and `npm install` manually after marketplace install. Both are now handled by the plugin itself.
+
 ## [0.1.0] — 2026-05-11
 
 Initial release.

@@ -1,8 +1,12 @@
 {
   "mcpServers": {
     "chameleon-mcp": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/mcp/.venv/bin/chameleon-mcp",
-      "args": [],
+      "command": "uvx",
+      "args": [
+        "--from",
+        "${CLAUDE_PLUGIN_ROOT}/mcp",
+        "chameleon-mcp"
+      ],
       "env": {}
     }
   }

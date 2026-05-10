@@ -82,20 +82,6 @@ Update later:
 gemini extensions update chameleon
 ```
 
-### One-time setup (required after any install)
-
-Chameleon ships a Python MCP server + a Node-based TypeScript extractor. The marketplace install methods deliver the plugin code but cannot run the build step, so the MCP server won't start until you build the deps once:
-
-```sh
-cd <plugin-install-path>/mcp
-uv sync          # Python venv for the MCP server
-npm install      # TypeScript extractor deps
-```
-
-`<plugin-install-path>` is wherever your harness puts the plugin. For Claude Code marketplace installs it's `~/.claude/plugins/cache/chameleon/chameleon/<version>/`. Easiest way to find the exact path: open `/mcp` in Claude Code — the failing server's `Command:` line shows the full path. Strip `/.venv/bin/chameleon-mcp` off the end and `cd` there.
-
-After running `uv sync && npm install`, press **Reconnect** in the `/mcp` panel (or restart your harness).
-
 ### First-run inside a project
 
 In any session inside a TypeScript or Ruby on Rails repo:
@@ -105,7 +91,11 @@ In any session inside a TypeScript or Ruby on Rails repo:
 /chameleon-trust   # approve the profile for your user
 ```
 
-After that, every Edit/Write in that repo gets archetype-aware context automatically. See [INSTALL.md](INSTALL.md) for the deep walkthrough, troubleshooting, and uninstall instructions.
+After that, every Edit/Write in that repo gets archetype-aware context automatically.
+
+The first `/chameleon-init` against a TypeScript repo will spend ~10s installing Node deps for the TS extractor (one-time, cached per plugin install). The Python MCP server itself is auto-built by `uv` on first launch.
+
+See [INSTALL.md](INSTALL.md) for the deep walkthrough, troubleshooting, and uninstall instructions.
 
 ## Slash commands
 

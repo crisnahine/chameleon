@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import sys
 import xxhash
 from pathlib import Path
 
 from chameleon_mcp.extractors._base import Extractor, ParsedFile, ParseResult
+from chameleon_mcp.plugin_paths import plugin_root
 
 
 class TypeScriptExtractor:
@@ -30,15 +33,44 @@ class TypeScriptExtractor:
     _ts_dump_script: Path
 
     def __init__(self, ts_dump_script: Path | None = None) -> None:
-        # Default: scripts/ts_dump.mjs at the plugin root (sibling of mcp/ dir)
         if ts_dump_script is None:
-            # mcp/chameleon_mcp/extractors/typescript.py → ../../../scripts/ts_dump.mjs
-            here = Path(__file__).resolve()
-            self._ts_dump_script = (
-                here.parent.parent.parent.parent / "scripts" / "ts_dump.mjs"
-            )
+            self._ts_dump_script = plugin_root() / "scripts" / "ts_dump.mjs"
         else:
             self._ts_dump_script = ts_dump_script
+
+    def _ensure_node_modules(self) -> None:
+        """Run `npm install` in mcp/ the first time TS extraction is needed.
+
+        Required because uvx-based MCP install does not run the npm step,
+        and the TS extractor depends on mcp/node_modules/typescript.
+        """
+        mcp_dir = plugin_root() / "mcp"
+        if (mcp_dir / "node_modules" / "typescript").exists():
+            return
+
+        if not shutil.which("npm"):
+            raise RuntimeError(
+                "chameleon: `npm` not found on PATH. Install Node.js >= 20 "
+                "to use the TypeScript extractor."
+            )
+
+        print(
+            "chameleon: first-run setup — installing Node deps (~10s)...",
+            file=sys.stderr,
+            flush=True,
+        )
+        result = subprocess.run(
+            ["npm", "install", "--no-audit", "--no-fund"],
+            cwd=str(mcp_dir),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "chameleon: `npm install` failed in "
+                f"{mcp_dir}:\n{result.stderr}"
+            )
 
     def can_handle(self, repo_root: Path) -> bool:
         """Detect TS via tsconfig.json or package.json with TS-related deps."""
@@ -88,11 +120,12 @@ class TypeScriptExtractor:
         if not self._ts_dump_script.exists():
             raise FileNotFoundError(
                 f"ts_dump.mjs not found at {self._ts_dump_script}; "
-                "run `cd mcp && npm install` to set up TS Compiler."
+                "the plugin install appears incomplete."
             )
+        self._ensure_node_modules()
         env = os.environ.copy()
         # NODE_PATH so the script can resolve TypeScript from mcp/node_modules
-        env["NODE_PATH"] = str(self._ts_dump_script.parent.parent / "mcp" / "node_modules")
+        env["NODE_PATH"] = str(plugin_root() / "mcp" / "node_modules")
 
         # Build input as one big string; communicate() handles pipe-deadlock
         # internally via threads (avoids the classic stdout-buffer-full hang).
@@ -105,7 +138,7 @@ class TypeScriptExtractor:
             stderr=subprocess.PIPE,
             text=True,
             env=env,
-            cwd=str(self._ts_dump_script.parent.parent / "mcp"),
+            cwd=str(plugin_root() / "mcp"),
         )
 
         # Communicate writes all input + reads all stdout/stderr in
