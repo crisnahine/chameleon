@@ -52,8 +52,10 @@ Find where the plugin lives:
 
 | Method | Plugin location |
 |---|---|
-| Method A (marketplace) | `~/.claude/plugins/marketplaces/chameleon/plugins/chameleon/` |
+| Method A (marketplace) | `~/.claude/plugins/cache/chameleon/chameleon/<version>/` (e.g. `…/0.1.0/`) |
 | Method B (local clone) | the directory you cloned into |
+
+For Method A, the easiest way to discover the exact path is to look at the failing MCP server error in Claude Code's `/mcp` panel — the `Command:` line names the full path.
 
 Then build the deps:
 
@@ -128,10 +130,10 @@ Most-temporary
 /plugin marketplace update chameleon
 ```
 
-Then re-run the post-install setup if the dependencies changed:
+Then re-run the post-install setup if the dependencies changed (path includes the new version):
 
 ```bash
-cd ~/.claude/plugins/marketplaces/chameleon/plugins/chameleon/mcp
+cd ~/.claude/plugins/cache/chameleon/chameleon/<new-version>/mcp
 uv sync
 npm install
 ```
@@ -167,7 +169,14 @@ rm -rf ~/.local/share/chameleon
 
 ### "chameleon-mcp not found" or MCP server doesn't connect
 
-The Python venv was never built. Run the post-install setup: `cd <plugin-path>/mcp && uv sync`.
+The Python venv was never built. Open `/mcp` in Claude Code, copy the path on the `Command:` line, strip `/.venv/bin/chameleon-mcp`, then run `uv sync && npm install` in that directory. Press **Reconnect** in the `/mcp` panel afterward.
+
+Example (Method A, v0.1.0):
+
+```bash
+cd ~/.claude/plugins/cache/chameleon/chameleon/0.1.0/mcp
+uv sync && npm install
+```
 
 ### TypeScript bootstrap fails with `Cannot find module 'typescript'`
 

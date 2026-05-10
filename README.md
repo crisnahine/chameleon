@@ -92,7 +92,9 @@ uv sync          # Python venv for the MCP server
 npm install      # TypeScript extractor deps
 ```
 
-`<plugin-install-path>` is wherever your harness puts the plugin — for local installs that's your clone directory. For marketplace installs, check your harness's plugin directory (e.g. `~/.claude/plugins/...`).
+`<plugin-install-path>` is wherever your harness puts the plugin. For Claude Code marketplace installs it's `~/.claude/plugins/cache/chameleon/chameleon/<version>/`. Easiest way to find the exact path: open `/mcp` in Claude Code — the failing server's `Command:` line shows the full path. Strip `/.venv/bin/chameleon-mcp` off the end and `cd` there.
+
+After running `uv sync && npm install`, press **Reconnect** in the `/mcp` panel (or restart your harness).
 
 ### First-run inside a project
 
