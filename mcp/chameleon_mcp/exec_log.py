@@ -20,7 +20,23 @@ import stat
 import time
 from pathlib import Path
 
-HMAC_KEY_PATH = Path.home() / ".claude" / "hooks" / ".exec_hmac.key"
+_DEFAULT_HMAC_KEY_PATH = Path.home() / ".claude" / "hooks" / ".exec_hmac.key"
+
+
+def _hmac_key_path() -> Path:
+    """Resolve the HMAC key path, honoring CHAMELEON_HMAC_KEY_PATH override.
+
+    The override exists for tests; production always uses the default
+    path under the user's home directory.
+    """
+    override = os.environ.get("CHAMELEON_HMAC_KEY_PATH")
+    if override:
+        return Path(override).expanduser()
+    return _DEFAULT_HMAC_KEY_PATH
+
+
+# Backwards-compat alias for tests that import the module-level path.
+HMAC_KEY_PATH = _DEFAULT_HMAC_KEY_PATH
 
 
 class HMACKeyError(Exception):
@@ -30,38 +46,66 @@ class HMACKeyError(Exception):
 def _ensure_hmac_key() -> bytes:
     """Load the per-user HMAC key, generating it on first use.
 
-    Mode 0600 enforced. Raises HMACKeyError if /dev/urandom is unavailable
-    (containerized environments without /dev mount). No silent fallback.
+    Mode 0600 enforced. Raises HMACKeyError if:
+    - the key file is owned by a different uid than the calling process,
+    - /dev/urandom is unavailable (containerized env without /dev mount),
+    - or another writer wins the create race and the resulting file is
+      unreadable for any reason.
     """
-    if HMAC_KEY_PATH.is_file():
-        # Verify mode 0600 and owner == euid
-        st = os.stat(HMAC_KEY_PATH)
+    key_path = _hmac_key_path()
+    if key_path.is_file():
+        st = os.stat(key_path)
         if st.st_uid != os.geteuid():
             raise HMACKeyError(
-                f"HMAC key {HMAC_KEY_PATH} owned by uid {st.st_uid}, "
+                f"HMAC key {key_path} owned by uid {st.st_uid}, "
                 f"expected {os.geteuid()}"
             )
         if st.st_mode & 0o077:
-            # Fix permissions silently if too permissive
-            os.chmod(HMAC_KEY_PATH, 0o600)
-        return HMAC_KEY_PATH.read_bytes()
+            os.chmod(key_path, 0o600)
+        return key_path.read_bytes()
 
     # Generate fresh key (32 bytes from /dev/urandom via secrets.token_bytes)
-    HMAC_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         key = secrets.token_bytes(32)
     except Exception as e:
         raise HMACKeyError(f"failed to read /dev/urandom: {e}") from e
 
-    # Atomic write with mode 0600
-    tmp_path = HMAC_KEY_PATH.with_suffix(".key.tmp")
-    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    # Atomic write with mode 0600. If another process wins the create
+    # race, fall back to reading the file the winner produced — both
+    # processes need a valid key to continue.
+    tmp_path = key_path.with_suffix(".key.tmp")
+    try:
+        fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # Another process is mid-write. Wait briefly, then try reading the
+        # final path — by which point os.replace should have moved tmp_path
+        # into key_path.
+        import time as _time
+        for _ in range(20):
+            _time.sleep(0.05)
+            if key_path.is_file():
+                return key_path.read_bytes()
+        raise HMACKeyError(
+            f"HMAC key tmp file {tmp_path} exists and final {key_path} "
+            f"never appeared after retries"
+        )
     try:
         os.write(fd, key)
         os.fsync(fd)
     finally:
         os.close(fd)
-    os.replace(tmp_path, HMAC_KEY_PATH)
+    try:
+        os.replace(tmp_path, key_path)
+    except OSError:
+        # Another writer beat us; clean up our tmp and re-read theirs.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        if key_path.is_file():
+            return key_path.read_bytes()
+        raise
     return key
 
 
