@@ -39,7 +39,30 @@ from chameleon_mcp.bootstrap.discovery import (
 from chameleon_mcp.bootstrap.tool_config import read_tool_configs
 from chameleon_mcp.bootstrap.transaction import atomic_profile_commit
 from chameleon_mcp.bootstrap.workspace import detect_workspace
+from chameleon_mcp.extractors._base import Extractor
+from chameleon_mcp.extractors.ruby import RubyExtractor
 from chameleon_mcp.extractors.typescript import TypeScriptExtractor
+
+
+def _select_extractor(repo_root: Path) -> Extractor | None:
+    """Pick the extractor whose can_handle() returns True for this repo.
+
+    Precedence: TypeScript > Ruby. A repo that has both Gemfile and
+    tsconfig.json (e.g., a Rails app with a Stimulus/Vite frontend in the
+    same repo) bootstraps with the TS extractor. For monorepos with truly
+    separate language subtrees, run /chameleon-init per subtree.
+    """
+    for ext_cls in (TypeScriptExtractor, RubyExtractor):
+        ext = ext_cls()
+        if ext.can_handle(repo_root):
+            return ext
+    return None
+
+
+def _glob_for_extractor(extractor: Extractor) -> str:
+    if extractor.language == "ruby":
+        return "**/*.rb"
+    return "**/*.{ts,tsx,js,jsx,mjs,cjs}"
 
 PROFILE_SCHEMA_VERSION = 4
 ENGINE_MIN_VERSION = "0.1.0"
@@ -129,11 +152,11 @@ def bootstrap_repo(
     # 1b. Read tool configs as ground truth for rules
     tool_configs = read_tool_configs(repo_root)
 
-    # 1c. Detect language (TS-only in v1.0)
-    extractor = TypeScriptExtractor()
-    if not extractor.can_handle(repo_root):
+    # 1c. Detect language (TS or Ruby in v1.5; ADR-0003)
+    extractor = _select_extractor(repo_root)
+    if extractor is None:
         return BootstrapReport(
-            status="failed_no_typescript",
+            status="failed_unsupported_language",
             archetypes_detected=0,
             rules_extracted=0,
             idioms_collected=0,
@@ -143,12 +166,16 @@ def bootstrap_repo(
             files_skipped_parse=0,
             duration_ms=int((time.time() - started_at) * 1000),
             profile_path=None,
-            error="No TypeScript signals detected (no tsconfig.json or TS in package.json deps)",
+            error=(
+                "No TypeScript signals (tsconfig.json / package.json TS deps) "
+                "and no Ruby signals (Gemfile / *.gemspec) detected"
+            ),
         )
 
-    # 2. Discover candidate files
+    # 2. Discover candidate files (use language-appropriate glob if no override)
+    discovery_glob = paths_glob or _glob_for_extractor(extractor)
     try:
-        candidates = discover_files(repo_root, paths_glob=paths_glob)
+        candidates = discover_files(repo_root, glob=discovery_glob, paths_glob=paths_glob)
     except TooManyFilesError as e:
         return BootstrapReport(
             status="failed_too_many_files",
@@ -267,7 +294,7 @@ def bootstrap_repo(
         "engine_min_version": ENGINE_MIN_VERSION,
         "generation": generation,
         "repo_id": repo_id,
-        "language": "typescript",
+        "language": extractor.language,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source": "bootstrap",
         "archetype_count": archetype_count,
