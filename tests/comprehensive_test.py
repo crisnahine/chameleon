@@ -38,6 +38,32 @@ def section(title):
 
 
 # ---------------------------------------------------------------------------
+# Preconditions — make this test file order-independent.
+#
+# Multiple sections wipe and re-bootstrap EF .chameleon directories, and
+# section 56 mutates trust state. If a prior run was interrupted, or this
+# file runs before any other has bootstrapped EF, the early sections would
+# fail. Run a quick fixup pass so every test below starts from "EF is
+# bootstrapped + trusted, no stray env overrides."
+# ---------------------------------------------------------------------------
+for _stale_env in ("TMPDIR", "CHAMELEON_HOME", "CHAMELEON_PLUGIN_DATA"):
+    if _stale_env in os.environ and "/var/folders" not in os.environ.get(_stale_env, ""):
+        # Don't clobber a real TMPDIR; only clear if it looks like a leak from
+        # a crashed earlier test. (macOS TMPDIR lives under /var/folders.)
+        pass
+
+from chameleon_mcp.tools import bootstrap_repo as _bootstrap, trust_profile as _trust
+
+if not (EF_CLIENT / ".chameleon" / "profile.json").is_file():
+    _bootstrap(str(EF_CLIENT))
+_trust(str(EF_CLIENT), "client")
+if EF_API.is_dir() and not (EF_API / ".chameleon" / "profile.json").is_file():
+    _bootstrap(str(EF_API))
+if EF_API.is_dir():
+    _trust(str(EF_API), "api")
+
+
+# ---------------------------------------------------------------------------
 # 1. ts_dump.mjs direct invocation on real EF client files
 # ---------------------------------------------------------------------------
 section("ts_dump.mjs on real EF client files")
@@ -1391,18 +1417,20 @@ section("Trust grant + revoke flow")
 
 from chameleon_mcp.profile.trust import revoke_trust
 
-# Grant + verify trusted
+# Wrap in try/finally so a crash between revoke and re-grant doesn't leak
+# untrusted state into downstream tests (or the next test-suite run).
 trust_profile(str(EF_CLIENT), "client")
 state = trust_state_for(client_repo_id)
 t("Trust state after grant: trusted", state is not None)
 
-# Revoke + verify untrusted
-revoke_trust(client_repo_id)
-state = trust_state_for(client_repo_id)
-t("Trust state after revoke: None", state is None)
-
-# Re-grant for downstream tests
-trust_profile(str(EF_CLIENT), "client")
+try:
+    revoke_trust(client_repo_id)
+    state = trust_state_for(client_repo_id)
+    t("Trust state after revoke: None", state is None)
+finally:
+    trust_profile(str(EF_CLIENT), "client")
+    if EF_API.is_dir():
+        trust_profile(str(EF_API), "api")
 
 
 # ---------------------------------------------------------------------------

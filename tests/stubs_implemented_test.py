@@ -32,6 +32,21 @@ def section(title):
     print(f"\n=== {title} ===")
 
 
+# Preconditions — order-independent: ensure both EF repos are bootstrapped
+# + trusted before any test that reads their .chameleon state.
+import os as _os
+if _os.environ.get("CHAMELEON_PLUGIN_DATA"):
+    del _os.environ["CHAMELEON_PLUGIN_DATA"]
+from chameleon_mcp.tools import bootstrap_repo as _bs, trust_profile as _tp
+if not (EF_CLIENT / ".chameleon" / "profile.json").is_file():
+    _bs(str(EF_CLIENT))
+_tp(str(EF_CLIENT), "client")
+if EF_API.is_dir() and not (EF_API / ".chameleon" / "profile.json").is_file():
+    _bs(str(EF_API))
+if EF_API.is_dir():
+    _tp(str(EF_API), "api")
+
+
 # ---------------------------------------------------------------------------
 # Round 1 — drift.db unit tests
 # ---------------------------------------------------------------------------
