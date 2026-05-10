@@ -1,0 +1,38 @@
+---
+name: Feature request
+about: Suggest an improvement to chameleon
+labels: enhancement
+---
+
+## What problem does this solve?
+
+<!-- The user-facing problem you've actually run into. Not "improve X" —
+     describe a concrete situation where chameleon fell short. -->
+
+## Proposed change
+
+<!-- What you'd like chameleon to do differently. Be specific. -->
+
+## Affected surface
+
+- [ ] Skill bodies (one of the 8 SKILL.md files)
+- [ ] MCP tools (chameleon_mcp/tools.py)
+- [ ] Hooks (hooks/*)
+- [ ] Bootstrap pipeline (extractor / clustering / canonical selection)
+- [ ] Trust + opt-out flow
+- [ ] Documentation / install
+- [ ] Other:
+
+## Languages affected
+
+- [ ] TypeScript (EF client)
+- [ ] Ruby on Rails (EF api)
+- [ ] Both / language-agnostic
+
+## Alternatives considered
+
+<!-- What else have you tried, or what other approaches could work? -->
+
+## Existing related issues / PRs
+
+<!-- Link any related items. -->

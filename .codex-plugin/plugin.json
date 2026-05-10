@@ -1,0 +1,34 @@
+{
+  "name": "chameleon",
+  "version": "0.1.0",
+  "description": "Code that blends in. Auto-derives codebase conventions and injects archetype-aware guidance for AI-generated code in TypeScript and Ruby on Rails repos.",
+  "author": {
+    "name": "Cris Nahine",
+    "email": "crisn@empireflippers.com"
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "skills",
+    "code-conventions",
+    "pattern-matching",
+    "ast-analysis",
+    "archetype",
+    "best-practices",
+    "typescript",
+    "ruby-on-rails"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Chameleon",
+    "shortDescription": "Archetype-aware coding assistant for TypeScript and Ruby on Rails",
+    "longDescription": "Chameleon scans your repo, clusters files into archetypes, picks canonical examples, and injects archetype-specific context before every Edit/Write so generated code matches your team's conventions.",
+    "developerName": "Cris Nahine",
+    "category": "Coding",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "",
+    "brandColor": "#10B981"
+  }
+}
