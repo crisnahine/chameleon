@@ -26,6 +26,22 @@ if [ ! -d "$EF_CLIENT" ]; then
     exit 0
 fi
 
+# /chameleon-pause-15m and /chameleon-disable invocations through real
+# Claude Code will actually write pause / session-disable markers in the
+# user-level plugin data dir. Clean them up on exit so the markers don't
+# linger and silently suppress later test runs.
+EF_CLIENT_REPO_ID="$(python3 -c '
+import hashlib, sys
+print(hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest())
+' "$EF_CLIENT")"
+PLUGIN_DATA="${HOME}/.local/share/chameleon/${EF_CLIENT_REPO_ID}"
+cleanup_test_markers() {
+    rm -f "${PLUGIN_DATA}/.pause_until" 2>/dev/null || true
+    rm -f "${PLUGIN_DATA}"/.session_disabled.* 2>/dev/null || true
+}
+trap cleanup_test_markers EXIT
+cleanup_test_markers  # also clear any leftovers from prior run
+
 cd "$EF_CLIENT"
 
 PASS=0
