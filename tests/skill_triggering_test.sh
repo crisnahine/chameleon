@@ -13,7 +13,17 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/test-helpers.sh"
+
+# Load .env if present so CHAMELEON_TEST_TS_REPO is available without
+# the caller having to `export` it manually.
+if [ -f "$REPO_ROOT/.env" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$REPO_ROOT/.env"
+    set +a
+fi
 
 require_claude_cli
 
