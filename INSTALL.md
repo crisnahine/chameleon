@@ -14,10 +14,6 @@ For Cursor, Codex CLI, and Gemini CLI install commands, see the harness sections
 
 ## Install
 
-Pick one of the two methods. The marketplace install is recommended for end users; the local-clone install is for plugin development.
-
-### Method A — Marketplace install (recommended)
-
 Inside any Claude Code session:
 
 ```
@@ -27,22 +23,7 @@ Inside any Claude Code session:
 
 Restart Claude Code. Verify by asking: *"What chameleon tools do you have?"*
 
-> `/plugin marketplace add` accepts a GitHub `owner/repo` slug or a full HTTPS URL — **not** a local filesystem path. For a local checkout use Method B.
-
-### Method B — Local clone with `--plugin-dir` (for plugin development)
-
-```bash
-git clone https://github.com/crisnahine/chameleon
-claude --plugin-dir ~/path/to/chameleon
-```
-
-You can stack multiple `--plugin-dir` flags:
-
-```bash
-claude --plugin-dir ./chameleon --plugin-dir ./other-plugin
-```
-
-When a `--plugin-dir` plugin shares a name with an installed marketplace plugin, the local copy wins for that session.
+> Contributors hacking on the plugin itself should follow [CONTRIBUTING.md](CONTRIBUTING.md) instead — `--plugin-dir` is the right tool for local development.
 
 ## How dependencies are resolved (no manual setup)
 
@@ -101,35 +82,20 @@ Most-temporary
 
 ## Updating chameleon
 
-**Method A (marketplace install):**
-
 ```
 /plugin marketplace update chameleon
 ```
 
-Restart Claude Code. `uv` and the lazy `npm install` will pick up the new versions on next launch / next `/chameleon-init`.
-
-**Method B (local clone):**
-
-```bash
-cd ~/path/to/chameleon
-git pull
-```
-
-Restart Claude Code.
+Restart Claude Code. `uv` and the lazy `npm install` pick up the new versions on next launch / next `/chameleon-init`.
 
 ## Uninstalling
-
-**Method A (marketplace install):**
 
 ```
 /plugin uninstall chameleon
 /plugin marketplace remove chameleon
 ```
 
-**Method B (local clone):** drop the `--plugin-dir` flag from your `claude` invocation. Optionally `rm -rf` the clone directory.
-
-Either way, also remove your trust state and drift cache:
+Then remove your trust state and drift cache:
 
 ```bash
 rm -rf ~/.local/share/chameleon
@@ -155,11 +121,7 @@ Check `~/.local/share/chameleon/<repo_id>/.trust` exists. If not, re-run `/chame
 
 ### Slash commands don't show up
 
-Verify either:
-- `--plugin-dir ~/path/to/chameleon` is on the `claude` command line, OR
-- `/plugin list` (inside Claude Code) shows `chameleon` as installed.
-
-If neither: the plugin isn't loaded. Re-run Method A or Method B from above.
+Run `/plugin list` inside Claude Code and confirm `chameleon` is listed. If not, re-run the install commands above.
 
 ### Hook latency feels high
 

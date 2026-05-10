@@ -34,18 +34,9 @@ Chameleon works in [Claude Code](#claude-code), [Cursor](#cursor), [Codex CLI](#
 
 ### Claude Code
 
-Install from the chameleon marketplace:
-
 ```
 /plugin marketplace add crisnahine/chameleon
 /plugin install chameleon@chameleon
-```
-
-Or load locally for development:
-
-```sh
-git clone https://github.com/crisnahine/chameleon
-claude --plugin-dir "$(pwd)/chameleon"
 ```
 
 ### Cursor
@@ -56,7 +47,7 @@ In Cursor Agent chat:
 /add-plugin chameleon
 ```
 
-> Pending listing on Cursor's plugin marketplace. Until then, clone the repo and load `.cursor-plugin/plugin.json` via Cursor's local-plugin loader.
+> Pending listing on Cursor's plugin marketplace.
 
 ### Codex CLI
 
@@ -68,7 +59,7 @@ Open the plugin search interface and install:
 
 Search for `chameleon`, then select **Install Plugin**.
 
-> Pending listing on Codex's plugin marketplace. Until then, clone the repo and point Codex at `.codex-plugin/plugin.json`.
+> Pending listing on Codex's plugin marketplace.
 
 ### Gemini CLI
 
