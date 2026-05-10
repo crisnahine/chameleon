@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# PreToolUse hook for chameleon plugin.
+#
+# Combined safety check + archetype advisor (single hook, parallelism-aware).
+# This is the load-bearing per-edit hook in chameleon's design.
+#
+# Phase 1B: stub with input parsing skeleton. Real safety logic + MCP
+# integration deferred to Phase 1C (MCP server scaffold) and Phase 4
+# (security mitigations).
+#
+# Final Phase 4 implementation will include:
+#   1. Safety hard-denies (path traversal, secrets, lockfiles, vendored,
+#      generated files, /etc/, /proc/, ~/.aws/, etc.)
+#      — Inherited from claude-measure-twice (REVIEWED, not verbatim;
+#         HMAC path bug fixed: ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/)
+#   2. safe_open: realpath + repo-boundary check + lstat + null/NFD/sep checks
+#   3. Hook-model dedup: skip injection if model already called MCP this turn
+#   4. MCP get_pattern_context call with 2s timeout, fail-open silent
+#   5. Tag-boundary sanitization on injected content
+#   6. Per-edit injection cap: 1500 tokens (truncated)
+#
+# See ARCHITECTURE.md "Hook stack" + "Atomicity & Crash Safety" + "Security
+# mitigations" sections for the full design.
+#
+# Input (from Claude Code via stdin): JSON with tool_name, tool_input, etc.
+# Output (to stdout): JSON with hookSpecificOutput.additionalContext or empty {}
+
+set -euo pipefail
+
+# Phase 1B: read input but don't act on it yet. Output empty JSON.
+# Real implementation in Phase 1C+.
+INPUT=$(cat)
+
+# TODO Phase 1C: parse INPUT, extract tool_name + file_path
+# TODO Phase 4: implement safety hard-deny layer
+# TODO Phase 1C: call MCP server for get_pattern_context
+# TODO Phase 4: tag-boundary sanitize injected content
+# TODO Phase 4: enforce per-edit injection cap (1500 tokens)
+
+printf '{}\n'
+exit 0

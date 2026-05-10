@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 1B — Hooks + skill stubs + first ADRs (2026-05-10)
+
+#### Added
+- `hooks/preflight-and-advise` (PreToolUse Edit/Write/NotebookEdit) — Phase 1B stub with input parsing skeleton; full implementation deferred to Phase 1C (MCP integration) + Phase 4 (security mitigations)
+- `hooks/posttool-recorder` (PostToolUse Bash) — Phase 1B stub for HMAC-signed exec log; bug fixes inherited from claude-measure-twice (path mismatch, fail-loud key generation, GC mtime correction) deferred to Phase 4
+- `hooks/callout-detector` (UserPromptSubmit) — Phase 1B stub; frustration phrase detection + escape-hatch surfacing (`/chameleon-disable`, `/chameleon-pause-15m`, `/chameleon-teach`) deferred to Phase 4
+- 7 skill stubs with frontmatter + design references:
+  - `skills/chameleon-init/SKILL.md`
+  - `skills/chameleon-refresh/SKILL.md`
+  - `skills/chameleon-status/SKILL.md`
+  - `skills/chameleon-teach/SKILL.md` (renamed from `refine` per Round 5 Dev Tools recommendation)
+  - `skills/chameleon-trust/SKILL.md`
+  - `skills/chameleon-disable/SKILL.md`
+  - `skills/chameleon-pause-15m/SKILL.md`
+- ADR template at `docs/chameleon/decisions/0000-template.md`
+- ADR-0001: Best-effort clustering vs framework-aware (Round 2 strategic shift)
+- ADR-0002: Companion plugins deferred to v2.0+ (v3-final scope cut)
+- ADR-0003: TypeScript only in v1.0; Ruby in v1.5 (Round 1 dependency-discipline finding)
+
 ### Phase 1A — Core repo scaffold (2026-05-10)
 
 #### Added

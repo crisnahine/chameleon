@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# UserPromptSubmit hook for chameleon plugin.
+#
+# Detects user frustration phrases and surfaces actionable next steps.
+# Inherited from claude-measure-twice (callout-detector.sh).
+#
+# Phase 1B: stub. Phase 4+ implements:
+#   - Frustration phrase detection (regex set, e.g., "ugh", "wait", "nope",
+#     "this isn't right", "stop")
+#   - When chameleon is the suspected cause:
+#       → Surface "/chameleon-disable to silence for session"
+#       → Or "/chameleon-pause-15m to pause temporarily"
+#       → Or "/chameleon-reset to start over with bootstrap"
+#   - When chameleon should adapt:
+#       → Suggest "/chameleon-teach to capture this miss as an idiom"
+#
+# See ARCHITECTURE.md "Hook stack" UserPromptSubmit section + Round 5 UX
+# Researcher recommendation #6 (discoverable disable on frustration).
+
+set -euo pipefail
+
+INPUT=$(cat)
+
+# TODO Phase 4: parse INPUT, extract user_prompt
+# TODO Phase 4: scan for frustration phrases
+# TODO Phase 4: if chameleon-active session AND frustration detected,
+#               inject hint about /chameleon-disable / /chameleon-pause-15m / /chameleon-teach
+
+printf '{}\n'
+exit 0

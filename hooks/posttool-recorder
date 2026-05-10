@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# PostToolUse Bash hook for chameleon plugin.
+#
+# HMAC-signed exec log for debugging + cookbook scoring (advisory).
+# Inherited from claude-measure-twice with bug fixes:
+#   - Path mismatch fixed: writes AND reads use ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/
+#   - HMAC key fail-loud: explicit error if /dev/urandom unavailable (no silent unsigned)
+#   - GC: -mtime +1 → -mmin +1440 (correct semantics)
+#
+# Phase 1B: stub. Phase 4 implements full HMAC discipline.
+#
+# See ARCHITECTURE.md "Hook stack" PostToolUse Bash section + "Security
+# mitigations" #5 (per-repo HMAC log directory) for the design.
+
+set -euo pipefail
+
+# Phase 1B: read input but don't write log yet.
+INPUT=$(cat)
+
+# TODO Phase 4: parse INPUT, extract command + exit_code + repo_id
+# TODO Phase 4: derive ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/ (mode 0700)
+# TODO Phase 4: ensure HMAC key exists (~/.claude/hooks/.exec_hmac.key, 0600);
+#               fail-loud if /dev/urandom read fails
+# TODO Phase 4: append HMAC-signed log line: {ts, command, exit_code, hmac}
+# TODO Phase 4: GC weekly: find logs older than -mmin +43200 (30 days), delete
+
+printf '{}\n'
+exit 0
