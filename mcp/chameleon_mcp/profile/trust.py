@@ -43,6 +43,7 @@ class TrustRecord:
     granted_at: str
     granted_by_user: str
     profile_sha256: str
+    repo_root: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> "TrustRecord":
@@ -50,6 +51,7 @@ class TrustRecord:
             granted_at=str(data.get("granted_at", "")),
             granted_by_user=str(data.get("granted_by_user", "")),
             profile_sha256=str(data.get("profile_sha256", "")),
+            repo_root=str(data.get("repo_root", "")),
         )
 
     def to_dict(self) -> dict:
@@ -57,6 +59,7 @@ class TrustRecord:
             "granted_at": self.granted_at,
             "granted_by_user": self.granted_by_user,
             "profile_sha256": self.profile_sha256,
+            "repo_root": self.repo_root,
         }
 
 
@@ -83,11 +86,15 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
     """Write a fresh .trust record for repo_id with current profile hash.
 
     Uses an atomic write pattern (write tmp then rename) to avoid partial files.
+    The repo_root path (parent of profile_dir) is stored so future tool calls
+    can resolve repo_id → repo_root without scanning every known repo.
     """
+    repo_root = profile_dir.parent
     record = TrustRecord(
         granted_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         granted_by_user=_current_user(),
         profile_sha256=hash_profile(profile_dir),
+        repo_root=str(repo_root.resolve()),
     )
     trust_path = repo_data_dir(repo_id) / ".trust"
     tmp_path = trust_path.with_suffix(".trust.tmp")

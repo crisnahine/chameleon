@@ -226,22 +226,115 @@ def get_pattern_context(file_path: str) -> dict:
     })
 
 
+def _resolve_repo_root_by_id(repo_id: str) -> Path | None:
+    """Map a repo_id back to its repo_root via the trust record.
+
+    Returns None if no trust record exists or the recorded repo_root is gone.
+    Phase 2D: trust record is the only stored repo_id → repo_root map.
+    """
+    from chameleon_mcp.profile.trust import trust_state_for
+
+    record = trust_state_for(repo_id)
+    if record is None or not record.repo_root:
+        return None
+    p = Path(record.repo_root)
+    return p if p.is_dir() else None
+
+
 def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     """Return the annotated canonical excerpt for an archetype."""
-    # Phase 2D: caller invokes get_pattern_context for full context;
-    # this stub is kept for compatibility.
+    from chameleon_mcp.profile.loader import load_profile_dir
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    repo_root = _resolve_repo_root_by_id(repo)
+    if repo_root is None:
+        return _envelope({
+            "content": "",
+            "witness_path": None,
+            "truncated": False,
+            "sha_hint": None,
+        })
+
+    try:
+        loaded = load_profile_dir(repo_root / ".chameleon")
+    except Exception:
+        return _envelope({
+            "content": "",
+            "witness_path": None,
+            "truncated": False,
+            "sha_hint": None,
+        })
+
+    canonicals = loaded.canonicals.get("canonicals", {}).get(archetype, [])
+    if not canonicals:
+        return _envelope({
+            "content": "",
+            "witness_path": None,
+            "truncated": False,
+            "sha_hint": None,
+        })
+
+    first = canonicals[0]
+    witness = first.get("witness", {}) or {}
+    witness_rel = witness.get("path")
+    if not witness_rel:
+        return _envelope({
+            "content": "",
+            "witness_path": None,
+            "truncated": False,
+            "sha_hint": witness.get("sha_hint"),
+        })
+
+    witness_path = repo_root / witness_rel
+    if not witness_path.is_file():
+        return _envelope({
+            "content": "",
+            "witness_path": witness_rel,
+            "truncated": False,
+            "sha_hint": witness.get("sha_hint"),
+        })
+
+    try:
+        content = witness_path.read_text(errors="replace")
+    except OSError:
+        return _envelope({
+            "content": "",
+            "witness_path": witness_rel,
+            "truncated": False,
+            "sha_hint": witness.get("sha_hint"),
+        })
+
+    truncated = len(content) > 3200
+    if truncated:
+        content = content[:3200] + "\n... [truncated]"
+    content = sanitize_for_chameleon_context(content)
     return _envelope({
-        "content": "",
-        "witness_path": None,
-        "truncated": False,
-        "sha_hint": None,
+        "content": content,
+        "witness_path": witness_rel,
+        "truncated": truncated,
+        "sha_hint": witness.get("sha_hint"),
     })
 
 
 def get_rules(repo: str, archetype: str | None = None) -> dict:
     """Return rules + citations for repo, filtered by archetype if provided."""
-    # Phase 2D: caller invokes get_pattern_context which embeds rules.
-    return _envelope({"rules": []})
+    from chameleon_mcp.profile.loader import load_profile_dir
+
+    repo_root = _resolve_repo_root_by_id(repo)
+    if repo_root is None:
+        return _envelope({"rules": []})
+
+    try:
+        loaded = load_profile_dir(repo_root / ".chameleon")
+    except Exception:
+        return _envelope({"rules": []})
+
+    rules_dict = loaded.rules.get("rules", {}) or {}
+    if archetype is None:
+        return _envelope({"rules": list(rules_dict.items())})
+    # Filter rules whose key matches archetype prefix or exact name
+    filtered = [(k, v) for k, v in rules_dict.items() if archetype in str(k)]
+    return _envelope({"rules": filtered})
 
 
 def lint_file(repo: str, archetype: str, content: str) -> dict:

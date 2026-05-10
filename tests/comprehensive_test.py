@@ -1068,6 +1068,344 @@ trust_profile(str(EF_API), "api")
 
 
 # ---------------------------------------------------------------------------
+# 41. Plugin manifest validity
+# ---------------------------------------------------------------------------
+section("Plugin manifest validity")
+
+plugin_json_path = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
+plugin_meta = json.loads(plugin_json_path.read_text())
+t("plugin.json has name=chameleon", plugin_meta.get("name") == "chameleon")
+t("plugin.json has version", "version" in plugin_meta)
+t("plugin.json has description", bool(plugin_meta.get("description")))
+t("plugin.json has author", "author" in plugin_meta)
+
+marketplace_path = PLUGIN_ROOT / ".claude-plugin" / "marketplace.json"
+if marketplace_path.is_file():
+    marketplace = json.loads(marketplace_path.read_text())
+    t("marketplace.json parseable", isinstance(marketplace, dict))
+
+
+# ---------------------------------------------------------------------------
+# 42. All 8 skills have valid frontmatter
+# ---------------------------------------------------------------------------
+section("Skill frontmatter validation")
+
+skills_dir = PLUGIN_ROOT / "skills"
+skill_dirs = [d for d in skills_dir.iterdir() if d.is_dir()]
+t(f"Found {len(skill_dirs)} skill directories", len(skill_dirs) >= 8)
+
+for sd in skill_dirs:
+    skill_md = sd / "SKILL.md"
+    if not skill_md.is_file():
+        t(f"Skill {sd.name}: SKILL.md exists", False)
+        continue
+    text = skill_md.read_text()
+    has_fm = text.startswith("---\n") and "\n---\n" in text
+    t(f"Skill {sd.name}: has frontmatter", has_fm)
+    # Extract frontmatter
+    if has_fm:
+        fm_block = text.split("\n---\n", 1)[0][4:]
+        has_name = any(line.startswith("name:") for line in fm_block.splitlines())
+        has_desc = any(line.startswith("description:") for line in fm_block.splitlines())
+        t(f"Skill {sd.name}: has name + description", has_name and has_desc)
+
+
+# ---------------------------------------------------------------------------
+# 43. Hook timeout enforcement (sleep > 2s should be killed)
+# ---------------------------------------------------------------------------
+section("Hook timeout enforcement")
+
+# Create a fake stdin payload that triggers a slow code path... Actually we
+# can't easily make Python sleep inside the hook. Instead, verify the bash
+# script invokes `timeout 2`. Less rigorous but verifiable.
+preflight_text = (HOOKS / "preflight-and-advise").read_text()
+t(
+    "preflight-and-advise script enforces 2-second timeout",
+    "timeout 2" in preflight_text,
+)
+callout_text = (HOOKS / "callout-detector").read_text()
+t(
+    "callout-detector script enforces 2-second timeout",
+    "timeout 2" in callout_text,
+)
+
+
+# ---------------------------------------------------------------------------
+# 44. session-start without CLAUDE_PLUGIN_ROOT (degrades gracefully)
+# ---------------------------------------------------------------------------
+section("session-start without CLAUDE_PLUGIN_ROOT")
+
+# Run hook helper directly with no env
+proc = subprocess.run(
+    [sys.executable, "-m", "chameleon_mcp.hook_helper", "session-start"],
+    input="",
+    capture_output=True,
+    text=True,
+    timeout=10,
+    env={k: v for k, v in os.environ.items() if k != "CLAUDE_PLUGIN_ROOT"},
+    cwd=str(PLUGIN_ROOT / "mcp"),
+)
+out = json.loads(proc.stdout) if proc.stdout.strip() else {}
+t(
+    "session-start without CLAUDE_PLUGIN_ROOT emits empty",
+    out == {} or not out.get("hookSpecificOutput", {}).get("additionalContext"),
+)
+
+
+# ---------------------------------------------------------------------------
+# 45. callout-detector empty / missing user_prompt
+# ---------------------------------------------------------------------------
+section("callout-detector edge cases")
+
+# Empty payload
+proc = subprocess.run(
+    [str(HOOKS / "callout-detector")],
+    input="{}",
+    capture_output=True,
+    text=True,
+    timeout=10,
+    env=env,
+)
+out = json.loads(proc.stdout)
+t("callout-detector emits empty on missing user_prompt", out == {})
+
+# Empty user_prompt string
+proc = subprocess.run(
+    [str(HOOKS / "callout-detector")],
+    input=json.dumps({"user_prompt": ""}),
+    capture_output=True,
+    text=True,
+    timeout=10,
+    env=env,
+)
+out = json.loads(proc.stdout)
+t("callout-detector emits empty on empty user_prompt", out == {})
+
+
+# ---------------------------------------------------------------------------
+# 46. preflight-and-advise on Write tool (not just Edit)
+# ---------------------------------------------------------------------------
+section("preflight-and-advise across tool variants")
+
+write_input = json.dumps({
+    "tool_name": "Write",
+    "tool_input": {
+        "file_path": str(EF_CLIENT / "src" / "components" / "base" / "SelectVettingStatus.tsx"),
+        "content": "...",
+    },
+    "session_id": "write-test",
+})
+proc = subprocess.run(
+    [str(HOOKS / "preflight-and-advise")],
+    input=write_input,
+    capture_output=True,
+    text=True,
+    timeout=30,
+    env=env,
+)
+out = json.loads(proc.stdout)
+ctx = out.get("hookSpecificOutput", {}).get("additionalContext", "")
+t("preflight-and-advise injects context for Write tool", "[chameleon: archetype=" in ctx)
+
+
+# ---------------------------------------------------------------------------
+# 47. get_canonical_excerpt returns sanitized content
+# ---------------------------------------------------------------------------
+section("get_canonical_excerpt")
+
+from chameleon_mcp.tools import get_canonical_excerpt
+
+# Find a known archetype name from the EF client profile
+profile = json.loads((EF_CLIENT / ".chameleon" / "archetypes.json").read_text())
+first_arch = next(iter(profile["archetypes"].keys()))
+client_repo_id = hashlib.sha256(str(EF_CLIENT.resolve()).encode("utf-8")).hexdigest()
+r = get_canonical_excerpt(client_repo_id, first_arch)
+data = r.get("data", {})
+content = data.get("content") or ""
+t(f"get_canonical_excerpt returns content for {first_arch}", bool(content))
+t(
+    "get_canonical_excerpt content is sanitized (no closing tag)",
+    "</chameleon-context>" not in content,
+)
+
+
+# ---------------------------------------------------------------------------
+# 48. get_rules
+# ---------------------------------------------------------------------------
+section("get_rules")
+
+from chameleon_mcp.tools import get_rules
+
+r = get_rules(client_repo_id, first_arch)
+rules_data = r.get("data", {})
+t("get_rules returns dict", isinstance(rules_data, dict))
+
+
+# ---------------------------------------------------------------------------
+# 49. EF api refresh_repo idempotence
+# ---------------------------------------------------------------------------
+section("EF api refresh_repo idempotence")
+
+from chameleon_mcp.tools import refresh_repo
+
+r1 = refresh_repo(str(EF_API))["data"]
+r2 = refresh_repo(str(EF_API))["data"]
+t(
+    "EF api refresh_repo idempotent",
+    r1["archetypes_detected"] == r2["archetypes_detected"],
+)
+
+
+# ---------------------------------------------------------------------------
+# 50. Bootstrap output schema
+# ---------------------------------------------------------------------------
+section("Bootstrap output schema")
+
+shutil.rmtree(EF_CLIENT / ".chameleon", ignore_errors=True)
+r_full = bootstrap_repo(str(EF_CLIENT))["data"]
+expected_keys = {"status", "archetypes_detected", "files_processed"}
+missing_keys = expected_keys - set(r_full.keys())
+t(
+    f"Bootstrap response has expected keys (missing: {missing_keys})",
+    not missing_keys,
+)
+t(
+    f"Bootstrap files_processed > 0 (got {r_full.get('files_processed')})",
+    r_full.get("files_processed", 0) > 0,
+)
+trust_profile(str(EF_CLIENT), "client")
+
+
+# ---------------------------------------------------------------------------
+# 51. HMAC key file has mode 0600
+# ---------------------------------------------------------------------------
+section("HMAC key file permissions")
+
+from chameleon_mcp.exec_log import _ensure_hmac_key, HMAC_KEY_PATH
+
+_ensure_hmac_key()
+if HMAC_KEY_PATH.is_file():
+    mode = os.stat(HMAC_KEY_PATH).st_mode & 0o777
+    t(f"HMAC key file mode is 0600 (got {oct(mode)})", mode == 0o600)
+
+
+# ---------------------------------------------------------------------------
+# 52. Profile summary content
+# ---------------------------------------------------------------------------
+section("Profile summary markdown")
+
+summary_path = EF_CLIENT / ".chameleon" / "profile.summary.md"
+if summary_path.is_file():
+    summary = summary_path.read_text()
+    t("profile.summary.md has Generated header", "Generated:" in summary)
+    t("profile.summary.md has Engine line", "Engine:" in summary)
+    t("profile.summary.md has Language line", "Language:" in summary)
+    t("profile.summary.md has Schema version", "Schema version:" in summary)
+    t("profile.summary.md lists archetypes", "archetypes detected" in summary)
+
+
+# ---------------------------------------------------------------------------
+# 53. Profile loader respects engine_min_version
+# ---------------------------------------------------------------------------
+section("Profile loader engine_min_version")
+
+with tempfile.TemporaryDirectory() as tmp:
+    bad_dir = Path(tmp) / ".chameleon"
+    bad_dir.mkdir()
+    # Profile demanding engine version higher than current
+    for name in ("profile.json", "archetypes.json", "rules.json", "canonicals.json"):
+        (bad_dir / name).write_text(json.dumps({
+            "schema_version": 4,
+            "engine_min_version": "999.0.0",
+            "generation": 1,
+        }))
+    (bad_dir / "COMMITTED").write_text("ok")
+    try:
+        load_profile_dir(bad_dir)
+        t("Loader rejects engine_min_version too high", False, "expected exception")
+    except ProfileLoadError:
+        t("Loader rejects engine_min_version too high", True)
+
+
+# ---------------------------------------------------------------------------
+# 54. Posttool-recorder writes log file
+# ---------------------------------------------------------------------------
+section("posttool-recorder writes HMAC log")
+
+with tempfile.TemporaryDirectory() as tmp:
+    env_log = env.copy()
+    env_log["TMPDIR"] = tmp
+    env_log["CLAUDE_CWD"] = str(EF_CLIENT)
+
+    hook_input = json.dumps({
+        "tool_name": "Bash",
+        "tool_input": {"command": "echo posttool-recorder-test"},
+        "tool_response": {"returnCode": 0},
+        "session_id": "post-test-1",
+    })
+    proc = subprocess.run(
+        [str(HOOKS / "posttool-recorder")],
+        input=hook_input,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env_log,
+    )
+    log_root = Path(tmp) / ".chameleon_exec_log"
+    log_files = list(log_root.rglob("*.jsonl"))
+    t(f"posttool-recorder writes {len(log_files)} log file(s)", len(log_files) >= 1)
+    if log_files:
+        line = log_files[0].read_text().splitlines()[0]
+        record = json.loads(line)
+        t(
+            "Log entry has command + exit_code + hmac",
+            "command" in record and "exit_code" in record and "hmac" in record,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 55. Multi-archetype alternatives populated
+# ---------------------------------------------------------------------------
+section("get_archetype alternatives")
+
+# A file with multiple plausible buckets — alternatives should be populated
+from chameleon_mcp.tools import get_archetype as _get_archetype
+
+test_file = EF_CLIENT / "src" / "components" / "base" / "SelectVettingStatus.tsx"
+r = _get_archetype(client_repo_id, str(test_file))
+data = r["data"]
+t(
+    "get_archetype returns archetype + alternatives",
+    "archetype" in data and "alternatives" in data,
+)
+t(
+    "get_archetype returns confidence_band",
+    data.get("confidence_band") in ("high", "medium", "low"),
+)
+
+
+# ---------------------------------------------------------------------------
+# 56. trust_profile + revoke flow
+# ---------------------------------------------------------------------------
+section("Trust grant + revoke flow")
+
+from chameleon_mcp.profile.trust import revoke_trust
+
+# Grant + verify trusted
+trust_profile(str(EF_CLIENT), "client")
+state = trust_state_for(client_repo_id)
+t("Trust state after grant: trusted", state is not None)
+
+# Revoke + verify untrusted
+revoke_trust(client_repo_id)
+state = trust_state_for(client_repo_id)
+t("Trust state after revoke: None", state is None)
+
+# Re-grant for downstream tests
+trust_profile(str(EF_CLIENT), "client")
+
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 section("Summary")

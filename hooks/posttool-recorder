@@ -2,27 +2,35 @@
 # PostToolUse Bash hook for chameleon plugin.
 #
 # HMAC-signed exec log for debugging + cookbook scoring (advisory).
-# Inherited from claude-measure-twice with bug fixes:
-#   - Path mismatch fixed: writes AND reads use ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/
-#   - HMAC key fail-loud: explicit error if /dev/urandom unavailable (no silent unsigned)
-#   - GC: -mtime +1 → -mmin +1440 (correct semantics)
+# Delegates to chameleon_mcp.hook_helper.posttool_recorder which:
+#   1. Reads payload from stdin (tool_input.command, tool_response.returnCode,
+#      session_id, CLAUDE_CWD)
+#   2. Computes repo_id = sha256(resolved CLAUDE_CWD)
+#   3. Appends an HMAC-signed log line to
+#      ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/<session_id>.jsonl
 #
-# Phase 1B: stub. Phase 4 implements full HMAC discipline.
+# Fail-open: any failure → emit empty JSON. Never block Bash from completing.
 #
-# See ARCHITECTURE.md "Hook stack" PostToolUse Bash section + "Security
-# mitigations" #5 (per-repo HMAC log directory) for the design.
+# See ARCHITECTURE.md "Hook stack" PostToolUse Bash + "Security mitigations"
+# #5 (per-repo HMAC log directory).
 
 set -euo pipefail
 
-# Phase 1B: read input but don't write log yet.
-INPUT=$(cat)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}"
+MCP_DIR="${PLUGIN_ROOT}/mcp"
 
-# TODO Phase 4: parse INPUT, extract command + exit_code + repo_id
-# TODO Phase 4: derive ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/ (mode 0700)
-# TODO Phase 4: ensure HMAC key exists (~/.claude/hooks/.exec_hmac.key, 0600);
-#               fail-loud if /dev/urandom read fails
-# TODO Phase 4: append HMAC-signed log line: {ts, command, exit_code, hmac}
-# TODO Phase 4: GC weekly: find logs older than -mmin +43200 (30 days), delete
+if [ -d "${MCP_DIR}/.venv" ]; then
+    PYTHON="${MCP_DIR}/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="$(command -v python3)"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON="$(command -v python)"
+else
+    printf '{}\n'
+    exit 0
+fi
 
-printf '{}\n'
-exit 0
+# 2-second hard timeout — log writes should be near-instant.
+PYTHONPATH="${MCP_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
+    timeout 2 "${PYTHON}" -m chameleon_mcp.hook_helper posttool-recorder \
+    || printf '{}\n'

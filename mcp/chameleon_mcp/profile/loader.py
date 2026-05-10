@@ -12,7 +12,19 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from chameleon_mcp import __version__ as ENGINE_VERSION
 from chameleon_mcp.bootstrap.transaction import is_committed
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Parse a "X.Y.Z" version string. Trailing junk is dropped."""
+    parts: list[int] = []
+    for chunk in str(v).split("."):
+        try:
+            parts.append(int("".join(c for c in chunk if c.isdigit()) or "0"))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts) or (0,)
 
 
 class ProfileLoadError(Exception):
@@ -111,6 +123,13 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         raise ProfileLoadError(
             f"profile generation mismatch across artifacts: {gens}; "
             "/chameleon-refresh recommended"
+        )
+
+    declared_min = profile.get("engine_min_version") or archetypes.get("engine_min_version")
+    if declared_min and _version_tuple(ENGINE_VERSION) < _version_tuple(declared_min):
+        raise ProfileLoadError(
+            f"profile requires engine >= {declared_min} but this engine is "
+            f"{ENGINE_VERSION}; upgrade chameleon-mcp"
         )
 
     mtime_token = "-".join(str(m) for m in mtimes_after)
