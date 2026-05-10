@@ -115,9 +115,11 @@ def preflight_and_advise() -> int:
         return 0
 
     data = result.get("data", {})
-    archetype = data.get("archetype", {}) or {}
+    archetype_obj = data.get("archetype", {}) or {}
     canonical = data.get("canonical_excerpt", {}) or {}
-    archetype_name = archetype.get("name")
+    # Note: get_archetype returns {archetype: <name>, alternatives, content_signal_match,
+    # confidence_band}. The cluster name lives under the "archetype" key (yes, nested).
+    archetype_name = archetype_obj.get("archetype")
 
     if not archetype_name:
         _emit({})
@@ -129,7 +131,7 @@ def preflight_and_advise() -> int:
     block = (
         "<chameleon-context>\n"
         f"[chameleon: archetype={archetype_name}, "
-        f"confidence={archetype.get('confidence_band', 'unknown')}]\n\n"
+        f"confidence={archetype_obj.get('confidence_band', 'unknown')}]\n\n"
     )
     if excerpt_content:
         block += "Canonical witness:\n```\n"

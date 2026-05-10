@@ -63,32 +63,34 @@ def safe_open(repo_root: Path, rel_path: str, *, max_size_bytes: int = 1_000_000
         if part in suspicious_segments:
             raise UnsafeFileError(f"path contains forbidden segment: {part}")
 
-    # 5. Resolve full path with realpath (follows symlinks intentionally for resolution,
-    #    then we lstat the *result* to catch symlinks at the leaf)
-    candidate = (repo_root / rel_path).resolve(strict=False)
+    # 5. Build the unresolved candidate path. We lstat THIS (not the resolved
+    #    form) so a leaf-symlink is detected before any resolution happens.
+    unresolved = repo_root / rel_path
 
-    # 6. Boundary check: candidate must be inside repo_root after resolution
+    # 6. lstat the unresolved path FIRST — catches symlinks at the leaf.
+    try:
+        st = os.lstat(unresolved)
+    except FileNotFoundError as e:
+        raise UnsafeFileError(f"path does not exist: {unresolved}") from e
+    except OSError as e:
+        raise UnsafeFileError(f"lstat failed: {e}") from e
+
+    # 7. Refuse symlinks (TOCTOU mitigation; matches Round 4/5 AppSec recs)
+    if stat.S_ISLNK(st.st_mode):
+        raise UnsafeFileError(f"path is a symlink (refused): {unresolved}")
+
+    # 8. Now resolve to canonical form for boundary check (no symlinks to follow
+    #    since we already refused above; resolve still normalizes ../ traversal)
+    candidate = unresolved.resolve(strict=False)
     repo_resolved = repo_root.resolve(strict=False)
     try:
         candidate.relative_to(repo_resolved)
     except ValueError as e:
         raise UnsafeFileError(f"path escapes repo boundary: {candidate} not under {repo_resolved}") from e
 
-    # 7. lstat (NOT stat) to catch symlinks pointing outside the repo
-    try:
-        st = os.lstat(candidate)
-    except FileNotFoundError as e:
-        raise UnsafeFileError(f"path does not exist: {candidate}") from e
-    except OSError as e:
-        raise UnsafeFileError(f"lstat failed: {e}") from e
-
-    # 8. Refuse symlinks (TOCTOU mitigation)
-    if stat.S_ISLNK(st.st_mode):
-        raise UnsafeFileError(f"path is a symlink (refused): {candidate}")
-
     # 9. Refuse non-regular files (devices, fifos, sockets)
     if not stat.S_ISREG(st.st_mode):
-        raise UnsafeFileError(f"path is not a regular file: {candidate}")
+        raise UnsafeFileError(f"path is not a regular file: {unresolved}")
 
     # 10. File size ceiling (DoS mitigation)
     if st.st_size > max_size_bytes:

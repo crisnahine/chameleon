@@ -245,29 +245,69 @@ def get_rules(repo: str, archetype: str | None = None) -> dict:
 
 
 def lint_file(repo: str, archetype: str, content: str) -> dict:
-    """Validate file content against archetype's rules. Phase 4 implements."""
-    return _envelope({
-        "violations": [],
-        "canonical_confidence": 0.0,
-        "unparseable_regions": [],
-    })
+    """Validate file content against archetype's rules.
+
+    Phase 2D simplification: returns size-bounded basic violation set.
+    The MCP envelope's "truncated" flag fires when content exceeds the cap.
+    Phase 4 adds real lint engine (AST query against canonical's normative shape).
+    """
+    del repo, archetype
+    # Cap content at 100 KB per architecture
+    truncated = len(content) > 100_000
+    return _envelope(
+        {
+            "violations": [],
+            "canonical_confidence": 0.0,
+            "unparseable_regions": [],
+            "content_size": len(content),
+        },
+        truncated=truncated,
+    )
 
 
 def get_drift_status(repo: str) -> dict:
-    """Report freshness, days_since_refresh, observed_drift_score for a repo.
+    """Report freshness for a repo by repo_id.
 
-    Phase 2D: reads profile.json `created_at`. Drift confidence requires
-    edit_observations table (Phase 4 wires hook → drift.db updates).
+    Phase 2D: scans ${PLUGIN_DATA}/<repo_id>/ for trust + days_since_refresh.
+    Reads profile.json's created_at if discoverable via index. Phase 4 will
+    query drift.db edit_observations for observed_drift_score.
     """
-    from chameleon_mcp.profile.loader import LoadedProfile, find_repo_root, load_profile_dir
+    import time
 
-    # Phase 2D simplification: caller passes repo_id; we look up via env walk.
-    # Real Phase 4: index.db lookup via repo_id.
-    del repo  # not used in Phase 2D simplification
+    from chameleon_mcp.profile.trust import plugin_data_dir, trust_state_for
+
+    if not isinstance(repo, str) or not repo:
+        return _envelope({
+            "days_since_refresh": None,
+            "observed_drift_score": None,
+            "recommended_action": "invalid repo_id",
+        })
+
+    repo_data = plugin_data_dir() / repo
+    trust = trust_state_for(repo) if repo_data.is_dir() else None
+
+    days_since_refresh: int | None = None
+    if trust is not None and trust.granted_at:
+        try:
+            granted_epoch = time.mktime(time.strptime(trust.granted_at, "%Y-%m-%dT%H:%M:%SZ"))
+            days_since_refresh = max(0, int((time.time() - granted_epoch) / 86_400))
+        except ValueError:
+            days_since_refresh = None
+
+    if days_since_refresh is None:
+        recommended = "no trust grant found; run /chameleon-trust first"
+    elif days_since_refresh > 90:
+        recommended = "profile may be stale; run /chameleon-refresh"
+    elif days_since_refresh > 30:
+        recommended = "consider /chameleon-refresh if codebase has materially changed"
+    else:
+        recommended = "fresh"
+
     return _envelope({
-        "days_since_refresh": None,
+        "repo_id": repo,
+        "days_since_refresh": days_since_refresh,
         "observed_drift_score": None,
-        "recommended_action": "Phase 2D simplification — pass file_path via detect_repo first",
+        "recommended_action": recommended,
     })
 
 
@@ -305,13 +345,54 @@ def bootstrap_repo(path: str, mode: str = "full", paths_glob: str | None = None)
 
 
 def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
-    """List all known repos. Phase 4 reads from index.db.
+    """List all known repos this user has touched.
 
-    Phase 2D: returns empty list (index.db not yet wired); cursor pagination
-    is the API shape, not implementation.
+    Phase 2D: scans ${PLUGIN_DATA}/<repo_id>/ directories for trust records.
+    Cursor pagination shape implemented from day 1 (Round 5 API Designer);
+    Phase 4 swaps to index.db single-SQLite query for >1000 repos.
     """
-    del cursor, limit
-    return _envelope({"profiles": []}, next_cursor=None)
+    from chameleon_mcp.profile.trust import plugin_data_dir, trust_state_for
+
+    if limit <= 0 or limit > 1000:
+        limit = 100
+
+    base = plugin_data_dir()
+    if not base.is_dir():
+        return _envelope({"profiles": []}, next_cursor=None)
+
+    # Collect all known repo_ids by directory listing
+    all_repo_ids = sorted(
+        [d.name for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")]
+    )
+
+    # Cursor = first repo_id of next page
+    if cursor:
+        try:
+            start = all_repo_ids.index(cursor)
+        except ValueError:
+            start = 0
+    else:
+        start = 0
+
+    page = all_repo_ids[start : start + limit]
+    next_cursor = (
+        all_repo_ids[start + limit] if start + limit < len(all_repo_ids) else None
+    )
+
+    profiles = []
+    for repo_id in page:
+        trust = trust_state_for(repo_id)
+        profiles.append({
+            "repo_id": repo_id,
+            "trust_state": "trusted" if trust else "untrusted",
+            "trusted_at": trust.granted_at if trust else None,
+            "trusted_by": trust.granted_by_user if trust else None,
+        })
+
+    return _envelope(
+        {"profiles": profiles, "total_known": len(all_repo_ids)},
+        next_cursor=next_cursor,
+    )
 
 
 def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:

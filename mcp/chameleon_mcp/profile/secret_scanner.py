@@ -81,13 +81,29 @@ def _fallback_scan(content: str) -> list[dict[str, Any]]:
 def scan_for_secrets(content: str) -> list[dict[str, Any]]:
     """Return list of detected secrets in content. Empty list = safe.
 
-    Tries `detect-secrets` first; falls back to a conservative regex set if
-    the library is not available in the environment.
+    Runs BOTH detect-secrets (when available, broad coverage) AND the
+    fallback regex set (deterministic, conservative). detect-secrets relies
+    on entropy + context heuristics that may miss inline test fixtures or
+    short example values; the fallback patterns catch those reliably.
+    Hits are deduplicated by (type, position).
     """
-    hits = _try_detect_secrets(content)
-    if hits is not None:
-        return hits
-    return _fallback_scan(content)
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple] = set()
+
+    detect_secrets_hits = _try_detect_secrets(content) or []
+    for hit in detect_secrets_hits:
+        key = (hit.get("type"), hit.get("line_number"), hit.get("position"))
+        if key not in seen:
+            seen.add(key)
+            hits.append(hit)
+
+    for hit in _fallback_scan(content):
+        key = (hit.get("type"), hit.get("position"))
+        if key not in seen:
+            seen.add(key)
+            hits.append(hit)
+
+    return hits
 
 
 def is_safe_canonical(content: str) -> bool:
