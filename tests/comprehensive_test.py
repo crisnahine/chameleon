@@ -778,10 +778,11 @@ expected_tools = {
     "get_canonical_excerpt", "get_rules", "lint_file",
     "get_drift_status", "refresh_repo", "bootstrap_repo",
     "list_profiles", "merge_profiles", "teach_profile", "trust_profile",
+    "disable_session", "pause_session",
 }
 missing = expected_tools - tool_names
 t(
-    f"MCP server registers all 13 tools (missing: {missing})",
+    f"MCP server registers all 15 tools (missing: {missing})",
     not missing,
 )
 

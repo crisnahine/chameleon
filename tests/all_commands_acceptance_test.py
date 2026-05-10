@@ -42,7 +42,7 @@ SLASH_COMMANDS = [
     "chameleon:chameleon-pause-15m",
 ]
 
-# All 13 MCP tools (full names as Claude Code exposes them when plugin is loaded)
+# All 15 MCP tools (full names as Claude Code exposes them when plugin is loaded)
 MCP_TOOLS = [
     "detect_repo",
     "get_archetype",
@@ -57,6 +57,8 @@ MCP_TOOLS = [
     "merge_profiles",
     "teach_profile",
     "trust_profile",
+    "disable_session",
+    "pause_session",
 ]
 MCP_PREFIX = "mcp__plugin_chameleon_chameleon-mcp__"
 

@@ -178,8 +178,8 @@ for label, repo_root, sample_rel, language in ACCEPTANCE_TARGETS:
             x for x in tools if x.startswith("mcp__plugin_chameleon_chameleon-mcp__")
         ]
         t(
-            f"{label}: all 13 chameleon tools registered (got {len(chameleon_tools)})",
-            len(chameleon_tools) == 13,
+            f"{label}: all 15 chameleon tools registered (got {len(chameleon_tools)})",
+            len(chameleon_tools) == 15,
         )
 
         skills = init.get("skills", [])

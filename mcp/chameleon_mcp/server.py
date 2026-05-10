@@ -151,6 +151,26 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     return tools.trust_profile(repo, confirmation_token)
 
 
+@mcp.tool()
+def disable_session(repo: str, session_id: str) -> dict:
+    """Suppress chameleon advisory injections for this Claude Code session.
+
+    Per /chameleon-disable. preflight-and-advise checks the
+    `.session_disabled.<session_id>` marker before injecting; when present,
+    no <chameleon-context> is added.
+    """
+    return tools.disable_session(repo, session_id)
+
+
+@mcp.tool()
+def pause_session(repo: str, minutes: int = 15) -> dict:
+    """Pause chameleon advisory injections for `minutes` minutes (default 15).
+
+    Per /chameleon-pause-15m. Auto-expires when the timestamp passes.
+    """
+    return tools.pause_session(repo, minutes)
+
+
 def main() -> None:
     """Entry point for `chameleon-mcp` CLI."""
     mcp.run()

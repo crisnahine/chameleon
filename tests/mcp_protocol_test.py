@@ -5,7 +5,7 @@ runs the MCP handshake, lists tools, and invokes every tool through the
 real JSON-RPC pipeline.
 
 Two rounds:
-  Round 1: protocol handshake + list_tools + 13-tool registry
+  Round 1: protocol handshake + list_tools + 15-tool registry
   Round 2: invoke each tool via call_tool with valid + invalid args
 """
 
@@ -39,6 +39,7 @@ EXPECTED_TOOLS = {
     "get_canonical_excerpt", "get_rules", "lint_file",
     "get_drift_status", "refresh_repo", "bootstrap_repo",
     "list_profiles", "merge_profiles", "teach_profile", "trust_profile",
+    "disable_session", "pause_session",
 }
 
 
@@ -72,12 +73,12 @@ async def run_protocol_test():
             tool_names = {tool.name for tool in tools_response.tools}
             t(
                 f"list_tools returns {len(tool_names)} tools",
-                len(tool_names) == 13,
+                len(tool_names) == len(EXPECTED_TOOLS),
             )
             missing = EXPECTED_TOOLS - tool_names
             extra = tool_names - EXPECTED_TOOLS
             t(
-                f"All 13 expected tools registered (missing: {missing}, extra: {extra})",
+                f"All {len(EXPECTED_TOOLS)} expected tools registered (missing: {missing}, extra: {extra})",
                 not missing and not extra,
             )
 

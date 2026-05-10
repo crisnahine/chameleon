@@ -32,9 +32,9 @@ Use the most-temporary option that solves the immediate need. Revert by:
 ## The flow
 
 1. Confirm chameleon is currently active in this session.
-2. Write a session-scope marker at `${PLUGIN_DATA}/<repo_id>/.session_disabled` (Phase 4 implementation; Phase 2D ships this skill but the actual session-disable handling is Phase 4-end).
-3. The PreToolUse hook checks for this marker before injecting; if present, skips.
-4. Confirm to user: "chameleon disabled for this session. SessionStart primer will re-enable on next session unless you set CHAMELEON_DISABLE=1 globally or .chameleon/.skip in this repo."
+2. Call `chameleon-mcp::disable_session(repo=<repo_root>, session_id=<current session_id>)`.
+3. The PreToolUse hook checks for the resulting `.session_disabled.<session_id>` marker before injecting; if present, skips.
+4. Confirm to user: "chameleon disabled for this session. SessionStart primer will re-enable on next session unless you set CHAMELEON_DISABLE=1 globally or `.chameleon/.skip` in this repo."
 
 ## Don't suggest disable for the wrong problem
 

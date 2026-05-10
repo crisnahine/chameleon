@@ -21,12 +21,12 @@ Pause chameleon's advisory injections for exactly 15 minutes. Auto-resumes after
 
 ## The flow
 
-1. Compute pause expiry: `now + 15 minutes`.
-2. Write timestamp to `${PLUGIN_DATA}/<repo_id>/.pause_until` (ISO 8601 UTC).
+1. Call `chameleon-mcp::pause_session(repo=<repo_root>, minutes=15)`.
+2. The tool writes `${PLUGIN_DATA}/<repo_id>/.pause_until` with the ISO 8601 expiry.
 3. PreToolUse hook checks `.pause_until`:
-   - If file missing or expired → inject normally
-   - If timestamp in future → skip injection, log to `events.jsonl`
-4. Confirm to user: "chameleon paused for 15 minutes (until <expiry-time>). Will auto-resume."
+   - If file missing or expired → inject normally (auto-cleans expired markers)
+   - If timestamp in future → skip injection
+4. Confirm to user: "chameleon paused for 15 minutes (until <expires_at returned by the tool>). Will auto-resume."
 
 ## Opt-out hierarchy
 
@@ -34,8 +34,8 @@ See `chameleon-disable` skill for the full hierarchy. `pause-15m` is the most-te
 
 ## Implementation status
 
-Phase 2D ships this skill. Hook integration that respects `.pause_until` is Phase 4-end work.
+Hook integration is wired: preflight-and-advise calls `is_chameleon_suppressed` before injecting, which honors `.pause_until` (auto-expires), `.session_disabled.<session_id>`, `CHAMELEON_DISABLE=1`, and `.chameleon/.skip`.
 
-## Phase 1.5+ variants
+## Future variants
 
-If `15m` is the wrong duration for some users, future v1.5+ may add `/chameleon-pause-1h` and `/chameleon-pause-until-restart`. Defer based on observed user behavior.
+If `15m` is the wrong duration for some users, future versions may add `/chameleon-pause-1h` and `/chameleon-pause-until-restart`. The `pause_session` MCP tool already accepts a `minutes` arg up to 240 (4 hours).

@@ -106,6 +106,30 @@ def preflight_and_advise() -> int:
         _emit({})
         return 0
 
+    # Opt-out check BEFORE any expensive work. If suppressed, emit empty
+    # context so the edit proceeds without injection. Mirrors the docs'
+    # "hook stack still fires (safety hard-deny preserved) but no
+    # <chameleon-context> content is injected" promise.
+    try:
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.tools import _compute_repo_id
+
+        repo_root_path = find_repo_root(Path(file_path).expanduser())
+        repo_id_hint = _compute_repo_id(repo_root_path) if repo_root_path else None
+        session_id = payload.get("session_id")
+        suppressed = is_chameleon_suppressed(
+            repo_root=repo_root_path,
+            repo_id=repo_id_hint,
+            session_id=session_id,
+        )
+        if suppressed is not None:
+            _emit({})
+            return 0
+    except Exception:
+        # Suppression check should never block — fail open into normal flow
+        pass
+
     try:
         from chameleon_mcp.tools import get_pattern_context
         result = get_pattern_context(file_path)

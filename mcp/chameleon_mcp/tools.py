@@ -616,6 +616,61 @@ def teach_profile(repo: str, feedback: str) -> dict:
     })
 
 
+def disable_session(repo: str, session_id: str) -> dict:
+    """Mark chameleon disabled for the given session_id.
+
+    Writes a `.session_disabled.<session_id>` marker under the per-repo
+    plugin data dir. preflight-and-advise checks this marker before
+    injecting context — when present, no <chameleon-context> content
+    is added to Edit/Write/NotebookEdit operations for that session.
+
+    Used by the /chameleon-disable slash command.
+    """
+    from chameleon_mcp.optouts import write_session_disable
+
+    repo_path = Path(repo).expanduser()
+    if not repo_path.is_absolute() or not repo_path.is_dir():
+        return _envelope({"status": "failed", "error": "expected absolute repo path"})
+    if not session_id or not isinstance(session_id, str):
+        return _envelope({"status": "failed", "error": "session_id required"})
+
+    repo_id = _compute_repo_id(repo_path)
+    marker = write_session_disable(repo_id, session_id)
+    return _envelope({
+        "status": "success",
+        "marker_path": str(marker),
+        "session_id": session_id,
+        "scope": "session",
+    })
+
+
+def pause_session(repo: str, minutes: int = 15) -> dict:
+    """Pause chameleon advisory injections for `minutes` minutes.
+
+    Writes a `.pause_until` file with an ISO 8601 expiry timestamp
+    under the per-repo plugin data dir. preflight-and-advise auto-
+    expires the marker; no manual cleanup needed.
+
+    Used by the /chameleon-pause-15m slash command (and any future
+    /chameleon-pause-<N> variants).
+    """
+    from chameleon_mcp.optouts import write_pause
+
+    repo_path = Path(repo).expanduser()
+    if not repo_path.is_absolute() or not repo_path.is_dir():
+        return _envelope({"status": "failed", "error": "expected absolute repo path"})
+    if not isinstance(minutes, int) or minutes <= 0 or minutes > 240:
+        return _envelope({"status": "failed", "error": "minutes must be 1..240"})
+
+    repo_id = _compute_repo_id(repo_path)
+    expiry_iso = write_pause(repo_id, minutes)
+    return _envelope({
+        "status": "success",
+        "expires_at": expiry_iso,
+        "minutes": minutes,
+    })
+
+
 def trust_profile(repo: str, confirmation_token: str) -> dict:
     """Mark a committed profile as trusted for the current user.
 
