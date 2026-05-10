@@ -19,7 +19,7 @@ The user identifies a missed pattern, typically after:
 
 ## The flow
 
-1. Confirm the user is in a TypeScript repo with `.chameleon/profile.json` present.
+1. Confirm the user is in a repo (TypeScript or Ruby on Rails) with `.chameleon/profile.json` present.
 2. Ask the user to describe the missed pattern. Probe for:
    - **What was generated** (the off-pattern code)
    - **What should have been generated** (the team's idiom)

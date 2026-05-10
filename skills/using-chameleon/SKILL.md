@@ -1,6 +1,6 @@
 ---
 name: using-chameleon
-description: Use when starting any conversation in a TypeScript repo with a chameleon profile present, before any Edit, Write, or NotebookEdit operation
+description: Use when starting any conversation in a repo with a chameleon profile present (TypeScript or Ruby on Rails), before any Edit, Write, or NotebookEdit operation
 ---
 
 <chameleon-context>
@@ -51,17 +51,17 @@ These thoughts mean you're rationalizing past the rule:
 ```dot
 digraph using_chameleon {
     "About to Edit/Write/NotebookEdit?" [shape=diamond];
-    "In a TypeScript repo with .chameleon/?" [shape=diamond];
+    "In a repo (TypeScript or Ruby) with .chameleon/?" [shape=diamond];
     "Trust state?" [shape=diamond];
     "Call get_pattern_context" [shape=box];
     "Trust prompt + proceed without injection" [shape=box];
     "Inject canonical + rules + idioms into edit" [shape=box];
     "Make the edit" [shape=doublecircle];
 
-    "About to Edit/Write/NotebookEdit?" -> "In a TypeScript repo with .chameleon/?" [label="yes"];
+    "About to Edit/Write/NotebookEdit?" -> "In a repo (TypeScript or Ruby) with .chameleon/?" [label="yes"];
     "About to Edit/Write/NotebookEdit?" -> "Make the edit" [label="no — proceed normally"];
-    "In a TypeScript repo with .chameleon/?" -> "Make the edit" [label="no"];
-    "In a TypeScript repo with .chameleon/?" -> "Trust state?" [label="yes"];
+    "In a repo (TypeScript or Ruby) with .chameleon/?" -> "Make the edit" [label="no"];
+    "In a repo (TypeScript or Ruby) with .chameleon/?" -> "Trust state?" [label="yes"];
     "Trust state?" -> "Trust prompt + proceed without injection" [label="untrusted"];
     "Trust state?" -> "Call get_pattern_context" [label="trusted"];
     "Trust prompt + proceed without injection" -> "Make the edit";
