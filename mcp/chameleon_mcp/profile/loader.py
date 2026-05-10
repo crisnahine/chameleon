@@ -48,18 +48,43 @@ class LoadedProfile:
     archetype_names: list[str] = field(default_factory=list)
 
 
-def find_repo_root(file_path: Path) -> Path | None:
-    """Walk up from file_path looking for a `.git` directory.
+REPO_ROOT_MARKERS: tuple[str, ...] = (
+    ".chameleon",  # already-bootstrapped chameleon repo (highest priority)
+    ".git",        # standard git repository
+    "package.json",  # Node / TypeScript project
+    "tsconfig.json",  # TypeScript project (no package.json)
+    "Gemfile",       # Ruby / Rails project
+    "pyproject.toml",  # Python project
+    "go.mod",        # Go module
+    "Cargo.toml",    # Rust crate
+)
 
-    Returns the directory containing `.git`, or None if not found within
-    a reasonable depth (32 parent directories).
+
+def find_repo_root(file_path: Path) -> Path | None:
+    """Walk up from file_path looking for a repo-root marker.
+
+    A "repo root" is the first ancestor directory containing any of:
+    .chameleon, .git, package.json, tsconfig.json, Gemfile, pyproject.toml,
+    go.mod, or Cargo.toml. Markers are checked in priority order at each
+    level — .chameleon wins over .git wins over a language manifest, so a
+    bootstrapped repo without .git (subtree, vendored copy, sparse
+    checkout, archive extract) still resolves correctly.
+
+    Returns the marker directory, or None if no marker is found within 32
+    parent directories.
     """
-    current = file_path.resolve()
+    current = file_path.expanduser()
     if current.is_file():
         current = current.parent
+    try:
+        current = current.resolve()
+    except OSError:
+        return None
+
     for _ in range(32):
-        if (current / ".git").exists():
-            return current
+        for marker in REPO_ROOT_MARKERS:
+            if (current / marker).exists():
+                return current
         parent = current.parent
         if parent == current:
             break
