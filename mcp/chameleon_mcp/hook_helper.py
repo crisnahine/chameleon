@@ -170,6 +170,8 @@ def preflight_and_advise() -> int:
     # Build a short context block; cap at 1500 tokens approx via char limit
     excerpt_content = canonical.get("content") or ""
     rules_count = len(data.get("rules") or [])
+    idioms_text = data.get("idioms") or ""
+    has_idioms = bool(idioms_text.strip())
     block = (
         "<chameleon-context>\n"
         f"[chameleon: archetype={archetype_name}, "
@@ -183,6 +185,8 @@ def preflight_and_advise() -> int:
         block += "\n```\n\n"
     if rules_count:
         block += f"Rules: {rules_count} entries available via get_rules({archetype_name!r}).\n"
+    if has_idioms:
+        block += "Team idioms captured via /chameleon-teach are available via get_pattern_context.\n"
     block += "</chameleon-context>"
 
     _emit({

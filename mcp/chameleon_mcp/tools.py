@@ -211,6 +211,19 @@ def get_pattern_context(file_path: str) -> dict:
                     except OSError:
                         pass
 
+    # Surface team idioms (captured via /chameleon-teach) — sanitized + capped.
+    # The using-chameleon skill says "shape your output using archetype,
+    # canonical, rules, AND idioms"; without this field, captured idioms
+    # never reach the model.
+    idioms_text = loaded.idioms_text or ""
+    if idioms_text:
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+        idioms_text = sanitize_for_chameleon_context(idioms_text)
+        # Cap at 8000 chars (~2000 tokens) to bound prompt size; idioms.md
+        # has its own 50KB cap so this is a defense-in-depth ceiling.
+        if len(idioms_text) > 8000:
+            idioms_text = idioms_text[:8000] + "\n... [truncated]"
+
     return _envelope({
         "repo": {
             "id": repo_id,
@@ -220,6 +233,7 @@ def get_pattern_context(file_path: str) -> dict:
         "archetype": arch_data,
         "canonical_excerpt": canonical_data,
         "rules": list(loaded.rules.get("rules", {}).items()),
+        "idioms": idioms_text,
         "meta": {
             "mtime_token": loaded.mtime_token,
             "computed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
