@@ -31,6 +31,17 @@ from pathlib import Path
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
 EF_CLIENT = Path("/Users/crisn/Documents/Projects/empire-flippers/client")
+EF_API = Path("/Users/crisn/Documents/Projects/empire-flippers/api")
+
+# Each entry: (label, repo_root, sample_file_relative_path, language).
+# The sample file MUST be a member of a known archetype so
+# get_pattern_context returns a non-null archetype name. Entry-point files
+# (src/index.tsx, config/application.rb) are typically singletons that
+# don't cluster — using a known-canonical witness avoids that gotcha.
+ACCEPTANCE_TARGETS = [
+    ("EF client (TypeScript)", EF_CLIENT, "src/utils/balanceTransaction.ts", "typescript"),
+    ("EF api (Ruby on Rails)", EF_API, "app/models/listing.rb", "ruby"),
+]
 
 
 def t(name, condition, info=""):
@@ -48,14 +59,17 @@ if shutil.which("claude") is None:
     print("SKIP: claude CLI not on PATH")
     sys.exit(0)
 
-# Ensure EF client is bootstrapped + trusted before we run
+# Ensure both EF repos are bootstrapped + trusted before we run
 from chameleon_mcp.tools import bootstrap_repo, trust_profile
-if not (EF_CLIENT / ".chameleon" / "profile.json").is_file():
-    bootstrap_repo(str(EF_CLIENT))
-trust_profile(str(EF_CLIENT), "client")
+for label, repo_root, _, _ in ACCEPTANCE_TARGETS:
+    if not repo_root.is_dir():
+        continue
+    if not (repo_root / ".chameleon" / "profile.json").is_file():
+        bootstrap_repo(str(repo_root))
+    trust_profile(str(repo_root), repo_root.name)
 
 
-def run_claude(prompt: str, allowed_tools: str = "") -> list[dict]:
+def run_claude(prompt: str, *, cwd: Path, allowed_tools: str = "") -> list[dict]:
     """Run `claude -p` with chameleon plugin loaded; return stream-json events."""
     cmd = [
         "claude", "-p", prompt,
@@ -70,7 +84,7 @@ def run_claude(prompt: str, allowed_tools: str = "") -> list[dict]:
 
     proc = subprocess.run(
         cmd,
-        cwd=str(EF_CLIENT),
+        cwd=str(cwd),
         capture_output=True,
         text=True,
         timeout=180,
@@ -86,113 +100,164 @@ def run_claude(prompt: str, allowed_tools: str = "") -> list[dict]:
     return events
 
 
-# ---------------------------------------------------------------------------
-# Round 1: plugin + hooks + MCP registration
-# ---------------------------------------------------------------------------
-section("Round 1 — plugin loads + hooks + MCP server connects")
-
-events = run_claude("Reply with the single word: OK")
-
-init = next((e for e in events if e.get("subtype") == "init"), None)
-t("init event present", init is not None)
-
-if init:
-    plugins = init.get("plugins", [])
-    t(
-        "Chameleon plugin loaded",
-        any(p.get("name") == "chameleon" for p in plugins),
-    )
-
-    mcp_servers = {m.get("name"): m.get("status") for m in init.get("mcp_servers", [])}
-    chameleon_mcp_status = mcp_servers.get("plugin:chameleon:chameleon-mcp")
-    t(
-        f"chameleon-mcp server status (got: {chameleon_mcp_status})",
-        chameleon_mcp_status == "connected",
-    )
-
-    tools = init.get("tools", [])
-    chameleon_tools = [
-        x for x in tools if x.startswith("mcp__plugin_chameleon_chameleon-mcp__")
-    ]
-    t(
-        f"All 13 chameleon tools registered (got {len(chameleon_tools)})",
-        len(chameleon_tools) == 13,
-    )
-
-    skills = init.get("skills", [])
-    chameleon_skills = [s for s in skills if s.startswith("chameleon:")]
-    t(
-        f"All 8 chameleon skills registered (got {len(chameleon_skills)})",
-        len(chameleon_skills) == 8,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Round 1 — SessionStart hook fires with using-chameleon SKILL
-# ---------------------------------------------------------------------------
-section("Round 1 — SessionStart hook injection")
-
-session_start = next(
-    (e for e in events
-     if e.get("hook_event") == "SessionStart" and e.get("subtype") == "hook_response"),
-    None,
-)
-t("SessionStart hook_response event present", session_start is not None)
-
-if session_start:
-    output = session_start.get("output", "")
-    try:
-        parsed = json.loads(output)
-    except json.JSONDecodeError:
-        parsed = {}
-    additional = parsed.get("hookSpecificOutput", {}).get("additionalContext", "")
-    t("additionalContext non-empty", len(additional) > 100)
-    t("additionalContext mentions using-chameleon", "using-chameleon" in additional)
-    t(
-        "additionalContext contains the 'Before any Edit' rule",
-        "Before any Edit" in additional,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Round 2 — Claude can actually call chameleon MCP tools (trust path bug)
-# ---------------------------------------------------------------------------
-section("Round 2 — chameleon-mcp tool invocation + trust resolution")
-
-events2 = run_claude(
-    "Call chameleon-mcp's detect_repo tool on src/index.tsx and report the trust_state value, nothing else.",
-    allowed_tools="mcp__plugin_chameleon_chameleon-mcp__detect_repo",
-)
-
-# Find the tool result for detect_repo
-tool_result = None
-for e in events2:
-    msg = e.get("message", {})
-    content = msg.get("content")
-    if not isinstance(content, list):
-        continue
-    for item in content:
-        if (
-            isinstance(item, dict)
-            and item.get("type") == "tool_result"
-            and isinstance(item.get("content"), list)
-        ):
-            for inner in item["content"]:
+def find_tool_result(events: list[dict], must_contain: str) -> dict | None:
+    """Pull out the first tool_result whose text contains a marker substring."""
+    for e in events:
+        msg = e.get("message", {})
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") != "tool_result":
+                continue
+            inner_content = item.get("content")
+            if not isinstance(inner_content, list):
+                continue
+            for inner in inner_content:
                 if isinstance(inner, dict) and inner.get("type") == "text":
                     text = inner.get("text", "")
-                    if "trust_state" in text and "repo_id" in text:
+                    if must_contain in text:
                         try:
-                            tool_result = json.loads(text)
+                            return json.loads(text)
                         except json.JSONDecodeError:
-                            pass
+                            continue
+    return None
 
-t("detect_repo tool was invoked + returned a result", tool_result is not None)
-if tool_result:
-    trust = tool_result.get("data", {}).get("trust_state")
-    t(
-        f"detect_repo returns trust_state=trusted from Claude Code (got {trust})",
-        trust == "trusted",
+
+def claude_called_tool(events: list[dict], tool_name: str) -> bool:
+    """True iff any assistant message in events contains a tool_use for tool_name."""
+    for e in events:
+        msg = e.get("message", {})
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if (
+                isinstance(item, dict)
+                and item.get("type") == "tool_use"
+                and item.get("name") == tool_name
+            ):
+                return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Per-repo acceptance: plugin + hooks + MCP + trust + skill-following
+# ---------------------------------------------------------------------------
+for label, repo_root, sample_rel, language in ACCEPTANCE_TARGETS:
+    if not repo_root.is_dir():
+        section(f"SKIP {label} — repo not present at {repo_root}")
+        continue
+
+    section(f"Round 1 — {label}: plugin loads + hooks + MCP server")
+
+    events = run_claude(
+        "Reply with the single word: OK",
+        cwd=repo_root,
     )
+
+    init = next((e for e in events if e.get("subtype") == "init"), None)
+    t(f"{label}: init event present", init is not None)
+
+    if init:
+        plugins = init.get("plugins", [])
+        t(
+            f"{label}: chameleon plugin loaded",
+            any(p.get("name") == "chameleon" for p in plugins),
+        )
+
+        mcp_servers = {m.get("name"): m.get("status") for m in init.get("mcp_servers", [])}
+        chameleon_mcp_status = mcp_servers.get("plugin:chameleon:chameleon-mcp")
+        t(
+            f"{label}: chameleon-mcp connected (got {chameleon_mcp_status})",
+            chameleon_mcp_status == "connected",
+        )
+
+        tools = init.get("tools", [])
+        chameleon_tools = [
+            x for x in tools if x.startswith("mcp__plugin_chameleon_chameleon-mcp__")
+        ]
+        t(
+            f"{label}: all 13 chameleon tools registered (got {len(chameleon_tools)})",
+            len(chameleon_tools) == 13,
+        )
+
+        skills = init.get("skills", [])
+        chameleon_skills = [s for s in skills if s.startswith("chameleon:")]
+        t(
+            f"{label}: all 8 chameleon skills registered (got {len(chameleon_skills)})",
+            len(chameleon_skills) == 8,
+        )
+
+    section(f"Round 1 — {label}: SessionStart hook injects using-chameleon SKILL")
+
+    session_start = next(
+        (e for e in events
+         if e.get("hook_event") == "SessionStart" and e.get("subtype") == "hook_response"),
+        None,
+    )
+    t(f"{label}: SessionStart hook_response present", session_start is not None)
+
+    if session_start:
+        output = session_start.get("output", "")
+        try:
+            parsed = json.loads(output)
+        except json.JSONDecodeError:
+            parsed = {}
+        additional = parsed.get("hookSpecificOutput", {}).get("additionalContext", "")
+        t(f"{label}: additionalContext non-empty", len(additional) > 100)
+        t(
+            f"{label}: additionalContext mentions using-chameleon",
+            "using-chameleon" in additional,
+        )
+        t(
+            f"{label}: additionalContext mentions both TS and Ruby",
+            "TypeScript or Ruby" in additional,
+        )
+
+    # ----------------------------------------------------------------------
+    # Round 2 — Claude can call chameleon MCP tools, trust resolves correctly
+    # ----------------------------------------------------------------------
+    section(f"Round 2 — {label}: detect_repo via real Claude Code")
+
+    events2 = run_claude(
+        f"Call chameleon-mcp's detect_repo tool on {sample_rel} and report only the trust_state value, nothing else.",
+        cwd=repo_root,
+        allowed_tools="mcp__plugin_chameleon_chameleon-mcp__detect_repo",
+    )
+    tool_result = find_tool_result(events2, "trust_state")
+    t(
+        f"{label}: detect_repo tool invoked + returned a result",
+        tool_result is not None,
+    )
+    if tool_result:
+        trust = tool_result.get("data", {}).get("trust_state")
+        t(
+            f"{label}: detect_repo trust_state=trusted (got {trust})",
+            trust == "trusted",
+        )
+
+    # ----------------------------------------------------------------------
+    # Round 2 — Claude follows the skill rule (calls get_pattern_context BEFORE Edit)
+    # ----------------------------------------------------------------------
+    section(f"Round 2 — {label}: skill-following on {language} file")
+
+    events3 = run_claude(
+        f"Use the Edit tool to change {repo_root}/{sample_rel} — replace the very first line with itself (no actual change). This is a hook test.",
+        cwd=repo_root,
+        allowed_tools="Edit Read mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
+    )
+    t(
+        f"{label}: Claude called get_pattern_context (followed skill rule)",
+        claude_called_tool(events3, "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context"),
+    )
+    pc_result = find_tool_result(events3, "archetype")
+    if pc_result:
+        archetype = pc_result.get("data", {}).get("archetype", {}).get("archetype")
+        t(
+            f"{label}: get_pattern_context returned archetype for {language} file",
+            archetype is not None and archetype.startswith("cluster-"),
+        )
 
 
 # ---------------------------------------------------------------------------
