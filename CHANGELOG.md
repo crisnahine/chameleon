@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 1C — MCP server scaffold (2026-05-10)
+
+#### Added (real implementations — security/correctness-critical helpers)
+- `mcp/chameleon_mcp/safe_open.py` — single shared helper for all file reads (realpath + repo-boundary check + lstat + null-byte/NFD/Windows-separator rejection). Per Round 5 AppSec recommendation #3.
+- `mcp/chameleon_mcp/locks.py` — POSIX `flock(2)` advisory lock context manager with stale-lock detection (PID alive + age check). Used by `refresh_repo`.
+- `mcp/chameleon_mcp/drift/sqlite_config.py` — SQLite hardening pragmas (WAL + busy_timeout=30000 + synchronous=NORMAL + trusted_schema=OFF + wal_autocheckpoint=10000) + retry-with-jitter on `SQLITE_BUSY`. Per Round 5 Database Architect verdict.
+- `mcp/chameleon_mcp/bootstrap/transaction.py` — atomic multi-file commit pattern with `COMMITTED` sentinel + per-PID temp subdir + atomic rename. Per Round 4 BLOCKING #1 (distributed systems).
+- `mcp/chameleon_mcp/profile/schema.py` — JSON parser hardening (depth cap 64, duplicate-key rejection via `object_pairs_hook`, schema-version range check, archetype name regex validation). Per Round 4 Security #14.
+
+#### Added (stubs with explicit Phase 2/4 TODOs)
+- `mcp/chameleon_mcp/server.py` — FastMCP entry point registering all 12 MCP tools with API versioning envelope.
+- `mcp/chameleon_mcp/tools.py` — 12 tool stubs returning hardcoded valid-shape responses: `detect_repo`, `get_archetype`, `get_pattern_context` (Round 5 collapsed-call addition), `get_canonical_excerpt`, `get_rules`, `lint_file`, `get_drift_status`, `refresh_repo`, `bootstrap_repo`, `list_profiles` (cursor-paginated from day 1), `merge_profiles`, `teach_profile` (renamed from `refine_profile`), `trust_profile`.
+- `mcp/chameleon_mcp/extractors/_base.py` — `ParsedFile` + `ParseResult` dataclasses + `Extractor` Protocol.
+- `mcp/chameleon_mcp/extractors/typescript.py` — TypeScript extractor with `can_handle()` detection logic (real); `parse_repo()` Phase 2 stub.
+- `mcp/chameleon_mcp/bootstrap/canonical_scanner.py` — instruction-shaped natural-language detector (4 regex patterns; Phase 4 expansion).
+- `mcp/chameleon_mcp/profile/secret_scanner.py` — Phase 4 detect-secrets wrapper stub.
+- `mcp/chameleon_mcp/profile/poisoning_scanner.py` — dangerous-pattern scanner (eval, exec, shell=True, raw SQL concat, weak hashes, Math.random for security; Round 4 Security architect recommendation).
+
+#### Added (project / configuration)
+- `mcp/pyproject.toml` — Python project manifest: FastMCP + xxhash + detect-secrets pinned; ruff + pytest dev deps.
+- `mcp/chameleon_mcp/profile/migrations/README.md` — migration correctness contract documented.
+- `mcp/chameleon_mcp/packs/__init__.py` — placeholder per ADR-0002 (companion plugins deferred to v2.0+).
+- `scripts/ts_dump.mjs` — Phase 1C placeholder; Phase 2 implements long-lived Node worker pool.
+- `scripts/bump-version.sh` — Phase 7 placeholder.
+- `scripts/verify-vendor-checksums.sh` — Phase 4 placeholder for SHA-256 manifest verification.
+
 ### Phase 1B — Hooks + skill stubs + first ADRs (2026-05-10)
 
 #### Added
