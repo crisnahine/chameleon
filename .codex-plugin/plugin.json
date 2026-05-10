@@ -4,9 +4,11 @@
   "description": "Code that blends in. Auto-derives codebase conventions and injects archetype-aware guidance for AI-generated code in TypeScript and Ruby on Rails repos.",
   "author": {
     "name": "Cris Nahine",
-    "email": "crisn@empireflippers.com"
+    "email": "crisjosephnahine@gmail.com"
   },
-  "license": "UNLICENSED",
+  "homepage": "https://github.com/crisnahine/chameleon",
+  "repository": "https://github.com/crisnahine/chameleon",
+  "license": "SEE LICENSE IN LICENSE",
   "keywords": [
     "skills",
     "code-conventions",
@@ -28,7 +30,7 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "",
+    "websiteURL": "https://github.com/crisnahine/chameleon",
     "brandColor": "#10B981"
   }
 }

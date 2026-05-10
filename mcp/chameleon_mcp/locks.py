@@ -7,8 +7,6 @@ POSIX `flock(2)` semantics:
 - LOCK_EX | LOCK_NB: exclusive non-blocking; returns immediately if held
 - Lock auto-releases when file descriptor is closed
 - Stale lock detection: check PID in lock file is still alive
-
-Pattern adopted from claude-measure-twice's flock usage.
 """
 
 from __future__ import annotations

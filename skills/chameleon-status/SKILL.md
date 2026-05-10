@@ -37,16 +37,16 @@ Surface the current state of chameleon for the active repo. The user-facing obse
 ## Output format
 
 ```
-chameleon profile: empire-flippers/client
+chameleon profile: <repo-name>
   Schema version:    4 (engine min: 0.1.0)
   Last refresh:      47 days ago
-  Trust state:       trusted (granted 2026-05-10 by crisn)
+  Trust state:       trusted (granted 2026-05-10 by <user>)
   Archetypes:        7
     - cluster-011440424e706e13 (9 files): components/base
     - cluster-06395b2e0fffcad7 (5 files): admin/users queries
     [...]
 
-Recent activity (Phase 4):
+Recent activity:
   Last 30 sessions:  142 edits matched archetype, 11 deviations flagged
   Corrections:       3 idioms added via /chameleon-teach
   MCP errors:        0 (last 24h)

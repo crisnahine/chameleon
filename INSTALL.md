@@ -1,23 +1,22 @@
 # Installing Chameleon
 
-Chameleon is a private Empire Flippers plugin for Claude Code. It gives the model archetype-aware context for both EF api (Ruby on Rails) and EF client (TypeScript) repos.
+Chameleon is a Claude Code plugin that gives the model archetype-aware context for TypeScript and Ruby on Rails repos.
 
 ## Prerequisites
 
-- macOS or Linux. (Windows works via Git Bash but isn't tested in production yet — see [docs/windows/polyglot-hooks.md](docs/windows/polyglot-hooks.md).)
+- macOS or Linux. Windows works via Git Bash; see [docs/windows/polyglot-hooks.md](docs/windows/polyglot-hooks.md).
 - [Claude Code](https://docs.claude.com/claude-code) 2.x.
-- [uv](https://docs.astral.sh/uv/) for the Python venv (`brew install uv` or `curl -LsSf https://astral.sh/uv/install.sh | sh`).
-- [Node.js](https://nodejs.org/) ≥ 18 (used by the TypeScript extractor).
-- [Ruby](https://www.ruby-lang.org/) ≥ 3.0 with the `prism` gem (used by the Ruby extractor).
+- [uv](https://docs.astral.sh/uv/) for the Python venv.
+- [Node.js](https://nodejs.org/) ≥ 18 (TypeScript extractor).
+- [Ruby](https://www.ruby-lang.org/) ≥ 3.0 with the `prism` gem (Ruby extractor).
 - `jq` (for `scripts/bump-version.sh`).
 
 ## One-time setup
 
-Clone the repo somewhere stable (any path works — pick something you won't move):
+Clone the repo somewhere stable:
 
 ```bash
-cd ~/Documents/Projects
-git clone <repo-url> chameleon
+git clone https://github.com/crisnahine/chameleon
 cd chameleon
 ```
 
@@ -29,81 +28,74 @@ uv sync
 cd ..
 ```
 
-Verify the MCP entry point exists:
+Verify the entry point:
 
 ```bash
 ls -l mcp/.venv/bin/chameleon-mcp
 ```
 
-That's all the build steps. Skip ahead to **Wiring chameleon into Claude Code**.
+Done. Skip ahead to **Wiring chameleon into Claude Code**.
 
 ## Wiring chameleon into Claude Code
 
-You have three options, ordered most-recommended → least:
+Three options, ordered most-recommended → least:
 
-### Option A — Per-session via `--plugin-dir` (recommended for first try)
+### Option A — Per-session via `--plugin-dir`
 
 Pass the chameleon repo path on every `claude` invocation:
 
 ```bash
-claude --plugin-dir ~/Documents/Projects/chameleon
+claude --plugin-dir ~/path/to/chameleon
 ```
 
-Pros: scoped to one session, easy to enable/disable, no config drift.
-Cons: have to remember the flag every time.
+Pros: scoped, easy to enable/disable. Cons: have to remember the flag.
 
-### Option B — Permanent install via marketplace add (recommended for daily use)
-
-Once you have a private marketplace set up (or use the local path directly), add chameleon as a plugin:
+### Option B — Permanent install via marketplace add
 
 ```bash
 # Inside Claude Code:
-/plugin marketplace add /Users/<you>/Documents/Projects/chameleon
+/plugin marketplace add ~/path/to/chameleon
 /plugin install chameleon
 ```
 
-Restart Claude Code. Verify by asking: *"What chameleon tools do you have?"* — the model should list `detect_repo`, `get_pattern_context`, etc.
+Restart Claude Code. Verify by asking: *"What chameleon tools do you have?"*
 
 ### Option C — Symlink into `~/.claude/plugins/`
 
-Manual install for users without marketplace tooling:
-
 ```bash
 mkdir -p ~/.claude/plugins
-ln -s ~/Documents/Projects/chameleon ~/.claude/plugins/chameleon
+ln -s ~/path/to/chameleon ~/.claude/plugins/chameleon
 ```
 
 Restart Claude Code.
 
 ## Verifying chameleon works
 
-In a fresh Claude Code session inside an EF repo (e.g. `cd ~/Documents/Projects/empire-flippers/client`), check:
+In a fresh Claude Code session inside any TypeScript or Ruby on Rails repo:
 
-1. **The session starts with chameleon context.** The model has read `using-chameleon` SKILL.md if it knows about `chameleon-mcp::get_pattern_context`. Ask: *"List your chameleon-related slash commands."*
-
-2. **Run `/chameleon-init`** (or `/cham-init`) if `.chameleon/` doesn't exist yet:
+1. **Run `/chameleon-init`** if `.chameleon/` doesn't exist yet:
 
    ```
    /chameleon-init
    ```
 
-   This bootstraps the profile in 3–10 seconds for repos under 5,000 files.
+   Bootstraps the profile in 3–10 seconds for repos under 5,000 files.
 
-3. **Run `/chameleon-trust`** to approve the committed profile for this user:
+2. **Run `/chameleon-trust`** to approve the committed profile for this user:
 
    ```
    /chameleon-trust
    ```
 
-   You'll be asked to type the repo's basename (e.g. `client` or `api`) to confirm.
+   You'll be asked to type the repo's basename to confirm.
 
-4. **Edit any file** in the repo. Watch for the chameleon context block: the model should mention the archetype name and reference the canonical example before writing code.
+3. **Edit any file** in the repo. The model should mention the archetype and reference the canonical example before writing code.
 
 ## Slash commands
 
 | Command | Purpose |
 |---|---|
-| `/chameleon-init` | Bootstrap a new profile (≤10s for typical repos) |
+| `/chameleon-init` | Bootstrap a new profile |
 | `/chameleon-refresh` | Re-analyze + update profile after team changes |
 | `/chameleon-status` | View profile state, drift score, plugin health |
 | `/chameleon-teach` | Capture a missed pattern as a team idiom |
@@ -115,26 +107,24 @@ All commands accept `/cham-<name>` short aliases.
 
 ## Opt-out hierarchy
 
-If chameleon is unhelpful, opt out at the level that matches the situation:
-
 ```
-Most-permanent →    .chameleon/.skip          (per-repo, all users, committed → team-wide)
-                ↓   CHAMELEON_DISABLE=1        (per-user globally; in shell rc)
-                ↓   /chameleon-disable         (this session only)
-                ↓   /chameleon-pause-15m       (next 15 minutes)
+Most-permanent →    .chameleon/.skip          per-repo, all users (committed)
+                ↓   CHAMELEON_DISABLE=1        per-user globally (in shell rc)
+                ↓   /chameleon-disable         this session only
+                ↓   /chameleon-pause-15m       next 15 minutes (auto-resume)
 Most-temporary
 ```
 
 ## Updating chameleon
 
 ```bash
-cd ~/Documents/Projects/chameleon
+cd ~/path/to/chameleon
 git pull
 cd mcp
-uv sync   # picks up any new Python dependencies
+uv sync
 ```
 
-Restart Claude Code if it's already running.
+Restart Claude Code if it's running.
 
 ## Uninstalling
 
@@ -151,7 +141,7 @@ If you used Option B (marketplace install):
 /plugin uninstall chameleon
 ```
 
-To also remove your trust state and drift cache:
+Also remove your trust state and drift cache:
 
 ```bash
 rm -rf ~/.local/share/chameleon
@@ -160,22 +150,27 @@ rm -rf ~/.local/share/chameleon
 ## Troubleshooting
 
 ### "chameleon-mcp not found" or MCP server doesn't connect
-The Python venv hasn't been built. Run `cd mcp && uv sync`.
+
+Build the venv: `cd mcp && uv sync`.
 
 ### `detect_repo` returns `trust_state: untrusted` after `/chameleon-trust`
-You may have a stale trust cache from an earlier `CLAUDE_PLUGIN_DATA` env override. Check `~/.local/share/chameleon/<repo_id>/.trust` exists and contains your user. If not, re-run `/chameleon-trust`.
 
-### Slash commands don't show up in `/help`
-Claude Code didn't load the plugin. Verify `--plugin-dir` is passed on the command line, OR that the marketplace install completed (`/plugin list` should show chameleon).
+Check `~/.local/share/chameleon/<repo_id>/.trust` exists. If not, re-run `/chameleon-trust`.
+
+### Slash commands don't show up
+
+Verify `--plugin-dir` is on the command line, OR that `/plugin list` shows chameleon.
 
 ### Hook latency feels high
-The PreToolUse hook spawns a Python subprocess per invocation. Expect 200–500 ms on a warm cache. The Phase 4 daemon model will reduce this; until then, use `/chameleon-pause-15m` for latency-sensitive sessions.
+
+The `PreToolUse` hook spawns a Python subprocess per invocation. Expect 200–500 ms on warm cache. Use `/chameleon-pause-15m` for latency-sensitive sessions.
 
 ### Profile bootstrap fails with `failed_unsupported_language`
+
 The repo has no TypeScript (`tsconfig.json` / `package.json`) AND no Ruby (`Gemfile`) signals. Chameleon currently supports only those two languages.
 
 ## Related docs
 
-- [docs/windows/polyglot-hooks.md](docs/windows/polyglot-hooks.md) — Windows hook setup (when ready to test)
+- [docs/windows/polyglot-hooks.md](docs/windows/polyglot-hooks.md) — Windows hook setup
 - [ARCHITECTURE.md](ARCHITECTURE.md) — design + invariants
-- [tests/](tests/) — every test file is also documentation by example
+- [tests/](tests/) — test files double as living documentation

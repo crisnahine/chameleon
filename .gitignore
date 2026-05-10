@@ -4,6 +4,9 @@
 .chameleon/.tmp/
 .chameleon/.lock
 
+# Local env (test repo paths, etc.)
+.env
+
 # Python
 __pycache__/
 *.py[cod]

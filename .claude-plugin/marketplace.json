@@ -1,9 +1,9 @@
 {
-  "name": "chameleon-dev",
-  "description": "Development marketplace for chameleon",
+  "name": "chameleon",
+  "description": "Marketplace for chameleon",
   "owner": {
     "name": "Cris Nahine",
-    "email": "crisn@empireflippers.com"
+    "email": "crisjosephnahine@gmail.com"
   },
   "plugins": [
     {
@@ -13,7 +13,7 @@
       "source": "./",
       "author": {
         "name": "Cris Nahine",
-        "email": "crisn@empireflippers.com"
+        "email": "crisjosephnahine@gmail.com"
       }
     }
   ]

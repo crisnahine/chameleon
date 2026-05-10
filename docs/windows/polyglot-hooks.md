@@ -1,6 +1,6 @@
-# Cross-Platform Polyglot Hooks for Chameleon
+# Cross-Platform Polyglot Hooks
 
-Chameleon's hooks need to work on Windows, macOS, and Linux. This document explains the polyglot wrapper technique that makes it possible. The pattern is adopted from `superpowers/docs/windows/polyglot-hooks.md` and uses the same `run-hook.cmd` dispatcher.
+Chameleon's hooks need to work on Windows, macOS, and Linux. This document explains the polyglot wrapper technique that makes it possible.
 
 ## The Problem
 
@@ -17,7 +17,7 @@ This creates several challenges:
 
 ## The Solution: Polyglot `.cmd` Wrapper
 
-A polyglot script is valid syntax in multiple languages simultaneously. Chameleon's `hooks/run-hook.cmd` is valid in both CMD and bash:
+A polyglot script is valid syntax in multiple languages simultaneously. `hooks/run-hook.cmd` is valid in both CMD and bash:
 
 ```cmd
 : << 'CMDBLOCK'
@@ -46,9 +46,9 @@ exec bash "${SCRIPT_DIR}/${SCRIPT_NAME}" "$@"
 
 #### On Windows (CMD.exe)
 
-1. `: << 'CMDBLOCK'` — CMD sees `:` as a label and ignores `<< 'CMDBLOCK'`.
+1. `: << 'CMDBLOCK'` — CMD treats `:` as a label and ignores the rest of the line.
 2. `@echo off` suppresses command echoing.
-3. The batch block searches for Git Bash at standard install locations, falls back to `where bash`, and silently exits if no bash is found (so the plugin still works, just without the hook).
+3. The batch block looks for Git Bash at standard install locations, falls back to `where bash`, and silently exits 0 if no bash is found (the plugin keeps working, just without the hook).
 4. `exit /b %ERRORLEVEL%` exits the batch script.
 5. Everything after `CMDBLOCK` is never reached by CMD.
 
@@ -56,7 +56,7 @@ exec bash "${SCRIPT_DIR}/${SCRIPT_NAME}" "$@"
 
 1. `: << 'CMDBLOCK'` — `:` is a no-op, `<< 'CMDBLOCK'` starts a heredoc.
 2. Everything until `CMDBLOCK` is consumed by the heredoc (ignored).
-3. `exec bash "${SCRIPT_DIR}/${SCRIPT_NAME}" "$@"` runs the named script.
+3. `exec bash "${SCRIPT_DIR}/${SCRIPT_NAME}" "$@"` runs the named hook script.
 
 ## File Structure
 
@@ -103,17 +103,20 @@ The path must be quoted because `${CLAUDE_PLUGIN_ROOT}` may contain spaces on Wi
 
 ### Unix (macOS/Linux)
 - Standard bash shell.
-- `run-hook.cmd` and the hook scripts must have execute permission (`chmod +x`).
+- `run-hook.cmd` and the hook scripts must have execute permission.
 
 ## Troubleshooting
 
 ### Hook silently doesn't run on Windows
-Check that Git for Windows is installed at `C:\Program Files\Git`. The dispatcher exits 0 (silent success) when no bash is found, so the plugin continues without hook injection. This is intentional — chameleon's advisory hook is fail-open.
+
+Verify Git for Windows is installed at `C:\Program Files\Git`. The dispatcher exits 0 (silent success) when no bash is found, so the plugin continues without hook injection. This is intentional — chameleon's advisory hook is fail-open.
 
 ### Script opens in text editor instead of running
+
 The hooks.json is pointing directly to a hook script. Always point to `run-hook.cmd <script-name>` instead.
 
 ### "bash is not recognized" inside Claude Code
+
 The dispatcher's Git Bash detection fell through. Verify with:
 
 ```powershell
@@ -122,17 +125,15 @@ where bash
 ```
 
 ### Works in terminal but not as Claude Code hook
-Test the hook in a simulated environment:
+
+Test in a simulated environment:
 
 ```powershell
 $env:CLAUDE_PLUGIN_ROOT = "C:\path\to\chameleon"
 cmd /c "C:\path\to\chameleon\hooks\run-hook.cmd session-start"
 ```
 
-## Reference
+## Related Claude Code issues
 
-The dispatcher pattern is adopted from [superpowers](https://github.com/obra/superpowers), which ships this same wrapper to Windows users via the official Anthropic plugin marketplace. See `superpowers/docs/windows/polyglot-hooks.md` for the upstream version.
-
-Related Claude Code issues:
 - [anthropics/claude-code#9758](https://github.com/anthropics/claude-code/issues/9758) — .sh scripts open in editor on Windows
 - [anthropics/claude-code#3417](https://github.com/anthropics/claude-code/issues/3417) — Hooks don't work on Windows

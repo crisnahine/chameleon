@@ -2,9 +2,9 @@
 
 Round 1: unit tests for record_edit_observation, compute_drift_score, and
          merge_profiles real implementation.
-Round 2: end-to-end — run hook with real EF file, verify drift.db row
+Round 2: end-to-end — run hook with a real test file, verify drift.db row
          appears, verify get_drift_status reflects observation, exercise
-         merge_profiles on real EF profile JSONs.
+         merge_profiles on real profile JSONs.
 """
 
 import hashlib
@@ -15,11 +15,10 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from _test_config import TS_REPO, RUBY_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
-EF_CLIENT = Path("/Users/crisn/Documents/Projects/empire-flippers/client")
-EF_API = Path("/Users/crisn/Documents/Projects/empire-flippers/api")
 
 
 def t(name, condition, info=""):
@@ -32,19 +31,19 @@ def section(title):
     print(f"\n=== {title} ===")
 
 
-# Preconditions — order-independent: ensure both EF repos are bootstrapped
+# Preconditions — order-independent: ensure both test repos are bootstrapped
 # + trusted before any test that reads their .chameleon state.
 import os as _os
 if _os.environ.get("CHAMELEON_PLUGIN_DATA"):
     del _os.environ["CHAMELEON_PLUGIN_DATA"]
 from chameleon_mcp.tools import bootstrap_repo as _bs, trust_profile as _tp
-if not (EF_CLIENT / ".chameleon" / "profile.json").is_file():
-    _bs(str(EF_CLIENT))
-_tp(str(EF_CLIENT), "client")
-if EF_API.is_dir() and not (EF_API / ".chameleon" / "profile.json").is_file():
-    _bs(str(EF_API))
-if EF_API.is_dir():
-    _tp(str(EF_API), "api")
+if not (TS_REPO / ".chameleon" / "profile.json").is_file():
+    _bs(str(TS_REPO))
+_tp(str(TS_REPO), "client")
+if RUBY_REPO.is_dir() and not (RUBY_REPO / ".chameleon" / "profile.json").is_file():
+    _bs(str(RUBY_REPO))
+if RUBY_REPO.is_dir():
+    _tp(str(RUBY_REPO), "api")
 
 
 # ---------------------------------------------------------------------------
@@ -198,12 +197,12 @@ with tempfile.TemporaryDirectory() as plugin_data_tmp:
     from chameleon_mcp.tools import trust_profile
     # We need to use the same env for the in-process call too
     os.environ["CHAMELEON_PLUGIN_DATA"] = plugin_data_tmp
-    trust_profile(str(EF_CLIENT), "client")
+    trust_profile(str(TS_REPO), "client")
 
     test_files = [
-        EF_CLIENT / "src" / "components" / "base" / "SelectVettingStatus.tsx",
-        EF_CLIENT / "src" / "queries" / "admin" / "users" / "create.ts",
-        EF_CLIENT / "src" / "utils" / "balanceTransaction.ts",
+        TS_REPO / "src" / "components" / "base" / "SelectVettingStatus.tsx",
+        TS_REPO / "src" / "queries" / "admin" / "users" / "create.ts",
+        TS_REPO / "src" / "utils" / "balanceTransaction.ts",
     ]
     for f in test_files:
         hook_input = json.dumps({
@@ -220,7 +219,7 @@ with tempfile.TemporaryDirectory() as plugin_data_tmp:
             env=env,
         )
 
-    repo_id = hashlib.sha256(str(EF_CLIENT.resolve()).encode("utf-8")).hexdigest()
+    repo_id = hashlib.sha256(str(TS_REPO.resolve()).encode("utf-8")).hexdigest()
     db_path = Path(plugin_data_tmp) / repo_id / "drift.db"
     t(f"drift.db created at expected path ({db_path})", db_path.is_file())
 
@@ -253,18 +252,18 @@ with tempfile.TemporaryDirectory() as plugin_data_tmp:
 
 
 # ---------------------------------------------------------------------------
-# Round 2 — merge_profiles on real EF profile copies
+# Round 2 — merge_profiles on real profile copies
 # ---------------------------------------------------------------------------
-section("Round 2 — merge_profiles on EF profile JSONs")
+section("Round 2 — merge_profiles on the test repo profile JSONs")
 
 with tempfile.TemporaryDirectory() as tmp:
-    # Copy real EF client + EF api archetypes.json side by side
+    # Copy real the TypeScript repo + the Ruby on Rails repo archetypes.json side by side
     ours = Path(tmp) / "ours.json"
     theirs = Path(tmp) / "theirs.json"
     base = Path(tmp) / "base.json"
-    shutil.copy(EF_CLIENT / ".chameleon" / "archetypes.json", ours)
-    shutil.copy(EF_API / ".chameleon" / "archetypes.json", theirs)
-    shutil.copy(EF_CLIENT / ".chameleon" / "archetypes.json", base)
+    shutil.copy(TS_REPO / ".chameleon" / "archetypes.json", ours)
+    shutil.copy(RUBY_REPO / ".chameleon" / "archetypes.json", theirs)
+    shutil.copy(TS_REPO / ".chameleon" / "archetypes.json", base)
 
     ours_data = json.loads(ours.read_text())
     theirs_data = json.loads(theirs.read_text())
@@ -272,7 +271,7 @@ with tempfile.TemporaryDirectory() as tmp:
     theirs_count = len(theirs_data.get("archetypes", {}))
 
     r = merge_profiles("test-repo", str(base), str(ours), str(theirs))
-    t("merge_profiles on real EF profiles succeeds", r["data"]["status"] == "success")
+    t("merge_profiles on real profiles succeeds", r["data"]["status"] == "success")
     merged_count = r["data"]["merged_archetype_count"]
     t(
         f"merged count >= max(ours={ours_count}, theirs={theirs_count}) (got {merged_count})",

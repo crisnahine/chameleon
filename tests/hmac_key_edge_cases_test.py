@@ -15,10 +15,10 @@ import tempfile
 import time
 from pathlib import Path
 from unittest import mock
+from _test_config import TS_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
-EF_CLIENT = Path("/Users/crisn/Documents/Projects/empire-flippers/client")
 
 
 def t(name, condition, info=""):
@@ -250,7 +250,7 @@ with tempfile.TemporaryDirectory() as tmp:
     env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_ROOT)
     env["TMPDIR"] = tmp
     env["CHAMELEON_HMAC_KEY_PATH"] = str(Path(tmp) / "isolated_hmac.key")
-    env["CLAUDE_CWD"] = str(EF_CLIENT)
+    env["CLAUDE_CWD"] = str(TS_REPO)
 
     hook_input = json.dumps({
         "tool_name": "Bash",

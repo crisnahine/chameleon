@@ -4,7 +4,7 @@ Round 1 — unit-level: trust_profile rejects bad tokens, accepts both
           documented forms (repo basename and yes-trust-<8>), and the
           .trust file roundtrips correctly.
 Round 2 — real Claude Code: invoke /chameleon-trust as a slash command
-          on both EF stacks and verify Claude reads profile.summary.md
+          on both test repos and verify Claude reads profile.summary.md
           before granting (per the skill flow doc).
 """
 
@@ -16,11 +16,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from _test_config import TS_REPO, RUBY_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
-EF_CLIENT = Path("/Users/crisn/Documents/Projects/empire-flippers/client")
-EF_API = Path("/Users/crisn/Documents/Projects/empire-flippers/api")
 
 
 def t(name, condition, info=""):
@@ -37,8 +36,8 @@ from chameleon_mcp.tools import bootstrap_repo, trust_profile, _compute_repo_id
 from chameleon_mcp.profile.trust import revoke_trust, trust_state_for
 
 
-# Ensure both EF repos bootstrapped
-for repo in (EF_CLIENT, EF_API):
+# Ensure both test repos bootstrapped
+for repo in (TS_REPO, RUBY_REPO):
     if not repo.is_dir():
         continue
     if not (repo / ".chameleon" / "profile.json").is_file():
@@ -51,7 +50,7 @@ for repo in (EF_CLIENT, EF_API):
 section("Round 1 — confirmation_token validation")
 
 # Wrong token rejected
-r = trust_profile(str(EF_CLIENT), "wrong-token")
+r = trust_profile(str(TS_REPO), "wrong-token")
 t(
     "Wrong confirmation_token rejected with status=failed",
     r["data"]["status"] == "failed",
@@ -62,15 +61,15 @@ t(
 )
 
 # Exact basename accepted
-r = trust_profile(str(EF_CLIENT), "client")
+r = trust_profile(str(TS_REPO), "client")
 t("Exact repo basename token accepted", r["data"]["status"] == "success")
-client_repo_id = _compute_repo_id(EF_CLIENT)
+client_repo_id = _compute_repo_id(TS_REPO)
 t("Trust state recorded after grant", trust_state_for(client_repo_id) is not None)
 
 # Revoke then test yes-trust-<8> form
 revoke_trust(client_repo_id)
 short = client_repo_id[:8]
-r = trust_profile(str(EF_CLIENT), f"yes-trust-{short}")
+r = trust_profile(str(TS_REPO), f"yes-trust-{short}")
 t(
     "yes-trust-<8> token accepted",
     r["data"]["status"] == "success",
@@ -78,17 +77,17 @@ t(
 t("Trust restored via yes-trust form", trust_state_for(client_repo_id) is not None)
 
 # Empty token rejected
-r = trust_profile(str(EF_CLIENT), "")
+r = trust_profile(str(TS_REPO), "")
 t("Empty token rejected", r["data"]["status"] == "failed")
 
 # Wrong-but-similar tokens rejected
-r = trust_profile(str(EF_CLIENT), "Client")  # case-sensitive
+r = trust_profile(str(TS_REPO), "Client")  # case-sensitive
 t("Case-mismatched basename rejected", r["data"]["status"] == "failed")
 
-r = trust_profile(str(EF_CLIENT), f"yes-trust-{short[:6]}")  # short prefix
+r = trust_profile(str(TS_REPO), f"yes-trust-{short[:6]}")  # short prefix
 t("Short prefix yes-trust rejected", r["data"]["status"] == "failed")
 
-r = trust_profile(str(EF_CLIENT), f"yes-trust-{client_repo_id}")  # full hash, not 8
+r = trust_profile(str(TS_REPO), f"yes-trust-{client_repo_id}")  # full hash, not 8
 t("Full hash yes-trust rejected (must be 8 chars)", r["data"]["status"] == "failed")
 
 
@@ -112,22 +111,22 @@ with tempfile.TemporaryDirectory() as tmp:
 # ---------------------------------------------------------------------------
 section("Round 1 — trust record fidelity")
 
-trust_profile(str(EF_CLIENT), "client")
+trust_profile(str(TS_REPO), "client")
 record = trust_state_for(client_repo_id)
-t("Trust record records correct repo_root", record.repo_root == str(EF_CLIENT.resolve()))
+t("Trust record records correct repo_root", record.repo_root == str(TS_REPO.resolve()))
 t("Trust record has granted_by_user", bool(record.granted_by_user))
 t("Trust record has profile_sha256 (64 hex chars)", len(record.profile_sha256) == 64)
 
 
 # ---------------------------------------------------------------------------
-# Round 2 — real Claude Code /chameleon-trust on both EF stacks
+# Round 2 — real Claude Code /chameleon-trust on both test repos
 # ---------------------------------------------------------------------------
 section("Round 2 — /chameleon-trust via real Claude Code")
 
 if shutil.which("claude") is None:
     print("  SKIP: claude CLI not on PATH")
 else:
-    for label, repo_root in [("EF client", EF_CLIENT), ("EF api", EF_API)]:
+    for label, repo_root in [("the TypeScript repo", TS_REPO), ("the Ruby on Rails repo", RUBY_REPO)]:
         if not repo_root.is_dir():
             continue
         # Revoke trust first to make the test meaningful

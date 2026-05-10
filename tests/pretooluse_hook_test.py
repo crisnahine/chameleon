@@ -6,10 +6,10 @@ PreToolUse was not seen — turned out the diagnostic sessions used
 firing. With the standard permission flow + --allowedTools, PreToolUse
 DOES fire.
 
-Round 1: synthetic Edit attempt against an EF file in real Claude
+Round 1: synthetic Edit attempt against an the test repo file in real Claude
          Code; capture the PreToolUse event and verify it has the
          chameleon archetype context in additionalContext.
-Round 2: same on EF api with a Ruby file.
+Round 2: same on the Ruby on Rails repo with a Ruby file.
 """
 
 import json
@@ -18,11 +18,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from _test_config import TS_REPO, RUBY_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
-EF_CLIENT = Path("/Users/crisn/Documents/Projects/empire-flippers/client")
-EF_API = Path("/Users/crisn/Documents/Projects/empire-flippers/api")
 
 
 def t(name, condition, info=""):
@@ -42,7 +41,7 @@ if shutil.which("claude") is None:
 
 from chameleon_mcp.tools import bootstrap_repo, trust_profile
 
-for repo in (EF_CLIENT, EF_API):
+for repo in (TS_REPO, RUBY_REPO):
     if not repo.is_dir():
         continue
     if not (repo / ".chameleon" / "profile.json").is_file():
@@ -98,25 +97,25 @@ def run_edit_session(repo_root: Path, sample_rel: str, language: str):
 
 
 # ---------------------------------------------------------------------------
-# Round 1 — EF client TypeScript: PreToolUse fires with archetype context
+# Round 1 — the TypeScript repo TypeScript: PreToolUse fires with archetype context
 # ---------------------------------------------------------------------------
-section("Round 1 — EF client: PreToolUse hook fires on Edit")
+section("Round 1 — the TypeScript repo: PreToolUse hook fires on Edit")
 
-events = run_edit_session(EF_CLIENT, "_test_target.ts", "typescript")
+events = run_edit_session(TS_REPO, "_test_target.ts", "typescript")
 
 pretool_responses = [
     e for e in events
     if e.get("subtype") == "hook_response" and e.get("hook_event") == "PreToolUse"
 ]
 t(
-    f"EF client: PreToolUse hook_response present ({len(pretool_responses)})",
+    f"the TypeScript repo: PreToolUse hook_response present ({len(pretool_responses)})",
     len(pretool_responses) >= 1,
 )
 
 if pretool_responses:
     ev = pretool_responses[0]
     t(
-        f"EF client: hook_name is PreToolUse:Edit (got {ev.get('hook_name')})",
+        f"the TypeScript repo: hook_name is PreToolUse:Edit (got {ev.get('hook_name')})",
         ev.get("hook_name") == "PreToolUse:Edit",
     )
     output_str = ev.get("output", "")
@@ -127,32 +126,32 @@ if pretool_responses:
     spec = parsed.get("hookSpecificOutput") or {}
     additional = spec.get("additionalContext") or ""
     t(
-        "EF client: additionalContext non-empty",
+        "the TypeScript repo: additionalContext non-empty",
         len(additional) > 50,
     )
     t(
-        "EF client: additionalContext contains archetype prefix",
+        "the TypeScript repo: additionalContext contains archetype prefix",
         "[chameleon: archetype=" in additional,
     )
     t(
-        "EF client: additionalContext contains canonical witness section",
+        "the TypeScript repo: additionalContext contains canonical witness section",
         "Canonical witness:" in additional,
     )
 
 
 # ---------------------------------------------------------------------------
-# Round 2 — EF api Ruby: PreToolUse fires with archetype context
+# Round 2 — the Ruby on Rails repo Ruby: PreToolUse fires with archetype context
 # ---------------------------------------------------------------------------
-section("Round 2 — EF api: PreToolUse hook fires on Ruby Edit")
+section("Round 2 — the Ruby on Rails repo: PreToolUse hook fires on Ruby Edit")
 
-events = run_edit_session(EF_API, "_test_target.rb", "ruby")
+events = run_edit_session(RUBY_REPO, "_test_target.rb", "ruby")
 
 pretool_responses = [
     e for e in events
     if e.get("subtype") == "hook_response" and e.get("hook_event") == "PreToolUse"
 ]
 t(
-    f"EF api: PreToolUse hook_response present ({len(pretool_responses)})",
+    f"the Ruby on Rails repo: PreToolUse hook_response present ({len(pretool_responses)})",
     len(pretool_responses) >= 1,
 )
 
@@ -166,7 +165,7 @@ if pretool_responses:
     spec = parsed.get("hookSpecificOutput") or {}
     additional = spec.get("additionalContext") or ""
     t(
-        "EF api: additionalContext mentions Ruby archetype",
+        "the Ruby on Rails repo: additionalContext mentions Ruby archetype",
         "[chameleon: archetype=" in additional,
     )
 
@@ -180,7 +179,7 @@ section("Round 2 — opt-out suppresses PreToolUse injection in real session")
 env = os.environ.copy()
 env["CHAMELEON_DISABLE"] = "1"
 
-target = EF_CLIENT / "src" / "utils" / "_chameleon_optout_test.ts"
+target = TS_REPO / "src" / "utils" / "_chameleon_optout_test.ts"
 target.write_text("export const placeholder = 'before';\n")
 try:
     proc = subprocess.run(
@@ -194,7 +193,7 @@ try:
             "--verbose",
             "--allowedTools", "Edit Read",
         ],
-        cwd=str(EF_CLIENT),
+        cwd=str(TS_REPO),
         capture_output=True,
         text=True,
         timeout=180,

@@ -52,7 +52,7 @@ def make_synthetic_repo(root: Path) -> None:
         (root / "src" / "utils" / f"f{i}.ts").write_text(f"export const f{i} = {i};\n")
 
 
-# Use synthetic repos so we don't perturb EF state
+# Use synthetic repos so we don't perturb test repo state
 with tempfile.TemporaryDirectory() as tmp:
     repo = Path(tmp) / "material_test"
     repo.mkdir()

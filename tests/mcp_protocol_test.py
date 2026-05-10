@@ -16,11 +16,10 @@ from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from _test_config import TS_REPO, RUBY_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
-EF_CLIENT = Path("/Users/crisn/Documents/Projects/empire-flippers/client")
-EF_API = Path("/Users/crisn/Documents/Projects/empire-flippers/api")
 SERVER_BIN = PLUGIN_ROOT / "mcp" / ".venv" / "bin" / "chameleon-mcp"
 
 
@@ -106,10 +105,10 @@ async def run_protocol_test():
             # ----------------------------------------------------------------
             section("Round 2 — call_tool with valid args")
 
-            # detect_repo (file inside EF client)
+            # detect_repo (file inside the TypeScript repo)
             r = await session.call_tool(
                 "detect_repo",
-                arguments={"file_path": str(EF_CLIENT / "src" / "index.tsx")},
+                arguments={"file_path": str(TS_REPO / "src" / "index.tsx")},
             )
             data = json.loads(r.content[0].text)
             t(
@@ -122,7 +121,7 @@ async def run_protocol_test():
             # get_pattern_context
             r = await session.call_tool(
                 "get_pattern_context",
-                arguments={"file_path": str(EF_CLIENT / "src" / "index.tsx")},
+                arguments={"file_path": str(TS_REPO / "src" / "index.tsx")},
             )
             data = json.loads(r.content[0].text)
             t(
@@ -135,7 +134,7 @@ async def run_protocol_test():
                 "get_archetype",
                 arguments={
                     "repo": client_repo_id,
-                    "file_path": str(EF_CLIENT / "src" / "index.tsx"),
+                    "file_path": str(TS_REPO / "src" / "index.tsx"),
                 },
             )
             data = json.loads(r.content[0].text)
@@ -146,7 +145,7 @@ async def run_protocol_test():
 
             # get_canonical_excerpt — pull a real archetype from the profile
             archetypes_json = json.loads(
-                (EF_CLIENT / ".chameleon" / "archetypes.json").read_text()
+                (TS_REPO / ".chameleon" / "archetypes.json").read_text()
             )
             first_arch = next(iter(archetypes_json["archetypes"].keys()))
             r = await session.call_tool(
@@ -211,7 +210,7 @@ async def run_protocol_test():
             r = await session.call_tool(
                 "teach_profile",
                 arguments={
-                    "repo": str(EF_CLIENT),
+                    "repo": str(TS_REPO),
                     "feedback": "mcp-protocol-test idiom: prefer named exports",
                 },
             )
@@ -239,7 +238,7 @@ async def run_protocol_test():
             r = await session.call_tool(
                 "bootstrap_repo",
                 arguments={
-                    "path": str(EF_CLIENT),
+                    "path": str(TS_REPO),
                     "mode": "full",
                     "paths_glob": None,
                 },
@@ -253,7 +252,7 @@ async def run_protocol_test():
             # refresh_repo
             r = await session.call_tool(
                 "refresh_repo",
-                arguments={"repo": str(EF_CLIENT), "force": False},
+                arguments={"repo": str(TS_REPO), "force": False},
             )
             data = json.loads(r.content[0].text)
             t(
@@ -264,7 +263,7 @@ async def run_protocol_test():
             # trust_profile
             r = await session.call_tool(
                 "trust_profile",
-                arguments={"repo": str(EF_CLIENT), "confirmation_token": "client"},
+                arguments={"repo": str(TS_REPO), "confirmation_token": "client"},
             )
             data = json.loads(r.content[0].text)
             t(
@@ -311,7 +310,7 @@ async def run_protocol_test():
                     "get_archetype",
                     arguments={
                         "repo": "deadbeef" * 8,
-                        "file_path": str(EF_CLIENT / "src" / "index.tsx"),
+                        "file_path": str(TS_REPO / "src" / "index.tsx"),
                     },
                 )
                 data = json.loads(r.content[0].text)
@@ -347,7 +346,7 @@ async def run_protocol_test():
 
             r = await session.call_tool(
                 "detect_repo",
-                arguments={"file_path": str(EF_CLIENT / "src" / "index.tsx")},
+                arguments={"file_path": str(TS_REPO / "src" / "index.tsx")},
             )
             data = json.loads(r.content[0].text)
             t(
@@ -367,7 +366,7 @@ async def run_protocol_test():
             for i in range(5):
                 r = await session.call_tool(
                     "detect_repo",
-                    arguments={"file_path": str(EF_CLIENT / "src" / "index.tsx")},
+                    arguments={"file_path": str(TS_REPO / "src" / "index.tsx")},
                 )
                 data = json.loads(r.content[0].text)
                 if data.get("data", {}).get("repo_id") != client_repo_id:

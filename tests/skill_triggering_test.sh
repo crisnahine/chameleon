@@ -2,9 +2,7 @@
 # Bash-driven skill-triggering smoke test.
 #
 # Verifies each user-invocable chameleon slash command produces a
-# response when invoked via real Claude Code. Mirrors superpowers'
-# tests/skill-triggering/ pattern but condensed into a single script
-# (chameleon has fewer skills than superpowers).
+# response when invoked via real Claude Code.
 #
 # Run with:
 #   bash tests/skill_triggering_test.sh
@@ -19,10 +17,11 @@ source "$SCRIPT_DIR/test-helpers.sh"
 
 require_claude_cli
 
-EF_CLIENT="/Users/crisn/Documents/Projects/empire-flippers/client"
+# Test repo is read from .env (CHAMELEON_TEST_TS_REPO)
+TS_REPO="${CHAMELEON_TEST_TS_REPO:-}"
 
-if [ ! -d "$EF_CLIENT" ]; then
-    echo "SKIP: EF_CLIENT not found at $EF_CLIENT"
+if [ ! -d "$TS_REPO" ]; then
+    echo "SKIP: TS_REPO not found at $TS_REPO"
     exit 0
 fi
 
@@ -30,11 +29,11 @@ fi
 # Claude Code will actually write pause / session-disable markers in the
 # user-level plugin data dir. Clean them up on exit so the markers don't
 # linger and silently suppress later test runs.
-EF_CLIENT_REPO_ID="$(python3 -c '
+TS_REPO_REPO_ID="$(python3 -c '
 import hashlib, sys
 print(hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest())
-' "$EF_CLIENT")"
-PLUGIN_DATA="${HOME}/.local/share/chameleon/${EF_CLIENT_REPO_ID}"
+' "$TS_REPO")"
+PLUGIN_DATA="${HOME}/.local/share/chameleon/${TS_REPO_REPO_ID}"
 cleanup_test_markers() {
     rm -f "${PLUGIN_DATA}/.pause_until" 2>/dev/null || true
     rm -f "${PLUGIN_DATA}"/.session_disabled.* 2>/dev/null || true
@@ -42,7 +41,7 @@ cleanup_test_markers() {
 trap cleanup_test_markers EXIT
 cleanup_test_markers  # also clear any leftovers from prior run
 
-cd "$EF_CLIENT"
+cd "$TS_REPO"
 
 PASS=0
 FAIL=0

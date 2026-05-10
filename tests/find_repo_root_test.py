@@ -3,7 +3,7 @@
 Round 1: synthetic repos with each supported marker (no .git), nested
          markers (priority resolution), and pathological cases (no marker
          at all → None).
-Round 2: verify behavior on real EF api / EF client repos still picks
+Round 2: verify behavior on real the Ruby on Rails repo / the TypeScript repo repos still picks
          the correct root, plus a non-git extracted archive scenario.
 """
 
@@ -108,25 +108,24 @@ with tempfile.TemporaryDirectory() as tmp:
 
 
 # ---------------------------------------------------------------------------
-# Round 2 — real EF repos still resolve correctly
+# Round 2 — real test repos still resolve correctly
 # ---------------------------------------------------------------------------
-section("Round 2 — real EF repos")
+section("Round 2 — real test repos")
 
-EF_CLIENT = Path("/Users/crisn/Documents/Projects/empire-flippers/client")
-EF_API = Path("/Users/crisn/Documents/Projects/empire-flippers/api")
+from _test_config import TS_REPO, RUBY_REPO
 
-if EF_CLIENT.is_dir():
-    root = find_repo_root(EF_CLIENT / "src" / "index.tsx")
+if TS_REPO.is_dir():
+    root = find_repo_root(TS_REPO / "src" / "index.tsx")
     t(
-        "EF client: src/index.tsx → EF_CLIENT root",
-        root is not None and root.resolve() == EF_CLIENT.resolve(),
+        "the TypeScript repo: src/index.tsx → TS_REPO root",
+        root is not None and root.resolve() == TS_REPO.resolve(),
     )
 
-if EF_API.is_dir():
-    root = find_repo_root(EF_API / "app" / "models" / "listing.rb")
+if RUBY_REPO.is_dir():
+    root = find_repo_root(RUBY_REPO / "app" / "models" / "listing.rb")
     t(
-        "EF api: app/models/listing.rb → EF_API root",
-        root is not None and root.resolve() == EF_API.resolve(),
+        "the Ruby on Rails repo: app/models/listing.rb → RUBY_REPO root",
+        root is not None and root.resolve() == RUBY_REPO.resolve(),
     )
 
 

@@ -1,6 +1,6 @@
-"""All-commands acceptance test through real Claude Code on both EF stacks.
+"""All-commands acceptance test through real Claude Code on both test repos.
 
-For each EF repo (TS + Ruby):
+For each test repo (TS + Ruby):
   Round 1 — invoke every slash command (7 user-invocable skills) via
             `claude -p "/<command>"` and verify the session completes
             without error and the model produces a sensible response.
@@ -20,15 +20,14 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from _test_config import TS_REPO, RUBY_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
-EF_CLIENT = Path("/Users/crisn/Documents/Projects/empire-flippers/client")
-EF_API = Path("/Users/crisn/Documents/Projects/empire-flippers/api")
 
 ACCEPTANCE_TARGETS = [
-    ("EF client", EF_CLIENT, "src/utils/balanceTransaction.ts"),
-    ("EF api", EF_API, "app/models/listing.rb"),
+    ("the TypeScript repo", TS_REPO, "src/utils/balanceTransaction.ts"),
+    ("the Ruby on Rails repo", RUBY_REPO, "app/models/listing.rb"),
 ]
 
 # All 7 user-invocable slash commands (using-chameleon auto-fires; not invocable)
@@ -77,7 +76,7 @@ if shutil.which("claude") is None:
     print("SKIP: claude CLI not on PATH")
     sys.exit(0)
 
-# Ensure both EF repos are bootstrapped + trusted
+# Ensure both test repos are bootstrapped + trusted
 from chameleon_mcp.tools import bootstrap_repo, trust_profile
 for label, repo_root, _ in ACCEPTANCE_TARGETS:
     if not repo_root.is_dir():

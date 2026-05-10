@@ -8,7 +8,6 @@ REM Hook scripts use extensionless filenames (e.g. "session-start" not
 REM "session-start.sh") so Claude Code's Windows auto-detection -- which
 REM prepends "bash" to any command containing .sh -- doesn't interfere.
 REM
-REM Pattern adopted verbatim from superpowers/hooks/run-hook.cmd.
 REM See ARCHITECTURE.md "Hook stack" section.
 REM
 REM Usage: run-hook.cmd <script-name> [args...]

@@ -1,7 +1,7 @@
 """Verify all 4 opt-out mechanisms actually suppress preflight injection.
 
 Round 1: unit-level — write each opt-out marker, run preflight-and-advise
-         hook bash script with a real EF file, verify the response is {}
+         hook bash script with a a real test file, verify the response is {}
          (no <chameleon-context> injected) instead of the normal archetype
          block.
 Round 2: end-to-end via the MCP tools — call disable_session and
@@ -19,10 +19,10 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from _test_config import TS_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
-EF_CLIENT = Path("/Users/crisn/Documents/Projects/empire-flippers/client")
 
 
 def t(name, condition, info=""):
@@ -45,11 +45,11 @@ from chameleon_mcp.optouts import (
 from chameleon_mcp.profile.trust import repo_data_dir
 
 
-# Ensure EF client is bootstrapped + trusted
-if not (EF_CLIENT / ".chameleon" / "profile.json").is_file():
-    bootstrap_repo(str(EF_CLIENT))
-trust_profile(str(EF_CLIENT), "client")
-client_repo_id = hashlib.sha256(str(EF_CLIENT.resolve()).encode("utf-8")).hexdigest()
+# Ensure the TypeScript repo is bootstrapped + trusted
+if not (TS_REPO / ".chameleon" / "profile.json").is_file():
+    bootstrap_repo(str(TS_REPO))
+trust_profile(str(TS_REPO), "client")
+client_repo_id = hashlib.sha256(str(TS_REPO.resolve()).encode("utf-8")).hexdigest()
 
 
 def run_preflight(file_path: str, session_id: str = "optouts-test") -> dict:
@@ -71,7 +71,7 @@ def run_preflight(file_path: str, session_id: str = "optouts-test") -> dict:
     return json.loads(proc.stdout) if proc.stdout.strip() else {}
 
 
-sample_ts = str(EF_CLIENT / "src" / "components" / "base" / "SelectVettingStatus.tsx")
+sample_ts = str(TS_REPO / "src" / "components" / "base" / "SelectVettingStatus.tsx")
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +83,7 @@ section("Baseline — no opt-outs, normal injection")
 clear_pause(client_repo_id)
 clear_session_disable(client_repo_id, "optouts-test")
 os.environ.pop("CHAMELEON_DISABLE", None)
-(EF_CLIENT / ".chameleon" / ".skip").unlink(missing_ok=True)
+(TS_REPO / ".chameleon" / ".skip").unlink(missing_ok=True)
 
 baseline = run_preflight(sample_ts)
 ctx = baseline.get("hookSpecificOutput", {}).get("additionalContext", "")
@@ -95,7 +95,7 @@ t("Baseline: archetype context injected", "[chameleon: archetype=" in ctx)
 # ---------------------------------------------------------------------------
 section("Round 1 — .chameleon/.skip suppresses injection")
 
-skip_path = EF_CLIENT / ".chameleon" / ".skip"
+skip_path = TS_REPO / ".chameleon" / ".skip"
 skip_path.write_text("acceptance test")
 try:
     out = run_preflight(sample_ts)
@@ -159,34 +159,34 @@ section("Round 1 — is_chameleon_suppressed reasons")
 
 t(
     "No opt-outs: returns None",
-    is_chameleon_suppressed(EF_CLIENT, client_repo_id, "x") is None,
+    is_chameleon_suppressed(TS_REPO, client_repo_id, "x") is None,
 )
 
 skip_path.write_text("x")
 t(
     ".skip: returns 'repo_skip'",
-    is_chameleon_suppressed(EF_CLIENT, client_repo_id, "x") == "repo_skip",
+    is_chameleon_suppressed(TS_REPO, client_repo_id, "x") == "repo_skip",
 )
 skip_path.unlink()
 
 os.environ["CHAMELEON_DISABLE"] = "1"
 t(
     "CHAMELEON_DISABLE: returns 'user_disable'",
-    is_chameleon_suppressed(EF_CLIENT, client_repo_id, "x") == "user_disable",
+    is_chameleon_suppressed(TS_REPO, client_repo_id, "x") == "user_disable",
 )
 del os.environ["CHAMELEON_DISABLE"]
 
 write_session_disable(client_repo_id, "x")
 t(
     "session marker: returns 'session_disable'",
-    is_chameleon_suppressed(EF_CLIENT, client_repo_id, "x") == "session_disable",
+    is_chameleon_suppressed(TS_REPO, client_repo_id, "x") == "session_disable",
 )
 clear_session_disable(client_repo_id, "x")
 
 write_pause(client_repo_id, minutes=15)
 t(
     "pause marker: returns 'pause'",
-    is_chameleon_suppressed(EF_CLIENT, client_repo_id, "x") == "pause",
+    is_chameleon_suppressed(TS_REPO, client_repo_id, "x") == "pause",
 )
 clear_pause(client_repo_id)
 
@@ -196,13 +196,13 @@ clear_pause(client_repo_id)
 # ---------------------------------------------------------------------------
 section("Round 2 — MCP tools write the right markers")
 
-r = disable_session(str(EF_CLIENT), "tool-test-session")
+r = disable_session(str(TS_REPO), "tool-test-session")
 t("disable_session returns success", r["data"]["status"] == "success")
 marker = repo_data_dir(client_repo_id) / ".session_disabled.tool-test-session"
 t("disable_session writes the marker", marker.is_file())
 clear_session_disable(client_repo_id, "tool-test-session")
 
-r = pause_session(str(EF_CLIENT), minutes=10)
+r = pause_session(str(TS_REPO), minutes=10)
 t("pause_session returns success", r["data"]["status"] == "success")
 t("pause_session response has expires_at", "expires_at" in r["data"])
 pause_path = repo_data_dir(client_repo_id) / ".pause_until"
@@ -218,13 +218,13 @@ section("Round 2 — disable/pause invalid args")
 r = disable_session("not/an/abs/path", "x")
 t("disable_session: relative path rejected", r["data"]["status"] == "failed")
 
-r = disable_session(str(EF_CLIENT), "")
+r = disable_session(str(TS_REPO), "")
 t("disable_session: empty session_id rejected", r["data"]["status"] == "failed")
 
-r = pause_session(str(EF_CLIENT), minutes=0)
+r = pause_session(str(TS_REPO), minutes=0)
 t("pause_session: minutes=0 rejected", r["data"]["status"] == "failed")
 
-r = pause_session(str(EF_CLIENT), minutes=999)
+r = pause_session(str(TS_REPO), minutes=999)
 t("pause_session: minutes=999 rejected", r["data"]["status"] == "failed")
 
 

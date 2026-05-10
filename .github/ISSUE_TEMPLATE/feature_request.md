@@ -25,8 +25,8 @@ labels: enhancement
 
 ## Languages affected
 
-- [ ] TypeScript (EF client)
-- [ ] Ruby on Rails (EF api)
+- [ ] TypeScript
+- [ ] Ruby on Rails
 - [ ] Both / language-agnostic
 
 ## Alternatives considered

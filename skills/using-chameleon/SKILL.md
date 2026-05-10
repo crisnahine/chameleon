@@ -23,12 +23,10 @@ If the file is in an untrusted profile (`trust_state == "untrusted"`), surface t
 
 If the call fails (timeout, MCP unavailable, parse error): **fail open**. Make the edit using your best inference, but tell your human partner the call failed.
 
-## Coordination with superpowers
+## Coordination with other skills
 
-- `using-superpowers` runs first (process layer: brainstorming → planning → TDD)
-- `using-chameleon` runs second (output layer: archetype + canonical conformance)
-- Both fire on Edit/Write; both injections accumulate
-- Process gates (brainstorming required before code) take priority over chameleon advisory
+- Chameleon is an *output-layer* advisory: archetype + canonical + rules + idioms shape the code you write.
+- Process-gating skills (e.g. brainstorming, planning, TDD frameworks) run BEFORE chameleon's advisory if both fire on the same Edit. Process gates take priority — finish the brainstorm/plan first, then apply chameleon's pattern context to the actual write.
 
 ## Red Flags — STOP and call MCP
 

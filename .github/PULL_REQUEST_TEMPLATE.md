@@ -2,15 +2,12 @@
 BEFORE SUBMITTING: Read every word of this template. PRs that leave
 sections blank, contain multiple unrelated changes, or show no evidence
 of human involvement will be sent back.
-
-Chameleon is a private Empire Flippers plugin. Internal contributions
-follow the same rigor we'd want before shipping anything to teammates.
 -->
 
 ## What problem are you trying to solve?
 
-<!-- Describe the specific problem you (or another EF engineer) encountered.
-     If this was a Claude Code session issue, include:
+<!-- Describe the specific problem you ran into. If this was a Claude Code
+     session issue, include:
        - What you were doing
        - What chameleon did wrong (or didn't do)
        - The exact failure mode (error, missing context, wrong archetype, etc.)
@@ -27,8 +24,8 @@ follow the same rigor we'd want before shipping anything to teammates.
 <!-- Chameleon currently supports TypeScript and Ruby on Rails.
      Mark which language(s) this PR touches: -->
 
-- [ ] TypeScript (EF client)
-- [ ] Ruby on Rails (EF api)
+- [ ] TypeScript
+- [ ] Ruby on Rails
 - [ ] Both
 - [ ] Neither (infrastructure / docs / tests)
 
@@ -43,14 +40,14 @@ follow the same rigor we'd want before shipping anything to teammates.
 
 ## Test coverage
 
-- [ ] Unit + integration tests pass: `cd mcp && PYTHONPATH=. .venv/bin/python ../tests/run_all_orders.py`
-- [ ] Real Claude Code acceptance pass on at least one EF stack: `cd mcp && PYTHONPATH=. .venv/bin/python ../tests/claude_code_acceptance_test.py`
+- [ ] Unit + integration tests pass: `cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/run_all_orders.py`
+- [ ] Real Claude Code acceptance passes: `cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/claude_code_acceptance_test.py`
 - [ ] If this changes the slash command surface, the bash skill-triggering test passes: `bash tests/skill_triggering_test.sh`
-- [ ] If this changes the MCP tool surface, the protocol test passes: `cd mcp && PYTHONPATH=. .venv/bin/python ../tests/mcp_protocol_test.py`
+- [ ] If this changes the MCP tool surface, the protocol test passes: `cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/mcp_protocol_test.py`
 
 ## Environment tested
 
-| Claude Code version | OS | Repo (TS / Ruby) | Result |
+| Claude Code version | OS | Repo language (TS / Ruby) | Result |
 |---|---|---|---|
 |  |  |  |  |
 
@@ -62,7 +59,7 @@ follow the same rigor we'd want before shipping anything to teammates.
 
 ## Human review
 
-- [ ] An EF engineer has reviewed the COMPLETE proposed diff before submission
+- [ ] A human has reviewed the COMPLETE proposed diff before submission
 
 <!--
 STOP. If the checkbox above is not checked, do not submit this PR.

@@ -40,7 +40,10 @@ for i, order in enumerate(ORDERS):
         proc = subprocess.run(
             [sys.executable, str(path)],
             cwd=str(TESTS_DIR.parent / "mcp"),
-            env={"PYTHONPATH": str(TESTS_DIR.parent / "mcp"), **__import__("os").environ},
+            env={
+                "PYTHONPATH": f"{TESTS_DIR.parent / 'mcp'}:{TESTS_DIR}",
+                **__import__("os").environ,
+            },
             capture_output=True,
             text=True,
             timeout=600,

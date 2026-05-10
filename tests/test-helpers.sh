@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # Helper functions for Claude Code integration tests.
 #
-# Adapted from superpowers/tests/claude-code/test-helpers.sh.
-#
 # Source this file from a bash test script:
 #   source "${BASH_SOURCE%/*}/test-helpers.sh"
 #

@@ -3,11 +3,10 @@
 > **Status:** Accepted
 > **Date:** 2026-05-10
 > **Deciders:** Cris Nahine
-> **Round/Context:** Round 2 adversarial pressure-test (pattern adversary) → v3 strategic scope shift
 
 ## Context
 
-v1 of the architecture proposed dimension-based pattern detection that would "support" specific frameworks (Next.js App Router, NestJS decorators, Pydantic v1 vs v2, tRPC builders, etc.). Round 2's pattern adversary demonstrated the proposed `content_signal` schema (single `directive` + `absent_directives` fields) is a "two-cell toy" that cannot express:
+An early design proposed dimension-based pattern detection that would "support" specific frameworks (Next.js App Router, NestJS decorators, Pydantic v1 vs v2, tRPC builders, etc.). A subsequent pressure-test demonstrated that the proposed `content_signal` schema (single `directive` + `absent_directives` fields) is a "two-cell toy" that cannot express:
 
 - Imports (e.g., distinguishing `react-dom/server` from `react/jsx-runtime`)
 - Decorators (NestJS `@Injectable()`, TypeORM)
@@ -30,7 +29,7 @@ Three options were considered:
 ### Positive consequences
 
 - Architecture's promise is honest: "we cluster what we can, ask about what we can't"
-- Avoids the slippery slope of growing `content_signal` into a JSONPath/CEL-style matcher language (Round 2 reviewer estimated this would triple extractor complexity)
+- Avoids the slippery slope of growing `content_signal` into a JSONPath/CEL-style matcher language (estimated to triple extractor complexity)
 - Two-tier dimension model becomes principled: 40 dimensions Tier 1 (auto-derivable), 29 Tier 2 (hand-curated)
 - `/chameleon-teach` becomes load-bearing in a clear way (not an afterthought escape hatch)
 - Engine is simpler and more focused; bigger surface area moves to user interview/iteration
@@ -61,5 +60,3 @@ Rejected because it would triple extractor complexity, require shipping a langua
 ## References
 
 - Architecture section: `ARCHITECTURE.md#what-chameleon-is-and-is-not-computing`
-- Round 2 report: `docs/chameleon/ROUND-2-REVIEWS.md` (Pattern Adversary: "content_signal is a two-cell toy")
-- v3 changelog: "Strategic scope shift — dropped framework-aware framing"

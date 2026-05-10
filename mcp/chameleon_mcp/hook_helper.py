@@ -39,8 +39,8 @@ def _emit_session_context(content: str) -> None:
     Claude Code: `{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": ... } }`
     SDK / Copilot CLI: `{ "additionalContext": ... }`
 
-    Mirrors superpowers/hooks/session-start dispatch logic. Single-format-per-platform
-    (Round 5 BLOCKING fix: never emit both formats).
+    Single-format-per-platform: never emit both formats — Claude Code reads
+    both `additional_context` and `hookSpecificOutput` without dedup.
     """
     if os.environ.get("CURSOR_PLUGIN_ROOT"):
         _emit({"additional_context": content})

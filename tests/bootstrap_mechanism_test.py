@@ -13,8 +13,8 @@ acceptance criterion for whether chameleon is "really integrated."
 
 Two rounds:
   Round 1: simulate Claude Code session start, end-to-end.
-  Round 2: cross-check against superpowers' reference, all 3 matchers,
-           and per-platform dispatch (Cursor / Claude Code / Copilot CLI).
+  Round 2: per-platform dispatch (Cursor / Claude Code / Copilot CLI),
+           JSON shape compliance, graceful degradation on bad env.
 """
 
 import json
@@ -170,27 +170,23 @@ t(
 
 
 # ---------------------------------------------------------------------------
-# Round 2: cross-check against superpowers reference + per-platform dispatch
+# Round 2: hook helper internals (per-platform dispatch logic)
 # ---------------------------------------------------------------------------
-section("Round 2 — cross-check with superpowers reference")
+section("Round 2 — hook helper internals")
 
-sp_session_start = Path("/Users/crisn/Documents/Projects/superpowers/hooks/session-start")
-if sp_session_start.is_file():
-    sp_text = sp_session_start.read_text()
-    # Superpowers uses the same per-platform dispatch pattern. Verify ours matches.
-    helper_text = (PLUGIN_ROOT / "mcp" / "chameleon_mcp" / "hook_helper.py").read_text()
-    t(
-        "Chameleon dispatches by CURSOR_PLUGIN_ROOT (matches superpowers)",
-        "CURSOR_PLUGIN_ROOT" in helper_text,
-    )
-    t(
-        "Chameleon emits hookSpecificOutput.hookEventName for Claude Code (matches superpowers)",
-        '"hookEventName": "SessionStart"' in helper_text,
-    )
-    t(
-        "Chameleon falls back to additionalContext for SDK / Copilot (matches superpowers)",
-        '"additionalContext"' in helper_text,
-    )
+helper_text = (PLUGIN_ROOT / "mcp" / "chameleon_mcp" / "hook_helper.py").read_text()
+t(
+    "Hook helper dispatches by CURSOR_PLUGIN_ROOT",
+    "CURSOR_PLUGIN_ROOT" in helper_text,
+)
+t(
+    "Hook helper emits hookSpecificOutput.hookEventName for Claude Code",
+    '"hookEventName": "SessionStart"' in helper_text,
+)
+t(
+    "Hook helper falls back to additionalContext for SDK / Copilot CLI",
+    '"additionalContext"' in helper_text,
+)
 
 
 # ---------------------------------------------------------------------------

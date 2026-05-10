@@ -10,7 +10,7 @@ labels: bug
 
 ## Repo + language
 
-- Repo: <!-- e.g. EF api, EF client, or a synthetic test repo -->
+- Repo: <!-- a real project repo, or a synthetic test repo -->
 - Language: <!-- TypeScript / Ruby on Rails -->
 - Repo size: <!-- approximate file count -->
 
@@ -42,7 +42,7 @@ paste the relevant excerpt here
 ## Environment
 
 - Claude Code version: <!-- claude --version -->
-- chameleon commit: <!-- git -C ~/Documents/Projects/chameleon rev-parse --short HEAD -->
+- chameleon commit: <!-- git rev-parse --short HEAD -->
 - OS: <!-- macOS / Linux / Windows -->
 - Python venv built: <!-- yes / no — `ls mcp/.venv/bin/chameleon-mcp` -->
 

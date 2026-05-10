@@ -3,22 +3,22 @@
   "version": "0.1.0",
   "description": "Code that blends in. Auto-derives codebase conventions and injects archetype-aware guidance for AI-generated code.",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "SEE LICENSE IN LICENSE",
   "author": {
     "name": "Cris Nahine",
-    "email": "crisn@empireflippers.com"
+    "email": "crisjosephnahine@gmail.com"
   },
   "repository": {
     "type": "git",
-    "url": "git@bitbucket.org:empire-flippers/chameleon.git"
+    "url": "https://github.com/crisnahine/chameleon"
   },
+  "homepage": "https://github.com/crisnahine/chameleon",
   "engines": {
-    "node": ">=20",
-    "pnpm": ">=10"
+    "node": ">=20"
   },
   "scripts": {
-    "test": "echo 'Run pytest mcp/tests/ for Python tests; tests/skill-triggering/run-all.sh for skill triggering tests' && exit 0",
-    "lint": "echo 'Lint config TBD in Phase 7' && exit 0",
+    "test": "cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/run_all_orders.py",
+    "version:check": "scripts/bump-version.sh --check",
     "version:bump": "scripts/bump-version.sh"
   }
 }

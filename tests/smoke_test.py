@@ -10,7 +10,7 @@ session. Used for pre-commit verification, regression testing, and to surface
 integration bugs that pure unit tests can't catch (Round 5 Engineering Manager
 recommendation: "Real learning starts with code").
 
-Includes regression tests for bugs surfaced during EF dogfood:
+Includes regression tests for bugs surfaced during implementation testing:
   1. fnmatch glob `**/x/**` not anchoring at root (Phase 5)
   2. Subprocess pipe deadlock at ~50KB (Phase 5)
   3. ts_dump.mjs ESM bare-import resolution (Phase 5)
@@ -28,6 +28,8 @@ import sys
 import tempfile
 
 from pathlib import Path
+
+from _test_config import TS_REPO, RUBY_REPO
 
 PASS, FAIL = [], []
 
@@ -242,16 +244,16 @@ with tempfile.TemporaryDirectory() as tmp:
     t("no_repo on non-git dir",
       detect_repo(str(no_git))["data"]["profile_status"] == "no_repo")
 
-r = detect_repo("/Users/crisn/Documents/Projects/empire-flippers/client/src/index.tsx")
-t("EF client profile_present", r["data"]["profile_status"] == "profile_present")
-t("EF client trusted", r["data"]["trust_state"] == "trusted")
+r = detect_repo(f"{TS_REPO}/src/index.tsx")
+t("the TypeScript repo profile_present", r["data"]["profile_status"] == "profile_present")
+t("the TypeScript repo trusted", r["data"]["trust_state"] == "trusted")
 
 
 # 12. teach_profile
 section("teach_profile")
 from chameleon_mcp.tools import teach_profile
 
-ef_client_path = "/Users/crisn/Documents/Projects/empire-flippers/client"
+ef_client_path = f"{TS_REPO}"
 idiom_text = f"smoke-test idiom {os.getpid()}: use ~/utils/* path alias"
 r = teach_profile(ef_client_path, idiom_text)
 t("returns success", r["data"]["status"] == "success")
@@ -290,7 +292,7 @@ t("emits valid JSON",
 hook_input = json.dumps({
     "tool_name": "Edit",
     "tool_input": {
-        "file_path": "/Users/crisn/Documents/Projects/empire-flippers/client/src/components/base/SelectVettingStatus.tsx"
+        "file_path": f"{TS_REPO}/src/components/base/SelectVettingStatus.tsx"
     },
     "session_id": "smoke-test",
 })
@@ -330,7 +332,7 @@ t("emits hint on frustration",
 section("get_drift_status")
 from chameleon_mcp.tools import get_drift_status
 
-r = detect_repo("/Users/crisn/Documents/Projects/empire-flippers/client/src/index.tsx")
+r = detect_repo(f"{TS_REPO}/src/index.tsx")
 ef_client_repo_id = r["data"]["repo_id"]
 r = get_drift_status(ef_client_repo_id)
 t("returns response with recommended_action", "recommended_action" in r["data"])
@@ -340,7 +342,7 @@ t("returns response with recommended_action", "recommended_action" in r["data"])
 section("profile loader")
 from chameleon_mcp.profile.loader import load_profile_dir
 
-profile_dir = Path("/Users/crisn/Documents/Projects/empire-flippers/client/.chameleon")
+profile_dir = Path(f"{TS_REPO}/.chameleon")
 loaded = load_profile_dir(profile_dir)
 t("returns LoadedProfile", loaded is not None)
 t("has archetype names", len(loaded.archetype_names) > 0)
@@ -363,16 +365,16 @@ with open(log_file) as fh:
     t("HMAC verifies", verify_exec_log_line(fh.readlines()[-1]))
 
 
-# 19. End-to-end EF stacks
-section("End-to-end EF stacks (regression check)")
+# 19. End-to-end test repos
+section("End-to-end test repos (regression check)")
 from chameleon_mcp.tools import get_pattern_context as gpc
 
-r = gpc("/Users/crisn/Documents/Projects/empire-flippers/api/app/services/api/v1/users/create.rb")
-t("EF api: returns archetype", r["data"]["archetype"]["archetype"] is not None)
-t("EF api: confidence high", r["data"]["archetype"]["confidence_band"] == "high")
+r = gpc(f"{RUBY_REPO}/app/services/api/v1/users/create.rb")
+t("the Ruby on Rails repo: returns archetype", r["data"]["archetype"]["archetype"] is not None)
+t("the Ruby on Rails repo: confidence high", r["data"]["archetype"]["confidence_band"] == "high")
 
-r = gpc("/Users/crisn/Documents/Projects/empire-flippers/client/src/components/base/SelectVettingStatus.tsx")
-t("EF client: returns archetype", r["data"]["archetype"]["archetype"] is not None)
+r = gpc(f"{TS_REPO}/src/components/base/SelectVettingStatus.tsx")
+t("the TypeScript repo: returns archetype", r["data"]["archetype"]["archetype"] is not None)
 
 
 # Summary

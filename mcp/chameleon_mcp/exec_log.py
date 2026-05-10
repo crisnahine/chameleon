@@ -3,10 +3,11 @@
 Per ARCHITECTURE.md "Hook stack" PostToolUse Bash + "Security mitigations" #5
 (per-repo HMAC log directory, mode 0700, owner-checked).
 
-Inherited from claude-measure-twice with Phase 4 bug fixes:
-- Path mismatch: writes AND reads use ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/
-- HMAC key fail-loud: raises if /dev/urandom unavailable (no silent unsigned mode)
-- GC: -mtime +1 → -mmin +1440 (correct semantics; weekly purge of >30-day logs)
+Design notes:
+- Writes AND reads use ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/.
+- Fail-loud HMAC key: raises if /dev/urandom is unavailable (no silent
+  unsigned mode).
+- GC: weekly purge of logs older than 30 days using mtime semantics.
 """
 
 from __future__ import annotations

@@ -41,7 +41,7 @@ git diff uv.lock | head -100
 
 ### 2. Calibration review
 
-Run the calibration harness against the EF dogfood corpus + 3 representative
+Run the calibration harness against the internal dogfood corpus + 3 representative
 OSS TS repos. Update parameters if measured correlation < 0.5.
 
 Parameters with calibration targets (per `ARCHITECTURE.md#calibration-targets`):
@@ -149,21 +149,17 @@ def can_migrate(profile_dir: Path) -> bool:
 
 Before tagging `v1.0.0` (or any semver-stable):
 
-- [ ] CI gate: `docs/chameleon/REAL-PROBLEM-EVIDENCE.md` contains ≥5 H2 sections
-      with EF transcripts (per ARCHITECTURE.md "Real Problem Evidence" gate)
-- [ ] CI gate: `tests/acceptance/golden-transcript.md` updated and verified
-- [ ] CI gate: `tests/acceptance/adversarial-transcript.md` (with superpowers
-      installed) updated and verified
-- [ ] CI gate: `tests/skill-triggering/run-all.sh` passes
-- [ ] CI gate: `verify-vendor-checksums.sh` passes
+- [ ] Full test suite passes: `cd mcp && PYTHONPATH=. .venv/bin/python ../tests/run_all_orders.py`
+- [ ] Real Claude Code acceptance: `cd mcp && PYTHONPATH=. .venv/bin/python ../tests/claude_code_acceptance_test.py`
+- [ ] Bash skill-triggering smoke: `bash tests/skill_triggering_test.sh`
 - [ ] All ADRs reviewed for staleness; superseded ones marked
 - [ ] CHANGELOG.md updated with Unreleased → vX.Y.Z section
-- [ ] `plugin.json`, `package.json`, `mcp/pyproject.toml` versions match
-- [ ] README.md status line updated
+- [ ] `scripts/bump-version.sh --check` reports all manifests in sync
+- [ ] README.md and INSTALL.md reviewed for stale references
 
 ## Threat model
 
-Per Round 4/5 security reviewers, document the threat model in
+document the threat model in
 `docs/chameleon/THREAT-MODEL.md` (Phase 7-end). Key concerns:
 
 - Adversarial OSS repos shipping malicious `.chameleon/` profiles (defense:
@@ -177,7 +173,7 @@ Per Round 4/5 security reviewers, document the threat model in
 
 ## Bus factor
 
-Solo maintainer (Cris Nahine, EF). No documented succession plan. **Phase 7
+Solo maintainer (Cris Nahine). No documented succession plan. **Phase 7
 TODO: identify backup maintainer or document that the project may archive
 if primary maintainer is unavailable for >30 days.**
 

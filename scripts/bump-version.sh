@@ -3,8 +3,6 @@
 # bump-version.sh — bump version numbers across all declared files,
 # with drift detection and repo-wide audit for missed files.
 #
-# Pattern adopted from superpowers/scripts/bump-version.sh.
-#
 # Usage:
 #   bump-version.sh <new-version>   Bump all declared files to new version
 #   bump-version.sh --check         Report current versions (detect drift)
