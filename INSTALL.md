@@ -2,53 +2,37 @@
 
 Chameleon is a Claude Code plugin that gives the model archetype-aware context for TypeScript and Ruby on Rails repos.
 
+For Cursor, Codex CLI, and Gemini CLI install commands, see the harness sections in [README.md](README.md#install). The rest of this document is the deep walkthrough for Claude Code (the recommended harness).
+
 ## Prerequisites
 
 - macOS or Linux. Windows works via Git Bash; see [docs/windows/polyglot-hooks.md](docs/windows/polyglot-hooks.md).
 - [Claude Code](https://docs.claude.com/claude-code) 2.x.
 - [uv](https://docs.astral.sh/uv/) for the Python venv.
-- [Node.js](https://nodejs.org/) ≥ 18 (TypeScript extractor).
-- [Ruby](https://www.ruby-lang.org/) ≥ 3.0 with the `prism` gem (Ruby extractor).
-- `jq` (for `scripts/bump-version.sh`).
+- [Node.js](https://nodejs.org/) ≥ 20 (TypeScript extractor).
+- [Ruby](https://www.ruby-lang.org/) ≥ 3.0 with the `prism` gem (Ruby extractor; `prism` ships by default in Ruby ≥ 3.3).
 
-## One-time setup
+## Install
 
-Clone the repo somewhere stable:
+Pick one of the two methods. The marketplace install is recommended for end users; the local-clone install is for plugin development.
+
+### Method A — Marketplace install (recommended)
+
+Inside any Claude Code session:
+
+```
+/plugin marketplace add crisnahine/chameleon
+/plugin install chameleon@chameleon
+```
+
+Restart Claude Code. Verify by asking: *"What chameleon tools do you have?"*
+
+> `/plugin marketplace add` accepts a GitHub `owner/repo` slug or a full HTTPS URL — **not** a local filesystem path. For a local checkout use Method B.
+
+### Method B — Local clone with `--plugin-dir` (for plugin development)
 
 ```bash
 git clone https://github.com/crisnahine/chameleon
-cd chameleon
-```
-
-Build the MCP server's Python venv and install the TypeScript extractor's Node dependencies:
-
-```bash
-cd mcp
-uv sync          # Python venv for the MCP server
-npm install      # Node deps for the TypeScript AST extractor
-cd ..
-```
-
-> `npm install` is required even if you only plan to use Ruby support — it installs the `typescript` package that `scripts/ts_dump.mjs` resolves via `require("typescript")`. Skipping it makes TS bootstrap fail at runtime.
-
-Verify the entry point and Node deps:
-
-```bash
-ls -l mcp/.venv/bin/chameleon-mcp        # Python entry point
-ls -d mcp/node_modules/typescript        # TypeScript package
-```
-
-Done. Skip ahead to **Wiring chameleon into Claude Code**.
-
-## Wiring chameleon into Claude Code
-
-Two supported methods. Pick one:
-
-### Option A — Per-session via `--plugin-dir` (recommended for local dev)
-
-Pass the chameleon repo path on every `claude` invocation:
-
-```bash
 claude --plugin-dir ~/path/to/chameleon
 ```
 
@@ -60,20 +44,35 @@ claude --plugin-dir ./chameleon --plugin-dir ./other-plugin
 
 When a `--plugin-dir` plugin shares a name with an installed marketplace plugin, the local copy wins for that session.
 
-Pros: picks up local edits without reinstalling. Cons: have to remember the flag.
+## Post-install setup (required for both methods)
 
-### Option B — Permanent install via the GitHub marketplace
+Chameleon ships a Python MCP server and a Node-based TypeScript extractor. Claude Code's plugin installer does **not** build those dependencies for you — you must do it once after installing.
 
-Inside any Claude Code session:
+Find where the plugin lives:
 
+| Method | Plugin location |
+|---|---|
+| Method A (marketplace) | `~/.claude/plugins/marketplaces/chameleon/plugins/chameleon/` |
+| Method B (local clone) | the directory you cloned into |
+
+Then build the deps:
+
+```bash
+cd <plugin-path>/mcp
+uv sync          # Python venv for the MCP server
+npm install      # Node deps for the TypeScript AST extractor
 ```
-/plugin marketplace add crisnahine/chameleon
-/plugin install chameleon@chameleon
+
+> `npm install` is required even if you only plan to use Ruby support — it installs the `typescript` package that `scripts/ts_dump.mjs` resolves via `require("typescript")`. Skipping it makes TS bootstrap fail at runtime.
+
+Verify:
+
+```bash
+ls -l <plugin-path>/mcp/.venv/bin/chameleon-mcp        # Python entry point
+ls -d <plugin-path>/mcp/node_modules/typescript        # TypeScript package
 ```
 
-Restart Claude Code. Verify by asking: *"What chameleon tools do you have?"*
-
-> `/plugin marketplace add` accepts a GitHub `owner/repo` slug or a full HTTPS URL — **not** a local filesystem path. Use Option A for local development.
+Restart Claude Code so it picks up the freshly-built MCP server.
 
 ## Verifying chameleon works
 
@@ -123,27 +122,40 @@ Most-temporary
 
 ## Updating chameleon
 
+**Method A (marketplace install):**
+
+```
+/plugin marketplace update chameleon
+```
+
+Then re-run the post-install setup if the dependencies changed:
+
+```bash
+cd ~/.claude/plugins/marketplaces/chameleon/plugins/chameleon/mcp
+uv sync
+npm install
+```
+
+**Method B (local clone):**
+
 ```bash
 cd ~/path/to/chameleon
 git pull
-cd mcp
-uv sync
-npm install      # in case the TypeScript pin changed
+cd mcp && uv sync && npm install
 ```
 
-Restart Claude Code if it's running.
+Restart Claude Code either way.
 
 ## Uninstalling
 
-If you used Option A (`--plugin-dir`): just drop the flag from your `claude` invocation. Nothing else to undo.
-
-If you used Option B (marketplace install):
+**Method A (marketplace install):**
 
 ```
-# Inside Claude Code:
 /plugin uninstall chameleon
 /plugin marketplace remove chameleon
 ```
+
+**Method B (local clone):** drop the `--plugin-dir` flag from your `claude` invocation. Optionally `rm -rf` the clone directory.
 
 Either way, also remove your trust state and drift cache:
 
@@ -155,11 +167,11 @@ rm -rf ~/.local/share/chameleon
 
 ### "chameleon-mcp not found" or MCP server doesn't connect
 
-Build the venv: `cd mcp && uv sync`.
+The Python venv was never built. Run the post-install setup: `cd <plugin-path>/mcp && uv sync`.
 
 ### TypeScript bootstrap fails with `Cannot find module 'typescript'`
 
-The Node deps were never installed. Run `cd mcp && npm install`, then retry `/chameleon-init`.
+The Node deps were never installed. Run `cd <plugin-path>/mcp && npm install`, then retry `/chameleon-init`.
 
 ### `detect_repo` returns `trust_state: untrusted` after `/chameleon-trust`
 
@@ -171,7 +183,7 @@ Verify either:
 - `--plugin-dir ~/path/to/chameleon` is on the `claude` command line, OR
 - `/plugin list` (inside Claude Code) shows `chameleon` as installed.
 
-If neither: the plugin isn't loaded. Re-run Option A or Option B from above.
+If neither: the plugin isn't loaded. Re-run Method A or Method B from above.
 
 ### Hook latency feels high
 
