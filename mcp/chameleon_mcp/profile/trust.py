@@ -18,12 +18,21 @@ from pathlib import Path
 
 
 def plugin_data_dir() -> Path:
-    """Resolve `${CLAUDE_PLUGIN_DATA}` (or fall back to a sensible default).
+    """Resolve where chameleon stores per-user state (trust DB, drift.db).
 
-    Phase 2D: respects override env var; falls back to ~/.local/share/chameleon
-    when CLAUDE_PLUGIN_DATA is not set.
+    Trust state is per-user, not per-plugin-instance: the same user editing
+    the same repo from a Claude Code plugin invocation, a Cursor plugin
+    invocation, or a direct CLI call must see the SAME trust record.
+    Therefore we deliberately do NOT honor CLAUDE_PLUGIN_DATA — Claude Code
+    sets that to a per-plugin sandbox path, which would partition trust
+    records across launchers and leave Claude Code-spawned MCP calls
+    unable to see trust granted by direct tool calls (real bug observed
+    in production).
+
+    CHAMELEON_PLUGIN_DATA exists for tests that need to isolate state to a
+    tmpdir; it is the only supported override.
     """
-    override = os.environ.get("CHAMELEON_PLUGIN_DATA") or os.environ.get("CLAUDE_PLUGIN_DATA")
+    override = os.environ.get("CHAMELEON_PLUGIN_DATA")
     if override:
         return Path(override).expanduser()
     return Path.home() / ".local" / "share" / "chameleon"
