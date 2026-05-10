@@ -1,16 +1,17 @@
-"""Profile-poisoning scanner — runs as CI gate on PRs that touch .chameleon/.
+"""Profile-poisoning scanner.
 
 Detects dangerous coding patterns in canonical excerpts that an attacker
 might commit to steer Claude toward insecure habits (e.g., raw SQL
-concatenation in an "auth" canonical, missing CSRF middleware, etc.).
+concatenation in an "auth" canonical, eval/exec invocations in a "utility"
+canonical, weak hashes in a security-related canonical, etc.).
 
-Round 4 Security Architect (red team) recommendation #6:
-> "CI gate: chameleon-status --diff runs detect-secrets + dangerous-pattern
-> checks (eval, exec, shell=True, raw SQL concat tokens, missing csrf
-> middleware on auth-shaped functions) over canonical excerpts on every
-> PR that touches .chameleon/."
-
-Phase 1C: stub returning "no hits". Phase 4: full pattern set.
+Patterns flagged unconditionally: raw_sql_concat, eval_call, exec_call,
+subprocess_shell_true, private_key headers. Patterns flagged only when a
+security keyword (password / token / signature / auth / hmac / csrf /
+session / api_key / nonce / salt / crypto / encrypt / decrypt / sign)
+appears within ±200 chars: weak_hash, math_random_for_security — this
+prevents false positives on legitimate non-crypto uses of MD5/SHA1
+(stable cache keys, React component keys, etc.).
 """
 
 from __future__ import annotations

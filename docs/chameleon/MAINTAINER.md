@@ -67,8 +67,7 @@ Whenever Anthropic ships a new Sonnet or Opus version, re-run all skill
 pressure scenarios:
 
 ```bash
-cd tests/skill-triggering
-./run-all.sh
+bash tests/skill_triggering_test.sh
 ```
 
 If any rationalizations are not in the existing skill body's Red Flags

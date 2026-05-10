@@ -88,14 +88,7 @@ def validate_archetype_name(name: str) -> None:
         )
 
 
-def load_profile_dir(profile_dir: Path) -> dict[str, Any]:
-    """Load and validate all artifacts from a .chameleon/ directory.
-
-    Returns dict with profile, archetypes, rules, canonicals, idioms keys.
-    Per ARCHITECTURE.md "SQLite schemas" → "Cross-file referential integrity",
-    we apply the double-fstat pattern to detect mid-load mutation.
-    """
-    # TODO Phase 2: implement double-fstat pattern for cross-file consistency
-    # TODO Phase 2: load + validate each artifact in isolation
-    # TODO Phase 2: cross-validate archetype name references between files
-    raise NotImplementedError("Phase 2 implementation")
+# Production profile-directory loading lives in `loader.py` (double-fstat +
+# generation consistency + engine_min_version enforcement). This module
+# owns the schema primitives (SchemaError, load_profile_json,
+# validate_archetype_name) used by both the loader and the tests.

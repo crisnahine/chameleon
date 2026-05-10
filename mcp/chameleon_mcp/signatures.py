@@ -99,23 +99,16 @@ def path_pattern_bucket_for(
     file_path: str,
     archetype_paths: dict[str, list[str]] | None = None,
 ) -> str:
-    """Bucket a file path against known archetype path patterns.
+    """Bucket a file path against the first two non-trivial path segments.
 
-    If `archetype_paths` is provided (from `archetypes.json`), this returns the
-    archetype name whose paths glob the file matches first. Otherwise returns
-    a coarse fallback bucket based on the top two path segments.
-
-    Phase 2A: minimal implementation. Phase 2B will integrate full glob
-    matching against the active profile's archetype.paths definitions.
+    `archetype_paths` is accepted as a forward-compat parameter for future
+    glob-against-known-archetypes matching, but the current implementation
+    always uses path-segment bucketing because that's the only signal
+    available during the initial bootstrap pass (no archetypes exist yet).
     """
-    if archetype_paths:
-        # TODO Phase 2B: implement glob matching (fnmatch / pathspec)
-        for arch_name, _patterns in archetype_paths.items():
-            # Phase 2B placeholder — currently returns "unknown" until implemented
-            del arch_name
-        return "unknown"
+    del archetype_paths  # reserved for forward-compat; not used today
 
-    # Fallback bucketing: use first two non-trivial path segments.
+    # Bucket by first two non-trivial path segments.
     # Examples:
     #   /repo/app/controllers/api/v1/users.rb → "app/controllers"
     #   /repo/src/components/Button.tsx → "src/components"

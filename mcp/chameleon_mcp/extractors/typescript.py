@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import time
 import xxhash
 from pathlib import Path
 

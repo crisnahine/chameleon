@@ -17,7 +17,6 @@ import hmac
 import json
 import os
 import secrets
-import stat
 import time
 from pathlib import Path
 

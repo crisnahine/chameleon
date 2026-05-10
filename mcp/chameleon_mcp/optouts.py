@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from chameleon_mcp.profile.trust import plugin_data_dir, repo_data_dir
+from chameleon_mcp.profile.trust import repo_data_dir
 
 
 def is_chameleon_suppressed(

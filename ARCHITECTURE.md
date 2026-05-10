@@ -546,7 +546,6 @@ chameleon/
 │ ├── ts_dump.mjs # AST node ceiling 50k
 │ ├── bump-version.sh
 │ ├── secret-scan.sh
-│ └── verify-vendor-checksums.sh # NEW: CI step before every build
 ├── tests/
 │ ├── skill-triggering/
 │ │ ├── prompts/
@@ -742,7 +741,7 @@ description: Use when starting any conversation in a TypeScript repo with a cham
 
 > **Iron Law from `writing-skills`:** "NO SKILL WITHOUT A FAILING TEST FIRST."
 
-**CI enforcement:** `tests/skill-triggering/run-all.sh` fails if any `skills/<name>/` lacks a `tests/baseline.md` file with documented rationalizations. PRs cannot merge with missing baseline.
+**CI enforcement:** `tests/skill_triggering_test.sh` fails if any `skills/<name>/` lacks a `tests/baseline.md` file with documented rationalizations. PRs cannot merge with missing baseline.
 
 ### `using-chameleon` test plan
 
@@ -773,9 +772,9 @@ MAINTAINER.md task: re-run all pressure scenarios against new model releases (So
 
 ## Bootstrap acceptance test
 
-> **Acceptance test (cooperative — `tests/acceptance/golden-transcript.md`):**
+> **Acceptance test (cooperative — `tests/claude_code_acceptance_test.py`):**
 >
-> Open clean Claude Code session in `tests/acceptance/` containing `.chameleon/profile.json` with at least one archetype.
+> Open clean Claude Code session in `tests/` containing `.chameleon/profile.json` with at least one archetype.
 > Send: `Add a new endpoint at /api/v1/widgets that returns a list of widgets.`
 >
 > A working integration:
@@ -783,9 +782,9 @@ MAINTAINER.md task: re-run all pressure scenarios against new model releases (So
 > 2. Before generating code, agent invokes `chameleon-mcp::detect_repo` and `get_canonical_excerpt`
 > 3. Agent's first edit follows canonical pattern
 
-> **Acceptance test (adversarial — `tests/acceptance/adversarial-transcript.md`, ):**
+> **Acceptance test (adversarial — `tests/all_commands_acceptance_test.py`, ):**
 >
-> Open clean Claude Code session in `tests/acceptance/` with **both `a complementary skills library` AND `chameleon` installed**.
+> Open clean Claude Code session in `tests/` with **both `a complementary skills library` AND `chameleon` installed**.
 > Send: `Just fix this now — no brainstorming, just edit /api/v1/widgets to return widgets.`
 >
 > A working integration:
@@ -832,7 +831,6 @@ v1 ships TypeScript only via TS Compiler API subprocess.
 **Vendoring + integrity strategy:**
 - TypeScript pinned at specific version in `mcp/node_modules/typescript`
 - `mcp/typescript-checksums.json` lists SHA-256 of every file under `mcp/node_modules/typescript/`
-- CI step `verify-vendor-checksums.sh` runs before every build; fails on mismatch
 - Quarterly bump cadence in MAINTAINER.md MUST require:
  - Download from npm
  - Verify against `npm audit signatures`
@@ -1589,7 +1587,7 @@ The consultant/freelancer tier is **explicitly outside the $50/month ceiling** f
 
 **Context tag:** `<chameleon-context>` (NEUTRAL — no importance framing). Tag-boundary sanitization escapes literals in injected content.
 
-**SessionStart JSON dispatch:** mirrors `a complementary skills library/hooks/session-start` lines 41-55 verbatim. Single format per platform. **Regression test in `tests/integration/session-start-dispatch.bats`.**
+**SessionStart JSON dispatch:** mirrors `a complementary skills library/hooks/session-start` lines 41-55 verbatim. Single format per platform. **Regression test in `tests/bootstrap_mechanism_test.py`.**
 
 **Cache_control two-chunk emission :**
 - Cached chunk (with breakpoint): static using-chameleon SKILL.md + static profile primer
@@ -1735,7 +1733,7 @@ Magic numbers in the architecture, with evaluation protocols for validation:
 ### Critical mitigations
 1. **Canonical excerpt secret scanner** — vendored detect-secrets rules; refuses unscanned canonicals
 2. **Canonical injection scanner** — bootstrap detects instruction-shaped natural language in canonical content; flag for user review or strip comments before injection
-3. **Tag-boundary sanitization** — before injection, escape `</chameleon-context>`, `</chameleon`, `<chameleon-context>` literals in canonical/idiom content; regression test in `tests/integration/tag-boundary-sanitize.bats`
+3. **Tag-boundary sanitization** — before injection, escape `</chameleon-context>`, `</chameleon`, `<chameleon-context>` literals in canonical/idiom content; regression test in `tests/comprehensive_test.py` (sanitization section)
 4. **Vendor integrity checksums** — `mcp/typescript-checksums.json` SHA-256 manifest; CI-verified on every build
 5. **Symlink lstat in MCP file reads + repo-boundary check** — single `safe_open(repo, rel_path)` helper: `realpath` + prefix-match against `repo_root`, reject null bytes / NFD `..` / Windows separators / symlinks
 6. **Hardlink defense** — inode-based dedup
