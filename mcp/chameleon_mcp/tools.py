@@ -61,10 +61,12 @@ def detect_repo(file_path: str) -> dict:
 def get_archetype(repo: str, file_path: str) -> dict:
     """Look up the archetype a given file matches.
 
-    Phase 2D: returns the archetype name whose path-pattern bucket matches.
-    Phase 4: integrates the full archetype-match predicate with content_signal.
+    Phase 2D: matches by exact path-pattern bucket equality (same logic as
+    bootstrap clustering). Phase 4 adds full archetype-match predicate with
+    content_signal + AST-shape verification.
     """
     from chameleon_mcp.profile.loader import LoadedProfile, find_repo_root, load_profile_dir
+    from chameleon_mcp.signatures import path_pattern_bucket_for
 
     p = Path(file_path).expanduser()
     repo_root = find_repo_root(p)
@@ -87,26 +89,50 @@ def get_archetype(repo: str, file_path: str) -> dict:
             "confidence_band": "low",
         })
 
-    # Phase 2D: simple match — pick the archetype whose "paths_pattern" is a
-    # prefix of the file's relative path. Phase 4 adds content_signal matching.
+    # Compute the file's bucket via the same function clustering used.
+    # Match archetypes by EXACT bucket equality (not substring).
     try:
         rel_str = str(p.relative_to(repo_root))
     except ValueError:
         rel_str = str(p)
+    file_bucket = path_pattern_bucket_for(rel_str)
 
-    matched: list[str] = []
+    exact_matches: list[str] = []
+    fallback_matches: list[str] = []  # substring fallback if no exact match
+
     for name, arch in loaded.archetypes.get("archetypes", {}).items():
         pattern = arch.get("paths_pattern", "")
-        if pattern and pattern in rel_str:
-            matched.append(name)
+        if not pattern:
+            continue
+        if pattern == file_bucket:
+            exact_matches.append(name)
+        elif pattern in rel_str:
+            fallback_matches.append(name)
 
-    primary = matched[0] if matched else None
-    alternatives = matched[1:] if len(matched) > 1 else []
+    if exact_matches:
+        # Sort by cluster size descending — largest cluster wins ties
+        archetypes = loaded.archetypes.get("archetypes", {})
+        exact_matches.sort(
+            key=lambda n: archetypes.get(n, {}).get("cluster_size", 0),
+            reverse=True,
+        )
+        primary = exact_matches[0]
+        alternatives = exact_matches[1:]
+        confidence = "high"
+    elif fallback_matches:
+        primary = fallback_matches[0]
+        alternatives = fallback_matches[1:]
+        confidence = "low"
+    else:
+        primary = None
+        alternatives = []
+        confidence = "low"
+
     return _envelope({
         "archetype": primary,
         "alternatives": alternatives,
         "content_signal_match": None,
-        "confidence_band": "high" if primary else "low",
+        "confidence_band": confidence,
     })
 
 
