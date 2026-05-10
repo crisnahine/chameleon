@@ -125,6 +125,24 @@ def preflight_and_advise() -> int:
         _emit({})
         return 0
 
+    # Record a drift observation. Best-effort — failure must not block the edit.
+    repo_info = data.get("repo") or {}
+    repo_id = repo_info.get("id")
+    confidence_band = archetype_obj.get("confidence_band")
+    if repo_id:
+        try:
+            from chameleon_mcp.drift.observations import record_edit_observation
+
+            record_edit_observation(
+                repo_id=repo_id,
+                rel_path=str(file_path),
+                archetype=archetype_name,
+                confidence_band=confidence_band,
+                matched_canonical=bool(canonical.get("witness_path")),
+            )
+        except Exception:
+            pass
+
     # Build a short context block; cap at 1500 tokens approx via char limit
     excerpt_content = canonical.get("content") or ""
     rules_count = len(data.get("rules") or [])

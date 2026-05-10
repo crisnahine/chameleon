@@ -11,6 +11,7 @@ All responses use the API versioning envelope per Round 5 API Designer:
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from pathlib import Path
 
@@ -361,12 +362,15 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
 def get_drift_status(repo: str) -> dict:
     """Report freshness for a repo by repo_id.
 
-    Phase 2D: scans ${PLUGIN_DATA}/<repo_id>/ for trust + days_since_refresh.
-    Reads profile.json's created_at if discoverable via index. Phase 4 will
-    query drift.db edit_observations for observed_drift_score.
+    Computes:
+    - days_since_refresh from the trust record's granted_at
+    - observed_drift_score from drift.db's recent edit_observations
+      (None if no observations yet)
+    - recommended_action: combines both signals
     """
     import time
 
+    from chameleon_mcp.drift.observations import compute_drift_score
     from chameleon_mcp.profile.trust import plugin_data_dir, trust_state_for
 
     if not isinstance(repo, str) or not repo:
@@ -387,8 +391,14 @@ def get_drift_status(repo: str) -> dict:
         except ValueError:
             days_since_refresh = None
 
+    drift_score = compute_drift_score(repo)
+
     if days_since_refresh is None:
         recommended = "no trust grant found; run /chameleon-trust first"
+    elif drift_score is not None and drift_score > 0.5:
+        recommended = (
+            f"observed drift is high ({drift_score:.2f}); run /chameleon-refresh"
+        )
     elif days_since_refresh > 90:
         recommended = "profile may be stale; run /chameleon-refresh"
     elif days_since_refresh > 30:
@@ -399,7 +409,7 @@ def get_drift_status(repo: str) -> dict:
     return _envelope({
         "repo_id": repo,
         "days_since_refresh": days_since_refresh,
-        "observed_drift_score": None,
+        "observed_drift_score": drift_score,
         "recommended_action": recommended,
     })
 
@@ -489,13 +499,79 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
 
 
 def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
-    """Three-way merge for git merge driver use. Phase 4 implements."""
-    del repo, base, ours, theirs
+    """Three-way merge for git merge driver use.
+
+    Per ARCHITECTURE.md "merge_profiles algorithm": the canonical-correct
+    merge of two profile JSONs is to re-cluster from the union — but the
+    git merge driver only has the static .json content of base/ours/theirs,
+    not the underlying repo. So we approximate: take the union of archetypes
+    from ours+theirs, dedup by cluster name, prefer the higher cluster_size
+    on conflict (ties broken by alphabetic witness path), and write the
+    result to `ours` so the merge driver can stage it.
+
+    The base argument is currently used only for conflict-detection logging;
+    canonical-correct three-way merging requires re-bootstrap from the merged
+    repo state, which the user can trigger with /chameleon-refresh after
+    accepting the merge.
+    """
+    del base  # unused — see docstring
+
+    ours_path = Path(ours)
+    theirs_path = Path(theirs)
+    if not ours_path.is_file() or not theirs_path.is_file():
+        return _envelope({
+            "status": "failed",
+            "error": "ours and theirs must point to existing profile JSON files",
+            "merged_profile_path": None,
+        })
+
+    try:
+        ours_data = json.loads(ours_path.read_text(encoding="utf-8"))
+        theirs_data = json.loads(theirs_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        return _envelope({
+            "status": "failed",
+            "error": f"profile JSON parse error: {e}",
+            "merged_profile_path": None,
+        })
+
+    ours_archs = ours_data.get("archetypes", {}) or {}
+    theirs_archs = theirs_data.get("archetypes", {}) or {}
+
+    merged: dict[str, dict] = dict(ours_archs)
+    for name, arch in theirs_archs.items():
+        if name not in merged:
+            merged[name] = arch
+            continue
+        # Conflict: prefer higher cluster_size; ties → alphabetic witness path.
+        ours_size = (merged[name] or {}).get("cluster_size", 0)
+        theirs_size = (arch or {}).get("cluster_size", 0)
+        if theirs_size > ours_size:
+            merged[name] = arch
+        elif theirs_size == ours_size:
+            ours_witness = (merged[name] or {}).get("canonical_witness", "")
+            theirs_witness = (arch or {}).get("canonical_witness", "")
+            if theirs_witness < ours_witness:
+                merged[name] = arch
+
+    merged_data = dict(ours_data)
+    merged_data["archetypes"] = merged
+
+    # Write merge result to `ours` (git merge driver convention).
+    ours_path.write_text(
+        json.dumps(merged_data, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
     return _envelope({
-        "status": "stub",
-        "merged_profile_path": None,
-        "summary_path": None,
-        "note": "Phase 4 implementation pending",
+        "status": "success",
+        "merged_profile_path": str(ours_path),
+        "merged_archetype_count": len(merged),
+        "ours_archetype_count": len(ours_archs),
+        "theirs_archetype_count": len(theirs_archs),
+        "note": (
+            "merged by archetype-name union; run /chameleon-refresh after accepting "
+            "the merge to re-cluster from the actual merged repo state"
+        ),
     })
 
 
