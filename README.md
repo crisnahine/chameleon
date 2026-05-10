@@ -6,9 +6,25 @@ A Claude Code plugin that learns your repo's actual conventions and injects arch
 
 ## Status
 
-`v0.1.0-alpha` — under active development. Architecture complete (5 review rounds, 27 reviewer perspectives). Implementation in progress.
+`v0.1.0-alpha` — under active development. Architecture complete (5 review rounds, 27 reviewer perspectives). Implementation through Phase 4 of 7 complete.
 
 Private to Empire Flippers, LLC. Not yet ready for external use.
+
+### Implementation progress
+
+- [x] Architecture (v5, 5 review rounds + EF dogfood verification)
+- [x] **Phase 1A**: Core repo scaffold (plugin manifest, hooks, skills shell, MCP scaffold, ADRs)
+- [x] **Phase 1B**: Hook stubs + skill stubs + first 3 ADRs
+- [x] **Phase 1C**: MCP server scaffold (FastMCP, 12 tools, security-critical helpers)
+- [x] **Phase 2A**: TS extractor + cluster signature function + drift.db schema
+- [x] **Phase 2B**: Bootstrap engine main flow (discovery, clustering, canonical selection)
+- [x] **Phase 2C**: Workspace detection + tool config reading
+- [x] **Phase 2D**: chameleon-init MCP wiring + trust + teach
+- [x] **Phase 3**: Foundation skill bodies (using-chameleon, init, trust, teach)
+- [x] **Phase 4**: Security mitigations + hook wiring (secret scanner, sanitization, hook_helper)
+- [ ] **Phase 5**: EF dogfood — populate `docs/chameleon/REAL-PROBLEM-EVIDENCE.md` (CI-gated)
+- [ ] **Phase 6**: Conformance benchmarking + calibration target evaluation
+- [ ] **Phase 7**: Documentation + v1.0 release
 
 ## Why?
 
