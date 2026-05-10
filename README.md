@@ -28,24 +28,82 @@ chameleon clusters your actual code patterns (via AST + statistical analysis), c
 
 ## Install
 
-See [INSTALL.md](INSTALL.md) for the full setup. Quick path on macOS / Linux:
+Chameleon works in [Claude Code](#claude-code), [Cursor](#cursor), [Codex CLI](#codex-cli), and [Gemini CLI](#gemini-cli). Install differs by harness; if you use more than one, install separately for each.
 
-**Prerequisites:** [Claude Code](https://docs.claude.com/claude-code) 2.x, [uv](https://docs.astral.sh/uv/), Node.js ≥ 20, Ruby ≥ 3.0 with the `prism` gem (Ruby support only; `prism` ships by default in Ruby ≥ 3.3).
+**Prerequisites (all harnesses):** [uv](https://docs.astral.sh/uv/), Node.js ≥ 20, Ruby ≥ 3.0 with the `prism` gem (only if you want Ruby on Rails support — `prism` ships by default in Ruby ≥ 3.3).
+
+### Claude Code
+
+Install from the chameleon marketplace:
+
+```
+/plugin marketplace add crisnahine/chameleon
+/plugin install chameleon@chameleon
+```
+
+Or load locally for development:
 
 ```sh
 git clone https://github.com/crisnahine/chameleon
-cd chameleon/mcp && uv sync && npm install && cd ..
-claude --plugin-dir "$(pwd)"
+claude --plugin-dir "$(pwd)/chameleon"
 ```
 
-In a Claude Code session inside any repo:
+### Cursor
+
+In Cursor Agent chat:
+
+```
+/add-plugin chameleon
+```
+
+> Pending listing on Cursor's plugin marketplace. Until then, clone the repo and load `.cursor-plugin/plugin.json` via Cursor's local-plugin loader.
+
+### Codex CLI
+
+Open the plugin search interface and install:
+
+```
+/plugins
+```
+
+Search for `chameleon`, then select **Install Plugin**.
+
+> Pending listing on Codex's plugin marketplace. Until then, clone the repo and point Codex at `.codex-plugin/plugin.json`.
+
+### Gemini CLI
+
+```sh
+gemini extensions install https://github.com/crisnahine/chameleon
+```
+
+Update later:
+
+```sh
+gemini extensions update chameleon
+```
+
+### One-time setup (required after any install)
+
+Chameleon ships a Python MCP server + a Node-based TypeScript extractor. The marketplace install methods deliver the plugin code but cannot run the build step, so the MCP server won't start until you build the deps once:
+
+```sh
+cd <plugin-install-path>/mcp
+uv sync          # Python venv for the MCP server
+npm install      # TypeScript extractor deps
+```
+
+`<plugin-install-path>` is wherever your harness puts the plugin — for local installs that's your clone directory. For marketplace installs, check your harness's plugin directory (e.g. `~/.claude/plugins/...`).
+
+### First-run inside a project
+
+In any session inside a TypeScript or Ruby on Rails repo:
 
 ```
 /chameleon-init    # bootstrap a profile (10s for ~5k files)
 /chameleon-trust   # approve the profile for your user
 ```
 
-After that, every Edit/Write in that repo gets archetype-aware context automatically.
+After that, every Edit/Write in that repo gets archetype-aware context automatically. See [INSTALL.md](INSTALL.md) for the deep walkthrough, troubleshooting, and uninstall instructions.
 
 ## Slash commands
 
