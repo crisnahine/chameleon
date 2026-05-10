@@ -141,6 +141,8 @@ def preflight_and_advise() -> int:
     data = result.get("data", {})
     archetype_obj = data.get("archetype", {}) or {}
     canonical = data.get("canonical_excerpt", {}) or {}
+    repo_info = data.get("repo", {}) or {}
+    trust_state = repo_info.get("trust_state")
     # Note: get_archetype returns {archetype: <name>, alternatives, content_signal_match,
     # confidence_band}. The cluster name lives under the "archetype" key (yes, nested).
     archetype_name = archetype_obj.get("archetype")
@@ -177,6 +179,12 @@ def preflight_and_advise() -> int:
         f"[chameleon: archetype={archetype_name}, "
         f"confidence={archetype_obj.get('confidence_band', 'unknown')}]\n\n"
     )
+    if trust_state == "stale":
+        block += (
+            "**Trust is stale**: the .chameleon/ profile has changed since the user trusted it. "
+            "Surface this once to your human partner and suggest /chameleon-trust to re-confirm. "
+            "Do not block the edit; chameleon advisory is provided below for reference only.\n\n"
+        )
     if excerpt_content:
         block += "Canonical witness:\n```\n"
         block += excerpt_content[:6000]  # ~1500 tokens

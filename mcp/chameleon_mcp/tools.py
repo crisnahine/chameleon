@@ -33,9 +33,18 @@ def _compute_repo_id(repo_root: Path) -> str:
 
 
 def detect_repo(file_path: str) -> dict:
-    """Detect the repo a given file path belongs to."""
+    """Detect the repo a given file path belongs to.
+
+    trust_state values:
+    - "n/a"        — no repo root detected
+    - "untrusted"  — repo found, no .trust record
+    - "trusted"    — .trust record exists AND profile hash matches
+    - "stale"      — .trust record exists but profile changed since grant;
+                     user must re-confirm via /chameleon-trust before
+                     chameleon resumes injection
+    """
     from chameleon_mcp.profile.loader import find_repo_root
-    from chameleon_mcp.profile.trust import trust_state_for
+    from chameleon_mcp.profile.trust import is_material_change, trust_state_for
 
     p = Path(file_path).expanduser()
     repo_root = find_repo_root(p)
@@ -51,11 +60,19 @@ def detect_repo(file_path: str) -> dict:
     profile_dir = repo_root / ".chameleon"
     profile_present = (profile_dir / "profile.json").exists()
     trust = trust_state_for(repo_id)
+
+    if trust is None:
+        trust_state = "untrusted"
+    elif profile_present and is_material_change(repo_id, profile_dir):
+        trust_state = "stale"
+    else:
+        trust_state = "trusted"
+
     return _envelope({
         "repo_id": repo_id,
         "repo_root": str(repo_root),
         "profile_status": "profile_present" if profile_present else "no_profile",
-        "trust_state": "trusted" if trust else "untrusted",
+        "trust_state": trust_state,
     })
 
 
@@ -167,12 +184,20 @@ def get_pattern_context(file_path: str) -> dict:
             "meta": {"mtime_token": None, "computed_at": None},
         })
 
+    from chameleon_mcp.profile.trust import is_material_change
     trust = trust_state_for(repo_id)
+    if trust is None:
+        trust_state_str = "untrusted"
+    elif is_material_change(repo_id, profile_dir):
+        trust_state_str = "stale"
+    else:
+        trust_state_str = "trusted"
+
     try:
         loaded = load_profile_dir(profile_dir)
     except Exception:
         return _envelope({
-            "repo": {"id": repo_id, "profile_status": "profile_present", "trust_state": "trusted" if trust else "untrusted"},
+            "repo": {"id": repo_id, "profile_status": "profile_present", "trust_state": trust_state_str},
             "archetype": {"name": None, "alternatives": [], "confidence_band": "low"},
             "canonical_excerpt": {"content": "", "witness_path": None, "truncated": False, "sha_hint": None},
             "rules": [],
@@ -228,7 +253,7 @@ def get_pattern_context(file_path: str) -> dict:
         "repo": {
             "id": repo_id,
             "profile_status": "profile_present",
-            "trust_state": "trusted" if trust else "untrusted",
+            "trust_state": trust_state_str,
         },
         "archetype": arch_data,
         "canonical_excerpt": canonical_data,
