@@ -42,9 +42,9 @@ Done. Skip ahead to **Wiring chameleon into Claude Code**.
 
 ## Wiring chameleon into Claude Code
 
-Three options, ordered most-recommended → least:
+Two supported methods. Pick one:
 
-### Option A — Per-session via `--plugin-dir`
+### Option A — Per-session via `--plugin-dir` (recommended for local dev)
 
 Pass the chameleon repo path on every `claude` invocation:
 
@@ -52,26 +52,28 @@ Pass the chameleon repo path on every `claude` invocation:
 claude --plugin-dir ~/path/to/chameleon
 ```
 
-Pros: scoped, easy to enable/disable. Cons: have to remember the flag.
-
-### Option B — Permanent install via marketplace add
+You can stack multiple `--plugin-dir` flags:
 
 ```bash
-# Inside Claude Code:
-/plugin marketplace add ~/path/to/chameleon
-/plugin install chameleon
+claude --plugin-dir ./chameleon --plugin-dir ./other-plugin
+```
+
+When a `--plugin-dir` plugin shares a name with an installed marketplace plugin, the local copy wins for that session.
+
+Pros: picks up local edits without reinstalling. Cons: have to remember the flag.
+
+### Option B — Permanent install via the GitHub marketplace
+
+Inside any Claude Code session:
+
+```
+/plugin marketplace add crisnahine/chameleon
+/plugin install chameleon@chameleon
 ```
 
 Restart Claude Code. Verify by asking: *"What chameleon tools do you have?"*
 
-### Option C — Symlink into `~/.claude/plugins/`
-
-```bash
-mkdir -p ~/.claude/plugins
-ln -s ~/path/to/chameleon ~/.claude/plugins/chameleon
-```
-
-Restart Claude Code.
+> `/plugin marketplace add` accepts a GitHub `owner/repo` slug or a full HTTPS URL — **not** a local filesystem path. Use Option A for local development.
 
 ## Verifying chameleon works
 
@@ -133,20 +135,17 @@ Restart Claude Code if it's running.
 
 ## Uninstalling
 
-If you used Option C (symlink):
-
-```bash
-rm ~/.claude/plugins/chameleon
-```
+If you used Option A (`--plugin-dir`): just drop the flag from your `claude` invocation. Nothing else to undo.
 
 If you used Option B (marketplace install):
 
 ```
 # Inside Claude Code:
 /plugin uninstall chameleon
+/plugin marketplace remove chameleon
 ```
 
-Also remove your trust state and drift cache:
+Either way, also remove your trust state and drift cache:
 
 ```bash
 rm -rf ~/.local/share/chameleon
@@ -168,7 +167,11 @@ Check `~/.local/share/chameleon/<repo_id>/.trust` exists. If not, re-run `/chame
 
 ### Slash commands don't show up
 
-Verify `--plugin-dir` is on the command line, OR that `/plugin list` shows chameleon.
+Verify either:
+- `--plugin-dir ~/path/to/chameleon` is on the `claude` command line, OR
+- `/plugin list` (inside Claude Code) shows `chameleon` as installed.
+
+If neither: the plugin isn't loaded. Re-run Option A or Option B from above.
 
 ### Hook latency feels high
 
