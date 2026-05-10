@@ -1855,14 +1855,9 @@ What's discarded:
 
 ### License declaration
 
-**Status:** — author choice required before any public release.
+**Status:** Licensed under MIT. See [LICENSE](./LICENSE).
 
-**Recommendation:**
-- For a private deployment: `UNLICENSED — proprietary to Cris Nahine`
-- If chameleon goes public OSS: `Apache-2.0` (corporate-friendly, patent grant included)
-- MIT acceptable but provides no patent grant
-
-The architecture currently equivocates between private and public paths. **Decide before Phase 1 starts.** This is the single highest-leverage one-line decision in the document.
+Rationale: maximum permissiveness, broad compatibility with downstream Claude Code plugin distribution, no copyleft obligations for users. MIT does not grant patents explicitly — Apache-2.0 would for projects with patent concerns, but chameleon has no patentable surface.
 
 ### Backwards-compatibility contract
 
@@ -1956,7 +1951,7 @@ This is the same contract Stripe publishes for their API.
 
 Phase 1 prerequisites:
 1. **stakeholder confirmation conversation** — gates everything else
-2. **License decision** — `UNLICENSED` (private) vs `Apache-2.0` (public)
+2. **License decision** — resolved: MIT (see [LICENSE](./LICENSE))
 3. **Risk registry review** — pre-commit fall-back-to-v0.5 plan if Phase 1 takes 12+ weeks for 30% scope
 
 When (1)-(3) are resolved, Phase 1 can begin.

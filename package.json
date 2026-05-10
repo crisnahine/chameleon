@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Code that blends in. Auto-derives codebase conventions and injects archetype-aware guidance for AI-generated code.",
   "private": true,
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "author": {
     "name": "Cris Nahine",
     "email": "crisjosephnahine@gmail.com"

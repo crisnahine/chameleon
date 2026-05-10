@@ -2,6 +2,9 @@
 
 > *"Code that blends in."*
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED.svg)](https://docs.claude.com/claude-code)
+
 A Claude Code plugin that learns your repo's actual conventions and injects archetype-aware guidance so AI-generated code matches your existing style on the first try.
 
 ## Why
@@ -71,9 +74,13 @@ CHAMELEON_DISABLE=1       per-user globally (in your shell rc)
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design: bootstrap pipeline, cluster signature function, atomic profile commit pattern, security mitigations (sanitization, secret scanning, poisoning scanner), and the trust + drift model.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, test workflows, and the change conventions used in this repo.
+
 ## License
 
-Proprietary — see [LICENSE](LICENSE). Private repository, no public license granted.
+MIT — see [LICENSE](LICENSE).
 
 ## Author
 

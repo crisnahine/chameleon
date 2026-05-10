@@ -4,7 +4,24 @@ This document is for **developers working on chameleon itself**. For users of th
 
 ## Status
 
-Private repository. External contributions are not solicited.
+Solo-maintained open-source project (MIT). Issues and PRs are welcome — read this file end-to-end before opening one.
+
+## Reporting bugs / requesting features
+
+Use the GitHub issue templates:
+
+- **Bug report** for incorrect behavior, crashes, or unexpected output.
+- **Feature request** for new languages, new MCP tools, or new slash commands.
+
+Before opening an issue, please search existing issues (open AND closed) for duplicates.
+
+## Submitting a PR
+
+1. Fork the repo, branch from `main`.
+2. Read the relevant section below (skill change vs MCP tool change vs schema change).
+3. Run the full test suite — see [Running tests](#running-tests).
+4. Open a PR using the [PR template](.github/PULL_REQUEST_TEMPLATE.md). Fill in **every section** with real, specific answers.
+5. Keep one problem per PR. Bundled unrelated changes will be sent back.
 
 ## Dev setup
 
@@ -96,9 +113,13 @@ MCP tools are an API surface (per [ARCHITECTURE.md](ARCHITECTURE.md)). Treat cha
 
 ## Decision-making
 
-Solo maintainer. Architecture changes captured in ADRs.
+Solo maintainer. Architecture changes captured in ADRs. The maintainer reserves the right to decline PRs that don't fit the project's design goals — please open an issue first for any non-trivial change so we can agree on the approach before you invest time.
 
 ## Data handling
 
 - Never commit hardcoded credentials.
 - Profile artifacts in `.chameleon/` may contain code excerpts; treat as sensitive even though committed.
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the [MIT License](LICENSE).

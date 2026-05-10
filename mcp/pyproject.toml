@@ -5,7 +5,8 @@ description = "MCP server for chameleon. Auto-derives codebase conventions and s
 authors = [
     { name = "Cris Nahine", email = "crisjosephnahine@gmail.com" }
 ]
-license = { file = "../LICENSE" }
+license = "MIT"
+license-files = ["../LICENSE"]
 readme = "../README.md"
 requires-python = ">=3.11"
 
