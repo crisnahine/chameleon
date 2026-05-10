@@ -166,11 +166,15 @@ def get_pattern_context(file_path: str) -> dict:
                 witness_path = repo_root / witness_rel
                 if witness_path.is_file():
                     try:
+                        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
                         content = witness_path.read_text(errors="replace")
                         # Truncate to ~800 tokens (~3200 chars approx)
                         truncated = len(content) > 3200
                         if truncated:
                             content = content[:3200] + "\n... [truncated]"
+                        # Tag-boundary sanitization (Round 4/5 security mitigation)
+                        content = sanitize_for_chameleon_context(content)
                         canonical_data = {
                             "content": content,
                             "witness_path": witness_rel,

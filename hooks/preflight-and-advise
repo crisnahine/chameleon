@@ -1,41 +1,34 @@
 #!/usr/bin/env bash
-# PreToolUse hook for chameleon plugin.
+# PreToolUse Edit/Write/NotebookEdit hook for chameleon plugin.
 #
-# Combined safety check + archetype advisor (single hook, parallelism-aware).
-# This is the load-bearing per-edit hook in chameleon's design.
+# Phase 4 implementation: delegates to chameleon_mcp.hook_helper which:
+#   1. Reads tool_input.file_path from stdin JSON
+#   2. Calls chameleon_mcp.tools.get_pattern_context(file_path)
+#   3. Emits archetype + canonical excerpt as additionalContext
 #
-# Phase 1B: stub with input parsing skeleton. Real safety logic + MCP
-# integration deferred to Phase 1C (MCP server scaffold) and Phase 4
-# (security mitigations).
+# Fail-open contract per ARCHITECTURE.md "Hook stack": if anything fails,
+# emit empty JSON and let the edit proceed.
 #
-# Final Phase 4 implementation will include:
-#   1. Safety hard-denies (path traversal, secrets, lockfiles, vendored,
-#      generated files, /etc/, /proc/, ~/.aws/, etc.)
-#      — Inherited from claude-measure-twice (REVIEWED, not verbatim;
-#         HMAC path bug fixed: ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/)
-#   2. safe_open: realpath + repo-boundary check + lstat + null/NFD/sep checks
-#   3. Hook-model dedup: skip injection if model already called MCP this turn
-#   4. MCP get_pattern_context call with 2s timeout, fail-open silent
-#   5. Tag-boundary sanitization on injected content
-#   6. Per-edit injection cap: 1500 tokens (truncated)
-#
-# See ARCHITECTURE.md "Hook stack" + "Atomicity & Crash Safety" + "Security
-# mitigations" sections for the full design.
-#
-# Input (from Claude Code via stdin): JSON with tool_name, tool_input, etc.
-# Output (to stdout): JSON with hookSpecificOutput.additionalContext or empty {}
+# See ARCHITECTURE.md "Hook stack" PreToolUse + "Performance characteristics"
+# (the daemon model that replaces this subprocess-per-call form).
 
 set -euo pipefail
 
-# Phase 1B: read input but don't act on it yet. Output empty JSON.
-# Real implementation in Phase 1C+.
-INPUT=$(cat)
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}"
+MCP_DIR="${PLUGIN_ROOT}/mcp"
 
-# TODO Phase 1C: parse INPUT, extract tool_name + file_path
-# TODO Phase 4: implement safety hard-deny layer
-# TODO Phase 1C: call MCP server for get_pattern_context
-# TODO Phase 4: tag-boundary sanitize injected content
-# TODO Phase 4: enforce per-edit injection cap (1500 tokens)
+if [ -d "${MCP_DIR}/.venv" ]; then
+    PYTHON="${MCP_DIR}/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON="$(command -v python3)"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON="$(command -v python)"
+else
+    printf '{}\n'
+    exit 0
+fi
 
-printf '{}\n'
-exit 0
+# 2-second hard timeout (Round 5 Performance Engineer recommendation)
+PYTHONPATH="${MCP_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
+    timeout 2 "${PYTHON}" -m chameleon_mcp.hook_helper preflight-and-advise \
+    || printf '{}\n'
