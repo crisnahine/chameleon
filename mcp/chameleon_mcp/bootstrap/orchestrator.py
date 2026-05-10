@@ -36,7 +36,9 @@ from chameleon_mcp.bootstrap.discovery import (
     TooManyFilesError,
     discover_files,
 )
+from chameleon_mcp.bootstrap.tool_config import read_tool_configs
 from chameleon_mcp.bootstrap.transaction import atomic_profile_commit
+from chameleon_mcp.bootstrap.workspace import detect_workspace
 from chameleon_mcp.extractors.typescript import TypeScriptExtractor
 
 PROFILE_SCHEMA_VERSION = 4
@@ -118,7 +120,16 @@ def bootstrap_repo(
     started_at = time.time()
     profile_dir = repo_root / profile_dir_name
 
-    # 1. Detect language (TS-only in v1.0)
+    # 1a. Detect workspace structure (pnpm/yarn/lerna/turbo/nx)
+    workspace = detect_workspace(repo_root)
+    # Phase 2C: workspace info is recorded in profile.json for visibility,
+    # but Phase 2D will use it to drive per-workspace bootstrapping. For now,
+    # we always bootstrap at repo_root.
+
+    # 1b. Read tool configs as ground truth for rules
+    tool_configs = read_tool_configs(repo_root)
+
+    # 1c. Detect language (TS-only in v1.0)
     extractor = TypeScriptExtractor()
     if not extractor.can_handle(repo_root):
         return BootstrapReport(
@@ -258,7 +269,36 @@ def bootstrap_repo(
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source": "bootstrap",
         "archetype_count": archetype_count,
+        "workspace": {
+            "is_workspace": workspace.is_workspace,
+            "manager": workspace.manager,
+            "workspace_count": len(workspace.workspace_paths),
+        },
+        "tool_configs": {
+            "sources": tool_configs.sources,
+            "warnings": {
+                "prettier_js_plugins": tool_configs.has_prettier_js_plugins,
+                "eslint_js_plugins": tool_configs.has_eslint_js_plugins,
+            },
+        },
     }
+
+    # Build initial rules from tool configs (Phase 2C — basic; Phase 4 expands)
+    if tool_configs.prettier:
+        rules_data["rules"]["formatting"] = {
+            "source": tool_configs.sources.get("prettier", ".prettierrc"),
+            "rules": tool_configs.prettier,
+        }
+    if tool_configs.tsconfig and isinstance(tool_configs.tsconfig.get("compilerOptions"), dict):
+        co = tool_configs.tsconfig["compilerOptions"]
+        rules_data["rules"]["typescript"] = {
+            "source": tool_configs.sources.get("tsconfig", "tsconfig.json"),
+            "strict": bool(co.get("strict")),
+            "noImplicitAny": bool(co.get("noImplicitAny", True)),
+            "strictNullChecks": bool(co.get("strictNullChecks", True)),
+            "target": co.get("target"),
+            "paths": co.get("paths"),
+        }
 
     # 7. Write atomically (Phase 1C transaction.py)
     with atomic_profile_commit(profile_dir) as txn_dir:
@@ -287,8 +327,8 @@ def bootstrap_repo(
     return BootstrapReport(
         status="success",
         archetypes_detected=archetype_count,
-        rules_extracted=0,  # Phase 2C: extract from tool configs + statistical analysis
-        idioms_collected=0,  # Phase 2D: interview-driven
+        rules_extracted=len(rules_data["rules"]),
+        idioms_collected=0,  # Phase 2D: interview-driven via /chameleon-teach
         canonicals_skipped_failed_scans=canonicals_skipped_failed_scans,
         files_processed=len(parse_result.files),
         files_skipped_generated=files_skipped_generated,
