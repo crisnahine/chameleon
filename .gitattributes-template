@@ -1,0 +1,19 @@
+# chameleon profile auto-merge
+#
+# Copy this file to your repo as `.gitattributes` (or merge into existing one)
+# to enable automatic profile merge resolution via chameleon-mcp.
+#
+# This prevents painful JSON merge conflicts when two developers run
+# /chameleon-refresh on parallel branches.
+
+.chameleon/profile.json     merge=chameleon
+.chameleon/archetypes.json  merge=chameleon
+.chameleon/rules.json       merge=chameleon
+.chameleon/canonicals.json  merge=chameleon
+
+# To register the merge driver, run once in your repo (or globally with --global):
+#
+#   git config merge.chameleon.name "chameleon profile merge"
+#   git config merge.chameleon.driver "chameleon-mcp merge_profiles --base %O --ours %A --theirs %B --output %A"
+#
+# Without registration, git falls back to its default conflict-marker behavior.

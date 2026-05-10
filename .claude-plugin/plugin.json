@@ -1,0 +1,18 @@
+{
+  "name": "chameleon",
+  "description": "Code that blends in. Auto-derives codebase conventions and injects archetype-aware guidance for AI-generated code.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Cris Nahine",
+    "email": "crisn@empireflippers.com"
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "skills",
+    "code-conventions",
+    "pattern-matching",
+    "ast-analysis",
+    "best-practices",
+    "claude-code"
+  ]
+}

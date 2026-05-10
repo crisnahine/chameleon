@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# SessionStart hook for chameleon plugin.
+#
+# Phase 1A: minimal no-op (no context injection yet).
+# Phase 1B will implement:
+#   - Active repo detection via file-path walk-up
+#   - Profile state check (.chameleon/profile.json present? trusted? etc.)
+#   - First-run welcome (one line, gated by .first_run_seen)
+#   - Single-format JSON dispatch per platform (Cursor / Claude Code / SDK)
+#   - cache_control two-chunk emission (cached prefix + ephemeral footer)
+#   - Tag-boundary sanitization on injected content
+#
+# See ARCHITECTURE.md "Bootstrap mechanism" for the full design.
+
+set -euo pipefail
+
+# Phase 1A: emit empty JSON so Claude Code doesn't treat the hook as failed.
+# No additionalContext is injected yet — that comes in Phase 1B.
+printf '{}\n'
+exit 0

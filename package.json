@@ -1,0 +1,24 @@
+{
+  "name": "chameleon",
+  "version": "0.1.0",
+  "description": "Code that blends in. Auto-derives codebase conventions and injects archetype-aware guidance for AI-generated code.",
+  "private": true,
+  "license": "UNLICENSED",
+  "author": {
+    "name": "Cris Nahine",
+    "email": "crisn@empireflippers.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git@bitbucket.org:empire-flippers/chameleon.git"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "test": "echo 'Run pytest mcp/tests/ for Python tests; tests/skill-triggering/run-all.sh for skill triggering tests' && exit 0",
+    "lint": "echo 'Lint config TBD in Phase 7' && exit 0",
+    "version:bump": "scripts/bump-version.sh"
+  }
+}
