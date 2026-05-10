@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Phase 2A — TS extractor + cluster signature + drift.db schema (2026-05-10)
+
+#### Added (real implementations)
+- `scripts/ts_dump.mjs` — long-lived Node worker using TypeScript Compiler API. Reads file paths from stdin (one per line), emits NDJSON ParsedFile records to stdout. Per-file caps: 50k AST nodes, 1MB size, 20 parse diagnostics. Extracts the 6 AST primitives needed for cluster signature (top_level_node_kinds, default_export_kind, named_export_count, import_specifiers, has_jsx, content_first_200_bytes). One file's parse error never aborts the run.
+- `mcp/chameleon_mcp/signatures.py` — cluster signature function `f: file → ClusterKey`. The 7-tuple specified in `ARCHITECTURE.md#cluster-signature-function`: (path_pattern_bucket, content_signal_match, top_level_node_kinds, default_export_kind, named_export_count_bucket, import_module_set_hash, jsx_present). Includes `bucket_named_export_count`, `hash_import_set` (sha256 over sorted imports — deterministic), `path_pattern_bucket_for` (Phase 2A fallback bucketing), `content_signal_match_for` (use_client / use_server / shebang / ts_pragma detection), `compute_signature` orchestration. `SIGNATURE_FUNCTION_VERSION` constant for cache invalidation.
+- `mcp/chameleon_mcp/extractors/typescript.py` — real `parse_repo` implementation: spawns `ts_dump.mjs` subprocess with line-buffered stdio, streams paths in, collects NDJSON results, computes sha_hint (xxhash64) on Python side, returns ParseResult. `_expand_glob` helper for `**/*.{ts,tsx,js,jsx,mjs,cjs}`-style alternation.
+- `mcp/chameleon_mcp/drift/schema.py` — drift.db DDL initialization (idempotent CREATE TABLE IF NOT EXISTS for `schema_meta`, `files` (WITHOUT ROWID), `edit_observations`; matching indices). `init_drift_db()` returns hardened sqlite3.Connection. `gc_old_observations()` purges records >30 days + checkpoints WAL.
+
+#### Added (configuration)
+- `mcp/package.json` — Node-side dependencies. TypeScript pinned at `5.9.3` (matches EF client's typescript dep). Phase 4 will switch to vendored + checksum-verified per `ARCHITECTURE.md#typescript-first-extractor`.
+
 ### Phase 1C — MCP server scaffold (2026-05-10)
 
 #### Added (real implementations — security/correctness-critical helpers)
