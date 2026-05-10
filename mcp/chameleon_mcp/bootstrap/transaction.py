@@ -15,7 +15,10 @@ Round 4 distributed-systems hardening — addresses one of the 6 BLOCKING items.
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import os
+import random
 import shutil
 import time
 import uuid
@@ -23,6 +26,30 @@ from contextlib import contextmanager
 from pathlib import Path
 
 COMMITTED_SENTINEL = "COMMITTED"
+
+
+def _acquire_rename_lock(lock_path: Path, *, timeout_seconds: float = 30.0) -> int:
+    """Block-and-retry until exclusive lock on lock_path is held.
+
+    Used to serialize the txn_dir → target_dir rename across concurrent
+    bootstrap processes. Returns the open fd; caller is responsible for
+    closing it (which releases the lock).
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    deadline = time.time() + timeout_seconds
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError as e:
+            if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                os.close(fd)
+                raise
+            if time.time() >= deadline:
+                os.close(fd)
+                raise TimeoutError(f"could not acquire {lock_path} within {timeout_seconds}s")
+            time.sleep(0.05 + random.random() * 0.05)
 
 
 @contextmanager
@@ -65,23 +92,33 @@ def atomic_profile_commit(target_dir: Path):
         with open(sentinel, "rb") as f:
             os.fsync(f.fileno())
 
-        # Atomic rename: txn_dir → target_dir.
-        # If target_dir already exists, we need to swap atomically. POSIX rename(2)
-        # over an existing directory only works if target is empty. So we use a
-        # two-step pattern: rename old target out of the way, then rename txn into place.
+        # Atomic rename: txn_dir → target_dir, serialized across concurrent
+        # processes via an advisory flock on a sibling file. POSIX rename(2)
+        # over an existing directory requires the target to be empty on
+        # macOS, so we move target_dir aside first and rename our txn into
+        # place — the lock prevents two writers from racing the move/rename
+        # pair (TOCTOU between target_dir.exists() and os.rename produces
+        # ENOTEMPTY when both writers think the target is missing).
         backup_dir = target_dir.parent / f".{target_dir.name}.backup-{txn_id}"
-        if target_dir.exists():
-            os.rename(target_dir, backup_dir)
+        rename_lock_path = target_dir.parent / f".{target_dir.name}.rename.lock"
+        rename_lock_fd = _acquire_rename_lock(rename_lock_path)
         try:
-            os.rename(txn_dir, target_dir)
-        except OSError:
-            # Restore backup on rename failure
+            if target_dir.exists():
+                os.rename(target_dir, backup_dir)
+            try:
+                os.rename(txn_dir, target_dir)
+            except OSError:
+                if backup_dir.exists():
+                    os.rename(backup_dir, target_dir)
+                raise
             if backup_dir.exists():
-                os.rename(backup_dir, target_dir)
-            raise
-        # Success: remove backup
-        if backup_dir.exists():
-            shutil.rmtree(backup_dir, ignore_errors=True)
+                shutil.rmtree(backup_dir, ignore_errors=True)
+        finally:
+            try:
+                fcntl.flock(rename_lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(rename_lock_fd)
     except Exception:
         # Clean up partial txn dir on any failure
         if txn_dir.exists():

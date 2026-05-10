@@ -577,16 +577,15 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
 
 
 def _sanitize_user_input(text: str) -> str:
-    """Strip ANSI escapes and zero-width unicode characters.
+    """Sanitize user-supplied text before persisting to idioms.md.
 
-    Phase 2D minimal sanitization. Phase 4 adds full Round 5 AppSec hardening
-    (stricter regex, BiDi attack detection, etc.).
+    User idioms get echoed back into the model's context inside a
+    <chameleon-context> wrapper, so the same tag-boundary protections that
+    apply to canonical excerpts must apply here. sanitize_for_chameleon_context
+    already covers ANSI escapes, zero-width unicode, NFC normalization, AND
+    closing-tag neutralization — there is no reason teach_profile should
+    use a weaker subset.
     """
-    import re
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-    # ANSI CSI/OSC escapes
-    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
-    text = re.sub(r"\x1b\][^\x07]*\x07?", "", text)
-    # Zero-width characters (U+200B, U+200C, U+200D, U+FEFF)
-    text = re.sub(r"[​-‍﻿]", "", text)
-    return text
+    return sanitize_for_chameleon_context(text)

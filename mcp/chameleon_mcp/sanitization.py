@@ -33,28 +33,27 @@ _DANGEROUS_TOKENS = (
 def sanitize_for_chameleon_context(content: str) -> str:
     """Replace dangerous tag-boundary tokens with neutral text.
 
-    Defensive transformations applied:
-    1. NFC unicode normalization (defeat NFD-encoded variants of `<`, `>`, etc.)
-    2. Replace each dangerous token with a `[chameleon: <text>]`-style annotation
-       so the meaning is preserved but the structure is broken.
-    3. Strip ANSI escapes (visual injection vector).
-    4. Strip zero-width unicode characters (used to hide real tokens).
-    """
-    # 1. Normalize unicode to NFC
-    normalized = unicodedata.normalize("NFC", content)
+    Order matters: zero-width characters and ANSI escapes are stripped FIRST
+    so an attacker cannot hide a tag-boundary token by sandwiching invisible
+    characters inside it (e.g., `<\\u200b/chameleon-context>`). Once these
+    obfuscators are gone, NFC normalization runs, then the literal tag-boundary
+    replacement.
 
-    # 2. Tag-boundary token replacement (case-insensitive for safety)
+    Defensive transformations:
+    1. Strip zero-width unicode (U+200B–U+200D, U+FEFF, U+2060) — must be first.
+    2. Strip ANSI CSI/OSC escapes.
+    3. NFC normalize (defeat decomposed `<`, `>` variants).
+    4. Replace each dangerous token with a `[chameleon-sanitized: <text>]`
+       annotation so the meaning is preserved but the structure is broken.
+    """
+    cleaned = re.sub(r"[​-‍﻿⁠]", "", content)
+    cleaned = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", cleaned)
+    cleaned = re.sub(r"\x1b\][^\x07]*\x07?", "", cleaned)
+    cleaned = unicodedata.normalize("NFC", cleaned)
+
     for token in _DANGEROUS_TOKENS:
         replacement = f"[chameleon-sanitized: {token.strip('<>')}]"
-        # Replace both literal case and lowercased
-        normalized = normalized.replace(token, replacement)
-        normalized = normalized.replace(token.lower(), replacement)
+        cleaned = cleaned.replace(token, replacement)
+        cleaned = cleaned.replace(token.lower(), replacement)
 
-    # 3. Strip ANSI CSI/OSC escapes
-    normalized = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", normalized)
-    normalized = re.sub(r"\x1b\][^\x07]*\x07?", "", normalized)
-
-    # 4. Strip zero-width characters (U+200B–U+200D, U+FEFF, U+2060)
-    normalized = re.sub(r"[​-‍﻿⁠]", "", normalized)
-
-    return normalized
+    return cleaned
