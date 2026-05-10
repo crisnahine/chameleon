@@ -59,10 +59,27 @@ class TypeScriptExtractor:
         repo_root: Path,
         glob: str = "**/*.{ts,tsx,js,jsx,mjs,cjs}",
         limit: int | None = None,
+        paths: list[Path] | None = None,
     ) -> ParseResult:
-        """Parse files matching `glob` under `repo_root`. Returns ParseResult."""
-        # 1. Discover files (supports glob alternation via expansion)
-        files = list(_expand_glob(repo_root, glob))
+        """Parse files under `repo_root`. Returns ParseResult.
+
+        Args:
+            repo_root: absolute path to the repo root
+            glob: file glob (only used if `paths` not provided)
+            limit: optional cap on files to parse
+            paths: explicit file list (overrides glob); typically from
+                   bootstrap.discovery.discover_files() so exclusion logic
+                   stays in one place
+
+        Returns:
+            ParseResult with files + skipped lists.
+        """
+        # 1. Use explicit paths if given (preferred — keeps exclusion logic in
+        # bootstrap/discovery.py); else fall back to the local glob.
+        if paths is not None:
+            files = list(paths)
+        else:
+            files = list(_expand_glob(repo_root, glob))
         if limit is not None:
             files = files[:limit]
         if not files:
@@ -78,57 +95,46 @@ class TypeScriptExtractor:
         # NODE_PATH so the script can resolve TypeScript from mcp/node_modules
         env["NODE_PATH"] = str(self._ts_dump_script.parent.parent / "mcp" / "node_modules")
 
+        # Build input as one big string; communicate() handles pipe-deadlock
+        # internally via threads (avoids the classic stdout-buffer-full hang).
+        input_data = "".join(f"{fp.resolve()}\n" for fp in files)
+
         proc = subprocess.Popen(
             ["node", str(self._ts_dump_script)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=1,  # line-buffered
             env=env,
             cwd=str(self._ts_dump_script.parent.parent / "mcp"),
         )
 
-        if proc.stdin is None or proc.stdout is None:
-            raise RuntimeError("ts_dump.mjs subprocess pipes failed to attach")
-
-        # 3. Send file paths and collect results
+        # Communicate writes all input + reads all stdout/stderr in
+        # background threads; safe for arbitrarily large data.
+        # Timeout sized for ~5,000 files at ~75ms each ≈ 6.5min; we cap at
+        # 10min for headroom.
         try:
-            for fp in files:
-                proc.stdin.write(f"{fp.resolve()}\n")
-            proc.stdin.flush()
-            proc.stdin.close()  # signal EOF; subprocess processes remaining + exits
+            stdout_data, _stderr = proc.communicate(input=input_data, timeout=600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout_data, _stderr = proc.communicate()
 
-            # Collect results (one NDJSON line per input file path; order preserved)
-            results = []
-            skipped: list[tuple[Path, str]] = []
-            for line in proc.stdout:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
-                    # Defensive: skip malformed output but don't abort
-                    continue
-                path = Path(record.get("path", ""))
-                if "error" in record:
-                    skipped.append((path, record["error"]))
-                    continue
-                results.append(_parsed_file_from_record(path, record))
-
-            # Wait for subprocess to terminate cleanly (with a short timeout)
+        # Parse NDJSON output line by line
+        results = []
+        skipped: list[tuple[Path, str]] = []
+        for line in stdout_data.splitlines():
+            line = line.strip()
+            if not line:
+                continue
             try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        finally:
-            for stream in (proc.stdin, proc.stdout, proc.stderr):
-                if stream is not None and not stream.closed:
-                    try:
-                        stream.close()
-                    except OSError:
-                        pass
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            path = Path(record.get("path", ""))
+            if "error" in record:
+                skipped.append((path, record["error"]))
+                continue
+            results.append(_parsed_file_from_record(path, record))
 
         return ParseResult(files=results, skipped=skipped)
 

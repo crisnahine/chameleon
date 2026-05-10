@@ -20,34 +20,45 @@ from pathlib import Path
 # without explicit user-supplied paths_glob.
 REPO_SIZE_GUARD = 50_000
 
-# Paths skipped entirely from clustering (architecture's exclusion list +
-# common build/vendor patterns).
-EXCLUDE_FROM_CLUSTERING_PATTERNS = (
-    "**/node_modules/**",
-    "**/vendor/**",
-    "**/dist/**",
-    "**/build/**",
-    "**/.next/**",
-    "**/.nuxt/**",
-    "**/.turbo/**",
-    "**/.cache/**",
-    "**/.parcel-cache/**",
-    "**/__generated__/**",
-    "**/generated/**",
-    "**/.git/**",
-    "**/storage/**",
-    "**/tmp/**",
-    "**/coverage/**",
-    "**/.coverage/**",
-    "**/.pytest_cache/**",
-    "**/.ruff_cache/**",
-    "**/.mypy_cache/**",
-    "**/.venv/**",
-    "**/venv/**",
-    "**/__pycache__/**",
-    "**/.idea/**",
-    "**/.vscode/**",
-    "**/.DS_Store",
+# Directory NAMES that, if present anywhere in a file's path components,
+# disqualify the file from clustering. Matched component-by-component, not
+# as glob — this is more reliable than fnmatch globs for `**/x/**` semantics
+# (fnmatch's `*` matches `/`, so `**/node_modules/**` doesn't anchor at root).
+EXCLUDE_FROM_CLUSTERING_DIRS = frozenset({
+    "node_modules",
+    "vendor",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".cache",
+    ".parcel-cache",
+    "__generated__",
+    "generated",
+    ".git",
+    "storage",
+    "tmp",
+    "coverage",
+    ".coverage",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".mypy_cache",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".idea",
+    ".vscode",
+    ".chameleon",  # never analyze our own profile dir
+})
+
+# Filename patterns to exclude (handle leaf-name globs separately).
+EXCLUDE_FROM_CLUSTERING_FILE_GLOBS = (
+    ".DS_Store",
+    "*.min.js",
+    "*.min.css",
+    "*.bundle.js",
+    "*.lock",
 )
 
 # Paths INCLUDED in clustering but EXCLUDED from canonical pool.
@@ -87,8 +98,22 @@ class TooManyFilesError(Exception):
 
 
 def _matches_any(rel_path: str, patterns: tuple[str, ...]) -> bool:
-    """Return True if rel_path matches any glob pattern."""
+    """Return True if rel_path matches any fnmatch pattern.
+
+    Use this for canonical-pool exclusions (where fnmatch semantics work).
+    For directory-component matching, use _has_excluded_component instead.
+    """
     return any(fnmatch.fnmatch(rel_path, pat) for pat in patterns)
+
+
+def _has_excluded_component(rel_path: Path, excluded_dirs: frozenset[str]) -> bool:
+    """True if any path component is in the excluded directory denylist."""
+    return any(part in excluded_dirs for part in rel_path.parts)
+
+
+def _matches_filename_glob(name: str, patterns: tuple[str, ...]) -> bool:
+    """True if the bare filename matches any leaf-name glob."""
+    return any(fnmatch.fnmatch(name, pat) for pat in patterns)
 
 
 def discover_files(
@@ -130,16 +155,18 @@ def discover_files(
     else:
         candidates = list(repo_root.glob(target_glob))
 
-    # Apply path-based exclusions
+    # Apply path-based exclusions (component-based, not fnmatch-glob)
     filtered: list[Path] = []
     for p in candidates:
         if not p.is_file():
             continue
         try:
-            rel = str(p.relative_to(repo_root))
+            rel = p.relative_to(repo_root)
         except ValueError:
             continue
-        if _matches_any(rel, EXCLUDE_FROM_CLUSTERING_PATTERNS):
+        if _has_excluded_component(rel, EXCLUDE_FROM_CLUSTERING_DIRS):
+            continue
+        if _matches_filename_glob(p.name, EXCLUDE_FROM_CLUSTERING_FILE_GLOBS):
             continue
         filtered.append(p)
 

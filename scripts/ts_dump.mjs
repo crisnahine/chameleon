@@ -37,11 +37,21 @@
 
 import * as readline from "node:readline";
 import * as fs from "node:fs";
+import * as path from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 
-// Resolve TypeScript from the Node module path (mcp/node_modules/typescript)
-// Phase 2A uses package-managed install (cd mcp && npm install).
+// Resolve TypeScript from mcp/node_modules/typescript (sibling-up of this script).
+// Node ESM doesn't honor cwd-based bare-import resolution, so we use createRequire
+// rooted at mcp/package.json to locate the dep.
+//
+// Layout assumption: chameleon/scripts/ts_dump.mjs + chameleon/mcp/node_modules/.
+// Phase 2A: package-managed install via `cd mcp && npm install`.
 // Phase 4 will switch to vendored + checksum-verified.
-const ts = await import("typescript").then((m) => m.default);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const mcpPackageJson = path.resolve(__dirname, "..", "mcp", "package.json");
+const require = createRequire(mcpPackageJson);
+const ts = require("typescript");
 
 const MAX_AST_NODES = 50_000;
 const MAX_PARSE_DIAGNOSTICS = 20;

@@ -180,7 +180,9 @@ def bootstrap_repo(
         )
 
     # 3. Parse via ts_dump.mjs subprocess
-    parse_result = extractor.parse_repo(repo_root, glob=paths_glob or "**/*.{ts,tsx,js,jsx,mjs,cjs}")
+    # Pass the discovered file list so bootstrap/discovery.py exclusions are
+    # honored (don't re-glob inside the extractor).
+    parse_result = extractor.parse_repo(repo_root, paths=candidates)
     files_skipped_parse = len(parse_result.skipped)
 
     # 4. Cluster by signature
