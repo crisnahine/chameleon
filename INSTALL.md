@@ -20,18 +20,22 @@ git clone https://github.com/crisnahine/chameleon
 cd chameleon
 ```
 
-Build the MCP server's Python venv:
+Build the MCP server's Python venv and install the TypeScript extractor's Node dependencies:
 
 ```bash
 cd mcp
-uv sync
+uv sync          # Python venv for the MCP server
+npm install      # Node deps for the TypeScript AST extractor
 cd ..
 ```
 
-Verify the entry point:
+> `npm install` is required even if you only plan to use Ruby support — it installs the `typescript` package that `scripts/ts_dump.mjs` resolves via `require("typescript")`. Skipping it makes TS bootstrap fail at runtime.
+
+Verify the entry point and Node deps:
 
 ```bash
-ls -l mcp/.venv/bin/chameleon-mcp
+ls -l mcp/.venv/bin/chameleon-mcp        # Python entry point
+ls -d mcp/node_modules/typescript        # TypeScript package
 ```
 
 Done. Skip ahead to **Wiring chameleon into Claude Code**.
@@ -122,6 +126,7 @@ cd ~/path/to/chameleon
 git pull
 cd mcp
 uv sync
+npm install      # in case the TypeScript pin changed
 ```
 
 Restart Claude Code if it's running.
@@ -152,6 +157,10 @@ rm -rf ~/.local/share/chameleon
 ### "chameleon-mcp not found" or MCP server doesn't connect
 
 Build the venv: `cd mcp && uv sync`.
+
+### TypeScript bootstrap fails with `Cannot find module 'typescript'`
+
+The Node deps were never installed. Run `cd mcp && npm install`, then retry `/chameleon-init`.
 
 ### `detect_repo` returns `trust_state: untrusted` after `/chameleon-trust`
 

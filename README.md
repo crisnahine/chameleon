@@ -30,9 +30,11 @@ chameleon clusters your actual code patterns (via AST + statistical analysis), c
 
 See [INSTALL.md](INSTALL.md) for the full setup. Quick path on macOS / Linux:
 
+**Prerequisites:** [Claude Code](https://docs.claude.com/claude-code) 2.x, [uv](https://docs.astral.sh/uv/), Node.js ≥ 20, Ruby ≥ 3.0 with the `prism` gem (Ruby support only; `prism` ships by default in Ruby ≥ 3.3).
+
 ```sh
 git clone https://github.com/crisnahine/chameleon
-cd chameleon/mcp && uv sync && cd ..
+cd chameleon/mcp && uv sync && npm install && cd ..
 claude --plugin-dir "$(pwd)"
 ```
 
