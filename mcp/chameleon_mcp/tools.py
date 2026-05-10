@@ -146,22 +146,29 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
 
 
 def bootstrap_repo(path: str, mode: str = "full", paths_glob: str | None = None) -> dict:
-    """First-time analysis: AST scan + interview + atomic profile commit."""
-    # TODO Phase 2: detect language (TS-only in v1.0)
-    # TODO Phase 2: detect workspace structure (pnpm/yarn/lerna/turbo/nx)
-    # TODO Phase 2: AST scan with sampling for repos >500 files
-    # TODO Phase 2: 50k file ceiling enforced post-glob (Round 2 cost adversary)
-    # TODO Phase 2: canonical injection scan (Round 4 critical security mitigation)
-    # TODO Phase 2: secret scan via vendored detect-secrets rules
-    # TODO Phase 2: interactive interview (≤3 user-facing prompts)
-    # TODO Phase 2: atomic transaction commit
-    return _envelope({
-        "status": "stub",
-        "archetypes_detected": 0,
-        "rules_extracted": 0,
-        "idioms_collected": 0,
-        "cost_estimate_usd": 0.0,
-    })
+    """First-time analysis: AST scan + (Phase 2D interview) + atomic profile commit.
+
+    Phase 2B: non-interactive bootstrap producing a working profile with
+    auto-generated archetype names (cluster-<hash>). Phase 2D wraps this
+    with the ≤3-prompt interview to rename archetypes and collect idioms.
+    """
+    from pathlib import Path
+
+    from chameleon_mcp.bootstrap.orchestrator import bootstrap_repo as _bootstrap
+
+    repo_root = Path(path).expanduser().resolve()
+    if not repo_root.is_dir():
+        return _envelope({
+            "status": "failed",
+            "error": f"path is not a directory: {path}",
+        })
+
+    # mode kept for forward-compat (Phase 2D adds "interview" mode); Phase 2B
+    # always runs non-interactively.
+    del mode
+
+    report = _bootstrap(repo_root, paths_glob=paths_glob)
+    return _envelope(report.to_dict())
 
 
 def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
