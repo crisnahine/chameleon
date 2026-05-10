@@ -1,26 +1,48 @@
 ---
 name: chameleon-refresh
-description: Use when the user explicitly invokes /chameleon-refresh to re-analyze the current repo and update the chameleon profile
+description: Use when the user explicitly invokes /chameleon-refresh to re-analyze the current repo and update the chameleon profile after drift
 ---
 
 # /chameleon-refresh
 
-> **Phase 1B placeholder.** Full skill body to be authored in Phase 3.
+Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Uses incremental clustering: cached signatures (in `drift.db`) reused for unchanged files; only changed files re-parsed.
 
-## Purpose
+## When to use
 
-Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Uses the recompute-all-from-cached-signatures incremental algorithm: cached signatures reused for unchanged files, recomputed only for changed files, full re-cluster from current sig set.
+- The user explicitly invokes `/chameleon-refresh` (or `/cham-refresh`)
+- `using-chameleon` primer surfaces `days_since_refresh > 90` and the user asks for a refresh
+- Reviewer feedback indicates the profile is stale (suggesting many recent edits diverge from the canonical)
+- Material changes to the codebase: significant refactors, framework upgrades, archetype boundaries shifted
 
-## Implementation status
+## When NOT to use
 
-- [ ] Phase 2: incremental algorithm + drift.db cache invalidation triggers
-- [ ] Phase 3: skill body via RED-GREEN-REFACTOR
+- The first time a repo has chameleon — that's `/chameleon-init`. Refresh requires an existing profile.
+- For capturing missed patterns — that's `/chameleon-teach`. Refresh re-derives auto-detectable dimensions only.
 
-## Design specification
+## The flow
 
-See `ARCHITECTURE.md` "Cluster signature function" → "Incremental algorithm" subsection.
+1. Confirm `.chameleon/profile.json` exists. If missing, suggest `/chameleon-init`.
+2. Call `chameleon-mcp::refresh_repo(repo=<absolute path>)`.
+3. The tool acquires an OS-level flock on `.chameleon/.refresh.lock` (per-PID + start timestamp; concurrent invocations fail with stale-lock detection at 1 hour).
+4. Re-discovers files (with same exclusions as init), re-parses changed files via cached `(path, content_sha256)` lookup in `drift.db`.
+5. Re-clusters from current signatures. New archetypes may appear; old ones may disappear.
+6. Atomic profile commit — old profile remains valid until `COMMITTED` sentinel is rolled in.
+7. Reports diff: archetypes added/removed, canonicals updated, file count delta.
 
-## Slash command surface
+## Trust + material change
 
-- `/chameleon-refresh` — full re-analysis with consent prompt for drift summary
-- `/cham-refresh` — short alias
+If the new profile's `profile.json` SHA-256 differs from the trusted hash, trust is automatically invalidated. The user must re-run `/chameleon-trust`.
+
+This is intentional — you can't safely keep using a stale trust grant after the profile materially changed.
+
+## Common failure modes
+
+| Failure | Action |
+|---|---|
+| `lock_held` | Another `/chameleon-refresh` is in progress (PID + timestamp shown). Wait or kill that PID. |
+| `failed_too_many_files` | Repo grew past 50k file ceiling since init. Ask user for `paths_glob`. |
+| `archetypes_changed` is large (>50%) | Surface as warning: "X archetypes added, Y removed; review profile.summary.md before /chameleon-trust." This is unusual — probably a major refactor or the previous profile was wrong. |
+
+## Phase 2D scope
+
+Phase 2D simplification: `refresh_repo` currently re-runs the full bootstrap (no real incremental algorithm yet). The `drift.db` cache is populated but not consulted on refresh. Phase 4-end implements true incremental refresh via `(path, content_sha256)` cache hits.

@@ -18,8 +18,10 @@ Per ARCHITECTURE.md "Bootstrap mechanism" + "Hook stack".
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -149,23 +151,91 @@ def preflight_and_advise() -> int:
 
 
 def posttool_recorder() -> int:
-    """PostToolUse Bash: HMAC-signed exec log. Phase 4-end implementation."""
-    # Read input but don't act yet (avoid breaking the hook chain).
+    """PostToolUse Bash: HMAC-signed exec log."""
     try:
-        sys.stdin.read()
+        payload = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, ValueError):
+        _emit({})
+        return 0
+
+    # Extract the bits we care about
+    tool_input = payload.get("tool_input", {})
+    tool_response = payload.get("tool_response", {})
+    command = tool_input.get("command", "")
+    session_id = payload.get("session_id", "unknown")
+    exit_code = tool_response.get("returnCode") if isinstance(tool_response, dict) else None
+
+    # Compute repo_id from cwd if available; else use session_id as the bucket
+    cwd = Path(os.environ.get("CLAUDE_CWD") or os.getcwd()).resolve()
+    repo_id = hashlib.sha256(str(cwd).encode("utf-8")).hexdigest()
+
+    try:
+        from chameleon_mcp.exec_log import append_exec_log
+
+        append_exec_log(
+            repo_id=repo_id,
+            session_id=session_id,
+            command=command,
+            exit_code=int(exit_code) if exit_code is not None else -1,
+        )
     except Exception:
+        # Fail-open per Round 4 — never break the hook chain on logging errors
         pass
+
     _emit({})
     return 0
 
 
+# Frustration phrases that suggest the user is unhappy with chameleon's
+# latency or pattern advice. Surfaced as a one-line reminder via
+# additionalContext.
+_FRUSTRATION_PATTERNS = (
+    re.compile(r"\b(ugh|argh|wtf|stop|nope|wait)\b", re.IGNORECASE),
+    re.compile(r"this isn'?t right", re.IGNORECASE),
+    re.compile(r"don'?t (do|use|inject) (that|this)", re.IGNORECASE),
+    re.compile(r"chameleon\s+is\s+(slow|wrong|broken)", re.IGNORECASE),
+)
+
+
 def callout_detector() -> int:
-    """UserPromptSubmit: frustration phrase reminder. Phase 4-end implementation."""
+    """UserPromptSubmit: frustration phrase reminder.
+
+    On detected frustration during a chameleon-active session, surface a
+    one-line hint about /chameleon-disable, /chameleon-pause-15m, and
+    /chameleon-teach as actionable next steps.
+    """
     try:
-        sys.stdin.read()
-    except Exception:
-        pass
-    _emit({})
+        payload = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, ValueError):
+        _emit({})
+        return 0
+
+    user_prompt = payload.get("user_prompt", "") or payload.get("prompt", "")
+    if not user_prompt:
+        _emit({})
+        return 0
+
+    if not any(pattern.search(user_prompt) for pattern in _FRUSTRATION_PATTERNS):
+        _emit({})
+        return 0
+
+    # Frustration detected. Emit a brief hint as additionalContext.
+    hint = (
+        "<chameleon-context>\n"
+        "[chameleon: detected frustration phrase]\n"
+        "If chameleon is the issue, options:\n"
+        "  /chameleon-disable      — suppress for the rest of this session\n"
+        "  /chameleon-pause-15m    — pause for 15 minutes (auto-resume)\n"
+        "  /chameleon-teach <pattern>  — capture the missed pattern as an idiom\n"
+        "If chameleon is unrelated, ignore this note.\n"
+        "</chameleon-context>"
+    )
+    _emit({
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": hint,
+        }
+    })
     return 0
 
 

@@ -1,37 +1,65 @@
 ---
 name: chameleon-status
-description: Use when the user explicitly invokes /chameleon-status to view profile state, drift, value attribution, and plugin health
+description: Use when the user explicitly invokes /chameleon-status to view profile state, drift indicators, value attribution, and plugin health
 ---
 
 # /chameleon-status
 
-> **Phase 1B placeholder.** Full skill body to be authored in Phase 3.
+Surface the current state of chameleon for the active repo. The user-facing observability surface — like `git status` for chameleon profiles.
 
-## Purpose
+## What it reports
 
-Surface to the user:
-- Active profile summary (archetype count, last refresh, trust state)
-- Drift indicators (days_since_refresh, observed confidence trend)
-- Value attribution (edits matched archetype, deviations flagged, corrections via `/chameleon-teach`)
-- Plugin health (recent MCP error rate, fail-open rate, hook latency p99)
+1. **Profile summary**
+   - Archetype count + names
+   - Last refresh date (from `profile.json#created_at`)
+   - Trust state (per-user)
+   - Schema version
+2. **Drift indicators**
+   - `days_since_refresh`
+   - Observed confidence trend (Phase 4: from `value_attrib.db`)
+   - Recommended action (refresh? teach?)
+3. **Value attribution** (Phase 4)
+   - Edits matching archetype (last 30 sessions)
+   - Deviations flagged
+   - Corrections via `/chameleon-teach`
+4. **Plugin health** (Phase 4)
+   - Recent MCP error rate
+   - Hook latency p99
+   - Fail-open rate
 
-## Implementation status
+## The flow
 
-- [ ] Phase 2: read drift.db and value_attrib.db
-- [ ] Phase 3: skill body via RED-GREEN-REFACTOR
-- [ ] Phase 4: `--health` flag (Round 5 SRE recommendation #2)
-- [ ] Phase 4: `--diff` flag (profile-poisoning scanner CI gate)
+1. Read `.chameleon/profile.json` and friends via `load_profile_dir()` (Phase 1C double-fstat pattern).
+2. Read `drift.db` for `days_since_refresh` and confidence trend (Phase 4).
+3. Read `value_attrib.db` for edit attribution (Phase 4).
+4. Format output for user terminal display.
 
-## Design specification
+## Output format
 
-See `ARCHITECTURE.md`:
-- "Performance characteristics" — observability metrics
-- "Failure mode runbook" — health diagnostic commands
-- "SQLite schemas" — `sessions` table in value_attrib.db
+```
+chameleon profile: empire-flippers/client
+  Schema version:    4 (engine min: 0.1.0)
+  Last refresh:      47 days ago
+  Trust state:       trusted (granted 2026-05-10 by crisn)
+  Archetypes:        7
+    - cluster-011440424e706e13 (9 files): components/base
+    - cluster-06395b2e0fffcad7 (5 files): admin/users queries
+    [...]
+
+Recent activity (Phase 4):
+  Last 30 sessions:  142 edits matched archetype, 11 deviations flagged
+  Corrections:       3 idioms added via /chameleon-teach
+  MCP errors:        0 (last 24h)
+  p99 hook latency:  890ms (last 24h)
+```
+
+## Out of scope (Phase 4-end)
+
+- `--health` flag with operator-grade SLO compliance dashboard (per Round 5 SRE recommendation)
+- `--diff` flag with profile-poisoning scan + semantic diff for PR review
+- `--json` flag for CI integration (machine-readable output)
 
 ## Slash command surface
 
-- `/chameleon-status` — default summary view
-- `/chameleon-status --health` — operator diagnostic (Phase 4)
-- `/chameleon-status --diff` — semantic diff for PR review (Phase 4)
+- `/chameleon-status` — default summary
 - `/cham-status` — short alias

@@ -5,27 +5,42 @@ description: Use when the user explicitly invokes /chameleon-disable to suppress
 
 # /chameleon-disable
 
-> **Phase 1B placeholder.** Full skill body to be authored in Phase 3.
+Disable chameleon's advisory injections for the current session. Hook stack still fires (safety hard-deny preserved) but no `<chameleon-context>` content is injected.
 
-## Purpose
+## When to use
 
-Disable chameleon's advisory injections for the current session only. Intended as a one-keystroke escape when chameleon's latency or pattern advice is unwelcome (e.g., experimental work, urgent fix).
+- User runs `/chameleon-disable` (or `/cham-disable`) explicitly
+- User expresses frustration with chameleon's latency or pattern advice (the `callout-detector` hook surfaces this command on detected frustration)
+- User is doing experimental / one-off work where conformance pressure is unwelcome
 
-For per-repo permanent disable: create `.chameleon/.skip` file. For global disable: set `CHAMELEON_DISABLE=1`.
+## Opt-out hierarchy
 
-## Implementation status
+```
+Most-permanent →    .chameleon/.skip (per-repo, all users, committed → team-wide)
+                ↓   CHAMELEON_DISABLE=1   (per-user globally; in shell rc)
+                ↓   /chameleon-disable    (this session only)
+                ↓   /chameleon-pause-15m  (next 15 minutes)
+Most-temporary
+```
 
-- [ ] Phase 2: session-scope state file in `${PLUGIN_DATA}/<repo_id>/.session_disabled`
-- [ ] Phase 3: skill body via RED-GREEN-REFACTOR
-- [ ] Phase 4: callout-detector integration — surface this command on detected frustration
+Use the most-temporary option that solves the immediate need. Revert by:
+- `/chameleon-disable` → starts new Claude Code session
+- `/chameleon-pause-15m` → expires automatically
+- `CHAMELEON_DISABLE=1` → unset the env var
+- `.chameleon/.skip` → remove the file from the repo
 
-## Design specification
+## The flow
 
-See `ARCHITECTURE.md`:
-- "Plugin coexistence" — opt-out hierarchy (.skip file, env var, session-scope, temporary)
-- "Failure mode runbook" — escape hatches discoverable in moments of frustration
+1. Confirm chameleon is currently active in this session.
+2. Write a session-scope marker at `${PLUGIN_DATA}/<repo_id>/.session_disabled` (Phase 4 implementation; Phase 2D ships this skill but the actual session-disable handling is Phase 4-end).
+3. The PreToolUse hook checks for this marker before injecting; if present, skips.
+4. Confirm to user: "chameleon disabled for this session. SessionStart primer will re-enable on next session unless you set CHAMELEON_DISABLE=1 globally or .chameleon/.skip in this repo."
 
-## Slash command surface
+## Don't suggest disable for the wrong problem
 
-- `/chameleon-disable` — disable for rest of session
-- `/cham-disable` — short alias
+- Pattern advice is wrong → use `/chameleon-teach` instead
+- Latency is too high → check `/chameleon-status --health` (Phase 4)
+- One archetype's canonical is bad → edit `.chameleon/canonicals.json` directly OR use `/chameleon-refresh`
+- Profile drift is causing churn → `/chameleon-refresh`
+
+Disable is the escape hatch for situations where chameleon legitimately isn't useful in the moment, not a tool for fixing other problems.

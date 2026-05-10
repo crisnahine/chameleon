@@ -5,27 +5,37 @@ description: Use when the user explicitly invokes /chameleon-pause-15m to tempor
 
 # /chameleon-pause-15m
 
-> **Phase 1B placeholder.** Full skill body to be authored in Phase 3.
+Pause chameleon's advisory injections for exactly 15 minutes. Auto-resumes after the timer expires. Use when latency is unwelcome for a short focused window (e.g., live coding, code review walkthrough, demo).
 
-## Purpose
+## When to use
 
-Pause chameleon's advisory injections for exactly 15 minutes. Auto-resumes after the timer expires. Intended for short focused work where the per-edit MCP latency is unwelcome (e.g., live coding session, code review walkthrough).
+- User is presenting / demoing and wants minimal hook latency
+- User is doing rapid scratch experimentation in a TS repo
+- User wants to compare AI output with vs without chameleon active over a short window
+- Frustration detected → callout-detector hook surfaces this as a less-permanent option than `/chameleon-disable`
+
+## When NOT to use
+
+- The frustration is about pattern advice quality → `/chameleon-teach` to capture the missed pattern
+- The frustration is about session-long latency → `/chameleon-disable` (session-scope) or check `/chameleon-status --health`
+
+## The flow
+
+1. Compute pause expiry: `now + 15 minutes`.
+2. Write timestamp to `${PLUGIN_DATA}/<repo_id>/.pause_until` (ISO 8601 UTC).
+3. PreToolUse hook checks `.pause_until`:
+   - If file missing or expired → inject normally
+   - If timestamp in future → skip injection, log to `events.jsonl`
+4. Confirm to user: "chameleon paused for 15 minutes (until <expiry-time>). Will auto-resume."
+
+## Opt-out hierarchy
+
+See `chameleon-disable` skill for the full hierarchy. `pause-15m` is the most-temporary option.
 
 ## Implementation status
 
-- [ ] Phase 2: timestamp file at `${PLUGIN_DATA}/<repo_id>/.pause_until` (ISO 8601 UTC)
-- [ ] Phase 3: skill body via RED-GREEN-REFACTOR
-- [ ] Phase 4: callout-detector integration — surface this command on detected frustration
+Phase 2D ships this skill. Hook integration that respects `.pause_until` is Phase 4-end work.
 
-## Design specification
+## Phase 1.5+ variants
 
-See `ARCHITECTURE.md` "Plugin coexistence" — opt-out hierarchy.
-
-## Slash command surface
-
-- `/chameleon-pause-15m` — pause for 15 minutes
-- `/cham-pause-15m` — short alias
-
-## Future variants (out of scope for v1)
-
-If `15m` is too short or too long for some users, future v1.5+ may add `/chameleon-pause-1h`, `/chameleon-pause-until-restart`. Defer based on observed user behavior.
+If `15m` is the wrong duration for some users, future v1.5+ may add `/chameleon-pause-1h` and `/chameleon-pause-until-restart`. Defer based on observed user behavior.
