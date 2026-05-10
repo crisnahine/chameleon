@@ -378,17 +378,20 @@ def get_rules(repo: str, archetype: str | None = None) -> dict:
 
 
 def lint_file(repo: str, archetype: str, content: str) -> dict:
-    """Validate file content against archetype's rules.
+    """Stub. Real lint engine ships in Phase 4 (AST query against the
+    canonical's normative shape).
 
-    Phase 2D simplification: returns size-bounded basic violation set.
-    The MCP envelope's "truncated" flag fires when content exceeds the cap.
-    Phase 4 adds real lint engine (AST query against canonical's normative shape).
+    The response carries `"stub": true` so callers don't treat the empty
+    violations list as a passing lint. Use `get_pattern_context` for the
+    actual archetype guidance until the real linter lands.
     """
     del repo, archetype
     # Cap content at 100 KB per architecture
     truncated = len(content) > 100_000
     return _envelope(
         {
+            "stub": True,
+            "stub_reason": "lint engine is Phase 4; v0.2 returns no violations regardless of input",
             "violations": [],
             "canonical_confidence": 0.0,
             "unparseable_regions": [],
@@ -458,10 +461,13 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
 
     Phase 2D: simplification — call bootstrap_repo on the repo's root.
     Phase 4 implements true incremental refresh + flock-protected updates.
+
+    The `force` parameter is currently a no-op: refresh_repo always re-runs
+    the full bootstrap pipeline in v0.2 (drift detection is the user's
+    decision to invoke). When Phase 4 adds incremental refresh, `force=True`
+    will bypass the incremental short-circuit.
     """
-    # Phase 2D: caller is expected to pass an absolute path as `repo` since
-    # we don't yet have an index.db that maps repo_id → path.
-    del force
+    del force  # accepted for forward-compat; see docstring
     repo_path = Path(repo)
     if not repo_path.is_absolute() or not repo_path.is_dir():
         return _envelope({
@@ -495,8 +501,11 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
     """
     from chameleon_mcp.profile.trust import plugin_data_dir, trust_state_for
 
-    if limit <= 0 or limit > 1000:
-        limit = 100
+    if not isinstance(limit, int) or limit <= 0 or limit > 1000:
+        return _envelope({
+            "status": "failed",
+            "error": "limit must be an integer in 1..1000",
+        })
 
     base = plugin_data_dir()
     if not base.is_dir():
@@ -512,7 +521,10 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
         try:
             start = all_repo_ids.index(cursor)
         except ValueError:
-            start = 0
+            return _envelope({
+                "status": "failed",
+                "error": f"unknown cursor {cursor!r}; pass the next_cursor value from a prior page",
+            })
     else:
         start = 0
 
@@ -617,12 +629,22 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
 def teach_profile(repo: str, feedback: str) -> dict:
     """Append a captured idiom to .chameleon/idioms.md.
 
-    Phase 2D: simple append-as-active-idiom. Phase 4 adds:
-    - feedback sanitization (strip ANSI/zero-width)
-    - 50KB cap on idioms.md
-    - structured idiom entries with deprecation tracking
-    - material-change re-prompt for trust
+    Sanitization is delegated to `sanitize_for_chameleon_context` (ANSI,
+    zero-width, NFC, tag-boundary). On top of that we:
+
+    - Reject empty / whitespace-only feedback (no orphan idioms).
+    - Honor a user-supplied `### slug` header instead of always prepending
+      an auto-generated one.
+    - Escape level-1 and level-2 ATX headings (`#` / `##`) in the body so a
+      `## deprecated` line in feedback can't fork idioms.md's section
+      structure.
+    - Strip the `_(no idioms yet …)_` placeholder the first time an active
+      idiom is added.
+    - Hold an advisory flock around the read-modify-write so concurrent
+      `/chameleon-teach` calls don't lose idioms.
     """
+    from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+
     repo_path = Path(repo).expanduser()
     if not repo_path.is_absolute() or not repo_path.is_dir():
         return _envelope({"status": "failed", "error": "expected absolute repo path"})
@@ -631,28 +653,81 @@ def teach_profile(repo: str, feedback: str) -> dict:
     if not idioms_path.parent.exists():
         return _envelope({"status": "failed", "error": "no profile in this repo (run /chameleon-init)"})
 
-    # Strip ANSI escapes and zero-width chars (Phase 2D minimal sanitization)
     sanitized = _sanitize_user_input(feedback)
+    if not sanitized.strip():
+        return _envelope({"status": "failed", "error": "feedback is empty after sanitization"})
     if len(sanitized) > 50_000:
         return _envelope({"status": "failed", "error": "feedback exceeds 50KB cap"})
 
-    # Append as a new active idiom block
-    timestamp = time.strftime("%Y-%m-%d", time.gmtime())
-    addition = f"\n### idiom-{timestamp}-{int(time.time())}\nStatus: active (added {timestamp})\n{sanitized}\n"
+    body = _escape_markdown_section_headings(sanitized)
 
-    # Read current content; insert under "## active" header
-    current = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else "# idioms\n\n## active\n\n## deprecated\n"
-    if "## active" in current:
-        new_content = current.replace("## active\n", f"## active\n{addition}", 1)
+    timestamp = time.strftime("%Y-%m-%d", time.gmtime())
+    if body.lstrip().startswith("### "):
+        # User supplied a slug — use as-is.
+        addition = f"\n{body.rstrip()}\n"
     else:
-        new_content = current + addition
-    idioms_path.write_text(new_content, encoding="utf-8")
+        slug = f"idiom-{timestamp}-{int(time.time())}"
+        addition = f"\n### {slug}\nStatus: active (added {timestamp})\n{body}\n"
+
+    lock_path = idioms_path.parent / ".idioms.lock"
+    try:
+        with acquire_advisory_lock(lock_path):
+            current = (
+                idioms_path.read_text(encoding="utf-8")
+                if idioms_path.exists()
+                else "# idioms\n\n## active\n\n## deprecated\n"
+            )
+            # Drop the "(no idioms yet …)" placeholder on first add.
+            current = current.replace(
+                "_(no idioms yet — run /chameleon-teach to capture team conventions)_\n\n",
+                "",
+                1,
+            )
+            if "## active" in current:
+                new_content = current.replace("## active\n", f"## active\n{addition}", 1)
+            else:
+                new_content = current + addition
+            idioms_path.write_text(new_content, encoding="utf-8")
+    except LockHeldError as e:
+        return _envelope({
+            "status": "failed",
+            "error": (
+                f"another /chameleon-teach is in progress (PID {e.holder_pid}); "
+                "retry shortly"
+            ),
+        })
 
     return _envelope({
         "status": "success",
         "idioms_added": 1,
         "idioms_deprecated": 0,
     })
+
+
+def _escape_markdown_section_headings(text: str) -> str:
+    """Escape `#` / `##` ATX headings at start of line.
+
+    idioms.md uses `## active` / `## deprecated` as section markers; an
+    unsanitized `## deprecated` line in a user idiom body would otherwise
+    split the active section. CommonMark renders `\\##` as literal text.
+
+    Only levels 1 and 2 are escaped — `###`, `####`, … are valid idiom
+    sub-headers and stay untouched.
+    """
+    lines = text.split("\n")
+    out: list[str] = []
+    for line in lines:
+        stripped = line.lstrip()
+        indent = line[: len(line) - len(stripped)]
+        if (
+            stripped.startswith("## ")
+            or stripped.startswith("# ")
+            or stripped in ("##", "#")
+        ):
+            out.append(f"{indent}\\{stripped}")
+        else:
+            out.append(line)
+    return "\n".join(out)
 
 
 def disable_session(repo: str, session_id: str) -> dict:
@@ -719,12 +794,18 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     from chameleon_mcp.profile.trust import grant_trust
 
     repo_path = Path(repo).expanduser()
-    if not repo_path.is_absolute() or not repo_path.is_dir():
-        return _envelope({"status": "failed", "error": "expected absolute repo path"})
+    if not repo_path.is_absolute():
+        return _envelope({"status": "failed", "error": f"repo path must be absolute: {repo!r}"})
+    if not repo_path.exists():
+        return _envelope({"status": "failed", "error": f"repo path does not exist: {repo!r}"})
+    if not repo_path.is_dir():
+        return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
 
     profile_dir = repo_path / ".chameleon"
+    if not profile_dir.is_dir():
+        return _envelope({"status": "failed", "error": "no .chameleon/ directory (run /chameleon-init first)"})
     if not (profile_dir / "profile.json").is_file():
-        return _envelope({"status": "failed", "error": "no profile to trust (run /chameleon-init first)"})
+        return _envelope({"status": "failed", "error": "no profile.json in .chameleon/ (run /chameleon-init first)"})
 
     repo_id = _compute_repo_id(repo_path)
     expected_short = repo_id[:8]

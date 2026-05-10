@@ -4,6 +4,36 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-05-11
+
+### Fixed (audit-driven)
+
+External audit ([chameleon-test-report.md](https://github.com/crisnahine/chameleon/blob/main/docs/chameleon-test-report.md)) surfaced 10 bugs; two independent verification agents confirmed them. This release addresses all of them.
+
+- **🔴 Critical — `refresh_repo` no longer wipes user idioms.** Bootstrap previously wrote an empty `idioms.md` template inside the atomic transaction on every refresh, silently destroying every `/chameleon-teach` capture. The orchestrator now reads the existing `idioms.md` before the transaction and re-emits its content into the commit, preserving Tier 2 dimensions across refreshes.
+- **🟠 High security — `profile.summary.md` now surfaces active idiom bodies.** The trust gate instructs reviewers to read `profile.summary.md` before granting trust; previously the Idioms section was a hardcoded placeholder, so poisoned idioms reached the model context unreviewed. `_build_summary_md` now inlines the `## active` section verbatim.
+- **🟠 High — `teach_profile` validation cluster:**
+  - Empty / whitespace-only feedback is rejected instead of creating orphan idiom entries.
+  - User-supplied `### slug` headers are honored as-is; the auto-wrapper fires only when no slug is present.
+  - Level-1 and level-2 ATX headings in feedback bodies are escaped (`\#`, `\##`) so a `## deprecated` line in user input can no longer fork `idioms.md`'s section structure.
+  - The `_(no idioms yet …)_` placeholder is dropped on first idiom add.
+  - The read-modify-write is now wrapped in an advisory flock so concurrent `/chameleon-teach` calls don't lose idioms.
+- **🟡 Medium (schema-breaking) — `path_pattern_bucket_for` no longer collapses `app/` and `spec/` clusters.** Prior versions used `parts[-3:-1]`, which mapped `app/controllers/api/v1/foo.rb` and `spec/controllers/api/v1/foo_spec.rb` into the same `"api/v1"` bucket; `get_archetype`'s `cluster_size` tiebreak then routinely surfaced spec clusters for app/ files. The new bucketing prepends the top-level segment (`app/api/v1` vs `spec/api/v1`), restoring discriminative path patterns. Bootstrap also now relativizes file paths before bucketing so cluster patterns match what the runtime archetype lookup computes.
+- **🟡 Medium — `list_profiles` validates inputs.** `limit ≤ 0`, `limit > 1000`, and unknown `cursor` values now return failed envelopes with explicit error messages instead of silently coercing.
+- **🟡 Medium — `trust_profile` differentiates path errors.** "must be absolute" / "does not exist" / "is not a directory" / "no .chameleon/" / "no profile.json" are now distinct errors instead of the previous catch-all "expected absolute repo path".
+- **🟢 `lint_file` envelope carries `"stub": true`** + `stub_reason` so callers don't treat the always-empty violations list as a passing lint. Real lint engine ships in Phase 4.
+- **🟢 `refresh_repo.force`** is now documented as a forward-compat no-op in the docstring (was silently discarded).
+- **🟢 Helper `_resolve_repo_root_status`** added alongside `_resolve_repo_root_by_id` so future tools can distinguish "untrusted/unknown repo_id" from "trust record present but repo_root gone."
+
+### Breaking
+
+- `PROFILE_SCHEMA_VERSION` bumped from 4 → 5. The `paths_pattern` field in `archetypes.json` is no longer compatible with v4 profiles. The loader refuses to load v0.2 profiles on engines older than 0.2.0; engines ≥ 0.2.0 can run `/chameleon-refresh` to rebuild a v5 profile. Existing trust grants need to be re-granted after re-bootstrap because the rebuilt profile has a new SHA.
+- `ENGINE_MIN_VERSION` bumped from `0.1.0` → `0.2.0`; `mcp/chameleon_mcp/__version__` bumped to `0.2.0`.
+
+### Added
+
+- `tests/v0_2_regression_test.py` — 25 assertions covering every fix above. Each assertion fails on v0.1.1 source and passes on v0.2.0.
+
 ## [0.1.1] — 2026-05-11
 
 ### Changed

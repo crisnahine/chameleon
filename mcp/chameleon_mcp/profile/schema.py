@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 # Schema version supported by this engine version
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 SUPPORTED_SCHEMA_RANGE = (CURRENT_SCHEMA_VERSION - 1, CURRENT_SCHEMA_VERSION)
 
 # Maximum JSON nesting depth (Round 4 hardening)

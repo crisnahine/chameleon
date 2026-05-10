@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable
 
 from chameleon_mcp.extractors._base import ParsedFile
@@ -67,12 +68,20 @@ class ClusteringResult:
         return [c for c in self.clusters if not c.is_sparse]
 
 
-def cluster_files(parsed_files: Iterable[ParsedFile]) -> ClusteringResult:
+def cluster_files(
+    parsed_files: Iterable[ParsedFile],
+    repo_root: Path | None = None,
+) -> ClusteringResult:
     """Group parsed files by ClusterKey signature.
 
     Args:
         parsed_files: iterable of successfully-parsed files (from
                       TypeScriptExtractor.parse_repo().files)
+        repo_root: repo root used to relativize each file's path before
+                   bucketing. Required for the path-pattern bucket to match
+                   what the runtime archetype lookup computes (also from a
+                   repo-relative path). Optional for backward compatibility;
+                   callers that don't pass it get absolute-path bucketing.
 
     Returns:
         ClusteringResult with clusters sorted by size (largest first) for
@@ -89,8 +98,16 @@ def cluster_files(parsed_files: Iterable[ParsedFile]) -> ClusteringResult:
             skipped_generated.append(pf)
             continue
 
+        if repo_root is not None:
+            try:
+                file_path_for_signature = str(pf.path.relative_to(repo_root))
+            except ValueError:
+                file_path_for_signature = str(pf.path)
+        else:
+            file_path_for_signature = str(pf.path)
+
         key = compute_signature(
-            file_path=str(pf.path),
+            file_path=file_path_for_signature,
             content_first_200_bytes=pf.content_first_200_bytes,
             top_level_node_kinds=pf.top_level_node_kinds,
             default_export_kind=pf.default_export_kind,

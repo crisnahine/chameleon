@@ -64,8 +64,8 @@ def _glob_for_extractor(extractor: Extractor) -> str:
         return "**/*.rb"
     return "**/*.{ts,tsx,js,jsx,mjs,cjs}"
 
-PROFILE_SCHEMA_VERSION = 4
-ENGINE_MIN_VERSION = "0.1.0"
+PROFILE_SCHEMA_VERSION = 5
+ENGINE_MIN_VERSION = "0.2.0"
 
 
 @dataclass
@@ -213,7 +213,7 @@ def bootstrap_repo(
     files_skipped_parse = len(parse_result.skipped)
 
     # 4. Cluster by signature
-    clustering = cluster_files(parse_result.files)
+    clustering = cluster_files(parse_result.files, repo_root=repo_root)
     files_skipped_generated = len(clustering.skipped_generated)
 
     # 5. Pick canonicals (only from dense clusters; sparse get user
@@ -329,6 +329,20 @@ def bootstrap_repo(
             "paths": co.get("paths"),
         }
 
+    # Preserve any user-curated idioms across a refresh: read the existing
+    # idioms.md (if present) and re-emit it inside the transaction. Bootstrap
+    # used to overwrite this file with an empty template every time, which
+    # silently destroyed the human-curated layer the architecture is supposed
+    # to protect.
+    existing_idioms_path = profile_dir / "idioms.md"
+    if existing_idioms_path.is_file():
+        try:
+            idioms_content = existing_idioms_path.read_text(encoding="utf-8")
+        except OSError:
+            idioms_content = _EMPTY_IDIOMS_TEMPLATE
+    else:
+        idioms_content = _EMPTY_IDIOMS_TEMPLATE
+
     # 7. Write atomically (Phase 1C transaction.py)
     with atomic_profile_commit(profile_dir) as txn_dir:
         (txn_dir / "profile.json").write_text(
@@ -343,12 +357,11 @@ def bootstrap_repo(
         (txn_dir / "rules.json").write_text(
             json.dumps(rules_data, indent=2, sort_keys=True), encoding="utf-8"
         )
-        (txn_dir / "idioms.md").write_text(
-            "# idioms\n\n## active\n\n_(no idioms yet — run /chameleon-teach to capture team conventions)_\n\n## deprecated\n\n_(none)_\n",
-            encoding="utf-8",
-        )
+        (txn_dir / "idioms.md").write_text(idioms_content, encoding="utf-8")
         (txn_dir / "profile.summary.md").write_text(
-            _build_summary_md(archetypes_data, canonicals_data, profile_data),
+            _build_summary_md(
+                archetypes_data, canonicals_data, profile_data, idioms_content
+            ),
             encoding="utf-8",
         )
 
@@ -367,10 +380,39 @@ def bootstrap_repo(
     )
 
 
+_EMPTY_IDIOMS_TEMPLATE = (
+    "# idioms\n\n"
+    "## active\n\n"
+    "_(no idioms yet — run /chameleon-teach to capture team conventions)_\n\n"
+    "## deprecated\n\n"
+    "_(none)_\n"
+)
+
+
+def _extract_active_idioms(idioms_md: str) -> str:
+    """Return the contents of the `## active` section of an idioms.md doc.
+
+    Used to inline idiom bodies in profile.summary.md so that the trust gate
+    actually shows users what they're approving. Without this, a poisoned
+    profile committed to a branch can ship prompt-injection-shaped idioms
+    that the trust review never displays.
+    """
+    if "## active" not in idioms_md:
+        return ""
+    after_active = idioms_md.split("## active", 1)[1]
+    # Stop at the next level-2 heading (typically `## deprecated`).
+    if "\n## " in after_active:
+        section = after_active.split("\n## ", 1)[0]
+    else:
+        section = after_active
+    return section.strip()
+
+
 def _build_summary_md(
     archetypes_data: dict,
     canonicals_data: dict,
     profile_data: dict,
+    idioms_md: str,
 ) -> str:
     """Generate the human-readable profile.summary.md for PR review.
 
@@ -405,7 +447,23 @@ def _build_summary_md(
         "",
         "## Idioms",
         "",
-        "_Phase 2D: interview-driven; run /chameleon-teach to capture team idioms._",
-        "",
     ])
+
+    active_idioms = _extract_active_idioms(idioms_md)
+    if active_idioms and "no idioms yet" not in active_idioms:
+        lines.append(
+            "_The following idioms ship in this profile and will be injected "
+            "into the model's context before each Edit/Write. Review carefully "
+            "before granting trust._"
+        )
+        lines.append("")
+        lines.append(active_idioms)
+        lines.append("")
+    else:
+        lines.append(
+            "_No idioms captured yet. Run /chameleon-teach to record team "
+            "conventions._"
+        )
+        lines.append("")
+
     return "\n".join(lines)

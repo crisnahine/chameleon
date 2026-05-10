@@ -99,23 +99,40 @@ def path_pattern_bucket_for(
     file_path: str,
     archetype_paths: dict[str, list[str]] | None = None,
 ) -> str:
-    """Bucket a file path against the first two non-trivial path segments.
+    """Bucket a file path so files with the same role cluster together.
 
     `archetype_paths` is accepted as a forward-compat parameter for future
     glob-against-known-archetypes matching, but the current implementation
     always uses path-segment bucketing because that's the only signal
     available during the initial bootstrap pass (no archetypes exist yet).
+
+    Schema v4 used `parts[-3:-1]` — the 2 directory segments immediately
+    enclosing the file. That was fine for granularity but collapsed
+    `app/controllers/api/v1/foo.rb` and `spec/controllers/api/v1/foo_spec.rb`
+    into the same `"api/v1"` bucket, and tools that picked a primary
+    archetype by cluster_size routinely surfaced the spec cluster for an
+    `app/` file.
+
+    Schema v5 keeps the same enclosing-directory information but prepends
+    the top-level segment so `app/...` and `spec/...` always disambiguate.
+    For shallow paths (≤3 segments) the result is just `parts[0]/parts[-2]`,
+    matching v4's behavior on those paths.
     """
     del archetype_paths  # reserved for forward-compat; not used today
 
-    # Bucket by first two non-trivial path segments.
-    # Examples:
-    #   /repo/app/controllers/api/v1/users.rb → "app/controllers"
-    #   /repo/src/components/Button.tsx → "src/components"
     parts = [p for p in file_path.split("/") if p and p not in (".", "..")]
-    if len(parts) >= 2:
-        return "/".join(parts[-3:-1]) if len(parts) >= 3 else "/".join(parts[:2])
-    return "(root)"
+    if len(parts) < 2:
+        return "(root)"
+    # Examples:
+    #   app/controllers/api/v1/users.rb       → "app/api/v1"
+    #   spec/controllers/api/v1/users_spec.rb → "spec/api/v1"
+    #   app/models/listing.rb                 → "app/models"
+    #   src/components/base/Button.tsx        → "src/components/base"
+    #   src/components/Button.tsx             → "src/components"
+    #   Gemfile (1 part)                      → "(root)"
+    if len(parts) >= 4:
+        return f"{parts[0]}/{parts[-3]}/{parts[-2]}"
+    return f"{parts[0]}/{parts[-2]}"
 
 
 def content_signal_match_for(

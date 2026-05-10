@@ -1740,8 +1740,8 @@ t(
     "schema_version" in profile_data,
 )
 t(
-    "profile.json schema_version is in v3-v4 range",
-    profile_data.get("schema_version") in (3, 4),
+    "profile.json schema_version is in v3-v5 range",
+    profile_data.get("schema_version") in (3, 4, 5),
 )
 
 
