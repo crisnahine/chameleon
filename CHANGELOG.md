@@ -4,6 +4,64 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-11
+
+The critique-answering release. The external audit framed v0.2 as "a canonical browser with security ceremony." v0.3 closes most of the gap toward Phase 4 in a single push, ships across all open Phase 2C/D work items, and adds 274 new regression assertions. Three top-tier agents implemented in parallel, two more reviewed.
+
+### Added — Phase 4 (the big leap)
+
+- **Real `lint_file` engine** (`mcp/chameleon_mcp/lint_engine.py`, 637 lines). Replaces the v0.2 stub with regex-based shape extraction matched against the archetype's `ast_query` block in `canonicals.json`. Five rule types: `default-export-kind-mismatch`, `top-level-node-kinds-mismatch`, `named-export-count-bucket-mismatch`, `jsx-presence-mismatch`, `content-signal-mismatch`. Returns `canonical_confidence` ∈ [0.0, 1.0]. Severities `info` / `warning` / `error`. TypeScript family + Ruby support. Envelope still carries `"stub"` boolean so callers can distinguish real-engine output from the legacy stub response shape.
+- **`mcp/chameleon_mcp/index_db.py`** (369 lines) — SQLite-backed repo index at `${PLUGIN_DATA}/index.db`. `bootstrap_repo` upserts each successful run; `_resolve_repo_root_by_id` now prefers `index.db` over the trust record (Phase 4.4). `last_seen_at` stored with microsecond precision. `list_profiles` queries the index instead of scanning directories.
+- **No-op refresh short-circuit** in `refresh_repo` (Phase 4.3 starter). When neither source files nor `idioms.md` have changed since the last bootstrap, returns `{"status": "noop", "reason": "no files changed since last refresh"}` without re-running the pipeline. `force=True` bypasses. Partial re-clustering is still deferred.
+
+### Added — Phase 2C (cluster + selection signal expansion)
+
+- **`derive_ast_query`** in `mcp/chameleon_mcp/bootstrap/canonical.py` — every archetype now ships a 5-field `ast_query` dict (top_level_node_kinds, default_export_kind, named_export_count_bucket, jsx_present, content_signal) so the lint engine has something to compare against. `null` fields mean "no expectation set."
+- **Recency-weighted canonical selection** — files modified in the last 90 days vote at 2×. Constants `RECENCY_WEIGHT_MULTIPLIER = 2.0` and `RECENCY_WINDOW_DAYS = 90` are surfaced at the top of `canonical.py` as calibration targets.
+- **Bimodal cluster flagging** — `ClusteringResult.bimodal_clusters` surfaces clusters that split 60/40 or worse on a key dimension. Bootstrap report now carries `sparse_cluster_warnings` and `bimodal_cluster_warnings` for future interview UI.
+- **tsconfig `extends` chain resolution** — walks single-string and TS-5 array extends, resolves bare specifiers via `node_modules`, caps at 8 hops with cycle detection, surfaces partial-merge warnings under `rules.eslint.parse_warning` instead of failing.
+- **`.eslintrc.yml` / `.eslintrc.js` parsing** — YAML via PyYAML (added as a direct dependency in `mcp/pyproject.toml`); `.eslintrc.js` extracted via brace-balanced regex with JS-ism normalization, falling back to v0.2's "invisible" warning on parse failure.
+- **Workspace resolution** — `pnpm-workspace.yaml`, `lerna.json`, `turbo.json` (1.10+ `packages`/`workspaces`) populate `WorkspaceInfo.workspace_paths`. `nx.json` skipped.
+
+### Added — Phase 2D (UX)
+
+- **Archetype renaming heuristic** (`mcp/chameleon_mcp/bootstrap/naming.py`). `cluster-<hash>` → meaningful names — `controller`, `model`, `service`, `policy`, `serializer`, `job`, `mailer`, `migration` (Rails); `react-component`, `react-hook`, `query`, `mutation`, `utility`, `types`, `class` (TypeScript); `test` for spec/__tests__/*.test.ts paths. Name collisions disambiguate via a path-derived suffix (`controller-admin`) then a numeric counter. All outputs conform to the existing `^[a-z][a-z0-9-]{0,63}$` archetype name regex.
+- **Material-change re-prompt on `/chameleon-teach`** — `profile/trust.py:hash_profile` now hashes `profile.json` + `idioms.md`. Adding or modifying an idiom flips a granted trust to `stale`, forcing the user to re-review (via `profile.summary.md`, which surfaces the idiom body verbatim — shipped in v0.2) before chameleon resumes injection.
+
+### Added — Phase 7 docs
+
+- `docs/chameleon/THREAT-MODEL.md` — 7-threat matrix (Threat / Defense / Residual risk) covering adversarial profiles, insider poisoning, idiom-channel injection, supply-chain attacks, confused-deputy via `--plugin-dir`, stale trust grant.
+- `docs/chameleon/REAL-PROBLEM-EVIDENCE.md` — evidence chameleon solves a real problem (with the v0.2 audit's positive findings) AND honest acknowledgement of what remains unmeasured (80% conformance: Phase 6; calibration params: not yet validated).
+- `docs/chameleon/decisions/0004-uvx-zero-touch-install.md` — v0.1.1 → v0.2.0 install model.
+- `docs/chameleon/decisions/0005-schema-v5-path-pattern-bucketing.md` — v0.2.0 schema bump.
+- `docs/chameleon/decisions/0006-audit-driven-v0_2_0-fixes.md` — v0.2.0 audit-fix flow.
+
+### Changed
+
+- `refresh_repo.force` documented as forward-compat (no-op for non-incremental refresh today; will bypass the incremental short-circuit when partial re-clustering ships).
+- `list_profiles` is now backed by `index.db` instead of scanning `${PLUGIN_DATA}/<repo_id>/` directories. Backwards-compatible response shape; legacy directories are backfilled on first list.
+- `_now_iso()` (in `index_db.py`) emits microsecond precision so refresh's no-op evaluator can compare against fractional file mtimes without false invalidations.
+- Engine version bumped 0.2.0 → 0.3.0 across all 7 manifests + `mcp/pyproject.toml` + `mcp/chameleon_mcp/__version__`.
+
+### Upgrade notes
+
+- **Every existing trust grant flips to `stale` on first session after upgrade.** v0.3 includes `idioms.md` in the material-change hash; the new hash will not match any v0.1 or v0.2 trust record, so chameleon will stop injecting context until the user re-runs `/chameleon-trust` once per repo. This is intentional — pre-v0.3 trust grants covered profile artifacts but not the idiom body that actually reaches the model.
+- **`index.db` is created on next bootstrap.** Existing v0.2 trust records are honored as fallback; first `bootstrap_repo` mirrors the repo into `index.db`. No manual migration required.
+- **Path-pattern semantics from v0.2 are preserved.** No schema bump in v0.3; profiles bootstrapped in v0.2 continue to load and match.
+
+### Tests
+
+- 274 new regression assertions across `tests/archetype_naming_test.py` (40), `tests/canonical_v03_test.py` (52), `tests/tool_config_v03_test.py` (48), `tests/lint_engine_test.py` (58), `tests/index_db_test.py` (76).
+- Full suite: 504/504 (comprehensive 175, v0_2_regression 28, mcp_protocol 27, plus the five new suites above).
+
+### Deferred to v0.4+
+
+- Long-lived daemon hook via UNIX socket (4.5) — major rearchitecture.
+- Interactive ≤3-prompt interview in `/chameleon-init` (2D.1) — MCP conversation protocol design.
+- Phase 6 calibration + benchmarking (6.x) — needs external test corpora.
+- Git remote URL detection for `repo_id` (4.6) — breaking change; bundles cleanly with the next schema bump.
+- True incremental refresh with partial re-clustering (4.3 extension) — current implementation only short-circuits on the no-op case.
+
 ## [0.2.0] — 2026-05-11
 
 ### Fixed (audit-driven)

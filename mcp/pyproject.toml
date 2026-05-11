@@ -1,6 +1,6 @@
 [project]
 name = "chameleon-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MCP server for chameleon. Auto-derives codebase conventions and serves archetype-keyed guidance via stdio JSON-RPC."
 authors = [
     { name = "Cris Nahine", email = "crisjosephnahine@gmail.com" }
@@ -14,6 +14,7 @@ dependencies = [
     "mcp>=1.2.0",            # FastMCP framework
     "xxhash>=3.5.0",         # Non-crypto hash for sha_hint (drift.db, canonicals)
     "detect-secrets>=1.5.0", # Secret scanner for canonical excerpts
+    "pyyaml>=6.0",           # tsconfig-adjacent + .eslintrc.yml + pnpm-workspace.yaml parsing
 ]
 
 [project.optional-dependencies]

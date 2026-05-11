@@ -3,6 +3,13 @@
 Detects pnpm/yarn/lerna/turbo/nx workspaces and proposes per-workspace
 bootstrap. Per ARCHITECTURE.md "Bootstrap interview flow" step (b)
 + Round 2 bootstrap edge case adversary recommendations.
+
+Phase 2C.5 expands workspace_paths population beyond `package.json`
+workspaces to also resolve pnpm-workspace.yaml (via PyYAML),
+lerna.json `packages`, and turbo.json (which can declare its own
+`workspaces`/`packages` array in turbo 1.10+). nx.json rarely declares
+workspaces inline and is intentionally skipped — the apps/+libs/
+heuristic remains for Nx.
 """
 
 from __future__ import annotations
@@ -10,6 +17,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:  # PyYAML ships transitively (detect-secrets) and is declared as a direct dep.
+    import yaml as _yaml  # type: ignore[import-untyped]
+except ImportError:  # pragma: no cover — defensive; PyYAML is a hard dep.
+    _yaml = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -34,7 +46,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
     1. pnpm-workspace.yaml
     2. yarn workspaces (in package.json)
     3. lerna.json
-    4. turbo.json (with `pipeline` field; turbo monorepo)
+    4. turbo.json (with `pipeline`/`tasks` field; turbo monorepo)
     5. nx.json (Nx workspace)
 
     Returns WorkspaceInfo with is_workspace=False if none detected.
@@ -86,7 +98,7 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
                 workspace_paths=_expand_workspace_globs(repo_root, [str(p) for p in packages]),
             )
 
-    # 4. turbo (only if pipeline exists; turbo can also be added to single-package repos)
+    # 4. turbo (only if pipeline/tasks exists; turbo can also be added to single-package repos)
     turbo_json = repo_root / "turbo.json"
     if turbo_json.exists():
         try:
@@ -94,13 +106,37 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
         except json.JSONDecodeError:
             turbo = {}
         if "pipeline" in turbo or "tasks" in turbo:
-            # Turbo monorepo; assume workspaces are declared in package.json
-            # (already handled by yarn-workspaces branch). If not, fall through
-            # to single-package.
+            # Turbo monorepo. Modern turbo (>=1.10) lets you declare workspace
+            # roots directly in turbo.json via `workspaces` / `packages`. Older
+            # versions assume `package.json` workspaces exist. We try the
+            # turbo.json field first, then fall back to package.json.
+            turbo_globs = _read_turbo_globs(turbo)
+            ws_paths: list[Path] = []
+            if turbo_globs:
+                ws_paths = _expand_workspace_globs(repo_root, turbo_globs)
+            elif package_json.exists():
+                # Re-read package.json defensively even if the yarn branch
+                # above didn't see workspaces (the field could exist alongside
+                # turbo without yarn's hoisting flag).
+                try:
+                    pkg = json.loads(package_json.read_text(errors="replace"))
+                except json.JSONDecodeError:
+                    pkg = {}
+                pkg_ws = pkg.get("workspaces")
+                pkg_globs: list[str] = []
+                if isinstance(pkg_ws, list):
+                    pkg_globs = [str(g) for g in pkg_ws]
+                elif isinstance(pkg_ws, dict):
+                    packages = pkg_ws.get("packages", [])
+                    if isinstance(packages, list):
+                        pkg_globs = [str(g) for g in packages]
+                if pkg_globs:
+                    ws_paths = _expand_workspace_globs(repo_root, pkg_globs)
+
             return WorkspaceInfo(
                 is_workspace=True,
                 manager="turbo",
-                workspace_paths=[],  # Phase 2C: rely on package.json workspaces
+                workspace_paths=ws_paths,
             )
 
     # 5. nx
@@ -137,18 +173,29 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
 
 
 def _read_pnpm_globs(pnpm_workspace_yaml: Path) -> list[str]:
-    """Minimal yaml parsing for pnpm-workspace.yaml — extracts `packages:` list.
+    """Parse pnpm-workspace.yaml → list of package globs.
 
-    Avoids adding PyYAML dep for one file; pnpm-workspace.yaml is conventionally
-    simple. Format:
-      packages:
-        - 'apps/*'
-        - 'packages/*'
+    Uses PyYAML when available; falls back to a minimal hand-rolled parser
+    for the conventional ``packages: [- foo, - bar]`` shape so we never crash
+    bootstrap even if the YAML library somehow goes missing at runtime.
     """
     try:
         text = pnpm_workspace_yaml.read_text(errors="replace")
     except OSError:
         return []
+
+    if _yaml is not None:
+        try:
+            loaded = _yaml.safe_load(text)
+        except _yaml.YAMLError:  # type: ignore[attr-defined]
+            loaded = None
+        if isinstance(loaded, dict):
+            packages = loaded.get("packages")
+            if isinstance(packages, list):
+                return [str(p) for p in packages if isinstance(p, (str, int))]
+        # Fall through to the legacy parser if PyYAML gave us something
+        # unexpected (e.g. a top-level scalar).
+
     globs: list[str] = []
     in_packages = False
     for raw_line in text.splitlines():
@@ -167,6 +214,24 @@ def _read_pnpm_globs(pnpm_workspace_yaml: Path) -> list[str]:
                 # Top-level key after packages — exit list
                 in_packages = False
     return globs
+
+
+def _read_turbo_globs(turbo: dict) -> list[str]:
+    """Extract workspace globs from a parsed turbo.json.
+
+    Turbo accepts either ``workspaces`` or ``packages`` as a sibling of
+    ``pipeline``/``tasks``. Both should be string arrays; anything else is
+    ignored.
+    """
+    for field_name in ("workspaces", "packages"):
+        value = turbo.get(field_name)
+        if isinstance(value, list):
+            return [str(v) for v in value if isinstance(v, (str, int))]
+        if isinstance(value, dict):
+            packages = value.get("packages")
+            if isinstance(packages, list):
+                return [str(v) for v in packages if isinstance(v, (str, int))]
+    return []
 
 
 def _expand_workspace_globs(repo_root: Path, globs: list[str]) -> list[Path]:

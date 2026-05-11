@@ -73,11 +73,24 @@ class TrustRecord:
 
 
 def hash_profile(profile_dir: Path) -> str:
-    """SHA-256 of `profile.json` content for material-change detection."""
+    """SHA-256 over the user-visible profile surface for material-change detection.
+
+    Hashes profile.json + idioms.md (when present). idioms.md is included
+    so that `/chameleon-teach` and `/chameleon-refresh` both flip a granted
+    trust to `stale`, forcing the user to re-review the idiom content
+    before chameleon resumes injection. v0.1 only hashed profile.json,
+    which meant new idioms reached model context without a re-trust.
+    """
     profile_json = profile_dir / "profile.json"
     if not profile_json.is_file():
         return ""
-    return hashlib.sha256(profile_json.read_bytes()).hexdigest()
+    h = hashlib.sha256()
+    h.update(profile_json.read_bytes())
+    idioms = profile_dir / "idioms.md"
+    if idioms.is_file():
+        h.update(b"\x00idioms.md\x00")
+        h.update(idioms.read_bytes())
+    return h.hexdigest()
 
 
 def trust_state_for(repo_id: str) -> TrustRecord | None:

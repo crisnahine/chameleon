@@ -6,23 +6,49 @@ Per ARCHITECTURE.md "Cluster signature function" → "Incremental algorithm":
 - Sparse cluster threshold: <5 files → candidate for "miscellaneous" or merge
 - Bimodal threshold: clusters split 60/40 or worse on a key dimension are flagged
 
-Phase 2B implements the basic exact-match clustering; sparse + bimodal
-detection deferred to Phase 2C.
+Phase 2C.3 adds bimodal detection: a cluster's members may all share the
+seven-tuple ClusterKey while still disagreeing on a separately-observable
+dimension (e.g. default_export_kind drawn from the ParsedFile, which is
+fixed for any single ClusterKey, vs. `named_export_count` raw counts which
+are bucketed but whose raw distribution still varies). The signature
+function is intentionally lossy; bimodal detection reveals when that loss
+hides a real split the bootstrap interview should surface.
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
 from chameleon_mcp.extractors._base import ParsedFile
-from chameleon_mcp.signatures import ClusterKey, compute_signature
+from chameleon_mcp.signatures import ClusterKey, bucket_named_export_count, compute_signature
 
 # Files in clusters smaller than this aren't proposed as their own archetype
 # without explicit user confirmation.
 SPARSE_CLUSTER_THRESHOLD = 5
+
+# A cluster is "bimodal" if, on at least one observable dimension, the
+# most-common value holds STRICTLY LESS than this fraction of its members.
+# i.e. a 60/40 split crosses the threshold (40% on the minority = 60% on the
+# majority, and 60% < 60% is false, so 60/40 exact is the boundary — see
+# `is_bimodal` docstring for the precise definition).
+BIMODAL_DOMINANT_SHARE_THRESHOLD = 0.6
+
+# Dimensions inspected for bimodality. These are signals the ClusterKey
+# already encodes (or bucketizes) but where the raw per-file value can still
+# vary inside a single cluster — e.g. two files in the same path bucket
+# may have different default_export_kind values yet land in the same cluster
+# because of identical top_level_node_kinds + identical import hash, with
+# default_export_kind being the discriminator buried in the tuple. Only
+# dimensions where intra-cluster variance is actually possible go here.
+BIMODAL_INSPECTED_DIMENSIONS: tuple[str, ...] = (
+    "default_export_kind",
+    "named_export_count_bucket",
+    "jsx_present",
+    "content_signal_match",
+)
 
 
 @dataclass
@@ -39,6 +65,72 @@ class Cluster:
     @property
     def is_sparse(self) -> bool:
         return self.size < SPARSE_CLUSTER_THRESHOLD
+
+    def _dimension_value_for(self, member: ParsedFile, dimension: str) -> object:
+        """Return the raw per-member value of an observable dimension.
+
+        For dimensions encoded in the ClusterKey but bucketed (e.g.
+        named_export_count_bucket), this returns the bucketed value of the
+        member's raw count — NOT the cluster-key value — so two members
+        with different bucket values fall into separate counter bins.
+
+        Members of a single cluster share the ClusterKey by construction,
+        so for dimensions that come directly off the key the counter
+        degenerates to size-of-one. The interesting dimensions here are
+        ones that *could* split inside a cluster if upstream signature
+        derivation ever weakens — defensive coverage for forward changes.
+        """
+        if dimension == "default_export_kind":
+            return member.default_export_kind
+        if dimension == "named_export_count_bucket":
+            return bucket_named_export_count(member.named_export_count)
+        if dimension == "jsx_present":
+            return member.has_jsx
+        if dimension == "content_signal_match":
+            # Inspect the first 200 bytes via the same matcher used for
+            # signature derivation so this stays in lockstep with the key.
+            from chameleon_mcp.signatures import content_signal_match_for
+            return content_signal_match_for(member.content_first_200_bytes)
+        return None
+
+    def dimension_distribution(self, dimension: str) -> dict[object, int]:
+        """Return a Counter-style dict of {value: count} for `dimension`.
+
+        Empty when the cluster has no members.
+        """
+        return dict(Counter(
+            self._dimension_value_for(m, dimension) for m in self.members
+        ))
+
+    @property
+    def bimodal_dimensions(self) -> list[str]:
+        """Names of inspected dimensions on which this cluster splits bimodally.
+
+        A dimension is bimodal when the most-common value holds STRICTLY
+        LESS than BIMODAL_DOMINANT_SHARE_THRESHOLD of the members. A
+        cluster with only one member, or no minority value at all, is
+        never bimodal.
+
+        60/40 exact: dominant share = 0.6, which is NOT < 0.6, so a clean
+        60/40 split is the boundary case and reports as non-bimodal. 59/41,
+        50/50, etc. all flag. This matches the spec's "60/40 or worse" —
+        worse = the minority share grows.
+        """
+        if self.size < 2:
+            return []
+        flagged: list[str] = []
+        for dim in BIMODAL_INSPECTED_DIMENSIONS:
+            dist = self.dimension_distribution(dim)
+            if len(dist) < 2:
+                continue
+            dominant_count = max(dist.values())
+            if (dominant_count / self.size) < BIMODAL_DOMINANT_SHARE_THRESHOLD:
+                flagged.append(dim)
+        return flagged
+
+    @property
+    def is_bimodal(self) -> bool:
+        return bool(self.bimodal_dimensions)
 
 
 @dataclass
@@ -66,6 +158,17 @@ class ClusteringResult:
     @property
     def dense_clusters(self) -> list[Cluster]:
         return [c for c in self.clusters if not c.is_sparse]
+
+    @property
+    def bimodal_clusters(self) -> list[Cluster]:
+        """Clusters that split bimodally on at least one observable dimension.
+
+        Bimodal flagging considers ALL clusters (sparse + dense). A sparse
+        cluster that also splits bimodally is interesting twice: the
+        bootstrap report surfaces both warnings so the future interview UI
+        (Phase 2D) can either rename it, merge it, or split it manually.
+        """
+        return [c for c in self.clusters if c.is_bimodal]
 
 
 def cluster_files(

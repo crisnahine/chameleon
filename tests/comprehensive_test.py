@@ -614,9 +614,12 @@ section("refresh_repo")
 
 from chameleon_mcp.tools import refresh_repo
 
-# refresh_repo currently just re-bootstraps in Phase 2D
+# Phase 4.3: refresh_repo returns "success" on a real re-bootstrap and "noop"
+# when the index.db short-circuit fires because no file changed. Both shapes
+# carry archetypes_detected so the idempotence assertion stays meaningful.
 r1 = refresh_repo(str(TS_REPO))["data"]
-t("refresh_repo returns success", r1["status"] == "success")
+t(f"refresh_repo returns success or noop (got {r1['status']})",
+  r1["status"] in ("success", "noop"))
 # Re-running still produces same archetype count
 r2 = refresh_repo(str(TS_REPO))["data"]
 t("refresh_repo idempotent on archetype count", r1["archetypes_detected"] == r2["archetypes_detected"])

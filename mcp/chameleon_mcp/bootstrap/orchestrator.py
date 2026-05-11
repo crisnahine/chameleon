@@ -26,16 +26,21 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from chameleon_mcp.bootstrap.canonical import select_canonicals
-from chameleon_mcp.bootstrap.clustering import cluster_files
+from chameleon_mcp.bootstrap.canonical import derive_ast_query, select_canonicals
+from chameleon_mcp.bootstrap.clustering import (
+    BIMODAL_DOMINANT_SHARE_THRESHOLD,
+    SPARSE_CLUSTER_THRESHOLD,
+    cluster_files,
+)
 from chameleon_mcp.bootstrap.discovery import (
     REPO_SIZE_GUARD,
     TooManyFilesError,
     discover_files,
 )
+from chameleon_mcp.bootstrap.naming import propose_archetype_name
 from chameleon_mcp.bootstrap.tool_config import read_tool_configs
 from chameleon_mcp.bootstrap.transaction import atomic_profile_commit
 from chameleon_mcp.bootstrap.workspace import detect_workspace
@@ -83,6 +88,20 @@ class BootstrapReport:
     duration_ms: int
     profile_path: Path | None
     error: str | None = None
+    sparse_cluster_warnings: list[dict] = field(default_factory=list)
+    """Phase 2C.3: clusters with fewer than SPARSE_CLUSTER_THRESHOLD members.
+
+    Each entry: {"paths_pattern": str, "size": int, "sample_paths": list[str]}.
+    Sparse clusters are excluded from canonical selection but surfaced here so
+    the future interview UI can prompt the user to merge or confirm them.
+    """
+    bimodal_cluster_warnings: list[dict] = field(default_factory=list)
+    """Phase 2C.3: clusters that split bimodally on at least one signal.
+
+    Each entry: {"paths_pattern": str, "size": int, "dimensions": [str, ...],
+    "distributions": {dim: {value_str: count}}}. The future interview UI uses
+    these to offer a manual split.
+    """
 
     def to_dict(self) -> dict:
         return {
@@ -97,6 +116,8 @@ class BootstrapReport:
             "duration_ms": self.duration_ms,
             "profile_path": str(self.profile_path) if self.profile_path else None,
             "error": self.error,
+            "sparse_cluster_warnings": list(self.sparse_cluster_warnings),
+            "bimodal_cluster_warnings": list(self.bimodal_cluster_warnings),
         }
 
 
@@ -119,6 +140,98 @@ def _generation_counter(now: float | None = None) -> int:
     verify consistency via the double-fstat pattern.
     """
     return int(now if now is not None else time.time())
+
+
+# Phase 2C.3: how many sample paths to include per warning. Just enough for
+# the future interview UI to give the user a hint without dumping the full
+# cluster membership.
+_WARNING_SAMPLE_PATHS = 3
+
+
+def _rel_or_abs(path: Path, repo_root: Path) -> str:
+    """Best-effort relative path; falls back to absolute if outside repo_root."""
+    try:
+        return str(path.relative_to(repo_root))
+    except ValueError:
+        return str(path)
+
+
+def _stringify_distribution_key(value: object) -> str:
+    """Render an arbitrary value as a stable JSON-dict-key string.
+
+    Booleans → "true" / "false"; None → "null"; everything else → str(value).
+    """
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if value is None:
+        return "null"
+    return str(value)
+
+
+def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
+    """Build the sparse-cluster warning payload for BootstrapReport.
+
+    Phase 2C.3: surface clusters with <SPARSE_CLUSTER_THRESHOLD members.
+    Each warning entry includes the path bucket, size, and a handful of
+    sample paths so the future interview UI can ask "merge with X?".
+    """
+    warnings: list[dict] = []
+    for cluster in sparse_clusters:
+        sample_paths = [
+            _rel_or_abs(m.path, repo_root)
+            for m in cluster.members[:_WARNING_SAMPLE_PATHS]
+        ]
+        warnings.append({
+            "kind": "sparse_cluster",
+            "reason": (
+                f"cluster has {cluster.size} members "
+                f"(threshold {SPARSE_CLUSTER_THRESHOLD})"
+            ),
+            "paths_pattern": cluster.key.path_pattern_bucket,
+            "size": cluster.size,
+            "sample_paths": sample_paths,
+        })
+    return warnings
+
+
+def _build_bimodal_warnings(bimodal_clusters, repo_root: Path) -> list[dict]:
+    """Build the bimodal-cluster warning payload for BootstrapReport.
+
+    For each flagged cluster, record the dimensions that split bimodally
+    and the per-dimension value distribution. JSON-friendly: keys are
+    stringified so booleans and Nones don't clash with JSON dict-key
+    constraints when callers serialize the report.
+    """
+    warnings: list[dict] = []
+    for cluster in bimodal_clusters:
+        flagged_dims = cluster.bimodal_dimensions
+        distributions: dict[str, dict[str, int]] = {}
+        for dim in flagged_dims:
+            raw = cluster.dimension_distribution(dim)
+            distributions[dim] = {
+                _stringify_distribution_key(value): count
+                for value, count in raw.items()
+            }
+        sample_paths = [
+            _rel_or_abs(m.path, repo_root)
+            for m in cluster.members[:_WARNING_SAMPLE_PATHS]
+        ]
+        warnings.append({
+            "kind": "bimodal_cluster",
+            "reason": (
+                f"cluster splits 60/40 or worse on "
+                f"{', '.join(flagged_dims)} "
+                f"(threshold {int(BIMODAL_DOMINANT_SHARE_THRESHOLD * 100)}% dominant share)"
+            ),
+            "paths_pattern": cluster.key.path_pattern_bucket,
+            "size": cluster.size,
+            "dimensions": flagged_dims,
+            "distributions": distributions,
+            "sample_paths": sample_paths,
+        })
+    return warnings
 
 
 def bootstrap_repo(
@@ -216,6 +329,12 @@ def bootstrap_repo(
     clustering = cluster_files(parse_result.files, repo_root=repo_root)
     files_skipped_generated = len(clustering.skipped_generated)
 
+    # 4b. Phase 2C.3: collect sparse + bimodal warnings. These are surfaced
+    # in BootstrapReport so the future interview UI (v0.4) can prompt the
+    # user; today they are pure diagnostics and do not block the bootstrap.
+    sparse_warnings = _build_sparse_warnings(clustering.sparse_clusters, repo_root)
+    bimodal_warnings = _build_bimodal_warnings(clustering.bimodal_clusters, repo_root)
+
     # 5. Pick canonicals (only from dense clusters; sparse get user
     # confirmation in Phase 2C/D interview)
     selection = select_canonicals(clustering.dense_clusters, repo_root)
@@ -246,7 +365,13 @@ def bootstrap_repo(
         "rules": {},
     }
 
-    # Build archetypes from dense clusters (Phase 2D will rename via interview)
+    # Build archetypes from dense clusters. Phase 2D.2 derives meaningful
+    # names (controller, service, react-component, ...) from cluster
+    # signals instead of the opaque ``cluster-<16hex>`` placeholder used
+    # in Phase 2B. Iteration order is largest-cluster-first (see
+    # ClusteringResult.dense_clusters), so the most common archetype gets
+    # the unsuffixed base name and smaller clusters take the suffix.
+    assigned_names: set[str] = set()
     for cluster in clustering.dense_clusters:
         cluster_id = next(
             (cid for cid, sel in selection.selections.items()
@@ -256,7 +381,8 @@ def bootstrap_repo(
         if not cluster_id:
             # No canonical selected (no eligible candidates passed scanners)
             continue
-        archetype_name = f"cluster-{cluster_id}"  # Phase 2D will rename via interview
+        archetype_name = propose_archetype_name(cluster, assigned_names)
+        assigned_names.add(archetype_name)
         archetypes_data["archetypes"][archetype_name] = {
             "cluster_id": cluster_id,
             "cluster_size": cluster.size,
@@ -276,7 +402,11 @@ def bootstrap_repo(
                 "sha_hint": sel.sha_hint,
             },
             "normative_shape": {
-                "ast_query": None,  # Phase 2C: derive from cluster key
+                # Phase 2C.1: derive the normative AST shape from the
+                # cluster signature. A file conforms when every non-null
+                # field matches the file's parsed shape. See
+                # canonical.derive_ast_query for the field contract.
+                "ast_query": derive_ast_query(cluster.key),
             },
             "normative_idioms": {
                 "comments": [],  # Phase 2D: collect via interview / chameleon-teach
@@ -320,13 +450,36 @@ def bootstrap_repo(
         }
     if tool_configs.tsconfig and isinstance(tool_configs.tsconfig.get("compilerOptions"), dict):
         co = tool_configs.tsconfig["compilerOptions"]
-        rules_data["rules"]["typescript"] = {
+        ts_rule: dict = {
             "source": tool_configs.sources.get("tsconfig", "tsconfig.json"),
             "strict": bool(co.get("strict")),
             "noImplicitAny": bool(co.get("noImplicitAny", True)),
             "strictNullChecks": bool(co.get("strictNullChecks", True)),
             "target": co.get("target"),
             "paths": co.get("paths"),
+        }
+        # Phase 4.7: surface the resolved extends chain so /chameleon-status
+        # can show e.g. "tsconfig.json → @tsconfig/strictest → ./base.json".
+        if tool_configs.tsconfig_extends_chain:
+            ts_rule["extends_chain"] = tool_configs.tsconfig_extends_chain
+        if "tsconfig" in tool_configs.parse_warnings:
+            ts_rule["parse_warning"] = tool_configs.parse_warnings["tsconfig"]
+        rules_data["rules"]["typescript"] = ts_rule
+    # Phase 2C.4: surface ESLint rules whenever we have them (JSON, YAML, or
+    # best-effort JS extraction). If parsing failed, record only the warning
+    # so /chameleon-status can flag the gap.
+    if tool_configs.eslint:
+        eslint_rule: dict = {
+            "source": tool_configs.sources.get("eslint", ".eslintrc"),
+            "rules": tool_configs.eslint,
+        }
+        if "eslint" in tool_configs.parse_warnings:
+            eslint_rule["parse_warning"] = tool_configs.parse_warnings["eslint"]
+        rules_data["rules"]["eslint"] = eslint_rule
+    elif "eslint" in tool_configs.parse_warnings:
+        rules_data["rules"]["eslint"] = {
+            "source": tool_configs.sources.get("eslint", ""),
+            "parse_warning": tool_configs.parse_warnings["eslint"],
         }
 
     # Preserve any user-curated idioms across a refresh: read the existing
@@ -377,6 +530,8 @@ def bootstrap_repo(
         files_skipped_parse=files_skipped_parse,
         duration_ms=duration_ms,
         profile_path=profile_dir,
+        sparse_cluster_warnings=sparse_warnings,
+        bimodal_cluster_warnings=bimodal_warnings,
     )
 
 
