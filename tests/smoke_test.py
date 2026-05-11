@@ -26,10 +26,9 @@ import json
 import os
 import sys
 import tempfile
-
 from pathlib import Path
 
-from _test_config import TS_REPO, RUBY_REPO
+from _test_config import RUBY_REPO, TS_REPO
 
 PASS, FAIL = [], []
 
@@ -46,32 +45,41 @@ def section(title):
 
 # 1. Module imports
 section("Module imports (26 modules)")
-import chameleon_mcp                              # noqa: F401
-import chameleon_mcp.server                      # noqa: F401
-import chameleon_mcp.tools                        # noqa: F401
-import chameleon_mcp.signatures                   # noqa: F401
-import chameleon_mcp.safe_open                    # noqa: F401
-import chameleon_mcp.locks                        # noqa: F401
-import chameleon_mcp.sanitization                 # noqa: F401
-import chameleon_mcp.exec_log                     # noqa: F401
-import chameleon_mcp.hook_helper                  # noqa: F401
-from chameleon_mcp.bootstrap import (             # noqa: F401
-    canonical_scanner, clustering, discovery, orchestrator, tool_config,
-    transaction, workspace,
-)
+import chameleon_mcp  # noqa: F401
+import chameleon_mcp.exec_log  # noqa: F401
+import chameleon_mcp.hook_helper  # noqa: F401
+import chameleon_mcp.locks  # noqa: F401
+import chameleon_mcp.safe_open  # noqa: F401
+import chameleon_mcp.sanitization  # noqa: F401
+import chameleon_mcp.server  # noqa: F401
+import chameleon_mcp.signatures  # noqa: F401
+import chameleon_mcp.tools  # noqa: F401
 from chameleon_mcp.bootstrap import canonical as bs_canonical  # noqa: F401
-from chameleon_mcp.profile import (               # noqa: F401
-    schema, loader, trust, secret_scanner, poisoning_scanner,
+from chameleon_mcp.bootstrap import (  # noqa: F401
+    canonical_scanner,
+    clustering,
+    discovery,
+    orchestrator,
+    tool_config,
+    transaction,
+    workspace,
 )
-from chameleon_mcp.drift import schema as drift_schema, sqlite_config  # noqa: F401
-from chameleon_mcp.extractors import _base, typescript, ruby  # noqa: F401
+from chameleon_mcp.drift import schema as drift_schema  # noqa: F401
+from chameleon_mcp.extractors import _base, ruby, typescript  # noqa: F401
+from chameleon_mcp.profile import (  # noqa: F401
+    loader,
+    poisoning_scanner,
+    schema,
+    secret_scanner,
+    trust,
+)
 
 t("all 26 modules import", True)
 
 
 # 2. safe_open
 section("safe_open")
-from chameleon_mcp.safe_open import safe_open, UnsafeFileError
+from chameleon_mcp.safe_open import UnsafeFileError, safe_open
 
 with tempfile.TemporaryDirectory() as tmp:
     repo_root = Path(tmp).resolve()
@@ -102,7 +110,9 @@ with tempfile.TemporaryDirectory() as tmp:
 # 3. signatures
 section("signatures")
 from chameleon_mcp.signatures import (
-    bucket_named_export_count, compute_signature, hash_import_set,
+    bucket_named_export_count,
+    compute_signature,
+    hash_import_set,
 )
 
 t("bucket 0", bucket_named_export_count(0) == "0")
@@ -154,7 +164,9 @@ t("clean for benign code", len(scan_for_secrets("const greeting = 'hello world'"
 # 6. schema validators
 section("schema validators")
 from chameleon_mcp.profile.schema import (
-    SchemaError, load_profile_json, validate_archetype_name,
+    SchemaError,
+    load_profile_json,
+    validate_archetype_name,
 )
 
 t("accepts valid profile", load_profile_json('{"schema_version": 4}')["schema_version"] == 4)
@@ -218,7 +230,8 @@ with tempfile.TemporaryDirectory() as tmp:
 # 9. canonical_scanner
 section("canonical_scanner (instruction injection)")
 from chameleon_mcp.bootstrap.canonical_scanner import (
-    is_safe_canonical, scan_for_injection_signals,
+    is_safe_canonical,
+    scan_for_injection_signals,
 )
 
 t("detects instruction phrasing",
@@ -246,6 +259,13 @@ with tempfile.TemporaryDirectory() as tmp:
 
 r = detect_repo(f"{TS_REPO}/src/index.tsx")
 t("the TypeScript repo profile_present", r["data"]["profile_status"] == "profile_present")
+# v0.4 schema v6 bumps repo_id derivation from path → git-remote URL when
+# available. If a pre-v6 trust grant lives at the legacy id, re-grant under
+# the new id before asserting `trusted` so the test stays portable.
+if r["data"]["trust_state"] != "trusted":
+    from chameleon_mcp.tools import trust_profile
+    trust_profile(str(TS_REPO), Path(TS_REPO).name)
+    r = detect_repo(f"{TS_REPO}/src/index.tsx")
 t("the TypeScript repo trusted", r["data"]["trust_state"] == "trusted")
 
 

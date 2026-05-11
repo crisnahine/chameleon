@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 from typing import Any
 
-# Schema version supported by this engine version
-CURRENT_SCHEMA_VERSION = 5
-SUPPORTED_SCHEMA_RANGE = (CURRENT_SCHEMA_VERSION - 1, CURRENT_SCHEMA_VERSION)
+# Schema version supported by this engine version.
+# v0.4 (4.6) bumped from 5 → 6: repo_id derivation now prefers the git
+# remote URL when available. v5 profiles are still readable by v0.4
+# engines (the loader's engine_min_version check guards forward compat),
+# but v0.3 engines cannot read v6.
+CURRENT_SCHEMA_VERSION = 6
+SUPPORTED_SCHEMA_RANGE = (CURRENT_SCHEMA_VERSION - 2, CURRENT_SCHEMA_VERSION)
 
 # Maximum JSON nesting depth (Round 4 hardening)
 MAX_JSON_DEPTH = 64

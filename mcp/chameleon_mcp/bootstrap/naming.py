@@ -25,7 +25,8 @@ so the result is still readable but obviously generic.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 # Public regex mirror — see ``profile.schema.ARCHETYPE_NAME_RE``. Kept in
 # sync by hand because importing the schema module from a bootstrap pure-

@@ -56,9 +56,8 @@ from chameleon_mcp.lint_engine import (  # noqa: E402
     extract_dimensions,
     lint,
 )
-from chameleon_mcp.tools import _compute_repo_id, bootstrap_repo, lint_file  # noqa: E402
 from chameleon_mcp.profile.trust import grant_trust  # noqa: E402
-
+from chameleon_mcp.tools import _compute_repo_id, bootstrap_repo, lint_file  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Phase 4.1: unit — language detection

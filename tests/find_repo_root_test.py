@@ -7,7 +7,6 @@ Round 2: verify behavior on real the Ruby on Rails repo / the TypeScript repo re
          the correct root, plus a non-git extracted archive scenario.
 """
 
-import os
 import sys
 import tempfile
 from pathlib import Path
@@ -25,8 +24,7 @@ def section(title):
     print(f"\n=== {title} ===")
 
 
-from chameleon_mcp.profile.loader import find_repo_root, REPO_ROOT_MARKERS
-
+from chameleon_mcp.profile.loader import REPO_ROOT_MARKERS, find_repo_root
 
 # ---------------------------------------------------------------------------
 # Round 1 — every supported marker resolves correctly without .git
@@ -112,7 +110,7 @@ with tempfile.TemporaryDirectory() as tmp:
 # ---------------------------------------------------------------------------
 section("Round 2 — real test repos")
 
-from _test_config import TS_REPO, RUBY_REPO
+from _test_config import RUBY_REPO, TS_REPO
 
 if TS_REPO.is_dir():
     root = find_repo_root(TS_REPO / "src" / "index.tsx")

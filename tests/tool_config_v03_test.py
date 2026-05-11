@@ -24,7 +24,6 @@ from chameleon_mcp.bootstrap.tool_config import (  # noqa: E402
 )
 from chameleon_mcp.bootstrap.workspace import detect_workspace  # noqa: E402
 
-
 PASS = 0
 FAIL = 0
 

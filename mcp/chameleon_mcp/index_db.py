@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 from chameleon_mcp.drift.sqlite_config import open_hardened
 from chameleon_mcp.profile.trust import plugin_data_dir

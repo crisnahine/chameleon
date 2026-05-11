@@ -13,7 +13,6 @@ Round 2 — real Claude Code session on a fresh temp repo where Claude
 """
 
 import json
-import os
 import shutil
 import subprocess
 import sys

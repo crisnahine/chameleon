@@ -28,8 +28,8 @@ Cache invalidation triggers:
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 # Bumped when the signature function's behavior changes.
 # Forces drift.db cache invalidation per ARCHITECTURE.md "Incremental algorithm".

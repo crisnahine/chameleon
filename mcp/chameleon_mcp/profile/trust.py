@@ -55,7 +55,7 @@ class TrustRecord:
     repo_root: str = ""
 
     @classmethod
-    def from_dict(cls, data: dict) -> "TrustRecord":
+    def from_dict(cls, data: dict) -> TrustRecord:
         return cls(
             granted_at=str(data.get("granted_at", "")),
             granted_by_user=str(data.get("granted_by_user", "")),

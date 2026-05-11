@@ -45,7 +45,6 @@ os.environ["CHAMELEON_PLUGIN_DATA"] = TMPDATA
 
 from chameleon_mcp.tools import (  # noqa: E402
     bootstrap_repo,
-    get_archetype,
     refresh_repo,
     teach_profile,
     trust_profile,

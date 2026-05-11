@@ -18,7 +18,8 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from _test_config import TS_REPO, RUBY_REPO
+
+from _test_config import RUBY_REPO, TS_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent

@@ -23,9 +23,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import uuid
 from pathlib import Path
+
 from _test_config import TS_REPO
 
 PASS, FAIL = [], []
@@ -43,9 +43,11 @@ def section(title):
 
 
 from chameleon_mcp.tools import (
-    bootstrap_repo, get_pattern_context, teach_profile, trust_profile,
+    bootstrap_repo,
+    get_pattern_context,
+    teach_profile,
+    trust_profile,
 )
-
 
 # Ensure the TypeScript repo is bootstrapped + trusted
 if not (TS_REPO / ".chameleon" / "profile.json").is_file():
@@ -112,7 +114,7 @@ teach_profile(
 )
 r = get_pattern_context(str(test_file))
 idioms = r["data"].get("idioms", "")
-t(f"Evil idiom marker present (sanitized form)", evil_marker in idioms)
+t("Evil idiom marker present (sanitized form)", evil_marker in idioms)
 t(
     "Closing chameleon-context tag NOT present in response idioms",
     "</chameleon-context>" not in idioms,

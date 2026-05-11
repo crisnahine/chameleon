@@ -8,7 +8,6 @@ Round 2 — real Claude Code: invoke /chameleon-trust as a slash command
           before granting (per the skill flow doc).
 """
 
-import hashlib
 import json
 import os
 import shutil
@@ -16,7 +15,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from _test_config import TS_REPO, RUBY_REPO
+
+from _test_config import RUBY_REPO, TS_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -32,9 +32,8 @@ def section(title):
     print(f"\n=== {title} ===")
 
 
-from chameleon_mcp.tools import bootstrap_repo, trust_profile, _compute_repo_id
 from chameleon_mcp.profile.trust import revoke_trust, trust_state_for
-
+from chameleon_mcp.tools import _compute_repo_id, bootstrap_repo, trust_profile
 
 # Ensure both test repos bootstrapped
 for repo in (TS_REPO, RUBY_REPO):
@@ -100,9 +99,11 @@ with tempfile.TemporaryDirectory() as tmp:
     no_profile = Path(tmp) / "no_profile_repo"
     no_profile.mkdir()
     r = trust_profile(str(no_profile), no_profile.name)
+    err = r["data"].get("error", "")
     t(
         "Trust without .chameleon/profile.json rejected",
-        r["data"]["status"] == "failed" and "no profile" in r["data"]["error"],
+        r["data"]["status"] == "failed"
+        and ("no profile" in err or "no .chameleon/" in err or "no profile.json" in err),
     )
 
 
@@ -145,7 +146,7 @@ else:
                 "--max-turns", "10",
                 "--verbose",
                 "--allowedTools",
-                f"Bash Read mcp__plugin_chameleon_chameleon-mcp__trust_profile mcp__plugin_chameleon_chameleon-mcp__detect_repo",
+                "Bash Read mcp__plugin_chameleon_chameleon-mcp__trust_profile mcp__plugin_chameleon_chameleon-mcp__detect_repo",
             ],
             cwd=str(repo_root),
             capture_output=True,

@@ -12,9 +12,9 @@ import os
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 from unittest import mock
+
 from _test_config import TS_REPO
 
 PASS, FAIL = [], []
@@ -37,7 +37,6 @@ from chameleon_mcp.exec_log import (
     append_exec_log,
     verify_exec_log_line,
 )
-
 
 # ---------------------------------------------------------------------------
 # Round 1 — first-time generation creates key with mode 0600
@@ -169,11 +168,11 @@ with tempfile.TemporaryDirectory() as tmp:
     all_succeeded = all(p.returncode == 0 for p in procs)
     all_same = len(set(keys)) == 1 and len(keys[0]) == 32
     t(
-        f"5 concurrent _ensure_hmac_key calls all succeed",
+        "5 concurrent _ensure_hmac_key calls all succeed",
         all_succeeded,
     )
     t(
-        f"All 5 concurrent calls return identical key",
+        "All 5 concurrent calls return identical key",
         all_same,
     )
 

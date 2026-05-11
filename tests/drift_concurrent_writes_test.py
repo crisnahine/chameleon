@@ -44,6 +44,7 @@ TS_REPO = require_repo(TS_REPO, "TypeScript")
 
 # Bootstrap + trust to make sure we have a clean profile to observe against.
 from chameleon_mcp.tools import bootstrap_repo, trust_profile
+
 if not (TS_REPO / ".chameleon" / "profile.json").is_file():
     bootstrap_repo(str(TS_REPO))
 trust_profile(str(TS_REPO), TS_REPO.name)
@@ -62,7 +63,8 @@ for arch_entries in canonicals["canonicals"].values():
 
 print(f"Using {len(witness_paths)} canonical witness paths as edit targets")
 
-repo_id = hashlib.sha256(str(TS_REPO.resolve()).encode("utf-8")).hexdigest()
+from chameleon_mcp.tools import _compute_repo_id as _compute_repo_id_v6  # noqa: E402
+repo_id = _compute_repo_id_v6(TS_REPO)
 
 
 def count_observations(drift_db: Path) -> int:

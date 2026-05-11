@@ -13,9 +13,9 @@ import shutil
 import sqlite3
 import sys
 import tempfile
-import time
 from pathlib import Path
-from _test_config import TS_REPO, RUBY_REPO
+
+from _test_config import RUBY_REPO, TS_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -34,9 +34,12 @@ def section(title):
 # Preconditions — order-independent: ensure both test repos are bootstrapped
 # + trusted before any test that reads their .chameleon state.
 import os as _os
+
 if _os.environ.get("CHAMELEON_PLUGIN_DATA"):
     del _os.environ["CHAMELEON_PLUGIN_DATA"]
-from chameleon_mcp.tools import bootstrap_repo as _bs, trust_profile as _tp
+from chameleon_mcp.tools import bootstrap_repo as _bs
+from chameleon_mcp.tools import trust_profile as _tp
+
 if not (TS_REPO / ".chameleon" / "profile.json").is_file():
     _bs(str(TS_REPO))
 _tp(str(TS_REPO), "client")
@@ -51,13 +54,14 @@ if RUBY_REPO.is_dir():
 # ---------------------------------------------------------------------------
 section("Round 1 — drift.db unit tests")
 
+import os
+
 from chameleon_mcp.drift.observations import (
+    _drift_db_path,
     compute_drift_score,
     record_edit_observation,
-    _drift_db_path,
 )
 
-import os
 with tempfile.TemporaryDirectory() as tmp:
     os.environ["CHAMELEON_PLUGIN_DATA"] = tmp
     repo_id = "drift-test-" + hashlib.sha256(b"x").hexdigest()[:16]
@@ -219,7 +223,8 @@ with tempfile.TemporaryDirectory() as plugin_data_tmp:
             env=env,
         )
 
-    repo_id = hashlib.sha256(str(TS_REPO.resolve()).encode("utf-8")).hexdigest()
+    from chameleon_mcp.tools import _compute_repo_id as _compute_repo_id_v6
+    repo_id = _compute_repo_id_v6(TS_REPO)
     db_path = Path(plugin_data_tmp) / repo_id / "drift.db"
     t(f"drift.db created at expected path ({db_path})", db_path.is_file())
 

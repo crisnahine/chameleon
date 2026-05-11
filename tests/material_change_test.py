@@ -11,14 +11,11 @@ Round 2 — preflight-and-advise hook surfaces the re-trust note in
           additionalContext when trust_state="stale".
 """
 
-import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 PASS, FAIL = [], []
@@ -35,12 +32,16 @@ def section(title):
     print(f"\n=== {title} ===")
 
 
-from chameleon_mcp.tools import (
-    _compute_repo_id, bootstrap_repo, detect_repo, get_pattern_context,
-    trust_profile,
-)
 from chameleon_mcp.profile.trust import (
-    is_material_change, revoke_trust, trust_state_for,
+    is_material_change,
+    revoke_trust,
+)
+from chameleon_mcp.tools import (
+    _compute_repo_id,
+    bootstrap_repo,
+    detect_repo,
+    get_pattern_context,
+    trust_profile,
 )
 
 

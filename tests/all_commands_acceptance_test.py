@@ -15,12 +15,12 @@ Skipped automatically if `claude` CLI is not on PATH.
 """
 
 import json
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from _test_config import TS_REPO, RUBY_REPO
+
+from _test_config import RUBY_REPO, TS_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -78,6 +78,7 @@ if shutil.which("claude") is None:
 
 # Ensure both test repos are bootstrapped + trusted
 from chameleon_mcp.tools import bootstrap_repo, trust_profile
+
 for label, repo_root, _ in ACCEPTANCE_TARGETS:
     if not repo_root.is_dir():
         continue
@@ -202,7 +203,8 @@ for label, repo_root, sample_rel in ACCEPTANCE_TARGETS:
     repo_path = str(repo_root)
 
     # Get repo_id, archetype upfront for tool args
-    from chameleon_mcp.tools import detect_repo as _det, get_pattern_context as _gpc
+    from chameleon_mcp.tools import detect_repo as _det
+    from chameleon_mcp.tools import get_pattern_context as _gpc
 
     rid = _det(sample_abs)["data"]["repo_id"]
     arch_name = (_gpc(sample_abs)["data"].get("archetype") or {}).get("archetype")

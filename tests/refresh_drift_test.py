@@ -16,7 +16,6 @@ import json
 import shutil
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 PASS, FAIL = [], []
@@ -32,14 +31,15 @@ def section(title):
     print(f"\n=== {title} ===")
 
 
-from chameleon_mcp.tools import (
-    _compute_repo_id, bootstrap_repo, get_drift_status, refresh_repo,
-    trust_profile,
-)
 from chameleon_mcp.drift.observations import (
-    compute_drift_score, record_edit_observation,
+    compute_drift_score,
+    record_edit_observation,
 )
-
+from chameleon_mcp.tools import (
+    bootstrap_repo,
+    get_drift_status,
+    refresh_repo,
+)
 
 # ---------------------------------------------------------------------------
 # Round 1 — refresh detects new archetypes after material change
@@ -160,6 +160,7 @@ with tempfile.TemporaryDirectory() as tmp:
 section("Round 2 — drift score reflects observation history")
 
 import os
+
 with tempfile.TemporaryDirectory() as tmp:
     os.environ["CHAMELEON_PLUGIN_DATA"] = tmp
     rid = "drift-score-test-" + hashlib.sha256(b"drift").hexdigest()[:16]

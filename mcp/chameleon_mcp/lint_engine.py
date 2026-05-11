@@ -1,5 +1,5 @@
-"""Lint engine — compare a file's AST-shape dimensions against an archetype's
-canonical `ast_query` and emit violations.
+r"""Lint engine — compare a file's AST-shape dimensions against an archetype's
+canonical `ast_query` and emit violations, AND scan content for secrets.
 
 Phase 4.1 (v0.3): regex-heuristic extraction. The cluster signature function
 in `signatures.py` operates on a real ParsedFile produced by the long-lived
@@ -8,6 +8,12 @@ subprocess for every lint_file call would dominate latency (cold-start cost
 of ~200ms per Node spawn, plus the `npm install` first-run trip), so for v0.3
 the lint engine derives the same dimensions from the raw `content` string via
 language-specific regex heuristics.
+
+v0.4 (4.8) adds a `secret-detected-in-content` rule wired to the bootstrap
+`detect-secrets` integration. The rule fires regardless of `ast_query` —
+even files without an archetype get scanned — and emits a violation per
+detected secret, capped at 50 per file to avoid the engine blowing up on
+a key dump.
 
 Trade-offs of the heuristic approach:
 
@@ -635,3 +641,81 @@ def canonical_confidence(snapshot: DimensionSnapshot, ast_query: dict | None) ->
     if not checks:
         return 1.0
     return sum(1 for c in checks if c) / len(checks)
+
+
+# -----------------------------------------------------------------------------
+# Public API: scan_secrets (v0.4 — 4.8)
+# -----------------------------------------------------------------------------
+
+
+# Hard cap on the number of secret violations a single lint_file call
+# returns. A real key dump or a giant accidental commit could trip dozens
+# of patterns per line — we want the model to see "this file has secrets"
+# without exhausting the response token budget.
+MAX_SECRETS_PER_FILE = 50
+
+
+def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> list[Violation]:
+    """Return one Violation per detected secret in `content`.
+
+    Wires the bootstrap-time `detect-secrets` integration (see
+    `profile/secret_scanner.scan_for_secrets`) into the edit-time lint path
+    so files that introduce hardcoded credentials are flagged before they
+    reach the model's output. Severity is `error` (this is a real security
+    issue, not a style mismatch); the rule fires regardless of whether the
+    file has an archetype, so even out-of-tree edits are covered.
+
+    Caps the result at `max_results` to avoid blowing up on a dump-style
+    file. When the cap is hit we still report the cap so the caller can
+    surface "and 17 more". Pure function — no I/O.
+    """
+    if not content:
+        return []
+    from chameleon_mcp.profile.secret_scanner import scan_for_secrets
+
+    hits = scan_for_secrets(content)
+    if not hits:
+        return []
+
+    violations: list[Violation] = []
+    capped = hits[:max_results]
+    for hit in capped:
+        location: str
+        if "line_number" in hit and hit.get("line_number") is not None:
+            location = f"line {hit['line_number']}"
+        elif "position" in hit and hit.get("position") is not None:
+            location = f"position {hit['position']}"
+        else:
+            location = "unknown location"
+        kind = str(hit.get("type") or "unknown")
+        violations.append(
+            Violation(
+                rule="secret-detected-in-content",
+                expected="<no secret>",
+                actual=f"{kind} at {location}",
+                severity="error",
+                message=(
+                    f"detect-secrets flagged a {kind} at {location}. "
+                    "Never commit credentials — rotate the secret and move it "
+                    "to an environment variable or a secret manager."
+                ),
+            )
+        )
+
+    if len(hits) > len(capped):
+        remaining = len(hits) - len(capped)
+        violations.append(
+            Violation(
+                rule="secret-detected-in-content",
+                expected="<no secrets beyond the cap>",
+                actual=f"+{remaining} more (capped at {max_results})",
+                severity="error",
+                message=(
+                    f"file contains {len(hits)} potential secrets; reporting "
+                    f"the first {max_results}. Treat this file as compromised "
+                    "and rotate every credential it touched."
+                ),
+            )
+        )
+
+    return violations

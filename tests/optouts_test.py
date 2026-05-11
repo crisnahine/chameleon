@@ -15,10 +15,9 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
 from _test_config import TS_REPO
 
 PASS, FAIL = [], []
@@ -35,21 +34,27 @@ def section(title):
     print(f"\n=== {title} ===")
 
 
-from chameleon_mcp.tools import (
-    bootstrap_repo, disable_session, pause_session, trust_profile,
-)
 from chameleon_mcp.optouts import (
-    clear_pause, clear_session_disable, is_chameleon_suppressed,
-    write_pause, write_session_disable,
+    clear_pause,
+    clear_session_disable,
+    is_chameleon_suppressed,
+    write_pause,
+    write_session_disable,
 )
 from chameleon_mcp.profile.trust import repo_data_dir
-
+from chameleon_mcp.tools import (
+    bootstrap_repo,
+    disable_session,
+    pause_session,
+    trust_profile,
+)
 
 # Ensure the TypeScript repo is bootstrapped + trusted
 if not (TS_REPO / ".chameleon" / "profile.json").is_file():
     bootstrap_repo(str(TS_REPO))
 trust_profile(str(TS_REPO), "client")
-client_repo_id = hashlib.sha256(str(TS_REPO.resolve()).encode("utf-8")).hexdigest()
+from chameleon_mcp.tools import _compute_repo_id as _compute_repo_id_v6  # noqa: E402
+client_repo_id = _compute_repo_id_v6(TS_REPO)
 
 
 def run_preflight(file_path: str, session_id: str = "optouts-test") -> dict:
@@ -141,7 +146,7 @@ try:
     t("pause_until in future → empty hook response", out == {})
 
     # Pause in PAST should NOT suppress + should auto-clean
-    past = (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    past = (datetime.now(UTC) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
     pause_path = repo_data_dir(client_repo_id) / ".pause_until"
     pause_path.write_text(past)
     out = run_preflight(sample_ts)

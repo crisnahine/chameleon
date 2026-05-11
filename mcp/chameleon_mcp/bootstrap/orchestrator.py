@@ -23,7 +23,6 @@ interview.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from dataclasses import dataclass, field
@@ -69,8 +68,8 @@ def _glob_for_extractor(extractor: Extractor) -> str:
         return "**/*.rb"
     return "**/*.{ts,tsx,js,jsx,mjs,cjs}"
 
-PROFILE_SCHEMA_VERSION = 5
-ENGINE_MIN_VERSION = "0.2.0"
+PROFILE_SCHEMA_VERSION = 6
+ENGINE_MIN_VERSION = "0.4.0"
 
 
 @dataclass
@@ -102,6 +101,14 @@ class BootstrapReport:
     "distributions": {dim: {value_str: count}}}. The future interview UI uses
     these to offer a manual split.
     """
+    workspace_reports: list[dict] = field(default_factory=list)
+    """v0.4 (2D.3): per-workspace bootstrap summaries for monorepos.
+
+    Each entry mirrors the root report shape: {"workspace_path": str,
+    "repo_id": str, "profile_dir": str, "repo_root": str, "status": str,
+    "archetypes_detected": int, "files_processed": int, "duration_ms": int,
+    "error": str | None}. Empty list for non-monorepo repos.
+    """
 
     def to_dict(self) -> dict:
         return {
@@ -118,6 +125,7 @@ class BootstrapReport:
             "error": self.error,
             "sparse_cluster_warnings": list(self.sparse_cluster_warnings),
             "bimodal_cluster_warnings": list(self.bimodal_cluster_warnings),
+            "workspaces": list(self.workspace_reports),
         }
 
 
@@ -126,11 +134,14 @@ def _compute_repo_id(repo_root: Path) -> str:
     sha256(canonicalize(git_remote_url)) if remote present, else
     sha256(canonicalize_path(repo_root)).
 
-    Phase 2B simplified: always uses canonical absolute path. Phase 2C
-    integrates git remote URL detection.
+    v0.4 (4.6): delegates to `tools._compute_repo_id` so the orchestrator
+    and the MCP tool layer can never disagree on the canonical id — a
+    drift the v0.1–v0.3 code path tolerated only because the two
+    implementations happened to be byte-identical.
     """
-    canonical = str(repo_root.resolve())
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    from chameleon_mcp.tools import _compute_repo_id as _tools_compute_repo_id
+
+    return _tools_compute_repo_id(repo_root)
 
 
 def _generation_counter(now: float | None = None) -> int:
@@ -245,13 +256,172 @@ def bootstrap_repo(
     Phase 2B emits a non-interactive profile. Phase 2D wraps this with the
     interactive interview flow.
 
+    v0.4 (2D.3): when `detect_workspace` returns one or more workspace_paths
+    (pnpm/yarn/lerna/turbo/nx), this also runs the full pipeline per
+    workspace and writes a `.chameleon/` to each workspace root in addition
+    to the repo-root profile. The repo-root profile catalogs the workspaces
+    in `profile.json.workspaces` so `/chameleon-list-profiles` and the
+    trust resolution layer can find them. Non-monorepo repos
+    (`workspace_paths == []`) bootstrap unchanged.
+
     Args:
         repo_root: absolute path to repo root (resolved before passing in)
         paths_glob: optional user-supplied scope override
         profile_dir_name: name of the committed profile dir (default ".chameleon")
 
     Returns:
-        BootstrapReport summarizing the run.
+        BootstrapReport summarizing the run. `workspace_reports` lists the
+        per-workspace outcomes when applicable.
+    """
+    report = _bootstrap_single(
+        repo_root,
+        paths_glob=paths_glob,
+        profile_dir_name=profile_dir_name,
+    )
+
+    if report.status != "success":
+        return report
+
+    # v0.4 2D.3: per-workspace bootstrap. We re-detect the workspace from
+    # the freshly committed root profile rather than re-walking the
+    # filesystem so the catalog and the per-workspace runs see consistent
+    # state. The workspace paths are an architecture-defined input to the
+    # bootstrap pipeline, so cycling them here is safe even when the root
+    # discovery glob didn't include them.
+    workspace = detect_workspace(repo_root)
+    if not workspace.has_workspaces:
+        return report
+
+    workspace_reports: list[dict] = []
+    for ws_path in workspace.workspace_paths:
+        ws_root = ws_path.resolve()
+        # Skip a workspace that happens to ALIAS the repo root (defensive —
+        # `apps/.` style paths would otherwise re-bootstrap the root and
+        # clobber the just-written profile).
+        try:
+            if ws_root == repo_root.resolve():
+                continue
+        except OSError:
+            continue
+        # Per-workspace bootstrap. Use a workspace-local glob so the
+        # extractor only walks files inside the workspace; pass paths_glob
+        # through so the user-supplied scope override still applies if set.
+        ws_report = _bootstrap_single(
+            ws_root,
+            paths_glob=paths_glob,
+            profile_dir_name=profile_dir_name,
+        )
+        from chameleon_mcp.tools import _compute_repo_id as _id
+
+        workspace_reports.append({
+            "workspace_path": str(ws_path),
+            "repo_root": str(ws_root),
+            "repo_id": _id(ws_root),
+            "profile_dir": (
+                str(ws_report.profile_path) if ws_report.profile_path else None
+            ),
+            "status": ws_report.status,
+            "archetypes_detected": ws_report.archetypes_detected,
+            "files_processed": ws_report.files_processed,
+            "duration_ms": ws_report.duration_ms,
+            "error": ws_report.error,
+        })
+
+    # Mutate the report to attach the per-workspace summaries AND amend
+    # profile.json to advertise the workspaces. The amendment goes through
+    # a second atomic_profile_commit so the loader's double-fstat check
+    # never sees a half-written profile.
+    if workspace_reports:
+        report.workspace_reports = workspace_reports
+        _amend_root_profile_with_workspaces(
+            repo_root / profile_dir_name, workspace_reports
+        )
+
+    return report
+
+
+def _amend_root_profile_with_workspaces(
+    profile_dir: Path, workspace_reports: list[dict]
+) -> None:
+    """Re-write profile.json with a `workspaces` array describing each
+    successfully bootstrapped sub-workspace.
+
+    Wraps the rewrite in the same atomic_profile_commit transaction the
+    initial bootstrap used so concurrent loaders never see a half-written
+    profile. The other four JSON artifacts + idioms.md + summary are
+    re-read from the existing committed profile and re-emitted verbatim
+    inside the new txn so the generation counter stays consistent across
+    files (the loader's double-fstat check requires it).
+    """
+    profile_path = profile_dir / "profile.json"
+    if not profile_path.is_file():
+        return
+
+    try:
+        profile_data = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+
+    profile_data["workspaces"] = [
+        {
+            "workspace_path": w["workspace_path"],
+            "repo_id": w["repo_id"],
+            "profile_dir": w["profile_dir"],
+            "status": w["status"],
+        }
+        for w in workspace_reports
+    ]
+
+    # Read sibling artifacts so we can re-emit them inside the new txn
+    # with the SAME generation counter (the loader verifies all four match).
+    artifact_names = ("archetypes.json", "canonicals.json", "rules.json")
+    siblings: dict[str, str] = {}
+    for name in artifact_names:
+        path = profile_dir / name
+        try:
+            siblings[name] = path.read_text(encoding="utf-8")
+        except OSError:
+            return  # Corrupt profile — leave alone.
+
+    idioms_text: str
+    idioms_path = profile_dir / "idioms.md"
+    try:
+        idioms_text = (
+            idioms_path.read_text(encoding="utf-8") if idioms_path.is_file() else ""
+        )
+    except OSError:
+        idioms_text = ""
+
+    summary_path = profile_dir / "profile.summary.md"
+    try:
+        summary_text = (
+            summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
+        )
+    except OSError:
+        summary_text = ""
+
+    with atomic_profile_commit(profile_dir) as txn_dir:
+        (txn_dir / "profile.json").write_text(
+            json.dumps(profile_data, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        for name, body in siblings.items():
+            (txn_dir / name).write_text(body, encoding="utf-8")
+        (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
+        (txn_dir / "profile.summary.md").write_text(summary_text, encoding="utf-8")
+
+
+def _bootstrap_single(
+    repo_root: Path,
+    *,
+    paths_glob: str | None = None,
+    profile_dir_name: str = ".chameleon",
+) -> BootstrapReport:
+    """The original (v0.3) single-target bootstrap pipeline.
+
+    Extracted so the v0.4 monorepo loop can call it once per workspace
+    without duplicating the discovery → cluster → canonical → commit
+    plumbing. Behavior on a non-monorepo repo is byte-identical to the
+    pre-v0.4 implementation.
     """
     started_at = time.time()
     profile_dir = repo_root / profile_dir_name

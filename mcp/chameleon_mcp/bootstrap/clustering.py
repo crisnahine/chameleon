@@ -18,9 +18,9 @@ hides a real split the bootstrap interview should surface.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 from chameleon_mcp.extractors._base import ParsedFile
 from chameleon_mcp.signatures import ClusterKey, bucket_named_export_count, compute_signature

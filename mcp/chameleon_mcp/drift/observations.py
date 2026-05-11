@@ -19,7 +19,6 @@ from pathlib import Path
 from chameleon_mcp.drift.schema import init_drift_db
 from chameleon_mcp.profile.trust import plugin_data_dir
 
-
 _CONFIDENCE_BAND_TO_FLOAT = {
     "high": 0.95,
     "medium": 0.7,

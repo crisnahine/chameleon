@@ -17,8 +17,9 @@ import os
 import shutil
 import subprocess
 import sys
-import xxhash
 from pathlib import Path
+
+import xxhash
 
 from chameleon_mcp.extractors._base import Extractor, ParsedFile, ParseResult
 from chameleon_mcp.plugin_paths import plugin_root

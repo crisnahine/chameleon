@@ -22,12 +22,12 @@ hooks, or trust storage paths.
 """
 
 import json
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from _test_config import TS_REPO, RUBY_REPO
+
+from _test_config import RUBY_REPO, TS_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -60,6 +60,7 @@ if shutil.which("claude") is None:
 
 # Ensure both test repos are bootstrapped + trusted before we run
 from chameleon_mcp.tools import bootstrap_repo, trust_profile
+
 for label, repo_root, _, _ in ACCEPTANCE_TARGETS:
     if not repo_root.is_dir():
         continue

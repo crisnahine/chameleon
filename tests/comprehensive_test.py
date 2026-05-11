@@ -9,7 +9,6 @@ every helper, and every documented invariant against real code.
 """
 
 import hashlib
-import io
 import json
 import os
 import subprocess
@@ -20,7 +19,8 @@ from pathlib import Path
 
 PASS, FAIL = [], []
 
-from _test_config import TS_REPO, RUBY_REPO
+from _test_config import RUBY_REPO, TS_REPO
+
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = PLUGIN_ROOT / "scripts"
 HOOKS = PLUGIN_ROOT / "hooks"
@@ -51,7 +51,8 @@ for _stale_env in ("TMPDIR", "CHAMELEON_HOME", "CHAMELEON_PLUGIN_DATA"):
         # a crashed earlier test. (macOS TMPDIR lives under /var/folders.)
         pass
 
-from chameleon_mcp.tools import bootstrap_repo as _bootstrap, trust_profile as _trust
+from chameleon_mcp.tools import bootstrap_repo as _bootstrap
+from chameleon_mcp.tools import trust_profile as _trust
 
 if not (TS_REPO / ".chameleon" / "profile.json").is_file():
     _bootstrap(str(TS_REPO))
@@ -140,10 +141,10 @@ t(
 # ---------------------------------------------------------------------------
 section("Bootstrap idempotence (deterministic profiles)")
 
-from chameleon_mcp.tools import bootstrap_repo
-
 # Wipe + bootstrap the TypeScript repo twice
 import shutil
+
+from chameleon_mcp.tools import bootstrap_repo
 
 shutil.rmtree(TS_REPO / ".chameleon", ignore_errors=True)
 r1 = bootstrap_repo(str(TS_REPO))["data"]
@@ -155,6 +156,7 @@ profile2_archetypes_json = (TS_REPO / ".chameleon" / "archetypes.json").read_tex
 
 # Generation counter differs (it's a timestamp); but the archetype data should match.
 import re
+
 
 def strip_generation(text):
     return re.sub(r'"generation":\s*\d+', '"generation": 0', text)
@@ -420,11 +422,17 @@ t(
 section("Trust material-change detection")
 
 from chameleon_mcp.profile.trust import (
-    grant_trust, hash_profile, is_material_change, repo_data_dir,
+    grant_trust,
+    is_material_change,
     trust_state_for,
 )
 
-repo_id = hashlib.sha256(str(TS_REPO.resolve()).encode()).hexdigest()
+# v0.4 schema v6: repo_id is derived via _compute_repo_id (git remote URL
+# preferred). Defer to the canonical helper so the test never disagrees
+# with the production code path.
+from chameleon_mcp.tools import _compute_repo_id as _compute_repo_id_v6  # noqa: E402
+
+repo_id = _compute_repo_id_v6(TS_REPO)
 profile_dir = TS_REPO / ".chameleon"
 record = grant_trust(repo_id, profile_dir)
 t("grant_trust returns record", record.profile_sha256 != "")
@@ -663,7 +671,6 @@ t("the TypeScript repo trust_state == trusted", r["data"]["trust_state"] == "tru
 section("Atomic transaction orphan cleanup")
 
 from chameleon_mcp.bootstrap.transaction import (
-    atomic_profile_commit,
     cleanup_orphan_tmp_dirs,
 )
 
@@ -737,7 +744,6 @@ with tempfile.TemporaryDirectory() as tmp:
 # ---------------------------------------------------------------------------
 section("Sanitization across all dangerous tokens")
 
-from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
 dangerous_inputs = [
     ("</chameleon-context>", "</chameleon-context>"),
@@ -795,7 +801,10 @@ t(
 section("HMAC exec log integrity")
 
 from chameleon_mcp.exec_log import (
-    _exec_log_dir, append_exec_log, gc_old_logs, verify_exec_log_line,
+    _exec_log_dir,
+    append_exec_log,
+    gc_old_logs,
+    verify_exec_log_line,
 )
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -1035,7 +1044,7 @@ section("Sanitization preserves clean code")
 
 clean_code = (TS_REPO / "src" / "utils" / "balanceTransaction.ts").read_text()
 sanitized = sanitize_for_chameleon_context(clean_code)
-diff_chars = sum(1 for a, b in zip(clean_code, sanitized) if a != b)
+diff_chars = sum(1 for a, b in zip(clean_code, sanitized, strict=False) if a != b)
 t(
     f"Real the test repo code largely untouched ({diff_chars}/{len(clean_code)} char diff)",
     diff_chars < 50,
@@ -1247,7 +1256,7 @@ from chameleon_mcp.tools import get_canonical_excerpt
 # Find a known archetype name from the the TypeScript repo profile
 profile = json.loads((TS_REPO / ".chameleon" / "archetypes.json").read_text())
 first_arch = next(iter(profile["archetypes"].keys()))
-client_repo_id = hashlib.sha256(str(TS_REPO.resolve()).encode("utf-8")).hexdigest()
+client_repo_id = _compute_repo_id_v6(TS_REPO)
 r = get_canonical_excerpt(client_repo_id, first_arch)
 data = r.get("data", {})
 content = data.get("content") or ""
@@ -1310,7 +1319,7 @@ trust_profile(str(TS_REPO), "client")
 # ---------------------------------------------------------------------------
 section("HMAC key file permissions")
 
-from chameleon_mcp.exec_log import _ensure_hmac_key, HMAC_KEY_PATH
+from chameleon_mcp.exec_log import HMAC_KEY_PATH, _ensure_hmac_key
 
 _ensure_hmac_key()
 if HMAC_KEY_PATH.is_file():
@@ -1743,8 +1752,8 @@ t(
     "schema_version" in profile_data,
 )
 t(
-    "profile.json schema_version is in v3-v5 range",
-    profile_data.get("schema_version") in (3, 4, 5),
+    "profile.json schema_version is in v3-v6 range",
+    profile_data.get("schema_version") in (3, 4, 5, 6),
 )
 
 

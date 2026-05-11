@@ -16,8 +16,10 @@ from chameleon_mcp import tools
 mcp = FastMCP("chameleon-mcp")
 
 
-# Register all 12 MCP tools (Phase 1C stubs return hardcoded valid-shape values).
+# Register all 18 MCP tools (Phase 1C stubs return hardcoded valid-shape values).
 # Real implementations land in Phase 2 (bootstrap + extractor) and Phase 4 (security).
+# Phase 2D.1 added propose_archetype_renames + apply_archetype_renames.
+# Phase 2D.4 added teach_profile_structured.
 
 
 @mcp.tool()
@@ -169,6 +171,64 @@ def pause_session(repo: str, minutes: int = 15) -> dict:
     Per /chameleon-pause-15m. Auto-expires when the timestamp passes.
     """
     return tools.pause_session(repo, minutes)
+
+
+@mcp.tool()
+def propose_archetype_renames(repo: str, top_n: int = 8) -> dict:
+    """Suggest better names for the top-N largest archetypes in the profile.
+
+    Drives the /chameleon-init interview's rename step. For each archetype
+    the response carries the current name, cluster_size, canonical file,
+    and 3-5 candidate alternative names derived from the canonical filename,
+    paths_pattern tail, and top-level node kinds.
+
+    The MCP is stateless — the chameleon-init skill collects user choices
+    and submits them as a single mapping via apply_archetype_renames.
+    """
+    return tools.propose_archetype_renames(repo, top_n)
+
+
+@mcp.tool()
+def apply_archetype_renames(repo: str, renames: dict) -> dict:
+    """Apply an archetype rename mapping atomically.
+
+    Rewrites archetypes.json + canonicals.json + rules.json keys (where
+    keyed by archetype) and regenerates profile.summary.md. Wrapped in
+    atomic_profile_commit so a crash mid-write leaves the previous profile
+    untouched.
+
+    Returns {status, renames_applied, new_profile_sha256}.
+    """
+    return tools.apply_archetype_renames(repo, renames)
+
+
+@mcp.tool()
+def teach_profile_structured(
+    repo: str,
+    slug: str,
+    rationale: str,
+    example: str | None = None,
+    counterexample: str | None = None,
+    archetype: str | None = None,
+    status: str = "active",
+) -> dict:
+    """Structured-form idiom capture for /chameleon-teach.
+
+    Validates slug regex (`^[a-z][a-z0-9-]{2,63}$`), enforces a 50KB cap on
+    rationale + example + counterexample combined, renders to idioms.md in
+    the same format as free-form teach_profile, and delegates to
+    teach_profile for the downstream protections (advisory lock,
+    sanitization, placeholder strip).
+    """
+    return tools.teach_profile_structured(
+        repo,
+        slug=slug,
+        rationale=rationale,
+        example=example,
+        counterexample=counterexample,
+        archetype=archetype,
+        status=status,
+    )
 
 
 def main() -> None:

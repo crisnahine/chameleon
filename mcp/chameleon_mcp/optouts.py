@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from chameleon_mcp.profile.trust import repo_data_dir
@@ -87,8 +87,8 @@ def clear_session_disable(repo_id: str, session_id: str) -> bool:
 
 def write_pause(repo_id: str, minutes: int = 15) -> str:
     """Write a .pause_until file with expiry = now + minutes. Returns ISO timestamp."""
-    expiry = datetime.now(timezone.utc).timestamp() + minutes * 60
-    expiry_iso = datetime.fromtimestamp(expiry, tz=timezone.utc).strftime(
+    expiry = datetime.now(UTC).timestamp() + minutes * 60
+    expiry_iso = datetime.fromtimestamp(expiry, tz=UTC).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
     pause_path = repo_data_dir(repo_id) / ".pause_until"

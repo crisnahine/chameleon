@@ -52,7 +52,6 @@ def section(name: str) -> None:
 from chameleon_mcp.bootstrap.canonical import (  # noqa: E402
     RECENCY_WEIGHT_MULTIPLIER,
     RECENCY_WINDOW_DAYS,
-    CanonicalSelection,
     _file_recency_weight,
     derive_ast_query,
     select_canonicals,
@@ -61,7 +60,6 @@ from chameleon_mcp.bootstrap.clustering import (  # noqa: E402
     BIMODAL_DOMINANT_SHARE_THRESHOLD,
     SPARSE_CLUSTER_THRESHOLD,
     Cluster,
-    cluster_files,
 )
 from chameleon_mcp.bootstrap.orchestrator import (  # noqa: E402
     _build_bimodal_warnings,
@@ -370,7 +368,7 @@ try:
     os.utime(over, (now - 91 * 86400, now - 91 * 86400))
     w_over = _file_recency_weight(over, now=now)
     t(
-        f"file 91 days old weights 1.0x (past window)",
+        "file 91 days old weights 1.0x (past window)",
         w_over == 1.0,
         f"got {w_over}",
     )

@@ -14,9 +14,9 @@ import json
 import sys
 from pathlib import Path
 
+from _test_config import TS_REPO
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from _test_config import TS_REPO, RUBY_REPO
 
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
@@ -39,6 +39,10 @@ EXPECTED_TOOLS = {
     "get_drift_status", "refresh_repo", "bootstrap_repo",
     "list_profiles", "merge_profiles", "teach_profile", "trust_profile",
     "disable_session", "pause_session",
+    # Phase 2D.1 — interactive rename interview
+    "propose_archetype_renames", "apply_archetype_renames",
+    # Phase 2D.4 — structured idiom capture
+    "teach_profile_structured",
 }
 
 
@@ -202,7 +206,7 @@ async def run_protocol_test():
             )
             data = json.loads(r.content[0].text)
             t(
-                f"call_tool list_profiles returns ≥2 profiles",
+                "call_tool list_profiles returns ≥2 profiles",
                 len(data.get("data", {}).get("profiles") or []) >= 2,
             )
 
