@@ -74,7 +74,16 @@ class TypeScriptExtractor:
             )
 
     def can_handle(self, repo_root: Path) -> bool:
-        """Detect TS via tsconfig.json or package.json with TS-related deps."""
+        """Detect TS via tsconfig.json or package.json with TS-related deps.
+
+        BUG-010 (v0.5.6): also accept "any *.ts/*.tsx file in the
+        workspace" as a signal. Hoisted-deps monorepos (excalidraw's
+        excalidraw-app, Nx-style packages where every TS dep lives at the
+        root) have workspaces whose own package.json carries no TS deps
+        and whose own dir has no tsconfig — yet the workspace is clearly
+        TS. The shallow scan is bounded (depth 3, capped at 50 files)
+        so a pathological tree can't hang detection.
+        """
         if (repo_root / "tsconfig.json").exists():
             return True
         package_json = repo_root / "package.json"
@@ -82,9 +91,16 @@ class TypeScriptExtractor:
             try:
                 content = package_json.read_text(errors="replace")
             except OSError:
-                return False
-            return any(token in content for token in ("typescript", '"ts-node"', '"vite"'))
-        return False
+                pass
+            else:
+                if any(token in content for token in ("typescript", '"ts-node"', '"vite"')):
+                    return True
+        # BUG-010 fallback: any .ts/.tsx file within depth 3 of the root.
+        return _has_typescript_source_files(repo_root, max_depth=3, max_found=50)
+
+    @staticmethod
+    def _shallow_ts_scan(repo_root: Path) -> bool:  # pragma: no cover - thin alias
+        return _has_typescript_source_files(repo_root, max_depth=3, max_found=50)
 
     def parse_repo(
         self,
@@ -226,6 +242,63 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
         parse_diagnostics_count=int(record.get("parse_diagnostics_count", 0)),
         sha_hint=sha_hint,
     )
+
+
+def _has_typescript_source_files(
+    repo_root: Path, *, max_depth: int = 3, max_found: int = 50
+) -> bool:
+    """Shallow-walk to find any .ts/.tsx file (BUG-010 detection fallback).
+
+    Bounded by depth and total files found so a giant tree can't hang
+    detection. Skips conventional ignore dirs to avoid wasting walks on
+    node_modules / dist / .git / etc.
+    """
+    if not repo_root.is_dir():
+        return False
+    ignore_dirs = {
+        ".git",
+        ".chameleon",
+        "node_modules",
+        "dist",
+        "build",
+        "coverage",
+        ".next",
+        ".turbo",
+        ".cache",
+        "__pycache__",
+        ".venv",
+        "vendor",
+    }
+    found = 0
+    # Walk breadth-first up to max_depth so shallow .ts files are found
+    # before paying for any deep descent.
+    frontier: list[tuple[Path, int]] = [(repo_root, 0)]
+    while frontier:
+        next_frontier: list[tuple[Path, int]] = []
+        for current, depth in frontier:
+            try:
+                entries = list(current.iterdir())
+            except (OSError, PermissionError):
+                continue
+            for entry in entries:
+                name = entry.name
+                try:
+                    is_dir = entry.is_dir()
+                except OSError:
+                    continue
+                if is_dir:
+                    if name in ignore_dirs or name.startswith("."):
+                        continue
+                    if depth + 1 <= max_depth:
+                        next_frontier.append((entry, depth + 1))
+                else:
+                    if name.endswith(".ts") or name.endswith(".tsx"):
+                        # One hit is enough — anything > 0 means TS.
+                        return True
+            if found >= max_found:
+                return True
+        frontier = next_frontier
+    return found > 0
 
 
 # Verify protocol conformance at import time
