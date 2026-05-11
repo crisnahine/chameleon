@@ -31,7 +31,6 @@ from pathlib import Path
 from chameleon_mcp.bootstrap.canonical import derive_ast_query, select_canonicals
 from chameleon_mcp.bootstrap.clustering import (
     BIMODAL_DOMINANT_SHARE_THRESHOLD,
-    SPARSE_CLUSTER_THRESHOLD,
     cluster_files,
 )
 from chameleon_mcp.bootstrap.discovery import (

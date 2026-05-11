@@ -91,14 +91,15 @@ from chameleon_mcp.bootstrap.naming import (  # noqa: E402
 )
 from chameleon_mcp.bootstrap.orchestrator import (  # noqa: E402
     _displayed_paths_pattern,
+)
+from chameleon_mcp.bootstrap.orchestrator import (
     bootstrap_repo as _orchestrator_bootstrap,
 )
 from chameleon_mcp.bootstrap.transaction import (  # noqa: E402
-    COMMITTED_SENTINEL,
     _PROTOCOL_FILES,
+    COMMITTED_SENTINEL,
     atomic_profile_commit,
 )
-
 
 # ---------------------------------------------------------------------------
 # Bug 1 — atomic_profile_commit preserves sibling files
@@ -255,7 +256,8 @@ shutil.rmtree(bug1c_root, ignore_errors=True)
 # ---------------------------------------------------------------------------
 section("Bug 2 — Rails-prior table is keyed on the canonical Ruby dirs")
 
-from dataclasses import dataclass, field as dc_field  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+from dataclasses import field as dc_field
 
 
 @dataclass

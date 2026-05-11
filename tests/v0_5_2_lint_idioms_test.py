@@ -62,7 +62,6 @@ from chameleon_mcp.lint_engine import (  # noqa: E402
     scan_secrets,
 )
 
-
 # ---------------------------------------------------------------------------
 # Bug 1 — GitHub PAT bypassed by string-concat
 # ---------------------------------------------------------------------------

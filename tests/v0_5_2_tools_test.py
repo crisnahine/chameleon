@@ -56,7 +56,6 @@ import os
 import shutil
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 # Make the in-repo chameleon_mcp importable without installing.
@@ -88,13 +87,11 @@ def section(name: str) -> None:
 
 
 # Eager imports — surface syntax errors before fixtures are set up.
-from chameleon_mcp import index_db  # noqa: E402
 from chameleon_mcp.tools import (  # noqa: E402
+    _SUSPICIOUS_PATTERNS,
     _compute_repo_id,
     _looks_suspicious,
     _resolve_repo_arg,
-    _SUSPICIOUS_PATTERNS,
-    apply_archetype_renames,
     bootstrap_repo,
     detect_repo,
     disable_session,
@@ -108,7 +105,6 @@ from chameleon_mcp.tools import (  # noqa: E402
     teach_profile_structured,
     trust_profile,
 )
-
 
 # Helpers -------------------------------------------------------------------
 

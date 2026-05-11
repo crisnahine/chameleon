@@ -83,14 +83,12 @@ from chameleon_mcp.bootstrap.orchestrator import (  # noqa: E402
     _is_rails_with_frontend,
     _load_user_renames,
     _select_extractor,
-    bootstrap_repo as _orchestrator_bootstrap,
 )
 from chameleon_mcp.sanitization import (  # noqa: E402
     _BIDI_CONTROLS,
     sanitize_for_chameleon_context,
 )
 from chameleon_mcp.tools import (  # noqa: E402
-    _compute_repo_id,
     _merge_rename_overlay,
     _read_renames_overlay,
     _resolve_repo_root_by_id,
@@ -98,7 +96,6 @@ from chameleon_mcp.tools import (  # noqa: E402
     bootstrap_repo,
     propose_archetype_renames,
 )
-
 
 # ---------------------------------------------------------------------------
 # Bug 4 — Bidi sanitization (Trojan Source / CVE-2021-42574)

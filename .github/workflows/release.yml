@@ -197,7 +197,11 @@ jobs:
 
   build-tarball:
     name: build-tarball
-    needs: test-all
+    # verify-tag is what produces the `version` output consumed below;
+    # test-all is the quality gate. Need both — the prior `needs: test-all`
+    # alone left needs.verify-tag.outputs.version unscoped, so VERSION
+    # rendered empty and tar wrote a `chameleon-.tar.gz` next to itself.
+    needs: [verify-tag, test-all]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -230,6 +234,7 @@ jobs:
             --exclude='*.pyc' \
             --exclude='./.DS_Store' \
             --exclude='*/.DS_Store' \
+            --exclude='./chameleon-*.tar.gz' \
             -czf "${TARBALL}" \
             --transform "s,^\./,chameleon-${VERSION}/," \
             .

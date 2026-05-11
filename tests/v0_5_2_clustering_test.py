@@ -76,8 +76,8 @@ def section(name: str) -> None:
 
 # Eager imports so a syntax error surfaces before fixture setup.
 from chameleon_mcp.bootstrap.clustering import (  # noqa: E402
-    Cluster,
     SPARSE_CLUSTER_THRESHOLD,
+    Cluster,
     _adaptive_sparse_threshold,
     cluster_files,
 )
@@ -88,7 +88,6 @@ from chameleon_mcp.signatures import (  # noqa: E402
     content_signal_match_for,
     path_pattern_bucket_for,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -375,10 +374,10 @@ section("Bug 3 (verify-after) — get_archetype surfaces content_signal_match in
 import json  # noqa: E402
 
 from chameleon_mcp.tools import (  # noqa: E402
+    _compute_repo_id,
     bootstrap_repo,
     get_archetype,
     trust_profile,
-    _compute_repo_id,
 )
 
 

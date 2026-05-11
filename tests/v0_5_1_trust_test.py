@@ -69,12 +69,7 @@ def section(name: str) -> None:
 
 from chameleon_mcp.profile.trust import (  # noqa: E402
     TrustRecord,
-    grant_trust,
     hash_profile,
-    is_material_change,
-    plugin_data_dir,
-    repo_data_dir,
-    revoke_trust,
     trust_state_for,
 )
 from chameleon_mcp.tools import (  # noqa: E402
@@ -84,7 +79,6 @@ from chameleon_mcp.tools import (  # noqa: E402
     detect_repo,
     trust_profile,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
