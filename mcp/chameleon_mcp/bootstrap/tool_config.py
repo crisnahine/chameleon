@@ -458,8 +458,123 @@ _EXPORTS_RE = re.compile(
 )
 
 
+def _parse_eslint_js_via_node(path: Path) -> tuple[dict | None, str | None]:
+    """Evaluate an ESLint config via Node and return its exported object.
+
+    BUG-003 / BUG-020 (v0.5.6): the regex-based parser below handles only
+    trivial object literals. Real-world configs use computed values,
+    spread, parserOptions nested objects, etc. — anything beyond the
+    simplest shape produces "object literal not JSON-coercible". The
+    plugin already requires Node >= 20, so shelling out to Node gives
+    us the same value ESLint sees.
+
+    Strategy:
+      - For ``.eslintrc.{js,cjs}``: ``node -e "console.log(JSON.stringify(require('<path>')))"``
+      - For ``.eslintrc.mjs`` / ``eslint.config.{js,mjs,cjs,ts}``: use
+        dynamic import — ``await import('<path>')`` and JSON.stringify the
+        default export.
+
+    Returns ``(parsed_dict, None)`` on success or ``(None, reason)``.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        return None, "node not on PATH"
+
+    name = path.name
+    is_esm = name.endswith(".mjs") or name == "eslint.config.mjs"
+    is_flat = name.startswith("eslint.config.")
+
+    if is_esm or is_flat:
+        # Dynamic import path: works for both flat-config (eslint.config.*)
+        # and legacy .eslintrc.mjs.
+        script = (
+            "(async () => {"
+            "  try {"
+            f"    const m = await import({json.dumps(str(path.resolve()))});"
+            "    const v = m.default ?? m;"
+            "    process.stdout.write(JSON.stringify(v, (k, val) => {"
+            # Functions / undefined / symbols aren't JSON-serializable;
+            # drop them so the rest of the config survives.
+            "      if (typeof val === 'function' || typeof val === 'symbol') return undefined;"
+            "      return val;"
+            "    }));"
+            "  } catch (e) {"
+            "    process.stderr.write(String(e && e.stack || e));"
+            "    process.exit(2);"
+            "  }"
+            "})();"
+        )
+        cmd = [node, "--input-type=module", "-e", script]
+    else:
+        # CJS path
+        script = (
+            "try {"
+            f"  const m = require({json.dumps(str(path.resolve()))});"
+            "  const v = m && m.default ? m.default : m;"
+            "  process.stdout.write(JSON.stringify(v, (k, val) => {"
+            "    if (typeof val === 'function' || typeof val === 'symbol') return undefined;"
+            "    return val;"
+            "  }));"
+            "} catch (e) {"
+            "  process.stderr.write(String(e && e.stack || e));"
+            "  process.exit(2);"
+            "}"
+        )
+        cmd = [node, "-e", script]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return None, f"{name}: node eval failed ({exc})"
+    if result.returncode != 0:
+        # Trim node's stderr to first line so the warning stays compact.
+        first_line = (result.stderr.splitlines() or ["non-zero exit"])[0]
+        return None, f"{name}: node eval returned non-zero ({first_line[:120]})"
+    try:
+        parsed = json.loads(result.stdout) if result.stdout.strip() else None
+    except json.JSONDecodeError as exc:
+        return None, f"{name}: node output not JSON ({exc.msg})"
+    if parsed is None:
+        return None, f"{name}: node returned empty"
+    # Flat config exports an array of config blocks; merge known keys for
+    # consumer-side simplicity. For legacy .eslintrc.* a plain dict is
+    # already returned.
+    if isinstance(parsed, list):
+        merged: dict = {"flat": True, "rules": {}, "extends": [], "plugins": []}
+        for block in parsed:
+            if not isinstance(block, dict):
+                continue
+            rules = block.get("rules")
+            if isinstance(rules, dict):
+                merged["rules"].update(rules)
+            extends = block.get("extends")
+            if isinstance(extends, list):
+                merged["extends"].extend(extends)
+            plugins = block.get("plugins")
+            if isinstance(plugins, list):
+                merged["plugins"].extend(plugins)
+            elif isinstance(plugins, dict):
+                merged["plugins"].extend(plugins.keys())
+        return merged, None
+    if not isinstance(parsed, dict):
+        return None, f"{name}: top-level export is not an object/array"
+    return parsed, None
+
+
 def _parse_eslint_js(path: Path) -> tuple[dict | None, str | None]:
     """Best-effort extract a top-level object literal from .eslintrc.js.
+
+    BUG-003 (v0.5.6): try the Node-eval path first (most accurate); fall
+    back to the regex-based parser only when Node is unavailable or the
+    eval fails.
 
     The strategy: locate the ``module.exports = { ... }`` (or
     ``export default { ... }``) assignment, scan forward with a depth counter
@@ -467,6 +582,10 @@ def _parse_eslint_js(path: Path) -> tuple[dict | None, str | None]:
     object literal into JSON. If anything fails we return ``(None, reason)``
     and the caller falls back to the legacy "invisible plugin" warning.
     """
+    parsed, node_warning = _parse_eslint_js_via_node(path)
+    if parsed is not None:
+        return parsed, None
+
     try:
         text = path.read_text(errors="replace")
     except OSError as exc:
@@ -485,6 +604,9 @@ def _parse_eslint_js(path: Path) -> tuple[dict | None, str | None]:
     try:
         parsed = json.loads(coerced)
     except json.JSONDecodeError as exc:
+        # Prefer the node failure note if it had one; both being None is rare.
+        if node_warning:
+            return None, f"{path.name}: {node_warning} (regex fallback: {exc.msg})"
         return None, f"{path.name}: object literal not JSON-coercible ({exc.msg})"
     if not isinstance(parsed, dict):
         return None, f"{path.name}: top-level export is not an object"
