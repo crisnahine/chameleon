@@ -2743,12 +2743,19 @@ def _rewrite_summary_md(
     archetypes_data: dict,
     canonicals_data: dict,
     idioms_text: str,
+    rules_data: dict | None = None,
 ) -> str:
     """Render the user-facing profile.summary.md after a rename.
 
     The bootstrap orchestrator owns the canonical builder. We can't import
     its private helper without coupling, so we re-emit the same shape here.
     Keep this in sync if the orchestrator's output changes.
+
+    v0.5.4: the Rules section now renders the actual contents of
+    ``rules.json`` instead of the v0.4-era placeholder
+    ``_Phase 2C: tool config rules + AST stats._``. ``rules_data`` is the
+    parsed ``rules.json`` bundle. When omitted (legacy callers), the
+    section explains that rules.json wasn't passed.
     """
     lines = [
         "# chameleon profile summary",
@@ -2799,17 +2806,53 @@ def _rewrite_summary_md(
         "",
         "## Rules",
         "",
-        "_Phase 2C: tool config rules + AST stats._",
+    ])
+    # v0.5.4 — mirror the orchestrator's rules rendering. Without
+    # ``rules_data`` we fall back to a "no rules captured" note rather
+    # than the v0.4 placeholder that read as an unfinished feature.
+    rules_block = (rules_data or {}).get("rules") if rules_data else None
+    detected_tools = sorted(rules_block.keys()) if isinstance(rules_block, dict) else []
+    if detected_tools:
+        # Import here to keep this module decoupled from orchestrator at
+        # module-import time (preserves the cold-start budget).
+        from chameleon_mcp.bootstrap.orchestrator import _count_terminal_rules
+        lines.append(
+            f"_Auto-derived from {len(detected_tools)} tool config file(s): "
+            f"{', '.join(f'`{t}`' for t in detected_tools)}._"
+        )
+        lines.append("")
+        for tool in detected_tools:
+            tool_block = rules_block[tool]
+            if not isinstance(tool_block, dict):
+                continue
+            rule_count = _count_terminal_rules(tool_block)
+            lines.append(f"- **{tool}** — {rule_count} rule(s) extracted")
+    else:
+        lines.append(
+            "_No tool-config rules detected._ The bootstrap looked for "
+            "`eslint`, `tsconfig`, `prettier`, `rubocop`, and `.editorconfig` "
+            "and found none of them. Auto-derived rules will appear here "
+            "once those configs exist."
+        )
+    lines.extend([
         "",
         "## Idioms",
         "",
     ])
 
-    # Mirror orchestrator's _extract_active_idioms.
-    active = ""
-    if "## active" in idioms_text:
-        after = idioms_text.split("## active", 1)[1]
-        active = after.split("\n## ", 1)[0].strip() if "\n## " in after else after.strip()
+    # Mirror orchestrator's _extract_active_idioms — extract BOTH active and
+    # deprecated sections so the renamed summary doesn't pretend the
+    # deprecated section is always empty (v0.5.4: the "## deprecated\n
+    # _(none)_" rendering was a placeholder that looked like a bug).
+    def _extract_section(text: str, marker: str) -> str:
+        if marker not in text:
+            return ""
+        after = text.split(marker, 1)[1]
+        return after.split("\n## ", 1)[0].strip() if "\n## " in after else after.strip()
+
+    active = _extract_section(idioms_text, "## active")
+    deprecated = _extract_section(idioms_text, "## deprecated")
+
     if active and "no idioms yet" not in active:
         lines.append(
             "_The following idioms ship in this profile and will be injected "
@@ -2824,6 +2867,21 @@ def _rewrite_summary_md(
             "_No idioms captured yet. Run /chameleon-teach to record team "
             "conventions._"
         )
+        lines.append("")
+
+    if deprecated and deprecated.strip() and "no idioms yet" not in deprecated:
+        # Only render the deprecated section if it actually carries content.
+        # Skipping the "_(none)_" placeholder removes a confusing visual
+        # artifact from clean profiles (cycle-3 dogfood observation).
+        lines.append("## Deprecated idioms")
+        lines.append("")
+        lines.append(
+            "_The following idioms were retired by `/chameleon-teach`. They "
+            "are kept here for audit history and are NOT injected into "
+            "context._"
+        )
+        lines.append("")
+        lines.append(deprecated)
         lines.append("")
     return "\n".join(lines)
 

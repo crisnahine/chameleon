@@ -321,6 +321,74 @@ def _has_dir_chain(member_paths: list[str], chain: tuple[str, ...]) -> bool:
     return matches * 2 >= len(member_paths)
 
 
+# v0.5.4 (Bug F): conventional monorepo parent dirs. When a path starts
+# with ``<parent>/<workspace>/...`` where parent is in this set, the first
+# two segments are stripped before TS-prior matching so workspace-internal
+# layouts (``packages/propel/src/components/``) hit the prior rules that
+# were authored for flat repos (``src/components/``).
+#
+# Mirrors ``_WORKSPACE_PARENT_DIRS`` in the orchestrator but maintained
+# separately here so naming stays a pure module with no orchestrator
+# import. Update both lists together if a new convention is added.
+_WORKSPACE_PARENT_DIRS_NAMING = ("apps", "packages", "services", "workspaces")
+
+
+def _strip_workspace_prefix(
+    member_paths: list[str], workspace_roots: list[str] | None
+) -> list[str]:
+    """Return member paths with any matching workspace prefix removed.
+
+    v0.5.4 (Bug F): v0.5.3 Bug B introduced workspace-level bootstrap and
+    Turborepo / pnpm / Nx layouts deliver paths as
+    ``apps/<ws>/src/components/Foo.tsx`` or ``packages/<ws>/src/...``
+    instead of root-relative ``src/...``. The TS-prior table's
+    directory-chain rules (``components/``, ``app/``, ``pages/``) were
+    authored for root-relative paths and silently missed on the
+    workspace-relative ones, leaving plane at 12/70 generic and
+    bulletproof-react at 6/12 generic in the cycle-3 dogfood.
+
+    Two stripping strategies, both safe:
+
+    1. **Explicit roots**: when ``workspace_roots`` is non-empty (the
+       v0.5.3 Bug B path), strip the longest matching root prefix.
+    2. **Path-shape fallback**: when ``workspace_roots`` is empty BUT a
+       path starts with ``apps/<dir>/``, ``packages/<dir>/``,
+       ``services/<dir>/``, or ``workspaces/<dir>/``, strip those two
+       segments. Catches the plane case (pnpm catalog: refs in root
+       package.json mask the workspace from Bug B's detector) and any
+       future workspace-layout repo that slips past the orchestrator.
+
+    Paths that don't match either strategy pass through unchanged so
+    flat repos are unaffected. Returns a new list; never mutates input.
+    """
+    if not member_paths:
+        return list(member_paths)
+    roots_sorted = (
+        sorted(workspace_roots, key=len, reverse=True) if workspace_roots else []
+    )
+    out: list[str] = []
+    for p in member_paths:
+        stripped: str | None = None
+        # Strategy 1: explicit roots (longest match wins).
+        for root in roots_sorted:
+            prefix = root.rstrip("/") + "/"
+            if p.startswith(prefix):
+                stripped = p[len(prefix):]
+                break
+        # Strategy 2: path-shape fallback for repos that didn't surface
+        # workspace_roots via the orchestrator (plane / pnpm-catalog case).
+        if stripped is None:
+            segs = p.split("/", 2)
+            if (
+                len(segs) >= 3
+                and segs[0] in _WORKSPACE_PARENT_DIRS_NAMING
+                and segs[1]  # non-empty workspace dir name
+            ):
+                stripped = segs[2]
+        out.append(stripped if stripped is not None else p)
+    return out
+
+
 def _rails_prior_match(member_paths: list[str]) -> str | None:
     """Walk the Rails-prior table and return the first matching archetype name.
 
@@ -455,6 +523,45 @@ _TS_PRIORS: tuple[
     # the more-generic ``query`` name swallowing what is really a hook.
     (("queries",), _fn_starts_with("use"), (), "query-hook"),
     (("queries",), _fn_any, (), "query"),
+
+    # --- v0.5.4 — additional patterns surfaced by cycle-3 dogfood -----------
+    # bulletproof-react + plane both ship feature-based architectures:
+    # ``features/<feature>/api/`` carries the feature's API client functions.
+    # The chain ``("features", "api")`` doesn't appear (features sit between),
+    # but the leaf ``api`` segment after a ``features`` parent is the marker.
+    (("features",), _fn_any, (), "feature-module"),
+    # MSW-style test mocks. Cluster name surfaces the harness layer so
+    # reviewers don't confuse production handler code with test fixtures.
+    (("testing", "mocks"), _fn_any, (), "test-mock"),
+    (("mocks", "handlers"), _fn_any, (), "test-mock-handler"),
+    # ``icons/`` directory — branded icon sets, typically a sibling of
+    # ``components/``. Pre-v0.5.4 these clustered under cluster-<hash>.
+    (("icons",), _fn_any, (), "icon-set"),
+    # i18n directories. ``locales/`` is the conventional name; ``i18n/``
+    # also common. The cluster typically holds per-locale JSON or TS
+    # tables; we name the cluster after the convention so users can
+    # spot non-locale files that leaked into the dir during review.
+    (("locales",), _fn_any, (), "locale-table"),
+    (("i18n",), _fn_any, (), "locale-table"),
+    # Constants modules — typically a single export object per file with
+    # repo-wide string/number tables. Common in modern React/Next.js apps.
+    (("constants",), _fn_any, (), "constants-module"),
+    # Schema modules — zod / yup / valibot schema definitions. Common in
+    # form-heavy apps; the cluster usually has many ``z.object(...)``
+    # definitions. ``schema/`` (singular) and ``schemas/`` both appear.
+    (("schema",), _fn_any, (), "schema-module"),
+    (("schemas",), _fn_any, (), "schema-module"),
+    # Provider components / context providers. ``providers/`` parent dir
+    # is the common convention.
+    (("providers",), _fn_any, (), "provider"),
+    (("contexts",), _fn_any, (), "context"),
+    # Layouts subdir — Next.js root-layout files plus standalone layout
+    # components in non-Next.js apps.
+    (("layouts",), _fn_any, (), "layout"),
+    # Configs subdir — domain-specific configuration modules separate
+    # from build-tool configs at the repo root.
+    (("config",), _fn_any, (), "config-module"),
+    (("configs",), _fn_any, (), "config-module"),
 )
 
 
@@ -542,12 +649,21 @@ def _ts_prior_match(member_paths: list[str]) -> str | None:
     return None
 
 
-def _base_name_for(cluster: Any) -> str | None:
+def _base_name_for(
+    cluster: Any,
+    workspace_roots: list[str] | None = None,
+) -> str | None:
     """Return a derived base name from cluster signals, or None for fallback.
 
     The order of rules is significant: more specific patterns are tried
     before more general ones (e.g., ``rails-initializer`` before the bare
     ``initializer`` token).
+
+    v0.5.4 (Bug F): when ``workspace_roots`` is non-empty the TS-prior
+    pipeline gets workspace-stripped paths so the directory-chain rules
+    (``components/``, ``app/``, ``pages/``) match correctly on
+    Turborepo / pnpm / Nx layouts. The Rails-prior pipeline doesn't get
+    the strip because Rails monorepos don't use this layout.
     """
     paths_pattern = _cluster_attr(cluster, "path_pattern_bucket") or ""
     default_export = _cluster_attr(cluster, "default_export_kind")
@@ -555,6 +671,9 @@ def _base_name_for(cluster: Any) -> str | None:
     jsx_present = bool(_cluster_attr(cluster, "jsx_present", False))
     member_paths = _member_relpaths(cluster)
     file_names = _filenames(member_paths)
+    # Pre-compute the workspace-stripped variant once per cluster — the
+    # TS-prior table uses it; the Rails-prior table uses the raw paths.
+    ts_member_paths = _strip_workspace_prefix(member_paths, workspace_roots)
 
     is_class_default = default_export in {
         "ClassNode",
@@ -614,7 +733,7 @@ def _base_name_for(cluster: Any) -> str | None:
         and not _is_ruby_cluster(member_paths)
         and not any(p.endswith(".rb") for p in member_paths)
     ):
-        prior_name = _ts_prior_match(member_paths)
+        prior_name = _ts_prior_match(ts_member_paths)
         if prior_name is not None:
             return prior_name
 
@@ -782,7 +901,12 @@ def _sanitize(name: str) -> str | None:
     return candidate if _NAME_RE.match(candidate) else None
 
 
-def propose_archetype_name(cluster: Any, existing_names: set[str]) -> str:
+def propose_archetype_name(
+    cluster: Any,
+    existing_names: set[str],
+    *,
+    workspace_roots: list[str] | None = None,
+) -> str:
     """Propose a meaningful archetype name for ``cluster``.
 
     Args:
@@ -794,15 +918,24 @@ def propose_archetype_name(cluster: Any, existing_names: set[str]) -> str:
         existing_names: the set of names already assigned by previous
             calls in this bootstrap run. Used for collision disambiguation
             and never mutated.
+        workspace_roots: optional list of repo-relative workspace dirs
+            (e.g., ``["apps/web", "packages/propel"]``) emitted by
+            ``bootstrap_repo``'s monorepo detection in v0.5.3. When
+            provided, the TS-prior pipeline strips the matching prefix
+            from member paths before running the directory-chain rules
+            so workspace-internal layouts (``apps/web/src/components/``,
+            ``packages/propel/src/hooks/``) match the prior table.
+            v0.5.4 (Bug F).
 
     Returns:
         A string matching ``^[a-z][a-z0-9-]{0,63}$``. Guaranteed unique
         with respect to ``existing_names``.
 
     The function is pure (no I/O) and idempotent: given the same cluster
-    and ``existing_names`` it always returns the same name.
+    and ``existing_names`` (and ``workspace_roots``) it always returns
+    the same name.
     """
-    base = _base_name_for(cluster)
+    base = _base_name_for(cluster, workspace_roots=workspace_roots)
     if base is not None:
         sanitized = _sanitize(base)
         if sanitized is not None:

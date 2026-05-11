@@ -4,6 +4,91 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] — 2026-05-11
+
+Cycle-3 dogfood patch. Third full sweep against 9 apps under a 10-phase end-to-end runner that exercises every MCP tool surface. Each app's `.chameleon/` was wiped before launch + the plugin data dir was cleared so every bootstrap started from scratch.
+
+Cycle-3 results: 378 PASS, 0 FAIL, 13 FINDING. Every v0.5.3 fix verified in real data. Reports under `docs/dogfood/v0.5.3-cycle3/`.
+
+### Fixed — Workspace-prefix stripping in TS naming (Bug F)
+
+v0.5.3 Bug B taught the orchestrator to bootstrap workspace monorepos (Turborepo, pnpm, Nx). Files in `apps/<ws>/src/components/` started reaching the naming pipeline, but the v0.5.3 TS prior table was authored for root-relative paths (`src/components/`) and the directory-chain matcher would only fire when the workspace prefix happened to land in the right segment position.
+
+v0.5.4 adds `_strip_workspace_prefix(member_paths, workspace_roots)` to `naming.py`. Two strategies:
+
+1. **Explicit roots**: when the bootstrap envelope's `workspace_roots` is non-empty (the Bug B path), the matching root prefix is stripped. Longest-match wins so `apps/admin-app/` isn't accidentally stripped to `admin-app/...`.
+2. **Path-shape fallback**: when `workspace_roots` is empty BUT a path starts with `apps/<dir>/`, `packages/<dir>/`, `services/<dir>/`, or `workspaces/<dir>/`, strip the 2-segment prefix. Catches the plane case — pnpm catalog refs (`typescript: "catalog:"`) in plane's root package.json made the v0.5.3 Bug B detector treat the workspace as a flat TS repo.
+
+`propose_archetype_name` and `_base_name_for` gain an optional `workspace_roots: list[str] | None` keyword. The orchestrator threads `workspace_roots or None` through; pure-mode callers can pass their own.
+
+### Fixed — TS prior table extensions
+
+Cycle-3 dogfood surfaced 13 more directory conventions that produced `cluster-<hex>` names:
+
+- `features/<feature>/` → `feature-module` (bulletproof-react, modern React layouts)
+- `testing/mocks/` → `test-mock` (MSW-style mock harnesses)
+- `mocks/handlers/` → `test-mock-handler` (standalone MSW handler dirs)
+- `icons/` → `icon-set` (brand icon sets; plane has `packages/propel/src/icons/brand/`)
+- `locales/` → `locale-table` (i18n table dirs)
+- `i18n/` → `locale-table` (alias for the same convention)
+- `constants/` → `constants-module`
+- `schema/` / `schemas/` → `schema-module` (zod/yup/valibot definitions)
+- `providers/` → `provider` (context/auth provider components)
+- `contexts/` → `context` (React context module dir)
+- `layouts/` → `layout` (layout-component dir)
+- `config/` / `configs/` → `config-module`
+
+Cycle-3 → v0.5.4 effect:
+
+| App | Cycle-3 generic | After v0.5.4 | Change |
+|---|---|---|---|
+| plane | 12/70 (17%) | 5/70 (7%) | -58% |
+| bulletproof-react | 6/12 (50%) | 0/12 (0%) | -100% |
+
+The 5 remaining plane generics are bespoke domain dirs (`emoji-icon-picker/`, `editor/`, etc.) that wouldn't fit any generic prior table.
+
+### Fixed — `profile.summary.md` rules section + deprecated section placeholders
+
+Cycle-3 dogfood reviewers spotted two unfinished-feature placeholders in every `profile.summary.md`:
+
+1. **`_Phase 2C: tool config rules + AST stats._`** — leftover stub from v0.4. Phase 2C actually shipped in v0.5.0; the placeholder never got swapped for real rendering. v0.5.4 renders the actual contents of `rules.json`:
+
+   ```
+   ## Rules
+
+   _Auto-derived from 2 tool config file(s): `eslint`, `formatting`._
+
+   - **eslint** — 15 rule(s) extracted
+   - **formatting** — 4 rule(s) extracted
+   ```
+
+   When `rules.json.rules` is empty (no eslint / tsconfig / prettier / rubocop / .editorconfig found), the section explains WHY instead of leaving a placeholder.
+
+2. **`## deprecated\n\n_(none)_`** — the deprecated-idioms section always rendered with `_(none)_` for clean profiles. v0.5.4 only renders the section when it carries actual content. Clean profiles no longer ship an empty-looking heading. Profiles that retire idioms via `/chameleon-teach` get a proper "Deprecated idioms" heading with explanatory text.
+
+Both fixes apply to the orchestrator's `_build_summary_md` AND the partial-refresh `_rewrite_summary_md` in `tools.py` (kept in lockstep per v0.5.1 comment).
+
+### Fixed — Runner cleanups (3 cosmetic dogfood-runner bugs)
+
+The cycle-3 dogfood harness `run_dogfood.py` had 3 issues that produced spurious FINDING entries:
+
+1. `pause_session(repo_id)` response shape: runner checked for `status in ("paused", "ok")` but the actual response is `status: "success"`. Tagged as FINDING in all 9 cycle-3 reports — now correctly tagged PASS.
+2. `language_hint` field name: runner used `lang_hint.get("secondary")` but the actual field is `secondary_detected`. gitlabhq's hybrid hint rendered as "secondary=None" even though it WAS emitted. Now reads the correct key + surfaces `secondary_file_count`.
+3. `archetypes[0]` staleness: phase_1 cached the archetype list pre-bootstrap; phase_5 re-bootstraps to verify atomic sibling preservation; phase_7 then called `get_canonical_excerpt` with a stale archetype name. v0.5.4 re-reads `archetypes.json` after phase_5 and prefers a non-generic name when available.
+
+### Tests
+
+- New: `tests/v0_5_4_naming_test.py` (30 assertions covering the strip helper, the 13 new TS prior entries, and the integration with `propose_archetype_name`)
+- All 38 suites green standalone. `pretooluse_hook_test.py` is environmental (real-Claude-Code acceptance against EF test repos; trust state was wiped at cycle-3 start) — not a v0.5.4 regression.
+
+### Schema
+
+No schema bump. `paths_pattern_display`, `workspace_roots`, instrumentation envelope fields all already exist at v7.
+
+### Deferred to v0.6
+
+Same 11 findings carried from earlier cycles. The 5 remaining plane generics are bespoke domain dirs (`emoji-icon-picker/`, `editor/`, etc.) — adding them would dilute the TS prior table without clear benefit.
+
 ## [0.5.3] — 2026-05-11
 
 Cycle-2 dogfood patch. Second full sweep against 9 apps (forem, maybe, mastodon, gitlabhq, excalidraw, plane, bulletproof-react, ef-api, ef-client) under a 10-phase end-to-end runner that exercises every MCP tool surface. 5 new findings caught; all 5 ship in v0.5.3. Reports under `docs/dogfood/v0.5.2-cycle2/`; cross-app analysis in `SUMMARY.md`.

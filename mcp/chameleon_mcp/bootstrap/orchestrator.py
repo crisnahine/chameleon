@@ -1027,7 +1027,9 @@ def _bootstrap_single(
         if not cluster_id:
             # No canonical selected (no eligible candidates passed scanners)
             continue
-        auto_name = propose_archetype_name(cluster, assigned_names)
+        auto_name = propose_archetype_name(
+            cluster, assigned_names, workspace_roots=workspace_roots or None
+        )
         # v0.5.1 (Bug 3): overlay the user's rename if one applies.
         effective_name = rename_map.get(auto_name, auto_name)
         assigned_names.add(auto_name)
@@ -1187,7 +1189,11 @@ def _bootstrap_single(
         (txn_dir / "idioms.md").write_text(idioms_content, encoding="utf-8")
         (txn_dir / "profile.summary.md").write_text(
             _build_summary_md(
-                archetypes_data, canonicals_data, profile_data, idioms_content
+                archetypes_data,
+                canonicals_data,
+                profile_data,
+                idioms_content,
+                rules_data,
             ),
             encoding="utf-8",
         )
@@ -1249,15 +1255,54 @@ def _extract_active_idioms(idioms_md: str) -> str:
     profile committed to a branch can ship prompt-injection-shaped idioms
     that the trust review never displays.
     """
-    if "## active" not in idioms_md:
+    return _extract_idioms_section(idioms_md, "## active")
+
+
+def _extract_idioms_section(idioms_md: str, marker: str) -> str:
+    """Return the contents of the given level-2 section of an idioms.md doc.
+
+    v0.5.4: factored out so ``_build_summary_md`` can render both the
+    active and deprecated sections. Returns an empty string when the
+    marker is absent OR when the section body is just the
+    ``_(none)_`` / "no idioms yet" placeholder.
+    """
+    if marker not in idioms_md:
         return ""
-    after_active = idioms_md.split("## active", 1)[1]
-    # Stop at the next level-2 heading (typically `## deprecated`).
-    if "\n## " in after_active:
-        section = after_active.split("\n## ", 1)[0]
-    else:
-        section = after_active
-    return section.strip()
+    after = idioms_md.split(marker, 1)[1]
+    section = after.split("\n## ", 1)[0] if "\n## " in after else after
+    section = section.strip()
+    # Treat placeholders as empty so profile.summary.md doesn't render
+    # a "Deprecated idioms" heading above "_(none)_" (cycle-3 dogfood
+    # observation).
+    placeholder_markers = ("_(none)_", "no idioms yet")
+    if not section or all(
+        section == m or section.startswith(m) for m in placeholder_markers if section == m
+    ):
+        return section if section and "no idioms yet" not in section and section != "_(none)_" else ""
+    if section in {"_(none)_"} or "no idioms yet" in section:
+        return ""
+    return section
+
+
+def _count_terminal_rules(block: dict, depth: int = 0) -> int:
+    """Return a rough count of terminal rule entries in a nested config block.
+
+    Used by ``_build_summary_md`` to surface a "N rule(s) extracted" line
+    for each tool config without rendering the full JSON tree (which can
+    be hundreds of lines for an eslint config). Caps recursion at depth
+    6 so a pathological config can't cause unbounded recursion.
+    """
+    if depth > 6 or not isinstance(block, dict):
+        return 0
+    count = 0
+    for v in block.values():
+        if isinstance(v, dict):
+            count += _count_terminal_rules(v, depth + 1)
+        elif isinstance(v, list):
+            count += len(v)
+        else:
+            count += 1
+    return count
 
 
 def _build_summary_md(
@@ -1265,11 +1310,17 @@ def _build_summary_md(
     canonicals_data: dict,
     profile_data: dict,
     idioms_md: str,
+    rules_data: dict | None = None,
 ) -> str:
     """Generate the human-readable profile.summary.md for PR review.
 
     Per Round 5 DX recommendation: profile.summary.md is what reviewers
     actually read on profile-change PRs.
+
+    v0.5.4: the rules section used to render a "_Phase 2C: tool config
+    rules + AST stats._" placeholder. Now summarizes the actual contents
+    of rules.json (when ``rules_data`` is provided) or explains that no
+    tool configs were detected.
     """
     lines = [
         "# chameleon profile summary",
@@ -1322,14 +1373,42 @@ def _build_summary_md(
         "",
         "## Rules",
         "",
-        "_Phase 2C: tool config rules + AST stats._",
+    ])
+    # v0.5.4 — render the actual tool-config rules detected at bootstrap
+    # instead of the v0.4-era "_Phase 2C: tool config rules + AST stats._"
+    # placeholder, which read like an unfinished feature after Phase 2C
+    # actually shipped in v0.5.0. When rules.json is empty we explain
+    # WHY (no eslint/tsconfig/prettier/rubocop/editorconfig found) so
+    # reviewers don't wonder if something broke.
+    rules_block = (rules_data or {}).get("rules") if rules_data else None
+    detected_tools = sorted(rules_block.keys()) if isinstance(rules_block, dict) else []
+    if detected_tools:
+        lines.append(
+            f"_Auto-derived from {len(detected_tools)} tool config file(s): "
+            f"{', '.join(f'`{t}`' for t in detected_tools)}._"
+        )
+        lines.append("")
+        for tool in detected_tools:
+            tool_block = rules_block[tool]
+            if not isinstance(tool_block, dict):
+                continue
+            rule_count = _count_terminal_rules(tool_block)
+            lines.append(f"- **{tool}** — {rule_count} rule(s) extracted")
+    else:
+        lines.append(
+            "_No tool-config rules detected._ The bootstrap looked for "
+            "`eslint`, `tsconfig`, `prettier`, `rubocop`, and `.editorconfig` "
+            "and found none of them. Auto-derived rules will appear here "
+            "once those configs exist."
+        )
+    lines.extend([
         "",
         "## Idioms",
         "",
     ])
 
     active_idioms = _extract_active_idioms(idioms_md)
-    if active_idioms and "no idioms yet" not in active_idioms:
+    if active_idioms:
         lines.append(
             "_The following idioms ship in this profile and will be injected "
             "into the model's context before each Edit/Write. Review carefully "
@@ -1343,6 +1422,22 @@ def _build_summary_md(
             "_No idioms captured yet. Run /chameleon-teach to record team "
             "conventions._"
         )
+        lines.append("")
+
+    # v0.5.4 — render the deprecated section only when it carries content.
+    # Pre-v0.5.4 the section always rendered with `_(none)_` for clean
+    # profiles, which read like an unfinished feature.
+    deprecated_idioms = _extract_idioms_section(idioms_md, "## deprecated")
+    if deprecated_idioms:
+        lines.append("## Deprecated idioms")
+        lines.append("")
+        lines.append(
+            "_The following idioms were retired by `/chameleon-teach`. They "
+            "are kept here for audit history and are NOT injected into "
+            "context._"
+        )
+        lines.append("")
+        lines.append(deprecated_idioms)
         lines.append("")
 
     return "\n".join(lines)
