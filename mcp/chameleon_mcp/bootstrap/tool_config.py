@@ -129,9 +129,19 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
 
     # JS variants — Phase 2C.4 attempts a best-effort regex extraction. If it
     # fails we fall back to today's "invisibility" warning so /chameleon-status
-    # still flags the gap.
+    # still flags the gap. BUG-020 (v0.5.6): also look at flat-config files
+    # (eslint.config.{js,mjs,cjs,ts}) which ESLint 9+ ships by default.
+    eslint_js_candidates = (
+        ".eslintrc.js",
+        ".eslintrc.cjs",
+        ".eslintrc.mjs",
+        "eslint.config.js",
+        "eslint.config.mjs",
+        "eslint.config.cjs",
+        "eslint.config.ts",
+    )
     if result.eslint is None:
-        for name in (".eslintrc.js", ".eslintrc.cjs", ".eslintrc.mjs"):
+        for name in eslint_js_candidates:
             p = repo_root / name
             if p.exists():
                 result.sources["eslint"] = name
@@ -145,9 +155,9 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
                     result.parse_warnings["eslint"] = warning
                 break
     else:
-        # Already loaded eslint (JSON/YAML); still note .js sibling if present
-        # for source visibility, but the loaded config wins.
-        for name in (".eslintrc.js", ".eslintrc.cjs", ".eslintrc.mjs"):
+        # Already loaded eslint (JSON/YAML); still note JS/flat sibling if
+        # present for source visibility, but the loaded config wins.
+        for name in eslint_js_candidates:
             if (repo_root / name).exists() and "eslint" not in result.sources:
                 result.sources["eslint"] = name
                 result.has_eslint_js_plugins = True

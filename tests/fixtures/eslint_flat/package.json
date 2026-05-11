@@ -1,0 +1,5 @@
+{
+  "name": "eslint-flat-fixture",
+  "private": true,
+  "type": "module"
+}
