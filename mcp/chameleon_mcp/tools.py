@@ -321,9 +321,14 @@ def detect_repo(file_path: str) -> dict:
     profile_present = (profile_dir / "profile.json").exists()
     trust = trust_state_for(repo_id)
 
-    if trust is None:
+    # BUG-005: when no profile exists, "untrusted" is misleading — the schema
+    # reserves "n/a" for the "no profile" case. Only consider the trust grant
+    # when a profile is actually present.
+    if not profile_present:
+        trust_state = "n/a"
+    elif trust is None:
         trust_state = "untrusted"
-    elif profile_present and is_material_change(repo_id, profile_dir):
+    elif is_material_change(repo_id, profile_dir):
         trust_state = "stale"
     else:
         trust_state = "trusted"
