@@ -366,9 +366,24 @@ class BootstrapReport:
     """
 
     def to_dict(self) -> dict:
+        # BUG-011: archetypes_detected should be the SUM across workspaces,
+        # not just the root's count. Pre-v0.5.6 a workspace bootstrap that
+        # produced N archetypes per sub-workspace reported the root's local
+        # count (often 0) and hid the per-workspace breakdown deep in the
+        # ``workspaces`` array.
+        per_workspace: dict[str, int] = {}
+        ws_total = 0
+        for w in self.workspace_reports:
+            if w.get("status") == "success":
+                count = int(w.get("archetypes_detected") or 0)
+                per_workspace[str(w.get("workspace_path") or w.get("repo_root") or "")] = count
+                ws_total += count
+        archetypes_total = self.archetypes_detected + ws_total
         out: dict = {
             "status": self.status,
-            "archetypes_detected": self.archetypes_detected,
+            "archetypes_detected": archetypes_total,
+            "archetypes_detected_root": self.archetypes_detected,
+            "archetypes_per_workspace": per_workspace,
             "rules_extracted": self.rules_extracted,
             "idioms_collected": self.idioms_collected,
             "canonicals_skipped_failed_scans": self.canonicals_skipped_failed_scans,

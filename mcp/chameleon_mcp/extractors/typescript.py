@@ -83,6 +83,16 @@ class TypeScriptExtractor:
         and whose own dir has no tsconfig — yet the workspace is clearly
         TS. The shallow scan is bounded (depth 3, capped at 50 files)
         so a pathological tree can't hang detection.
+
+        IMPORTANT: the .ts-file fallback is SKIPPED when this directory
+        is itself a workspace coordinator (declares ``"workspaces"`` or
+        has a sibling ``pnpm-workspace.yaml``) OR carries any of the
+        conventional ``apps/`` / ``packages/`` / ``services/`` /
+        ``workspaces/`` subdirs that themselves contain a package.json.
+        In those cases the orchestrator's per-workspace fanout — not the
+        root extractor — should claim the children. Pre-v0.5.6's
+        path-only signal naturally returned False at these roots and the
+        workspace fanout depended on it.
         """
         if (repo_root / "tsconfig.json").exists():
             return True
@@ -95,6 +105,21 @@ class TypeScriptExtractor:
             else:
                 if any(token in content for token in ("typescript", '"ts-node"', '"vite"')):
                     return True
+                if '"workspaces"' in content:
+                    return False
+        if (repo_root / "pnpm-workspace.yaml").exists():
+            return False
+        # Workspace-shaped subdirs (Turborepo / Nx style) — defer.
+        for parent in ("apps", "packages", "services", "workspaces"):
+            parent_dir = repo_root / parent
+            if not parent_dir.is_dir():
+                continue
+            try:
+                for child in parent_dir.iterdir():
+                    if (child / "package.json").is_file():
+                        return False
+            except (OSError, PermissionError):
+                continue
         # BUG-010 fallback: any .ts/.tsx file within depth 3 of the root.
         return _has_typescript_source_files(repo_root, max_depth=3, max_found=50)
 
