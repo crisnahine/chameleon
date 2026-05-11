@@ -597,6 +597,14 @@ def _stringify_distribution_key(value: object) -> str:
     return str(value)
 
 
+_SPARSE_WARNING_LIMIT = 50
+"""BUG-008/009 (v0.5.6): cap on the per-bootstrap sparse_cluster_warnings
+list. Pre-v0.5.6 bootstrap returned 2000-6000 warning entries on
+mid-sized repos and exceeded the MCP protocol's response size, breaking
+chameleon-init. The cap is applied after the same-paths_pattern
+aggregation step below."""
+
+
 def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
     """Build the sparse-cluster warning payload for BootstrapReport.
 
@@ -605,24 +613,90 @@ def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
     records the cluster's resolved threshold instead of the legacy
     module-level constant.
 
+    BUG-008/009 (v0.5.6): aggregate by ``paths_pattern`` first so 50
+    singletons at ``src/x/y:ts`` collapse to one row with
+    ``cluster_count: 50, total_members: 50``. After aggregation, cap at
+    ``_SPARSE_WARNING_LIMIT`` and surface ``truncated`` + ``total_groups``
+    so consumers know the cap fired.
+
     Each warning entry includes the path bucket, size, and a handful of
     sample paths so the future interview UI can ask "merge with X?".
     """
-    warnings: list[dict] = []
+    # First pass: aggregate by paths_pattern.
+    grouped: dict[str, dict] = {}
+    insertion_order: list[str] = []
     for cluster in sparse_clusters:
+        bucket = cluster.key.path_pattern_bucket or "(unknown)"
         sample_paths = [
             _rel_or_abs(m.path, repo_root)
             for m in cluster.members[:_WARNING_SAMPLE_PATHS]
         ]
+        if bucket not in grouped:
+            grouped[bucket] = {
+                "kind": "sparse_cluster",
+                "paths_pattern": bucket,
+                "cluster_count": 1,
+                "total_members": int(cluster.size),
+                "min_size": int(cluster.size),
+                "max_size": int(cluster.size),
+                "sample_paths": list(sample_paths),
+                "thresholds": [int(cluster.sparse_threshold)],
+            }
+            insertion_order.append(bucket)
+        else:
+            g = grouped[bucket]
+            g["cluster_count"] += 1
+            g["total_members"] += int(cluster.size)
+            g["min_size"] = min(g["min_size"], int(cluster.size))
+            g["max_size"] = max(g["max_size"], int(cluster.size))
+            g["thresholds"].append(int(cluster.sparse_threshold))
+            # Keep up to _WARNING_SAMPLE_PATHS paths total across the group.
+            remaining = _WARNING_SAMPLE_PATHS - len(g["sample_paths"])
+            if remaining > 0 and sample_paths:
+                g["sample_paths"].extend(sample_paths[:remaining])
+
+    warnings: list[dict] = []
+    for bucket in insertion_order:
+        g = grouped[bucket]
+        thresholds = g.pop("thresholds")
+        threshold_str = (
+            str(thresholds[0])
+            if len(set(thresholds)) == 1
+            else f"{min(thresholds)}-{max(thresholds)}"
+        )
+        if g["cluster_count"] == 1:
+            g["reason"] = (
+                f"cluster has {g['total_members']} members "
+                f"(threshold {threshold_str})"
+            )
+            g["size"] = g.pop("total_members")
+            g.pop("min_size", None)
+            g.pop("max_size", None)
+            g.pop("cluster_count", None)
+        else:
+            g["reason"] = (
+                f"{g['cluster_count']} sparse clusters at this paths_pattern "
+                f"({g['total_members']} files; sizes {g['min_size']}-{g['max_size']}; "
+                f"threshold {threshold_str})"
+            )
+        warnings.append(g)
+
+    # Second pass: enforce the cap. The full count is surfaced separately
+    # so consumers know how many were elided.
+    total_groups = len(warnings)
+    truncated = total_groups > _SPARSE_WARNING_LIMIT
+    if truncated:
+        warnings = warnings[:_SPARSE_WARNING_LIMIT]
         warnings.append({
-            "kind": "sparse_cluster",
-            "reason": (
-                f"cluster has {cluster.size} members "
-                f"(threshold {cluster.sparse_threshold})"
+            "kind": "sparse_cluster_truncated",
+            "truncated": True,
+            "total_groups": total_groups,
+            "shown": _SPARSE_WARNING_LIMIT,
+            "note": (
+                f"BUG-008/009: {total_groups - _SPARSE_WARNING_LIMIT} "
+                "additional sparse-cluster groups omitted to keep the "
+                "bootstrap response within MCP transport limits."
             ),
-            "paths_pattern": cluster.key.path_pattern_bucket,
-            "size": cluster.size,
-            "sample_paths": sample_paths,
         })
     return warnings
 
