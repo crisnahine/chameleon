@@ -32,6 +32,47 @@ def _emit(output: dict) -> None:
     sys.stdout.write("\n")
 
 
+def _plugin_data_dir() -> Path:
+    """Return the per-user chameleon plugin data dir (override-aware).
+
+    Mirrors chameleon_mcp.plugin_paths.plugin_data_dir but keeps the import
+    cost off the hook hot path.
+    """
+    override = os.environ.get("CHAMELEON_PLUGIN_DATA")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".local" / "share" / "chameleon"
+
+
+_TRUST_PROMPT_FILENAME = ".trust_prompted.{session}"
+
+
+def _should_emit_untrusted_prompt(repo_id: str, session_id: str | None) -> bool:
+    """BUG-024: emit the untrusted trust prompt at most once per session.
+
+    Writes a marker file at ``${PLUGIN_DATA}/<repo_id>/.trust_prompted.<session>``
+    the first time and returns False on every subsequent invocation in
+    the same session. Sessions are per-Claude-Code-conversation so the
+    user gets a fresh prompt in a new conversation.
+
+    Best-effort: any filesystem error short-circuits to "yes, prompt"
+    (the prompt is harmless if duplicated; suppressing it on error would
+    hide the trust gate completely).
+    """
+    if not repo_id or not session_id:
+        return True
+    try:
+        marker_dir = _plugin_data_dir() / repo_id
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        marker = marker_dir / _TRUST_PROMPT_FILENAME.format(session=session_id)
+        if marker.exists():
+            return False
+        marker.touch(exist_ok=True)
+        return True
+    except (OSError, PermissionError):
+        return True
+
+
 def _emit_session_context(content: str) -> None:
     """Emit SessionStart context per platform's expected JSON shape.
 
@@ -178,6 +219,44 @@ def preflight_and_advise() -> int:
     archetype_name = archetype_obj.get("archetype")
 
     if not archetype_name:
+        _emit({})
+        return 0
+
+    # BUG-024: gate canonical injection on trust_state. Pre-v0.5.6 the hook
+    # injected the full canonical witness even when the user had not
+    # granted trust, contradicting the using-chameleon skill ("if
+    # untrusted, surface trust prompt once, proceed without injection
+    # until trusted"). For an untrusted profile we now:
+    #   1. Emit a one-time trust prompt (per session) suggesting
+    #      /chameleon-trust, and
+    #   2. Suppress the canonical excerpt and rules until the user trusts.
+    # The "once per session" tracking uses a marker file under the per-
+    # repo plugin-data dir.
+    repo_id_for_gate = repo_info.get("id")
+    session_id = payload.get("session_id")
+    if trust_state == "untrusted" and repo_id_for_gate:
+        if _should_emit_untrusted_prompt(repo_id_for_gate, session_id):
+            block = (
+                "<chameleon-context>\n"
+                "[chameleon: profile present, untrusted]\n\n"
+                "A `.chameleon/` profile exists in this repo but the user "
+                "has not granted trust for it yet. Surface this to your "
+                "human partner once and suggest:\n\n"
+                "    /chameleon-trust\n\n"
+                "Chameleon will not inject canonical excerpts or team "
+                "idioms into your context until trust is granted. The "
+                "edit may still proceed; this is an advisory gate, not a "
+                "hard deny.\n"
+                "</chameleon-context>"
+            )
+            _emit({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "additionalContext": block,
+                }
+            })
+            return 0
+        # Already prompted this session — stay silent.
         _emit({})
         return 0
 
