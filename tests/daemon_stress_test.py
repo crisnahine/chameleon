@@ -278,14 +278,14 @@ print(
     f"total_retries={total_retries} (max_per_call={max_retries_seen})"
 )
 print(
-    f"    NOTE: daemon is single-threaded with listen() backlog=16; "
-    f"retries above zero reflect the documented fail-open contract — "
-    f"`daemon_client.call` returns None on ECONNREFUSED and the hook "
-    f"falls back to in-process. This test models that retry loop."
+    "    NOTE: daemon is single-threaded with listen() backlog=16; "
+    "retries above zero reflect the documented fail-open contract — "
+    "`daemon_client.call` returns None on ECONNREFUSED and the hook "
+    "falls back to in-process. This test models that retry loop."
 )
 
 t(
-    f"daemon still alive after 200 concurrent requests",
+    "daemon still alive after 200 concurrent requests",
     daemon.is_daemon_alive(),
     "daemon crashed under load",
 )

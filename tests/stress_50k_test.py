@@ -86,6 +86,8 @@ from chameleon_mcp.bootstrap.discovery import (  # noqa: E402
 )
 from chameleon_mcp.tools import (  # noqa: E402
     bootstrap_repo as bootstrap_repo_tool,
+)
+from chameleon_mcp.tools import (
     get_pattern_context,
 )
 
