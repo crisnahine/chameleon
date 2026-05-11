@@ -4,6 +4,46 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] — 2026-05-11
+
+The dogfood-driven patch release. Real-world testing against 6 production repos (forem, maybe, mastodon, gitlabhq, excalidraw, plane) surfaced 56 unique findings. v0.5.1 ships the 4 Critical + 3 High fixes that the dogfood + 3-app-confirmed bug analysis prioritized.
+
+Per-app reports under `docs/dogfood/REPORT-*.md`; cross-app analysis in `docs/dogfood/SUMMARY.md`. Independent code reviewer signed off; 1,041 test assertions across 18 suites all green.
+
+### Fixed — Critical (4)
+
+- **Bug 4: Trojan-source bidi sanitization (CVE-2021-42574 class).** `sanitize_for_chameleon_context` now strips U+202A–U+202E (LRE/RLE/PDF/LRO/RLO) and U+2066–U+2069 (LRI/RLI/FSI/PDI), not just zero-width chars + ANSI escapes. A poisoned idiom containing `‮` would have reached model context verbatim in v0.5.0; v0.5.1 strips it byte-level. Order matters in the sanitize pipeline: zero-width → bidi → NFC → tag-token replacement, so sandwich attacks like `<‮/chameleon-context>` cannot slip the boundary check. (Confirmed by maybe + excalidraw dogfoods.)
+
+- **Bug 1: Monorepo `repo_id` collision in `index.db`.** Three independent dogfoods (mastodon, plane, excalidraw) hit the same crash: all sub-workspaces share a git-remote-derived `repo_id`, and the v0.5.0 `repos` table's PRIMARY KEY was `repo_id` alone, so every per-workspace bootstrap overwrote the root row. `_resolve_repo_root_by_id` then misrouted every consumer call (`get_canonical_excerpt`, partial-refresh, drift, ...) to the alphabetically-last workspace. v0.5.1 changes the PK to `(repo_id, repo_root)` and adds a one-time, in-place, transactional migration (`_migrate_repos_to_composite_pk`) that runs on first `init_index_db()` after upgrade. `get_repo` and `resolve_repo_root` accept an optional `repo_root_hint` for monorepo callers; absent the hint, they return the freshest matching row.
+
+- **Bug 2: Rails+JS hybrid silently scans only TypeScript.** forem (3,515 Ruby files invisible) and mastodon (3,179 Ruby files invisible) both hit this: when both `Gemfile` and `package.json` existed, `_select_extractor` picked TypeScript first and the entire Rails app stayed unscanned. v0.5.1 detects the Rails-with-frontend triple (`Gemfile` + `config/application.rb` + `app/javascript/`), picks Ruby for those repos, and surfaces a new `language_hint` envelope field describing the secondary language and recommending `bootstrap_repo(<repo>/app/javascript)` for the TS half. The hint flows through `BootstrapReport`, `profile.json` (omitted when no hybrid is detected), and `profile.summary.md` (rendered as a `## Secondary language detected` section above the archetype list).
+
+- **Bug 3: `refresh_repo` silently wiped user renames.** Three independent dogfoods (forem, plane, excalidraw) reproduced this; root causes varied by repo but the symptom was the same: full-bootstrap fallthrough re-derived archetype names from scratch, destroying user curation. v0.5.1 persists the rename mapping into `.chameleon/renames.json` (intended to be committed to git so the team shares the curation). The orchestrator loads the overlay AFTER `propose_archetype_name` runs and re-keys the archetypes / canonicals dicts before commit; user-mapped target names are pre-reserved in `assigned_names` so collisions take a numeric suffix on the auto-name side. The renames file is re-emitted inside every `atomic_profile_commit` (full bootstrap, partial refresh, workspace amend) so the directory replacement never clobbers it.
+
+### Fixed — High (3)
+
+- **H1: `apply_archetype_renames` now flips trust to stale.** `hash_profile` was previously scoped to `profile.json + idioms.md`, so renaming archetypes (which rewrites `archetypes.json` + `canonicals.json` + `profile.summary.md`) left the trust hash unchanged. v0.5.1 extends `hash_profile` to cover all 4 JSON artifacts (alphabetical order, each framed by `\x00<filename>\x00` to prevent boundary collisions) plus `idioms.md`. Renames now correctly invalidate trust; users see one re-trust prompt per rename. NB: this is **transparently breaking** for existing v0.5.0 trust records — every previously-trusted repo with a non-trivial `archetypes.json` flips to `trust_state=stale` on first v0.5.1 run.
+
+- **H2: Stale trust grants no longer silently inherit to fresh clones.** `repo_id = sha256(git_remote_url)` means a fresh clone of a previously-trusted repo (e.g., from a calibration run) inherits the trust grant with a stale `repo_root` path. `detect_repo` now surfaces a structured `legacy_trust_hint` envelope when the trust record's `repo_root` differs from the current path and no per-root entry covers the current workspace: `{reason, recorded_repo_root, current_repo_root, recommended_action}`. The v0.4 schema-v6 migration hint (string) and v0.5.1 cross-clone hint (dict) are mutually exclusive — readers should `isinstance(..., dict)` to disambiguate.
+
+- **H6: Per-(repo_id, repo_root) trust.** `TrustRecord` gains an additive `repo_root_specific_hashes: dict[str, str]` field mapping resolved repo_root → profile_sha256, so monorepos can grant trust at a specific workspace without overwriting the root's grant. `is_material_change` delegates to a new `hash_for_root(repo_root)` method that returns the most-specific match (per-root entry → top-level fallback). Backward compatible: v0.5.0 records load with an empty map and behave identically to v0.5.0.
+
+### Tests
+
+- New: `tests/v0_5_1_critical_test.py` (82 assertions) + `tests/v0_5_1_trust_test.py` (38 assertions). Each fix is verified by an explicit reproducer drawn from the dogfood reports.
+- Existing 16 suites all green (1,041 total assertions). 2 `interview_flow_test` assertions were updated to match the new H1 behavior — renames now flip trust to stale, where the old behavior had pinned the no-op.
+
+### Known regressions / migration notes
+
+- **`forget_repo(repo_id)` without `repo_root`** now deletes ALL rows for that repo_id (v0.5.0 deleted "the row" — there could only ever be one). Callers should pass `repo_root` explicitly to scope the delete.
+- **`BootstrapReport.to_dict()` always includes `language_hint`** (null when not a hybrid); `profile.json` omits the key when null. Consumers reading either should use `.get("language_hint")`.
+- **`atomic_profile_commit` still clobbers `.chameleon/.skip` and `.chameleon/.gitignore`** sibling files. `renames.json` is preserved; `.skip` / `.gitignore` preservation is deferred to v0.5.2 (BUG-007 from dogfood).
+- The v0.5.1 `_migrate_repos_to_composite_pk` runs the first time `init_index_db()` is called after upgrade; idempotent and transactional. A crash mid-migration leaves the v0.5.0 table intact.
+
+### Deferred to v0.5.2+
+
+~28 medium/low bugs from the dogfood pass: API consistency around `repo` arg (4 confirmations), `.skip` sibling preservation, idiom slug collision, partial-refresh cluster_id namespace mismatch, adaptive sparse-cluster threshold, Next.js/Remix route-group recognition, content_signal_match wire-through, Rails-aware naming priors, semantic prompt-injection NL heuristic, and others. Full list in `docs/dogfood/SUMMARY.md`.
+
 ## [0.5.0] — 2026-05-11
 
 The **actually-100% release**. The three items I previously called "intentionally deferred to v1.0+" all ship: long-lived daemon, partial re-clustering, real calibration measurements against a real corpus. Every item the original Phase plan + ARCHITECTURE.md + audit identified is now either shipped or has a concrete reason rooted in data, not in "we ran out of time."

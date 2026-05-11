@@ -157,6 +157,28 @@ def detect_repo(file_path: str) -> dict:
     - "stale"      — .trust record exists but profile changed since grant;
                      user must re-confirm via /chameleon-trust before
                      chameleon resumes injection
+
+    Two distinct ``legacy_trust_hint`` surfaces are emitted, mutually
+    exclusive by trigger:
+
+    1. **Pre-v0.4 path-id migration** (string hint + ``legacy_repo_id``):
+       fires when ``trust_state == "untrusted"`` because the canonical
+       (git-remote-derived) id has no record, but the legacy path-derived
+       id DOES. The user trusted the repo before v0.4 changed the repo_id
+       derivation and just needs to re-grant under the new id.
+
+    2. **v0.5.1 stale-clone hint** (dict, Bug H2): fires when
+       ``trust_state == "stale"`` AND the trust record's recorded
+       ``repo_root`` doesn't match the current ``repo_root``. Same git
+       remote + same id, but the trust was granted on a different
+       checkout (a prior calibration run, a teammate's clone synced via
+       shared plugin-data, etc.). v0.5.0 surfaced this as a generic
+       "stale" with no explanation; v0.5.1 returns a structured envelope
+       so the using-chameleon skill can tell the user "you're on a fresh
+       clone — re-run /chameleon-trust" instead of "something changed
+       inside the profile". Genuine in-place stale (recorded_repo_root
+       matches current_repo_root) deliberately does NOT surface the hint
+       — that branch is already covered by the standard stale messaging.
     """
     from chameleon_mcp.profile.loader import find_repo_root
     from chameleon_mcp.profile.trust import is_material_change, trust_state_for
@@ -189,13 +211,48 @@ def detect_repo(file_path: str) -> dict:
     # the check when the two ids happen to be equal (no git remote — the
     # function already returned the legacy id and there's nothing to migrate).
     legacy_id = _legacy_path_repo_id(repo_root)
-    legacy_trust_hint: str | None = None
+    legacy_trust_hint_value: str | dict | None = None
+    legacy_repo_id_value: str | None = None
     if trust is None and legacy_id != repo_id and trust_state_for(legacy_id) is not None:
-        legacy_trust_hint = (
+        legacy_trust_hint_value = (
             "Trust record found at the legacy (pre-v0.4) path-derived repo_id "
             f"{legacy_id[:8]}…; the canonical repo_id is now derived from the "
             "git remote URL. Run /chameleon-trust to re-grant under the new id."
         )
+        legacy_repo_id_value = legacy_id
+
+    # v0.5.1 Bug H2: stale trust against a different recorded repo_root
+    # ⇒ this checkout inherited an older clone's trust grant via the
+    # shared git-remote repo_id. Surface the recorded vs current paths so
+    # the user can distinguish "fresh clone reuse" from "real material
+    # change". Pre-condition: trust is not None AND it's stale, so the
+    # v0.4 path above could not have fired (that one requires trust is
+    # None).
+    current_repo_root_str = str(repo_root)
+    if (
+        trust is not None
+        and trust_state == "stale"
+        and trust.repo_root
+        and trust.repo_root != current_repo_root_str
+    ):
+        # Suppress the dict hint when the workspace HAS its own per-root
+        # trust grant in the new map — in that case the stale flag is
+        # about the workspace itself, not the legacy clone path.
+        try:
+            resolved_current = str(Path(repo_root).resolve())
+        except OSError:
+            resolved_current = current_repo_root_str
+        has_workspace_grant = resolved_current in trust.repo_root_specific_hashes
+        if not has_workspace_grant:
+            legacy_trust_hint_value = {
+                "reason": (
+                    "Trust granted previously for a different repo_root "
+                    "(likely a prior clone of this repo)"
+                ),
+                "recorded_repo_root": trust.repo_root,
+                "current_repo_root": current_repo_root_str,
+                "recommended_action": "Re-run /chameleon-trust on this clone",
+            }
 
     data: dict = {
         "repo_id": repo_id,
@@ -203,9 +260,10 @@ def detect_repo(file_path: str) -> dict:
         "profile_status": "profile_present" if profile_present else "no_profile",
         "trust_state": trust_state,
     }
-    if legacy_trust_hint is not None:
-        data["legacy_repo_id"] = legacy_id
-        data["legacy_trust_hint"] = legacy_trust_hint
+    if legacy_trust_hint_value is not None:
+        data["legacy_trust_hint"] = legacy_trust_hint_value
+        if legacy_repo_id_value is not None:
+            data["legacy_repo_id"] = legacy_repo_id_value
     return _envelope(data)
 
 
@@ -502,7 +560,9 @@ def get_pattern_context(file_path: str) -> dict:
     })
 
 
-def _resolve_repo_root_by_id(repo_id: str) -> Path | None:
+def _resolve_repo_root_by_id(
+    repo_id: str, repo_root_hint: str | None = None
+) -> Path | None:
     """Map a repo_id back to its repo_root.
 
     Phase 4.4 lookup order:
@@ -510,13 +570,20 @@ def _resolve_repo_root_by_id(repo_id: str) -> Path | None:
       2. trust record's repo_root (backward compat with v0.1/v0.2 installs
          that bootstrapped before index.db existed)
 
+    v0.5.1 (Bug 1): monorepo sub-workspaces share a git-remote-derived
+    repo_id with the root, so a single repo_id may now resolve to
+    multiple candidate roots. When the caller knows which workspace it
+    is asking about (e.g., refresh_repo just resolved the absolute path),
+    it passes `repo_root_hint` so index.db returns the matching row
+    instead of the freshest-overall one.
+
     Returns None if neither layer resolves to an existing directory.
     """
     from chameleon_mcp import index_db
     from chameleon_mcp.profile.trust import trust_state_for
 
-    # Primary: index.db
-    indexed = index_db.resolve_repo_root(repo_id)
+    # Primary: index.db (with optional repo_root pinning for monorepos).
+    indexed = index_db.resolve_repo_root(repo_id, repo_root_hint=repo_root_hint)
     if indexed:
         p = Path(indexed)
         if p.is_dir():
@@ -1222,6 +1289,17 @@ def _attempt_partial_refresh(
         except OSError:
             summary_text = ""
 
+    # v0.5.1 (Bug 3): preserve `.chameleon/renames.json` across the
+    # atomic_profile_commit's dir-replacement so the user's rename
+    # mapping survives a partial refresh.
+    renames_text: str | None = None
+    renames_path_partial = profile_dir / "renames.json"
+    if renames_path_partial.is_file():
+        try:
+            renames_text = renames_path_partial.read_text(encoding="utf-8")
+        except OSError:
+            renames_text = None
+
     # Step 10: atomic commit. Any exception here leaves the existing
     # profile untouched.
     try:
@@ -1246,6 +1324,10 @@ def _attempt_partial_refresh(
             (txn_dir / "profile.summary.md").write_text(
                 summary_text, encoding="utf-8"
             )
+            if renames_text is not None:
+                (txn_dir / "renames.json").write_text(
+                    renames_text, encoding="utf-8"
+                )
     except Exception:
         # atomic_profile_commit guarantees on-disk state is unchanged
         # on exception. Bail to full bootstrap.
@@ -1342,7 +1424,9 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     # Phase 4.3 no-op optimization.
     repo_root = repo_path.resolve()
     repo_id = _compute_repo_id(repo_root)
-    cached = index_db.get_repo(repo_id)
+    # v0.5.1 (Bug 1): pin the lookup to this repo_root so a monorepo
+    # sub-workspace doesn't surface a sibling workspace's cached row.
+    cached = index_db.get_repo(repo_id, repo_root_hint=str(repo_root))
     profile_dir = repo_root / ".chameleon"
     profile_path = profile_dir / "profile.json"
 
@@ -2198,9 +2282,30 @@ def _rewrite_summary_md(
         f"Generation: {profile_data.get('generation', '')}",
         f"Schema version: {profile_data.get('schema_version', '')}",
         "",
+    ]
+    # v0.5.1 (Bug 2): keep the secondary-language section in lockstep with
+    # the orchestrator's _build_summary_md so a rename doesn't drop the
+    # warning from the trust-gate surface.
+    hint = profile_data.get("language_hint")
+    if isinstance(hint, dict) and hint.get("secondary_detected"):
+        lines.extend([
+            "## Secondary language",
+            "",
+            (
+                f"This bootstrap scanned **{hint.get('primary', '?')}** only. "
+                f"A secondary **{hint['secondary_detected']}** sidecar with "
+                f"~{hint.get('secondary_file_count', 0)} files was detected at "
+                f"`{hint.get('secondary_path', '')}` and **not included** in "
+                "this profile."
+            ),
+            "",
+            f"_{hint.get('note', '')}_",
+            "",
+        ])
+    lines.extend([
         f"## {profile_data.get('archetype_count', 0)} archetypes detected",
         "",
-    ]
+    ])
     for name, arch in sorted(archetypes_data.get("archetypes", {}).items()):
         canonical_entries = canonicals_data.get("canonicals", {}).get(name) or []
         canonical_path = (
@@ -2243,6 +2348,72 @@ def _rewrite_summary_md(
         )
         lines.append("")
     return "\n".join(lines)
+
+
+# v0.5.1 (Bug 3): the rename overlay file lives at `.chameleon/renames.json`
+# and is meant to be committed to the repo so the team shares the mapping.
+# Format:
+#   { "schema_version": 1,
+#     "renames": {<auto_name_from_naming_py>: <user_chosen_name>, ...},
+#     "updated_at": "<ISO 8601 Z>" }
+
+
+def _read_renames_overlay(profile_dir: Path) -> dict[str, str]:
+    """Return the current `.chameleon/renames.json` mapping, or {}.
+
+    Tolerant of missing / malformed files — the next `apply_archetype_renames`
+    rewrites the file from scratch, so a malformed renames.json self-heals.
+    """
+    path = profile_dir / "renames.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    sv = data.get("schema_version")
+    if not isinstance(sv, int) or sv > 1:
+        return {}
+    raw = data.get("renames", {})
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
+
+
+def _merge_rename_overlay(
+    existing: dict[str, str],
+    incoming: dict[str, str],
+) -> dict[str, str]:
+    """Merge `incoming` user renames into `existing` overlay.
+
+    `existing` is keyed by AUTO-name → user-name. `incoming` is keyed by
+    whatever name is currently in `archetypes.json` → new user-name.
+
+    Merge rules:
+      1. If incoming.source already appears as a key in existing, the
+         incoming.source is an auto-name → overwrite value with the new
+         user-name.
+      2. If incoming.source appears as a VALUE in existing, the user is
+         renaming an already-renamed archetype → walk back to the auto-name
+         key and overwrite its value.
+      3. Otherwise the incoming.source is itself an auto-name → add a
+         brand-new (source, target) entry.
+
+    Returns a new dict; the inputs are not mutated.
+    """
+    merged = dict(existing)
+    value_to_key = {v: k for k, v in existing.items()}
+    for source, target in incoming.items():
+        if source in merged:
+            merged[source] = target
+        elif source in value_to_key:
+            auto_key = value_to_key[source]
+            merged[auto_key] = target
+        else:
+            merged[source] = target
+    return merged
 
 
 def apply_archetype_renames(repo: str, renames: dict) -> dict:
@@ -2330,6 +2501,22 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         profile_data, archetypes_data, canonicals_data, idioms_text,
     )
 
+    # v0.5.1 (Bug 3): merge the new renames into `.chameleon/renames.json`
+    # so the next bootstrap re-applies them. Existing renames.json keys
+    # are AUTO-derived names (what naming.py would produce on a fresh
+    # bootstrap). When the incoming rename's source matches a key, we
+    # update the value. When it matches a value (i.e., the user is
+    # renaming an already-renamed archetype), we walk back to the
+    # original auto-name and update that entry. Otherwise the incoming
+    # source is itself an auto-name and gets a brand-new entry.
+    existing_renames = _read_renames_overlay(profile_dir)
+    merged_renames = _merge_rename_overlay(existing_renames, effective)
+    renames_payload = {
+        "schema_version": 1,
+        "renames": merged_renames,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
     try:
         with atomic_profile_commit(profile_dir) as txn_dir:
             (txn_dir / "profile.json").write_text(
@@ -2346,6 +2533,10 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
             )
             (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
             (txn_dir / "profile.summary.md").write_text(summary_md, encoding="utf-8")
+            (txn_dir / "renames.json").write_text(
+                json.dumps(renames_payload, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
     except Exception as e:
         return _envelope({"status": "failed", "error": f"atomic commit failed: {e}"})
 
@@ -2354,7 +2545,9 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     repo_id = _compute_repo_id(repo_root)
     new_hash = hash_profile(profile_dir)
     try:
-        cached = index_db.get_repo(repo_id) or {}
+        # v0.5.1 (Bug 1): pin to this repo_root so a monorepo sibling
+        # workspace's cached row doesn't leak its archetype_count here.
+        cached = index_db.get_repo(repo_id, repo_root_hint=str(repo_root)) or {}
         index_db.upsert_repo(
             repo_id,
             str(repo_root),

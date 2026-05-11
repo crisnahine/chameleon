@@ -48,14 +48,67 @@ from chameleon_mcp.extractors.ruby import RubyExtractor
 from chameleon_mcp.extractors.typescript import TypeScriptExtractor
 
 
+def _is_rails_with_frontend(repo_root: Path) -> bool:
+    """Detect a Rails-with-frontend hybrid (Bug 2 fix).
+
+    Rails+Stimulus / Rails+Hotwire / Rails+ImportMaps all colocate a TS
+    sidecar under ``app/javascript/`` while keeping the production code
+    in Ruby. The pre-v0.5.1 ``_select_extractor`` picked TypeScript first
+    when both ``package.json`` and ``Gemfile`` existed, which silently
+    excluded thousands of Ruby files (forem: 3,515; mastodon: 3,179).
+
+    Signal: all three of
+      - ``Gemfile`` present at the root
+      - ``config/application.rb`` present (the canonical Rails marker —
+        rules out vendored gemspecs / dual-language SDKs)
+      - ``app/javascript/`` present (the convention any Rails+JS hybrid
+        uses for its bundler entry point)
+    """
+    if not (repo_root / "Gemfile").is_file():
+        return False
+    if not (repo_root / "config" / "application.rb").is_file():
+        return False
+    if not (repo_root / "app" / "javascript").is_dir():
+        return False
+    return True
+
+
+def _count_ts_files_under(directory: Path) -> int:
+    """Best-effort count of .ts(x) / .js(x) files under ``directory``.
+
+    Used to populate the secondary-language file count in the
+    ``language_hint`` field. Bounded by a hard 50_000 stop so a
+    pathological symlink loop can't wedge bootstrap.
+    """
+    if not directory.is_dir():
+        return 0
+    count = 0
+    cap = 50_000
+    for ext in ("*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs"):
+        try:
+            for _ in directory.rglob(ext):
+                count += 1
+                if count >= cap:
+                    return count
+        except OSError:
+            continue
+    return count
+
+
 def _select_extractor(repo_root: Path) -> Extractor | None:
     """Pick the extractor whose can_handle() returns True for this repo.
 
-    Precedence: TypeScript > Ruby. A repo that has both Gemfile and
-    tsconfig.json (e.g., a Rails app with a Stimulus/Vite frontend in the
-    same repo) bootstraps with the TS extractor. For monorepos with truly
-    separate language subtrees, run /chameleon-init per subtree.
+    Precedence:
+      1. Rails-with-frontend (Gemfile + config/application.rb + app/javascript/)
+         → Ruby. The TS sidecar in ``app/javascript/`` is a separate
+         workspace concern; the user can run ``bootstrap_repo`` on it
+         independently. Surfaced via ``BootstrapReport.language_hint``.
+      2. TypeScript > Ruby for all other repos. A repo that has both
+         Gemfile and tsconfig.json without the Rails-with-frontend
+         signal bootstraps with the TS extractor.
     """
+    if _is_rails_with_frontend(repo_root):
+        return RubyExtractor()
     for ext_cls in (TypeScriptExtractor, RubyExtractor):
         ext = ext_cls()
         if ext.can_handle(repo_root):
@@ -109,9 +162,26 @@ class BootstrapReport:
     "archetypes_detected": int, "files_processed": int, "duration_ms": int,
     "error": str | None}. Empty list for non-monorepo repos.
     """
+    language_hint: dict | None = None
+    """v0.5.1 (Bug 2): hybrid-language detection envelope.
+
+    Populated when bootstrap picks one language but a meaningful sidecar
+    in another language exists in the same repo (Rails+JS, TS-with-Ruby-
+    scripts, etc.). Shape:
+        {
+          "primary": "ruby",
+          "secondary_detected": "typescript",
+          "secondary_file_count": int,
+          "secondary_path": "<repo>/app/javascript",
+          "note": "...recommendation...",
+        }
+    Surfaced in the bootstrap_repo envelope, persisted in profile.json,
+    and rendered in profile.summary.md so the user can decide whether
+    to run a second bootstrap on the sidecar.
+    """
 
     def to_dict(self) -> dict:
-        return {
+        out: dict = {
             "status": self.status,
             "archetypes_detected": self.archetypes_detected,
             "rules_extracted": self.rules_extracted,
@@ -127,6 +197,10 @@ class BootstrapReport:
             "bimodal_cluster_warnings": list(self.bimodal_cluster_warnings),
             "workspaces": list(self.workspace_reports),
         }
+        # Always include language_hint in the envelope (None when no hybrid
+        # detected) so downstream consumers can rely on a stable key.
+        out["language_hint"] = self.language_hint
+        return out
 
 
 def _compute_repo_id(repo_root: Path) -> str:
@@ -142,6 +216,45 @@ def _compute_repo_id(repo_root: Path) -> str:
     from chameleon_mcp.tools import _compute_repo_id as _tools_compute_repo_id
 
     return _tools_compute_repo_id(repo_root)
+
+
+# v0.5.1 (Bug 3): schema for the user-rename overlay file. Bumped if and
+# only if the on-disk shape changes incompatibly. v1 layout:
+#   { "schema_version": 1, "renames": {auto_name: user_name, ...},
+#     "updated_at": "<ISO 8601 Z>" }
+RENAMES_SCHEMA_VERSION = 1
+
+
+def _load_user_renames(profile_dir: Path) -> dict[str, str]:
+    """Return the {auto_name: user_name} overlay from `.chameleon/renames.json`.
+
+    Returns an empty dict when the file is absent, malformed, or carries
+    a future schema_version this build cannot interpret. The bootstrap
+    pipeline applies the returned mapping AFTER the heuristic naming
+    pass, so unknown auto-names (e.g., the heuristic produced something
+    different from what was originally renamed) are simply skipped —
+    they remain in renames.json untouched for the next pass.
+    """
+    path = profile_dir / "renames.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    sv = data.get("schema_version")
+    if not isinstance(sv, int) or sv > RENAMES_SCHEMA_VERSION:
+        return {}
+    renames = data.get("renames", {})
+    if not isinstance(renames, dict):
+        return {}
+    out: dict[str, str] = {}
+    for k, v in renames.items():
+        if isinstance(k, str) and isinstance(v, str) and k and v:
+            out[k] = v
+    return out
 
 
 def _generation_counter(now: float | None = None) -> int:
@@ -400,6 +513,16 @@ def _amend_root_profile_with_workspaces(
     except OSError:
         summary_text = ""
 
+    # v0.5.1 (Bug 3): re-emit renames.json inside the workspace-amendment
+    # txn so the user's rename overlay survives the dir replacement.
+    renames_path = profile_dir / "renames.json"
+    renames_text: str | None = None
+    if renames_path.is_file():
+        try:
+            renames_text = renames_path.read_text(encoding="utf-8")
+        except OSError:
+            renames_text = None
+
     with atomic_profile_commit(profile_dir) as txn_dir:
         (txn_dir / "profile.json").write_text(
             json.dumps(profile_data, indent=2, sort_keys=True), encoding="utf-8"
@@ -408,6 +531,8 @@ def _amend_root_profile_with_workspaces(
             (txn_dir / name).write_text(body, encoding="utf-8")
         (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
         (txn_dir / "profile.summary.md").write_text(summary_text, encoding="utf-8")
+        if renames_text is not None:
+            (txn_dir / "renames.json").write_text(renames_text, encoding="utf-8")
 
 
 def _bootstrap_single(
@@ -454,6 +579,27 @@ def _bootstrap_single(
                 "and no Ruby signals (Gemfile / *.gemspec) detected"
             ),
         )
+
+    # v0.5.1 (Bug 2): Rails-with-frontend repos pick Ruby; emit a
+    # language_hint so the caller knows the TS sidecar under
+    # app/javascript/ was deliberately excluded from the Ruby scan.
+    language_hint: dict | None = None
+    if extractor.language == "ruby" and _is_rails_with_frontend(repo_root):
+        js_dir = repo_root / "app" / "javascript"
+        secondary_count = _count_ts_files_under(js_dir)
+        if secondary_count > 0:
+            language_hint = {
+                "primary": "ruby",
+                "secondary_detected": "typescript",
+                "secondary_file_count": secondary_count,
+                "secondary_path": str(js_dir),
+                "note": (
+                    "Ruby-with-frontend repo detected; TS sidecar in "
+                    "app/javascript/ not scanned by this bootstrap. "
+                    "Run bootstrap_repo("
+                    f"{js_dir}) for the TS half."
+                ),
+            }
 
     # 2. Discover candidate files (use language-appropriate glob if no override)
     discovery_glob = paths_glob or _glob_for_extractor(extractor)
@@ -535,6 +681,15 @@ def _bootstrap_single(
         "rules": {},
     }
 
+    # v0.5.1 (Bug 3): load any user-curated renames so they survive
+    # /chameleon-refresh's full-bootstrap fallthrough. The file lives at
+    # `.chameleon/renames.json` and is meant to be committed to git so
+    # the team shares it. The orchestrator applies the rename overlay
+    # AFTER `propose_archetype_name` runs, so the auto-derived name still
+    # determines collision detection — and the overlay simply re-keys the
+    # archetypes_data / canonicals_data dicts before they're written.
+    rename_map = _load_user_renames(profile_dir)
+
     # Build archetypes from dense clusters. Phase 2D.2 derives meaningful
     # names (controller, service, react-component, ...) from cluster
     # signals instead of the opaque ``cluster-<16hex>`` placeholder used
@@ -542,6 +697,14 @@ def _bootstrap_single(
     # ClusteringResult.dense_clusters), so the most common archetype gets
     # the unsuffixed base name and smaller clusters take the suffix.
     assigned_names: set[str] = set()
+    # v0.5.1 (Bug 3): every user-mapped target is reserved up-front so
+    # auto-naming never produces a candidate that collides with one. When
+    # a collision would have occurred, the auto-derivation gets a numeric
+    # suffix (handled inside `propose_archetype_name` via its existing
+    # assigned_names set). This is the "user's mapping wins" rule.
+    for target in rename_map.values():
+        assigned_names.add(target)
+
     for cluster in clustering.dense_clusters:
         cluster_id = next(
             (cid for cid, sel in selection.selections.items()
@@ -551,9 +714,12 @@ def _bootstrap_single(
         if not cluster_id:
             # No canonical selected (no eligible candidates passed scanners)
             continue
-        archetype_name = propose_archetype_name(cluster, assigned_names)
-        assigned_names.add(archetype_name)
-        archetypes_data["archetypes"][archetype_name] = {
+        auto_name = propose_archetype_name(cluster, assigned_names)
+        # v0.5.1 (Bug 3): overlay the user's rename if one applies.
+        effective_name = rename_map.get(auto_name, auto_name)
+        assigned_names.add(auto_name)
+        assigned_names.add(effective_name)
+        archetypes_data["archetypes"][effective_name] = {
             "cluster_id": cluster_id,
             "cluster_size": cluster.size,
             "paths_pattern": cluster.key.path_pattern_bucket,
@@ -566,7 +732,7 @@ def _bootstrap_single(
 
         # Canonical entry
         sel = selection.selections[cluster_id]
-        canonicals_data["canonicals"][archetype_name] = [{
+        canonicals_data["canonicals"][effective_name] = [{
             "witness": {
                 "path": str(sel.witness_path.relative_to(repo_root)),
                 "sha_hint": sel.sha_hint,
@@ -611,6 +777,11 @@ def _bootstrap_single(
             },
         },
     }
+    # v0.5.1 Bug 2: only emit language_hint when a sibling language was
+    # actually detected. Including `null` in the envelope would mask
+    # legitimately-single-language repos with the same shape as hybrids.
+    if language_hint is not None:
+        profile_data["language_hint"] = language_hint
 
     # Build initial rules from tool configs (Phase 2C — basic; Phase 4 expands)
     if tool_configs.prettier:
@@ -687,6 +858,20 @@ def _bootstrap_single(
             ),
             encoding="utf-8",
         )
+        # v0.5.1 (Bug 3): re-emit `renames.json` inside the txn so the
+        # user's rename overlay file survives the directory replacement.
+        # Without this, atomic_profile_commit's rename clobbers the file
+        # even though the in-memory dicts were already renamed in-place.
+        if rename_map:
+            renames_payload = {
+                "schema_version": 1,
+                "renames": dict(rename_map),
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            (txn_dir / "renames.json").write_text(
+                json.dumps(renames_payload, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
 
     duration_ms = int((time.time() - started_at) * 1000)
     return BootstrapReport(
@@ -702,6 +887,7 @@ def _bootstrap_single(
         profile_path=profile_dir,
         sparse_cluster_warnings=sparse_warnings,
         bimodal_cluster_warnings=bimodal_warnings,
+        language_hint=language_hint,
     )
 
 
@@ -754,9 +940,32 @@ def _build_summary_md(
         f"Generation: {profile_data['generation']}",
         f"Schema version: {profile_data['schema_version']}",
         "",
+    ]
+
+    # v0.5.1 Bug 2: prominent secondary-language warning for Rails+JS
+    # hybrids (and any future hybrid). Reviewers must see this before
+    # the archetype list because a wrong primary-language pick silently
+    # excludes ~half the repo.
+    hint = profile_data.get("language_hint")
+    if hint:
+        lines.extend([
+            "## Secondary language detected",
+            "",
+            (
+                f"This bootstrap scanned **{hint.get('primary')}** only. "
+                f"A sibling **{hint.get('secondary_detected')}** codebase "
+                f"({hint.get('secondary_file_count')} files at "
+                f"`{hint.get('secondary_path')}`) was deliberately excluded."
+            ),
+            "",
+            hint.get("note", ""),
+            "",
+        ])
+
+    lines.extend([
         f"## {profile_data['archetype_count']} archetypes detected",
         "",
-    ]
+    ])
     for name, arch in sorted(archetypes_data["archetypes"].items()):
         canonicals = canonicals_data["canonicals"].get(name, [])
         canonical_path = canonicals[0]["witness"]["path"] if canonicals else "(none)"

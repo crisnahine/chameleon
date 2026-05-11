@@ -257,16 +257,21 @@ if len(renames_list) >= 2:
         "apply's returned new_profile_sha256 matches a fresh hash_profile() read",
         ap_data["new_profile_sha256"] == post_hash,
     )
+    # v0.5.1 H1 fix: hash_profile now covers archetypes.json + canonicals.json
+    # in addition to profile.json + idioms.md, so a pure rename DOES change
+    # the trust hash. The interview's apply path correctly bumps profile_sha256;
+    # users must re-trust after a rename. This is the new material-change
+    # rule (a rename is treated as a profile mutation worth re-reviewing,
+    # not a silent update).
     t(
-        "trust hash unchanged on pure rename (profile.json + idioms.md untouched)",
-        post_hash == pre_hash,
-        f"pre={pre_hash[:12]} post={post_hash[:12]} — per ARCHITECTURE §Material-change",
+        "trust hash CHANGED on rename (v0.5.1 H1 — hash_profile covers archetypes.json)",
+        post_hash != pre_hash,
+        f"pre={pre_hash[:12]} post={post_hash[:12]}",
     )
 
-    # The trust record was written before the rename and remains valid:
-    # since the trust hash did NOT change, the user is NOT forced to re-trust.
-    # This is intended per the material-change rule (renames are 'silent
-    # updates').
+    # The trust record was written before the rename; its profile_sha256 now
+    # no longer matches the on-disk profile, so subsequent detect_repo calls
+    # report `trust_state: "stale"` and the user must re-run /chameleon-trust.
     repo_id = _compute_repo_id(repo)
     record = trust_state_for(repo_id)
     t(
@@ -275,8 +280,8 @@ if len(renames_list) >= 2:
     )
     if record is not None:
         t(
-            "trust record's profile_sha256 still matches (no re-trust forced)",
-            record.profile_sha256 == post_hash,
+            "trust record's profile_sha256 is STALE after rename (v0.5.1 H1)",
+            record.profile_sha256 != post_hash,
             f"trust={record.profile_sha256[:12]} disk={post_hash[:12]}",
         )
 
