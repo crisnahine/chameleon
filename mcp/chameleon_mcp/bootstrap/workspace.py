@@ -247,7 +247,22 @@ def _expand_workspace_globs(repo_root: Path, globs: list[str]) -> list[Path]:
             continue
         # Trailing slash normalization
         glob = glob.rstrip("/")
-        for p in repo_root.glob(glob):
+        # Reject empty / pure-"." / pure-".." entries before passing them
+        # to Path.glob. Python 3.11's pathlib raises IndexError("tuple
+        # index out of range") inside `_make_selector` on an empty pattern
+        # tuple, and "." / ".." are degenerate-but-legal workspace entries
+        # in some real-world manifests (e.g., mastodon's
+        # `"workspaces": [".", "streaming"]` declares the repo root as a
+        # workspace). Treat "." as "the repo root is itself a workspace"
+        # — already handled by the orchestrator's root pass, so skip here.
+        if not glob or glob in (".", ".."):
+            continue
+        try:
+            matches = list(repo_root.glob(glob))
+        except (ValueError, IndexError):
+            # Defensive: malformed glob shouldn't crash bootstrap.
+            continue
+        for p in matches:
             if p.is_dir() and p not in seen:
                 # Workspace must contain a package.json to be a real package
                 if (p / "package.json").exists():

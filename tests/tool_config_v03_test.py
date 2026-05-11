@@ -435,6 +435,26 @@ t("malformed pnpm yields empty (or partial) workspace_paths",
 
 
 # ---------------------------------------------------------------------------
+# v0.5.1: workspace.py degenerate-glob guard (mastodon-style `["."]`)
+# ---------------------------------------------------------------------------
+section("workspace expansion rejects degenerate globs safely")
+from chameleon_mcp.bootstrap.workspace import _expand_workspace_globs  # noqa: E402
+
+with tempfile.TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    # Should not crash even though "." would otherwise raise IndexError
+    # inside Python 3.11 pathlib's _make_selector. Surfaced during the
+    # Phase 6 calibration corpus expansion when mastodon's
+    # `"workspaces": [".", "streaming"]` crashed bootstrap.
+    try:
+        result = _expand_workspace_globs(root, [".", "..", "", "streaming"])
+        t("degenerate globs ('.', '..', '') skipped without crash", True)
+        t("empty result when no real package.json directories exist", result == [])
+    except (IndexError, ValueError) as e:
+        t(f"degenerate globs ('.', '..', '') skipped without crash — got {type(e).__name__}: {e}", False)
+
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 section("Summary")
