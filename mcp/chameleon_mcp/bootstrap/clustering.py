@@ -63,6 +63,11 @@ class Cluster:
     # Cluster instances directly (older tests) inherit the v0.5.1
     # threshold-5 behavior unchanged.
     sparse_threshold: int = SPARSE_CLUSTER_THRESHOLD
+    # BUG-002 (v0.5.6): loose-merge clustering tier. Clusters created by
+    # the tight (exact-signature) pass have tier "tight"; clusters formed
+    # by the second-pass loose merge — same paths_pattern + AST shape
+    # Jaccard >= 0.5 — get tier "loose" so consumers can distinguish.
+    cluster_tier: str = "tight"
 
     @property
     def size(self) -> int:
@@ -281,9 +286,108 @@ def cluster_files(
         Cluster(key=k, members=members, sparse_threshold=resolved_threshold)
         for k, members in by_key.items()
     ]
+
+    # BUG-002 (v0.5.6): loose-merge second pass. Pre-v0.5.6 the strict
+    # signature clustering left 90%+ of files in singleton clusters
+    # because the seven-tuple key keys on AST top-level-node-kinds —
+    # minor shape differences (one file has an extra TypeAlias) split
+    # the cluster. The vast majority of files in a real codebase then
+    # return archetype=null from get_pattern_context.
+    #
+    # The loose-merge tier groups sparse clusters sharing the same
+    # paths_pattern + extension + JSX flag and folds them into a single
+    # cluster when pairwise top-level-node-kinds Jaccard >= 0.5. The
+    # merged cluster is marked tier="loose" so consumers can apply
+    # lower confidence to it.
+    clusters = _loose_merge_sparse_clusters(clusters, resolved_threshold)
     clusters.sort(key=lambda c: c.size, reverse=True)
 
     return ClusteringResult(
         clusters=clusters,
         skipped_generated=skipped_generated,
     )
+
+
+def _node_kinds_set(member: ParsedFile) -> frozenset[str]:
+    return frozenset(member.top_level_node_kinds or ())
+
+
+def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
+    if not a and not b:
+        return 1.0
+    union = a | b
+    if not union:
+        return 1.0
+    return len(a & b) / len(union)
+
+
+def _loose_merge_sparse_clusters(
+    clusters: list[Cluster], sparse_threshold: int
+) -> list[Cluster]:
+    """Second-pass merge of sparse clusters by paths_pattern + Jaccard.
+
+    Group by ``(path_pattern_bucket, jsx_present)``; within each group,
+    walk the sparse clusters and merge any pair whose top-level node
+    kinds satisfy Jaccard >= 0.5. The result is one or more loose
+    clusters per bucket, each carrying ``cluster_tier="loose"``. Tight
+    (non-sparse) clusters are passed through unchanged.
+    """
+    tight: list[Cluster] = []
+    sparse_by_bucket: dict[tuple[str, bool], list[Cluster]] = defaultdict(list)
+    for c in clusters:
+        if c.size >= sparse_threshold:
+            tight.append(c)
+            continue
+        bucket_key = (c.key.path_pattern_bucket or "", bool(c.key.jsx_present))
+        sparse_by_bucket[bucket_key].append(c)
+
+    merged: list[Cluster] = []
+    for (bucket, jsx), group in sparse_by_bucket.items():
+        if len(group) < 2:
+            # Single sparse cluster — nothing to merge with; keep as-is.
+            merged.extend(group)
+            continue
+        # Greedy union-find on Jaccard >= 0.5.
+        parent: list[int] = list(range(len(group)))
+
+        def find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        def union(i: int, j: int) -> None:
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[ri] = rj
+
+        # Compute representative node-kinds-set per cluster (use the
+        # first member's set as the cluster's shape signature).
+        shapes = [_node_kinds_set(c.members[0]) for c in group]
+        n = len(group)
+        for i in range(n):
+            for j in range(i + 1, n):
+                if _jaccard(shapes[i], shapes[j]) >= 0.5:
+                    union(i, j)
+
+        # Build merged clusters from union-find buckets.
+        by_root: dict[int, list[int]] = defaultdict(list)
+        for i in range(n):
+            by_root[find(i)].append(i)
+        for root, indices in by_root.items():
+            if len(indices) == 1:
+                merged.append(group[indices[0]])
+                continue
+            # Combine members from all indices, retain first cluster's key.
+            combined_members: list[ParsedFile] = []
+            for idx in indices:
+                combined_members.extend(group[idx].members)
+            new_cluster = Cluster(
+                key=group[indices[0]].key,
+                members=combined_members,
+                sparse_threshold=sparse_threshold,
+                cluster_tier="loose",
+            )
+            merged.append(new_cluster)
+
+    return tight + merged
