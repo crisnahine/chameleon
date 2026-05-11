@@ -2470,12 +2470,25 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
 
     Phase 2D: validates `confirmation_token` matches the repo's basename
     (typed repo name) or `yes-trust-<repo_id_short>`. Writes .trust file.
+
+    BUG-004 (v0.5.6): ``repo`` accepts either an absolute repo path or
+    a 64-char repo_id hex digest, matching the behavior of get_archetype,
+    refresh_repo, propose_archetype_renames, etc. Pre-v0.5.6 the function
+    only accepted a path and rejected repo_id with "repo path must be
+    absolute" even though every other tool documented repo_id as the
+    canonical handle.
     """
     from chameleon_mcp.profile.trust import grant_trust
 
-    repo_path = Path(repo).expanduser()
-    if not repo_path.is_absolute():
-        return _envelope({"status": "failed", "error": f"repo path must be absolute: {repo!r}"})
+    # BUG-004: shape-detect via _resolve_repo_arg so a repo_id resolves
+    # back to its absolute path via index.db / trust records.
+    resolved_path, _resolved_id = _resolve_repo_arg(repo)
+    if resolved_path is None:
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+    repo_path = resolved_path
     if not repo_path.exists():
         return _envelope({"status": "failed", "error": f"repo path does not exist: {repo!r}"})
     if not repo_path.is_dir():
