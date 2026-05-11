@@ -938,8 +938,13 @@ def _bootstrap_single(
         )
 
     if not candidates:
+        # BUG-012: "no source files" was emitting status="failed" while the
+        # "no language signals" branch above emitted "failed_unsupported_language".
+        # Both are semantically the same case (nothing for chameleon to do).
+        # Unify on failed_unsupported_language with the original detail
+        # appended so callers don't need to track two distinct statuses.
         return BootstrapReport(
-            status="failed",
+            status="failed_unsupported_language",
             archetypes_detected=0,
             rules_extracted=0,
             idioms_collected=0,
@@ -949,7 +954,7 @@ def _bootstrap_single(
             files_skipped_parse=0,
             duration_ms=int((time.time() - started_at) * 1000),
             profile_path=None,
-            error="No TypeScript files found matching the discovery glob",
+            error="No source files found matching the discovery glob",
             workspace_roots=list(workspace_roots),
             fanout_capped=fanout_capped,
             discovered_files_pre_exclusion=pre_exclusion_count,
