@@ -1156,7 +1156,7 @@ def _attempt_partial_refresh(
     # + reparsed), record its current contribution. Difference = delta.
 
     prev_membership: dict[str, int] = {}
-    for rel, prev in prev_state.items():
+    for _rel, prev in prev_state.items():
         cid = prev.get("cluster_id") or ""
         prev_membership[cid] = prev_membership.get(cid, 0) + 1
 

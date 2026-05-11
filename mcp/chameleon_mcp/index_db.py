@@ -284,8 +284,8 @@ def list_repos(
         if cursor:
             try:
                 cursor_ts, cursor_id = cursor.split("|", 1)
-            except ValueError:
-                raise ValueError(f"unknown cursor {cursor!r}")
+            except ValueError as e:
+                raise ValueError(f"unknown cursor {cursor!r}") from e
             # Confirm the cursor points at a real row — protects against
             # corrupted cursors and keeps the v0.2 error envelope honest.
             check = conn.execute(

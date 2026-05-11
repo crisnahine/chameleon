@@ -89,7 +89,7 @@ def _ensure_hmac_key() -> bytes:
         raise HMACKeyError(
             f"HMAC key tmp file {tmp_path} exists and final {key_path} "
             f"never appeared after retries"
-        )
+        ) from None
     try:
         os.write(fd, key)
         os.fsync(fd)
