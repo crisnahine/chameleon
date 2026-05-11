@@ -834,20 +834,19 @@ def _short_hash_for(cluster: Any) -> str:
     return "unknown"
 
 
-def _disambiguation_suffix(cluster: Any) -> str | None:
-    """Pick a stable, name-safe suffix from the cluster's path metadata.
+def _disambiguation_suffixes(cluster: Any) -> list[str]:
+    """All name-safe disambiguator candidates from the cluster's path metadata.
 
-    Consults two sources in order:
-      1. the paths_pattern bucket — usually the most concise namespace hint;
-      2. the member paths themselves — needed because signature v5's bucket
-         collapses inner segments (``app/controllers/api/v1/foo.rb`` →
-         ``app/api/v1``) and so loses subdirectory-of-controllers namespaces
-         like ``admin`` in ``app/controllers/admin/dashboard_controller.rb``.
+    BUG-013: previously returned a single value; when that single value
+    collided with an earlier cluster's name, the caller fell back to a
+    numeric counter (``react-component-10``, ``service-20``) which gives
+    the user no information about what makes the cluster different.
 
-    Walks each source's segments from right to left, returning the first
-    one that isn't a generic noise token (``controllers``, ``app``, ...)
-    and isn't a version-style id (``v1``). Returns None when nothing
-    useful is left — caller falls back to a numeric suffix.
+    Now returns an ordered list of candidates so the caller can try
+    several path-shaped disambiguators before falling back to a counter:
+    e.g., ``[handlers, mocks, testing]`` derived from
+    ``src/testing/mocks/handlers/foo.ts``. Order: most-specific (rightmost
+    meaningful path segment) to least.
     """
     paths_pattern = _cluster_attr(cluster, "path_pattern_bucket") or ""
     candidate_streams: list[list[str]] = []
@@ -857,31 +856,39 @@ def _disambiguation_suffix(cluster: Any) -> str | None:
     elif bucket_segs:
         candidate_streams.append(bucket_segs)
 
-    # Also consult the first member's directory chain (without the filename)
-    # so collisions inside ``app/controllers/admin/...`` reliably pick up
-    # ``admin``.
     member_paths = _member_relpaths(cluster)
     if member_paths:
         first_dirs = member_paths[0].rsplit("/", 1)[0].split("/")
-        # Skip the very first segment (``app``/``spec``); it's generic.
         if len(first_dirs) > 1:
             candidate_streams.append(first_dirs[1:])
 
+    seen: set[str] = set()
+    result: list[str] = []
     for segs in candidate_streams:
         for seg in reversed(segs):
             normalized = re.sub(r"[^a-z0-9-]+", "-", seg.lower()).strip("-")
             if not normalized:
                 continue
-            # Drop pure version tokens (v1, v2.3) and well-known generic tails.
             if re.fullmatch(r"v\d+(?:\.\d+)*", normalized):
                 continue
             if normalized in _GENERIC_TAIL_SEGMENTS:
                 continue
-            # Must still match the leading-letter requirement of the schema.
             if not normalized[0].isalpha():
                 continue
-            return normalized
-    return None
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
+def _disambiguation_suffix(cluster: Any) -> str | None:
+    """Backwards-compat thin wrapper around _disambiguation_suffixes.
+
+    Returns the first (most-specific) candidate, or None.
+    """
+    suffixes = _disambiguation_suffixes(cluster)
+    return suffixes[0] if suffixes else None
 
 
 def _sanitize(name: str) -> str | None:
@@ -956,13 +963,24 @@ def propose_archetype_name(
     if base not in existing_names:
         return base
 
-    # Collision path. First try the path-tail suffix because it carries
-    # real namespace info (e.g., ``controller-admin`` vs ``controller-api``).
-    suffix = _disambiguation_suffix(cluster)
-    if suffix is not None:
+    # Collision path. BUG-013: try EVERY meaningful path-tail suffix in
+    # decreasing specificity before falling back to a numeric counter, so
+    # we get ``react-component-button`` / ``react-component-icons`` /
+    # ``react-component-modal`` instead of ``react-component-10``.
+    suffix_candidates = _disambiguation_suffixes(cluster)
+    for suffix in suffix_candidates:
         candidate = _sanitize(f"{base}-{suffix}")
         if candidate is not None and candidate not in existing_names:
             return candidate
+
+    # Also try pairs of segments (most-specific + parent) to cover the case
+    # where every single-segment suffix collides too.
+    for i in range(len(suffix_candidates)):
+        for j in range(i + 1, len(suffix_candidates)):
+            paired = f"{suffix_candidates[i]}-{suffix_candidates[j]}"
+            candidate = _sanitize(f"{base}-{paired}")
+            if candidate is not None and candidate not in existing_names:
+                return candidate
 
     # As a last resort, append a numeric counter. We try ``-2`` first because
     # ``foo`` already exists, so the second instance is logically the second.
