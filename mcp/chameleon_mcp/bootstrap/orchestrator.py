@@ -1259,6 +1259,21 @@ def _bootstrap_single(
             "source": tool_configs.sources.get("eslint", ""),
             "parse_warning": tool_configs.parse_warnings["eslint"],
         }
+    # BUG-014 (v0.5.6): surface rubocop config so Ruby files get linting
+    # guidance equivalent to what TS files have via ESLint.
+    if tool_configs.rubocop:
+        rubocop_rule: dict = {
+            "source": tool_configs.sources.get("rubocop", ".rubocop.yml"),
+            "rules": tool_configs.rubocop,
+        }
+        if "rubocop" in tool_configs.parse_warnings:
+            rubocop_rule["parse_warning"] = tool_configs.parse_warnings["rubocop"]
+        rules_data["rules"]["rubocop"] = rubocop_rule
+    elif "rubocop" in tool_configs.parse_warnings:
+        rules_data["rules"]["rubocop"] = {
+            "source": tool_configs.sources.get("rubocop", ""),
+            "parse_warning": tool_configs.parse_warnings["rubocop"],
+        }
 
     # Preserve any user-curated idioms across a refresh: read the existing
     # idioms.md (if present) and re-emit it inside the transaction. Bootstrap

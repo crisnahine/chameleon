@@ -42,6 +42,9 @@ class ToolConfigResult:
     tsconfig: dict | None = None
     eslint: dict | None = None
     editorconfig: dict | None = None
+    rubocop: dict | None = None
+    """BUG-014: extracted .rubocop.yml content (top-level cops, plugins,
+    AllCops settings, etc.). None when the repo has no rubocop config."""
 
     has_prettier_js_plugins: bool = False
     """If True, plugin rules are invisible to chameleon (warn user)."""
@@ -172,6 +175,21 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
     if editorconfig_path.exists():
         result.editorconfig = _parse_editorconfig(editorconfig_path)
         result.sources["editorconfig"] = ".editorconfig"
+
+    # 5. .rubocop.yml — BUG-014 (v0.5.6). Pre-v0.5.6 all four Ruby test
+    # repos returned ``rules: {}`` because chameleon had no Ruby-tool
+    # extractor. Reads top-level keys (AllCops, plugins, cops) so a Ruby
+    # file's get_pattern_context surfaces real linting guidance.
+    for name in (".rubocop.yml", ".rubocop.yaml"):
+        p = repo_root / name
+        if p.exists():
+            parsed, warning = _parse_rubocop_yaml(p)
+            if parsed is not None:
+                result.rubocop = parsed
+                result.sources["rubocop"] = name
+            if warning:
+                result.parse_warnings["rubocop"] = warning
+            break
 
     return result
 
@@ -450,6 +468,31 @@ def _parse_eslint_yaml(path: Path) -> tuple[dict | None, str | None]:
         text = path.read_text(errors="replace")
     except OSError as exc:
         return None, f"could not read {path.name}: {exc}"
+    try:
+        loaded = _yaml.safe_load(text)
+    except _yaml.YAMLError as exc:  # type: ignore[attr-defined]
+        return None, f"malformed YAML in {path.name}: {exc}"
+    if not isinstance(loaded, dict):
+        return None, f"{path.name} did not parse to a mapping"
+    return loaded, None
+
+
+def _parse_rubocop_yaml(path: Path) -> tuple[dict | None, str | None]:
+    """Parse a .rubocop.yml file via PyYAML (BUG-014, v0.5.6).
+
+    Captures the top-level mapping verbatim: ``AllCops``, ``plugins``,
+    ``require``, ``inherit_from``, plus every cop entry. We cap the
+    payload at ~50KB to keep rules.json bounded even for very large
+    real-world configs (gitlab's .rubocop.yml is 42KB).
+    """
+    if _yaml is None:
+        return None, "PyYAML unavailable; cannot parse rubocop config"
+    try:
+        text = path.read_text(errors="replace")
+    except OSError as exc:
+        return None, f"could not read {path.name}: {exc}"
+    if len(text) > 200_000:
+        text = text[:200_000]
     try:
         loaded = _yaml.safe_load(text)
     except _yaml.YAMLError as exc:  # type: ignore[attr-defined]
