@@ -216,11 +216,19 @@ jobs:
         env:
           VERSION: ${{ needs.verify-tag.outputs.version }}
         run: |
-          TARBALL="chameleon-${VERSION}.tar.gz"
-          echo "tarball-name=${TARBALL}" >> "$GITHUB_OUTPUT"
+          # Write the tarball to a sibling dir (../out) so tar isn't
+          # reading from a tree it's writing into. v0.5.2's exclude
+          # pattern alone wasn't enough: tar still emits "file changed
+          # as we read it" + exit 1 when the destination lives in the
+          # same dir being archived.
+          OUT_DIR="${RUNNER_TEMP:-/tmp}/chameleon-release"
+          mkdir -p "$OUT_DIR"
+          TARBALL_NAME="chameleon-${VERSION}.tar.gz"
+          TARBALL_PATH="${OUT_DIR}/${TARBALL_NAME}"
+          echo "tarball-name=${TARBALL_NAME}" >> "$GITHUB_OUTPUT"
+          echo "tarball-path=${TARBALL_PATH}" >> "$GITHUB_OUTPUT"
           # Exclude developer-local artefacts (.venv, node_modules,
           # .chameleon, dist, __pycache__) from the release tarball.
-          # --exclude-vcs strips .git too.
           tar \
             --exclude='./.venv' \
             --exclude='./.git' \
@@ -234,17 +242,16 @@ jobs:
             --exclude='*.pyc' \
             --exclude='./.DS_Store' \
             --exclude='*/.DS_Store' \
-            --exclude='./chameleon-*.tar.gz' \
-            -czf "${TARBALL}" \
+            -czf "${TARBALL_PATH}" \
             --transform "s,^\./,chameleon-${VERSION}/," \
             .
-          ls -lh "${TARBALL}"
+          ls -lh "${TARBALL_PATH}"
 
       - name: Upload tarball artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-tarball
-          path: ${{ steps.archive.outputs.tarball-name }}
+          path: ${{ steps.archive.outputs.tarball-path }}
           retention-days: 7
 
   create-release:
