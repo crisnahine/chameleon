@@ -128,6 +128,23 @@ def _count_ts_files_under(directory: Path) -> int:
     return count
 
 
+def _count_ruby_files_under(directory: Path) -> int:
+    """Best-effort count of .rb files under ``directory`` (mirror of
+    _count_ts_files_under). BUG-017."""
+    if not directory.is_dir():
+        return 0
+    count = 0
+    cap = 50_000
+    try:
+        for _ in directory.rglob("*.rb"):
+            count += 1
+            if count >= cap:
+                return count
+    except OSError:
+        pass
+    return count
+
+
 def _select_extractor(repo_root: Path) -> Extractor | None:
     """Pick the extractor whose can_handle() returns True for this repo.
 
@@ -887,6 +904,9 @@ def _bootstrap_single(
     # app/frontend) was deliberately excluded from the Ruby scan.
     # v0.5.3 (Bug E): the dir is resolved via _rails_frontend_dir so the
     # hint points at whichever convention the repo actually uses.
+    # BUG-017 (v0.5.6): when TS wins but the repo also carries a Gemfile
+    # plus a meaningful Ruby sidecar, emit the reciprocal hint so the
+    # user sees "we picked TS, but there's a Ruby half here too".
     language_hint: dict | None = None
     if extractor.language == "ruby" and _is_rails_with_frontend(repo_root):
         js_dir = _rails_frontend_dir(repo_root)
@@ -908,6 +928,27 @@ def _bootstrap_single(
                         f"Run bootstrap_repo({js_dir}) for the JS half."
                     ),
                 }
+    elif extractor.language == "typescript" and (repo_root / "Gemfile").is_file():
+        # BUG-017: TS won, but the Gemfile suggests this is a Rails repo
+        # whose Rails-with-frontend signal didn't fire (legacy layout,
+        # non-standard JS dir, no app/javascript or app/assets/javascripts
+        # or app/frontend marker). The reciprocal hint warns the user that
+        # the Ruby half exists and was deliberately not scanned.
+        ruby_count = _count_ruby_files_under(repo_root)
+        if ruby_count >= 50:  # threshold: substantive Ruby presence
+            language_hint = {
+                "primary": "typescript",
+                "secondary_detected": "ruby",
+                "secondary_file_count": ruby_count,
+                "secondary_path": str(repo_root),
+                "note": (
+                    "TypeScript signals took precedence at the repo root, "
+                    "but a Gemfile and a substantive Ruby tree were also "
+                    "detected. Run bootstrap_repo on a Ruby-only subtree "
+                    "(or re-organize the repo with a recognized Rails "
+                    "frontend layout) to get Ruby archetype coverage."
+                ),
+            }
 
     # 2. Discover candidate files (use language-appropriate glob if no override).
     # v0.5.3 (Bug B): when workspace_roots is non-empty, the discovery walker
