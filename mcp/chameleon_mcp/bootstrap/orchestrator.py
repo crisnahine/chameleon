@@ -257,7 +257,20 @@ def _glob_for_extractor(extractor: Extractor) -> str:
     return "**/*.{ts,tsx,js,jsx,mjs,cjs}"
 
 PROFILE_SCHEMA_VERSION = 7
-ENGINE_MIN_VERSION = "0.4.0"
+
+# BUG-007: read engine version from installed package metadata instead of
+# hardcoding it. Pre-v0.5.6 the constant stayed at "0.4.0" through several
+# releases and leaked into profile.json and profile.summary.md.
+try:
+    from importlib.metadata import PackageNotFoundError as _PkgNotFound
+    from importlib.metadata import version as _pkg_version
+
+    try:
+        ENGINE_MIN_VERSION = _pkg_version("chameleon-mcp")
+    except _PkgNotFound:  # pragma: no cover - editable install w/o metadata
+        ENGINE_MIN_VERSION = "0.5.6"
+except Exception:  # pragma: no cover - defensive fallback
+    ENGINE_MIN_VERSION = "0.5.6"
 # v0.5.2 schema-v7 bump rationale:
 #   - paths_pattern strings now carry the file extension suffix
 #     (e.g. "src/components:tsx") to fix the .tsx vs .ts collision.
