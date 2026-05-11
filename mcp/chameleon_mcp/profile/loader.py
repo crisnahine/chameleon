@@ -15,6 +15,13 @@ from pathlib import Path
 from chameleon_mcp import __version__ as ENGINE_VERSION
 from chameleon_mcp.bootstrap.transaction import is_committed
 
+# BUG-023: schema_version is monotonic. A profile written by a future
+# chameleon with a higher schema_version may contain fields this engine
+# doesn't know about; reading it silently risks emitting wrong guidance.
+# Keep this constant in sync with bootstrap.orchestrator.PROFILE_SCHEMA_VERSION
+# (import-cycle avoidance: don't pull orchestrator at module load).
+MAX_SUPPORTED_SCHEMA_VERSION = 7
+
 
 def _version_tuple(v: str) -> tuple[int, ...]:
     """Parse a "X.Y.Z" version string. Trailing junk is dropped."""
@@ -155,6 +162,17 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         raise ProfileLoadError(
             f"profile requires engine >= {declared_min} but this engine is "
             f"{ENGINE_VERSION}; upgrade chameleon-mcp"
+        )
+
+    # BUG-023: refuse to load a profile written by a newer schema. This
+    # engine doesn't know what new fields mean and may return incorrect
+    # data if it silently accepts the read.
+    declared_schema = profile.get("schema_version")
+    if isinstance(declared_schema, int) and declared_schema > MAX_SUPPORTED_SCHEMA_VERSION:
+        raise ProfileLoadError(
+            f"profile schema_version {declared_schema} is newer than this "
+            f"engine supports (max {MAX_SUPPORTED_SCHEMA_VERSION}); "
+            f"upgrade chameleon-mcp"
         )
 
     mtime_token = "-".join(str(m) for m in mtimes_after)
