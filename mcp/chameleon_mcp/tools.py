@@ -2558,16 +2558,22 @@ def _propose_alternatives_for(
     """
     import re as _re
     candidates: list[str] = []
+    current_slug = _slugify(current_name) if current_name else None
 
     def _push(c: str | None) -> None:
         s = _slugify(c) if c else None
-        if s and s not in candidates:
-            candidates.append(s)
+        if not s or s in candidates:
+            return
+        # BUG-006: never propose the current name back at the user, and
+        # never propose a derivative that just decorates the current name
+        # (e.g. ``cluster-a2cfb565-comments`` when the current name is
+        # already ``cluster-a2cfb565``). The "keep current name" affordance
+        # lives in the slash-command UI, not in the candidate list.
+        if current_slug and (s == current_slug or s.startswith(current_slug + "-")):
+            return
+        candidates.append(s)
 
-    # 1. The current heuristic name (so "no rename" is a visible option).
-    _push(current_name)
-
-    # 2. Canonical filename stem (e.g., users_controller.rb → users-controller).
+    # 1. Canonical filename stem (e.g., users_controller.rb → users-controller).
     witness_rel = ""
     if canonical:
         witness_rel = (canonical.get("witness") or {}).get("path", "")
