@@ -1869,7 +1869,12 @@ def _iso_to_epoch(ts: str) -> float:
         return 0.0
 
 
-def bootstrap_repo(path: str, mode: str = "full", paths_glob: str | None = None) -> dict:
+def bootstrap_repo(
+    path: str,
+    mode: str = "full",
+    paths_glob: str | None = None,
+    force: bool = False,
+) -> dict:
     """First-time analysis: AST scan + (Phase 2D interview) + atomic profile commit.
 
     v0.4 (2D.3): for monorepos with detected workspace_paths, runs the full
@@ -1879,6 +1884,11 @@ def bootstrap_repo(path: str, mode: str = "full", paths_glob: str | None = None)
     v0.5.2 (Bug 1): `path` accepts either an absolute repo path or a
     64-char repo_id hex digest (for repos previously bootstrapped). See
     `_resolve_repo_arg`.
+
+    v0.5.6 (BUG-026): refuses to overwrite a committed profile unless
+    ``force=True``. Pre-v0.5.6 a second call silently clobbered the
+    existing profile; the /chameleon-init skill warned the model but the
+    MCP had no defense in depth.
     """
     from chameleon_mcp import index_db
     from chameleon_mcp.bootstrap.orchestrator import bootstrap_repo as _bootstrap
@@ -1899,6 +1909,23 @@ def bootstrap_repo(path: str, mode: str = "full", paths_glob: str | None = None)
             "status": "failed",
             "error": f"path is not a directory: {path}",
         })
+
+    # BUG-026: guard against accidental overwrite. A committed profile is
+    # marked by the COMMITTED sentinel inside .chameleon/ (atomic write).
+    if not force:
+        committed_marker = repo_root / ".chameleon" / "COMMITTED"
+        if committed_marker.is_file():
+            profile_path = str(repo_root / ".chameleon")
+            return _envelope({
+                "status": "already_bootstrapped",
+                "profile_path": profile_path,
+                "message": (
+                    "A committed profile already exists at this path. "
+                    "Pass force=true to overwrite, or run /chameleon-refresh "
+                    "to re-analyze without clearing trust state."
+                ),
+            })
+
     del mode  # forward-compat for Phase 2D interview mode
     report = _bootstrap(repo_root, paths_glob=paths_glob)
 

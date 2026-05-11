@@ -113,9 +113,17 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
 
 
 @mcp.tool()
-def bootstrap_repo(path: str, mode: str = "full", paths_glob: str | None = None) -> dict:
-    """First-time analysis: AST scan + interview + atomic profile commit."""
-    return tools.bootstrap_repo(path, mode, paths_glob)
+def bootstrap_repo(
+    path: str,
+    mode: str = "full",
+    paths_glob: str | None = None,
+    force: bool = False,
+) -> dict:
+    """First-time analysis: AST scan + interview + atomic profile commit.
+
+    Pass force=true to overwrite a committed profile (BUG-026).
+    """
+    return tools.bootstrap_repo(path, mode, paths_glob, force)
 
 
 @mcp.tool()
