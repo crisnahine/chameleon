@@ -1,0 +1,138 @@
+# Real-Claude-Code acceptance suite for chameleon.
+#
+# This workflow runs tests/claude_code_acceptance_test.py, which spawns
+# `claude --plugin-dir ...` and parses its stream-json output. Each run
+# costs roughly $0.20 in API spend against the maintainer's Claude
+# Code OAuth account — that's why the suite is NOT wired into ci.yml or
+# release.yml. It runs only on:
+#
+#   - workflow_dispatch (manual trigger, "Run workflow" in the Actions UI)
+#   - weekly cron (Mondays at 12:00 UTC) — a smoke pass against main
+#
+# REQUIRED SECRETS (must be configured in the repo settings under
+# Settings -> Secrets and variables -> Actions). If absent, the workflow
+# fails-soft with an explanatory message instead of charging the account
+# with a definitely-broken run.
+#
+#   CLAUDE_CODE_OAUTH_TOKEN
+#       The OAuth token the `claude` CLI uses to authenticate. Generate
+#       it locally with `claude auth` and copy the token from
+#       ~/.config/claude/auth.json (path may vary by platform).
+#
+#   CHAMELEON_TEST_TS_REPO
+#   CHAMELEON_TEST_RUBY_REPO
+#       Absolute paths to a TypeScript repo (must contain tsconfig.json /
+#       package.json) and a Ruby on Rails repo (must contain Gemfile /
+#       config/application.rb). chameleon's current test rig reads
+#       these from .env via tests/_test_config.py.
+#
+#       Because GitHub-hosted runners have no checkout of the
+#       maintainer's local test repos, the recommended path is:
+#         a) Commit fixture repos as git submodules under tests/fixtures/
+#            and set the secrets to those relative paths, OR
+#         b) Skip via the fail-soft branch below and run this workflow
+#            only against a self-hosted runner that has the repos
+#            checked out locally.
+#
+#       The workflow as shipped takes path (b) — see the "Detect missing
+#       secrets" step.
+
+name: real-claude-code-acceptance
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays at 12:00 UTC. Adjust as needed.
+    - cron: '0 12 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: real-claude-code-acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Detect missing secrets (fail-soft)
+        id: secrets-check
+        env:
+          OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TS_REPO: ${{ secrets.CHAMELEON_TEST_TS_REPO }}
+          RUBY_REPO: ${{ secrets.CHAMELEON_TEST_RUBY_REPO }}
+        run: |
+          MISSING=""
+          [ -z "$OAUTH_TOKEN" ] && MISSING="${MISSING} CLAUDE_CODE_OAUTH_TOKEN"
+          [ -z "$TS_REPO" ]     && MISSING="${MISSING} CHAMELEON_TEST_TS_REPO"
+          [ -z "$RUBY_REPO" ]   && MISSING="${MISSING} CHAMELEON_TEST_RUBY_REPO"
+          if [ -n "$MISSING" ]; then
+            echo "SKIP: required secrets not configured:${MISSING}"
+            echo "See workflow header for setup instructions."
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "missing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.secrets-check.outputs.missing == 'false'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Set up uv
+        if: steps.secrets-check.outputs.missing == 'false'
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'mcp/uv.lock'
+
+      - name: Set up Node.js
+        if: steps.secrets-check.outputs.missing == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'mcp/package-lock.json'
+
+      - name: Install Python dependencies (uv sync)
+        if: steps.secrets-check.outputs.missing == 'false'
+        working-directory: mcp
+        run: uv sync --frozen --extra dev
+
+      - name: Install Node dependencies (TypeScript extractor)
+        if: steps.secrets-check.outputs.missing == 'false'
+        working-directory: mcp
+        run: npm ci
+
+      - name: Install Claude Code CLI
+        if: steps.secrets-check.outputs.missing == 'false'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Authenticate Claude Code
+        if: steps.secrets-check.outputs.missing == 'false'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          # The acceptance test spawns the `claude` binary, which reads
+          # CLAUDE_CODE_OAUTH_TOKEN from the environment. We forward it
+          # via the `env` block on the test-runner step below.
+          echo "OAuth token wired through env (not echoed)."
+
+      - name: Run real-Claude-Code acceptance test
+        if: steps.secrets-check.outputs.missing == 'false'
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CHAMELEON_TEST_TS_REPO: ${{ secrets.CHAMELEON_TEST_TS_REPO }}
+          CHAMELEON_TEST_RUBY_REPO: ${{ secrets.CHAMELEON_TEST_RUBY_REPO }}
+        run: .venv/bin/python ../tests/claude_code_acceptance_test.py

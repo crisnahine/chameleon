@@ -123,6 +123,8 @@ gemini extensions update chameleon
 
 All commands accept `/cham-<name>` short aliases. `using-chameleon` is the eighth skill — it auto-fires on `SessionStart` and orients the model.
 
+- [Vocabulary firewall and competitive analysis](docs/chameleon/VOCABULARY-AND-COMPETITIVE.md) — how chameleon's terms differ from lint rules, formatters, AI-rules files, and codebase retrievers, plus where the engine doesn't apply.
+
 ### Hooks
 
 Four hooks drive the runtime:

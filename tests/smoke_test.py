@@ -275,7 +275,7 @@ t("has 'profiles' key", "profiles" in r["data"])
 section("hook_helper.session_start")
 from chameleon_mcp.hook_helper import preflight_and_advise, session_start
 
-os.environ["CLAUDE_PLUGIN_ROOT"] = "/Users/crisn/Documents/Projects/chameleon"
+os.environ["CLAUDE_PLUGIN_ROOT"] = str(Path(__file__).resolve().parent.parent)
 old_stdout = sys.stdout
 captured = io.StringIO()
 sys.stdout = captured

@@ -1,0 +1,214 @@
+# Continuous integration gates for chameleon.
+#
+# Fires on every PR (against main) and every push to main. Mirrors the
+# local test workflow documented in CONTRIBUTING.md, minus the
+# real-Claude-Code acceptance suite (that costs ~$0.20/run and lives in
+# real-claude-code-acceptance.yml — manual / cron only).
+#
+# Jobs:
+#   - test-python: matrix on Python 3.11 + 3.12 across Ubuntu + macOS.
+#     Runs every test suite that doesn't need network or a real claude
+#     binary. Mirrors the local "cd mcp && PYTHONPATH=.:../tests" idiom.
+#   - lint:        ruff check on the MCP package + tests.
+#   - version-sync: bash scripts/bump-version.sh --check (fails CI on drift).
+#   - hook-smoke:  one-shot invocation of hooks/session-start with synthetic
+#                  stdin, asserting the hook emits valid JSON.
+
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-python:
+    name: test-python (py${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'mcp/uv.lock'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'mcp/package-lock.json'
+
+      - name: Install Python dependencies (uv sync)
+        working-directory: mcp
+        run: uv sync --frozen --extra dev
+
+      - name: Install Node dependencies (TypeScript extractor)
+        working-directory: mcp
+        run: npm ci
+
+      - name: Sanity-check the MCP server imports
+        working-directory: mcp
+        run: .venv/bin/python -c "from chameleon_mcp.server import mcp; print('mcp ok')"
+
+      - name: Run comprehensive_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/comprehensive_test.py
+
+      - name: Run mcp_protocol_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/mcp_protocol_test.py
+
+      - name: Run v0_2_regression_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/v0_2_regression_test.py
+
+      - name: Run lint_engine_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/lint_engine_test.py
+
+      - name: Run index_db_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/index_db_test.py
+
+      - name: Run archetype_naming_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/archetype_naming_test.py
+
+      - name: Run canonical_v03_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/canonical_v03_test.py
+
+      - name: Run tool_config_v03_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/tool_config_v03_test.py
+
+  lint:
+    name: lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Lint is informational in v0.3.1 — there is a known ~250-error
+    # backlog from rapid Phase 2C/4 implementation. Run on every PR so
+    # new issues surface, but do not block merges until the backlog is
+    # cleared (tracked as a v0.4 follow-up).
+    continue-on-error: true
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'mcp/uv.lock'
+
+      - name: Ruff check (MCP package + tests)
+        working-directory: mcp
+        # Use uvx so we don't need a full `uv sync` just to lint. Ruff
+        # config (line-length, target-version, select) lives in
+        # mcp/pyproject.toml — uvx picks it up from the working directory.
+        run: uvx ruff@0.6.0 check chameleon_mcp/ ../tests/
+
+  version-sync:
+    name: version-sync (bump-version.sh --check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Verify all 7 manifests agree on the version
+        run: bash scripts/bump-version.sh --check
+
+  hook-smoke:
+    name: hook-smoke (session-start)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'mcp/uv.lock'
+
+      - name: Install Python dependencies (uv sync)
+        working-directory: mcp
+        run: uv sync --frozen
+
+      - name: Invoke hooks/session-start with synthetic stdin
+        # Mirrors the "preflight-and-advise on real..." section of
+        # tests/comprehensive_test.py — but standalone, no test repo
+        # required. We pipe a minimal SessionStart payload and confirm
+        # the hook emits a parseable JSON object on stdout.
+        #
+        # `strict=False` is used because Claude Code hook contracts allow
+        # literal newlines inside JSON string values (the embedded skill
+        # body). Strict JSON would reject them; Claude Code's runtime
+        # parser tolerates them, and so do we.
+        env:
+          CLAUDE_PLUGIN_ROOT: ${{ github.workspace }}
+        run: |
+          echo '{"session_id":"ci-smoke","hook_event_name":"SessionStart"}' \
+            | hooks/session-start \
+            | python3 -c "import json,sys; obj=json.loads(sys.stdin.read(), strict=False); assert isinstance(obj, dict), f'expected dict, got {type(obj).__name__}'; print('hook emitted valid JSON object')"

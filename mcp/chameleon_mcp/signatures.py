@@ -160,7 +160,13 @@ def content_signal_match_for(
         return "shebang"
     if head.lstrip().startswith("// @ts-"):
         return "ts_pragma"
-    # No archetype-specific match yet (Phase 2B integration deferred)
+    # The `archetype_signals` parameter is a forward-compat hook: future
+    # archetypes may declare their own first-200-byte directives beyond the
+    # universal set above (e.g., a team's `# typed: strict` Sorbet pragma).
+    # Wire-through would compare `head` against the archetype's stored
+    # signal table here. Today's set covers every signal the bootstrap
+    # pipeline actually clusters on; per-archetype signals add no value
+    # until calibration evidence shows a real per-team divergence.
     del archetype_signals
     return "none"
 

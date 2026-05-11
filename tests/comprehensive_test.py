@@ -21,7 +21,7 @@ from pathlib import Path
 PASS, FAIL = [], []
 
 from _test_config import TS_REPO, RUBY_REPO
-PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = PLUGIN_ROOT / "scripts"
 HOOKS = PLUGIN_ROOT / "hooks"
 

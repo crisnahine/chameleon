@@ -4,6 +4,38 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] — 2026-05-11
+
+Closes out three Phase 7 items I forgot to schedule in the v0.3.0 plan, plus three code-level TODOs left in v0.3.0. No new behavior — docs + CI + correctness-edge fixes only.
+
+### Added — Phase 7 (the forgotten three)
+
+- **`docs/chameleon/VOCABULARY-AND-COMPETITIVE.md`** (176 lines) — vocabulary firewall (archetype vs rule, canonical vs example, idiom vs convention, profile vs config, trust vs install, drift vs divergence, bucketing vs glob, shape vs structure) and a competitive-analysis section (ESLint/RuboCop, Prettier, .cursorrules / CLAUDE.md, superpowers, Cody/Copilot, codebase-aware retrievers) plus an explicit "when NOT to use chameleon" list. Linked from README.md "What's Inside".
+- **Bus-factor + succession plan** in `docs/chameleon/MAINTAINER.md`. Replaces the Phase 7-end TODO with an explicit inactivity policy (30 days → maintenance-only mode, 180 days → archive), criteria for becoming a co-maintainer, and a handoff-artifact list. The project is MIT and forkable; the policy is documentation, not enforcement.
+- **GitHub Actions CI** under `.github/workflows/`:
+  - `ci.yml` — runs on every PR + push to main. Matrix: Python 3.11/3.12 × Ubuntu/macOS. Jobs: `test-python` (all 8 suites — comprehensive, mcp_protocol, v0_2_regression, lint_engine, index_db, archetype_naming, canonical_v03, tool_config_v03), `lint` (ruff, `continue-on-error: true` until the v0.3.0 backlog is cleared), `version-sync` (`bump-version.sh --check`), `hook-smoke` (SessionStart hook JSON-validity).
+  - `release.yml` — fires on `v*.*.*` tag push. Verifies manifests + `__version__` + CHANGELOG entry, runs the full test matrix, builds a release tarball (excluding `.venv`/`node_modules`/`.chameleon`/`dist`/`__pycache__`/`.ruff_cache`/`.git`), and creates the GitHub Release with the CHANGELOG section as the body.
+  - `real-claude-code-acceptance.yml` — manual (`workflow_dispatch`) + weekly cron. Runs the ~$0.20-per-run real Claude Code acceptance test against committed test repos. Fails soft when secrets are not configured.
+
+### Fixed — code-level TODOs
+
+- **`bootstrap/transaction.py:cleanup_orphan_tmp_dirs`** now parses the writer PID from the txn-dir name (`<pid>-<uuid8>-<epoch>`) and skips cleanup when that PID is still alive. Previously a fresh chameleon-mcp startup could clobber a sibling process's in-progress bootstrap. Legacy dirs without a PID prefix are still cleaned unconditionally. New regression assertions in `tests/v0_2_regression_test.py` cover legacy / dead-PID / live-PID.
+- **`extractors/typescript.py`** sha_hint TODO replaced with a clearer "intentional double-read" note — the perf concern was speculative; no benchmark today says it's a bottleneck.
+- **`signatures.py`** archetype-signal TODO clarified as a forward-compat hook, not a missing feature. The `archetype_signals` parameter remains in the API surface for the day calibration evidence shows per-team signal divergence; until then, no behavior change.
+
+### Test path portability fix (CI prerequisite)
+
+- 16 test files previously hardcoded `Path("/Users/crisn/Documents/Projects/chameleon")` as `PLUGIN_ROOT`. Replaced with `Path(__file__).resolve().parent.parent` so the suites run on GitHub-hosted runners (and any developer machine) without modification.
+
+### Tests
+
+- Full suite: **508/508** pass (added 4 PID-aware-cleanup assertions to `tests/v0_2_regression_test.py`, was 504/504).
+
+### Known issues left for v0.4
+
+- Ruff lint shows ~250 errors against the project's own `pyproject.toml` config (cleanup is a Phase 6-adjacent task, not blocking).
+- `tests/trust_flow_test.py` "Trust without .chameleon/profile.json rejected" — error message rewording in v0.2.0 was missed by the assertion. Pre-existing v0.2 regression, not introduced here.
+
 ## [0.3.0] — 2026-05-11
 
 The critique-answering release. The external audit framed v0.2 as "a canonical browser with security ceremony." v0.3 closes most of the gap toward Phase 4 in a single push, ships across all open Phase 2C/D work items, and adds 274 new regression assertions. Three top-tier agents implemented in parallel, two more reviewed.

@@ -204,6 +204,28 @@ both is a welcome PR.
 
 Run `scripts/bump-version.sh --check` before tagging to catch drift.
 
+## Continuous integration
+
+Three workflows live under [.github/workflows/](.github/workflows/):
+
+- **`ci.yml`** — fires on every PR against `main` and every push to `main`.
+  Runs the Python test matrix (3.11 + 3.12 on Ubuntu + macOS), ruff lint,
+  `bump-version.sh --check`, and a one-shot `hooks/session-start` smoke
+  test. The real-Claude-Code acceptance suite is intentionally excluded.
+- **`release.yml`** — fires on tag pushes matching `v*.*.*`. Verifies all
+  seven manifests + `mcp/pyproject.toml` + `mcp/chameleon_mcp/__init__.py`
+  agree with the tag, that `CHANGELOG.md` has an entry for the version,
+  re-runs the full test matrix, builds a release tarball, and publishes
+  a GitHub Release with the CHANGELOG entry as the body.
+- **`real-claude-code-acceptance.yml`** — manual (`workflow_dispatch`)
+  plus a weekly cron. Runs `tests/claude_code_acceptance_test.py`
+  (~$0.20/run). Trigger manually from the Actions tab; requires the
+  maintainer to have configured `CLAUDE_CODE_OAUTH_TOKEN`,
+  `CHAMELEON_TEST_TS_REPO`, and `CHAMELEON_TEST_RUBY_REPO` secrets.
+  Fails soft with a SKIP message when those secrets aren't present.
+
+Workflow run logs live under the repo's Actions tab on GitHub.
+
 ## Decision-making
 
 Solo maintainer. Architecture-touching changes are captured in ADRs.

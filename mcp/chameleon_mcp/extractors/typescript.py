@@ -201,8 +201,12 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
 
     Computes sha_hint (xxhash64) on the Python side to keep ts_dump.mjs lean.
     """
-    # Compute sha_hint by re-reading the file (hot path; could be deferred to
-    # Phase 2B if perf testing shows this is a bottleneck).
+    # The double-read (parse in JS, hash in Python) is intentional: ts_dump.mjs
+    # stays narrow (it only does what the TypeScript Compiler API gives it for
+    # free), and xxhash here is dominated by disk-page-cache reads, not parse
+    # cost. If profiling on >5k-file repos eventually shows this is a real
+    # bottleneck, push the hash into ts_dump.mjs and stream it back in the
+    # NDJSON record instead of re-opening here. No benchmark today says it is.
     try:
         sha_hint = xxhash.xxh64(path.read_bytes()).hexdigest()
     except OSError:

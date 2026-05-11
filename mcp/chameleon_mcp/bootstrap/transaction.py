@@ -137,18 +137,52 @@ def is_committed(target_dir: Path) -> bool:
     return sentinel.is_file()
 
 
+def _txn_dir_pid(txn_dir: Path) -> int | None:
+    """Extract the writer PID from a txn dir name (`<pid>-<uuid8>-<epoch>`).
+
+    Returns None when the name doesn't conform to that pattern (e.g.,
+    legacy directories pre-PID-prefix, or hand-created junk).
+    """
+    head = txn_dir.name.split("-", 1)[0]
+    try:
+        return int(head)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """POSIX liveness check. Permission errors count as 'alive' (conservative)."""
+    import errno
+    import os
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError as e:
+        return e.errno != errno.ESRCH
+
+
 def cleanup_orphan_tmp_dirs(target_parent: Path, profile_dir_name: str = ".chameleon") -> int:
     """Sweep orphaned .tmp/<txn-id>/ directories that lack COMMITTED sentinels.
 
     Called on MCP server startup. Returns count of cleaned-up directories.
+
+    Skips dirs whose PID prefix is still alive — that's a concurrent
+    chameleon-mcp process mid-bootstrap; clobbering it would race with
+    the live transaction. Legacy dirs with no PID prefix are cleaned
+    unconditionally (those predate the PID-stamped txn_id format).
     """
     tmp_root = target_parent / f".{profile_dir_name}.tmp"
     if not tmp_root.is_dir():
         return 0
     cleaned = 0
     for txn_dir in tmp_root.iterdir():
-        if txn_dir.is_dir() and not (txn_dir / COMMITTED_SENTINEL).exists():
-            # TODO Phase 2: also check if PID prefix is dead before cleaning
-            shutil.rmtree(txn_dir, ignore_errors=True)
-            cleaned += 1
+        if not txn_dir.is_dir():
+            continue
+        if (txn_dir / COMMITTED_SENTINEL).exists():
+            continue
+        pid = _txn_dir_pid(txn_dir)
+        if pid is not None and _pid_alive(pid):
+            continue  # concurrent writer; do not clobber
+        shutil.rmtree(txn_dir, ignore_errors=True)
+        cleaned += 1
     return cleaned

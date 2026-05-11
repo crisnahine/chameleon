@@ -30,7 +30,7 @@ from pathlib import Path
 from _test_config import TS_REPO, RUBY_REPO
 
 PASS, FAIL = [], []
-PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
 # Each entry: (label, repo_root, sample_file_relative_path, language).
 # The sample file MUST be a member of a known archetype so

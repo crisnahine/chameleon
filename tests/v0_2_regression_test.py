@@ -308,6 +308,35 @@ t("lint_file response includes 'stub': true", r.get("stub") is True)
 t("lint_file response includes stub_reason", isinstance(r.get("stub_reason"), str))
 
 
+section("v0.3.1: PID-aware orphan-txn cleanup")
+from chameleon_mcp.bootstrap.transaction import cleanup_orphan_tmp_dirs  # noqa: E402
+
+cleanup_parent = Path(tempfile.mkdtemp(prefix="chameleon_v031_cleanup_"))
+try:
+    tmp_root = cleanup_parent / ".chameleon.tmp"
+    tmp_root.mkdir()
+
+    legacy = tmp_root / "no-pid-style"
+    legacy.mkdir()
+    (legacy / "profile.json").write_text("{}")
+
+    dead = tmp_root / "999999-deadbeef-1700000000"
+    dead.mkdir()
+    (dead / "profile.json").write_text("{}")
+
+    live = tmp_root / f"{os.getpid()}-livepid01-1700000000"
+    live.mkdir()
+    (live / "profile.json").write_text("{}")
+
+    n = cleanup_orphan_tmp_dirs(cleanup_parent, "chameleon")
+    t("legacy txn (no PID prefix) is cleaned", not legacy.is_dir())
+    t("dead-PID txn is cleaned", not dead.is_dir())
+    t("live-PID txn is preserved (no race with concurrent writer)", live.is_dir())
+    t("cleanup count matches removed dirs", n == 2, f"got {n}")
+finally:
+    shutil.rmtree(cleanup_parent, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 print("\n=== Summary ===")
 print(f"  Total: {PASS + FAIL}")

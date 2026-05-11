@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 PASS, FAIL = [], []
-PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
 
 def t(name, condition, info=""):

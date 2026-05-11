@@ -23,7 +23,7 @@ from pathlib import Path
 from _test_config import TS_REPO, RUBY_REPO
 
 PASS, FAIL = [], []
-PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 
 ACCEPTANCE_TARGETS = [
     ("the TypeScript repo", TS_REPO, "src/utils/balanceTransaction.ts"),

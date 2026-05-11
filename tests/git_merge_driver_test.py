@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 PASS, FAIL = [], []
-PLUGIN_ROOT = Path("/Users/crisn/Documents/Projects/chameleon")
+PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 MERGE_DRIVER = PLUGIN_ROOT / "scripts" / "chameleon-merge-driver.sh"
 
 

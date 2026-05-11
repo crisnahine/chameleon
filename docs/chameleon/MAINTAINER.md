@@ -170,11 +170,54 @@ document the threat model in
 - Supply chain attacks on vendored TypeScript / FastMCP / detect-secrets
   (defense: SHA-256 checksums, quarterly bumps with `npm audit signatures`)
 
-## Bus factor
+## Bus factor and succession
 
-Solo maintainer (Cris Nahine). No documented succession plan. **Phase 7
-TODO: identify backup maintainer or document that the project may archive
-if primary maintainer is unavailable for >30 days.**
+Solo maintainer (Cris Nahine, crisjosephnahine@gmail.com). chameleon is
+MIT-licensed; anyone may fork and continue the work at any time.
+
+### Inactivity policy
+
+If the primary maintainer is unreachable for **>30 days** on issues,
+PRs, and email, the project enters **maintenance-only mode**:
+
+- No new feature work is committed to `main`.
+- Critical security fixes (CVEs, data-loss bugs) may be patched by
+  any contributor whose PR passes the full test suite + at least one
+  independent code review (open a PR; cite this policy in the body).
+- The plugin marketplaces (Claude Code, Cursor, Codex, Gemini)
+  continue to serve the last tagged release.
+
+If unreachable for **>180 days**, the README and marketplace listings
+should be amended to label the project **archived** until a new
+maintainer is named.
+
+### Becoming a maintainer
+
+The project is open to a co-maintainer once one exists. Criteria:
+
+- At least 3 merged non-trivial PRs (real features or audit-grade
+  fixes, not docs typos).
+- Demonstrated familiarity with `ARCHITECTURE.md` + `OVERVIEW.md` +
+  the schema migration runbook above.
+- Willingness to follow the test-and-review discipline (see
+  `CONTRIBUTING.md`).
+
+To propose yourself: open a GitHub Discussion with a one-paragraph
+case + your PR history; the primary maintainer responds within 14
+days. There is no formal vote — the primary maintainer's call.
+
+### Handoff artifacts
+
+The handoff bundle (for any successor) consists of:
+
+- This repo (full git history).
+- The plugin marketplace registration:
+  https://github.com/crisnahine/chameleon (public, MIT).
+- The contact email above (for marketplace-listing transfer requests
+  with Anthropic / Cursor / Codex / Gemini).
+
+There is no hidden infrastructure, no private SaaS, no auth keys.
+A fork plus a marketplace-listing transfer is the entire handoff.
 
 ## Decision register
 

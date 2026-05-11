@@ -1,0 +1,295 @@
+# Release-tag gate for chameleon.
+#
+# Fires on any tag matching `v*.*.*`. Verifies that:
+#   1. All 7 manifests in .version-bump.json agree on the tagged version.
+#   2. mcp/pyproject.toml's [project] version matches.
+#   3. mcp/chameleon_mcp/__init__.py:__version__ matches.
+#   4. CHANGELOG.md has an entry for the tagged version (heading like
+#      `## [0.3.0]`).
+#
+# After verification, runs the full Python test matrix (same suites as
+# ci.yml's test-python job), builds a source tarball, and publishes a
+# GitHub Release with the CHANGELOG entry as the body.
+#
+# To cut a release:
+#   1. bash scripts/bump-version.sh <new-version>           # 7 manifests
+#   2. Edit mcp/pyproject.toml and mcp/chameleon_mcp/__init__.py manually
+#      (the script doesn't cover Python-side anchors yet — see
+#      CONTRIBUTING.md "Version bumps" / "Known gap").
+#   3. Append the version entry to CHANGELOG.md.
+#   4. git commit + git tag v<new-version> + git push --tags.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  verify-tag:
+    name: verify-tag (manifests + CHANGELOG)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.extract.outputs.version }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Extract version from tag
+        id: extract
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          echo "Tag: $TAG -> Version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify all 7 manifests agree (bump-version.sh --check)
+        run: bash scripts/bump-version.sh --check
+
+      - name: Verify all 7 manifests match the tagged version
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          # bump-version.sh --check confirms the 7 manifests agree with each
+          # OTHER, but not that they agree with the tag. Compare one
+          # manifest (canonical: .claude-plugin/plugin.json) against the
+          # extracted version.
+          MANIFEST_VERSION=$(jq -r '.version' .claude-plugin/plugin.json)
+          if [ "$MANIFEST_VERSION" != "$VERSION" ]; then
+            echo "ERROR: tag is v$VERSION but .claude-plugin/plugin.json reports $MANIFEST_VERSION" >&2
+            exit 1
+          fi
+          echo "Manifest version matches tag: $VERSION"
+
+      - name: Verify mcp/pyproject.toml version matches the tag
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          PY_VERSION=$(grep -E '^version = ' mcp/pyproject.toml | head -n 1 | sed -E 's/version = "(.*)"/\1/')
+          if [ "$PY_VERSION" != "$VERSION" ]; then
+            echo "ERROR: tag is v$VERSION but mcp/pyproject.toml reports $PY_VERSION" >&2
+            exit 1
+          fi
+          echo "mcp/pyproject.toml version matches tag: $VERSION"
+
+      - name: Verify mcp/chameleon_mcp/__init__.py __version__ matches the tag
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          INIT_VERSION=$(grep -E '^__version__ = ' mcp/chameleon_mcp/__init__.py | head -n 1 | sed -E 's/__version__ = "(.*)"/\1/')
+          if [ "$INIT_VERSION" != "$VERSION" ]; then
+            echo "ERROR: tag is v$VERSION but mcp/chameleon_mcp/__init__.py reports $INIT_VERSION" >&2
+            exit 1
+          fi
+          echo "mcp/chameleon_mcp/__init__.py __version__ matches tag: $VERSION"
+
+      - name: Verify CHANGELOG.md has an entry for this version
+        env:
+          VERSION: ${{ steps.extract.outputs.version }}
+        run: |
+          if ! grep -qE "^## \[${VERSION}\]" CHANGELOG.md; then
+            echo "ERROR: no '## [${VERSION}]' heading found in CHANGELOG.md" >&2
+            exit 1
+          fi
+          echo "CHANGELOG.md has an entry for $VERSION"
+
+  test-all:
+    name: test-all (py${{ matrix.python-version }} / ${{ matrix.os }})
+    needs: verify-tag
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: 'pip'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'mcp/uv.lock'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'mcp/package-lock.json'
+
+      - name: Install Python dependencies (uv sync)
+        working-directory: mcp
+        run: uv sync --frozen --extra dev
+
+      - name: Install Node dependencies (TypeScript extractor)
+        working-directory: mcp
+        run: npm ci
+
+      - name: Run comprehensive_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/comprehensive_test.py
+
+      - name: Run mcp_protocol_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/mcp_protocol_test.py
+
+      - name: Run v0_2_regression_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/v0_2_regression_test.py
+
+      - name: Run lint_engine_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/lint_engine_test.py
+
+      - name: Run index_db_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/index_db_test.py
+
+      - name: Run archetype_naming_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/archetype_naming_test.py
+
+      - name: Run canonical_v03_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/canonical_v03_test.py
+
+      - name: Run tool_config_v03_test.py
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.:../tests'
+        run: .venv/bin/python ../tests/tool_config_v03_test.py
+
+  build-tarball:
+    name: build-tarball
+    needs: test-all
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tarball-name: ${{ steps.archive.outputs.tarball-name }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build release tarball
+        id: archive
+        env:
+          VERSION: ${{ needs.verify-tag.outputs.version }}
+        run: |
+          TARBALL="chameleon-${VERSION}.tar.gz"
+          echo "tarball-name=${TARBALL}" >> "$GITHUB_OUTPUT"
+          # Exclude developer-local artefacts (.venv, node_modules,
+          # .chameleon, dist, __pycache__) from the release tarball.
+          # --exclude-vcs strips .git too.
+          tar \
+            --exclude='./.venv' \
+            --exclude='./.git' \
+            --exclude='./.github' \
+            --exclude='*/.venv' \
+            --exclude='*/node_modules' \
+            --exclude='*/.chameleon' \
+            --exclude='*/dist' \
+            --exclude='*/__pycache__' \
+            --exclude='*/.ruff_cache' \
+            --exclude='*.pyc' \
+            --exclude='./.DS_Store' \
+            --exclude='*/.DS_Store' \
+            -czf "${TARBALL}" \
+            --transform "s,^\./,chameleon-${VERSION}/," \
+            .
+          ls -lh "${TARBALL}"
+
+      - name: Upload tarball artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-tarball
+          path: ${{ steps.archive.outputs.tarball-name }}
+          retention-days: 7
+
+  create-release:
+    name: create-release
+    needs: [verify-tag, build-tarball]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download tarball artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+
+      - name: Extract CHANGELOG entry for this version
+        id: changelog
+        env:
+          VERSION: ${{ needs.verify-tag.outputs.version }}
+        run: |
+          # Pull the section between `## [VERSION]` and the next `## [`.
+          # awk prints lines between the two markers, exclusive of the
+          # trailing marker.
+          BODY=$(awk -v ver="$VERSION" '
+            $0 ~ "^## \\["ver"\\]" { found=1; next }
+            found && $0 ~ "^## \\[" { exit }
+            found { print }
+          ' CHANGELOG.md)
+
+          if [ -z "$BODY" ]; then
+            echo "WARN: no CHANGELOG body extracted for $VERSION; falling back to a generic message" >&2
+            BODY="Release v${VERSION}. See CHANGELOG.md for details."
+          fi
+
+          # Multi-line outputs in GitHub Actions need a heredoc delimiter.
+          {
+            echo "body<<__CHAMELEON_CHANGELOG_END__"
+            echo "$BODY"
+            echo "__CHAMELEON_CHANGELOG_END__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: chameleon ${{ needs.verify-tag.outputs.version }}
+          body: ${{ steps.changelog.outputs.body }}
+          files: ${{ needs.build-tarball.outputs.tarball-name }}
+          draft: false
+          prerelease: false
