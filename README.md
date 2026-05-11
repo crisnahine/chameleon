@@ -59,6 +59,15 @@ Restart Claude Code. Verify by asking *"What chameleon tools do you have?"*
 
 See [INSTALL.md](INSTALL.md) for the deep walkthrough, troubleshooting, and uninstall instructions.
 
+#### Upgrading
+
+After `/plugin update chameleon` (or any reinstall), **restart Claude Code**. The MCP server is a long-lived subprocess and won't pick up the new version until the session restarts. To prune previous cached versions afterward:
+
+```
+scripts/prune-plugin-cache.sh           # dry run
+scripts/prune-plugin-cache.sh --apply   # delete every cached version except the current install
+```
+
 ### Cursor
 
 In Cursor Agent chat:
