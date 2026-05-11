@@ -128,6 +128,50 @@ def _count_ts_files_under(directory: Path) -> int:
     return count
 
 
+def _ad_hoc_discovery_hints(repo_root: Path) -> list[dict]:
+    """BUG-001: scan apps/* and packages/* for discoverable sub-projects.
+
+    Walks at most two depths down standard monorepo parent dirs and
+    returns one hint per child that carries its own ``package.json`` or
+    ``Gemfile``. Caps at 50 results so a pathological tree doesn't
+    balloon the response. Used only on the ``failed_unsupported_language``
+    return path; the orchestrator's regular workspace fanout handles
+    declared workspaces (yarn / pnpm / Turborepo).
+    """
+    hints: list[dict] = []
+    cap = 50
+    for parent in ("apps", "packages", "services", "workspaces"):
+        parent_dir = repo_root / parent
+        if not parent_dir.is_dir():
+            continue
+        try:
+            children = sorted(parent_dir.iterdir())
+        except (OSError, PermissionError):
+            continue
+        for child in children:
+            if not child.is_dir():
+                continue
+            language: str | None = None
+            if (child / "package.json").is_file() or (child / "tsconfig.json").is_file():
+                language = "typescript"
+            elif (child / "Gemfile").is_file():
+                language = "ruby"
+            if language is None:
+                continue
+            try:
+                rel = str(child.relative_to(repo_root))
+            except ValueError:
+                rel = str(child)
+            hints.append({
+                "subdir": rel,
+                "abs_path": str(child),
+                "language": language,
+            })
+            if len(hints) >= cap:
+                return hints
+    return hints
+
+
 def _count_ruby_files_under(directory: Path) -> int:
     """Best-effort count of .rb files under ``directory`` (mirror of
     _count_ts_files_under). BUG-017."""
@@ -381,6 +425,19 @@ class BootstrapReport:
     canonical selection but contribute to the post-clustering count.
     Always >= 0.
     """
+    discovery_hints: list[dict] = field(default_factory=list)
+    """BUG-001 (v0.5.6): when bootstrap fails with
+    ``failed_unsupported_language`` on a directory that *looks* like an
+    ad-hoc monorepo (apps/* or packages/* subdirs each carrying their
+    own package.json), this list names the discoverable sub-projects so
+    the slash-command UI can prompt the user to bootstrap each one.
+
+    Shape:
+        [
+          {"subdir": "apps/web", "abs_path": "/.../apps/web", "language": "typescript"},
+          {"subdir": "apps/api", "abs_path": "/.../apps/api", "language": "ruby"},
+        ]
+    """
 
     def to_dict(self) -> dict:
         # BUG-011: archetypes_detected should be the SUM across workspaces,
@@ -425,6 +482,7 @@ class BootstrapReport:
         # alias for files_processed kept around for clarity.
         out["discovered_files_pre_exclusion"] = int(self.discovered_files_pre_exclusion)
         out["discovered_files_post_exclusion"] = int(self.discovered_files_post_exclusion)
+        out["discovery_hints"] = list(self.discovery_hints)
         out["clustered_files"] = int(self.files_processed)
         out["sparse_dropped_files"] = int(self.sparse_dropped_files)
         return out
@@ -982,6 +1040,11 @@ def _bootstrap_single(
         if workspace_roots:
             extractor = TypeScriptExtractor()
     if extractor is None:
+        # BUG-001: surface discoverable sub-projects so the slash-command
+        # UI can prompt the user. We walk apps/* and packages/* one level
+        # deep (cheap), looking for children that have their own
+        # package.json or Gemfile.
+        hints = _ad_hoc_discovery_hints(repo_root)
         return BootstrapReport(
             status="failed_unsupported_language",
             archetypes_detected=0,
@@ -998,6 +1061,7 @@ def _bootstrap_single(
                 "and no Ruby signals (Gemfile / *.gemspec) detected"
             ),
             fanout_capped=fanout_capped,
+            discovery_hints=hints,
         )
 
     # v0.5.1 (Bug 2): Rails-with-frontend repos pick Ruby; emit a
