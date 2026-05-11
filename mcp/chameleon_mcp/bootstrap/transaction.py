@@ -48,7 +48,9 @@ def _acquire_rename_lock(lock_path: Path, *, timeout_seconds: float = 30.0) -> i
                 raise
             if time.time() >= deadline:
                 os.close(fd)
-                raise TimeoutError(f"could not acquire {lock_path} within {timeout_seconds}s")
+                raise TimeoutError(
+                    f"could not acquire {lock_path} within {timeout_seconds}s"
+                ) from e
             time.sleep(0.05 + random.random() * 0.05)
 
 

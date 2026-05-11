@@ -224,7 +224,7 @@ def _base_name_for(cluster: Any) -> str | None:
     """
     paths_pattern = _cluster_attr(cluster, "path_pattern_bucket") or ""
     default_export = _cluster_attr(cluster, "default_export_kind")
-    top_level_kinds = _cluster_attr(cluster, "top_level_node_kinds") or ()
+    _cluster_attr(cluster, "top_level_node_kinds") or ()
     jsx_present = bool(_cluster_attr(cluster, "jsx_present", False))
     member_paths = _member_relpaths(cluster)
     file_names = _filenames(member_paths)

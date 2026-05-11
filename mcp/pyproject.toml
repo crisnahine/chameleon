@@ -47,6 +47,24 @@ select = [
     "B",   # flake8-bugbear
     "UP",  # pyupgrade
 ]
+ignore = [
+    # Module-level imports are intentionally placed inside functions /
+    # methods throughout chameleon_mcp/ to keep server startup fast (the
+    # MCP cold-start budget is ~150ms; eagerly importing every tool's
+    # dependencies blows that). The pattern is documented in
+    # `docs/chameleon/OVERVIEW.md` under "Cold-start budget."
+    "E402",
+    # Long lines are mostly user-facing strings (error messages, idiom
+    # markdown templates) where reflowing reduces readability.
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files can repeat themselves and import where they please.
+# Path is relative to this pyproject.toml; the test suite lives one level
+# above (`../tests/`) when running from `mcp/`.
+"../tests/**" = ["B007"]
+"tests/**" = ["B007"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

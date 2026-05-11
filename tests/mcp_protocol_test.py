@@ -43,6 +43,8 @@ EXPECTED_TOOLS = {
     "propose_archetype_renames", "apply_archetype_renames",
     # Phase 2D.4 — structured idiom capture
     "teach_profile_structured",
+    # Phase 4.5 — long-lived daemon status
+    "daemon_status",
 }
 
 

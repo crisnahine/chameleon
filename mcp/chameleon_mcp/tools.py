@@ -851,6 +851,453 @@ def get_drift_status(repo: str) -> dict:
     })
 
 
+# Phase 4.3-extended: change_ratio above this threshold falls through to a
+# full re-bootstrap. The constraint is fixed in the design doc; expose it
+# as a module-level constant so tests can verify the boundary without
+# duplicating the literal.
+PARTIAL_REFRESH_CHANGE_RATIO_CEILING = 0.10
+
+
+def _content_sha_hint(path: Path) -> str | None:
+    """xxhash64 hex digest of a file's content, or None if unreadable.
+
+    Mirrors `extractors.typescript._parsed_file_from_record` so the
+    file_clusters sha_hint stored at bootstrap time can be re-compared
+    byte-for-byte during refresh without rerunning the extractor on
+    unchanged files. xxhash64 is sufficient for change detection — we
+    are not relying on it for cryptographic integrity (canonical
+    selection runs its own scanners on every chosen witness).
+    """
+    try:
+        import xxhash
+    except ImportError:
+        return None
+    try:
+        return xxhash.xxh64(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _hash_cluster_key_for(key) -> str:
+    """Compute the 16-char cluster_id hash for a ClusterKey.
+
+    Mirrors `bootstrap.canonical._hash_cluster_key` exactly so the
+    cluster_ids stored in file_clusters match the cluster_ids written
+    into archetypes.json. Duplicating the 4-line helper here keeps
+    `tools.py` independent of `canonical.py` for this code path; the
+    upstream helper is private to the bootstrap layer.
+    """
+    canonical = json.dumps(key.to_dict(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _compute_file_cluster_map(
+    repo_root: Path, paths_glob: str | None = None
+) -> list[tuple[str, str, str | None]] | None:
+    """Re-run discover+parse+cluster to derive each file's cluster_id.
+
+    Returns a list of `(rel_path, cluster_id, sha_hint)` rows ready to
+    feed `index_db.upsert_file_clusters`, or None when the repo has no
+    supported extractor / discovery raised / nothing was clustered. The
+    caller treats None as "skip file_clusters population for this repo"
+    — partial refresh becomes unavailable but full re-bootstrap still
+    works (file_clusters is opportunistic).
+
+    This is a second pass on top of the orchestrator's bootstrap; the
+    orchestrator does not expose the per-file → cluster mapping in its
+    BootstrapReport, and the file_clusters write requires it. The cost
+    is bounded by REPO_SIZE_GUARD (50_000 files) and runs synchronously
+    after the atomic profile commit so a partial failure here cannot
+    corrupt the committed profile.
+    """
+    from chameleon_mcp.bootstrap.clustering import cluster_files
+    from chameleon_mcp.bootstrap.discovery import discover_files
+    from chameleon_mcp.bootstrap.orchestrator import (
+        _glob_for_extractor,
+        _select_extractor,
+    )
+
+    try:
+        extractor = _select_extractor(repo_root)
+    except Exception:
+        return None
+    if extractor is None:
+        return None
+
+    discovery_glob = paths_glob or _glob_for_extractor(extractor)
+    try:
+        candidates = discover_files(
+            repo_root, glob=discovery_glob, paths_glob=paths_glob
+        )
+    except Exception:
+        return None
+    if not candidates:
+        return []
+
+    try:
+        parse_result = extractor.parse_repo(repo_root, paths=candidates)
+    except Exception:
+        return None
+
+    clustering = cluster_files(parse_result.files, repo_root=repo_root)
+
+    rows: list[tuple[str, str, str | None]] = []
+    for cluster in clustering.clusters:
+        cluster_id = _hash_cluster_key_for(cluster.key)
+        for pf in cluster.members:
+            try:
+                rel = str(pf.path.relative_to(repo_root))
+            except ValueError:
+                rel = str(pf.path)
+            rows.append((rel, cluster_id, pf.sha_hint))
+    return rows
+
+
+def _reparse_changed_files(
+    repo_root: Path, paths: list[Path]
+) -> dict[str, tuple[str, str | None]] | None:
+    """Re-parse a subset of files and return their new cluster_ids.
+
+    Returns `{rel_path: (cluster_id, sha_hint)}` for each path that
+    successfully parsed + clustered. Returns None if the extractor or
+    parse step itself failed — caller should bail to full re-bootstrap.
+
+    The relativization uses `repo_root` (which the caller resolved
+    already) so the rel_paths match the keys stored in file_clusters.
+    """
+    from chameleon_mcp.bootstrap.clustering import cluster_files
+    from chameleon_mcp.bootstrap.orchestrator import _select_extractor
+
+    if not paths:
+        return {}
+
+    try:
+        extractor = _select_extractor(repo_root)
+    except Exception:
+        return None
+    if extractor is None:
+        return None
+
+    try:
+        parse_result = extractor.parse_repo(repo_root, paths=paths)
+    except Exception:
+        return None
+
+    clustering = cluster_files(parse_result.files, repo_root=repo_root)
+    out: dict[str, tuple[str, str | None]] = {}
+    for cluster in clustering.clusters:
+        cluster_id = _hash_cluster_key_for(cluster.key)
+        for pf in cluster.members:
+            try:
+                rel = str(pf.path.relative_to(repo_root))
+            except ValueError:
+                rel = str(pf.path)
+            out[rel] = (cluster_id, pf.sha_hint)
+    return out
+
+
+def _attempt_partial_refresh(
+    repo_root: Path,
+    repo_id: str,
+    profile_dir: Path,
+    candidates: list[Path],
+    prev_state: dict[str, dict[str, str | None]],
+    started_at: float,
+) -> dict | None:
+    """Try to perform a partial re-clustering. Returns the envelope on
+    success, or None to signal "fall through to full bootstrap".
+
+    Algorithm (per Phase 4.3-extended design):
+      1. Compute current sha_hint for every candidate.
+      2. Diff against prev_state → {unchanged, modified, added, removed}.
+      3. Compute change_ratio. If > 10% → return None (caller falls back).
+      4. Re-parse only the modified+added files.
+      5. If any re-parsed file lands in a NEW cluster (not in
+         archetypes.json), return None — canonical selection for new
+         clusters needs the full corpus.
+      6. If a modified file's prev cluster_id has only one canonical
+         witness AND that witness is the file itself, return None —
+         canonical re-selection needs the full cluster, which we don't
+         have in the partial path.
+      7. Otherwise, amend archetypes.json's cluster_size (add/sub
+         members), then atomic-commit profile.json + archetypes.json +
+         canonicals.json + rules.json + idioms.md + summary.
+      8. Update file_clusters rows and return the partial envelope.
+
+    Returns None on ANY failure that hasn't already mutated state. The
+    only state mutations happen inside `atomic_profile_commit`, which
+    is self-rolling-back on exception, so a bail-out here always leaves
+    the profile intact.
+    """
+    from chameleon_mcp import index_db
+    from chameleon_mcp.bootstrap.transaction import atomic_profile_commit
+    from chameleon_mcp.profile.trust import hash_profile
+
+    # Step 1: compute current sha + index by rel_path.
+    current_by_rel: dict[str, dict] = {}
+    for p in candidates:
+        try:
+            rel = str(p.relative_to(repo_root))
+        except ValueError:
+            continue
+        current_by_rel[rel] = {
+            "path": p,
+            "sha_hint": _content_sha_hint(p),
+        }
+
+    # Step 2: diff against prev_state.
+    unchanged: list[str] = []
+    modified: list[str] = []
+    added: list[str] = []
+    for rel, info in current_by_rel.items():
+        prev = prev_state.get(rel)
+        if prev is None:
+            added.append(rel)
+        elif prev.get("sha_hint") == info["sha_hint"] and info["sha_hint"] is not None:
+            unchanged.append(rel)
+        else:
+            modified.append(rel)
+    removed = [rel for rel in prev_state if rel not in current_by_rel]
+
+    # Step 3: change ratio. Use len(prev_state) as the denominator so a
+    # repo with 100 files where 9 are modified registers 9% (under the
+    # 10% ceiling) rather than 9/109 = 8.3% (which would also pass but
+    # for a noisier reason). The design doc fixes the formula:
+    # `(modified + added + removed) / max(1, len(prev_state))`.
+    change_count = len(modified) + len(added) + len(removed)
+    denom = max(1, len(prev_state))
+    change_ratio = change_count / denom
+    if change_ratio > PARTIAL_REFRESH_CHANGE_RATIO_CEILING:
+        return None
+    if change_count == 0:
+        # No change at all — but we got here because the no-op
+        # short-circuit failed (idioms.md mtime newer, etc.). Fall
+        # through so the full bootstrap re-renders summary.md.
+        return None
+
+    # Step 4: load existing archetypes + canonicals to plan the amend.
+    try:
+        archetypes_data = json.loads(
+            (profile_dir / "archetypes.json").read_text(encoding="utf-8")
+        )
+        canonicals_data = json.loads(
+            (profile_dir / "canonicals.json").read_text(encoding="utf-8")
+        )
+        profile_data = json.loads(
+            (profile_dir / "profile.json").read_text(encoding="utf-8")
+        )
+        rules_data = json.loads(
+            (profile_dir / "rules.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    # Build a cluster_id → archetype_name map for fast lookup.
+    archetypes = archetypes_data.get("archetypes", {}) or {}
+    cluster_id_to_archetype: dict[str, str] = {}
+    for name, arch in archetypes.items():
+        cid = (arch or {}).get("cluster_id")
+        if cid:
+            cluster_id_to_archetype[cid] = name
+
+    # Step 5: re-parse modified+added.
+    reparse_paths = [
+        current_by_rel[rel]["path"] for rel in (modified + added)
+    ]
+    reparsed = _reparse_changed_files(repo_root, reparse_paths)
+    if reparsed is None:
+        return None
+
+    # If any modified+added file lacks a re-parse entry (e.g. ts_dump
+    # skipped it for syntax errors), we can't safely place it — bail.
+    for rel in modified + added:
+        if rel not in reparsed:
+            return None
+
+    # Step 6: every re-parsed file must land in a known cluster. A new
+    # cluster_id means we'd need to run canonical selection on a fresh
+    # cluster, which requires the full corpus.
+    for rel in modified + added:
+        new_cid, _ = reparsed[rel]
+        if new_cid not in cluster_id_to_archetype:
+            return None
+
+    # Step 7: check canonical-witness integrity. A modified file that
+    # IS the current canonical witness for its archetype forces a
+    # canonical re-selection — but the partial path only has the changed
+    # subset, not the full cluster. Bail unless the witness happens to
+    # be unchanged among modified files (the modified file could be
+    # someone else in the same cluster).
+    canonicals = canonicals_data.get("canonicals", {}) or {}
+    for rel in modified + removed:
+        # Determine which archetype name this rel was a member of.
+        prev = prev_state.get(rel)
+        if prev is None:
+            continue
+        prev_arch = cluster_id_to_archetype.get(prev.get("cluster_id") or "")
+        if prev_arch is None:
+            continue
+        entries = canonicals.get(prev_arch) or []
+        if not entries:
+            continue
+        witness_rel = (entries[0].get("witness") or {}).get("path")
+        if witness_rel == rel:
+            # The canonical witness itself moved/changed — full re-bootstrap
+            # is the only way to re-select a clean canonical for the cluster.
+            return None
+
+    # Step 8: amend archetypes.json. For each archetype, compute net
+    # delta = (new members added in this cluster) - (members removed +
+    # members that moved out via modification). A member that moves
+    # FROM cluster A TO cluster B contributes -1 to A and +1 to B.
+    #
+    # Build {cluster_id: net_delta}. For each *prev_state* file, record
+    # its prev cluster contribution. For each *current* file (unchanged
+    # + reparsed), record its current contribution. Difference = delta.
+
+    prev_membership: dict[str, int] = {}
+    for rel, prev in prev_state.items():
+        cid = prev.get("cluster_id") or ""
+        prev_membership[cid] = prev_membership.get(cid, 0) + 1
+
+    current_membership: dict[str, int] = {}
+    for rel in unchanged:
+        prev = prev_state.get(rel)
+        if prev is None:
+            continue
+        cid = prev.get("cluster_id") or ""
+        current_membership[cid] = current_membership.get(cid, 0) + 1
+    for rel in modified + added:
+        new_cid, _ = reparsed[rel]
+        current_membership[new_cid] = current_membership.get(new_cid, 0) + 1
+
+    # Per-archetype size update.
+    new_archetypes = dict(archetypes)
+    for cid, archetype_name in cluster_id_to_archetype.items():
+        new_size = current_membership.get(cid, 0)
+        existing = dict(new_archetypes.get(archetype_name, {}) or {})
+        existing["cluster_size"] = new_size
+        new_archetypes[archetype_name] = existing
+
+    archetypes_amended = sum(
+        1
+        for cid, name in cluster_id_to_archetype.items()
+        if (current_membership.get(cid, 0) != prev_membership.get(cid, 0))
+    )
+    archetypes_unchanged = len(cluster_id_to_archetype) - archetypes_amended
+
+    # Step 9: bump generation. The loader requires all four artifacts
+    # to share the same generation counter. Reuse the existing
+    # transaction module's pattern.
+    new_generation = int(started_at)
+    archetypes_data["archetypes"] = new_archetypes
+    archetypes_data["generation"] = new_generation
+    canonicals_data["generation"] = new_generation
+    profile_data["generation"] = new_generation
+    rules_data["generation"] = new_generation
+
+    # Recompute archetype_count from the live archetypes dict (a member
+    # could have moved a sparse cluster into an empty state, but we
+    # don't drop the archetype — that would invalidate the cluster_id
+    # reverse-lookup. cluster_size = 0 archetypes simply mean "all
+    # members moved elsewhere," which the next full bootstrap cleans up).
+    profile_data["archetype_count"] = len(new_archetypes)
+
+    # Read idioms.md + summary.md so we re-emit them inside the same
+    # transaction (the loader's double-fstat check requires the same
+    # generation across all artifacts and idioms.md influences summary).
+    idioms_text = ""
+    idioms_path = profile_dir / "idioms.md"
+    if idioms_path.is_file():
+        try:
+            idioms_text = idioms_path.read_text(encoding="utf-8")
+        except OSError:
+            idioms_text = ""
+
+    summary_text = ""
+    summary_path = profile_dir / "profile.summary.md"
+    if summary_path.is_file():
+        try:
+            summary_text = summary_path.read_text(encoding="utf-8")
+        except OSError:
+            summary_text = ""
+
+    # Step 10: atomic commit. Any exception here leaves the existing
+    # profile untouched.
+    try:
+        with atomic_profile_commit(profile_dir) as txn_dir:
+            (txn_dir / "profile.json").write_text(
+                json.dumps(profile_data, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            (txn_dir / "archetypes.json").write_text(
+                json.dumps(archetypes_data, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            (txn_dir / "canonicals.json").write_text(
+                json.dumps(canonicals_data, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            (txn_dir / "rules.json").write_text(
+                json.dumps(rules_data, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+            (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
+            (txn_dir / "profile.summary.md").write_text(
+                summary_text, encoding="utf-8"
+            )
+    except Exception:
+        # atomic_profile_commit guarantees on-disk state is unchanged
+        # on exception. Bail to full bootstrap.
+        return None
+
+    # Step 11: update file_clusters. Insert/update added+modified rows
+    # with their new cluster_id + sha; delete removed rows; touch
+    # unchanged rows so last_seen_at moves forward (helps drift
+    # diagnostics).
+    upsert_rows: list[tuple[str, str, str | None]] = []
+    for rel in modified + added:
+        new_cid, new_sha = reparsed[rel]
+        upsert_rows.append((rel, new_cid, new_sha))
+    for rel in unchanged:
+        prev = prev_state[rel]
+        upsert_rows.append((
+            rel,
+            prev.get("cluster_id") or "",
+            current_by_rel[rel].get("sha_hint") or prev.get("sha_hint"),
+        ))
+    if upsert_rows:
+        index_db.upsert_file_clusters(repo_id, upsert_rows)
+    if removed:
+        index_db.delete_file_clusters_for_paths(repo_id, removed)
+
+    # Step 12: refresh index.db row metadata.
+    duration_ms = int((time.time() - started_at) * 1000)
+    files_processed = len(unchanged) + len(modified) + len(added)
+    index_db.upsert_repo(
+        repo_id,
+        str(repo_root),
+        profile_sha256=hash_profile(profile_dir),
+        archetype_count=profile_data["archetype_count"],
+        files_indexed=files_processed,
+        bootstrap_ms=duration_ms,
+    )
+
+    return _envelope({
+        "status": "partial_refresh",
+        "files_changed": len(modified),
+        "files_added": len(added),
+        "files_removed": len(removed),
+        "files_processed": files_processed,
+        "duration_ms": duration_ms,
+        "archetypes_unchanged": archetypes_unchanged,
+        "archetypes_amended": archetypes_amended,
+        "archetypes_detected": profile_data["archetype_count"],
+        "profile_path": str(profile_dir),
+        "change_ratio": round(change_ratio, 4),
+    })
+
+
 def refresh_repo(repo: str, force: bool = False) -> dict:
     """Re-analyze repo, detect drift, update profile.
 
@@ -862,15 +1309,23 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     like `r1["archetypes_detected"] == r2["archetypes_detected"]` keep
     passing.
 
-    Partial re-clustering (the >10% changed path) is deferred to a
-    Phase 4.3-extended deliverable; today we fall through to the full
-    bootstrap as soon as any file has moved.
+    Phase 4.3-extended adds a partial-refresh path for repos where
+    ≤10% of files have changed since the last bootstrap. The partial
+    path re-parses only the modified+added files and amends
+    archetypes.json / canonicals.json / profile.json in place via the
+    same atomic_profile_commit pattern. Repos without per-file cluster
+    state in index.db (legacy v0.4 profiles, or any repo where the
+    initial bootstrap predates this feature) fall through to full
+    re-bootstrap unconditionally.
 
-    `force=True` bypasses the short-circuit and always re-bootstraps.
+    `force=True` bypasses BOTH short-circuits and always re-bootstraps.
     """
     from chameleon_mcp import index_db
     from chameleon_mcp.bootstrap.discovery import discover_files
-    from chameleon_mcp.bootstrap.orchestrator import _glob_for_extractor, _select_extractor
+    from chameleon_mcp.bootstrap.orchestrator import (
+        _glob_for_extractor,
+        _select_extractor,
+    )
 
     repo_path = Path(repo)
     if not repo_path.is_absolute() or not repo_path.is_dir():
@@ -879,63 +1334,85 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             "error": "refresh_repo expects an absolute repo path",
         })
 
-    # Phase 4.3 no-op optimization. Skipped on `force=True`.
-    if not force:
-        repo_root = repo_path.resolve()
-        repo_id = _compute_repo_id(repo_root)
-        cached = index_db.get_repo(repo_id)
-        profile_dir = repo_root / ".chameleon"
-        profile_path = profile_dir / "profile.json"
-        if cached and profile_path.is_file():
-            try:
-                extractor = _select_extractor(repo_root)
-            except Exception:
-                extractor = None
-            if extractor is not None:
-                try:
-                    candidates = discover_files(
-                        repo_root, glob=_glob_for_extractor(extractor)
-                    )
-                except Exception:
-                    candidates = None
-                if candidates is not None:
-                    cached_files = cached.get("files_indexed") or 0
-                    last_seen_iso = cached.get("last_seen_at") or ""
-                    last_seen_epoch = _iso_to_epoch(last_seen_iso)
-                    # Include idioms.md in the freshness check: a fresh
-                    # /chameleon-teach must invalidate the no-op so the
-                    # transaction re-renders `profile.summary.md` with the
-                    # new idiom body (the trust-review surface). idioms.md
-                    # is the only file outside the discovery glob whose
-                    # content affects committed profile artifacts.
-                    idioms_path = profile_dir / "idioms.md"
-                    refresh_inputs = list(candidates) + [idioms_path]
-                    max_mtime = index_db.max_mtime_over(refresh_inputs)
-                    cardinality_match = (
-                        cached_files > 0 and len(candidates) == cached_files
-                    )
-                    nothing_newer = (
-                        last_seen_epoch > 0.0 and max_mtime <= last_seen_epoch
-                    )
-                    if cardinality_match and nothing_newer:
-                        # Touch the row so the repo bubbles to the top of
-                        # list_profiles even on a no-op refresh.
-                        index_db.upsert_repo(
-                            repo_id,
-                            str(repo_root),
-                            archetype_count=cached.get("archetype_count"),
-                            files_indexed=cached_files,
-                            bootstrap_ms=cached.get("bootstrap_ms"),
-                            profile_sha256=cached.get("profile_sha256"),
-                        )
-                        return _envelope({
-                            "status": "noop",
-                            "reason": "no files changed since last refresh",
-                            "archetypes_detected": cached.get("archetype_count") or 0,
-                            "files_processed": cached_files,
-                            "duration_ms": 0,
-                            "profile_path": str(profile_dir),
-                        })
+    started_at = time.time()
+
+    if force:
+        return bootstrap_repo(str(repo_path))
+
+    # Phase 4.3 no-op optimization.
+    repo_root = repo_path.resolve()
+    repo_id = _compute_repo_id(repo_root)
+    cached = index_db.get_repo(repo_id)
+    profile_dir = repo_root / ".chameleon"
+    profile_path = profile_dir / "profile.json"
+
+    if not (cached and profile_path.is_file()):
+        return bootstrap_repo(str(repo_path))
+
+    try:
+        extractor = _select_extractor(repo_root)
+    except Exception:
+        extractor = None
+    if extractor is None:
+        return bootstrap_repo(str(repo_path))
+
+    try:
+        candidates = discover_files(
+            repo_root, glob=_glob_for_extractor(extractor)
+        )
+    except Exception:
+        return bootstrap_repo(str(repo_path))
+
+    cached_files = cached.get("files_indexed") or 0
+    last_seen_iso = cached.get("last_seen_at") or ""
+    last_seen_epoch = _iso_to_epoch(last_seen_iso)
+    # Include idioms.md in the freshness check: a fresh /chameleon-teach
+    # must invalidate the no-op so the transaction re-renders
+    # profile.summary.md with the new idiom body (the trust-review
+    # surface). idioms.md is the only file outside the discovery glob
+    # whose content affects committed profile artifacts.
+    idioms_path = profile_dir / "idioms.md"
+    refresh_inputs = list(candidates) + [idioms_path]
+    max_mtime = index_db.max_mtime_over(refresh_inputs)
+    cardinality_match = cached_files > 0 and len(candidates) == cached_files
+    nothing_newer = last_seen_epoch > 0.0 and max_mtime <= last_seen_epoch
+
+    if cardinality_match and nothing_newer:
+        # Touch the row so the repo bubbles to the top of list_profiles
+        # even on a no-op refresh.
+        index_db.upsert_repo(
+            repo_id,
+            str(repo_root),
+            archetype_count=cached.get("archetype_count"),
+            files_indexed=cached_files,
+            bootstrap_ms=cached.get("bootstrap_ms"),
+            profile_sha256=cached.get("profile_sha256"),
+        )
+        return _envelope({
+            "status": "noop",
+            "reason": "no files changed since last refresh",
+            "archetypes_detected": cached.get("archetype_count") or 0,
+            "files_processed": cached_files,
+            "duration_ms": 0,
+            "profile_path": str(profile_dir),
+        })
+
+    # Phase 4.3-extended: try partial refresh before falling back to
+    # full re-bootstrap. Requires (a) file_clusters rows for this repo,
+    # and (b) a change_ratio in (0, 0.10]. Repos without rows or above
+    # the ceiling go straight to bootstrap_repo (the legacy path).
+    prev_state = index_db.get_file_clusters(repo_id)
+    if prev_state:
+        partial_envelope = _attempt_partial_refresh(
+            repo_root,
+            repo_id,
+            profile_dir,
+            list(candidates),
+            prev_state,
+            started_at,
+        )
+        if partial_envelope is not None:
+            return partial_envelope
 
     return bootstrap_repo(str(repo_path))
 
@@ -1005,6 +1482,23 @@ def bootstrap_repo(path: str, mode: str = "full", paths_glob: str | None = None)
             files_indexed=report.files_processed,
             bootstrap_ms=report.duration_ms,
         )
+        # Phase 4.3-extended: populate file_clusters so a subsequent
+        # /chameleon-refresh can take the partial path. We replace the
+        # whole repo's rows so a re-bootstrap after a major refactor
+        # doesn't leave stale (cluster_id, rel_path) entries pointing at
+        # clusters that no longer exist in the new profile. Errors here
+        # are non-fatal — the worst case is that the next refresh falls
+        # through to full bootstrap.
+        try:
+            file_cluster_rows = _compute_file_cluster_map(
+                repo_root, paths_glob=paths_glob
+            )
+        except Exception:
+            file_cluster_rows = None
+        if file_cluster_rows is not None:
+            index_db.delete_all_file_clusters(repo_id)
+            if file_cluster_rows:
+                index_db.upsert_file_clusters(repo_id, file_cluster_rows)
         # v0.4 2D.3: register each successfully bootstrapped workspace too
         # so `/chameleon-list-profiles` and the trust-resolution layer can
         # find them by repo_id without re-walking the workspace tree.
@@ -1024,6 +1518,18 @@ def bootstrap_repo(path: str, mode: str = "full", paths_glob: str | None = None)
                 files_indexed=ws.get("files_processed"),
                 bootstrap_ms=ws.get("duration_ms"),
             )
+            # Mirror file_clusters at the workspace level too so per-
+            # workspace refresh can take the partial path.
+            try:
+                ws_rows = _compute_file_cluster_map(
+                    ws_root, paths_glob=paths_glob
+                )
+            except Exception:
+                ws_rows = None
+            if ws_rows is not None:
+                index_db.delete_all_file_clusters(ws_repo_id)
+                if ws_rows:
+                    index_db.upsert_file_clusters(ws_repo_id, ws_rows)
 
     return _envelope(report.to_dict())
 
@@ -1966,3 +2472,47 @@ def teach_profile_structured(
     # Delegate to teach_profile so we inherit the lock + sanitization +
     # placeholder-strip code path. The leading "### " header is honored.
     return teach_profile(repo, rendered)
+
+
+def daemon_status() -> dict:
+    """Return current status of the chameleon-mcp daemon (Phase 4.5).
+
+    Returns an envelope with:
+      alive            — True iff the pidfile points at a live process.
+      pid              — recorded PID, or null when not running.
+      socket           — UNIX socket path the daemon listens on.
+      uptime_s         — seconds since the daemon process started, or null.
+      last_request_at  — ISO 8601 timestamp of the most recent socket
+                         request (None when the daemon hasn't served any
+                         requests yet, or when ping fails). Determined via
+                         a lightweight `ping` round-trip; only set when
+                         the daemon answers.
+
+    Users invoke this through `/chameleon-status` to see whether the
+    fast-path is engaged. The tool is read-only — it does not start or
+    stop the daemon as a side effect.
+    """
+    from chameleon_mcp import daemon as _daemon
+    from chameleon_mcp import daemon_client as _daemon_client
+
+    info = _daemon.daemon_info()
+    last_request_at = None
+    if info.get("alive"):
+        # Probe with a 0.5s timeout — non-blocking enough that an idle
+        # daemon doesn't slow down /chameleon-status.
+        pong = _daemon_client.call("ping", {}, timeout=0.5)
+        if isinstance(pong, dict) and "ts" in pong:
+            try:
+                last_request_at = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(pong["ts"]))
+                )
+            except (TypeError, ValueError):
+                last_request_at = None
+
+    return _envelope({
+        "alive": bool(info.get("alive")),
+        "pid": info.get("pid"),
+        "socket": info.get("socket"),
+        "uptime_s": info.get("uptime_s"),
+        "last_request_at": last_request_at,
+    })

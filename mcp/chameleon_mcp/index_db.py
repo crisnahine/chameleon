@@ -56,6 +56,21 @@ CREATE INDEX IF NOT EXISTS idx_repos_last_seen
   ON repos(last_seen_at DESC, repo_id ASC);
 CREATE INDEX IF NOT EXISTS idx_repos_repo_root
   ON repos(repo_root);
+
+-- Phase 4.3-extended: per-file cluster assignment. Populated by
+-- bootstrap_repo after a successful run; consulted by refresh_repo to
+-- decide whether a partial re-clustering is viable (change_ratio <= 10%)
+-- vs. a full re-bootstrap. Additive table; legacy installs without rows
+-- transparently fall through to full re-bootstrap.
+CREATE TABLE IF NOT EXISTS file_clusters (
+  repo_id      TEXT NOT NULL,
+  rel_path     TEXT NOT NULL,
+  cluster_id   TEXT NOT NULL,
+  sha_hint     TEXT,
+  last_seen_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, rel_path)
+);
+CREATE INDEX IF NOT EXISTS idx_file_clusters_repo ON file_clusters(repo_id);
 """
 
 
@@ -350,6 +365,198 @@ def forget_repo(repo_id: str, *, db_path: Path | None = None) -> bool:
             return cur.rowcount > 0
     except sqlite3.Error:
         return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _ensure_file_clusters_schema(db_path: Path | None = None) -> None:
+    """Ensure the file_clusters table + index exist.
+
+    Phase 4.3-extended: callable independently of init_index_db for older
+    databases that were created before the table was added. SCHEMA_DDL
+    already declares the table via CREATE TABLE IF NOT EXISTS, so init
+    is idempotent; this helper is a thin alias for callers that want to
+    state the intent explicitly. Fail-open on sqlite errors — the index
+    is a cache, not the source of truth, and the partial-refresh path
+    transparently falls back to full bootstrap when the table is unusable.
+    """
+    try:
+        conn = init_index_db(db_path)
+    except (sqlite3.Error, OSError):
+        return
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def upsert_file_clusters(
+    repo_id: str,
+    rows: Iterable[tuple[str, str, str | None]],
+    *,
+    last_seen_at: str | None = None,
+    db_path: Path | None = None,
+) -> None:
+    """Insert or update per-file cluster assignment rows.
+
+    Each `rows` entry is `(rel_path, cluster_id, sha_hint)`. The
+    `last_seen_at` column is filled with the supplied timestamp (or
+    "now" when omitted) so all rows from a single bootstrap/partial
+    refresh share a stable observation moment that downstream consumers
+    can range-query against.
+
+    Fail-open on sqlite errors: a transient write failure must not block
+    the calling bootstrap/refresh — file_clusters is opportunistic state
+    that's reconstructable from a full re-bootstrap.
+    """
+    if not repo_id:
+        return
+    materialized = list(rows)
+    if not materialized:
+        return
+    ts = last_seen_at or _now_iso()
+    try:
+        conn = init_index_db(db_path)
+    except (sqlite3.Error, OSError):
+        return
+    try:
+        with conn:
+            conn.executemany(
+                """
+                INSERT INTO file_clusters
+                  (repo_id, rel_path, cluster_id, sha_hint, last_seen_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(repo_id, rel_path) DO UPDATE SET
+                  cluster_id   = excluded.cluster_id,
+                  sha_hint     = excluded.sha_hint,
+                  last_seen_at = excluded.last_seen_at
+                """,
+                [
+                    (repo_id, rel_path, cluster_id, sha_hint, ts)
+                    for rel_path, cluster_id, sha_hint in materialized
+                ],
+            )
+    except sqlite3.Error:
+        return
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_file_clusters(
+    repo_id: str, *, db_path: Path | None = None
+) -> dict[str, dict[str, str | None]]:
+    """Return prev-state per-file cluster assignment for a repo.
+
+    Result shape: `{rel_path: {"cluster_id": str, "sha_hint": str|None,
+    "last_seen_at": str}}`. Empty dict when the repo is unknown or has
+    no rows yet (legacy v0.4 profiles); callers treat this as "no
+    partial-refresh state available, fall through to full bootstrap".
+    """
+    if not repo_id:
+        return {}
+    path = db_path if db_path is not None else _index_db_path()
+    if not path.is_file():
+        return {}
+    try:
+        conn = open_hardened(path, read_only=True)
+    except (sqlite3.Error, OSError):
+        return {}
+    try:
+        rows = conn.execute(
+            """
+            SELECT rel_path, cluster_id, sha_hint, last_seen_at
+            FROM file_clusters
+            WHERE repo_id = ?
+            """,
+            (repo_id,),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return {
+        r["rel_path"]: {
+            "cluster_id": r["cluster_id"],
+            "sha_hint": r["sha_hint"],
+            "last_seen_at": r["last_seen_at"],
+        }
+        for r in rows
+    }
+
+
+def delete_file_clusters_for_paths(
+    repo_id: str,
+    rel_paths: Iterable[str],
+    *,
+    db_path: Path | None = None,
+) -> int:
+    """Bulk-delete per-file cluster rows. Returns the number removed.
+
+    Used by the partial-refresh path when a previously-tracked file has
+    been removed from the discovery set (deleted from disk, moved into
+    an excluded directory). Fail-open: a delete error returns 0 rather
+    than propagating, because a stale row only over-reports cluster
+    membership; the next full bootstrap cleans it up.
+    """
+    if not repo_id:
+        return 0
+    materialized = list(rel_paths)
+    if not materialized:
+        return 0
+    try:
+        conn = init_index_db(db_path)
+    except (sqlite3.Error, OSError):
+        return 0
+    try:
+        with conn:
+            cur = conn.executemany(
+                "DELETE FROM file_clusters WHERE repo_id = ? AND rel_path = ?",
+                [(repo_id, rel_path) for rel_path in materialized],
+            )
+            # executemany sets rowcount to the sum across statements on
+            # sqlite3 ≥ 3.39 (Python 3.12+); older Pythons return -1.
+            # Caller treats negative as "unknown, but the call did not error".
+            return cur.rowcount if cur.rowcount >= 0 else len(materialized)
+    except sqlite3.Error:
+        return 0
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def delete_all_file_clusters(repo_id: str, *, db_path: Path | None = None) -> int:
+    """Remove every per-file cluster row for a repo.
+
+    Called when the partial-refresh path falls through to full bootstrap
+    and we want to rebuild the table from scratch instead of leaving
+    stale rows alongside the fresh ones. Caller is expected to repopulate
+    via upsert_file_clusters within the same logical transaction.
+    """
+    if not repo_id:
+        return 0
+    try:
+        conn = init_index_db(db_path)
+    except (sqlite3.Error, OSError):
+        return 0
+    try:
+        with conn:
+            cur = conn.execute(
+                "DELETE FROM file_clusters WHERE repo_id = ?", (repo_id,)
+            )
+            return cur.rowcount if cur.rowcount >= 0 else 0
+    except sqlite3.Error:
+        return 0
     finally:
         try:
             conn.close()

@@ -98,7 +98,7 @@ def _run_repo(spec: dict) -> dict:
     canonicals_path = repo_path / ".chameleon" / "canonicals.json"
     canonicals = json.loads(canonicals_path.read_text(encoding="utf-8"))
     sample_files: list[Path] = []
-    for archetype_name, entries in canonicals.get("canonicals", {}).items():
+    for _archetype_name, entries in canonicals.get("canonicals", {}).items():
         if not entries:
             continue
         witness_rel = entries[0].get("witness", {}).get("path")

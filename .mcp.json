@@ -3,6 +3,8 @@
     "chameleon-mcp": {
       "command": "uvx",
       "args": [
+        "--refresh-package",
+        "chameleon-mcp",
         "--from",
         "${CLAUDE_PLUGIN_ROOT}/mcp",
         "chameleon-mcp"

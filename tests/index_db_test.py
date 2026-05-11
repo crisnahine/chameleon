@@ -411,9 +411,14 @@ try:
     new_file = repo / "app" / "controllers" / "api" / "v1" / "r99.ts"
     new_file.write_text("export class Resource99 { get() { return 99; } }\n")
     rep5 = refresh_repo(str(repo))["data"]
+    # Phase 4.3-extended: adding a single file to a 12-file repo registers
+    # a change_ratio of ~8.3%, below the 10% ceiling for partial refresh.
+    # Either "success" (full re-bootstrap) or "partial_refresh" is a
+    # valid response — the contract is that the cardinality change
+    # invalidates the no-op.
     t(
-        f"refresh after new file re-bootstraps (cardinality change, got {rep5['status']})",
-        rep5["status"] == "success",
+        f"refresh after new file invalidates the no-op (got {rep5['status']})",
+        rep5["status"] in ("success", "partial_refresh"),
     )
 finally:
     shutil.rmtree(repo, ignore_errors=True)

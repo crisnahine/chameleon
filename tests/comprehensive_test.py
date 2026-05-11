@@ -8,7 +8,6 @@ Goes beyond smoke_test.py — this hits every MCP tool, every hook bash script,
 every helper, and every documented invariant against real code.
 """
 
-import hashlib
 import json
 import os
 import subprocess

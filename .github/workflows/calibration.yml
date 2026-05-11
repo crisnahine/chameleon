@@ -1,0 +1,113 @@
+# Calibration harness for chameleon (Phase 6 conformance measurement).
+#
+# Runs tests/calibration/harness.py and uploads the JSON result as an
+# artifact. The harness reads tests/calibration/corpus.json (gitignored)
+# for the list of repos to measure; without that file it exits 0 with a
+# "no_corpus_configured" payload (CI-safe).
+#
+# This workflow is MANUAL ONLY (workflow_dispatch). We do NOT run it on
+# push / PR because:
+#   - real-corpus runs depend on maintainer-local repo paths that the
+#     GitHub-hosted runners cannot see;
+#   - even a small corpus run takes several seconds per repo and is not
+#     a per-PR gate (calibration is a quarterly review per
+#     docs/chameleon/MAINTAINER.md);
+#   - results carry no per-PR signal — they answer "are our parameter
+#     defaults still right?", which is a release-cadence question.
+#
+# To run the harness against a real corpus from CI, configure the
+# CHAMELEON_CALIBRATION_CORPUS_JSON repository secret with the JSON
+# body of tests/calibration/corpus.json (schema documented in
+# tests/calibration/README.md), pointing at repos that the runner can
+# clone (or use a self-hosted runner with the corpus mounted).
+#
+# Without that secret, this workflow still runs cleanly — the harness
+# emits "no_corpus_configured" and the artifact captures that state.
+# That is by design: a green run with the no-corpus payload tells us
+# the harness scaffolding still imports and executes; numbers are a
+# separate question.
+
+name: calibration
+
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: 'Optional notes about why this calibration run was triggered (e.g., "post-v0.5 tuning review").'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  calibrate:
+    name: calibration-harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'mcp/uv.lock'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'mcp/package-lock.json'
+
+      - name: Install Python dependencies (uv sync)
+        working-directory: mcp
+        run: uv sync --frozen --extra dev
+
+      - name: Install Node dependencies (TypeScript extractor)
+        working-directory: mcp
+        run: npm ci
+
+      - name: Materialize corpus.json from secret (optional)
+        env:
+          CORPUS: ${{ secrets.CHAMELEON_CALIBRATION_CORPUS_JSON }}
+        run: |
+          if [ -n "$CORPUS" ]; then
+            printf '%s' "$CORPUS" > tests/calibration/corpus.json
+            echo "corpus.json materialized from secret"
+          else
+            echo "CHAMELEON_CALIBRATION_CORPUS_JSON not set; harness will emit 'no_corpus_configured'"
+          fi
+
+      - name: Run calibration harness
+        id: harness
+        env:
+          PYTHONPATH: 'mcp:tests'
+        run: |
+          mkdir -p calibration-artifacts
+          mcp/.venv/bin/python tests/calibration/harness.py \
+            | tee calibration-artifacts/calibration.json
+          echo "trigger-notes=${{ github.event.inputs.notes }}" >> calibration-artifacts/run-context.txt
+          echo "ref=${{ github.ref }}"                          >> calibration-artifacts/run-context.txt
+          echo "sha=${{ github.sha }}"                          >> calibration-artifacts/run-context.txt
+
+      - name: Upload calibration artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-${{ github.run_id }}
+          path: calibration-artifacts/
+          retention-days: 90
+          if-no-files-found: error

@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # Verify the new archetype includes a hook file
     found_hook_archetype = False
-    for arch_name, arch_data in refreshed_archetypes.items():
+    for _arch_name, arch_data in refreshed_archetypes.items():
         if arch_data.get("paths_pattern") and "hooks" in arch_data["paths_pattern"]:
             found_hook_archetype = True
             break

@@ -86,13 +86,22 @@ def session_start() -> int:
 def preflight_and_advise() -> int:
     """PreToolUse Edit/Write/NotebookEdit: inject canonical context.
 
-    Phase 4 simplified: reads tool_input.file_path, calls
-    chameleon_mcp.tools.get_pattern_context, emits the result as
-    additionalContext.
+    Reads tool_input.file_path, calls chameleon_mcp.tools.get_pattern_context,
+    emits the result as additionalContext.
 
-    Real Phase 4 production: connects to a long-lived daemon via UNIX socket
-    for sub-100ms latency. This subprocess-per-call form is acceptable for
-    initial dogfood but will be replaced with the daemon model.
+    Fast path (Phase 4.5): try the long-lived daemon at
+    ``${PLUGIN_DATA}/.daemon.sock``. The daemon holds the python import
+    cache + profile state hot between hook calls, so warm latency drops
+    from 200-500 ms (subprocess) to sub-100 ms (socket roundtrip).
+
+    Fallback: if the daemon is unreachable / slow / returned an error,
+    fall through to the in-process get_pattern_context call. The two
+    paths are wire-equivalent; the daemon is purely a latency
+    optimization, not a correctness layer.
+
+    On first call from a session, we kick off a background daemon spawn
+    so the SECOND hook call sees the daemon ready. The current call
+    proceeds via the in-process path either way.
     """
     try:
         payload = json.loads(sys.stdin.read())
@@ -130,13 +139,34 @@ def preflight_and_advise() -> int:
         # Suppression check should never block — fail open into normal flow
         pass
 
+    # Fast path: try the daemon. On any failure (None response), kick off
+    # a background spawn (no-op if it's already running or in flight) and
+    # fall through to the in-process call. The hook's 2s ceiling means we
+    # cannot afford to wait for a cold daemon — the warm hits show up on
+    # the second invocation onwards.
+    result: dict | None = None
     try:
-        from chameleon_mcp.tools import get_pattern_context
-        result = get_pattern_context(file_path)
+        from chameleon_mcp import daemon_client
+
+        result = daemon_client.call("get_pattern_context", {"file_path": file_path})
     except Exception:
-        # Fail-open per ARCHITECTURE.md — never block edits on advisor failure
-        _emit({})
-        return 0
+        result = None
+
+    if result is None:
+        # Kick off the daemon for next time, then run in-process now.
+        try:
+            from chameleon_mcp.daemon import ensure_daemon_async
+
+            ensure_daemon_async()
+        except Exception:
+            pass
+        try:
+            from chameleon_mcp.tools import get_pattern_context
+            result = get_pattern_context(file_path)
+        except Exception:
+            # Fail-open per ARCHITECTURE.md — never block edits on advisor failure
+            _emit({})
+            return 0
 
     data = result.get("data", {})
     archetype_obj = data.get("archetype", {}) or {}

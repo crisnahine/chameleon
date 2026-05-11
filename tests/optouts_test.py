@@ -10,7 +10,6 @@ Round 2: end-to-end via the MCP tools — call disable_session and
          reason.
 """
 
-import hashlib
 import json
 import os
 import subprocess
@@ -54,6 +53,7 @@ if not (TS_REPO / ".chameleon" / "profile.json").is_file():
     bootstrap_repo(str(TS_REPO))
 trust_profile(str(TS_REPO), "client")
 from chameleon_mcp.tools import _compute_repo_id as _compute_repo_id_v6  # noqa: E402
+
 client_repo_id = _compute_repo_id_v6(TS_REPO)
 
 

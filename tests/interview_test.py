@@ -398,6 +398,7 @@ t("minimal call succeeds", mini["data"]["status"] == "success")
 # ---------------------------------------------------------------------------
 section("Server tool registry includes new tools")
 import chameleon_mcp.server as srv  # noqa: E402
+
 registered = {tool.name for tool in srv.mcp._tool_manager.list_tools()}
 for name in ("propose_archetype_renames", "apply_archetype_renames", "teach_profile_structured"):
     t(f"server registers {name!r}", name in registered, str(sorted(registered)))

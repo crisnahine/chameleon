@@ -231,6 +231,17 @@ def teach_profile_structured(
     )
 
 
+@mcp.tool()
+def daemon_status() -> dict:
+    """Return current chameleon-mcp daemon status.
+
+    Phase 4.5 long-lived daemon: returns alive flag, PID, socket path,
+    uptime (seconds) and ISO 8601 last_request_at when the daemon
+    answered a ping. Read-only — does not start/stop the daemon.
+    """
+    return tools.daemon_status()
+
+
 def main() -> None:
     """Entry point for `chameleon-mcp` CLI."""
     mcp.run()

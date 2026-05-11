@@ -14,7 +14,6 @@ fewer-than-expected rows in `edit_observations`, OR one of the
 subprocesses will exit non-zero.
 """
 
-import hashlib
 import json
 import os
 import sqlite3
@@ -64,6 +63,7 @@ for arch_entries in canonicals["canonicals"].values():
 print(f"Using {len(witness_paths)} canonical witness paths as edit targets")
 
 from chameleon_mcp.tools import _compute_repo_id as _compute_repo_id_v6  # noqa: E402
+
 repo_id = _compute_repo_id_v6(TS_REPO)
 
 

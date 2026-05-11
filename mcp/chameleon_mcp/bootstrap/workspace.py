@@ -192,7 +192,7 @@ def _read_pnpm_globs(pnpm_workspace_yaml: Path) -> list[str]:
         if isinstance(loaded, dict):
             packages = loaded.get("packages")
             if isinstance(packages, list):
-                return [str(p) for p in packages if isinstance(p, (str, int))]
+                return [str(p) for p in packages if isinstance(p, str | int)]
         # Fall through to the legacy parser if PyYAML gave us something
         # unexpected (e.g. a top-level scalar).
 
@@ -226,11 +226,11 @@ def _read_turbo_globs(turbo: dict) -> list[str]:
     for field_name in ("workspaces", "packages"):
         value = turbo.get(field_name)
         if isinstance(value, list):
-            return [str(v) for v in value if isinstance(v, (str, int))]
+            return [str(v) for v in value if isinstance(v, str | int)]
         if isinstance(value, dict):
             packages = value.get("packages")
             if isinstance(packages, list):
-                return [str(v) for v in packages if isinstance(v, (str, int))]
+                return [str(v) for v in packages if isinstance(v, str | int)]
     return []
 
 
