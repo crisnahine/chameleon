@@ -864,15 +864,43 @@ def _bootstrap_single(
     # but Phase 2D will use it to drive per-workspace bootstrapping. For now,
     # we always bootstrap at repo_root.
 
-    # 1b. Read tool configs as ground truth for rules
-    tool_configs = read_tool_configs(repo_root)
+    # 1b. Read tool configs as ground truth for rules.
+    # BUG-019 (v0.5.6): when bootstrap_repo is invoked on a sidecar like
+    # ``<rails-root>/app/javascript`` that carries no own package.json /
+    # tsconfig.json but has a parent that does, read tool configs from
+    # the parent. The language_hint envelope (Bug 2) suggested running
+    # ``bootstrap_repo(<repo>/app/javascript)`` for the TS half, but that
+    # call returned ``rules: {}`` because the sidecar dir lacked its own
+    # tooling configuration.
+    inherited_signals_from: Path | None = None
+    if not (repo_root / "package.json").is_file() and not (
+        repo_root / "tsconfig.json"
+    ).is_file():
+        ancestor = repo_root.parent
+        for _ in range(4):  # walk up at most 4 dirs to find the parent root
+            if (ancestor / "package.json").is_file() or (ancestor / "Gemfile").is_file():
+                inherited_signals_from = ancestor
+                break
+            if ancestor.parent == ancestor:
+                break
+            ancestor = ancestor.parent
+    if inherited_signals_from is not None:
+        tool_configs = read_tool_configs(inherited_signals_from)
+    else:
+        tool_configs = read_tool_configs(repo_root)
 
     # 1c. Detect language (TS or Ruby in v1.5; ADR-0003)
     # v0.5.3 (Bug B): when the root doesn't carry TS signals directly,
     # try first-level workspace drill-down (Turborepo / pnpm-workspaces
     # / Nx pattern). If a qualifying workspace is found, treat the repo
     # as TypeScript and scan only inside the workspace dirs.
+    # BUG-019: a sidecar with inherited signals from a parent root that
+    # has package.json should still try TS detection — _select_extractor
+    # at the sidecar would otherwise return None.
     extractor = _select_extractor(repo_root)
+    if extractor is None and inherited_signals_from is not None:
+        # Use the parent's extractor selection.
+        extractor = _select_extractor(inherited_signals_from)
     workspace_roots: list[str] = []
     fanout_capped = False
     if extractor is None:
