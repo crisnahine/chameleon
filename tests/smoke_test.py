@@ -309,6 +309,26 @@ t("emits valid JSON",
 
 
 # 14b. hook_helper.preflight_and_advise (regression Phase 5: archetype name key)
+# BUG-024 (v0.5.6): preflight now gates canonical injection on trust state.
+# Trust the TS repo first so the assertion below ("[chameleon: archetype=") is
+# actually testing the canonical-injection path the test was originally for.
+# Also drop any stale daemon process so the hook's daemon-fast-path doesn't
+# answer from code older than the current import (tests can outrun a daemon's
+# 10-minute idle window).
+import signal as _sig
+_pid_file = Path.home() / ".local/share/chameleon/.daemon.pid"
+if _pid_file.exists():
+    try:
+        _pid = int(_pid_file.read_text().splitlines()[0].strip())
+        os.kill(_pid, _sig.SIGKILL)
+    except (OSError, ValueError):
+        pass
+    _pid_file.unlink(missing_ok=True)
+    _sock_file = Path.home() / ".local/share/chameleon/.daemon.sock"
+    _sock_file.unlink(missing_ok=True)
+
+from chameleon_mcp.tools import trust_profile as _trust_for_smoke
+_trust_for_smoke(str(TS_REPO), Path(TS_REPO).name)
 hook_input = json.dumps({
     "tool_name": "Edit",
     "tool_input": {

@@ -222,6 +222,26 @@ def preflight_and_advise() -> int:
         _emit({})
         return 0
 
+    # Record a drift observation BEFORE the trust gate. Drift recording is
+    # internal observability and stays useful regardless of whether we
+    # inject canonical content for this edit. Failure must not block the
+    # edit.
+    repo_id = repo_info.get("id")
+    confidence_band = archetype_obj.get("confidence_band")
+    if repo_id:
+        try:
+            from chameleon_mcp.drift.observations import record_edit_observation
+
+            record_edit_observation(
+                repo_id=repo_id,
+                rel_path=str(file_path),
+                archetype=archetype_name,
+                confidence_band=confidence_band,
+                matched_canonical=bool(canonical.get("witness_path")),
+            )
+        except Exception:
+            pass
+
     # BUG-024: gate canonical injection on trust_state. Pre-v0.5.6 the hook
     # injected the full canonical witness even when the user had not
     # granted trust, contradicting the using-chameleon skill ("if
@@ -232,10 +252,9 @@ def preflight_and_advise() -> int:
     #   2. Suppress the canonical excerpt and rules until the user trusts.
     # The "once per session" tracking uses a marker file under the per-
     # repo plugin-data dir.
-    repo_id_for_gate = repo_info.get("id")
     session_id = payload.get("session_id")
-    if trust_state == "untrusted" and repo_id_for_gate:
-        if _should_emit_untrusted_prompt(repo_id_for_gate, session_id):
+    if trust_state == "untrusted" and repo_id:
+        if _should_emit_untrusted_prompt(repo_id, session_id):
             block = (
                 "<chameleon-context>\n"
                 "[chameleon: profile present, untrusted]\n\n"
@@ -259,24 +278,6 @@ def preflight_and_advise() -> int:
         # Already prompted this session — stay silent.
         _emit({})
         return 0
-
-    # Record a drift observation. Best-effort — failure must not block the edit.
-    repo_info = data.get("repo") or {}
-    repo_id = repo_info.get("id")
-    confidence_band = archetype_obj.get("confidence_band")
-    if repo_id:
-        try:
-            from chameleon_mcp.drift.observations import record_edit_observation
-
-            record_edit_observation(
-                repo_id=repo_id,
-                rel_path=str(file_path),
-                archetype=archetype_name,
-                confidence_band=confidence_band,
-                matched_canonical=bool(canonical.get("witness_path")),
-            )
-        except Exception:
-            pass
 
     # Build a short context block; cap at 1500 tokens approx via char limit
     excerpt_content = canonical.get("content") or ""

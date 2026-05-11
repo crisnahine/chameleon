@@ -260,7 +260,13 @@ async def run_protocol_test():
             data = json.loads(r.content[0].text)
             t(
                 "call_tool bootstrap_repo returns status",
-                data.get("data", {}).get("status") in ("success", "failed", "failed_unsupported_language", "failed_lock_held"),
+                data.get("data", {}).get("status") in (
+                    "success",
+                    "failed",
+                    "failed_unsupported_language",
+                    "failed_lock_held",
+                    "already_bootstrapped",  # BUG-026 (v0.5.6): guard against accidental overwrite
+                ),
             )
 
             # refresh_repo
