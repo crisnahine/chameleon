@@ -40,3 +40,8 @@ build/
 htmlcov/
 coverage.xml
 tests/calibration/corpus.json
+
+# Per-app dogfood reports for internal-only repos. SUMMARY.md anonymizes
+# their entries; the per-app dumps stay local.
+docs/dogfood/**/REPORT-ef-*.md
+docs/dogfood/**/log-*.txt

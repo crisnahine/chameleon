@@ -25,7 +25,7 @@ so the result is still readable but obviously generic.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 # Public regex mirror — see ``profile.schema.ARCHETYPE_NAME_RE``. Kept in
@@ -234,6 +234,40 @@ def _is_ruby_cluster(member_paths: Iterable[str]) -> bool:
     return members[0].endswith(".rb")
 
 
+# Extensions a TypeScript/JavaScript cluster's first member is expected to end
+# with. Mirrors the discovery glob's extension set so the gate matches what
+# the bootstrap actually clusters as TS/JS.
+_TS_JS_EXTENSIONS: tuple[str, ...] = (
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+)
+
+
+def _is_typescript_cluster(member_paths: Iterable[str]) -> bool:
+    """Return True when the cluster's canonical witness is a TS/JS file.
+
+    v0.5.3 (Bug C): The TS-prior table must only fire when the cluster's
+    members are TypeScript or JavaScript — otherwise a ``.rb`` file that
+    happens to sit under ``app/`` would be misnamed by the Next.js-style
+    rules. We use the first member's extension as the language tell, the
+    same way ``_is_ruby_cluster`` does. The TS and Ruby gates are mutually
+    exclusive in practice because the discovery glob groups by extension,
+    but the caller still combines both gates (``ts && !rb``) plus a
+    no-.rb-anywhere purity check so a mixed cluster (which the gate
+    technically can't disambiguate from the first member alone) falls
+    through to the existing heuristic rather than silently picking a TS
+    name.
+    """
+    members = list(member_paths)
+    if not members:
+        return False
+    return members[0].endswith(_TS_JS_EXTENSIONS)
+
+
 # v0.5.2 (Bug 2): Rails-prior table. Each entry: (directory chain that must
 # appear contiguously somewhere in the bucket OR the member paths, optional
 # filename suffix the member must end in, archetype name). The first match
@@ -306,6 +340,208 @@ def _rails_prior_match(member_paths: list[str]) -> str | None:
     return None
 
 
+# v0.5.3 (Bug C): TypeScript-prior table. Parallel to ``_RAILS_PRIORS`` but
+# anchored on Next.js / Remix / common TS-ecosystem conventions.
+#
+# Each entry: ``(directory_chain, filename_predicate, excluded_chains, name)``.
+#   * ``directory_chain`` — a tuple of directory segments that must appear
+#     contiguously in the majority of member paths (same semantics as
+#     ``_has_dir_chain``).
+#   * ``filename_predicate`` — a callable taking the basename string and
+#     returning bool. ``_fn_any`` matches everything; the named helpers
+#     below cover the brief's filename gates (``page.tsx``, ``use*``, etc.).
+#   * ``excluded_chains`` — tuples of directory chains that, when matched
+#     by the same cluster, disqualify this rule. The only use today is
+#     "``app/`` but NOT ``app/api/``" for App Router page/layout rules.
+#   * ``name`` — the archetype name to emit.
+#
+# The table is ordered most-specific-first so longer chains beat shorter
+# ones. ``_ts_prior_match`` walks top-to-bottom and returns the first hit,
+# so reordering changes behavior — keep the comment-banded grouping below
+# when adding entries.
+
+
+def _fn_any(_name: str) -> bool:
+    """Filename predicate: matches every basename."""
+    return True
+
+
+def _fn_in(allowed: frozenset[str]) -> Callable[[str], bool]:
+    """Build a predicate that matches only the given exact basenames."""
+    def _pred(name: str) -> bool:
+        return name in allowed
+    return _pred
+
+
+def _fn_not_in(disallowed: frozenset[str]) -> Callable[[str], bool]:
+    """Build a predicate that rejects the given basenames (everything else passes)."""
+    def _pred(name: str) -> bool:
+        return name not in disallowed
+    return _pred
+
+
+def _fn_starts_with(prefix: str) -> Callable[[str], bool]:
+    """Build a predicate that matches basenames starting with ``prefix``."""
+    def _pred(name: str) -> bool:
+        return name.startswith(prefix)
+    return _pred
+
+
+# Filename sets used by multiple rules.
+_NEXT_APP_PAGE_FILES = frozenset({"page.tsx", "page.ts"})
+_NEXT_APP_LAYOUT_FILES = frozenset({"layout.tsx", "layout.ts"})
+_NEXT_APP_SPECIAL_FILES = frozenset({"loading.tsx", "error.tsx", "not-found.tsx"})
+_NEXT_APP_ROUTE_FILES = frozenset({"route.ts", "route.tsx"})
+_NEXT_PAGES_SPECIAL_FILES = frozenset({"_app.tsx", "_document.tsx", "_error.tsx"})
+
+
+_TS_PRIORS: tuple[
+    tuple[
+        tuple[str, ...],              # directory chain
+        Callable[[str], bool],        # filename predicate (basename → bool)
+        tuple[tuple[str, ...], ...],  # excluded chains (any match disqualifies)
+        str,                          # archetype name
+    ],
+    ...,
+] = (
+    # --- Next.js App Router (most-specific chains first) ---------------------
+    # ``app/api/route.{ts,tsx}`` → route handler. Sits at chain length 2 so it
+    # beats the ``("app",)`` page/layout rules below for files under app/api/.
+    (("app", "api"), _fn_in(_NEXT_APP_ROUTE_FILES), (), "app-route-handler"),
+
+    # ``app/routes/`` (Remix) — chain length 2, distinguishable from Next.js
+    # App Router by the explicit ``routes/`` segment. Check before bare
+    # ``("app",)`` rules so a Remix repo doesn't get Next.js-shaped names.
+    (("app", "routes"), _fn_any, (), "remix-route"),
+
+    # ``app/`` page / layout / special component files. NOT under ``app/api/``
+    # (excluded chain catches the mixed case where a cluster spans both, even
+    # though in practice the file conventions don't collide).
+    (("app",), _fn_in(_NEXT_APP_PAGE_FILES), (("app", "api"),), "app-page-component"),
+    (("app",), _fn_in(_NEXT_APP_LAYOUT_FILES), (("app", "api"),), "app-layout"),
+    (("app",), _fn_in(_NEXT_APP_SPECIAL_FILES), (("app", "api"),), "app-special-component"),
+
+    # --- Next.js Pages Router ------------------------------------------------
+    # ``pages/api/`` — any filename. Chain length 2 wins over bare ``pages/``.
+    (("pages", "api"), _fn_any, (), "pages-api-handler"),
+
+    # ``pages/`` specials (``_app``, ``_document``, ``_error``) before the
+    # generic ``pages-component`` rule so those filenames don't accidentally
+    # get the page-component name.
+    (("pages",), _fn_in(_NEXT_PAGES_SPECIAL_FILES), (("pages", "api"),), "pages-special-component"),
+    (("pages",), _fn_not_in(_NEXT_PAGES_SPECIAL_FILES), (("pages", "api"),), "pages-component"),
+
+    # --- Generic TS conventions (single-segment chains) ----------------------
+    # Order within this group doesn't matter for the brief's verification
+    # cases because the chains don't overlap, but we keep declaration order
+    # stable so adding a new rule doesn't reshuffle existing behavior.
+    (("components",), _fn_any, (), "component"),
+    (("ui",), _fn_any, (), "ui-component"),
+    # ``hooks/use*`` first; without the use-prefix the cluster is NOT a hook.
+    (("hooks",), _fn_starts_with("use"), (), "hook"),
+    (("lib",), _fn_any, (), "lib-module"),
+    (("utils",), _fn_any, (), "util"),
+    (("helpers",), _fn_any, (), "helper"),
+    (("services",), _fn_any, (), "service"),
+    # ``middleware/`` directory; the root-level ``middleware.ts`` file is
+    # handled by a special-case check in ``_ts_prior_match`` because it has
+    # no directory chain to match against.
+    (("middleware",), _fn_any, (), "middleware"),
+    (("actions",), _fn_any, (), "action"),
+    (("store",), _fn_any, (), "store"),
+    (("stores",), _fn_any, (), "store"),
+    (("types",), _fn_any, (), "type-module"),
+    # ``queries/use*`` (react-query hooks) before bare ``queries/`` to avoid
+    # the more-generic ``query`` name swallowing what is really a hook.
+    (("queries",), _fn_starts_with("use"), (), "query-hook"),
+    (("queries",), _fn_any, (), "query"),
+)
+
+
+def _ts_prior_match(member_paths: list[str]) -> str | None:
+    """Walk the TS-prior table and return the first matching archetype name.
+
+    The walk is deliberately top-to-bottom — the table is sorted with
+    longer directory chains and more specific filename predicates first
+    so the "most specific wins" rule from the brief falls out for free.
+
+    Two non-table cases are also covered here:
+
+      1. ``middleware.ts`` at the repo root (no ``middleware/`` directory) —
+         when the majority of members are exactly named ``middleware.ts``
+         and none sit under a ``middleware/`` directory, emit ``middleware``.
+      2. Root-level ``api/`` (NOT Next.js) — when the majority of members
+         have ``api`` as their first directory segment AND no member sits
+         under ``pages/api/`` or ``app/api/``, emit ``api-client``.
+
+    Test detection (``__tests__/``, ``*.test.ts``, ``*.spec.ts``) is NOT
+    handled here because ``_looks_like_test`` already runs first in
+    ``_base_name_for`` and returns ``"test"`` for those clusters — adding
+    a duplicate rule would be dead code.
+    """
+    if not member_paths:
+        return None
+
+    member_count = len(member_paths)
+    file_names = _filenames(member_paths)
+
+    # Pre-compute exclusion-chain hits once per cluster so the inner loop
+    # doesn't repeat the same scan for every disqualified rule.
+    def _is_excluded(excluded_chains: tuple[tuple[str, ...], ...]) -> bool:
+        for excl in excluded_chains:
+            if _has_dir_chain(member_paths, excl):
+                return True
+        return False
+
+    for chain, filename_pred, excluded_chains, name in _TS_PRIORS:
+        if not _has_dir_chain(member_paths, chain):
+            continue
+        if excluded_chains and _is_excluded(excluded_chains):
+            continue
+        # Majority of basenames must satisfy the filename predicate.
+        hits = sum(1 for n in file_names if filename_pred(n))
+        if hits * 2 >= member_count:
+            return name
+
+    # --- Special case: root-level ``middleware.ts`` file -------------------
+    # When the cluster is dominated by files literally named ``middleware.ts``
+    # (e.g., a Next.js project's edge middleware) AND no member sits under
+    # a ``middleware/`` directory, the directory-chain rule above doesn't
+    # apply — but the convention is unambiguous.
+    middleware_hits = sum(
+        1 for p in member_paths if p.rsplit("/", 1)[-1] == "middleware.ts"
+    )
+    if (
+        middleware_hits * 2 >= member_count
+        and not _has_dir_chain(member_paths, ("middleware",))
+    ):
+        return "middleware"
+
+    # --- Special case: root-level ``api/`` (NOT Next.js) -------------------
+    # The ``("app", "api")`` and ``("pages", "api")`` rules above already
+    # handle Next.js. A cluster whose members start with ``api/<file>``
+    # (i.e., ``api`` is the first segment, no ``app/`` or ``pages/`` parent)
+    # is the conventional "API client" pattern — REST wrappers, fetch
+    # helpers, generated SDK code.
+    api_first_segment = sum(
+        1
+        for p in member_paths
+        if p.split("/", 1)[0] == "api"
+    )
+    if api_first_segment * 2 >= member_count:
+        # Belt-and-suspenders: make sure no member is actually under
+        # ``pages/api/`` or ``app/api/`` (which would already have matched
+        # earlier rules; this guards against the table being reordered).
+        nextjs_overlap = (
+            _has_dir_chain(member_paths, ("pages", "api"))
+            or _has_dir_chain(member_paths, ("app", "api"))
+        )
+        if not nextjs_overlap:
+            return "api-client"
+
+    return None
+
+
 def _base_name_for(cluster: Any) -> str | None:
     """Return a derived base name from cluster signals, or None for fallback.
 
@@ -358,6 +594,30 @@ def _base_name_for(cluster: Any) -> str | None:
         if prior_name is not None:
             return prior_name
 
+    # v0.5.3 (Bug C): TS-prior table fires only when the cluster's canonical
+    # witness is a TS/JS file AND the Ruby gate is False. The third clause
+    # (``no .rb member anywhere``) is belt-and-suspenders: a mixed cluster
+    # with a TS first member should still fall through to neither prior
+    # table, per the bug-C verification contract. In practice the discovery
+    # glob groups clusters by extension so all three clauses agree, but a
+    # future signature change that loosens grouping won't silently start
+    # naming Ruby-shaped TS clusters with Next.js names.
+    #
+    # Covers Next.js (App Router page/layout/route, Pages Router api),
+    # Remix (``app/routes/``), and the common TS-ecosystem conventions
+    # (``components/``, ``hooks/``, ``lib/``, ``utils/``, ``types/``,
+    # ``actions/``, ``store/``, ``middleware/``, root-level ``api/``) that
+    # the v0.5.1 heuristic missed or named with a less consistent
+    # vocabulary.
+    if (
+        _is_typescript_cluster(member_paths)
+        and not _is_ruby_cluster(member_paths)
+        and not any(p.endswith(".rb") for p in member_paths)
+    ):
+        prior_name = _ts_prior_match(member_paths)
+        if prior_name is not None:
+            return prior_name
+
     # --- Rails-flavored buckets (paths_pattern starts with ``app/...``) ---
     if _has("controllers"):
         return "controller"
@@ -387,14 +647,22 @@ def _base_name_for(cluster: Any) -> str | None:
     if _has("services"):
         return "service"
 
-    # --- Front-end / TS-flavored buckets ---
+    # --- Front-end / TS-flavored buckets (legacy fallback) ---
+    # v0.5.3 vocabulary alignment: these fallbacks now match the names
+    # used by ``_TS_PRIORS`` so a cluster whose path bucket missed every
+    # prior-table entry but matched a structural signal still gets the
+    # standardized name rather than a v0.5.1-era one. The TS prior table
+    # handles the path-conventional cases first; this block is reachable
+    # only for non-conventional layouts (e.g., JSX components that live
+    # outside any ``components/`` dir).
+
     # React components: explicit ``components`` dir AND JSX present.
     if _has("components") and jsx_present:
-        return "react-component"
+        return "component"
 
     # React hooks: ``hooks`` directory AND filename starts with ``use``.
     if _has("hooks") and any(n.startswith("use") for n in file_names):
-        return "react-hook"
+        return "hook"
 
     if _has("queries"):
         return "query"
@@ -403,19 +671,21 @@ def _base_name_for(cluster: Any) -> str | None:
 
     # ``lib/utils`` and ``utils`` directories — utility / pure functions.
     if _has("utils") or _has("util"):
-        return "utility"
+        return "util"
 
     # ``types`` directory or paths_pattern ending in ``/types``.
     if _has("types"):
-        return "types"
+        return "type-module"
 
-    # Style fallback: a JSX-present cluster whose default export is arrow-y
-    # is almost always a component.
+    # Structural fallback: a JSX-present cluster whose default export is
+    # arrow-y is almost always a component, even outside ``components/``.
     if jsx_present and is_arrow_default:
-        return "react-component"
+        return "component"
 
-    # TS class default with no JSX — generic ``class`` is more informative
-    # than the cluster-hash fallback.
+    # TS class default with no JSX — generic ``class`` is intentionally
+    # distinct from ``lib-module`` (which encodes the ``lib/`` location).
+    # A class outside any conventional directory keeps the structural
+    # name rather than a misleading directory-flavored one.
     if is_class_default and not jsx_present:
         return "class"
 

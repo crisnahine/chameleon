@@ -817,6 +817,25 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     `_resolve_repo_arg` and emit an explicit `{status: failed, error:
     "repo_id not found"}` envelope for unresolvable input so callers
     can distinguish "no archetype" from "wrong arg shape".
+
+    v0.5.3 (Bug A): the "valid repo, valid archetype name, but the
+    archetype has no canonical witness in canonicals.json" path was
+    equally silent — the witness can be rejected at bootstrap time
+    because every candidate contained secrets / was too long / the
+    cluster fell below the confidence threshold. Callers (the
+    using-chameleon skill, IDE integrations) couldn't distinguish that
+    from a transient I/O failure. We now emit three typed envelopes:
+      - `status: "failed", error: "repo_id not found"` — unresolvable
+        `repo` argument (unchanged from v0.5.2).
+      - `status: "failed", error: "archetype not found"` — the
+        `archetype` name isn't in archetypes.json (was previously
+        conflated with "no witness").
+      - `status: "no_witness"` — archetype name resolves but
+        canonicals.json carries no usable entry (bootstrap-time
+        rejection).
+    The legacy `content / witness_path / truncated / sha_hint` keys
+    stay in every envelope so callers reading them by name don't crash;
+    they're `None` / `False` when not applicable.
     """
     from chameleon_mcp.profile.loader import load_profile_dir
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
@@ -826,6 +845,10 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         return _envelope({
             "status": "failed",
             "error": "repo_id not found",
+            "content": None,
+            "witness_path": None,
+            "truncated": False,
+            "sha_hint": None,
         })
     repo_root = resolved_path
     if repo_root is None and repo_id is not None:
@@ -834,6 +857,10 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         return _envelope({
             "status": "failed",
             "error": "repo_id not found",
+            "content": None,
+            "witness_path": None,
+            "truncated": False,
+            "sha_hint": None,
         })
 
     try:
@@ -846,10 +873,35 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             "sha_hint": None,
         })
 
+    # v0.5.3 Bug A: distinguish "archetype name unknown" from "archetype
+    # known but witness was dropped at bootstrap". `archetypes.json` is
+    # the source of truth for whether the name exists; `canonicals.json`
+    # only carries entries for archetypes that survived the witness
+    # selection scan (secret / injection / poisoning gates).
+    known_archetypes = loaded.archetypes.get("archetypes", {}) or {}
+    if archetype not in known_archetypes:
+        return _envelope({
+            "status": "failed",
+            "error": "archetype not found",
+            "archetype_name": archetype,
+            "repo_id": repo_id,
+            "content": None,
+            "witness_path": None,
+            "truncated": False,
+            "sha_hint": None,
+        })
+
     canonicals = loaded.canonicals.get("canonicals", {}).get(archetype, [])
     if not canonicals:
         return _envelope({
-            "content": "",
+            "status": "no_witness",
+            "reason": (
+                "archetype has no canonical witness (below confidence "
+                "threshold, or all candidates contained secrets)"
+            ),
+            "archetype_name": archetype,
+            "repo_id": repo_id,
+            "content": None,
             "witness_path": None,
             "truncated": False,
             "sha_hint": None,
@@ -859,8 +911,19 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     witness = first.get("witness", {}) or {}
     witness_rel = witness.get("path")
     if not witness_rel:
+        # Canonicals row exists but lacks a usable witness path. Same
+        # observable state as a dropped-at-bootstrap entry — surface the
+        # typed `no_witness` envelope so the caller doesn't have to
+        # reason about partially-populated rows.
         return _envelope({
-            "content": "",
+            "status": "no_witness",
+            "reason": (
+                "archetype has no canonical witness (below confidence "
+                "threshold, or all candidates contained secrets)"
+            ),
+            "archetype_name": archetype,
+            "repo_id": repo_id,
+            "content": None,
             "witness_path": None,
             "truncated": False,
             "sha_hint": witness.get("sha_hint"),
@@ -1232,7 +1295,7 @@ def _compute_file_cluster_map(
     This is a second pass on top of the orchestrator's bootstrap; the
     orchestrator does not expose the per-file → cluster mapping in its
     BootstrapReport, and the file_clusters write requires it. The cost
-    is bounded by REPO_SIZE_GUARD (50_000 files) and runs synchronously
+    is bounded by REPO_SIZE_GUARD (200_000 files; v0.5.3) and runs synchronously
     after the atomic profile commit so a partial failure here cannot
     corrupt the committed profile.
     """

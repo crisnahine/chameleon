@@ -4,6 +4,89 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] — 2026-05-11
+
+Cycle-2 dogfood patch. Second full sweep against 9 apps (forem, maybe, mastodon, gitlabhq, excalidraw, plane, bulletproof-react, ef-api, ef-client) under a 10-phase end-to-end runner that exercises every MCP tool surface. 5 new findings caught; all 5 ship in v0.5.3. Reports under `docs/dogfood/v0.5.2-cycle2/`; cross-app analysis in `SUMMARY.md`.
+
+Three parallel agents owned non-overlapping file sets under the verify-before / verify-after / code-review discipline. 39 test suites, 1,696 assertions, all green.
+
+### Fixed — Bug A: `get_canonical_excerpt` silent empty on missing witness (3-app confirmation)
+
+Pre-v0.5.3 the tool returned `{"content": "", "witness_path": null, "truncated": false, "sha_hint": null}` with no error when the archetype existed in `archetypes.json` but had no canonical witness in `canonicals.json` (witness rejected at bootstrap because all candidates contained secrets or fell below the confidence threshold). v0.5.2's Bug 5 fix covered the wrong-arg-shape case but missed the missing-witness case.
+
+v0.5.3 emits three distinct typed envelopes:
+- `status: "failed", error: "repo_id not found"` — repo_id doesn't resolve
+- `status: "failed", error: "archetype not found"` — archetype name not in profile
+- `status: "no_witness", reason: "...", archetype_name, repo_id` — valid args, no witness available
+
+Legacy `content/witness_path/truncated/sha_hint` keys are preserved (all `null` when not applicable) so consumers reading them don't crash.
+
+### Fixed — Bug B: monorepo with empty-root `package.json` fails bootstrap (high severity, foundational)
+
+`bulletproof-react` (Turborepo-style: root `package.json` with only `scripts`, per-workspace `apps/<ws>/tsconfig.json` + `apps/<ws>/package.json`) returned `failed_unsupported_language`. This is the modern monorepo layout used by Turborepo, Nx, pnpm workspaces, and Lerna; without this fix chameleon's on-ramp story is broken for any team on that pattern.
+
+v0.5.3 extends `_select_extractor` to drill one level down into `apps/*`, `packages/*`, `services/*`, `workspaces/*` when:
+- Root has `package.json` but no TS deps in root deps/devDeps
+- AND root has no root-level `tsconfig.json`
+- AND at least one first-level workspace dir contains `tsconfig.json` OR a TS-flavored `package.json`
+
+When detected, the bootstrap envelope carries `workspace_roots: list[str]` listing the dirs (relative to repo root), and `discover_files` scans the union of those dirs instead of the root. Fanout is bounded at 50 first-level dirs to defang misconfigured trees.
+
+### Fixed — Bug C: Next.js / Remix archetypes get generic `cluster-<hex>` names (plane: 50% sparse)
+
+plane dogfood shipped 35/70 archetypes named `cluster-<hex>` despite clear Next.js conventions. v0.5.2's Rails-prior table (`_RAILS_PRIORS`) had no TypeScript equivalent.
+
+v0.5.3 adds `_TS_PRIORS` (22 entries) parallel to `_RAILS_PRIORS`, gated by `_is_typescript_cluster(cluster)` (first member's extension is `.ts/.tsx/.js/.jsx/.mjs/.cjs`) AND `not _is_ruby_cluster(cluster)`. Coverage:
+- Next.js App Router: `app-route-handler`, `app-page-component`, `app-layout`, `app-special-component`
+- Next.js Pages Router: `pages-api-handler`, `pages-component`, `pages-special-component`
+- Remix: `remix-route`
+- Component: `component` (`components/`), `ui-component` (`ui/`)
+- Hook: `hook` (`hooks/use*.ts`)
+- Library: `lib-module`, `util`, `helper`, `service`, `middleware`, `action`, `store`, `type-module`, `query-hook`, `query`, `api-client`
+- Test: `test` (handled by existing `_looks_like_test`, listed for clarity)
+
+Priority order: longest directory-chain match first; filename predicate disambiguators within the same chain (so `app/api/route.ts` wins `app-route-handler`, not just `app-page-component`).
+
+**Vocabulary standardization:** the new prior table also renames 5 categories that overlapped with v0.5.1 names: `react-component`→`component`, `react-hook`→`hook`, `utility`→`util`, `types`→`type-module`, `class` (TS lib/ default)→`lib-module`. The 7 affected assertions in `archetype_naming_test.py` updated to the new vocabulary.
+
+### Fixed — Bug D: bootstrap coverage telemetry (gitlabhq: 6,574 of ~125k files surfaced silently)
+
+gitlabhq dogfood reported `files_processed=6,574` for a ~125k-file repo and there was no way to tell whether the gap was healthy exclusion (vendor, public/uploads, app/assets/images) or unexpected pruning. v0.5.3 adds 4 instrumentation fields to the `bootstrap_repo` success envelope:
+- `discovered_files_pre_exclusion: int` — total files walked
+- `discovered_files_post_exclusion: int` — survivors of EXCLUDE sets
+- `clustered_files: int` — same as legacy `files_processed`, kept for back-compat
+- `sparse_dropped_files: int` — files in clusters below the sparse threshold
+
+A new `discovery_stats(repo_root, ...)` helper produces these counts without raising `TooManyFilesError`, so telemetry on an oversized repo is still useful.
+
+### Fixed — Bug E: Rails+JS hybrid detector misses legacy sprockets layout (gitlabhq)
+
+`_is_rails_with_frontend` required `app/javascript/` (modern Rails 6+ webpacker / esbuild). gitlabhq uses the older sprockets layout (`app/assets/javascripts/`). v0.5.3 broadens the predicate to also accept:
+- `app/assets/javascripts/` (legacy Rails 5 sprockets)
+- `app/frontend/` (some Rails 7 conventions)
+
+### Limits
+
+`REPO_SIZE_GUARD` bumped 100,000 → 200,000 (2x, 4x baseline). The cycle-2 dogfood confirmed gitlabhq sits at ~125k files; anticipated public OSS apps (full Plane monorepo with all packages, Discourse, Forem-pro) sit in the 100k-200k band. Discovery is dominated by `stat()` + `xxhash`; bootstrap wall-time on a 200k repo measures 3.5-4 minutes on the reference SSD — acceptable for the one-shot install experience. The other 50K caps (`teach_profile` body, structured-payload limit, hybrid-detection scan) stay — they guard input shape, not corpus size.
+
+### Tests
+
+- New: `tests/v0_5_3_canonical_witness_test.py` (30 assertions, Bug A)
+- New: `tests/v0_5_3_monorepo_bootstrap_test.py` (37 assertions, Bugs B + D + E)
+- New: `tests/v0_5_3_ts_priors_test.py` (108 assertions, Bug C)
+- Updated: `tests/archetype_naming_test.py` (7 assertions migrated to new vocabulary)
+- Updated: `tests/pretooluse_hook_test.py` (2 sections now filter for `PreToolUse:Edit` specifically instead of picking the first PreToolUse event, which can be chameleon's own MCP call)
+
+**All 39 suites, 1,696 assertions green.**
+
+### Schema
+
+No schema bump. `workspace_roots` is an envelope-only field on `bootstrap_repo`'s response — not persisted to `profile.json`.
+
+### Deferred to v0.6
+
+11 findings from v0.5.1 plus the v0.5.2 "Bug 1 FINDING" (runner-side cosmetic, not a chameleon bug). Full list: `docs/dogfood/SUMMARY.md` and `docs/dogfood/v0.5.2-cycle2/SUMMARY.md`.
+
 ## [0.5.2] — 2026-05-11
 
 Second dogfood patch. 17 of the remaining 28 medium-severity findings from the same 6-repo dogfood pass (forem, maybe, mastodon, gitlabhq, excalidraw, plane) ship; the rest are deferred to v0.6 where they need design conversations (semantic prompt-injection heuristic, Next.js route group recognition, Phase 6 calibration refresh).

@@ -235,7 +235,7 @@ name = propose_archetype_name(
     ),
     set(),
 )
-t("React component (jsx + components dir) → 'react-component'", name == "react-component", name)
+t("React component (jsx + components dir) → 'component'", name == "component", name)
 
 # Variant: JSX + arrow default WITHOUT 'components' path token still wins.
 name = propose_archetype_name(
@@ -247,7 +247,7 @@ name = propose_archetype_name(
     ),
     set(),
 )
-t("JSX + ArrowFunction default → 'react-component' even without /components/", name == "react-component", name)
+t("JSX + ArrowFunction default in app/<route>/page.tsx → 'app-page-component'", name == "app-page-component", name)
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +264,7 @@ name = propose_archetype_name(
     ),
     set(),
 )
-t("React hook (hooks + use* filenames) → 'react-hook'", name == "react-hook", name)
+t("React hook (hooks + use* filenames) → 'hook'", name == "hook", name)
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +309,7 @@ name = propose_archetype_name(
     ),
     set(),
 )
-t("lib/utils → 'utility'", name == "utility", name)
+t("lib/utils → 'lib-module' (lib-prior wins, more specific than utils)", name == "lib-module", name)
 
 name = propose_archetype_name(
     _cluster(
@@ -319,11 +319,11 @@ name = propose_archetype_name(
     ),
     set(),
 )
-t("src/utils → 'utility'", name == "utility", name)
+t("src/utils → 'util'", name == "util", name)
 
 
 # ---------------------------------------------------------------------------
-section("Unit: TS class default → 'class'")
+section("Unit: TS lib/ default → 'lib-module' (v0.5.3 Bug C prior)")
 name = propose_archetype_name(
     _cluster(
         paths_pattern="src/lib",
@@ -333,7 +333,7 @@ name = propose_archetype_name(
     ),
     set(),
 )
-t("TS class default → 'class'", name == "class", name)
+t("TS lib/ ClassDeclaration → 'lib-module'", name == "lib-module", name)
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +346,7 @@ name = propose_archetype_name(
     ),
     set(),
 )
-t("src/types → 'types'", name == "types", name)
+t("src/types → 'type-module' (v0.5.3 Bug C TS prior)", name == "type-module", name)
 
 
 # ---------------------------------------------------------------------------

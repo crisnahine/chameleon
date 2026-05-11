@@ -104,12 +104,17 @@ section("Round 1 — the TypeScript repo: PreToolUse hook fires on Edit")
 
 events = run_edit_session(TS_REPO, "_test_target.ts", "typescript")
 
+# Filter for the Edit-specific hook fire. The session may also contain
+# PreToolUse fires for chameleon's own MCP calls (get_pattern_context,
+# etc.); we only care about the user's Edit tool here.
 pretool_responses = [
     e for e in events
-    if e.get("subtype") == "hook_response" and e.get("hook_event") == "PreToolUse"
+    if e.get("subtype") == "hook_response"
+    and e.get("hook_event") == "PreToolUse"
+    and e.get("hook_name") == "PreToolUse:Edit"
 ]
 t(
-    f"the TypeScript repo: PreToolUse hook_response present ({len(pretool_responses)})",
+    f"the TypeScript repo: PreToolUse:Edit hook_response present ({len(pretool_responses)})",
     len(pretool_responses) >= 1,
 )
 
@@ -149,10 +154,12 @@ events = run_edit_session(RUBY_REPO, "_test_target.rb", "ruby")
 
 pretool_responses = [
     e for e in events
-    if e.get("subtype") == "hook_response" and e.get("hook_event") == "PreToolUse"
+    if e.get("subtype") == "hook_response"
+    and e.get("hook_event") == "PreToolUse"
+    and e.get("hook_name") == "PreToolUse:Edit"
 ]
 t(
-    f"the Ruby on Rails repo: PreToolUse hook_response present ({len(pretool_responses)})",
+    f"the Ruby on Rails repo: PreToolUse:Edit hook_response present ({len(pretool_responses)})",
     len(pretool_responses) >= 1,
 )
 

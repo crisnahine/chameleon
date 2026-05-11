@@ -37,6 +37,7 @@ from chameleon_mcp.bootstrap.discovery import (
     REPO_SIZE_GUARD,
     TooManyFilesError,
     discover_files,
+    discovery_stats,
 )
 from chameleon_mcp.bootstrap.naming import propose_archetype_name
 from chameleon_mcp.bootstrap.tool_config import read_tool_configs
@@ -48,28 +49,61 @@ from chameleon_mcp.extractors.typescript import TypeScriptExtractor
 
 
 def _is_rails_with_frontend(repo_root: Path) -> bool:
-    """Detect a Rails-with-frontend hybrid (Bug 2 fix).
+    """Detect a Rails-with-frontend hybrid (Bug 2 fix; v0.5.3 Bug E broaden).
 
-    Rails+Stimulus / Rails+Hotwire / Rails+ImportMaps all colocate a TS
-    sidecar under ``app/javascript/`` while keeping the production code
-    in Ruby. The pre-v0.5.1 ``_select_extractor`` picked TypeScript first
-    when both ``package.json`` and ``Gemfile`` existed, which silently
-    excluded thousands of Ruby files (forem: 3,515; mastodon: 3,179).
+    Rails+Stimulus / Rails+Hotwire / Rails+ImportMaps colocate a JS/TS
+    sidecar alongside Ruby production code under a handful of well-known
+    conventions:
+
+      - ``app/javascript/`` — modern Rails 6+ webpacker / esbuild /
+        importmap-rails entry point (forem, mastodon).
+      - ``app/assets/javascripts/`` — legacy Rails 5 sprockets layout
+        (gitlabhq, older Discourse). v0.5.3 (Bug E) added.
+      - ``app/frontend/`` — Rails 7 convention used by some teams
+        (Vite-rails default, jumpstart-pro). v0.5.3 (Bug E) added.
+
+    The pre-v0.5.1 ``_select_extractor`` picked TypeScript first when both
+    ``package.json`` and ``Gemfile`` existed, which silently excluded
+    thousands of Ruby files (forem: 3,515; mastodon: 3,179). This
+    predicate now fires on any of the three layouts so legacy Rails 5
+    repos like gitlabhq are correctly classified.
 
     Signal: all three of
       - ``Gemfile`` present at the root
       - ``config/application.rb`` present (the canonical Rails marker —
         rules out vendored gemspecs / dual-language SDKs)
-      - ``app/javascript/`` present (the convention any Rails+JS hybrid
-        uses for its bundler entry point)
+      - at least one of the three JS sidecar dirs above
     """
     if not (repo_root / "Gemfile").is_file():
         return False
     if not (repo_root / "config" / "application.rb").is_file():
         return False
-    if not (repo_root / "app" / "javascript").is_dir():
-        return False
-    return True
+    # v0.5.3 (Bug E): accept legacy / modern / new Rails JS layouts.
+    js_dir_candidates = (
+        repo_root / "app" / "javascript",
+        repo_root / "app" / "assets" / "javascripts",
+        repo_root / "app" / "frontend",
+    )
+    return any(d.is_dir() for d in js_dir_candidates)
+
+
+def _rails_frontend_dir(repo_root: Path) -> Path | None:
+    """Return the first matching Rails JS sidecar dir, or ``None``.
+
+    Mirror of the search order in ``_is_rails_with_frontend``. Used by
+    the language_hint envelope so the message points at the actual dir
+    on disk (``app/assets/javascripts`` on gitlabhq, ``app/javascript``
+    on forem, …).
+    """
+    for sub in (
+        ("app", "javascript"),
+        ("app", "assets", "javascripts"),
+        ("app", "frontend"),
+    ):
+        candidate = repo_root.joinpath(*sub)
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 def _count_ts_files_under(directory: Path) -> int:
@@ -113,6 +147,108 @@ def _select_extractor(repo_root: Path) -> Extractor | None:
         if ext.can_handle(repo_root):
             return ext
     return None
+
+
+# v0.5.3 (Bug B): first-level workspace fanout cap. Bounded so a
+# misconfigured tree with hundreds of empty apps/* dirs can't walk
+# forever. 50 is generous: real Turborepo / pnpm / Nx repos almost never
+# exceed ~30 first-level workspaces (excalidraw: 9; mastodon: 1; the
+# largest real-world Turborepo we know of, Vercel internal, ships ~40).
+_WORKSPACE_FANOUT_CAP = 50
+
+# v0.5.3 (Bug B): conventional monorepo first-level directories. We drill
+# one layer deep into each of these when the root carries package.json
+# but no TS deps and no tsconfig.json.
+_WORKSPACE_PARENT_DIRS = ("apps", "packages", "services", "workspaces")
+
+
+def _detect_workspace_ts_monorepo(
+    repo_root: Path,
+) -> tuple[list[str], bool]:
+    """Detect a TS monorepo whose root package.json has no TS deps.
+
+    v0.5.3 (Bug B): the common Turborepo / pnpm-workspaces / Nx pattern
+    leaves the root ``package.json`` carrying only ``scripts`` (no
+    ``dependencies``/``devDependencies``) and puts ``tsconfig.json`` +
+    TS deps inside workspace dirs under ``apps/*``, ``packages/*``,
+    ``services/*``, ``workspaces/*``. The pre-v0.5.3 ``_select_extractor``
+    saw no TS signal at the root and returned None → bootstrap reported
+    ``failed_unsupported_language`` (bulletproof-react dogfood).
+
+    A workspace dir qualifies when it contains either:
+      - a ``tsconfig.json``, OR
+      - a ``package.json`` whose content carries a TS-flavored token
+        (``typescript``, ``ts-node``, ``vite``) — same signal
+        ``TypeScriptExtractor.can_handle`` uses on a single repo.
+
+    The first-level scan is bounded at ``_WORKSPACE_FANOUT_CAP`` (50)
+    entries per parent dir so a pathological tree with hundreds of
+    empty entries can't walk forever. When the cap fires, the orchestrator
+    sets ``fanout_capped=True`` in the bootstrap envelope.
+
+    Args:
+        repo_root: absolute path to repo root
+
+    Returns:
+        Tuple of ``(workspace_roots, fanout_capped)``.
+        - ``workspace_roots`` is a sorted list of repo-relative POSIX
+          paths (e.g. ``["apps/api", "apps/web"]``) — empty if no
+          qualifying workspaces found.
+        - ``fanout_capped`` is True if any parent dir hit the
+          ``_WORKSPACE_FANOUT_CAP`` ceiling.
+    """
+    package_json = repo_root / "package.json"
+    if not package_json.is_file():
+        return ([], False)
+    # If the root itself has a tsconfig.json or TS deps in package.json,
+    # the regular single-root path handles this — don't drill.
+    if (repo_root / "tsconfig.json").exists():
+        return ([], False)
+    try:
+        content = package_json.read_text(errors="replace")
+    except OSError:
+        return ([], False)
+    if any(token in content for token in ("typescript", '"ts-node"', '"vite"')):
+        return ([], False)
+
+    # Walk each conventional parent dir one level deep.
+    workspace_roots: list[str] = []
+    fanout_capped = False
+    for parent_name in _WORKSPACE_PARENT_DIRS:
+        parent = repo_root / parent_name
+        if not parent.is_dir():
+            continue
+        try:
+            entries = sorted(p for p in parent.iterdir() if p.is_dir())
+        except OSError:
+            continue
+        if len(entries) > _WORKSPACE_FANOUT_CAP:
+            fanout_capped = True
+            entries = entries[:_WORKSPACE_FANOUT_CAP]
+        for entry in entries:
+            if _is_ts_workspace(entry):
+                workspace_roots.append(f"{parent_name}/{entry.name}")
+    workspace_roots.sort()
+    return (workspace_roots, fanout_capped)
+
+
+def _is_ts_workspace(workspace_dir: Path) -> bool:
+    """Return True if ``workspace_dir`` looks like a TS workspace.
+
+    Mirrors ``TypeScriptExtractor.can_handle``'s rules at one level of
+    depth: tsconfig.json wins, otherwise check package.json for TS
+    tokens. Best-effort and tolerant of unreadable files.
+    """
+    if (workspace_dir / "tsconfig.json").is_file():
+        return True
+    pkg = workspace_dir / "package.json"
+    if not pkg.is_file():
+        return False
+    try:
+        content = pkg.read_text(errors="replace")
+    except OSError:
+        return False
+    return any(token in content for token in ("typescript", '"ts-node"', '"vite"'))
 
 
 def _glob_for_extractor(extractor: Extractor) -> str:
@@ -189,6 +325,32 @@ class BootstrapReport:
     and rendered in profile.summary.md so the user can decide whether
     to run a second bootstrap on the sidecar.
     """
+    workspace_roots: list[str] = field(default_factory=list)
+    """v0.5.3 (Bug B): repo-relative workspace dirs found when the root
+    package.json has no TS deps but TS lives one level down (Turborepo,
+    pnpm-workspaces, Nx). Empty for single-root TS repos. Envelope-only
+    today (not persisted to profile.json so the schema doesn't bump).
+    """
+    fanout_capped: bool = False
+    """v0.5.3 (Bug B): True when the first-level workspace scan hit the
+    50-entry cap. Surfaced so an unusually large monorepo's report is
+    distinguishable from a clean run.
+    """
+    discovered_files_pre_exclusion: int = 0
+    """v0.5.3 (Bug D): total files walked by discovery, before
+    EXCLUDE_FROM_CLUSTERING_DIRS / EXTENSIONS / EXACT_RELPATHS dropped
+    anything. Lets coverage tooling reason about where files went.
+    """
+    discovered_files_post_exclusion: int = 0
+    """v0.5.3 (Bug D): files that survived the discovery-layer exclusion
+    sets and were handed to the extractor. Always <= pre.
+    """
+    sparse_dropped_files: int = 0
+    """v0.5.3 (Bug D): files dropped because their cluster fell below
+    the adaptive sparse_threshold. Sparse-cluster members never reach
+    canonical selection but contribute to the post-clustering count.
+    Always >= 0.
+    """
 
     def to_dict(self) -> dict:
         out: dict = {
@@ -210,6 +372,16 @@ class BootstrapReport:
         # Always include language_hint in the envelope (None when no hybrid
         # detected) so downstream consumers can rely on a stable key.
         out["language_hint"] = self.language_hint
+        # v0.5.3 (Bug B): always surface workspace_roots / fanout_capped so
+        # callers can rely on stable keys.
+        out["workspace_roots"] = list(self.workspace_roots)
+        out["fanout_capped"] = bool(self.fanout_capped)
+        # v0.5.3 (Bug D): instrumentation counters. clustered_files is an
+        # alias for files_processed kept around for clarity.
+        out["discovered_files_pre_exclusion"] = int(self.discovered_files_pre_exclusion)
+        out["discovered_files_post_exclusion"] = int(self.discovered_files_post_exclusion)
+        out["clustered_files"] = int(self.files_processed)
+        out["sparse_dropped_files"] = int(self.sparse_dropped_files)
         return out
 
 
@@ -651,7 +823,17 @@ def _bootstrap_single(
     tool_configs = read_tool_configs(repo_root)
 
     # 1c. Detect language (TS or Ruby in v1.5; ADR-0003)
+    # v0.5.3 (Bug B): when the root doesn't carry TS signals directly,
+    # try first-level workspace drill-down (Turborepo / pnpm-workspaces
+    # / Nx pattern). If a qualifying workspace is found, treat the repo
+    # as TypeScript and scan only inside the workspace dirs.
     extractor = _select_extractor(repo_root)
+    workspace_roots: list[str] = []
+    fanout_capped = False
+    if extractor is None:
+        workspace_roots, fanout_capped = _detect_workspace_ts_monorepo(repo_root)
+        if workspace_roots:
+            extractor = TypeScriptExtractor()
     if extractor is None:
         return BootstrapReport(
             status="failed_unsupported_language",
@@ -668,33 +850,61 @@ def _bootstrap_single(
                 "No TypeScript signals (tsconfig.json / package.json TS deps) "
                 "and no Ruby signals (Gemfile / *.gemspec) detected"
             ),
+            fanout_capped=fanout_capped,
         )
 
     # v0.5.1 (Bug 2): Rails-with-frontend repos pick Ruby; emit a
-    # language_hint so the caller knows the TS sidecar under
-    # app/javascript/ was deliberately excluded from the Ruby scan.
+    # language_hint so the caller knows the JS sidecar (modern
+    # app/javascript, legacy app/assets/javascripts, or Rails 7
+    # app/frontend) was deliberately excluded from the Ruby scan.
+    # v0.5.3 (Bug E): the dir is resolved via _rails_frontend_dir so the
+    # hint points at whichever convention the repo actually uses.
     language_hint: dict | None = None
     if extractor.language == "ruby" and _is_rails_with_frontend(repo_root):
-        js_dir = repo_root / "app" / "javascript"
-        secondary_count = _count_ts_files_under(js_dir)
-        if secondary_count > 0:
-            language_hint = {
-                "primary": "ruby",
-                "secondary_detected": "typescript",
-                "secondary_file_count": secondary_count,
-                "secondary_path": str(js_dir),
-                "note": (
-                    "Ruby-with-frontend repo detected; TS sidecar in "
-                    "app/javascript/ not scanned by this bootstrap. "
-                    "Run bootstrap_repo("
-                    f"{js_dir}) for the TS half."
-                ),
-            }
+        js_dir = _rails_frontend_dir(repo_root)
+        if js_dir is not None:
+            secondary_count = _count_ts_files_under(js_dir)
+            if secondary_count > 0:
+                try:
+                    js_dir_display = str(js_dir.relative_to(repo_root))
+                except ValueError:
+                    js_dir_display = str(js_dir)
+                language_hint = {
+                    "primary": "ruby",
+                    "secondary_detected": "typescript",
+                    "secondary_file_count": secondary_count,
+                    "secondary_path": str(js_dir),
+                    "note": (
+                        "Ruby-with-frontend repo detected; JS sidecar in "
+                        f"{js_dir_display}/ not scanned by this bootstrap. "
+                        f"Run bootstrap_repo({js_dir}) for the JS half."
+                    ),
+                }
 
-    # 2. Discover candidate files (use language-appropriate glob if no override)
+    # 2. Discover candidate files (use language-appropriate glob if no override).
+    # v0.5.3 (Bug B): when workspace_roots is non-empty, the discovery walker
+    # scans only inside those dirs (apps/web, packages/foo, …) instead of
+    # the whole repo. This keeps a monorepo's empty root + sibling
+    # config dirs from blowing past the size guard.
+    # v0.5.3 (Bug D): compute pre/post counters off the same walker so the
+    # numbers always agree.
     discovery_glob = paths_glob or _glob_for_extractor(extractor)
+    ws_arg = workspace_roots or None
+    stats = discovery_stats(
+        repo_root,
+        glob=discovery_glob,
+        paths_glob=paths_glob,
+        workspace_roots=ws_arg,
+    )
+    pre_exclusion_count = stats.get("pre_exclusion", 0)
+    post_exclusion_count = stats.get("post_exclusion", 0)
     try:
-        candidates = discover_files(repo_root, glob=discovery_glob, paths_glob=paths_glob)
+        candidates = discover_files(
+            repo_root,
+            glob=discovery_glob,
+            paths_glob=paths_glob,
+            workspace_roots=ws_arg,
+        )
     except TooManyFilesError as e:
         return BootstrapReport(
             status="failed_too_many_files",
@@ -708,6 +918,10 @@ def _bootstrap_single(
             duration_ms=int((time.time() - started_at) * 1000),
             profile_path=None,
             error=f"Repo has {e.count} files (ceiling {REPO_SIZE_GUARD}); use explicit paths_glob",
+            workspace_roots=list(workspace_roots),
+            fanout_capped=fanout_capped,
+            discovered_files_pre_exclusion=pre_exclusion_count,
+            discovered_files_post_exclusion=post_exclusion_count,
         )
 
     if not candidates:
@@ -723,6 +937,10 @@ def _bootstrap_single(
             duration_ms=int((time.time() - started_at) * 1000),
             profile_path=None,
             error="No TypeScript files found matching the discovery glob",
+            workspace_roots=list(workspace_roots),
+            fanout_capped=fanout_capped,
+            discovered_files_pre_exclusion=pre_exclusion_count,
+            discovered_files_post_exclusion=post_exclusion_count,
         )
 
     # 3. Parse via ts_dump.mjs subprocess
@@ -734,6 +952,11 @@ def _bootstrap_single(
     # 4. Cluster by signature
     clustering = cluster_files(parse_result.files, repo_root=repo_root)
     files_skipped_generated = len(clustering.skipped_generated)
+    # v0.5.3 (Bug D): count files that ended up in a sparse cluster —
+    # they were parsed and clustered but never made it to archetype/canonical
+    # selection. Useful for explaining gaps between files_processed and
+    # archetypes_detected.
+    sparse_dropped_files = sum(c.size for c in clustering.sparse_clusters)
 
     # 4b. Phase 2C.3: collect sparse + bimodal warnings. These are surfaced
     # in BootstrapReport so the future interview UI (v0.4) can prompt the
@@ -998,6 +1221,14 @@ def _bootstrap_single(
         sparse_cluster_warnings=sparse_warnings,
         bimodal_cluster_warnings=bimodal_warnings,
         language_hint=language_hint,
+        # v0.5.3 (Bug B): workspace drill-down envelope fields. Empty for
+        # single-root repos so the keys stay stable.
+        workspace_roots=list(workspace_roots),
+        fanout_capped=fanout_capped,
+        # v0.5.3 (Bug D): instrumentation counters.
+        discovered_files_pre_exclusion=pre_exclusion_count,
+        discovered_files_post_exclusion=post_exclusion_count,
+        sparse_dropped_files=sparse_dropped_files,
     )
 
 

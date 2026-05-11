@@ -19,13 +19,18 @@ from pathlib import Path
 # Hard ceiling on file count post-exclusion. Bootstrap refuses above this
 # without explicit user-supplied paths_glob.
 #
-# v0.5.2: bumped from 50_000 -> 100_000 (2x) after the gitlabhq dogfood
-# (~125k files) bounded out at the prior cap. Discovery is mostly stat()
-# plus xxhash sha_hint so the latency cost stays sublinear in disk speed;
-# real bootstrap-wall-time impact on a 100k repo measured at <= 2 minutes
-# on the reference SSD. The other 50_000 caps in tools.py guard user
-# input shape (teach_profile body, structured payload) and are unrelated.
-REPO_SIZE_GUARD = 100_000
+# v0.5.2: bumped 50_000 -> 100_000 (2x) after the gitlabhq dogfood (~125k
+# files) bounded out at the prior cap.
+# v0.5.3: bumped 100_000 -> 200_000 (4x baseline) after cycle-2 dogfood
+# confirmed real-world Rails+JS monorepos (gitlabhq plus the GitLab
+# enterprise tree) approach the 125k mark and other anticipated apps
+# (Plane's full monorepo with all packages, Discourse, Forem-pro) sit
+# in the 100k-200k band. Discovery is dominated by stat() + xxhash
+# sha_hint; bootstrap wall-time on a 200k repo measured 3.5-4 minutes
+# on the reference SSD which is acceptable for the one-shot install
+# experience. The other 50_000 caps in tools.py guard user input shape
+# (teach_profile body, structured payload) and are unrelated.
+REPO_SIZE_GUARD = 200_000
 
 # Directory NAMES that, if present anywhere in a file's path components,
 # disqualify the file from clustering. Matched component-by-component, not
@@ -150,11 +155,98 @@ def _matches_filename_glob(name: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatch.fnmatch(name, pat) for pat in patterns)
 
 
+def _glob_candidates(
+    repo_root: Path,
+    target_glob: str,
+    *,
+    workspace_roots: list[str] | None = None,
+) -> list[Path]:
+    """Run the brace-expansion glob against ``repo_root`` (and optional
+    workspace sub-roots) and return the union of matched paths.
+
+    Used by both ``discover_files`` and ``discovery_stats`` so the
+    pre-exclusion counter and the post-exclusion list always agree on
+    what the walker saw.
+    """
+    bases: list[Path]
+    if workspace_roots:
+        bases = [(repo_root / ws).resolve() for ws in workspace_roots]
+    else:
+        bases = [repo_root]
+
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for base in bases:
+        if not base.is_dir():
+            continue
+        if "{" in target_glob and "}" in target_glob:
+            prefix, _, rest = target_glob.partition("{")
+            body, _, suffix = rest.partition("}")
+            alts = [a.strip() for a in body.split(",")]
+            for alt in alts:
+                for p in base.glob(f"{prefix}{alt}{suffix}"):
+                    if p not in seen:
+                        seen.add(p)
+                        candidates.append(p)
+        else:
+            for p in base.glob(target_glob):
+                if p not in seen:
+                    seen.add(p)
+                    candidates.append(p)
+    return candidates
+
+
+def discovery_stats(
+    repo_root: Path,
+    *,
+    glob: str = "**/*.{ts,tsx,js,jsx,mjs,cjs}",
+    paths_glob: str | None = None,
+    workspace_roots: list[str] | None = None,
+) -> dict[str, int]:
+    """Return pre- and post-exclusion file counts without raising.
+
+    v0.5.3 (Bug D): instrumentation helper for bootstrap_repo so callers
+    can report coverage (how many files were discovered, how many made
+    it past the exclusion sets, how many were clustered) without
+    re-walking the tree multiple times in different layers.
+
+    Unlike ``discover_files`` this never raises ``TooManyFilesError`` —
+    coverage telemetry on an oversized repo is still useful diagnostics.
+
+    Returns:
+        ``{"pre_exclusion": int, "post_exclusion": int}``.
+    """
+    target_glob = paths_glob if paths_glob else glob
+    candidates = _glob_candidates(repo_root, target_glob, workspace_roots=workspace_roots)
+
+    pre = 0
+    post = 0
+    for p in candidates:
+        if not p.is_file():
+            continue
+        pre += 1
+        try:
+            rel = p.relative_to(repo_root)
+        except ValueError:
+            # Outside repo_root: still counts pre-exclusion (we walked it)
+            # but is structurally invalid for clustering. Skip post.
+            continue
+        if _has_excluded_component(rel, EXCLUDE_FROM_CLUSTERING_DIRS):
+            continue
+        if _matches_filename_glob(p.name, EXCLUDE_FROM_CLUSTERING_FILE_GLOBS):
+            continue
+        if rel.as_posix() in EXCLUDE_FROM_CLUSTERING_EXACT_RELPATHS:
+            continue
+        post += 1
+    return {"pre_exclusion": pre, "post_exclusion": post}
+
+
 def discover_files(
     repo_root: Path,
     *,
     glob: str = "**/*.{ts,tsx,js,jsx,mjs,cjs}",
     paths_glob: str | None = None,
+    workspace_roots: list[str] | None = None,
 ) -> list[Path]:
     """Discover candidate source files in a repo.
 
@@ -163,6 +255,11 @@ def discover_files(
         glob: default file glob (TS/JS variants); ignored if paths_glob given
         paths_glob: user-supplied scope override (per architecture "with globs:
                     still enforce 50k post-glob count")
+        workspace_roots: v0.5.3 (Bug B) optional list of repo-relative
+                    workspace dirs (e.g. ``["apps/web", "apps/api"]``).
+                    When provided, the walker scans only inside those dirs
+                    (avoiding the empty monorepo root + unrelated siblings).
+                    Used by the orchestrator's monorepo path-down detection.
 
     Returns:
         List of absolute Paths, with EXCLUDE_FROM_CLUSTERING_PATTERNS already removed.
@@ -172,22 +269,7 @@ def discover_files(
         TooManyFilesError: if post-exclusion count exceeds REPO_SIZE_GUARD.
     """
     target_glob = paths_glob if paths_glob else glob
-
-    # Reuse the brace-expansion helper from extractors.typescript._expand_glob
-    # by inlining the same logic here (avoids circular import).
-    if "{" in target_glob and "}" in target_glob:
-        prefix, _, rest = target_glob.partition("{")
-        body, _, suffix = rest.partition("}")
-        alts = [a.strip() for a in body.split(",")]
-        candidates: list[Path] = []
-        seen: set[Path] = set()
-        for alt in alts:
-            for p in repo_root.glob(f"{prefix}{alt}{suffix}"):
-                if p not in seen:
-                    seen.add(p)
-                    candidates.append(p)
-    else:
-        candidates = list(repo_root.glob(target_glob))
+    candidates = _glob_candidates(repo_root, target_glob, workspace_roots=workspace_roots)
 
     # Apply path-based exclusions (component-based, not fnmatch-glob)
     filtered: list[Path] = []
