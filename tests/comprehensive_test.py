@@ -522,8 +522,8 @@ with tempfile.TemporaryDirectory() as tmp:
     # No .ts files; tsconfig present
     r = bootstrap_repo(str(repo))["data"]
     t(
-        "Bootstrap on TS repo with 0 files returns failed",
-        r["status"] == "failed",
+        "Bootstrap on TS repo with 0 files returns failed_unsupported_language",
+        r["status"] == "failed_unsupported_language",
     )
 
 

@@ -416,6 +416,52 @@ def detect_repo(file_path: str) -> dict:
     return _envelope(data)
 
 
+def _prefix_overlap_fallback(
+    rel_str: str, archetypes: dict
+) -> tuple[str | None, list[str]]:
+    """BUG-015: pick the archetype that shares the longest directory prefix.
+
+    Returns (primary, alternatives). When no archetype shares at least one
+    leading directory segment with the file, returns (None, []).
+    """
+    file_dir = rel_str.rsplit("/", 1)[0] if "/" in rel_str else ""
+    file_segments = [s for s in file_dir.split("/") if s]
+    file_ext = rel_str.rsplit(".", 1)[-1] if "." in rel_str.rsplit("/", 1)[-1] else ""
+    scored: list[tuple[int, int, str]] = []  # (-overlap, -cluster_size, name)
+    for name, arch in archetypes.items():
+        pattern = arch.get("paths_pattern", "")
+        if not pattern:
+            continue
+        # paths_pattern may carry a trailing ``:ext`` suffix (v0.5.2+); strip
+        # for the prefix comparison and use it as the extension filter.
+        if ":" in pattern:
+            arch_dir, _, arch_ext = pattern.rpartition(":")
+        else:
+            arch_dir, arch_ext = pattern, ""
+        arch_segments = [s for s in arch_dir.split("/") if s]
+        if not arch_segments or not file_segments:
+            continue
+        overlap = 0
+        for fs, asg in zip(file_segments, arch_segments):
+            if fs == asg:
+                overlap += 1
+            else:
+                break
+        if overlap == 0:
+            continue
+        # If the archetype declares an extension, prefer matches.
+        if arch_ext and file_ext and arch_ext != file_ext:
+            continue
+        cluster_size = int(arch.get("cluster_size") or 0)
+        scored.append((-overlap, -cluster_size, name))
+    if not scored:
+        return None, []
+    scored.sort()
+    primary = scored[0][2]
+    alternatives = [name for _o, _c, name in scored[1:]]
+    return primary, alternatives
+
+
 def get_archetype(repo: str, file_path: str) -> dict:
     """Look up the archetype a given file matches.
 
@@ -563,8 +609,18 @@ def get_archetype(repo: str, file_path: str) -> dict:
             alternatives = fallback_matches[1:]
             confidence = "low"
         else:
-            primary = None
-            alternatives = []
+            # BUG-015: last-resort fallback by longest shared directory
+            # prefix. A file at app/controllers/application_controller.rb
+            # has no exact-bucket match for the ``controller`` cluster
+            # (paths_pattern app/controllers/v1) but a user looking at
+            # ApplicationController would expect chameleon to suggest the
+            # controller archetype as guidance. We pick the archetype
+            # whose paths_pattern shares the longest leading directory
+            # prefix with the file (>= 1 segment, same extension when
+            # the archetype carries one).
+            primary, alternatives = _prefix_overlap_fallback(
+                rel_str, archetypes
+            )
             confidence = "low"
         return _envelope({
             "archetype": primary,
@@ -1814,7 +1870,10 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     started_at = time.time()
 
     if force:
-        return bootstrap_repo(str(repo_path))
+        # BUG-026: refresh_repo's internal bootstrap calls always overwrite
+        # the existing profile (that's the whole point of refresh); skip the
+        # already_bootstrapped guard meant for accidental re-invocation.
+        return bootstrap_repo(str(repo_path), force=True)
 
     # Phase 4.3 no-op optimization.
     repo_root = repo_path.resolve()
@@ -1826,21 +1885,30 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     profile_path = profile_dir / "profile.json"
 
     if not (cached and profile_path.is_file()):
-        return bootstrap_repo(str(repo_path))
+        # BUG-026: refresh_repo's internal bootstrap calls always overwrite
+        # the existing profile (that's the whole point of refresh); skip the
+        # already_bootstrapped guard meant for accidental re-invocation.
+        return bootstrap_repo(str(repo_path), force=True)
 
     try:
         extractor = _select_extractor(repo_root)
     except Exception:
         extractor = None
     if extractor is None:
-        return bootstrap_repo(str(repo_path))
+        # BUG-026: refresh_repo's internal bootstrap calls always overwrite
+        # the existing profile (that's the whole point of refresh); skip the
+        # already_bootstrapped guard meant for accidental re-invocation.
+        return bootstrap_repo(str(repo_path), force=True)
 
     try:
         candidates = discover_files(
             repo_root, glob=_glob_for_extractor(extractor)
         )
     except Exception:
-        return bootstrap_repo(str(repo_path))
+        # BUG-026: refresh_repo's internal bootstrap calls always overwrite
+        # the existing profile (that's the whole point of refresh); skip the
+        # already_bootstrapped guard meant for accidental re-invocation.
+        return bootstrap_repo(str(repo_path), force=True)
 
     cached_files = cached.get("files_indexed") or 0
     last_seen_iso = cached.get("last_seen_at") or ""
@@ -1893,7 +1961,8 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
         if partial_envelope is not None:
             return partial_envelope
 
-    return bootstrap_repo(str(repo_path))
+    # BUG-026: full re-bootstrap from inside refresh — always overwrite.
+    return bootstrap_repo(str(repo_path), force=True)
 
 
 def _iso_to_epoch(ts: str) -> float:
