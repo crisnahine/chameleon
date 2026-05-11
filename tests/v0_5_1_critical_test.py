@@ -239,12 +239,18 @@ t(
     f"got {hinted_web}",
 )
 
-# Without a hint, the freshest row wins. workspace-B was upserted second so
-# it has the later last_seen_at.
+# v0.5.5 Bug H: without a hint, the ANCESTOR-most row wins. The v0.5.1
+# rule was "freshest wins" (which would have returned `/tmp/monorepo/
+# apps/web` since it was upserted second). The cycle-4 dogfood proved
+# that rule misroutes downstream consumers (get_canonical_excerpt,
+# get_drift_status) on monorepos that share a repo_id across all
+# workspaces — the workspace-bootstrap path inserts a row per workspace
+# and the freshest ends up being the alphabetically-last one, not the
+# repo root. v0.5.5 returns the ancestor when one exists.
 fresh = index_db.resolve_repo_root("monorepo_id", db_path=db_path)
 t(
-    "resolve_repo_root(no hint) returns the freshest row",
-    fresh == "/tmp/monorepo/apps/web",
+    "v0.5.5 Bug H: resolve_repo_root(no hint) returns the ancestor (root)",
+    fresh == "/tmp/monorepo/root",
     f"got {fresh}",
 )
 

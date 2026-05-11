@@ -3,4 +3,4 @@
 See ARCHITECTURE.md for the full design.
 """
 
-__version__ = "0.5.4"
+__version__ = "0.5.5"

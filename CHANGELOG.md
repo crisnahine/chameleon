@@ -4,6 +4,64 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] — 2026-05-11
+
+Cycle-4 dogfood patch — single, targeted fix for a silent misroute the v0.5.4 cycle surfaced (3-app confirmed). Net cycle-4 result: 388 PASS / 0 FAIL / 3 FINDING across 9 apps (vs cycle-3's 378 / 0 / 13 — 77% finding reduction). v0.5.5 closes the last 3.
+
+### Fixed — Bug H: `_resolve_repo_root_by_id` returns wrong workspace for monorepos (3-app: excalidraw, mastodon, plane)
+
+**Symptom.** After `bootstrap_repo(plane_root)` (a Turborepo / pnpm-catalog monorepo), the `repos` table in `index.db` carries 18 rows — one for the plane root and one per workspace (`apps/admin`, `apps/live`, `apps/space`, `apps/web`, `packages/*` × 13). All 18 rows share the same `repo_id` because `_compute_repo_id(workspace_dir)` derives the id from the git remote URL, which is identical for every workspace and the root.
+
+`resolve_repo_root(repo_id)` without a hint (the wrapper consumers actually call — `get_canonical_excerpt`, `get_drift_status`, the using-chameleon skill) picks the freshest row by `last_seen_at`. Workspaces are upserted AFTER the root row inside `bootstrap_repo`, so the alphabetically-last workspace (`packages/utils` for plane) wins the lookup.
+
+The downstream call chain then:
+1. resolves repo_root to `plane/packages/utils` (wrong)
+2. loads profile from `plane/packages/utils/.chameleon/` (doesn't exist — workspaces have no profile)
+3. `load_profile_dir` returns an empty/stub profile
+4. `"action" not in known_archetypes` is True
+5. Returns `{"status": "failed", "error": "archetype not found"}` — misleading
+
+The v0.5.1 Bug 1 composite `(repo_id, repo_root)` PK works — the rows coexist without overwriting — but the no-hint resolver still picked freshest from a pool that now has 17 wrong entries against 1 right one.
+
+**Fix.** Make `resolve_repo_root` **ancestor-aware**: when multiple rows share a `repo_id`, prefer the row whose `repo_root` is an ancestor of (or equal to) every other row's `repo_root`. The actual repo root, not a workspace, wins.
+
+Algorithm in new helper `_pick_ancestor_or_freshest`:
+1. Resolve each candidate to a canonical absolute path.
+2. For each candidate, count how many other candidates sit under it (strict descendants).
+3. The candidate with the maximum descendant count wins.
+4. Tie-break: shorter path string wins (ancestors are always shorter).
+5. Fall back to the original order (freshest first) when no clear ancestor exists (rare — sibling clones with the same git remote).
+
+The `repo_root_hint` contract from v0.5.1 stays unchanged: explicit hints win when they match a row, fall through to the new ancestor-aware path when they miss.
+
+**Verify-after.** `_resolve_repo_root_by_id(plane_repo_id)` now returns `/Users/crisn/.../plane` (root), and `get_canonical_excerpt(repo_id, "action")` returns 793 bytes of content. Before the fix, the same calls returned `/Users/crisn/.../plane/packages/utils` and `{"status": "failed", "error": "archetype not found"}` respectively.
+
+### Tests
+
+- New: `tests/v0_5_5_resolver_test.py` (13 assertions covering `_pick_ancestor_or_freshest` unit cases, real index.db round-trip, single-row repos, hint contract preservation, end-to-end resolver flow).
+- Updated: `tests/v0_5_1_critical_test.py` — one assertion that codified the OLD "freshest wins" behavior now expects the new ancestor-aware behavior. The pre-v0.5.5 assertion was passing precisely because of the bug v0.5.5 fixes.
+
+39 of 39 testable suites green; `pretooluse_hook_test.py` remains environmental (requires pre-trusted EF test repos; the trust state was wiped at cycle-3 start and not restored).
+
+### Schema
+
+No schema bump.
+
+### Cycle-4 dogfood
+
+Reports under `docs/dogfood/v0.5.4-cycle4/`. Cycle-by-cycle progression:
+
+| Cycle | Version | PASS | FAIL | FINDING | Clean apps (0 finding) |
+|---|---|---|---|---|---|
+| 2 | v0.5.1 | (n/a — bulletproof-react aborted at bootstrap) | 0 | 12 | 1 |
+| 3 | v0.5.3 | 378 | 0 | 13 | 0 |
+| 4 | v0.5.4 | 388 | 0 | 3 | 5 |
+| 4 + v0.5.5 (projected) | v0.5.5 | 388+ | 0 | 0 | 9 |
+
+### Deferred to v0.6
+
+Same 11 findings carried since cycle 1. The bespoke-domain-dir generics (plane / mastodon `emoji-icon-picker/`, `editor/`, deep `features/<feature>/api/` nests) don't warrant a generic prior-table entry.
+
 ## [0.5.4] — 2026-05-11
 
 Cycle-3 dogfood patch. Third full sweep against 9 apps under a 10-phase end-to-end runner that exercises every MCP tool surface. Each app's `.chameleon/` was wiped before launch + the plugin data dir was cleared so every bootstrap started from scratch.

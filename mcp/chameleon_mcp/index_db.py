@@ -310,15 +310,27 @@ def resolve_repo_root(
 
     v0.5.1 (Bug 1): monorepo sub-workspaces share a git-remote-derived
     repo_id with the root, so a single repo_id may now match multiple
-    rows. Resolution rules:
+    rows.
 
-      - If `repo_root_hint` is supplied AND a row exists with that exact
-        repo_root, return the hinted root (callers in tools.py pass the
-        repo_root they computed locally).
-      - Otherwise, return the MOST RECENTLY UPDATED row's repo_root
-        (ordered by last_seen_at DESC, repo_id ASC). This preserves
-        v0.5.0 semantics for repos with a unique repo_id and gives
-        monorepo callers the freshest workspace by default.
+    v0.5.5 (Bug H): when the workspace-bootstrap path in tools.py inserts
+    a row PER workspace (e.g., plane: 1 root + 17 ``packages/*`` /
+    ``apps/*`` rows, all sharing the same repo_id), the previous
+    freshest-row rule returned the alphabetically-last workspace
+    (``packages/utils``). Downstream consumers (get_canonical_excerpt,
+    get_drift_status) then loaded the wrong .chameleon/ and silently
+    emitted ``archetype not found`` for valid archetypes. v0.5.5 makes
+    the resolver ANCESTOR-AWARE.
+
+    Resolution order:
+      1. If ``repo_root_hint`` matches a row exactly, return it
+         (unchanged from v0.5.1).
+      2. If multiple rows exist for this repo_id, prefer the row whose
+         ``repo_root`` is an ancestor of (or equal to) every other row's
+         ``repo_root`` — i.e., the actual repo root, not a workspace.
+         When several rows are mutually ancestors of nothing (rare —
+         can happen with sibling clones), fall back to the freshest.
+      3. Otherwise (single row, or no ancestor relation), return the
+         most recently updated row.
 
     Returns None if the repo is unknown to the index OR the resolved row
     points at a path that no longer exists on disk. Caller is responsible
@@ -342,16 +354,19 @@ def resolve_repo_root(
             if row is not None:
                 root = row["repo_root"]
                 return root if root else None
-            # Hint missed — fall through to the freshest-row resolution.
-        row = conn.execute(
+            # Hint missed — fall through to the ancestor/freshest resolution.
+
+        # v0.5.5 Bug H: load all candidate roots once, then pick the
+        # ancestor-most one. Ordered by last_seen_at DESC first so the
+        # ancestor tie-break is deterministic on duplicated paths.
+        rows = conn.execute(
             """
             SELECT repo_root FROM repos
             WHERE repo_id = ?
             ORDER BY last_seen_at DESC, repo_id ASC
-            LIMIT 1
             """,
             (repo_id,),
-        ).fetchone()
+        ).fetchall()
     except sqlite3.Error:
         return None
     finally:
@@ -359,10 +374,68 @@ def resolve_repo_root(
             conn.close()
         except Exception:
             pass
-    if row is None:
+    if not rows:
         return None
-    root = row["repo_root"]
-    return root if root else None
+    candidates = [r["repo_root"] for r in rows if r["repo_root"]]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    return _pick_ancestor_or_freshest(candidates)
+
+
+def _pick_ancestor_or_freshest(candidates: list[str]) -> str:
+    """Return the root whose path is an ancestor of every other candidate.
+
+    v0.5.5 Bug H. When ``bootstrap_repo`` runs on a monorepo, the
+    workspace-completion path inserts a row per workspace using
+    ``_compute_repo_id(ws_root)``. Because ``_compute_repo_id`` hashes
+    the git remote URL, every workspace and the root collapse to the
+    same ``repo_id``. The resolver must disambiguate by path topology.
+
+    Algorithm:
+      1. Resolve each candidate to a canonical absolute path.
+      2. For each candidate, count how many other candidates sit under it
+         (strict descendants). The one with the maximum descendant count
+         is the ancestor-most.
+      3. Tie-break: the candidate with the shortest path string wins
+         (ancestors are always shorter). If still tied, fall back to the
+         original order (freshest first).
+
+    Returns the ORIGINAL string (not the resolved Path) so callers
+    comparing against ``upsert_repo`` insertion keys see the same value.
+    """
+    pairs: list[tuple[str, Path | None]] = []
+    for c in candidates:
+        try:
+            pairs.append((c, Path(c).resolve()))
+        except (OSError, ValueError):
+            pairs.append((c, None))
+
+    best_idx = 0
+    best_descendants = -1
+    best_path_len = float("inf")
+    for i, (_, p_i) in enumerate(pairs):
+        if p_i is None:
+            continue
+        descendants = 0
+        for j, (_, p_j) in enumerate(pairs):
+            if i == j or p_j is None:
+                continue
+            # Strict descendant: p_j is under p_i (and they're not equal).
+            try:
+                if p_j != p_i and p_i in p_j.parents:
+                    descendants += 1
+            except (OSError, ValueError):
+                continue
+        path_len = len(str(p_i))
+        if descendants > best_descendants or (
+            descendants == best_descendants and path_len < best_path_len
+        ):
+            best_idx = i
+            best_descendants = descendants
+            best_path_len = path_len
+    return pairs[best_idx][0]
 
 
 def list_repo_roots(repo_id: str, *, db_path: Path | None = None) -> list[str]:
