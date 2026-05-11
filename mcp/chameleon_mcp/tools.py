@@ -318,13 +318,28 @@ def detect_repo(file_path: str) -> dict:
 
     repo_id = _compute_repo_id(repo_root)
     profile_dir = repo_root / ".chameleon"
-    profile_present = (profile_dir / "profile.json").exists()
+    profile_file = profile_dir / "profile.json"
+    profile_present = profile_file.exists()
     trust = trust_state_for(repo_id)
+
+    # BUG-021: detect a corrupted profile.json (unreadable as JSON) and
+    # surface a distinct status. Pre-v0.5.6 detect_repo only checked file
+    # existence; consumers had no way to know the profile was unreadable
+    # until a later get_pattern_context call returned silently-empty data.
+    profile_corrupted = False
+    if profile_present:
+        try:
+            import json as _json
+
+            with profile_file.open("r", encoding="utf-8") as fh:
+                _json.load(fh)
+        except (OSError, ValueError):
+            profile_corrupted = True
 
     # BUG-005: when no profile exists, "untrusted" is misleading — the schema
     # reserves "n/a" for the "no profile" case. Only consider the trust grant
-    # when a profile is actually present.
-    if not profile_present:
+    # when a profile is actually present and parseable.
+    if not profile_present or profile_corrupted:
         trust_state = "n/a"
     elif trust is None:
         trust_state = "untrusted"
@@ -382,10 +397,16 @@ def detect_repo(file_path: str) -> dict:
                 "recommended_action": "Re-run /chameleon-trust on this clone",
             }
 
+    if profile_corrupted:
+        profile_status = "profile_corrupted"
+    elif profile_present:
+        profile_status = "profile_present"
+    else:
+        profile_status = "no_profile"
     data: dict = {
         "repo_id": repo_id,
         "repo_root": str(repo_root),
-        "profile_status": "profile_present" if profile_present else "no_profile",
+        "profile_status": profile_status,
         "trust_state": trust_state,
     }
     if legacy_trust_hint_value is not None:
@@ -659,6 +680,43 @@ def get_archetype(repo: str, file_path: str) -> dict:
     })
 
 
+def _empty_pattern_envelope(
+    repo_id: str | None,
+    profile_status: str,
+    trust_state: str,
+) -> dict:
+    """Shape of the get_pattern_context response when no archetype data exists.
+
+    BUG-022: both the no-repo / no-profile / profile-corrupted early returns
+    must use the same archetype envelope shape as the healthy path. Pre-v0.5.6
+    we returned ``archetype.name`` (typo of ``archetype.archetype``) and
+    dropped ``content_signal_match`` and ``idioms`` entirely. Consumers parsing
+    the response then tripped on the key change.
+    """
+    return {
+        "repo": {
+            "id": repo_id,
+            "profile_status": profile_status,
+            "trust_state": trust_state,
+        },
+        "archetype": {
+            "archetype": None,
+            "alternatives": [],
+            "content_signal_match": "none",
+            "confidence_band": "low",
+        },
+        "canonical_excerpt": {
+            "content": "",
+            "witness_path": None,
+            "truncated": False,
+            "sha_hint": None,
+        },
+        "rules": [],
+        "idioms": "",
+        "meta": {"mtime_token": None, "computed_at": None},
+    }
+
+
 def get_pattern_context(file_path: str) -> dict:
     """Collapsed call: archetype + canonical + rules + meta in one round trip.
 
@@ -670,24 +728,29 @@ def get_pattern_context(file_path: str) -> dict:
     p = Path(file_path).expanduser()
     repo_root = find_repo_root(p)
     if repo_root is None:
-        return _envelope({
-            "repo": {"id": None, "profile_status": "no_repo", "trust_state": "n/a"},
-            "archetype": {"name": None, "alternatives": [], "confidence_band": "low"},
-            "canonical_excerpt": {"content": "", "witness_path": None, "truncated": False, "sha_hint": None},
-            "rules": [],
-            "meta": {"mtime_token": None, "computed_at": None},
-        })
+        return _envelope(
+            _empty_pattern_envelope(None, "no_repo", "n/a")
+        )
 
     repo_id = _compute_repo_id(repo_root)
     profile_dir = repo_root / ".chameleon"
-    if not (profile_dir / "profile.json").exists():
-        return _envelope({
-            "repo": {"id": repo_id, "profile_status": "no_profile", "trust_state": "untrusted"},
-            "archetype": {"name": None, "alternatives": [], "confidence_band": "low"},
-            "canonical_excerpt": {"content": "", "witness_path": None, "truncated": False, "sha_hint": None},
-            "rules": [],
-            "meta": {"mtime_token": None, "computed_at": None},
-        })
+    profile_file = profile_dir / "profile.json"
+    if not profile_file.exists():
+        return _envelope(
+            _empty_pattern_envelope(repo_id, "no_profile", "n/a")
+        )
+
+    # BUG-021/022: detect corrupted profile.json here too so the response
+    # carries an explicit status and the consistent envelope shape.
+    try:
+        import json as _json
+
+        with profile_file.open("r", encoding="utf-8") as fh:
+            _json.load(fh)
+    except (OSError, ValueError):
+        return _envelope(
+            _empty_pattern_envelope(repo_id, "profile_corrupted", "n/a")
+        )
 
     from chameleon_mcp.profile.trust import is_material_change
     trust = trust_state_for(repo_id)
@@ -701,13 +764,9 @@ def get_pattern_context(file_path: str) -> dict:
     try:
         loaded = load_profile_dir(profile_dir)
     except Exception:
-        return _envelope({
-            "repo": {"id": repo_id, "profile_status": "profile_present", "trust_state": trust_state_str},
-            "archetype": {"name": None, "alternatives": [], "confidence_band": "low"},
-            "canonical_excerpt": {"content": "", "witness_path": None, "truncated": False, "sha_hint": None},
-            "rules": [],
-            "meta": {"mtime_token": None, "computed_at": None},
-        })
+        return _envelope(
+            _empty_pattern_envelope(repo_id, "profile_corrupted", "n/a")
+        )
 
     # Reuse get_archetype logic
     arch_response = get_archetype(repo_id, file_path)
