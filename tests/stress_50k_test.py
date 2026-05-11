@@ -91,12 +91,17 @@ from chameleon_mcp.tools import (
     get_pattern_context,
 )
 
-# Sanity-check the constant the fixture is built around — if the codebase
-# ever moves the ceiling, this test should fail loudly instead of silently
-# building a too-small fixture.
-assert REPO_SIZE_GUARD == 50_000, (
-    f"This test is hardcoded around REPO_SIZE_GUARD=50000; "
-    f"got {REPO_SIZE_GUARD}. Update the fixture sizes if the ceiling moved."
+# Sanity-check the constant the fixture is built around. The fixture is
+# fixed at 50,000 files (the stress level the suite name encodes) — when
+# the ceiling moved up to 100,000 in v0.5.2 we kept the stress level at
+# 50K so the test stays in a sane wall-clock budget. The assertion just
+# guards against a future regression that LOWERS the ceiling below the
+# fixture size.
+STRESS_FIXTURE_SIZE = 50_000
+assert REPO_SIZE_GUARD >= STRESS_FIXTURE_SIZE, (
+    f"REPO_SIZE_GUARD ({REPO_SIZE_GUARD}) dropped below the stress "
+    f"fixture size ({STRESS_FIXTURE_SIZE}); reduce the fixture or "
+    f"raise the ceiling before re-enabling this test."
 )
 
 
@@ -316,19 +321,20 @@ created_files: list[Path] = []
 
 try:
     setup_start = time.monotonic()
-    created_files = make_synthetic_repo(at_cap, REPO_SIZE_GUARD)
+    created_files = make_synthetic_repo(at_cap, STRESS_FIXTURE_SIZE)
     setup_elapsed = time.monotonic() - setup_start
     print(
         f"    fixture: {len(created_files)} files in {setup_elapsed:.1f}s "
         f"({at_cap})"
     )
 
-    # Sanity: discovery returns exactly 50_000 (no over-the-ceiling raise).
+    # Sanity: discovery returns exactly STRESS_FIXTURE_SIZE (we're under the
+    # ceiling, so no over-the-ceiling raise).
     discovered = discover_files(at_cap)
     print(f"    discover_files: {len(discovered)} files (ceiling = {REPO_SIZE_GUARD})")
     t(
-        f"discover_files returns exactly {REPO_SIZE_GUARD}",
-        len(discovered) == REPO_SIZE_GUARD,
+        f"discover_files returns exactly {STRESS_FIXTURE_SIZE}",
+        len(discovered) == STRESS_FIXTURE_SIZE,
         f"got {len(discovered)}",
     )
 
@@ -381,9 +387,9 @@ try:
         "10 templates should cluster into many archetypes",
     )
     t(
-        f"files_processed close to {REPO_SIZE_GUARD} "
+        f"files_processed close to {STRESS_FIXTURE_SIZE} "
         f"(got {data['files_processed']})",
-        data["files_processed"] >= REPO_SIZE_GUARD * 0.95,
+        data["files_processed"] >= STRESS_FIXTURE_SIZE * 0.95,
         f"too many files dropped: {data['files_processed']}",
     )
     t(

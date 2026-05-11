@@ -654,6 +654,93 @@ def canonical_confidence(snapshot: DimensionSnapshot, ast_query: dict | None) ->
 # without exhausting the response token budget.
 MAX_SECRETS_PER_FILE = 50
 
+# v0.5.2 (Bug — GitHub PAT bypassed by string-concat): the fallback regex in
+# `profile/secret_scanner._FALLBACK_PATTERNS` and detect-secrets's per-line
+# scanners require the secret prefix (e.g., `ghp_`) and the rest of the token
+# to live in the *same* string literal. A trivially-obfuscated payload like
+# `"ghp_" + "abcdef…"` (TS/JS) or `"ghp_" + "abcdef…"` (Python) defeats both.
+#
+# We fold consecutive same-quote-style string literals joined by `+` into a
+# single literal *before* invoking the underlying scanners. Two safety rails:
+#
+# 1. We only fold literal-to-literal concat. `"ghp_" + foo()` is out of scope
+#    (we'd need real dataflow to know what `foo()` returns) and stays
+#    un-folded so detect-secrets sees the original text.
+# 2. We bound the number of substitutions per call. A pathological generated
+#    file with thousands of `+`-joined string fragments could otherwise burn
+#    CPU before the existing 100KB content cap took effect.
+_MAX_CONCAT_FOLDS_PER_FILE = 1000
+
+# Quote-style-aware joined-string folder. Matches `"a" + "b"` with arbitrary
+# whitespace (including newlines) around the `+`, regardless of escapes in
+# the literal bodies. Three patterns — one per quote style — so we don't
+# accidentally fold across mismatched delimiters (`"a" + 'b'` is left alone:
+# the source language might treat that as an error and silently joining
+# could produce a literal that doesn't exist in any source).
+#
+# We do NOT attempt to handle JS template literals (backticks) here: those
+# can contain `${…}` interpolations whose contents are not known statically,
+# so folding two backtick strings would produce a literal that does not
+# represent the runtime value. Most real-world obfuscation attempts use
+# plain quotes anyway.
+_CONCAT_DQ = re.compile(
+    r'"((?:\\.|[^"\\])*)"\s*\+\s*"((?:\\.|[^"\\])*)"',
+    re.DOTALL,
+)
+_CONCAT_SQ = re.compile(
+    r"'((?:\\.|[^'\\])*)'\s*\+\s*'((?:\\.|[^'\\])*)'",
+    re.DOTALL,
+)
+
+
+def _fold_string_concat(
+    content: str, *, max_folds: int = _MAX_CONCAT_FOLDS_PER_FILE
+) -> str:
+    """Iteratively collapse `"a" + "b"` / `'a' + 'b'` into single literals.
+
+    Runs multiple passes because folding can create new folding opportunities
+    (`"a" + "b" + "c"` → `"ab" + "c"` → `"abc"`). We bound *total*
+    substitutions across passes at `max_folds`; once we're at the cap we
+    stop returning whatever we've already produced. This keeps a pathologically
+    long concat chain (auto-generated code, fuzzer input, etc.) from
+    dominating lint_file latency. The 100KB content cap upstream gives a
+    secondary defense.
+
+    Mixed-quote pairs (`"a" + 'b'`) are left alone — see module-level comment
+    above. The returned text is a strict structural subset of `content`'s
+    information: every fold replaces a substring of length N with a substring
+    of length ≤ N, so downstream regex line numbers may shift but no new
+    text is introduced.
+
+    Pure function — no I/O. Safe to call on hostile input; the regex engine
+    runs at most `max_folds × 2` total substitutions before bailing.
+    """
+    if "+" not in content:
+        return content
+
+    remaining = max_folds
+    out = content
+    while remaining > 0:
+        before = out
+
+        def _join_dq(m: re.Match) -> str:
+            return '"' + m.group(1) + m.group(2) + '"'
+
+        def _join_sq(m: re.Match) -> str:
+            return "'" + m.group(1) + m.group(2) + "'"
+
+        # subn returns (new_string, n) so we can decrement the budget.
+        out, n_dq = _CONCAT_DQ.subn(_join_dq, out, count=remaining)
+        remaining -= n_dq
+        if remaining <= 0:
+            break
+        out, n_sq = _CONCAT_SQ.subn(_join_sq, out, count=remaining)
+        remaining -= n_sq
+        # Idempotent fixpoint: if neither regex fired, we're done.
+        if out == before:
+            break
+    return out
+
 
 def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> list[Violation]:
     """Return one Violation per detected secret in `content`.
@@ -665,6 +752,16 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
     issue, not a style mismatch); the rule fires regardless of whether the
     file has an archetype, so even out-of-tree edits are covered.
 
+    v0.5.2 (forem dogfood bug — "GitHub PAT bypassed by string-concat"):
+    a preprocessing pass folds `"prefix" + "rest"` patterns before invoking
+    the underlying scanners so that trivially-obfuscated tokens like
+    `"ghp_" + "abc…"` reach detect-secrets as `"ghp_abc…"`. Same applies to
+    Python concat (`"a" + "b"`) since the operator is identical. We then run
+    BOTH the original content (to keep line numbers truthful for already-
+    visible secrets) AND the folded content through the scanner, de-duped
+    by (type, position) on the original-text scan and (type, "[concat]") for
+    fold-only hits.
+
     Caps the result at `max_results` to avoid blowing up on a dump-style
     file. When the cap is hit we still report the cap so the caller can
     surface "and 17 more". Pure function — no I/O.
@@ -674,6 +771,40 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
     from chameleon_mcp.profile.secret_scanner import scan_for_secrets
 
     hits = scan_for_secrets(content)
+
+    # Fold concat-obfuscated literals and re-scan. New hits (those that
+    # didn't appear in the unfolded content) are appended with a clear
+    # location marker so the operator knows we caught a deobfuscated form.
+    folded = _fold_string_concat(content)
+    if folded != content:
+        # Build a quick dedup set keyed by (type, secret-shaped substring) on
+        # the original. We can't trust (type, line_number) alone because the
+        # fold changes the byte offsets within a line — but if the underlying
+        # secret VALUE is already flagged in the original, we don't need to
+        # re-flag it. detect-secrets redacts the value, so as a second-best
+        # we dedup on (type, line_number) for line-bearing hits.
+        seen_types_lines = {
+            (h.get("type"), h.get("line_number"))
+            for h in hits
+            if h.get("line_number") is not None
+        }
+        seen_types = {h.get("type") for h in hits}
+        for fh in scan_for_secrets(folded):
+            key_line = (fh.get("type"), fh.get("line_number"))
+            if fh.get("line_number") is not None and key_line in seen_types_lines:
+                continue
+            if fh.get("type") in seen_types and fh.get("line_number") is None:
+                # Position-keyed hits collide if the same type already showed
+                # up in the original; the folded text's positions are not
+                # comparable. Drop to avoid double-reporting.
+                continue
+            # Tag the hit so the reported message makes the deobfuscation
+            # explicit; the user shouldn't have to guess why a `ghp_…`
+            # warning fired on a line that doesn't visually contain one.
+            fh = dict(fh)
+            fh["concat_folded"] = True
+            hits.append(fh)
+
     if not hits:
         return []
 
@@ -688,14 +819,17 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
         else:
             location = "unknown location"
         kind = str(hit.get("type") or "unknown")
+        # v0.5.2: surface deobfuscation-via-fold so the operator sees why a
+        # ghp_… flag fired on a line whose visible text is two short literals.
+        fold_suffix = " [after string-concat fold]" if hit.get("concat_folded") else ""
         violations.append(
             Violation(
                 rule="secret-detected-in-content",
                 expected="<no secret>",
-                actual=f"{kind} at {location}",
+                actual=f"{kind} at {location}{fold_suffix}",
                 severity="error",
                 message=(
-                    f"detect-secrets flagged a {kind} at {location}. "
+                    f"detect-secrets flagged a {kind} at {location}{fold_suffix}. "
                     "Never commit credentials — rotate the secret and move it "
                     "to an environment variable or a secret manager."
                 ),

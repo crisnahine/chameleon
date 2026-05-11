@@ -4,6 +4,69 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] — 2026-05-11
+
+Second dogfood patch. 17 of the remaining 28 medium-severity findings from the same 6-repo dogfood pass (forem, maybe, mastodon, gitlabhq, excalidraw, plane) ship; the rest are deferred to v0.6 where they need design conversations (semantic prompt-injection heuristic, Next.js route group recognition, Phase 6 calibration refresh).
+
+Per-app reports under `docs/dogfood/REPORT-*.md`. 4 parallel agents each owned a non-overlapping file set under the verify-before / verify-after / code-review discipline. 23 test suites, 1,259 assertions, all green.
+
+### Fixed — `tools.py` API surface (7 bugs)
+
+- **API repo arg unified.** Four independent dogfoods (forem, maybe, plane, excalidraw) hit the same friction: `pause_session`, `disable_session`, `teach_profile`, `refresh_repo`, `propose_archetype_renames`, `apply_archetype_renames`, and `bootstrap_repo` rejected the repo_id digest that the rest of the API (`get_canonical_excerpt`, `get_rules`, `lint_file`, `get_archetype`) accepted. v0.5.2 ships a single `_resolve_repo_arg(repo) -> (repo_path, repo_id)` shape detector (path prefix / 64-char hex / expanduser-absolute) called from 9 entry points. Both forms work everywhere.
+- **Idiom slug collision within same epoch second.** Two `teach_profile` calls within the same wall-clock second produced identical slugs (`idiom-YYYY-MM-DD-{epoch_seconds}`). v0.5.2 appends a 4-hex `secrets.token_hex(2)` suffix (16 bits = 65,536 values) and re-rolls once on collision detection.
+- **`list_profiles` enrichment.** Now JOINs against `index.db`; entries carry `repo_root`, `archetype_count`, `files_indexed`, `bootstrap_ms`, `last_seen_at` in addition to the legacy 4 trust fields.
+- **`get_drift_status` path-vs-id misroute.** Path-shaped input was treated as an opaque `plugin_data_dir` key. Routed through `_resolve_repo_arg` now; legacy non-path / non-hex strings still work for the existing `refresh_drift_test.py` fixtures.
+- **`get_canonical_excerpt` silent empty.** Wrong-shape arg returned `{"content": "", "witness_path": null}` with no error. Now returns an explicit `{"status": "failed", "error": "repo_id not found"}` envelope.
+- **`detect_repo` $HOME information disclosure (minor).** Path traversal like `<dir>/../../../etc/passwd` resolved to `$HOME` silently. Now guards against `Path.home()` (or strict ancestor) as the resolved repo_root.
+- **`suspicious_input` flag in `teach_profile` response.** 8-pattern heuristic flags prompt-injection-shaped feedback (`ignore previous instructions`, `you are now in DAN mode`, system-role injections, `eval(`/`exec(`/`rm -rf`, `reveal the system prompt`, ...). The idiom IS still stored — the defense is the trust gate — but the user gets a UI signal.
+
+### Fixed — clustering / signatures (4 bugs)
+
+- **Path bucket extension-blind collision.** `.tsx` and `.ts` siblings collapsed into the same bucket. `path_pattern_bucket_for(include_extension=True)` appends `:tsx` / `:ts` etc. The clustering pipeline opts in; `get_archetype` keeps the legacy default and falls back to the extension-aware form on miss.
+- **Monorepo bucket dropped middle segments.** `packages/{excalidraw,element,math}/components/TTDDialog/X.tsx` all collided in v0.5.1. v0.5.2 detects `parts[0] in {"packages", "apps", "workspaces"}` with ≥4 segments and uses `parts[0]/parts[1]/parts[2]` so the workspace name survives.
+- **`content_signal_match` is no longer dead code.** `get_archetype` reads the first 200 bytes and calls `signatures.content_signal_match_for(head)` for every return branch; consumers see `"none" | "use_client" | "use_server" | "shebang" | "ts_pragma"`. Python `None` is reserved for "file unreadable", so consumers can distinguish "we looked, nothing matched" from "we never looked."
+- **Adaptive sparse-cluster threshold.** Hard-coded threshold 5 killed recall on feature-per-folder layouts (mastodon, excalidraw, plane). `cluster_files(min_cluster_size=None)` now uses: <1000 files → 3, 1000–5000 → 4, ≥5000 → 5 (legacy). Tests pass explicit values for determinism.
+
+### Fixed — bootstrap (4 bugs)
+
+- **`atomic_profile_commit` sibling-file preservation.** Pre-v0.5.2 the directory-replacement rename wiped `.chameleon/.skip`, `.chameleon/.gitignore`, `.chameleon/.editorconfig`, and arbitrary user files (the committed `.skip` opt-out was silently disappearing on every bootstrap). v0.5.2 copies all non-protocol siblings into the txn dir before the rename via `shutil.copy2` / `shutil.copytree`. Protocol files in the txn dir always win.
+- **Rails-aware naming priors.** forem dogfood saw 5/7 archetypes named `cluster-<hex>` despite clear Rails conventions. 15-entry Rails prior table covers `app/controllers/concerns/`, `app/models/concerns/`, `app/{controllers,models,services,jobs,mailers,helpers,policies,serializers,presenters,workers,views}/`, `db/migrate/`, `config/initializers/`. Gated by `_is_ruby_cluster` so TS clusters don't engage. Filename suffix discriminators (`_job.rb`, `_mailer.rb`, `_helper.rb`) anchor against misplaced files.
+- **`paths_pattern_display` for Rails archetype review.** maybe dogfood saw `paths_pattern = "app/rule/action_executor"` for an archetype whose witness was `app/models/rule/action_executor/auto_categorize.rb` — the `models/` segment was missing. Changing the bucket would break the runtime archetype-lookup invariant (`path_pattern_bucket_for(rel) == archetype.paths_pattern`), so v0.5.2 keeps the bucket byte-identical and adds a sibling `paths_pattern_display` field for `profile.summary.md`. The display form fires only when the witness has ≥4 parts, starts with `app/`, and `parts[1]` is a load-bearing Rails dir not already in the bucket.
+- **`db/schema.rb` always-added on partial-refresh.** Discovery picked it up but clustering dropped it as single-member generic. Every refresh saw it as "added" and forced a full bootstrap. v0.5.2 excludes `db/schema.rb` and `db/structure.sql` at discovery time — they're Rails-autogenerated.
+
+### Fixed — lint engine + idioms (2 bugs)
+
+- **GitHub PAT bypassed by string-concat.** `lint_file` flagged `AKIAIOSFODNN7EXAMPLE` but missed `"ghp_" + "abcdef..."`. v0.5.2 adds a `_fold_string_concat` preprocessor that folds literal-to-literal `+` concat (both `"a" + "b"` and `'a' + 'b'`) before invoking the secret scanner. Bounded at 1000 substitutions per file. Folded hits surface a `[after string-concat fold]` suffix in the violation so operators see why a token fired on a line whose visible text is two short literals. Backticks and variable-mixed concat (`"a" + foo()`) are intentionally out of scope.
+- **Idioms not language-scoped.** maybe dogfood: a JS file in a Ruby-detected repo received Ruby-flavoured idioms. v0.5.2 adds an opt-in `Language:` frontmatter line per idiom (`ruby` / `typescript` / `any` — default `any`) and a new `idiom_filter.py` module exposing `filter_idioms_by_language(md, target_language)` and `language_for_path(path)`. Legacy idioms without frontmatter are treated as `any`. The filter drops a `<!-- chameleon: filtered N idiom(s)… -->` HTML comment when it removed entries so trust-review surfaces don't go blank.
+
+### Limits
+
+`REPO_SIZE_GUARD` bumped from 50,000 → 100,000 (2x). gitlabhq dogfood (~125k files) bounded out at the prior cap. Discovery is mostly stat + xxhash so the latency cost stays sublinear. The other 50K caps (`teach_profile` body, `teach_profile_structured` payload, `_count_ts_files_under` hybrid scan) are unrelated input-shape guards and stay at 50K.
+
+### Schema
+
+`PROFILE_SCHEMA_VERSION` bumps from 6 → 7. New fields in `archetypes.json`:
+- `paths_pattern_display` (string | absent): Rails-aware display form when the cluster's bucket would mislead a human reviewer.
+- Extension-aware buckets (`:tsx`, `:ts`, etc.) for clusters that opted in.
+
+Old v6 profiles still load (range gate is 5–7). Trust hashes are unchanged for unmodified profiles.
+
+### Tests
+
+- New: `tests/v0_5_2_tools_test.py` (89), `tests/v0_5_2_clustering_test.py` (52), `tests/v0_5_2_bootstrap_test.py` (51), `tests/v0_5_2_lint_idioms_test.py` (61) — 253 new assertions across 4 suites with explicit `# Verify-before:` / `# Verify-after:` comments per bug.
+- Updated: 3 legacy assertions that hardcoded the prior schema version (`tests/smoke_test.py` profile `schema_version: 4` → `5`; `tests/comprehensive_test.py` range gate `v3-v6` → `v3-v7`; `tests/v04_features_test.py` `PROFILE_SCHEMA_VERSION == 6` → `== 7`).
+- All 23 suites green: 1,259 total assertions.
+
+### Known regressions / migration notes
+
+- **Trust hash unchanged across this release** for unmodified profiles. v0.5.2 adds `paths_pattern_display` to `archetypes.json` only when a Rails witness triggers it, which DOES bump the hash for affected Rails monorepos (one re-trust prompt per affected repo).
+- **`atomic_profile_commit` now preserves nested directories under `.chameleon/`** in addition to flat files. If a future feature places a directory there, it survives unchanged.
+- **`_resolve_repo_arg` accepts empty string as `(None, None)`** rather than raising; downstream tools fall through to their existing "no repo provided" error envelopes.
+
+### Deferred to v0.6
+
+11 of the original 28 medium/low findings remain: semantic prompt-injection NL heuristic (needs broader design conversation), Next.js / Remix route group recognition, Phase 6 calibration corpus refresh, fresh-bootstrap `trust_state` semantics (`"stale"` vs `"untrusted"`), engine-version-string drift detector, sparse-warning de-dup across refresh runs, `excerpt` vs `content` field rename audit, idiom language-tag UI in `profile.summary.md`, partial-refresh cluster_id namespace alignment (different root cause from v0.5.1 Bug 3), fresh-bootstrap index.db artifact cleanup, and a follow-up audit of the v0.5.2 `paths_pattern_display` heuristic against deeply nested Rails namespaces. Full list: `docs/dogfood/SUMMARY.md`.
+
 ## [0.5.1] — 2026-05-11
 
 The dogfood-driven patch release. Real-world testing against 6 production repos (forem, maybe, mastodon, gitlabhq, excalidraw, plane) surfaced 56 unique findings. v0.5.1 ships the 4 Critical + 3 High fixes that the dogfood + 3-app-confirmed bug analysis prioritized.

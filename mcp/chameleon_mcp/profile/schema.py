@@ -19,7 +19,12 @@ from typing import Any
 # remote URL when available. v5 profiles are still readable by v0.4
 # engines (the loader's engine_min_version check guards forward compat),
 # but v0.3 engines cannot read v6.
-CURRENT_SCHEMA_VERSION = 6
+# v0.5.2 bumped from 6 → 7: paths_pattern strings now carry a file
+# extension suffix (e.g. "src/components:tsx") and preserve the
+# workspace name on monorepo paths. v6 profiles are still readable;
+# get_archetype reads both the v6 (extension-blind) and v7
+# (extension-aware) bucket variants so v0.5.x profiles keep matching.
+CURRENT_SCHEMA_VERSION = 7
 SUPPORTED_SCHEMA_RANGE = (CURRENT_SCHEMA_VERSION - 2, CURRENT_SCHEMA_VERSION)
 
 # Maximum JSON nesting depth (Round 4 hardening)

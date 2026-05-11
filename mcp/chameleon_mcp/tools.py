@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import secrets
 import subprocess
 import time
 from pathlib import Path
@@ -26,6 +27,101 @@ def _envelope(data: dict, truncated: bool = False, next_cursor: str | None = Non
     if next_cursor is not None:
         out["next_cursor"] = next_cursor
     return out
+
+
+# v0.5.2 Bug 1: Unify the `repo` argument across every MCP tool.
+#
+# Pre-v0.5.2 history left tools in an inconsistent state:
+#   - get_canonical_excerpt, get_rules, lint_file, get_archetype accepted
+#     a 64-char repo_id hex digest.
+#   - pause_session, disable_session, teach_profile, teach_profile_structured,
+#     refresh_repo, propose_archetype_renames, apply_archetype_renames,
+#     bootstrap_repo expected an absolute repo path.
+# The asymmetry forced the using-chameleon skill to track two parallel
+# vocabularies, which led to four separate dogfood reports of "I passed
+# the repo_id and got `expected absolute repo path`."
+#
+# `_resolve_repo_arg` accepts BOTH forms and returns `(repo_path, repo_id)`.
+# Callers MAY rely on either component being None when only the other
+# can be derived (e.g., a fresh repo_id that has never been bootstrapped
+# resolves to (None, repo_id); a path that lives outside any known repo
+# resolves to (path, repo_id) with the id always computable from the
+# path's resolved location).
+
+# A repo_id is a SHA-256 hex digest: exactly 64 characters, all hex.
+_REPO_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _resolve_repo_arg(repo: str) -> tuple[Path | None, str | None]:
+    """Shape-detecting `repo` argument resolver.
+
+    Accepts either form:
+      - An absolute or `~`-relative or `./` / `../` path → treated as a
+        repo path. `repo_id` is computed via `_compute_repo_id`.
+      - A 64-char lowercase hex string → treated as a repo_id. The path
+        is resolved via `_resolve_repo_root_by_id`.
+
+    Returns `(repo_path, repo_id)`. Either component may be None:
+      - `(None, None)` when the input is neither shape (empty, None,
+        wrong length, non-hex). Callers should surface a typed error.
+      - `(path, repo_id)` when a path was supplied; both fields are
+        populated whenever the path resolves to an existing directory.
+      - `(None, repo_id)` when a repo_id was supplied but no row in the
+        index nor a trust grant maps it back to an on-disk path.
+
+    Path-shape detection trips on either:
+      - String starts with `/`, `~`, `./`, or `../` (explicit POSIX path).
+      - String is absolute after `Path.expanduser()` (handles edge cases
+        where the caller passed a Windows-style path on macOS/Linux,
+        which falls back to id-shape detection naturally).
+    The hex check is exclusive of the path check, so a 64-char path like
+    `/aaaa…` never gets mis-detected (paths start with `/`, not `[0-9a-f]`).
+    """
+    if not isinstance(repo, str) or not repo:
+        return None, None
+
+    # Path-shape check: explicit prefixes win. A 64-char hex repo_id
+    # cannot start with `/`, `~`, or `.`, so this check is unambiguous.
+    looks_pathy = repo[0] in ("/", "~") or repo.startswith("./") or repo.startswith("../")
+    if not looks_pathy:
+        # Hex-shape check: exactly 64 lowercase hex chars.
+        if _REPO_ID_RE.match(repo):
+            resolved = _resolve_repo_root_by_id(repo)
+            return (resolved, repo)
+        # Fall-through: maybe the caller passed an unusual path shape
+        # (e.g., a Windows-style "C:\foo" or relative "src/foo.ts"). Try
+        # expanduser + is_absolute as a last resort.
+        try:
+            candidate = Path(repo).expanduser()
+        except (OSError, ValueError):
+            return None, None
+        if not candidate.is_absolute():
+            return None, None
+        # Treated as a path from here on.
+        repo_path_str: str = repo
+    else:
+        repo_path_str = repo
+
+    # Path branch: resolve + compute repo_id when the directory exists.
+    try:
+        path = Path(repo_path_str).expanduser()
+    except (OSError, ValueError):
+        return None, None
+    if not path.is_absolute():
+        return None, None
+    if path.is_dir():
+        try:
+            resolved_path = path.resolve()
+        except OSError:
+            resolved_path = path
+        try:
+            return resolved_path, _compute_repo_id(resolved_path)
+        except Exception:
+            return resolved_path, None
+    # Path string supplied but the directory doesn't exist on disk.
+    # Return the (path, None) tuple so callers can surface a precise
+    # "path is not a directory" error.
+    return path, None
 
 
 # Hosts whose URLs are case-insensitive — folded to lowercase before hashing.
@@ -193,6 +289,33 @@ def detect_repo(file_path: str) -> dict:
             "trust_state": "n/a",
         })
 
+    # v0.5.2 (Bug 6): path-traversal canonicalization defense. A request
+    # like `/home/user/proj/../../../etc/passwd` walks up via `find_repo_root`
+    # and lands on `$HOME` itself (or any ancestor of it), which is never
+    # a "repo" in the chameleon sense. Pre-v0.5.2 we returned `repo_root:
+    # "/Users/<user>"` and `profile_status: "no_profile"` which leaks the
+    # username on the response surface — minor info-disclosure. We now
+    # detect that case and report `no_repo` exactly as the missing-marker
+    # path does. The check covers both `Path.home()` itself and any
+    # strict ancestor (e.g., `/Users` on macOS, `/home` on Linux).
+    try:
+        home = Path.home().resolve()
+        resolved = Path(repo_root).resolve()
+    except OSError:
+        home = None  # type: ignore[assignment]
+        resolved = repo_root
+    if home is not None and (
+        resolved == home
+        or resolved in home.parents
+        or resolved == Path(resolved.anchor)
+    ):
+        return _envelope({
+            "repo_id": None,
+            "repo_root": None,
+            "profile_status": "no_repo",
+            "trust_state": "n/a",
+        })
+
     repo_id = _compute_repo_id(repo_root)
     profile_dir = repo_root / ".chameleon"
     profile_present = (profile_dir / "profile.json").exists()
@@ -286,6 +409,24 @@ def get_archetype(repo: str, file_path: str) -> dict:
     from a hook input that doesn't carry content) fall back to the v0.3
     path-bucket-only behavior so the function stays callable on hypothetical
     paths.
+
+    v0.5.2 (Bug 3): the response envelope's ``content_signal_match`` field
+    is now populated whenever the file is readable on disk, by reading
+    the first 200 bytes ourselves and calling
+    ``signatures.content_signal_match_for``. Earlier versions hardcoded
+    ``None`` in every return branch, which made the Phase 2C content
+    signal dead code despite being computed inside the lint engine. The
+    new wire-through emits a string ("none", "use_client", "use_server",
+    "shebang", "ts_pragma") whenever the file head was read, and Python
+    ``None`` only when we never looked (file missing, unreadable).
+
+    v0.5.2 (Bug 1) compatibility: this function still computes the
+    file's bucket with the v0.5.x extension-blind
+    ``path_pattern_bucket_for`` (``include_extension=False``) so v0.5.x
+    ``archetypes.json`` files continue to match. New v0.5.2 bootstraps
+    write extension-aware buckets (e.g. ``"src/components:tsx"``); we
+    also check the extension-aware variant as a secondary key so
+    profiles written by v0.5.2 still hit the exact-match path.
     """
     from chameleon_mcp.lint_engine import (
         canonical_confidence,
@@ -293,15 +434,40 @@ def get_archetype(repo: str, file_path: str) -> dict:
         extract_dimensions,
     )
     from chameleon_mcp.profile.loader import LoadedProfile, find_repo_root, load_profile_dir
-    from chameleon_mcp.signatures import path_pattern_bucket_for
+    from chameleon_mcp.signatures import (
+        content_signal_match_for,
+        path_pattern_bucket_for,
+    )
 
     p = Path(file_path).expanduser()
+
+    # v0.5.2 (Bug 3): read the first 200 bytes once, up-front, so EVERY
+    # return branch can populate `content_signal_match` consistently.
+    # When the file is unreadable / missing the field stays None to
+    # signal "we didn't look". The full-content read further down (used
+    # for AST scoring) is still gated on `p.is_file()` and capped at
+    # 100KB — the head-only read here is cheap, bounded by 200 bytes,
+    # and runs before any repo / profile validation so the directive is
+    # surfaced even when the repo isn't bootstrapped yet (the lint
+    # engine and using-chameleon skill both want the signal regardless
+    # of profile state).
+    file_head: str | None = None
+    if p.is_file():
+        try:
+            file_head = p.read_bytes()[:200].decode("utf-8", errors="replace")
+        except OSError:
+            file_head = None
+
+    content_signal_value: str | None = (
+        content_signal_match_for(file_head) if file_head is not None else None
+    )
+
     repo_root = find_repo_root(p)
     if repo_root is None or _compute_repo_id(repo_root) != repo:
         return _envelope({
             "archetype": None,
             "alternatives": [],
-            "content_signal_match": None,
+            "content_signal_match": content_signal_value,
             "confidence_band": "low",
         })
 
@@ -312,17 +478,43 @@ def get_archetype(repo: str, file_path: str) -> dict:
         return _envelope({
             "archetype": None,
             "alternatives": [],
-            "content_signal_match": None,
+            "content_signal_match": content_signal_value,
             "confidence_band": "low",
         })
 
     # Compute the file's bucket via the same function clustering used.
     # Match archetypes by EXACT bucket equality (not substring).
+    #
+    # v0.5.2: keep the v0.5.x extension-blind bucket as the primary key
+    # (so old profiles still match) AND check the extension-aware bucket
+    # as a secondary match against v0.5.2+ profiles. Either form is a
+    # legitimate exact match — we don't prefer one over the other;
+    # AST-scoring downstream picks the winner.
+    #
+    # Path-resolve both sides so /var <-> /private/var symlink shenanigans
+    # on macOS don't push `relative_to` into the ValueError branch. The
+    # pre-v0.5.2 code path tolerated this only because the substring-
+    # fallback check happened to fire on the absolute path; with the
+    # extension suffix added by v0.5.2 (Bug 1) that substring no longer
+    # matches, so callers on macOS would silently lose all archetype
+    # mappings on test-temp-dir paths.
     try:
-        rel_str = str(p.relative_to(repo_root))
+        p_resolved = p.resolve()
+    except OSError:
+        p_resolved = p
+    try:
+        repo_root_resolved = repo_root.resolve()
+    except OSError:
+        repo_root_resolved = repo_root
+    try:
+        rel_str = str(p_resolved.relative_to(repo_root_resolved))
     except ValueError:
-        rel_str = str(p)
+        try:
+            rel_str = str(p.relative_to(repo_root))
+        except ValueError:
+            rel_str = str(p)
     file_bucket = path_pattern_bucket_for(rel_str)
+    file_bucket_ext = path_pattern_bucket_for(rel_str, include_extension=True)
 
     exact_matches: list[str] = []
     fallback_matches: list[str] = []  # substring fallback if no exact match
@@ -332,7 +524,7 @@ def get_archetype(repo: str, file_path: str) -> dict:
         pattern = arch.get("paths_pattern", "")
         if not pattern:
             continue
-        if pattern == file_bucket:
+        if pattern == file_bucket or pattern == file_bucket_ext:
             exact_matches.append(name)
         elif pattern in rel_str:
             fallback_matches.append(name)
@@ -351,7 +543,7 @@ def get_archetype(repo: str, file_path: str) -> dict:
         return _envelope({
             "archetype": primary,
             "alternatives": alternatives,
-            "content_signal_match": None,
+            "content_signal_match": content_signal_value,
             "confidence_band": confidence,
         })
 
@@ -378,10 +570,13 @@ def get_archetype(repo: str, file_path: str) -> dict:
 
     if content is None:
         # No content available — v0.3 cluster-size ordering wins.
+        # v0.5.2 (Bug 3): even when we can't run AST scoring, the
+        # 200-byte file head was read at the top of the function, so we
+        # still surface its directive-match here.
         return _envelope({
             "archetype": exact_matches[0],
             "alternatives": exact_matches[1:],
-            "content_signal_match": None,
+            "content_signal_match": content_signal_value,
             "confidence_band": "high" if len(exact_matches) == 1 else "low",
         })
 
@@ -440,10 +635,21 @@ def get_archetype(repo: str, file_path: str) -> dict:
         alternatives = exact_matches[1:]
         confidence = "high" if len(exact_matches) == 1 else "low"
 
+    # v0.5.2 (Bug 3): prefer the head-only signal computed up-front so
+    # all return branches agree on the {"none", "use_client",
+    # "use_server", "shebang", "ts_pragma"} alphabet. The lint engine's
+    # snapshot stores ``None`` for "no directive", a different alphabet
+    # than `content_signal_match_for` (returns the string "none"). Fall
+    # back to `snapshot.content_signal` only if the head read failed
+    # despite full-content read succeeding (a contradiction in practice
+    # but defensive against future refactors of the read path).
+    final_signal = content_signal_value if content_signal_value is not None else (
+        snapshot.content_signal if snapshot.content_signal is not None else "none"
+    )
     return _envelope({
         "archetype": primary,
         "alternatives": alternatives,
-        "content_signal_match": snapshot.content_signal,
+        "content_signal_match": final_signal,
         "confidence_band": confidence,
     })
 
@@ -602,17 +808,32 @@ def _resolve_repo_root_by_id(
 
 
 def get_canonical_excerpt(repo: str, archetype: str) -> dict:
-    """Return the annotated canonical excerpt for an archetype."""
+    """Return the annotated canonical excerpt for an archetype.
+
+    v0.5.2 (Bug 5): `repo` accepts either an absolute repo path or a
+    64-char repo_id hex digest. Pre-v0.5.2 the function only accepted
+    repo_ids and silently returned `{content: "", witness_path: null,
+    truncated: false}` when handed a path. Now we shape-detect via
+    `_resolve_repo_arg` and emit an explicit `{status: failed, error:
+    "repo_id not found"}` envelope for unresolvable input so callers
+    can distinguish "no archetype" from "wrong arg shape".
+    """
     from chameleon_mcp.profile.loader import load_profile_dir
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-    repo_root = _resolve_repo_root_by_id(repo)
+    resolved_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None and resolved_path is None:
+        return _envelope({
+            "status": "failed",
+            "error": "repo_id not found",
+        })
+    repo_root = resolved_path
+    if repo_root is None and repo_id is not None:
+        repo_root = _resolve_repo_root_by_id(repo_id)
     if repo_root is None:
         return _envelope({
-            "content": "",
-            "witness_path": None,
-            "truncated": False,
-            "sha_hint": None,
+            "status": "failed",
+            "error": "repo_id not found",
         })
 
     try:
@@ -864,13 +1085,27 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
 
 
 def get_drift_status(repo: str) -> dict:
-    """Report freshness for a repo by repo_id.
+    """Report freshness for a repo.
 
     Computes:
     - days_since_refresh from the trust record's granted_at
     - observed_drift_score from drift.db's recent edit_observations
       (None if no observations yet)
     - recommended_action: combines both signals
+
+    v0.5.2 (Bug 4): `repo` accepts either an absolute repo path or a
+    64-char repo_id hex digest. Pre-v0.5.2, passing a path silently
+    routed it to `plugin_data_dir() / <path>` which is never a real
+    directory; the user got a confusing envelope echoing the path back
+    as `repo_id`. Now we shape-detect via `_resolve_repo_arg`:
+      - Path-shaped input  → resolve to repo_id, then proceed.
+      - 64-char hex input  → keep current behavior (treat as repo_id).
+      - Empty / None input → explicit error envelope.
+      - Path-shaped junk (absolute path that doesn't exist) → error
+        envelope (no more echoing it back as repo_id).
+      - Opaque non-path non-hex string → preserved legacy behavior
+        (treat as opaque plugin_data dir key) so drift-observation
+        callers that construct synthetic ids keep working.
     """
     import time
 
@@ -879,13 +1114,37 @@ def get_drift_status(repo: str) -> dict:
 
     if not isinstance(repo, str) or not repo:
         return _envelope({
-            "days_since_refresh": None,
-            "observed_drift_score": None,
-            "recommended_action": "invalid repo_id",
+            "status": "failed",
+            "error": "expected repo path or repo_id hex digest",
         })
 
-    repo_data = plugin_data_dir() / repo
-    trust = trust_state_for(repo) if repo_data.is_dir() else None
+    resolved_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None and resolved_path is not None:
+        # Path-shaped input that didn't resolve (directory doesn't
+        # exist). Without my v0.5.2 fix this would silently echo the
+        # bogus path back as repo_id; emit a typed error instead.
+        return _envelope({
+            "status": "failed",
+            "error": "expected repo path or repo_id hex digest",
+        })
+    if repo_id is None:
+        # Neither a path nor a 64-char hex digest. The legacy code
+        # treated arbitrary strings as opaque keys into plugin_data_dir;
+        # drift-recording callers (record_edit_observation) rely on
+        # this. We keep that behavior — the path-shape gate above is
+        # what closes the Bug 4 misrouting class without breaking the
+        # opaque-id consumers. Reject path-traversal payloads explicitly
+        # so an attacker-controlled opaque key cannot escape the
+        # plugin-data-dir sandbox via `..` segments.
+        if "/" in repo or ".." in repo or "\\" in repo:
+            return _envelope({
+                "status": "failed",
+                "error": "expected repo path or repo_id hex digest",
+            })
+        repo_id = repo
+
+    repo_data = plugin_data_dir() / repo_id
+    trust = trust_state_for(repo_id) if repo_data.is_dir() else None
 
     days_since_refresh: int | None = None
     if trust is not None and trust.granted_at:
@@ -895,7 +1154,7 @@ def get_drift_status(repo: str) -> dict:
         except ValueError:
             days_since_refresh = None
 
-    drift_score = compute_drift_score(repo)
+    drift_score = compute_drift_score(repo_id)
 
     if days_since_refresh is None:
         recommended = "no trust grant found; run /chameleon-trust first"
@@ -911,7 +1170,7 @@ def get_drift_status(repo: str) -> dict:
         recommended = "fresh"
 
     return _envelope({
-        "repo_id": repo,
+        "repo_id": repo_id,
         "days_since_refresh": days_since_refresh,
         "observed_drift_score": drift_score,
         "recommended_action": recommended,
@@ -1401,6 +1660,9 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     re-bootstrap unconditionally.
 
     `force=True` bypasses BOTH short-circuits and always re-bootstraps.
+
+    v0.5.2 (Bug 1): `repo` accepts either an absolute repo path or a
+    64-char repo_id hex digest. See `_resolve_repo_arg`.
     """
     from chameleon_mcp import index_db
     from chameleon_mcp.bootstrap.discovery import discover_files
@@ -1409,7 +1671,13 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
         _select_extractor,
     )
 
-    repo_path = Path(repo)
+    resolved_path, _resolved_id = _resolve_repo_arg(repo)
+    if resolved_path is None:
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+    repo_path = resolved_path
     if not repo_path.is_absolute() or not repo_path.is_dir():
         return _envelope({
             "status": "failed",
@@ -1539,12 +1807,25 @@ def bootstrap_repo(path: str, mode: str = "full", paths_glob: str | None = None)
     v0.4 (2D.3): for monorepos with detected workspace_paths, runs the full
     pipeline per workspace as well, producing one `.chameleon/` under each
     workspace root in addition to the root profile that catalogs them.
+
+    v0.5.2 (Bug 1): `path` accepts either an absolute repo path or a
+    64-char repo_id hex digest (for repos previously bootstrapped). See
+    `_resolve_repo_arg`.
     """
     from chameleon_mcp import index_db
     from chameleon_mcp.bootstrap.orchestrator import bootstrap_repo as _bootstrap
     from chameleon_mcp.profile.trust import hash_profile
 
-    repo_root = Path(path).expanduser().resolve()
+    resolved_path, _resolved_id = _resolve_repo_arg(path)
+    if resolved_path is None:
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+    try:
+        repo_root = resolved_path.resolve()
+    except OSError:
+        repo_root = resolved_path
     if not repo_root.is_dir():
         return _envelope({
             "status": "failed",
@@ -1667,11 +1948,21 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
         # `granted_at` / `granted_by_user` always reflect the latest grant,
         # not whatever was snapshotted into index.db at bootstrap time.
         trust = trust_state_for(repo_id) if (base / repo_id).is_dir() else None
+        # v0.5.2 (Bug 3): JOIN against index.db fields so the user can
+        # tell repos apart in /chameleon-list-profiles output. Three
+        # dogfood passes flagged "repo_id hash alone isn't enough info
+        # to know which is which". The legacy four fields stay verbatim
+        # for backward compat; the new fields are additive.
         profiles.append({
             "repo_id": repo_id,
             "trust_state": "trusted" if trust else "untrusted",
             "trusted_at": trust.granted_at if trust else None,
             "trusted_by": trust.granted_by_user if trust else None,
+            "repo_root": row.get("repo_root"),
+            "archetype_count": row.get("archetype_count"),
+            "files_indexed": row.get("files_indexed"),
+            "bootstrap_ms": row.get("bootstrap_ms"),
+            "last_seen_at": row.get("last_seen_at"),
         })
 
     return _envelope(
@@ -1812,16 +2103,44 @@ def teach_profile(repo: str, feedback: str) -> dict:
       idiom is added.
     - Hold an advisory flock around the read-modify-write so concurrent
       `/chameleon-teach` calls don't lose idioms.
+
+    v0.5.2 (Bug 1): `repo` accepts either an absolute repo path or a
+    64-char repo_id hex digest. See `_resolve_repo_arg`.
+
+    v0.5.2 (Bug 2 — slug-collision): the auto-generated idiom slug is
+    `idiom-YYYY-MM-DD-{epoch_seconds}-{3hex}`. The 4-hex random suffix
+    closes the 1-second collision window where two `/chameleon-teach`
+    calls landed in the same epoch second (observed twice in dogfood).
+    If the proposed slug already exists in idioms.md we retry once with
+    a fresh suffix; the second collision is statistically negligible
+    (4096^2 chance per second).
+
+    v0.5.2 (Bug 7 — suspicious_input): natural-language prompt-injection
+    preambles ("ignore previous instructions", "you are now in DAN
+    mode", `eval(…)`, `rm -rf`, etc.) are still STORED — the trust gate
+    is the defensive boundary — but the response envelope now carries
+    `suspicious_input: True` plus the matched pattern so the using-
+    chameleon skill can surface a UI warning.
     """
     from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
 
-    repo_path = Path(repo).expanduser()
-    if not repo_path.is_absolute() or not repo_path.is_dir():
-        return _envelope({"status": "failed", "error": "expected absolute repo path"})
+    repo_path, _repo_id = _resolve_repo_arg(repo)
+    if repo_path is None:
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+    if not repo_path.is_dir():
+        return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
 
     idioms_path = repo_path / ".chameleon" / "idioms.md"
     if not idioms_path.parent.exists():
         return _envelope({"status": "failed", "error": "no profile in this repo (run /chameleon-init)"})
+
+    # v0.5.2 Bug 7: check the RAW feedback for suspicious patterns before
+    # sanitization. Sanitization strips ANSI/zero-width/etc.; the
+    # heuristic operates on the natural-language form which survives.
+    suspicious, suspicious_pattern = _looks_suspicious(feedback)
 
     sanitized = _sanitize_user_input(feedback)
     if not sanitized.strip():
@@ -1836,7 +2155,26 @@ def teach_profile(repo: str, feedback: str) -> dict:
         # User supplied a slug — use as-is.
         addition = f"\n{body.rstrip()}\n"
     else:
-        slug = f"idiom-{timestamp}-{int(time.time())}"
+        # v0.5.2 Bug 2: append a 4-hex random suffix to defeat same-
+        # epoch-second collisions. Read idioms.md once to detect a
+        # collision; if present, retry once with a fresh suffix. The
+        # second collision probability is ~4096^-2 per second so a
+        # single retry is more than enough.
+        existing_text = (
+            idioms_path.read_text(encoding="utf-8")
+            if idioms_path.exists()
+            else ""
+        )
+
+        def _new_slug() -> str:
+            return (
+                f"idiom-{timestamp}-{int(time.time())}-"
+                f"{secrets.token_hex(2)}"
+            )
+
+        slug = _new_slug()
+        if f"### {slug}\n" in existing_text or f"### {slug} " in existing_text:
+            slug = _new_slug()
         addition = f"\n### {slug}\nStatus: active (added {timestamp})\n{body}\n"
 
     lock_path = idioms_path.parent / ".idioms.lock"
@@ -1867,11 +2205,15 @@ def teach_profile(repo: str, feedback: str) -> dict:
             ),
         })
 
-    return _envelope({
+    response: dict = {
         "status": "success",
         "idioms_added": 1,
         "idioms_deprecated": 0,
-    })
+    }
+    if suspicious:
+        response["suspicious_input"] = True
+        response["suspicious_input_reason"] = f"matched {suspicious_pattern!r}"
+    return _envelope(response)
 
 
 def _escape_markdown_section_headings(text: str) -> str:
@@ -1909,16 +2251,22 @@ def disable_session(repo: str, session_id: str) -> dict:
     is added to Edit/Write/NotebookEdit operations for that session.
 
     Used by the /chameleon-disable slash command.
+
+    v0.5.2 (Bug 1): `repo` now accepts either an absolute repo path or
+    a 64-char repo_id hex digest. See `_resolve_repo_arg`.
     """
     from chameleon_mcp.optouts import write_session_disable
 
-    repo_path = Path(repo).expanduser()
-    if not repo_path.is_absolute() or not repo_path.is_dir():
-        return _envelope({"status": "failed", "error": "expected absolute repo path"})
     if not session_id or not isinstance(session_id, str):
         return _envelope({"status": "failed", "error": "session_id required"})
 
-    repo_id = _compute_repo_id(repo_path)
+    _repo_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None:
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+
     marker = write_session_disable(repo_id, session_id)
     return _envelope({
         "status": "success",
@@ -1937,16 +2285,24 @@ def pause_session(repo: str, minutes: int = 15) -> dict:
 
     Used by the /chameleon-pause-15m slash command (and any future
     /chameleon-pause-<N> variants).
+
+    v0.5.2 (Bug 1): `repo` now accepts either an absolute repo path
+    or a 64-char repo_id hex digest. The asymmetry across MCP tools
+    surfaced 4 separate dogfood complaints about pause/disable rejecting
+    repo_ids. `_resolve_repo_arg` performs the shape detection.
     """
     from chameleon_mcp.optouts import write_pause
 
-    repo_path = Path(repo).expanduser()
-    if not repo_path.is_absolute() or not repo_path.is_dir():
-        return _envelope({"status": "failed", "error": "expected absolute repo path"})
     if not isinstance(minutes, int) or minutes <= 0 or minutes > 240:
         return _envelope({"status": "failed", "error": "minutes must be 1..240"})
 
-    repo_id = _compute_repo_id(repo_path)
+    _repo_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None:
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+
     expiry_iso = write_pause(repo_id, minutes)
     return _envelope({
         "status": "success",
@@ -2010,6 +2366,64 @@ def _sanitize_user_input(text: str) -> str:
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
     return sanitize_for_chameleon_context(text)
+
+
+# v0.5.2 Bug 7 — prompt-injection signal detection.
+#
+# The patterns below detect natural-language preambles that survive the
+# token-level sanitizer (ANSI/zero-width/tag-boundary). Hits never reject
+# the idiom: the trust gate is the defensive boundary. Instead we surface
+# `suspicious_input: True` in the response envelope so the UI / consumer
+# skill can warn the user. Each pattern is documented to make audits easy:
+#
+#   - "ignore (all )?previous instructions" — canonical jailbreak preamble.
+#   - "disregard (the )?(above|prior)" — variant phrasing.
+#   - "you are now (in )?\w* mode" — DAN / jailbreak persona triggers.
+#   - "system:" / "<system>" / "</system>" — fake system-role prefix.
+#   - "eval(", "exec(", "rm -rf" — explicit dangerous code/shell.
+#   - "reveal (the )?(secret|api key|prompt|system prompt)" — exfil ask.
+#
+# Patterns are intentionally permissive: false positives are cheap (the
+# user just sees a "are you sure?" UI hint); false negatives waste the
+# warning. Each pattern is case-insensitive.
+_SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("ignore previous instructions",
+     re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE)),
+    ("disregard above/prior",
+     re.compile(r"disregard\s+(the\s+)?(above|prior)", re.IGNORECASE)),
+    ("you are now <mode>",
+     re.compile(r"you\s+are\s+now\s+(in\s+)?[\w\s]{0,32}mode", re.IGNORECASE)),
+    ("system role injection",
+     re.compile(r"(<\s*/?\s*system\s*>|system\s*:\s*)", re.IGNORECASE)),
+    ("eval()",
+     re.compile(r"\beval\s*\(", re.IGNORECASE)),
+    ("exec()",
+     re.compile(r"\bexec\s*\(", re.IGNORECASE)),
+    ("rm -rf",
+     re.compile(r"\brm\s+-rf\b", re.IGNORECASE)),
+    ("reveal secrets/prompt",
+     re.compile(
+         r"reveal\s+(the\s+)?(secret|api\s*key|prompt|system\s+prompt)",
+         re.IGNORECASE,
+     )),
+)
+
+
+def _looks_suspicious(text: str) -> tuple[bool, str | None]:
+    """Return `(matched, label)` if `text` matches a known injection
+    pattern, else `(False, None)`.
+
+    The label corresponds to a human-readable handle for the matched
+    pattern (e.g., "ignore previous instructions"). It's surfaced in the
+    `suspicious_input_reason` envelope field so consumers can route on
+    the specific category of suspicion without parsing free text.
+    """
+    if not isinstance(text, str) or not text:
+        return False, None
+    for label, regex in _SUSPICIOUS_PATTERNS:
+        if regex.search(text):
+            return True, label
+    return False, None
 
 
 # ---------------------------------------------------------------------------
@@ -2155,23 +2569,24 @@ def propose_archetype_renames(repo: str, top_n: int = 8) -> dict:
     Drives the chameleon-init interview prompt 1+2 (skill-side prose).
     The MCP is stateless — the skill collects the user's choices and
     submits them as a single mapping via apply_archetype_renames.
+
+    v0.5.2 (Bug 1): `repo` accepts either an absolute repo path or a
+    64-char repo_id hex digest. See `_resolve_repo_arg`.
     """
     from chameleon_mcp.profile.loader import load_profile_dir
 
     if not isinstance(top_n, int) or top_n <= 0 or top_n > 64:
         return _envelope({"status": "failed", "error": "top_n must be an int in 1..64"})
 
-    repo_path = Path(repo).expanduser()
-    # Accept either a repo_id (resolved via index.db / trust) or an absolute repo path.
-    if repo_path.is_absolute():
-        if not repo_path.is_dir():
-            return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
-        repo_root = repo_path.resolve()
-    else:
-        resolved = _resolve_repo_root_by_id(repo)
-        if resolved is None:
-            return _envelope({"status": "failed", "error": f"could not resolve repo {repo!r}"})
-        repo_root = resolved
+    resolved_path, _resolved_id = _resolve_repo_arg(repo)
+    if resolved_path is None:
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+    if not resolved_path.is_dir():
+        return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
+    repo_root = resolved_path.resolve()
 
     profile_dir = repo_root / ".chameleon"
     if not profile_dir.is_dir():
@@ -2427,22 +2842,24 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
 
     Uses atomic_profile_commit so a crash mid-write leaves the previous
     profile untouched. Returns status, renames_applied, new_profile_sha256.
+
+    v0.5.2 (Bug 1): `repo` accepts either an absolute repo path or a
+    64-char repo_id hex digest. See `_resolve_repo_arg`.
     """
     from chameleon_mcp import index_db
     from chameleon_mcp.bootstrap.transaction import atomic_profile_commit
     from chameleon_mcp.profile.loader import load_profile_dir
     from chameleon_mcp.profile.trust import hash_profile
 
-    repo_path = Path(repo).expanduser()
-    if repo_path.is_absolute():
-        if not repo_path.is_dir():
-            return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
-        repo_root = repo_path.resolve()
-    else:
-        resolved = _resolve_repo_root_by_id(repo)
-        if resolved is None:
-            return _envelope({"status": "failed", "error": f"could not resolve repo {repo!r}"})
-        repo_root = resolved
+    resolved_path, _resolved_id = _resolve_repo_arg(repo)
+    if resolved_path is None:
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+    if not resolved_path.is_dir():
+        return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
+    repo_root = resolved_path.resolve()
 
     profile_dir = repo_root / ".chameleon"
     if not profile_dir.is_dir():

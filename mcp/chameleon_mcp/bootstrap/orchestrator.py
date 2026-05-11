@@ -121,8 +121,19 @@ def _glob_for_extractor(extractor: Extractor) -> str:
         return "**/*.rb"
     return "**/*.{ts,tsx,js,jsx,mjs,cjs}"
 
-PROFILE_SCHEMA_VERSION = 6
+PROFILE_SCHEMA_VERSION = 7
 ENGINE_MIN_VERSION = "0.4.0"
+# v0.5.2 schema-v7 bump rationale:
+#   - paths_pattern strings now carry the file extension suffix
+#     (e.g. "src/components:tsx") to fix the .tsx vs .ts collision.
+#   - paths_pattern preserves the workspace name on monorepo paths
+#     (e.g. "packages/excalidraw/components" instead of
+#     "packages/components/Group").
+# Old profiles still load because the loader doesn't gate on schema_version
+# value; only `engine_min_version` is checked. Tools that EXPECT v6
+# extension-blind buckets (notably tools.get_archetype) fall back to the
+# extension-blind bucket explicitly so v0.5.x archetypes.json files keep
+# matching post-upgrade.
 
 
 @dataclass
@@ -266,6 +277,82 @@ def _generation_counter(now: float | None = None) -> int:
     return int(now if now is not None else time.time())
 
 
+# v0.5.2 (Bug 3): Rails top-level dirs whose second segment is load-bearing
+# and must NOT be dropped from the displayed paths_pattern. The signature
+# v5 bucket formula (``parts[0]/parts[-3]/parts[-2]`` for ≥4 segments)
+# collapses ``app/models/rule/action_executor/auto_categorize.rb`` into
+# the bucket ``app/rule/action_executor`` — silently losing the
+# load-bearing ``models/`` segment.
+#
+# Touching the bucket key itself is out of scope here (see signatures.py;
+# the clustering agent owns that). Instead we re-derive the paths_pattern
+# WRITTEN INTO archetypes.json from the canonical witness path so what
+# the team reviewer sees on a profile-change PR matches the actual file.
+_RAILS_LOAD_BEARING_SECOND_SEGS = frozenset({
+    "models",
+    "controllers",
+    "services",
+    "jobs",
+    "mailers",
+    "helpers",
+    "policies",
+    "serializers",
+    "presenters",
+    "workers",
+    "views",
+    "channels",
+    "javascript",
+})
+
+
+def _displayed_paths_pattern(
+    bucket: str,
+    witness_relpath: str,
+) -> str:
+    """Return the paths_pattern string to surface in archetypes.json.
+
+    Falls back to the cluster's signature bucket unchanged in the common
+    case. When the witness's first segment is ``app`` AND its second
+    segment is a load-bearing Rails dir (``models``, ``controllers``, …)
+    that the v5 bucket formula dropped, we re-derive a Rails-honest
+    bucket of shape ``app/<second>/<directory-of-the-witness-tail>`` so
+    the displayed path always agrees with the witness.
+
+    Examples (bucket → displayed):
+      ``app/rule/action_executor`` + witness
+        ``app/models/rule/action_executor/auto_categorize.rb``
+        → ``app/models/action_executor``
+
+      ``app/admin/dashboards`` + witness
+        ``app/controllers/admin/dashboards/foo.rb``
+        → ``app/controllers/dashboards``
+
+      ``app/models`` + witness ``app/models/user.rb``
+        → ``app/models`` (unchanged; bucket already correct)
+
+      ``src/components/base`` + witness ``src/components/base/Button.tsx``
+        → ``src/components/base`` (non-Rails; unchanged)
+    """
+    if not witness_relpath:
+        return bucket
+    witness_parts = [p for p in witness_relpath.split("/") if p]
+    if len(witness_parts) < 4:
+        # Bucket formula only collapses on ≥4-segment paths; shorter
+        # witness paths agree with the bucket by construction.
+        return bucket
+    if witness_parts[0] != "app":
+        return bucket
+    if witness_parts[1] not in _RAILS_LOAD_BEARING_SECOND_SEGS:
+        return bucket
+    # Already-honest bucket: the bucket *contains* the load-bearing
+    # segment. Keep it; rewriting would be a no-op or worse.
+    if witness_parts[1] in bucket.split("/"):
+        return bucket
+    # Construct the corrected bucket: app/<load-bearing>/<dir-of-witness>.
+    # witness_parts[-2] is the directory immediately containing the file.
+    return f"{witness_parts[0]}/{witness_parts[1]}/{witness_parts[-2]}"
+
+
 # Phase 2C.3: how many sample paths to include per warning. Just enough for
 # the future interview UI to give the user a hint without dumping the full
 # cluster membership.
@@ -297,7 +384,11 @@ def _stringify_distribution_key(value: object) -> str:
 def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
     """Build the sparse-cluster warning payload for BootstrapReport.
 
-    Phase 2C.3: surface clusters with <SPARSE_CLUSTER_THRESHOLD members.
+    Phase 2C.3: surface clusters with <threshold members. v0.5.2 (Bug 4)
+    makes the threshold adaptive based on corpus size, so each warning
+    records the cluster's resolved threshold instead of the legacy
+    module-level constant.
+
     Each warning entry includes the path bucket, size, and a handful of
     sample paths so the future interview UI can ask "merge with X?".
     """
@@ -311,7 +402,7 @@ def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
             "kind": "sparse_cluster",
             "reason": (
                 f"cluster has {cluster.size} members "
-                f"(threshold {SPARSE_CLUSTER_THRESHOLD})"
+                f"(threshold {cluster.sparse_threshold})"
             ),
             "paths_pattern": cluster.key.path_pattern_bucket,
             "size": cluster.size,
@@ -719,22 +810,42 @@ def _bootstrap_single(
         effective_name = rename_map.get(auto_name, auto_name)
         assigned_names.add(auto_name)
         assigned_names.add(effective_name)
+        # Canonical entry — selected up-front because v0.5.2 (Bug 3) uses
+        # the witness path to surface a Rails-honest display string.
+        sel = selection.selections[cluster_id]
+        try:
+            witness_relpath = str(sel.witness_path.relative_to(repo_root))
+        except ValueError:
+            # Witness somehow lives outside repo_root — defensive: skip
+            # the paths_pattern repair and keep whatever the bucket says.
+            witness_relpath = ""
+        # v0.5.2 (Bug 3): the signature-v5 bucket formula drops the
+        # ``models/`` segment for paths like
+        # ``app/models/rule/action_executor/auto_categorize.rb`` →
+        # ``app/rule/action_executor``. That bucket is still what runtime
+        # archetype lookup keys on (path_pattern_bucket_for produces the
+        # same string), so we keep ``paths_pattern`` byte-equal to the
+        # bucket. We add ``paths_pattern_display`` carrying the Rails-honest
+        # form (``app/models/action_executor`` here) so reviewers reading
+        # archetypes.json / profile.summary.md aren't misled about where
+        # the cluster actually lives. The display form falls back to the
+        # bucket when the witness path doesn't trigger the repair.
+        bucket = cluster.key.path_pattern_bucket
+        display_pattern = _displayed_paths_pattern(bucket, witness_relpath)
         archetypes_data["archetypes"][effective_name] = {
             "cluster_id": cluster_id,
             "cluster_size": cluster.size,
-            "paths_pattern": cluster.key.path_pattern_bucket,
+            "paths_pattern": bucket,
+            "paths_pattern_display": display_pattern,
             "content_signal": cluster.key.content_signal_match,
             "top_level_node_kinds": list(cluster.key.top_level_node_kinds),
             "jsx_present": cluster.key.jsx_present,
             "default_export_kind": cluster.key.default_export_kind,
             "named_export_count_bucket": cluster.key.named_export_count_bucket,
         }
-
-        # Canonical entry
-        sel = selection.selections[cluster_id]
         canonicals_data["canonicals"][effective_name] = [{
             "witness": {
-                "path": str(sel.witness_path.relative_to(repo_root)),
+                "path": witness_relpath or str(sel.witness_path),
                 "sha_hint": sel.sha_hint,
             },
             "normative_shape": {
@@ -969,9 +1080,13 @@ def _build_summary_md(
     for name, arch in sorted(archetypes_data["archetypes"].items()):
         canonicals = canonicals_data["canonicals"].get(name, [])
         canonical_path = canonicals[0]["witness"]["path"] if canonicals else "(none)"
+        # v0.5.2 (Bug 3): prefer the witness-honest display string when
+        # signature-v5's bucket collapsed a load-bearing Rails segment.
+        # Falls back to the bucket for older profiles + non-Rails repos.
+        display_paths = arch.get("paths_pattern_display") or arch["paths_pattern"]
         lines.append(
             f"- **{name}** (cluster_size {arch['cluster_size']}, "
-            f"paths {arch['paths_pattern']}) — canonical: `{canonical_path}`"
+            f"paths {display_paths}) — canonical: `{canonical_path}`"
         )
     lines.extend([
         "",

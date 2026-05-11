@@ -57,6 +57,12 @@ class Cluster:
 
     key: ClusterKey
     members: list[ParsedFile] = field(default_factory=list)
+    # v0.5.2 (Bug 4): per-cluster sparse threshold so the adaptive
+    # heuristic in `cluster_files` can be reflected in `.is_sparse`
+    # without changing the module-level default. Callers that build
+    # Cluster instances directly (older tests) inherit the v0.5.1
+    # threshold-5 behavior unchanged.
+    sparse_threshold: int = SPARSE_CLUSTER_THRESHOLD
 
     @property
     def size(self) -> int:
@@ -64,7 +70,7 @@ class Cluster:
 
     @property
     def is_sparse(self) -> bool:
-        return self.size < SPARSE_CLUSTER_THRESHOLD
+        return self.size < self.sparse_threshold
 
     def _dimension_value_for(self, member: ParsedFile, dimension: str) -> object:
         """Return the raw per-member value of an observable dimension.
@@ -171,9 +177,37 @@ class ClusteringResult:
         return [c for c in self.clusters if c.is_bimodal]
 
 
+def _adaptive_sparse_threshold(total_files: int) -> int:
+    """Pick a sparse-cluster threshold based on corpus size.
+
+    The v0.5.1 hard-coded threshold of 5 killed recall on feature-per-folder
+    layouts (excalidraw: 94.8% sparse warnings; mastodon: 0 archetypes from
+    856 files). Repos under ~1k files routinely have meaningful clusters
+    with 3–4 members; lowering the floor lets the long tail surface.
+
+    Heuristic (corpus-size tiered):
+      - total_files <  1000 → threshold = 3
+      - total_files <  5000 → threshold = 4
+      - total_files >= 5000 → threshold = 5 (v0.5.1 behavior preserved
+                              for large monorepos where 5+ members is
+                              easy to clear and noisier clusters dominate)
+
+    These cutoffs are intentionally coarse so the rule is easy to reason
+    about during bootstrap review. Callers needing determinism in tests
+    pass an explicit ``min_cluster_size`` to ``cluster_files``.
+    """
+    if total_files < 1000:
+        return 3
+    if total_files < 5000:
+        return 4
+    return 5
+
+
 def cluster_files(
     parsed_files: Iterable[ParsedFile],
     repo_root: Path | None = None,
+    *,
+    min_cluster_size: int | None = None,
 ) -> ClusteringResult:
     """Group parsed files by ClusterKey signature.
 
@@ -185,10 +219,19 @@ def cluster_files(
                    what the runtime archetype lookup computes (also from a
                    repo-relative path). Optional for backward compatibility;
                    callers that don't pass it get absolute-path bucketing.
+        min_cluster_size: explicit sparse threshold. When ``None`` (the
+                   default) the adaptive heuristic in
+                   :func:`_adaptive_sparse_threshold` picks a value based
+                   on the corpus size — 3 for repos < 1k files, 4 for
+                   1k–5k, 5 for larger. Tests pass an explicit value for
+                   determinism; the orchestrator passes ``None`` so real
+                   repos get the adaptive behavior (v0.5.2 Bug 4).
 
     Returns:
         ClusteringResult with clusters sorted by size (largest first) for
-        deterministic archetype proposal ordering.
+        deterministic archetype proposal ordering. Each cluster's
+        ``sparse_threshold`` reflects the resolved threshold so
+        ``cluster.is_sparse`` agrees with ``ClusteringResult.sparse_clusters``.
     """
     from chameleon_mcp.bootstrap.discovery import is_likely_generated
 
@@ -209,6 +252,10 @@ def cluster_files(
         else:
             file_path_for_signature = str(pf.path)
 
+        # v0.5.2 (Bug 1): clustering keys bucket on extension so .tsx
+        # and .ts files in the same dir cluster separately. The runtime
+        # archetype lookup keeps the extension-blind bucket so old
+        # v0.5.x profiles remain matchable.
         key = compute_signature(
             file_path=file_path_for_signature,
             content_first_200_bytes=pf.content_first_200_bytes,
@@ -217,10 +264,23 @@ def cluster_files(
             named_export_count=pf.named_export_count,
             import_specifiers=pf.import_specifiers,
             has_jsx=pf.has_jsx,
+            include_extension_in_bucket=True,
         )
         by_key[key].append(pf)
 
-    clusters = [Cluster(key=k, members=members) for k, members in by_key.items()]
+    # v0.5.2 (Bug 4): adaptive sparse threshold. Resolved AFTER bucketing
+    # so the threshold reflects the actual clustered file count, not the
+    # candidate-before-generated-filter count.
+    total_clustered = sum(len(members) for members in by_key.values())
+    if min_cluster_size is None:
+        resolved_threshold = _adaptive_sparse_threshold(total_clustered)
+    else:
+        resolved_threshold = max(1, int(min_cluster_size))
+
+    clusters = [
+        Cluster(key=k, members=members, sparse_threshold=resolved_threshold)
+        for k, members in by_key.items()
+    ]
     clusters.sort(key=lambda c: c.size, reverse=True)
 
     return ClusteringResult(

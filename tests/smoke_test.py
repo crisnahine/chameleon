@@ -169,7 +169,7 @@ from chameleon_mcp.profile.schema import (
     validate_archetype_name,
 )
 
-t("accepts valid profile", load_profile_json('{"schema_version": 4}')["schema_version"] == 4)
+t("accepts valid profile", load_profile_json('{"schema_version": 5}')["schema_version"] == 5)
 
 try:
     load_profile_json('{"schema_version": 99}')

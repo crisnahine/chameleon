@@ -95,9 +95,26 @@ def hash_import_set(import_specifiers: Sequence[tuple[str, str]]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# v0.5.2 (Bug 2): top-level segments that announce "this is a monorepo
+# workspace dir, the package name follows" — when one of these is at
+# parts[0] AND parts[1] looks like a workspace name, keep parts[1] in
+# the bucket so files from sibling workspaces (e.g.
+# packages/excalidraw/components/X.tsx vs packages/element/components/X.tsx)
+# don't collide. Schema-v6 bucketing was monorepo-blind: any path of the
+# form `packages/<ws>/components/Group/X.tsx` collapsed to
+# "packages/components/Group" regardless of the workspace name.
+_MONOREPO_WORKSPACE_ROOTS: frozenset[str] = frozenset({
+    "packages",
+    "apps",
+    "workspaces",
+})
+
+
 def path_pattern_bucket_for(
     file_path: str,
     archetype_paths: dict[str, list[str]] | None = None,
+    *,
+    include_extension: bool = False,
 ) -> str:
     """Bucket a file path so files with the same role cluster together.
 
@@ -117,6 +134,19 @@ def path_pattern_bucket_for(
     the top-level segment so `app/...` and `spec/...` always disambiguate.
     For shallow paths (≤3 segments) the result is just `parts[0]/parts[-2]`,
     matching v4's behavior on those paths.
+
+    v0.5.2 (Bug 1, opt-in via ``include_extension``): when True, append
+    ``:<ext>`` (e.g. ``:tsx``) to the bucket so ``.tsx`` and ``.ts`` files
+    in the same directory don't share a cluster. The clustering pipeline
+    flips this on; ``get_archetype`` keeps the default (False) so v0.5.x
+    profiles' ``paths_pattern`` strings still match without migration.
+
+    v0.5.2 (Bug 2): when ``parts[0]`` is a monorepo workspace root
+    (``packages``, ``apps``, ``workspaces``) and the path has at least 4
+    segments, ``parts[1]`` (the workspace name) is preserved so files from
+    distinct workspaces don't collide on identical sub-directory shapes.
+    The pre-v0.5.2 formula ``parts[0]/parts[-3]/parts[-2]`` dropped the
+    workspace name for any ≥5-part monorepo path.
     """
     del archetype_paths  # reserved for forward-compat; not used today
 
@@ -130,9 +160,52 @@ def path_pattern_bucket_for(
     #   src/components/base/Button.tsx        → "src/components/base"
     #   src/components/Button.tsx             → "src/components"
     #   Gemfile (1 part)                      → "(root)"
-    if len(parts) >= 4:
-        return f"{parts[0]}/{parts[-3]}/{parts[-2]}"
-    return f"{parts[0]}/{parts[-2]}"
+    #   packages/excalidraw/components/Foo.tsx → "packages/excalidraw/components"
+    #   apps/web/routes/(marketing)/page.tsx  → "apps/web/routes"
+    if (
+        len(parts) >= 4
+        and parts[0] in _MONOREPO_WORKSPACE_ROOTS
+    ):
+        # Monorepo: anchor on the workspace name (parts[1]) plus the
+        # workspace-internal top-level segment (parts[2]). This keeps
+        # sibling workspaces (packages/excalidraw/... vs
+        # packages/element/...) discriminated AND keeps every file inside
+        # a workspace's top-level directory in the same cluster — which
+        # is the same coarseness as `src/components` for a non-monorepo
+        # repo, just one segment deeper.
+        bucket = f"{parts[0]}/{parts[1]}/{parts[2]}"
+    elif len(parts) >= 4:
+        bucket = f"{parts[0]}/{parts[-3]}/{parts[-2]}"
+    else:
+        bucket = f"{parts[0]}/{parts[-2]}"
+
+    if include_extension:
+        # Suffix the file's extension so ``.tsx`` and ``.ts`` (or ``.js``
+        # and ``.jsx``) in the same dir cluster separately. JSX-vs-non-JSX
+        # re-discrimination happens downstream, but by then the cluster's
+        # already been forced — keying the bucket on extension prevents
+        # that.
+        ext = _extension_of(parts[-1])
+        if ext:
+            bucket = f"{bucket}:{ext}"
+    return bucket
+
+
+def _extension_of(filename: str) -> str:
+    """Return the file extension (without leading dot), or '' if none.
+
+    Examples:
+      "Foo.tsx"           -> "tsx"
+      "helper.ts"         -> "ts"
+      "page.test.tsx"     -> "tsx"   (final dot only)
+      "Dockerfile"        -> ""
+      ".gitignore"        -> ""      (leading dot is not an extension)
+    """
+    dot = filename.rfind(".")
+    if dot <= 0:
+        # No dot, or leading dot (".gitignore" → no extension to bucket on).
+        return ""
+    return filename[dot + 1:]
 
 
 def content_signal_match_for(
@@ -182,6 +255,7 @@ def compute_signature(
     *,
     archetype_paths: dict[str, list[str]] | None = None,
     archetype_signals: dict[str, dict] | None = None,
+    include_extension_in_bucket: bool = False,
 ) -> ClusterKey:
     """Compute the 7-tuple cluster signature for a parsed file.
 
@@ -190,9 +264,20 @@ def compute_signature(
 
     Outputs are exact-equality bucketed; clusters group files with identical
     signatures.
+
+    ``include_extension_in_bucket`` forwards to
+    :func:`path_pattern_bucket_for`; the clustering pipeline turns this on
+    so ``.tsx`` and ``.ts`` files in the same dir cluster separately
+    (v0.5.2 Bug 1). Callers that need backward-compatible bucket strings
+    (e.g. ``get_archetype`` reading v0.5.x ``paths_pattern`` entries)
+    leave it False.
     """
     return ClusterKey(
-        path_pattern_bucket=path_pattern_bucket_for(file_path, archetype_paths),
+        path_pattern_bucket=path_pattern_bucket_for(
+            file_path,
+            archetype_paths,
+            include_extension=include_extension_in_bucket,
+        ),
         content_signal_match=content_signal_match_for(
             content_first_200_bytes, archetype_signals
         ),

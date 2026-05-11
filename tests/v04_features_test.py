@@ -248,16 +248,16 @@ with tempfile.TemporaryDirectory(prefix="cv04n_") as tmp:
     )
 
 t(
-    f"PROFILE_SCHEMA_VERSION bumped to 6 (got {PROFILE_SCHEMA_VERSION})",
-    PROFILE_SCHEMA_VERSION == 6,
+    f"PROFILE_SCHEMA_VERSION at v7 (got {PROFILE_SCHEMA_VERSION})",
+    PROFILE_SCHEMA_VERSION == 7,
 )
 t(
     f"ENGINE_MIN_VERSION bumped to 0.4.0 (got {ENGINE_MIN_VERSION})",
     ENGINE_MIN_VERSION == "0.4.0",
 )
 t(
-    f"CURRENT_SCHEMA_VERSION in profile.schema bumped to 6 (got {CURRENT_SCHEMA_VERSION})",
-    CURRENT_SCHEMA_VERSION == 6,
+    f"CURRENT_SCHEMA_VERSION in profile.schema at v7 (got {CURRENT_SCHEMA_VERSION})",
+    CURRENT_SCHEMA_VERSION == 7,
 )
 
 

@@ -215,6 +215,97 @@ def _filenames(member_paths: Iterable[str]) -> list[str]:
     return [p.rsplit("/", 1)[-1] for p in member_paths]
 
 
+def _is_ruby_cluster(member_paths: Iterable[str]) -> bool:
+    """Return True when the cluster's canonical witness lives in a `.rb` file.
+
+    v0.5.2 (Bug 2): Rails priors must only fire when the cluster's members
+    are Ruby — otherwise a TS file under ``app/models/`` (e.g., a stray
+    type definition the team dropped in the Rails tree) would be named
+    ``model`` even though it has no Rails semantics. We use the first
+    member's extension as the language tell; the cluster-purity check
+    elsewhere keeps mixed clusters honest.
+    """
+    members = list(member_paths)
+    if not members:
+        return False
+    # Use the first member as a proxy for the cluster's language. The
+    # bootstrap already groups by extension via the discovery glob, so a
+    # cluster is either Ruby-only or TS-only in practice.
+    return members[0].endswith(".rb")
+
+
+# v0.5.2 (Bug 2): Rails-prior table. Each entry: (directory chain that must
+# appear contiguously somewhere in the bucket OR the member paths, optional
+# filename suffix the member must end in, archetype name). The first match
+# wins; specificity-ordered so ``app/controllers/concerns/`` beats the bare
+# ``controllers`` token.
+#
+# The ``filename_suffix`` field disambiguates buckets the path test alone
+# would over-match (e.g., a Sidekiq worker file named ``foo_worker.rb``
+# under ``app/jobs/`` should still be named ``worker``, but in practice
+# only the ``jobs/`` directory is conventional; we anchor on the dir).
+# When the suffix is None, only the directory chain has to match.
+_RAILS_PRIORS: tuple[tuple[tuple[str, ...], str | None, str], ...] = (
+    # Most specific first: concerns live UNDER controllers/, models/, or
+    # the top-level concerns/ dir.
+    (("app", "controllers", "concerns"), None, "controller-concern"),
+    (("app", "models", "concerns"), None, "model-concern"),
+    # Then the conventional one-deep Rails dirs.
+    (("app", "controllers"), None, "controller"),
+    (("app", "models"), None, "model"),
+    (("app", "services"), None, "service"),
+    (("app", "jobs"), "_job.rb", "job"),
+    (("app", "mailers"), "_mailer.rb", "mailer"),
+    (("app", "helpers"), "_helper.rb", "helper"),
+    (("app", "policies"), None, "policy"),
+    (("app", "serializers"), None, "serializer"),
+    (("app", "presenters"), None, "presenter"),
+    (("app", "workers"), None, "worker"),
+    (("app", "views"), None, "view"),
+    (("db", "migrate"), None, "migration"),
+    (("config", "initializers"), None, "rails-initializer"),
+)
+
+
+def _has_dir_chain(member_paths: list[str], chain: tuple[str, ...]) -> bool:
+    """Return True when the directory ``chain`` appears in the majority of members.
+
+    We treat membership the same way ``_members_contain`` does — a strict
+    majority of the cluster must sit under the directory chain — so a
+    single rogue file dropped into the cluster by a coarse signature can't
+    yank the archetype name in a misleading direction.
+    """
+    if not member_paths:
+        return False
+    matches = 0
+    for p in member_paths:
+        segs = p.split("/")
+        for i in range(len(segs) - len(chain) + 1):
+            if tuple(segs[i:i + len(chain)]) == chain:
+                matches += 1
+                break
+    return matches * 2 >= len(member_paths)
+
+
+def _rails_prior_match(member_paths: list[str]) -> str | None:
+    """Walk the Rails-prior table and return the first matching archetype name.
+
+    Each entry's directory chain must appear in the majority of member
+    paths; when a filename suffix is specified, at least half the members
+    must additionally end with that suffix (catches stray files in the dir).
+    """
+    for chain, filename_suffix, name in _RAILS_PRIORS:
+        if not _has_dir_chain(member_paths, chain):
+            continue
+        if filename_suffix is None:
+            return name
+        # Suffix-aware path: a majority of members must match the suffix.
+        suffix_hits = sum(1 for p in member_paths if p.endswith(filename_suffix))
+        if suffix_hits * 2 >= len(member_paths):
+            return name
+    return None
+
+
 def _base_name_for(cluster: Any) -> str | None:
     """Return a derived base name from cluster signals, or None for fallback.
 
@@ -254,6 +345,18 @@ def _base_name_for(cluster: Any) -> str | None:
     # suffix one ``controller-spec``, which is misleading.
     if _looks_like_test(paths_pattern, member_paths):
         return "test"
+
+    # v0.5.2 (Bug 2): Rails-prior table fires only when the cluster's
+    # canonical witness is a `.rb` file. It catches dirs the v0.5.1
+    # heuristic missed (helpers, presenters, views, controller-concerns)
+    # AND tightens the existing dirs by requiring directory-chain match
+    # rather than the lenient single-token search. The path-bucket from
+    # signature v5 collapses inner segments, so we always test against
+    # the raw member paths.
+    if _is_ruby_cluster(member_paths):
+        prior_name = _rails_prior_match(member_paths)
+        if prior_name is not None:
+            return prior_name
 
     # --- Rails-flavored buckets (paths_pattern starts with ``app/...``) ---
     if _has("controllers"):

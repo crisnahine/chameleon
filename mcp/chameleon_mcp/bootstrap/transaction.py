@@ -27,6 +27,25 @@ from pathlib import Path
 
 COMMITTED_SENTINEL = "COMMITTED"
 
+# v0.5.2 (Bug 1): chameleon-protocol files. Anything in the target_dir whose
+# name is NOT in this set is treated as a user-/team-authored sibling
+# (`.skip`, `.gitignore`, `.editorconfig`, hand-written `.notes`, etc.) and
+# preserved across the atomic directory replacement. Without this, every
+# bootstrap or refresh silently wipes the committed opt-out file the team
+# put alongside the profile. Names in this set are owned by chameleon and
+# are always re-emitted by the txn_dir writer, so the writer's intent wins
+# over any sibling-copy of the same name.
+_PROTOCOL_FILES = frozenset({
+    COMMITTED_SENTINEL,
+    "profile.json",
+    "archetypes.json",
+    "canonicals.json",
+    "rules.json",
+    "idioms.md",
+    "profile.summary.md",
+    "renames.json",
+})
+
 
 def _acquire_rename_lock(lock_path: Path, *, timeout_seconds: float = 30.0) -> int:
     """Block-and-retry until exclusive lock on lock_path is held.
@@ -93,6 +112,39 @@ def atomic_profile_commit(target_dir: Path):
         # fsync the sentinel to ensure it's on disk before the rename
         with open(sentinel, "rb") as f:
             os.fsync(f.fileno())
+
+        # v0.5.2 (Bug 1): preserve user-/team-authored sibling files. The
+        # team commits `.chameleon/.skip` (opt-out marker), `.gitignore`,
+        # `.editorconfig`, and free-form notes alongside the profile. The
+        # pre-v0.5.2 rename clobbered every one of these on each bootstrap.
+        # We copy non-protocol siblings into the txn_dir BEFORE the swap
+        # so the new directory inherits them. Protocol files (profile.json,
+        # idioms.md, …) in the txn_dir always win over any same-named
+        # sibling — the writer's intent for the current generation supersedes
+        # whatever was there before.
+        if target_dir.is_dir():
+            for sibling in target_dir.iterdir():
+                if sibling.name in _PROTOCOL_FILES:
+                    continue
+                dest = txn_dir / sibling.name
+                if dest.exists():
+                    # Writer already produced a file with this name; the
+                    # writer's intent wins (e.g., chameleon decides to start
+                    # emitting `renames.json` in a future schema version —
+                    # we don't want to keep a stale sibling-copy).
+                    continue
+                try:
+                    if sibling.is_dir():
+                        shutil.copytree(sibling, dest, symlinks=True)
+                    else:
+                        # copy2 preserves mtime + perms so the user's
+                        # `.skip` keeps its original metadata across writes.
+                        shutil.copy2(sibling, dest, follow_symlinks=False)
+                except OSError:
+                    # Best-effort: if a sibling refuses to copy (e.g.,
+                    # permissions on a symlink we can't read), skip it
+                    # rather than aborting the bootstrap.
+                    continue
 
         # Atomic rename: txn_dir → target_dir, serialized across concurrent
         # processes via an advisory flock on a sibling file. POSIX rename(2)
