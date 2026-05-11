@@ -18,6 +18,14 @@ from _test_config import TS_REPO
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+# CI / fresh-clone guard: this suite exercises a real repo end-to-end.
+if TS_REPO is None:
+    print(
+        "SKIP: mcp_protocol_test requires CHAMELEON_TEST_TS_REPO. "
+        "Unset on this runner — skipping the suite."
+    )
+    raise SystemExit(0)
+
 PASS, FAIL = [], []
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 SERVER_BIN = PLUGIN_ROOT / "mcp" / ".venv" / "bin" / "chameleon-mcp"

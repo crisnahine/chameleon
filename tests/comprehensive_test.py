@@ -20,6 +20,16 @@ PASS, FAIL = [], []
 
 from _test_config import RUBY_REPO, TS_REPO
 
+# CI / fresh-clone guard: this suite exercises real-repo behavior and needs
+# both test repos. Skip cleanly when either env var is unset rather than
+# crashing on `None / ".chameleon"`.
+if TS_REPO is None or RUBY_REPO is None:
+    print(
+        "SKIP: comprehensive_test requires CHAMELEON_TEST_TS_REPO and "
+        "CHAMELEON_TEST_RUBY_REPO. Unset on this runner — skipping the suite."
+    )
+    raise SystemExit(0)
+
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = PLUGIN_ROOT / "scripts"
 HOOKS = PLUGIN_ROOT / "hooks"
