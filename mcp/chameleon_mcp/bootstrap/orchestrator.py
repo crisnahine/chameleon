@@ -1038,8 +1038,36 @@ def _bootstrap_single(
     # at the sidecar would otherwise return None.
     extractor = _select_extractor(repo_root)
     if extractor is None and inherited_signals_from is not None:
-        # Use the parent's extractor selection.
-        extractor = _select_extractor(inherited_signals_from)
+        # BUG-019 (v0.5.7): sidecar bootstraps should pick the extractor by
+        # what's IN the sidecar, not by what the parent's primary language
+        # was. forem is a Rails-with-frontend repo; _select_extractor at
+        # the forem root returns Ruby (correctly), but the user asked us
+        # to bootstrap forem/app/javascript — the JS half. Inheriting
+        # Ruby extractor → glob "**/*.rb" → zero files in the sidecar.
+        #
+        # Heuristic: count source files of each language inside the
+        # sidecar (depth-limited to avoid scanning node_modules etc.) and
+        # pick the dominant one.
+        from chameleon_mcp.extractors.typescript import TypeScriptExtractor
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        ts_count = ruby_count = 0
+        for ext_token in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
+            ts_count += sum(1 for _ in repo_root.rglob(f"*{ext_token}"))
+            if ts_count > 5:
+                break
+        for _ in repo_root.rglob("*.rb"):
+            ruby_count += 1
+            if ruby_count > 5:
+                break
+
+        if ts_count > ruby_count and ts_count > 0:
+            extractor = TypeScriptExtractor()
+        elif ruby_count > 0:
+            extractor = RubyExtractor()
+        else:
+            # Truly empty — fall back to parent for the error trail.
+            extractor = _select_extractor(inherited_signals_from)
     workspace_roots: list[str] = []
     fanout_capped = False
     if extractor is None:
