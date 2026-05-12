@@ -14,8 +14,7 @@ Covers the most impactful GAP scenarios:
 
 import calendar
 import io
-import json as _stdjson
-import json as _json
+import json
 import os
 import sqlite3
 import sys
@@ -200,14 +199,14 @@ for sv in (3, 4, 5, 6, 7):
         prof_dir = Path(raw) / ".chameleon"
         prof_dir.mkdir()
         (prof_dir / "profile.json").write_text(
-            _json.dumps({"schema_version": sv, "generation": 1, "engine_min_version": "0.4.0",
+            json.dumps({"schema_version": sv, "generation": 1, "engine_min_version": "0.4.0",
                          "language": "typescript"}))
         (prof_dir / "archetypes.json").write_text(
-            _json.dumps({"schema_version": sv, "generation": 1, "archetypes": {}}))
+            json.dumps({"schema_version": sv, "generation": 1, "archetypes": {}}))
         (prof_dir / "rules.json").write_text(
-            _json.dumps({"schema_version": sv, "generation": 1, "rules": {}}))
+            json.dumps({"schema_version": sv, "generation": 1, "rules": {}}))
         (prof_dir / "canonicals.json").write_text(
-            _json.dumps({"schema_version": sv, "generation": 1, "canonicals": {}}))
+            json.dumps({"schema_version": sv, "generation": 1, "canonicals": {}}))
         (prof_dir / "COMMITTED").touch()
         try:
             load_profile_dir(prof_dir)
@@ -226,14 +225,14 @@ for sv in (8, 99, 999):
         prof_dir = Path(raw) / ".chameleon"
         prof_dir.mkdir()
         (prof_dir / "profile.json").write_text(
-            _json.dumps({"schema_version": sv, "generation": 1, "engine_min_version": "0.4.0",
+            json.dumps({"schema_version": sv, "generation": 1, "engine_min_version": "0.4.0",
                          "language": "typescript"}))
         (prof_dir / "archetypes.json").write_text(
-            _json.dumps({"schema_version": sv, "generation": 1, "archetypes": {}}))
+            json.dumps({"schema_version": sv, "generation": 1, "archetypes": {}}))
         (prof_dir / "rules.json").write_text(
-            _json.dumps({"schema_version": sv, "generation": 1, "rules": {}}))
+            json.dumps({"schema_version": sv, "generation": 1, "rules": {}}))
         (prof_dir / "canonicals.json").write_text(
-            _json.dumps({"schema_version": sv, "generation": 1, "canonicals": {}}))
+            json.dumps({"schema_version": sv, "generation": 1, "canonicals": {}}))
         (prof_dir / "COMMITTED").touch()
         try:
             load_profile_dir(prof_dir)
@@ -293,12 +292,12 @@ finally:
 t("session_start returns 0 even without CLAUDE_PLUGIN_ROOT", rc == 0, f"rc={rc}")
 out = captured.getvalue().strip()
 try:
-    parsed = _stdjson.loads(out)
+    parsed = json.loads(out)
     t("session_start emits valid JSON", True)
     t("session_start emits empty payload",
       parsed == {} or parsed.get("hookSpecificOutput") in (None, {}),
       f"got {parsed!r}")
-except _stdjson.JSONDecodeError:
+except json.JSONDecodeError:
     t("session_start emits valid JSON", False, f"got {out!r}")
 
 
