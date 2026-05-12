@@ -12,10 +12,14 @@ Both fixed in v0.5.7-redo. This test exercises both together.
 """
 
 import json
-import shutil
 import sys
 import tempfile
 from pathlib import Path
+
+from chameleon_mcp.bootstrap.tool_config import (
+    _strip_jsonc_comments,
+    read_tool_configs,
+)
 
 PASS, FAIL = [], []
 
@@ -28,12 +32,6 @@ def t(name, condition, info=""):
 
 def section(title):
     print(f"\n=== {title} ===")
-
-
-from chameleon_mcp.bootstrap.tool_config import (
-    _strip_jsonc_comments,
-    read_tool_configs,
-)
 
 
 section("JSONC preserves URLs in string literals")
