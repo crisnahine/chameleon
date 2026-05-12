@@ -1349,7 +1349,8 @@ def _bootstrap_single(
             # No canonical selected (no eligible candidates passed scanners)
             continue
         auto_name = propose_archetype_name(
-            cluster, assigned_names, workspace_roots=workspace_roots or None
+            cluster, assigned_names, workspace_roots=workspace_roots or None,
+            repo_root=str(repo_root),
         )
         # v0.5.1 (Bug 3): overlay the user's rename if one applies.
         effective_name = rename_map.get(auto_name, auto_name)

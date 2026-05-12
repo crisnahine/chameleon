@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from typing import Any
 
 # Public regex mirror — see ``profile.schema.ARCHETYPE_NAME_RE``. Kept in
@@ -116,19 +117,30 @@ def _cluster_attr(cluster: Any, attr: str, default: Any = None) -> Any:
     return getattr(cluster, attr, default)
 
 
-def _member_relpaths(cluster: Any) -> list[str]:
-    """Return the cluster members' paths as POSIX-style strings.
+def _member_relpaths(repo_root: str | None, members: Any) -> list[str]:
+    """Return member paths as POSIX-style strings, relative to repo_root.
 
     Members are ParsedFile instances during real bootstraps and arbitrary
     dicts/strings during unit tests. We tolerate both shapes; callers use
     the result only for filename and segment inspection, never to read
     files.
+
+    When repo_root is provided, each absolute member path is made relative
+    to it so that test-token detection in _looks_like_test is not biased by
+    a repo whose absolute location happens to contain "tests", "spec", or
+    similar segments (e.g., chameleon/tests/fixtures/eval_repos/ts_minimal/).
     """
-    members = getattr(cluster, "members", None)
-    if members is None and isinstance(cluster, dict):
-        members = cluster.get("members", [])
+    if members is None:
+        return []
     if not members:
         return []
+
+    resolved_root: Path | None = None
+    if repo_root is not None:
+        try:
+            resolved_root = Path(repo_root).resolve()
+        except Exception:
+            resolved_root = None
 
     paths: list[str] = []
     for m in members:
@@ -138,10 +150,30 @@ def _member_relpaths(cluster: Any) -> list[str]:
             if isinstance(m, str):
                 paths.append(m.replace("\\", "/"))
             continue
-        # ``Path`` and ``PurePath`` both stringify cleanly; use POSIX form so
-        # the heuristic behaves the same on win32 if it's ever wired up.
+        # Use POSIX form so the heuristic behaves the same on win32 if it's
+        # ever wired up. Convert to a path relative to repo_root so the
+        # test-token detection is not biased by the absolute path containing
+        # tokens like "tests" / "spec" from an unrelated parent directory.
+        if resolved_root is not None:
+            try:
+                rel = Path(p).resolve().relative_to(resolved_root)
+                paths.append(str(rel).replace("\\", "/"))
+                continue
+            except ValueError:
+                # Member path isn't under repo_root for some reason; fall back
+                # to the absolute string (preserves prior behavior for those
+                # cases).
+                pass
         paths.append(str(p).replace("\\", "/"))
     return paths
+
+
+def _extract_members(cluster: Any) -> Any:
+    """Extract the members list from a cluster object or dict."""
+    members = getattr(cluster, "members", None)
+    if members is None and isinstance(cluster, dict):
+        members = cluster.get("members", [])
+    return members or []
 
 
 def _looks_like_test(paths_pattern: str, member_paths: Iterable[str]) -> bool:
@@ -652,6 +684,7 @@ def _ts_prior_match(member_paths: list[str]) -> str | None:
 def _base_name_for(
     cluster: Any,
     workspace_roots: list[str] | None = None,
+    repo_root: str | None = None,
 ) -> str | None:
     """Return a derived base name from cluster signals, or None for fallback.
 
@@ -669,7 +702,7 @@ def _base_name_for(
     default_export = _cluster_attr(cluster, "default_export_kind")
     _cluster_attr(cluster, "top_level_node_kinds") or ()
     jsx_present = bool(_cluster_attr(cluster, "jsx_present", False))
-    member_paths = _member_relpaths(cluster)
+    member_paths = _member_relpaths(repo_root, _extract_members(cluster))
     file_names = _filenames(member_paths)
     # Pre-compute the workspace-stripped variant once per cluster — the
     # TS-prior table uses it; the Rails-prior table uses the raw paths.
@@ -834,7 +867,7 @@ def _short_hash_for(cluster: Any) -> str:
     return "unknown"
 
 
-def _disambiguation_suffixes(cluster: Any) -> list[str]:
+def _disambiguation_suffixes(cluster: Any, repo_root: str | None = None) -> list[str]:
     """All name-safe disambiguator candidates from the cluster's path metadata.
 
     BUG-013: previously returned a single value; when that single value
@@ -856,7 +889,7 @@ def _disambiguation_suffixes(cluster: Any) -> list[str]:
     elif bucket_segs:
         candidate_streams.append(bucket_segs)
 
-    member_paths = _member_relpaths(cluster)
+    member_paths = _member_relpaths(repo_root, _extract_members(cluster))
     if member_paths:
         first_dirs = member_paths[0].rsplit("/", 1)[0].split("/")
         if len(first_dirs) > 1:
@@ -913,6 +946,7 @@ def propose_archetype_name(
     existing_names: set[str],
     *,
     workspace_roots: list[str] | None = None,
+    repo_root: str | None = None,
 ) -> str:
     """Propose a meaningful archetype name for ``cluster``.
 
@@ -933,6 +967,10 @@ def propose_archetype_name(
             so workspace-internal layouts (``apps/web/src/components/``,
             ``packages/propel/src/hooks/``) match the prior table.
             v0.5.4 (Bug F).
+        repo_root: absolute path to the repo root. When provided, member
+            paths are made relative to it before test-token detection so
+            a repo whose absolute location contains "tests" or "spec" in
+            its path does not cause non-test clusters to be misnamed.
 
     Returns:
         A string matching ``^[a-z][a-z0-9-]{0,63}$``. Guaranteed unique
@@ -942,7 +980,7 @@ def propose_archetype_name(
     and ``existing_names`` (and ``workspace_roots``) it always returns
     the same name.
     """
-    base = _base_name_for(cluster, workspace_roots=workspace_roots)
+    base = _base_name_for(cluster, workspace_roots=workspace_roots, repo_root=repo_root)
     if base is not None:
         sanitized = _sanitize(base)
         if sanitized is not None:
@@ -967,7 +1005,7 @@ def propose_archetype_name(
     # decreasing specificity before falling back to a numeric counter, so
     # we get ``react-component-button`` / ``react-component-icons`` /
     # ``react-component-modal`` instead of ``react-component-10``.
-    suffix_candidates = _disambiguation_suffixes(cluster)
+    suffix_candidates = _disambiguation_suffixes(cluster, repo_root=repo_root)
     for suffix in suffix_candidates:
         candidate = _sanitize(f"{base}-{suffix}")
         if candidate is not None and candidate not in existing_names:
