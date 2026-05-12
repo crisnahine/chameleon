@@ -4,6 +4,7 @@ The runner itself runs scenario JSON against get_pattern_context. These
 tests verify the runner's own logic without depending on real fixtures.
 """
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -84,6 +85,22 @@ class AssertScenarioTest(unittest.TestCase):
         )
         self.assertEqual(result.status, "SCHEMA_ROT")
         self.assertIn("refresh_eval_fixtures", " ".join(result.mismatches))
+
+
+class DiscoverScenariosTest(unittest.TestCase):
+    def test_discover_returns_sorted_scenarios(self):
+        from runner import discover_scenarios
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "ts").mkdir()
+            (root / "ruby").mkdir()
+            (root / "ts" / "02-b.json").write_text('{"name": "b"}')
+            (root / "ts" / "01-a.json").write_text('{"name": "a"}')
+            (root / "ruby" / "01-c.json").write_text('{"name": "c"}')
+
+            found = discover_scenarios(root)
+            names = [s["name"] for s in found]
+            self.assertEqual(names, ["c", "a", "b"])
 
 
 if __name__ == "__main__":

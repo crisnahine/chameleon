@@ -104,15 +104,122 @@ def assert_scenario(scenario: dict, response: dict) -> ScenarioResult:
     )
 
 
+def discover_scenarios(root: Path) -> list[dict]:
+    """Glob scenarios/**/*.json, sorted lexicographically."""
+    paths = sorted(glob.glob(str(root / "**" / "*.json"), recursive=True))
+    scenarios = []
+    for p in paths:
+        with open(p, encoding="utf-8") as f:
+            obj = json.load(f)
+        obj["_source_path"] = p
+        scenarios.append(obj)
+    return scenarios
+
+
+def _synthesize_no_profile_marker(repo_tmp: Path, file_path: str) -> None:
+    """For fixture_repo: null, drop a language marker so find_repo_root resolves."""
+    ext = Path(file_path).suffix.lower()
+    if ext in (".ts", ".tsx", ".js", ".jsx"):
+        (repo_tmp / "package.json").write_text("{}")
+    elif ext == ".rb":
+        (repo_tmp / "Gemfile").write_text("source 'https://rubygems.org'\n")
+
+
+def _apply_trust_state(repo_tmp: Path, trust_state: str) -> None:
+    """Per-scenario trust setup. Assumes CHAMELEON_PLUGIN_DATA is already set."""
+    if trust_state in ("untrusted", "n/a"):
+        return
+    from chameleon_mcp.tools import trust_profile
+    trust_profile(str(repo_tmp), repo_tmp.name)
+    if trust_state == "stale":
+        profile_path = repo_tmp / ".chameleon" / "profile.json"
+        with open(profile_path, "ab") as f:
+            f.write(b" ")
+
+
+def run_scenario_mcp(scenario: dict) -> ScenarioResult:
+    """Run one scenario through get_pattern_context (MCP layer)."""
+    from chameleon_mcp.tools import get_pattern_context
+
+    fixture_repo = scenario.get("fixture_repo")
+    file_path = scenario["file_path"]
+    file_content = scenario.get("file_content", "")
+    trust_state = scenario.get("trust_state", "trusted")
+    name = scenario["name"]
+
+    with tempfile.TemporaryDirectory() as repo_tmp_str, tempfile.TemporaryDirectory() as data_tmp_str:
+        repo_tmp = Path(repo_tmp_str)
+        os.environ["CHAMELEON_PLUGIN_DATA"] = data_tmp_str
+        try:
+            if fixture_repo is not None:
+                src = FIXTURES_DIR / fixture_repo
+                if not src.is_dir():
+                    return ScenarioResult(
+                        name=name,
+                        status="ERROR",
+                        mismatches=[f"fixture not found: {src}"],
+                    )
+                shutil.copytree(src, repo_tmp, dirs_exist_ok=True)
+            else:
+                _synthesize_no_profile_marker(repo_tmp, file_path)
+
+            _apply_trust_state(repo_tmp, trust_state)
+
+            target = repo_tmp / file_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(file_content, encoding="utf-8")
+
+            response = get_pattern_context(str(target))
+            return assert_scenario(scenario, response)
+        except Exception as exc:
+            return ScenarioResult(name=name, status="ERROR", mismatches=[repr(exc)])
+        finally:
+            os.environ.pop("CHAMELEON_PLUGIN_DATA", None)
+
+
+def run_scenario_full(scenario: dict) -> ScenarioResult:
+    """Stub: --full mode lands in Task 11."""
+    return ScenarioResult(
+        name=scenario["name"],
+        status="ERROR",
+        mismatches=["--full mode not implemented yet"],
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--full", action="store_true", help="run scenarios through hooks/preflight-and-advise")
     args = parser.parse_args(argv)
 
-    # Placeholder: scenario discovery + execution lands in Task 7.
-    print(json.dumps({"status": "not_implemented", "full": args.full}, indent=2))
-    print("Summary: 0 run, 0 passed, 0 failed", file=sys.stderr)
-    return 0
+    scenarios = discover_scenarios(SCENARIOS_DIR)
+    results: list[ScenarioResult] = []
+
+    for scenario in scenarios:
+        if args.full:
+            result = run_scenario_full(scenario)
+        else:
+            result = run_scenario_mcp(scenario)
+        results.append(result)
+
+        sys.stderr.write(f"[{result.status}] {scenario['name']}\n")
+        for m in result.mismatches:
+            sys.stderr.write(f"    {m}\n")
+
+    passed = sum(1 for r in results if r.status == "PASS")
+    failed = sum(1 for r in results if r.status != "PASS")
+    summary = {
+        "mode": "full" if args.full else "mcp",
+        "scenarios_run": len(results),
+        "passed": passed,
+        "failed": failed,
+        "results": [
+            {"name": r.name, "status": r.status, "mismatches": r.mismatches}
+            for r in results
+        ],
+    }
+    print(json.dumps(summary, indent=2))
+    print(f"Summary: {len(results)} run, {passed} passed, {failed} failed", file=sys.stderr)
+    return 0 if failed == 0 else 1
 
 
 if __name__ == "__main__":
