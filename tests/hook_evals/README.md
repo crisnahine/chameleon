@@ -51,9 +51,12 @@ scripts/refresh_eval_fixtures.sh --apply    # write
 
 `--apply` regenerates `.chameleon/` with `now=1700000000` for deterministic witness selection. Commit the resulting diff.
 
+`--check` always reports DIFF on wall-clock fields (`generation`, `created_at`, `repo_id`) because it bootstraps into a tmpdir and compares paths differ. Use `--check` as a smoke test that bootstrap still succeeds; use `--apply` followed by `git diff` when you want a real diff against checked-in content.
+
 ## Internals
 
 - `runner.py` discovers scenarios via `glob('scenarios/**/*.json')`, sorted.
 - Each scenario gets its own tmpdir for repo and plugin-data, isolated via `CHAMELEON_PLUGIN_DATA`.
 - `--full` mode pipes a synthetic PreToolUse event through `hooks/preflight-and-advise` and parses the advisory from `hookSpecificOutput.additionalContext` or top-level `additionalContext`.
 - Fail-open detection watches `~/.local/share/chameleon/.hook_errors.log` (hardcoded path in the bash hooks; not redirectable via env var). `--full` mode appends one line to that log on hook failure, an accepted cost.
+- Known false positive: if a chameleon daemon is running concurrently with `--full` mode (e.g., during an interactive Claude Code session), the daemon's writes to `.hook_errors.log` can spuriously trip the fail-open guard. Re-run `--full` after a brief idle period; per-second re-runs are stable. CI environments typically don't run a daemon and aren't affected.
