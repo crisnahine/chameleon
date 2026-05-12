@@ -203,7 +203,7 @@ def full_mode_capability_check() -> tuple[bool, str]:
 def _read_mtime(p: Path) -> float | None:
     try:
         return p.stat().st_mtime
-    except FileNotFoundError:
+    except (FileNotFoundError, OSError):
         return None
 
 
