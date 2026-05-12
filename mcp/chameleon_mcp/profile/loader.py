@@ -70,24 +70,12 @@ REPO_ROOT_MARKERS: tuple[str, ...] = (
 def find_repo_root(file_path: Path) -> Path | None:
     """Walk up from file_path looking for a repo-root marker.
 
-    Two-pass strategy (BUG-NEW-002, v0.5.7):
-
-    Pass 1 — walks up to 32 levels collecting every ancestor that has a
-    ``.chameleon/`` directory. If at least one is found, returns the
-    DEEPEST such ancestor (closest to the file). A workspace sub-profile
-    takes priority over an outer profile, but more importantly: a profile
-    that exists higher up the tree is never masked by a closer non-chameleon
-    marker (e.g. ``apps/web/package.json``).
-
-    Pass 2 — no ``.chameleon/`` found anywhere. Walks up again and returns
-    the first ancestor with any other marker (.git, package.json,
-    tsconfig.json, Gemfile, pyproject.toml, go.mod, Cargo.toml).
-
-    Pre-v0.5.7 the walk was single-pass over all markers in priority order,
-    which stopped at the first ancestor with any marker. That returned
-    `apps/web/` (where package.json existed) and never reached the parent
-    monorepo where `.chameleon/` lived. Net effect: in monorepos, every
-    file in workspace subdirs reported `profile_status: no_profile`.
+    A "repo root" is the first ancestor directory containing any of:
+    .chameleon, .git, package.json, tsconfig.json, Gemfile, pyproject.toml,
+    go.mod, or Cargo.toml. Markers are checked in priority order at each
+    level — .chameleon wins over .git wins over a language manifest, so a
+    bootstrapped repo without .git (subtree, vendored copy, sparse
+    checkout, archive extract) still resolves correctly.
 
     Returns the marker directory, or None if no marker is found within 32
     parent directories.
@@ -100,32 +88,14 @@ def find_repo_root(file_path: Path) -> Path | None:
     except OSError:
         return None
 
-    # Pass 1: deepest .chameleon ancestor wins.
-    chameleon_ancestors: list[Path] = []
-    walker = current
-    for _ in range(32):
-        if (walker / ".chameleon").exists():
-            chameleon_ancestors.append(walker)
-        parent = walker.parent
-        if parent == walker:
-            break
-        walker = parent
-    if chameleon_ancestors:
-        # First one encountered going up is the deepest.
-        return chameleon_ancestors[0]
-
-    # Pass 2: first ancestor with any non-.chameleon marker.
-    walker = current
     for _ in range(32):
         for marker in REPO_ROOT_MARKERS:
-            if marker == ".chameleon":
-                continue
-            if (walker / marker).exists():
-                return walker
-        parent = walker.parent
-        if parent == walker:
+            if (current / marker).exists():
+                return current
+        parent = current.parent
+        if parent == current:
             break
-        walker = parent
+        current = parent
     return None
 
 
