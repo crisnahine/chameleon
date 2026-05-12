@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from chameleon_mcp import tools
-import chameleon_mcp.bootstrap.canonical as canonical_mod
+import chameleon_mcp.bootstrap.orchestrator as orchestrator_mod
 
 
 class NowThreadingTest(unittest.TestCase):
@@ -25,9 +25,9 @@ class NowThreadingTest(unittest.TestCase):
                     f"export const v{i} = {i};\n"
                 )
 
-            real_select = canonical_mod.select_canonicals
+            real_select = orchestrator_mod.select_canonicals
             with patch.object(
-                canonical_mod, "select_canonicals", wraps=real_select
+                orchestrator_mod, "select_canonicals", wraps=real_select
             ) as mock_select:
                 tools.bootstrap_repo(str(repo), now=12345.0)
 
