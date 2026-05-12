@@ -1047,10 +1047,7 @@ def _bootstrap_single(
         #
         # Heuristic: count source files of each language inside the
         # sidecar (depth-limited to avoid scanning node_modules etc.) and
-        # pick the dominant one.
-        from chameleon_mcp.extractors.typescript import TypeScriptExtractor
-        from chameleon_mcp.extractors.ruby import RubyExtractor
-
+        # pick the dominant one. Uses the module-level imports.
         ts_count = ruby_count = 0
         for ext_token in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
             ts_count += sum(1 for _ in repo_root.rglob(f"*{ext_token}"))
@@ -1074,6 +1071,37 @@ def _bootstrap_single(
         workspace_roots, fanout_capped = _detect_workspace_ts_monorepo(repo_root)
         if workspace_roots:
             extractor = TypeScriptExtractor()
+            # BUG-003 (v0.5.7): for ad-hoc monorepos that have per-workspace
+            # tool configs (apps/<x>/.eslintrc.cjs, apps/<x>/.prettierrc, ...)
+            # but no root-level ones, fall back to the first workspace's
+            # config. Otherwise rules.json is empty even though every
+            # workspace has perfectly readable lint rules. Single-config
+            # representative isn't perfect (each workspace may differ
+            # slightly) but is strictly better than reporting zero rules.
+            if (
+                not tool_configs.eslint
+                and not tool_configs.prettier
+                and not tool_configs.tsconfig
+            ):
+                for ws_rel in workspace_roots:
+                    ws_path = repo_root / ws_rel
+                    if not ws_path.is_dir():
+                        continue
+                    ws_configs = read_tool_configs(ws_path)
+                    if (
+                        ws_configs.eslint
+                        or ws_configs.prettier
+                        or ws_configs.tsconfig
+                        or ws_configs.rubocop
+                    ):
+                        # Adopt the workspace's configs as repo-wide. Tag
+                        # the source so the user knows it came from a
+                        # sub-workspace.
+                        tool_configs = ws_configs
+                        tool_configs.sources = {
+                            k: f"{ws_rel}/{v}" for k, v in ws_configs.sources.items()
+                        }
+                        break
     if extractor is None:
         # BUG-001: surface discoverable sub-projects so the slash-command
         # UI can prompt the user. We walk apps/* and packages/* one level
