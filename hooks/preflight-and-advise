@@ -28,7 +28,16 @@ else
     exit 0
 fi
 
+# BUG-NEW-010 (v0.5.7): when the helper fails silently (typical when
+# system python3 lacks chameleon_mcp deps), keep a rotating error log so
+# users can diagnose why no advisory is firing. The log lives outside
+# the plugin tree to survive plugin upgrades.
+LOG_DIR="${HOME}/.local/share/chameleon"
+mkdir -p "${LOG_DIR}" 2>/dev/null || true
+LOG_FILE="${LOG_DIR}/.hook_errors.log"
+
 # 2-second hard timeout (Round 5 Performance Engineer recommendation)
 PYTHONPATH="${MCP_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
     timeout 2 "${PYTHON}" -m chameleon_mcp.hook_helper preflight-and-advise \
-    || printf '{}\n'
+    2>>"${LOG_FILE}" \
+    || { echo "[$(date -u +%FT%TZ)] preflight-and-advise failed (python=${PYTHON})" >>"${LOG_FILE}"; printf '{}\n'; }

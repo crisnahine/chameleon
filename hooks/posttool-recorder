@@ -30,7 +30,13 @@ else
     exit 0
 fi
 
+# BUG-NEW-010 (v0.5.7): rotating error log so silent failures are diagnosable.
+LOG_DIR="${HOME}/.local/share/chameleon"
+mkdir -p "${LOG_DIR}" 2>/dev/null || true
+LOG_FILE="${LOG_DIR}/.hook_errors.log"
+
 # 2-second hard timeout — log writes should be near-instant.
 PYTHONPATH="${MCP_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
     timeout 2 "${PYTHON}" -m chameleon_mcp.hook_helper posttool-recorder \
-    || printf '{}\n'
+    2>>"${LOG_FILE}" \
+    || { echo "[$(date -u +%FT%TZ)] posttool-recorder failed (python=${PYTHON})" >>"${LOG_FILE}"; printf '{}\n'; }
