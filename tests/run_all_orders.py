@@ -1,6 +1,6 @@
 """Test-suite isolation verifier.
 
-Runs all 6 chameleon test files in 3 different randomized orders. If any
+Runs all 6 chameleon test files in 4 orders (canonical + 3 randomized). If any
 test depends on state set up by an earlier file, at least one ordering
 will fail.
 
