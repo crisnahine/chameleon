@@ -374,6 +374,19 @@ class BootstrapReport:
     "distributions": {dim: {value_str: count}}}. The future interview UI uses
     these to offer a manual split.
     """
+    nested_profile_warnings: list[str] = field(default_factory=list)
+    """BUG-NEW-005 (v0.5.7): pre-existing `.chameleon/` directories found
+    in workspace subdirectories of the repo being bootstrapped.
+
+    When a prior test/dogfood run bootstrapped a sub-workspace directly,
+    its `.chameleon/` persists. Subsequent bootstraps at the parent root
+    don't prune these — so `detect_repo` for a file in that workspace
+    will resolve to the stale sub-profile instead of the freshly-written
+    root profile. Surfacing them as warnings lets the user prune manually.
+
+    Each entry is a relative path from repo_root, e.g.
+    "apps/react-vite/.chameleon".
+    """
     workspace_reports: list[dict] = field(default_factory=list)
     """v0.4 (2D.3): per-workspace bootstrap summaries for monorepos.
 
@@ -469,6 +482,7 @@ class BootstrapReport:
             "error": self.error,
             "sparse_cluster_warnings": list(self.sparse_cluster_warnings),
             "bimodal_cluster_warnings": list(self.bimodal_cluster_warnings),
+            "nested_profile_warnings": list(self.nested_profile_warnings),
             "workspaces": list(self.workspace_reports),
         }
         # Always include language_hint in the envelope (None when no hybrid
@@ -1531,6 +1545,29 @@ def _bootstrap_single(
             )
 
     duration_ms = int((time.time() - started_at) * 1000)
+
+    # BUG-NEW-005 (v0.5.7): scan for nested `.chameleon/` profiles in
+    # workspace subdirs. These typically come from prior dogfood runs
+    # that bootstrapped sub-workspaces directly; they persist and shadow
+    # the freshly-written root profile during detection. Surface the
+    # paths (relative to repo_root) so the user can decide whether to
+    # prune. The scan is depth-limited via a glob of common workspace
+    # parents to avoid trawling node_modules / vendor / etc.
+    nested_warnings: list[str] = []
+    for pat in (
+        "apps/*/.chameleon",
+        "packages/*/.chameleon",
+        "services/*/.chameleon",
+        "workspaces/*/.chameleon",
+        "examples/*/.chameleon",
+    ):
+        for match in repo_root.glob(pat):
+            try:
+                rel = str(match.relative_to(repo_root))
+            except ValueError:
+                rel = str(match)
+            nested_warnings.append(rel)
+
     return BootstrapReport(
         status="success",
         archetypes_detected=archetype_count,
@@ -1544,6 +1581,7 @@ def _bootstrap_single(
         profile_path=profile_dir,
         sparse_cluster_warnings=sparse_warnings,
         bimodal_cluster_warnings=bimodal_warnings,
+        nested_profile_warnings=nested_warnings,
         language_hint=language_hint,
         # v0.5.3 (Bug B): workspace drill-down envelope fields. Empty for
         # single-root repos so the keys stay stable.
