@@ -5,7 +5,9 @@ description: Use when the user explicitly invokes /chameleon-pause-15m to tempor
 
 # /chameleon-pause-15m
 
-Pause chameleon's advisory injections for exactly 15 minutes. Auto-resumes after the timer expires. Use when latency is unwelcome for a short focused window (e.g., live coding, code review walkthrough, demo).
+Pause chameleon's advisory injections for 15 minutes by default. Auto-resumes after the timer expires. Use when latency is unwelcome for a short focused window (e.g. live coding, code review walkthrough, demo).
+
+The underlying `pause_session` MCP tool accepts any integer in `[1, 240]` minutes; the `-15m` slash command alias is the default convenience. If a different duration is needed, call `pause_session(repo, minutes=N)` directly.
 
 ## When to use
 

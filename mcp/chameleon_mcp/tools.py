@@ -2410,15 +2410,51 @@ def teach_profile(repo: str, feedback: str) -> dict:
             else ""
         )
 
+        # BUG-NEW-006 (v0.5.7): derive a human slug from the rationale's
+        # first non-empty line. Strips markdown formatting, takes the
+        # first ~5 words, kebab-cases them. Pre-fix the slug was always
+        # idiom-<date>-<epoch>-<rand>, giving idioms.md entries no
+        # visible meaning until the reader opened the body.
+        def _slug_from_rationale(text: str) -> str:
+            import re as _re
+
+            first_line = ""
+            for line in text.splitlines():
+                stripped = line.strip()
+                # Skip markdown headers, empty lines, code-fence markers.
+                if not stripped or stripped.startswith(("#", "```", ">", "*", "-")):
+                    continue
+                first_line = stripped
+                break
+            if not first_line:
+                return ""
+            # Lower-case, replace non-alphanumeric with hyphens, collapse, trim.
+            slugged = _re.sub(r"[^a-z0-9]+", "-", first_line.lower()).strip("-")
+            words = slugged.split("-")[:5]
+            candidate = "-".join(w for w in words if w)
+            # Bound length and reject too-short or non-alpha slugs.
+            if len(candidate) < 4 or candidate.isdigit():
+                return ""
+            return candidate[:40]
+
         def _new_slug() -> str:
             return (
                 f"idiom-{timestamp}-{int(time.time())}-"
                 f"{secrets.token_hex(2)}"
             )
 
-        slug = _new_slug()
-        if f"### {slug}\n" in existing_text or f"### {slug} " in existing_text:
+        # Prefer rationale-derived slug; fall back to timestamp slug on
+        # collision or unsuitable input.
+        rationale_slug = _slug_from_rationale(body)
+        if rationale_slug and (
+            f"### {rationale_slug}\n" not in existing_text
+            and f"### {rationale_slug} " not in existing_text
+        ):
+            slug = rationale_slug
+        else:
             slug = _new_slug()
+            if f"### {slug}\n" in existing_text or f"### {slug} " in existing_text:
+                slug = _new_slug()
         addition = f"\n### {slug}\nStatus: active (added {timestamp})\n{body}\n"
 
     lock_path = idioms_path.parent / ".idioms.lock"
@@ -2469,10 +2505,27 @@ def _escape_markdown_section_headings(text: str) -> str:
 
     Only levels 1 and 2 are escaped — `###`, `####`, … are valid idiom
     sub-headers and stay untouched.
+
+    BUG-NEW-007 (v0.5.7): don't escape inside fenced code blocks. A
+    rationale that includes `# frozen_string_literal: true` inside a
+    triple-backtick block must render literally. Pre-fix the escape
+    produced `\\# frozen_string_literal: true` visible to the reader,
+    cosmetic-broken in the canonical Ruby comment convention.
     """
     lines = text.split("\n")
     out: list[str] = []
+    in_fence = False
     for line in lines:
+        # Toggle on/off when we see a fence marker (```), with or without
+        # an info string. Treat the line as fence-boundary regardless of
+        # leading whitespace.
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
         stripped = line.lstrip()
         indent = line[: len(line) - len(stripped)]
         if (

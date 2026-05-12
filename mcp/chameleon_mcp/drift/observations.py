@@ -26,6 +26,13 @@ _CONFIDENCE_BAND_TO_FLOAT = {
     None: 0.0,
 }
 
+# BUG-NEW-022 (v0.5.7): retention caps for edit_observations. The HARD
+# cap triggers a cleanup pass; the SOFT cap is the post-cleanup ceiling.
+# 90-day age cutoff fires first; if that didn't trim enough, keep the
+# newest SOFT-cap rows.
+_EDIT_OBS_HARD_CAP = 50_000
+_EDIT_OBS_SOFT_CAP = 10_000
+
 
 def _drift_db_path(repo_id: str) -> Path:
     return plugin_data_dir() / repo_id / "drift.db"
@@ -80,6 +87,37 @@ def record_edit_observation(
                 """,
                 (rel_path, 0, None, None, archetype, None, confidence, ts),
             )
+            # BUG-NEW-022 (v0.5.7): keep edit_observations bounded. Without
+            # retention, drift.db grows monotonically: each PreToolUse on
+            # the same file appends a new row. Heavy editing leaves
+            # millions of rows in months. We trim opportunistically (only
+            # when the insert raises the count past the threshold) so the
+            # cost amortizes to ~one DELETE per few thousand inserts.
+            (count,) = conn.execute(
+                "SELECT COUNT(*) FROM edit_observations"
+            ).fetchone()
+            if count > _EDIT_OBS_HARD_CAP:
+                ninety_days_ago = ts - 90 * 24 * 3600
+                conn.execute(
+                    "DELETE FROM edit_observations WHERE observed_at < ?",
+                    (ninety_days_ago,),
+                )
+                # If 90-day age cap didn't drop us below the soft cap,
+                # truncate by row id keeping only the newest soft-cap rows.
+                (count_after,) = conn.execute(
+                    "SELECT COUNT(*) FROM edit_observations"
+                ).fetchone()
+                if count_after > _EDIT_OBS_SOFT_CAP:
+                    conn.execute(
+                        """
+                        DELETE FROM edit_observations
+                        WHERE id NOT IN (
+                            SELECT id FROM edit_observations
+                            ORDER BY observed_at DESC LIMIT ?
+                        )
+                        """,
+                        (_EDIT_OBS_SOFT_CAP,),
+                    )
     except sqlite3.Error:
         return
     finally:
