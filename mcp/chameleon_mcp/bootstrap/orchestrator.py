@@ -1544,6 +1544,49 @@ def _bootstrap_single(
                 encoding="utf-8",
             )
 
+    # BUG-NEW-021 (v0.5.7): populate drift.db's files table with one row
+    # per clustered file. Without this baseline, refresh's incremental
+    # detection treats every file as new and refresh degrades to full
+    # rebootstrap; /chameleon-status also can't aggregate "files indexed"
+    # accurately. Fail-open: any sqlite error is swallowed (advisory).
+    try:
+        from chameleon_mcp.drift.observations import record_bootstrap_baseline
+
+        # Map cluster_id (selection key) → archetype name once.
+        cluster_id_to_name: dict[str, str] = {}
+        for arch_name, body in archetypes_data["archetypes"].items():
+            cid = body.get("cluster_id")
+            if isinstance(cid, str):
+                cluster_id_to_name[cid] = arch_name
+
+        baseline_rows: list[tuple[str, str | None, str | None]] = []
+        for cluster in clustering.dense_clusters:
+            # Recover the selection key for this cluster (same lookup the
+            # naming pass above uses).
+            cluster_id = next(
+                (cid for cid, sel in selection.selections.items()
+                 if sel.witness_path in {pf.path for pf in cluster.members}),
+                None,
+            )
+            arch_name = cluster_id_to_name.get(cluster_id) if cluster_id else None
+            confidence = "high" if cluster.size >= 5 else "medium"
+            for member in cluster.members:
+                try:
+                    rel = str(member.path.relative_to(repo_root))
+                except ValueError:
+                    rel = str(member.path)
+                baseline_rows.append((rel, arch_name, confidence))
+        for cluster in clustering.sparse_clusters:
+            for member in cluster.members:
+                try:
+                    rel = str(member.path.relative_to(repo_root))
+                except ValueError:
+                    rel = str(member.path)
+                baseline_rows.append((rel, None, "low"))
+        record_bootstrap_baseline(repo_id, baseline_rows)
+    except Exception:
+        pass
+
     duration_ms = int((time.time() - started_at) * 1000)
 
     # BUG-NEW-005 (v0.5.7): scan for nested `.chameleon/` profiles in

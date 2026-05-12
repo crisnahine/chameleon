@@ -89,6 +89,69 @@ def record_edit_observation(
             pass
 
 
+def record_bootstrap_baseline(
+    repo_id: str,
+    clustered_files: list[tuple[str, str | None, str | None]],
+) -> int:
+    """Populate the `files` table with one row per clustered file.
+
+    BUG-NEW-021 (v0.5.7): pre-fix the `files` table only got rows from
+    PreToolUse hook fires. Bootstrap on a 4 799-file repo left the table
+    with 1 row (the file the model later touched). refresh_drift / drift
+    detection has no baseline — every "is this file new" check sees a
+    miss and the cache is effectively useless.
+
+    Args:
+        repo_id: the canonical repo id (hex digest).
+        clustered_files: list of (rel_path, archetype, confidence_band) tuples,
+            one per file the clusterer assigned (sparse-dropped files included
+            with archetype=None).
+
+    Returns:
+        Number of rows written.
+
+    Fail-open: any sqlite error is swallowed.
+    """
+    if not repo_id or not clustered_files:
+        return 0
+    db_path = _drift_db_path(repo_id)
+    ts = int(time.time())
+    try:
+        conn = init_drift_db(db_path)
+    except (sqlite3.Error, OSError):
+        return 0
+    written = 0
+    try:
+        with conn:
+            for rel_path, archetype, band in clustered_files:
+                confidence = _CONFIDENCE_BAND_TO_FLOAT.get(band, 0.0)
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO files
+                          (rel_path, mtime_ns, size, sha_hint, archetype, cached_sig,
+                           last_observed_confidence, last_seen_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(rel_path) DO UPDATE SET
+                          archetype = excluded.archetype,
+                          last_observed_confidence = excluded.last_observed_confidence,
+                          last_seen_at = excluded.last_seen_at
+                        """,
+                        (rel_path, 0, None, None, archetype, None, confidence, ts),
+                    )
+                    written += 1
+                except sqlite3.Error:
+                    continue
+    except sqlite3.Error:
+        return written
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return written
+
+
 def compute_drift_score(repo_id: str, *, window_days: int = 14) -> float | None:
     """Compute observed_drift_score from recent edit_observations.
 
