@@ -7,6 +7,6 @@
   "trust_state": "trusted",
   "expected": {
     "archetype_name": "component",
-    "canonical_excerpt_includes": ["<"]
+    "canonical_excerpt_includes": ["=>"]
   }
 }
