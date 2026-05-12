@@ -544,9 +544,16 @@ def get_archetype(repo: str, file_path: str) -> dict:
         except OSError:
             file_head = None
 
-    content_signal_value: str | None = (
-        content_signal_match_for(file_head) if file_head is not None else None
+    # BUG-NEW-008 (v0.5.7): content_signal_match always returns a string
+    # from {"strong", "weak", "none"}. Pre-fix this could be None when the
+    # file couldn't be read, contradicting the documented schema. The
+    # downstream get_pattern_context envelope had a mix of "none" and null
+    # across hit vs miss paths.
+    content_signal_value: str = (
+        content_signal_match_for(file_head) if file_head is not None else "none"
     )
+    if content_signal_value is None:
+        content_signal_value = "none"
 
     repo_root = find_repo_root(p)
     if repo_root is None or _compute_repo_id(repo_root) != repo:

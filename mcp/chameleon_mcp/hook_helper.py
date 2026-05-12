@@ -290,10 +290,16 @@ def preflight_and_advise() -> int:
         f"confidence={archetype_obj.get('confidence_band', 'unknown')}]\n\n"
     )
     if trust_state == "stale":
+        # BUG-NEW-011 (v0.5.7): explain the "stale" cause. Pre-fix the
+        # message just said "Trust is stale" without saying why, which was
+        # confusing right after a user trusted then refreshed. Refresh
+        # invalidates the trust grant because the profile sha changes.
         block += (
-            "**Trust is stale**: the .chameleon/ profile has changed since the user trusted it. "
-            "Surface this once to your human partner and suggest /chameleon-trust to re-confirm. "
-            "Do not block the edit; chameleon advisory is provided below for reference only.\n\n"
+            "**Trust is stale**: a recent /chameleon-refresh (or manual edit) "
+            "changed `.chameleon/profile.json` after the trust grant. Trust is "
+            "tied to the profile sha, so the grant no longer covers the current "
+            "profile. Suggest /chameleon-trust to re-confirm. Do not block the "
+            "edit; chameleon advisory is provided below for reference only.\n\n"
         )
     if excerpt_content:
         block += "Canonical witness:\n```\n"
@@ -355,11 +361,24 @@ def posttool_recorder() -> int:
 # Frustration phrases that suggest the user is unhappy with chameleon's
 # latency or pattern advice. Surfaced as a one-line reminder via
 # additionalContext.
+#
+# BUG-NEW-014 (v0.5.7): expanded coverage. Pre-fix the patterns missed
+# the obvious frustration markers ("annoying", "hate", expletives) and
+# over-triggered on a bare "stop" in any context ("don't stop now"). The
+# expanded set:
+#   - keeps interjection markers (ugh, argh, wtf, nope) but drops solo "stop"
+#     to avoid false positives;
+#   - adds plain-English unhappiness ("hate", "annoying", "frustrating", "useless");
+#   - adds common expletives that almost always co-occur with frustration;
+#   - keeps chameleon-specific patterns explicit.
 _FRUSTRATION_PATTERNS = (
-    re.compile(r"\b(ugh|argh|wtf|stop|nope|wait)\b", re.IGNORECASE),
+    re.compile(r"\b(ugh|argh|wtf|nope|sucks|useless|dumb)\b", re.IGNORECASE),
+    re.compile(r"\b(annoying|annoyed|frustrating|frustrated|hate|hating)\b", re.IGNORECASE),
+    re.compile(r"\b(damn|fuck|fucking|shit|crap|bullshit)\b", re.IGNORECASE),
     re.compile(r"this isn'?t right", re.IGNORECASE),
     re.compile(r"don'?t (do|use|inject) (that|this)", re.IGNORECASE),
-    re.compile(r"chameleon\s+is\s+(slow|wrong|broken)", re.IGNORECASE),
+    re.compile(r"chameleon\s+is\s+(slow|wrong|broken|annoying|useless)", re.IGNORECASE),
+    re.compile(r"stop (injecting|using|doing|adding)", re.IGNORECASE),
 )
 
 
