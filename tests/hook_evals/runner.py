@@ -287,6 +287,21 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
                         mismatches.append(
                             f"advisory blob missing archetype hint {expected_arch!r}"
                         )
+
+            expected_trust = expected.get("trust_state")
+            if expected_trust is not None:
+                if expected_trust not in advisory_text:
+                    mismatches.append(
+                        f"advisory blob missing trust_state hint {expected_trust!r}"
+                    )
+
+            expected_profile_status = expected.get("profile_status")
+            if expected_profile_status is not None:
+                if expected_profile_status not in advisory_text:
+                    mismatches.append(
+                        f"advisory blob missing profile_status hint {expected_profile_status!r}"
+                    )
+
             for needle in expected.get("canonical_excerpt_includes", []) or []:
                 if needle not in advisory_text:
                     mismatches.append(f"advisory blob missing substring {needle!r}")
