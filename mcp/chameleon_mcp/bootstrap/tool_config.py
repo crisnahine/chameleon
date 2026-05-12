@@ -195,20 +195,66 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
 
 
 def _strip_jsonc_comments(text: str) -> str:
-    """Minimal JSONC → JSON: strip // and /* */ comments. Preserves strings."""
-    # Remove /* ... */ block comments (non-greedy)
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    # Remove // line comments (but not inside strings — heuristic)
-    out_lines = []
-    for line in text.splitlines():
-        # Naive: strip after // unless preceded by ":" (URL-like)
-        # tsconfig comments are typically full-line or end-of-line.
-        stripped = line.split("//", 1)[0] if "//" in line else line
-        out_lines.append(stripped)
-    text = "\n".join(out_lines)
+    """Minimal JSONC → JSON: strip // and /* */ comments. Preserves strings.
+
+    BUG-NEW-012 (v0.5.7-redo): the previous implementation naively split on
+    `//` and ate everything after, which corrupted URL string literals like
+    ``"$schema": "https://json.schemastore.org/tsconfig"``. tsconfig files
+    that ship a $schema URL (most modern ones do) failed to parse, returning
+    `None` from `_load_tsconfig_file` and dropping the whole extends chain.
+
+    The fix is a single-pass scanner that tracks string-literal state so
+    `//` and `/* */` only strip when outside a string. Escape sequences
+    inside strings are handled minimally — enough to survive ``\\"`` and
+    ``\\\\``. Trailing-comma cleanup runs after.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    in_string = False
+    while i < n:
+        ch = text[i]
+        if in_string:
+            if ch == "\\" and i + 1 < n:
+                # Preserve escape pair verbatim
+                out.append(ch)
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            out.append(ch)
+            i += 1
+            continue
+        # Outside string
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "/":
+                # Line comment: skip to newline
+                j = text.find("\n", i + 2)
+                if j == -1:
+                    j = n
+                i = j
+                continue
+            if nxt == "*":
+                # Block comment: skip to */
+                j = text.find("*/", i + 2)
+                if j == -1:
+                    i = n
+                else:
+                    i = j + 2
+                continue
+        out.append(ch)
+        i += 1
+    stripped = "".join(out)
     # Strip trailing commas before ] or }
-    text = re.sub(r",(\s*[\]}])", r"\1", text)
-    return text
+    stripped = re.sub(r",(\s*[\]}])", r"\1", stripped)
+    return stripped
 
 
 # ---------------------------------------------------------------------------
@@ -403,12 +449,111 @@ def _resolve_extends_target(
             except OSError:  # pragma: no cover — defensive
                 break
 
+        # BUG-NEW-012 (v0.5.7-redo): also try workspace packages when the
+        # specifier looks like an org-prefixed local package
+        # (e.g. ``@plane/typescript-config/react-library.json``).
+        # pnpm/yarn-workspace monorepos publish their config packages
+        # through ``link:`` / ``workspace:`` deps, so they don't end up
+        # under ``node_modules/`` in fresh checkouts. The repo's
+        # ``packages/<name>/`` is the actual on-disk location.
+        # Pass from_dir (the tsconfig's parent dir) so the workspace
+        # walker starts in a directory, not a file.
+        candidates.extend(
+            _resolve_workspace_package_target(target, from_dir, repo_root)
+        )
+
     for cand in candidates:
         if cand.is_file():
             parsed = _load_tsconfig_file(cand)
             if parsed is not None:
                 return cand, parsed
     return None
+
+
+def _workspace_monorepo_root(start: Path) -> Path | None:
+    """Walk up from ``start`` looking for a workspace-monorepo root.
+
+    BUG-NEW-012 helper: the workspace root carries one of:
+      * ``pnpm-workspace.yaml`` (pnpm)
+      * ``package.json`` with a ``workspaces`` field (yarn / npm 7+)
+
+    The first ancestor that matches wins. Returns None if no workspace
+    root is found within 8 levels (we don't need to walk far).
+    """
+    walker = start
+    for _ in range(8):
+        if (walker / "pnpm-workspace.yaml").is_file():
+            return walker
+        pkg = walker / "package.json"
+        if pkg.is_file():
+            try:
+                data = json.loads(pkg.read_text(errors="replace"))
+            except (OSError, json.JSONDecodeError):
+                data = None
+            if isinstance(data, dict) and data.get("workspaces"):
+                return walker
+        parent = walker.parent
+        if parent == walker:
+            break
+        walker = parent
+    return None
+
+
+def _resolve_workspace_package_target(
+    target: str, from_path: Path, repo_root: Path
+) -> list[Path]:
+    """Find candidate paths for an org-prefixed workspace-local package.
+
+    BUG-NEW-012 (v0.5.7-redo): pnpm/yarn-workspace monorepos like plane
+    publish their tsconfig packages via ``link:`` / ``workspace:`` deps,
+    so ``node_modules/@plane/typescript-config/react-library.json`` does
+    not exist on a fresh checkout. The actual files live at
+    ``packages/typescript-config/react-library.json``.
+
+    Heuristic: for a specifier ``@org/pkg-name/sub/path.json``:
+      1. Find the workspace monorepo root by walking up from from_path
+         until we hit ``pnpm-workspace.yaml`` or a ``package.json`` with
+         a ``workspaces`` field. Fall back to repo_root if none found.
+      2. Look in ``<ws_root>/packages/<pkg-name>/``, ``apps/<pkg-name>/``,
+         etc.
+
+    We need step 1 because read_tool_configs is called with the
+    workspace dir as repo_root (not the actual monorepo root), so
+    repo_root alone can't locate sibling packages.
+    """
+    target_path = Path(target)
+    parts = target_path.parts
+    if not parts:
+        return []
+    head = parts[0]
+
+    # Org-prefixed specifier (@org/pkg/...) parses as ["@org", "pkg", ...].
+    if head.startswith("@") and len(parts) >= 2:
+        pkg_name = parts[1]
+        rest = Path(*parts[2:]) if len(parts) > 2 else None
+    else:
+        return []
+
+    if not pkg_name:
+        return []
+
+    # Find workspace root; fall back to repo_root if no ws root upstream.
+    ws_root = _workspace_monorepo_root(from_path) or repo_root
+
+    candidates: list[Path] = []
+    for ws_parent in ("packages", "apps", "services", "workspaces"):
+        pkg_dir = ws_root / ws_parent / pkg_name
+        if not pkg_dir.is_dir():
+            continue
+        if rest is None:
+            # Default to tsconfig.json in the package root.
+            candidates.append(pkg_dir / "tsconfig.json")
+            candidates.append(pkg_dir / "tsconfig.base.json")
+        else:
+            candidates.append(pkg_dir / rest)
+            if rest.suffix != ".json":
+                candidates.append(pkg_dir / rest.with_suffix(".json"))
+    return candidates
 
 
 def _load_tsconfig_file(path: Path) -> dict | None:
