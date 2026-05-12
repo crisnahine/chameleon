@@ -263,8 +263,14 @@ t(
 )
 r = trust_profile("relative/path", "x")["data"]
 t(
-    "relative path returns 'must be absolute'",
-    "must be absolute" in r.get("error", ""),
+    # BUG-004 (v0.5.6): trust_profile now accepts an absolute path OR a
+    # 64-char repo_id hex digest; the relative-path rejection message
+    # changed accordingly.
+    "relative (non-absolute, non-repo_id) input is rejected",
+    r.get("status") == "failed" and (
+        "must be absolute" in r.get("error", "")
+        or "absolute repo path" in r.get("error", "")
+    ),
     r.get("error"),
 )
 
