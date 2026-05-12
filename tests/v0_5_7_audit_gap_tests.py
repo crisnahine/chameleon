@@ -301,6 +301,49 @@ except json.JSONDecodeError:
     t("session_start emits valid JSON", False, f"got {out!r}")
 
 
+
+# ---------------------------------------------------------------------------
+# BUG-NEW-023 - get_drift_status uses UTC, not local TZ (v0.5.7-followup)
+# ---------------------------------------------------------------------------
+section("BUG-NEW-023 get_drift_status timezone parity")
+
+import unittest.mock as _mock
+
+from chameleon_mcp.profile import trust as _trust_mod
+from chameleon_mcp.profile.trust import TrustRecord
+from chameleon_mcp.tools import get_drift_status
+
+with tempfile.TemporaryDirectory() as raw:
+    tmp = Path(raw)
+    _isolated_plugin_data(tmp)
+    repo_id = "f" * 64
+    pdir = plugin_data_dir() / repo_id
+    pdir.mkdir(parents=True)
+    granted_iso = "2026-05-01T12:00:00Z"  # 11 days before "now" of 2026-05-12 12:00 UTC
+
+    fake_trust = TrustRecord(
+        granted_at=granted_iso,
+        granted_by_user="test",
+        profile_sha256="x" * 64,
+        repo_root=str(tmp),
+        repo_root_specific_hashes={},
+    )
+
+    def _fake_trust_state(rid):
+        return fake_trust if rid == repo_id else None
+
+    frozen_now = calendar.timegm(
+        time.strptime("2026-05-12T12:00:00Z", "%Y-%m-%dT%H:%M:%SZ")
+    )
+
+    with _mock.patch.object(_trust_mod, "trust_state_for", _fake_trust_state), \
+         _mock.patch("time.time", return_value=frozen_now):
+        resp = get_drift_status(repo_id)
+    days = resp["data"]["days_since_refresh"]
+    t("days_since_refresh = 11 (UTC math, not local-TZ-shifted)",
+      days == 11, f"got {days}")
+
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

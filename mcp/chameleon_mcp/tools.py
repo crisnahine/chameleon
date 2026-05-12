@@ -1353,7 +1353,16 @@ def get_drift_status(repo: str) -> dict:
     days_since_refresh: int | None = None
     if trust is not None and trust.granted_at:
         try:
-            granted_epoch = time.mktime(time.strptime(trust.granted_at, "%Y-%m-%dT%H:%M:%SZ"))
+            # BUG-NEW-023 (v0.5.7): use calendar.timegm to interpret the
+            # ISO timestamp as UTC. trust.granted_at is written with
+            # time.gmtime() upstream, so reading it with time.mktime
+            # (local TZ) produced a tz_offset drift in days_since_refresh.
+            # Confirmed 8h offset on PST in the v0.5.7 audit tests.
+            import calendar as _calendar
+
+            granted_epoch = _calendar.timegm(
+                time.strptime(trust.granted_at, "%Y-%m-%dT%H:%M:%SZ")
+            )
             days_since_refresh = max(0, int((time.time() - granted_epoch) / 86_400))
         except ValueError:
             days_since_refresh = None
