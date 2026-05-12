@@ -12,12 +12,31 @@ Covers the most impactful GAP scenarios:
   * Hook fail-open on missing CLAUDE_PLUGIN_ROOT
 """
 
+import calendar
+import io
+import json as _stdjson
+import json as _json
 import os
 import sqlite3
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+from chameleon_mcp.drift.observations import (
+    _EDIT_OBS_HARD_CAP,
+    _EDIT_OBS_SOFT_CAP,
+    record_bootstrap_baseline,
+    record_edit_observation,
+)
+from chameleon_mcp.hook_helper import session_start
+from chameleon_mcp.profile.loader import (
+    ProfileLoadError,
+    find_repo_root,
+    load_profile_dir,
+)
+from chameleon_mcp.profile.trust import plugin_data_dir
+from chameleon_mcp.tools import _iso_to_epoch
 
 PASS, FAIL = [], []
 
@@ -30,17 +49,6 @@ def t(name, condition, info=""):
 
 def section(title):
     print(f"\n=== {title} ===")
-
-
-from chameleon_mcp.drift.observations import (
-    _EDIT_OBS_HARD_CAP,
-    _EDIT_OBS_SOFT_CAP,
-    compute_drift_score,
-    record_bootstrap_baseline,
-    record_edit_observation,
-)
-from chameleon_mcp.profile.loader import find_repo_root
-from chameleon_mcp.profile.trust import plugin_data_dir
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +151,6 @@ with tempfile.TemporaryDirectory() as raw:
 # ---------------------------------------------------------------------------
 section("Fail-open contract — record_edit_observation on read-only path")
 
-import stat
 with tempfile.TemporaryDirectory() as raw:
     tmp = Path(raw)
     _isolated_plugin_data(tmp)
@@ -167,8 +174,6 @@ with tempfile.TemporaryDirectory() as raw:
 # ---------------------------------------------------------------------------
 section("Timezone parity check")
 
-from chameleon_mcp.tools import _iso_to_epoch
-import calendar
 iso = "2026-05-12T03:00:00Z"
 ts_calendar = _iso_to_epoch(iso)
 # Expected: 2026-05-12 03:00 UTC = a deterministic epoch
@@ -189,9 +194,6 @@ t("known timezone-discrepancy issue exists" if offset != 0 else "in UTC system",
 # Schema-version acceptance — v3..v7 should all load
 # ---------------------------------------------------------------------------
 section("Schema-version acceptance v3..v7")
-
-from chameleon_mcp.profile.loader import load_profile_dir, ProfileLoadError
-import json as _json
 
 for sv in (3, 4, 5, 6, 7):
     with tempfile.TemporaryDirectory() as raw:
@@ -278,8 +280,6 @@ with tempfile.TemporaryDirectory() as raw:
 # ---------------------------------------------------------------------------
 section("Hook fail-open without CLAUDE_PLUGIN_ROOT")
 
-import io, json as _stdjson
-from chameleon_mcp.hook_helper import session_start
 old_root = os.environ.pop("CLAUDE_PLUGIN_ROOT", None)
 old_stdout = sys.stdout
 captured = io.StringIO()
