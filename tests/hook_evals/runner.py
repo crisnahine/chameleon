@@ -154,7 +154,7 @@ def run_scenario_mcp(scenario: dict) -> ScenarioResult:
     trust_state = scenario.get("trust_state", "trusted")
     name = scenario["name"]
 
-    with tempfile.TemporaryDirectory() as repo_tmp_str, tempfile.TemporaryDirectory() as data_tmp_str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as repo_tmp_str, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data_tmp_str:
         repo_tmp = Path(repo_tmp_str)
         os.environ["CHAMELEON_PLUGIN_DATA"] = data_tmp_str
         try:
@@ -211,12 +211,18 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
     trust_state = scenario.get("trust_state", "trusted")
     name = scenario["name"]
 
-    with tempfile.TemporaryDirectory() as repo_tmp_str, tempfile.TemporaryDirectory() as data_tmp_str:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as repo_tmp_str, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data_tmp_str:
         repo_tmp = Path(repo_tmp_str)
         os.environ["CHAMELEON_PLUGIN_DATA"] = data_tmp_str
         try:
             if fixture_repo is not None:
                 src = FIXTURES_DIR / fixture_repo
+                if not src.is_dir():
+                    return ScenarioResult(
+                        name=name,
+                        status="ERROR",
+                        mismatches=[f"fixture not found: {src}"],
+                    )
                 shutil.copytree(src, repo_tmp, dirs_exist_ok=True)
             else:
                 _synthesize_no_profile_marker(repo_tmp, file_path)
