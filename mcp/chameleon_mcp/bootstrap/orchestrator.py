@@ -816,6 +816,7 @@ def bootstrap_repo(
     *,
     paths_glob: str | None = None,
     profile_dir_name: str = ".chameleon",
+    now: float | None = None,
 ) -> BootstrapReport:
     """Run the full bootstrap pipeline on a repo.
 
@@ -843,6 +844,7 @@ def bootstrap_repo(
         repo_root,
         paths_glob=paths_glob,
         profile_dir_name=profile_dir_name,
+        now=now,
     )
 
     if report.status != "success":
@@ -876,6 +878,7 @@ def bootstrap_repo(
             ws_root,
             paths_glob=paths_glob,
             profile_dir_name=profile_dir_name,
+            now=now,
         )
         from chameleon_mcp.tools import _compute_repo_id as _id
 
@@ -993,6 +996,7 @@ def _bootstrap_single(
     *,
     paths_glob: str | None = None,
     profile_dir_name: str = ".chameleon",
+    now: float | None = None,
 ) -> BootstrapReport:
     """The original (v0.3) single-target bootstrap pipeline.
 
@@ -1283,7 +1287,7 @@ def _bootstrap_single(
 
     # 5. Pick canonicals (only from dense clusters; sparse get user
     # confirmation in Phase 2C/D interview)
-    selection = select_canonicals(clustering.dense_clusters, repo_root)
+    selection = select_canonicals(clustering.dense_clusters, repo_root, now=now)
     canonicals_skipped_failed_scans = len(selection.clusters_with_only_failing_canonicals)
 
     # 6. Build profile artifacts (Phase 2B: minimal viable shape)

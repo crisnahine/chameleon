@@ -2032,6 +2032,7 @@ def bootstrap_repo(
     mode: str = "full",
     paths_glob: str | None = None,
     force: bool = False,
+    now: float | None = None,
 ) -> dict:
     """First-time analysis: AST scan + (Phase 2D interview) + atomic profile commit.
 
@@ -2085,7 +2086,7 @@ def bootstrap_repo(
             })
 
     del mode  # forward-compat for Phase 2D interview mode
-    report = _bootstrap(repo_root, paths_glob=paths_glob)
+    report = _bootstrap(repo_root, paths_glob=paths_glob, now=now)
 
     # Phase 4.4: mirror the run into the repo index. Only on success — a
     # failed_too_many_files / failed_unsupported_language run should not
