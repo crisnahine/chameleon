@@ -156,6 +156,7 @@ def run_scenario_mcp(scenario: dict) -> ScenarioResult:
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as repo_tmp_str, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data_tmp_str:
         repo_tmp = Path(repo_tmp_str)
+        _prev_plugin_data = os.environ.get("CHAMELEON_PLUGIN_DATA")
         os.environ["CHAMELEON_PLUGIN_DATA"] = data_tmp_str
         try:
             if fixture_repo is not None:
@@ -181,7 +182,10 @@ def run_scenario_mcp(scenario: dict) -> ScenarioResult:
         except Exception as exc:
             return ScenarioResult(name=name, status="ERROR", mismatches=[repr(exc)])
         finally:
-            os.environ.pop("CHAMELEON_PLUGIN_DATA", None)
+            if _prev_plugin_data is None:
+                os.environ.pop("CHAMELEON_PLUGIN_DATA", None)
+            else:
+                os.environ["CHAMELEON_PLUGIN_DATA"] = _prev_plugin_data
 
 
 def full_mode_capability_check() -> tuple[bool, str]:
@@ -213,6 +217,7 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as repo_tmp_str, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data_tmp_str:
         repo_tmp = Path(repo_tmp_str)
+        _prev_plugin_data = os.environ.get("CHAMELEON_PLUGIN_DATA")
         os.environ["CHAMELEON_PLUGIN_DATA"] = data_tmp_str
         try:
             if fixture_repo is not None:
@@ -314,7 +319,10 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
         except Exception as exc:
             return ScenarioResult(name=name, status="ERROR", mismatches=[repr(exc)])
         finally:
-            os.environ.pop("CHAMELEON_PLUGIN_DATA", None)
+            if _prev_plugin_data is None:
+                os.environ.pop("CHAMELEON_PLUGIN_DATA", None)
+            else:
+                os.environ["CHAMELEON_PLUGIN_DATA"] = _prev_plugin_data
 
 
 def main(argv: list[str] | None = None) -> int:
