@@ -15,6 +15,7 @@ What's plumbed today (read straight from `.chameleon/` and `drift.db`):
 2. **Trust state** — `trusted | untrusted | stale | n/a`, with the trusting user and grant timestamp when present.
 3. **Drift** — `days_since_refresh`, `observed_drift_score`, and a `recommended_action` string from `get_drift_status`.
 4. **Language hint** — when a Rails-with-frontend (or TS-with-Ruby-sidecar) was detected, name the secondary tree so the user can bootstrap it separately.
+5. **Version coherence** (v0.5.7) — call `daemon_status` to get `running_version`. Read `~/.claude/plugins/installed_plugins.json` for the installed plugin version. If they disagree, surface "Running v<X>, installed v<Y> — restart Claude Code to pick up the new MCP." This catches BUG-NEW-001 / BUG-018 in the wild.
 
 ## The flow
 

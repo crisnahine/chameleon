@@ -3433,10 +3433,21 @@ def daemon_status() -> dict:
             except (TypeError, ValueError):
                 last_request_at = None
 
+    # BUG-NEW-001 (v0.5.7): surface the running MCP version so
+    # /chameleon-status can detect "installed v0.5.7 but session bound
+    # to v0.5.6 cache" and tell the user to restart Claude Code.
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        running_version = _pkg_version("chameleon-mcp")
+    except Exception:  # pragma: no cover - defensive
+        running_version = None
+
     return _envelope({
         "alive": bool(info.get("alive")),
         "pid": info.get("pid"),
         "socket": info.get("socket"),
         "uptime_s": info.get("uptime_s"),
         "last_request_at": last_request_at,
+        "running_version": running_version,
     })
