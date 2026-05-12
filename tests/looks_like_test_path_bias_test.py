@@ -1,10 +1,16 @@
 """Regression test for naming._member_relpaths absolute-path bias.
 
-If a fixture repo lives at a path that contains a test-token segment
-(e.g., chameleon/tests/fixtures/eval_repos/ts_minimal/), the
-_looks_like_test heuristic must NOT flag non-test clusters as tests.
-The fix makes member paths relative to repo_root before the segment
-check.
+Bug: any repo whose absolute path contained a test-token segment
+(e.g., chameleon/tests/fixtures/eval_repos/ts_minimal/) had its
+non-test clusters mis-flagged as tests, producing test-* archetype
+names like 'test', 'test-utils-ts', 'test-models-rb'.
+
+Fix landed in commit a154969: _member_relpaths now relativizes member
+paths against repo_root before the all-segments test-token check in
+_looks_like_test.
+
+If you see suspicious test-* archetype names again, this regression
+likely fires here first.
 """
 import sys
 import tempfile

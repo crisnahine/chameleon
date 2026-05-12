@@ -816,6 +816,8 @@ def bootstrap_repo(
     *,
     paths_glob: str | None = None,
     profile_dir_name: str = ".chameleon",
+    # Pinned by scripts/refresh_eval_fixtures.sh for deterministic
+    # witness selection. Do not remove without coordinating that script.
     now: float | None = None,
 ) -> BootstrapReport:
     """Run the full bootstrap pipeline on a repo.
@@ -996,6 +998,8 @@ def _bootstrap_single(
     *,
     paths_glob: str | None = None,
     profile_dir_name: str = ".chameleon",
+    # Pinned by scripts/refresh_eval_fixtures.sh for deterministic
+    # witness selection. Do not remove without coordinating that script.
     now: float | None = None,
 ) -> BootstrapReport:
     """The original (v0.3) single-target bootstrap pipeline.
