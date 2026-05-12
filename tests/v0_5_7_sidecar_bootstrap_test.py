@@ -7,7 +7,6 @@ RubyExtractor → glob "**/*.rb" → 0 files matched → failed_unsupported_lang
 Fix: count source files inside the sidecar and pick the dominant extractor.
 """
 
-import json
 import shutil
 import sys
 import tempfile
