@@ -327,19 +327,31 @@ def detect_repo(file_path: str) -> dict:
     # existence; consumers had no way to know the profile was unreadable
     # until a later get_pattern_context call returned silently-empty data.
     profile_corrupted = False
+    profile_unsupported_schema = False
     if profile_present:
         try:
             import json as _json
 
             with profile_file.open("r", encoding="utf-8") as fh:
-                _json.load(fh)
+                _peek = _json.load(fh)
+            # BUG-023 (v0.5.7): the profile-loader already refuses to load
+            # schema_version > MAX_SUPPORTED, but detect_repo only opened
+            # profile.json to test parseability. A v99 profile reported
+            # profile_present and would later fail at load time. Surface
+            # the mismatch as its own profile_status so consumers know
+            # to upgrade chameleon-mcp rather than re-bootstrap.
+            from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
+
+            _sv = _peek.get("schema_version") if isinstance(_peek, dict) else None
+            if isinstance(_sv, int) and _sv > MAX_SUPPORTED_SCHEMA_VERSION:
+                profile_unsupported_schema = True
         except (OSError, ValueError):
             profile_corrupted = True
 
     # BUG-005: when no profile exists, "untrusted" is misleading — the schema
     # reserves "n/a" for the "no profile" case. Only consider the trust grant
     # when a profile is actually present and parseable.
-    if not profile_present or profile_corrupted:
+    if not profile_present or profile_corrupted or profile_unsupported_schema:
         trust_state = "n/a"
     elif trust is None:
         trust_state = "untrusted"
@@ -399,6 +411,8 @@ def detect_repo(file_path: str) -> dict:
 
     if profile_corrupted:
         profile_status = "profile_corrupted"
+    elif profile_unsupported_schema:
+        profile_status = "profile_unsupported_schema_version"
     elif profile_present:
         profile_status = "profile_present"
     else:
