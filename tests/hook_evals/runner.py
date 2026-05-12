@@ -1,0 +1,119 @@
+"""Hook eval scenario runner.
+
+See docs/superpowers/specs/2026-05-12-hook-evals-design.md.
+
+Default mode: calls chameleon_mcp.tools.get_pattern_context in-process.
+--full mode: pipes a synthetic PreToolUse event through hooks/preflight-and-advise.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "eval_repos"
+HOOK_SCRIPT = REPO_ROOT / "hooks" / "preflight-and-advise"
+SCENARIOS_DIR = REPO_ROOT / "tests" / "hook_evals" / "scenarios"
+HOOK_ERROR_LOG = Path.home() / ".local" / "share" / "chameleon" / ".hook_errors.log"
+
+
+@dataclass
+class ScenarioResult:
+    name: str
+    status: str  # PASS | FAIL | SCHEMA_ROT | HOOK_FAILED | ERROR
+    mismatches: list[str] = field(default_factory=list)
+
+
+def assert_scenario(scenario: dict, response: dict) -> ScenarioResult:
+    """Assert a get_pattern_context response matches a scenario's `expected`.
+
+    Returns a ScenarioResult. Does not raise.
+    """
+    name = scenario["name"]
+    data = response.get("data", {}) or {}
+    repo = data.get("repo", {}) or {}
+    expected = scenario.get("expected", {}) or {}
+    mismatches: list[str] = []
+
+    profile_status = repo.get("profile_status")
+    if profile_status == "profile_corrupted":
+        return ScenarioResult(
+            name=name,
+            status="SCHEMA_ROT",
+            mismatches=[
+                "Fixture profile is unloadable. Run scripts/refresh_eval_fixtures.sh to regenerate."
+            ],
+        )
+
+    archetype_node = data.get("archetype") or {}
+    actual_archetype = archetype_node.get("archetype") if isinstance(archetype_node, dict) else None
+
+    expected_archetype = expected.get("archetype_name", "<unset>")
+    if expected_archetype != "<unset>":
+        if expected_archetype != actual_archetype:
+            mismatches.append(
+                f"archetype: expected {expected_archetype!r}, got {actual_archetype!r}"
+            )
+
+    expected_status = expected.get("profile_status")
+    if expected_status is not None and expected_status != profile_status:
+        mismatches.append(
+            f"profile_status: expected {expected_status!r}, got {profile_status!r}"
+        )
+
+    expected_trust = expected.get("trust_state")
+    if expected_trust is not None and expected_trust != repo.get("trust_state"):
+        mismatches.append(
+            f"trust_state: expected {expected_trust!r}, got {repo.get('trust_state')!r}"
+        )
+
+    canonical = data.get("canonical_excerpt") or {}
+    canonical_text = canonical.get("text", "") if isinstance(canonical, dict) else ""
+    for needle in expected.get("canonical_excerpt_includes", []) or []:
+        if needle not in canonical_text:
+            mismatches.append(
+                f"canonical_excerpt missing substring {needle!r}"
+            )
+
+    rules_pairs = data.get("rules") or []
+    rules_text = "\n".join(f"{k}: {v}" for k, v in rules_pairs)
+    for needle in expected.get("rules_must_include_substring", []) or []:
+        if needle not in rules_text:
+            mismatches.append(f"rules missing substring {needle!r}")
+    for forbidden in expected.get("rules_must_not_include_substring", []) or []:
+        if forbidden in rules_text:
+            mismatches.append(f"rules unexpectedly contains substring {forbidden!r}")
+
+    idioms_text = data.get("idioms", "") or ""
+    for needle in expected.get("idioms_must_include_substring", []) or []:
+        if needle not in idioms_text:
+            mismatches.append(f"idioms missing substring {needle!r}")
+
+    return ScenarioResult(
+        name=name,
+        status="PASS" if not mismatches else "FAIL",
+        mismatches=mismatches,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--full", action="store_true", help="run scenarios through hooks/preflight-and-advise")
+    args = parser.parse_args(argv)
+
+    # Placeholder: scenario discovery + execution lands in Task 7.
+    print(json.dumps({"status": "not_implemented", "full": args.full}, indent=2))
+    print("Summary: 0 run, 0 passed, 0 failed", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
