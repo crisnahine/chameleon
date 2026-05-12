@@ -70,15 +70,36 @@ REPO_ROOT_MARKERS: tuple[str, ...] = (
 def find_repo_root(file_path: Path) -> Path | None:
     """Walk up from file_path looking for a repo-root marker.
 
-    A "repo root" is the first ancestor directory containing any of:
-    .chameleon, .git, package.json, tsconfig.json, Gemfile, pyproject.toml,
-    go.mod, or Cargo.toml. Markers are checked in priority order at each
-    level — .chameleon wins over .git wins over a language manifest, so a
-    bootstrapped repo without .git (subtree, vendored copy, sparse
-    checkout, archive extract) still resolves correctly.
+    Two-pass strategy (BUG-NEW-002, v0.5.7-redo):
 
-    Returns the marker directory, or None if no marker is found within 32
-    parent directories.
+    Pass 1 - if the immediate first-marker ancestor's marker is
+    ``.chameleon``, return it. (Fast path: behaves like pre-fix code
+    when the closest marker is already a chameleon profile, which is
+    the overwhelming-common case for files inside a single-root repo.)
+
+    Pass 2 - the first-marker ancestor's marker is NOT ``.chameleon``
+    (e.g. workspace ``package.json``). Continue walking up looking for
+    an ancestor that DOES have ``.chameleon``. If found within
+    32 levels, return THAT one. Otherwise fall back to the first-marker
+    ancestor from pass 1 (pre-fix behavior).
+
+    Why two-pass: pre-v0.5.7 the walk stopped at the first marker, so
+    monorepos with ``.chameleon`` at the root and ``package.json`` at
+    each workspace returned the workspace as repo_root and masked the
+    root profile. The straight ``.chameleon`` priority within a level
+    couldn't fix that because the marker existed at a DIFFERENT level.
+
+    Why not always prefer ``.chameleon``: tests, especially run_all_orders.py
+    test-isolation harness, can leak stray ``.chameleon`` dirs in tmp
+    paths between tests via the shared filesystem. Walking up looking
+    for ``.chameleon`` past a closer real marker introduces order-
+    dependent test failures. The two-pass approach is defensive: if a
+    closer language marker is present we trust it as the lower bound,
+    and we only override when a closer-or-equal-priority chameleon
+    profile genuinely exists upstream.
+
+    Returns the marker directory, or None if no marker is found within
+    32 parent directories.
     """
     current = file_path.expanduser()
     if current.is_file():
@@ -88,15 +109,46 @@ def find_repo_root(file_path: Path) -> Path | None:
     except OSError:
         return None
 
+    # Pass 1: walk up; record the first ancestor with ANY marker.
+    first_marker_ancestor: Path | None = None
+    first_marker_name: str | None = None
+    walker = current
     for _ in range(32):
         for marker in REPO_ROOT_MARKERS:
-            if (current / marker).exists():
-                return current
-        parent = current.parent
-        if parent == current:
+            if (walker / marker).exists():
+                first_marker_ancestor = walker
+                first_marker_name = marker
+                break
+        if first_marker_ancestor is not None:
             break
-        current = parent
-    return None
+        parent = walker.parent
+        if parent == walker:
+            break
+        walker = parent
+
+    if first_marker_ancestor is None:
+        return None
+
+    if first_marker_name == ".chameleon":
+        # Closest marker is already a chameleon profile - done.
+        return first_marker_ancestor
+
+    # Pass 2: closest marker is a language manifest (package.json, etc).
+    # Continue walking up to see if an enclosing .chameleon profile exists.
+    # If yes, prefer it (BUG-NEW-002 monorepo case). If no, return the
+    # closer language-manifest ancestor (pre-fix behavior, preserves
+    # test isolation).
+    walker = first_marker_ancestor.parent
+    if walker == first_marker_ancestor:
+        return first_marker_ancestor
+    for _ in range(32):
+        if (walker / ".chameleon").exists():
+            return walker
+        parent = walker.parent
+        if parent == walker:
+            break
+        walker = parent
+    return first_marker_ancestor
 
 
 def load_profile_dir(profile_dir: Path) -> LoadedProfile:
