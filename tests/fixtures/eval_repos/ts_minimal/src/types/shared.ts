@@ -1,1 +1,4 @@
-export type ID = string;
+export type Settings = {
+  theme: string;
+  locale: string;
+};
