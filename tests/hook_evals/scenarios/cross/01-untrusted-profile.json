@@ -1,0 +1,11 @@
+{
+  "name": "cross: untrusted profile surfaces trust_state in response",
+  "description": "When the profile is present but not trusted, get_pattern_context returns the archetype but trust_state == 'untrusted'.",
+  "fixture_repo": "ts_minimal",
+  "file_path": "src/utils/format_phone.ts",
+  "file_content": "export const formatPhone = (s: string): string => s;\n",
+  "trust_state": "untrusted",
+  "expected": {
+    "trust_state": "untrusted"
+  }
+}
