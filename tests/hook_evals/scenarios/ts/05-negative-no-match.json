@@ -1,0 +1,11 @@
+{
+  "name": "ts: file in unknown dir falls back to AST-based archetype match",
+  "description": "A .ts file with a TypeAlias top-level node in an unrecognized path falls back to the type archetype via AST shape matching, even without a path-pattern hit.",
+  "fixture_repo": "ts_minimal",
+  "file_path": "src/unknown/_one_off.ts",
+  "file_content": "export type OneOff = { id: string };\n",
+  "trust_state": "trusted",
+  "expected": {
+    "archetype_name": "test-types-ts"
+  }
+}

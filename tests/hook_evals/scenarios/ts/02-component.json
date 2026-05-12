@@ -1,0 +1,12 @@
+{
+  "name": "ts: new component resolves to component archetype",
+  "description": "A PascalCase JSX-returning file under src/components/ should match the component archetype.",
+  "fixture_repo": "ts_minimal",
+  "file_path": "src/components/Tooltip.tsx",
+  "file_content": "export const Tooltip = (props: { text: string }) => <span>{props.text}</span>;\n",
+  "trust_state": "trusted",
+  "expected": {
+    "archetype_name": "test",
+    "canonical_excerpt_includes": ["<"]
+  }
+}
