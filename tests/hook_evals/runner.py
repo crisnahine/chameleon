@@ -76,7 +76,7 @@ def assert_scenario(scenario: dict, response: dict) -> ScenarioResult:
         )
 
     canonical = data.get("canonical_excerpt") or {}
-    canonical_text = canonical.get("text", "") if isinstance(canonical, dict) else ""
+    canonical_text = canonical.get("content", "") if isinstance(canonical, dict) else ""
     for needle in expected.get("canonical_excerpt_includes", []) or []:
         if needle not in canonical_text:
             mismatches.append(

@@ -21,7 +21,7 @@ class AssertScenarioTest(unittest.TestCase):
                     "trust_state": "trusted",
                 },
                 "archetype": {"archetype": "utility_cluster_abc"},
-                "canonical_excerpt": {"text": "export const x = 1;"},
+                "canonical_excerpt": {"content": "export const x = 1;"},
                 "rules": [["no-default-export", "Avoid default exports"]],
                 "idioms": "Use named exports.",
             }
