@@ -2583,6 +2583,24 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     if not (profile_dir / "profile.json").is_file():
         return _envelope({"status": "failed", "error": "no profile.json in .chameleon/ (run /chameleon-init first)"})
 
+    # BUG-NEW-020 (v0.5.7): trust validates that the profile is actually
+    # loadable. Pre-fix trust succeeded on corrupted profile.json or on
+    # an unsupported schema version, leaving the user with a "trusted"
+    # state for something the engine can't read.
+    from chameleon_mcp.profile.loader import ProfileLoadError, load_profile_dir
+
+    try:
+        load_profile_dir(profile_dir)
+    except ProfileLoadError as exc:
+        return _envelope({
+            "status": "failed",
+            "error": (
+                f"profile is not loadable; refuse to grant trust on an unreadable "
+                f"profile. Run /chameleon-init or /chameleon-refresh first. "
+                f"loader said: {exc}"
+            ),
+        })
+
     repo_id = _compute_repo_id(repo_path)
     expected_short = repo_id[:8]
 
