@@ -329,9 +329,9 @@ try:
     try:
         ENGINE_MIN_VERSION = _pkg_version("chameleon-mcp")
     except _PkgNotFound:  # pragma: no cover - editable install w/o metadata
-        ENGINE_MIN_VERSION = "0.5.6"
+        ENGINE_MIN_VERSION = "0.5.7"
 except Exception:  # pragma: no cover - defensive fallback
-    ENGINE_MIN_VERSION = "0.5.6"
+    ENGINE_MIN_VERSION = "0.5.7"
 # v0.5.2 schema-v7 bump rationale:
 #   - paths_pattern strings now carry the file extension suffix
 #     (e.g. "src/components:tsx") to fix the .tsx vs .ts collision.
