@@ -1,0 +1,12 @@
+{
+  "name": "ruby: new spec resolves to spec archetype",
+  "description": "An RSpec.describe block under spec/models/ should match the spec archetype.",
+  "fixture_repo": "ruby_minimal",
+  "file_path": "spec/models/article_spec.rb",
+  "file_content": "require \"rails_helper\"\n\nRSpec.describe Article, type: :model do\n  it { is_expected.to belong_to(:user) }\nend\n",
+  "trust_state": "trusted",
+  "expected": {
+    "archetype_name": "test-ruby-minimal",
+    "canonical_excerpt_includes": ["RSpec.describe"]
+  }
+}

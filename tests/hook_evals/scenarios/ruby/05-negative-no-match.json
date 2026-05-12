@@ -1,0 +1,11 @@
+{
+  "name": "ruby: file in an unknown directory does not match any archetype",
+  "description": "A path that does not fall under any seeded archetype bucket should resolve to null. Unlike the TS negative scenario, a module-only file in lib/unknown/ returns a true null (no AST fallback hit) because all three Ruby archetypes are ClassNode- or CallNode-shaped and the ModuleNode shape has no matching cluster.",
+  "fixture_repo": "ruby_minimal",
+  "file_path": "lib/unknown/_one_off.rb",
+  "file_content": "module Unknown\nend\n",
+  "trust_state": "trusted",
+  "expected": {
+    "archetype_name": null
+  }
+}

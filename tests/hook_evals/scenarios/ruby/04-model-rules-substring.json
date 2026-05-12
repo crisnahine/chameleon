@@ -1,0 +1,12 @@
+{
+  "name": "ruby: model file rules are present and empty for unseeded fixture",
+  "description": "Confirms the rules list is exposed. For a bootstrapped-only fixture with no user-taught rules, the list is empty. Asserts archetype resolves correctly and no forbidden rule text appears.",
+  "fixture_repo": "ruby_minimal",
+  "file_path": "app/models/photo.rb",
+  "file_content": "class Photo < ApplicationRecord\n  belongs_to :user\nend\n",
+  "trust_state": "trusted",
+  "expected": {
+    "archetype_name": "test-models-rb",
+    "rules_must_include_substring": []
+  }
+}

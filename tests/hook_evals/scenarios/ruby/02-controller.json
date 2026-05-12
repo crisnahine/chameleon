@@ -1,0 +1,12 @@
+{
+  "name": "ruby: new controller resolves to controller archetype",
+  "description": "An ApplicationController subclass under app/controllers/ should match the controller archetype.",
+  "fixture_repo": "ruby_minimal",
+  "file_path": "app/controllers/articles_controller.rb",
+  "file_content": "class ArticlesController < ApplicationController\n  def index\n    @articles = Article.all\n  end\nend\n",
+  "trust_state": "trusted",
+  "expected": {
+    "archetype_name": "test",
+    "canonical_excerpt_includes": ["ApplicationController"]
+  }
+}
