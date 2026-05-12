@@ -1005,9 +1005,16 @@ def _bootstrap_single(
     # call returned ``rules: {}`` because the sidecar dir lacked its own
     # tooling configuration.
     inherited_signals_from: Path | None = None
-    if not (repo_root / "package.json").is_file() and not (
-        repo_root / "tsconfig.json"
-    ).is_file():
+    # BUG-014 (v0.5.7): the sidecar walk-up fires only when the repo has
+    # NEITHER its own JS signals (package.json / tsconfig.json) NOR its
+    # own Ruby signals (Gemfile / *.gemspec). Pre-fix the check looked
+    # only at JS signals, which fired on pure-Ruby repos and walked up
+    # past their Gemfile into HOME, then ran read_tool_configs on
+    # /Users/<name> with no rubocop config to find. ef-api's rubocop
+    # silently disappeared.
+    own_js = (repo_root / "package.json").is_file() or (repo_root / "tsconfig.json").is_file()
+    own_ruby = (repo_root / "Gemfile").is_file() or any(repo_root.glob("*.gemspec"))
+    if not own_js and not own_ruby:
         ancestor = repo_root.parent
         for _ in range(4):  # walk up at most 4 dirs to find the parent root
             if (ancestor / "package.json").is_file() or (ancestor / "Gemfile").is_file():
