@@ -1,17 +1,17 @@
 # chameleon profile summary
 
-Generated: 2026-05-12T16:34:56Z
+Generated: 2026-05-12T22:37:30Z
 Engine: chameleon v0.5.6
 Language: typescript
 Source: bootstrap
-Generation: 1778603696
+Generation: 1778625450
 Schema version: 7
 
 ## 3 archetypes detected
 
-- **test** (cluster_size 5, paths src/components:tsx) — canonical: `src/components/Alert.tsx`
-- **test-types-ts** (cluster_size 5, paths src/types:ts) — canonical: `src/types/api.ts`
-- **test-utils-ts** (cluster_size 5, paths src/utils:ts) — canonical: `src/utils/format_date.ts`
+- **component** (cluster_size 5, paths src/components:tsx) — canonical: `src/components/Alert.tsx`
+- **type-module** (cluster_size 5, paths src/types:ts) — canonical: `src/types/api.ts`
+- **util** (cluster_size 5, paths src/utils:ts) — canonical: `src/utils/format_date.ts`
 
 ## Rules
 

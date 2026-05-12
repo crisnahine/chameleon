@@ -1,6 +1,6 @@
 {
   "archetypes": {
-    "test": {
+    "controller": {
       "cluster_id": "d6462a1366d47ef1",
       "cluster_size": 5,
       "content_signal": "none",
@@ -13,7 +13,7 @@
         "ClassNode"
       ]
     },
-    "test-models-rb": {
+    "model": {
       "cluster_id": "513917a942243626",
       "cluster_size": 5,
       "content_signal": "none",
@@ -26,7 +26,7 @@
         "ClassNode"
       ]
     },
-    "test-ruby-minimal": {
+    "test": {
       "cluster_id": "0e930a9c2ba96e00",
       "cluster_size": 5,
       "content_signal": "none",
@@ -42,6 +42,6 @@
     }
   },
   "engine_min_version": "0.5.6",
-  "generation": 1778603854,
+  "generation": 1778625454,
   "schema_version": 7
 }

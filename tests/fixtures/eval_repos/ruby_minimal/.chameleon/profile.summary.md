@@ -1,17 +1,17 @@
 # chameleon profile summary
 
-Generated: 2026-05-12T16:37:34Z
+Generated: 2026-05-12T22:37:35Z
 Engine: chameleon v0.5.6
 Language: ruby
 Source: bootstrap
-Generation: 1778603854
+Generation: 1778625454
 Schema version: 7
 
 ## 3 archetypes detected
 
-- **test** (cluster_size 5, paths app/controllers:rb) — canonical: `app/controllers/comments_controller.rb`
-- **test-models-rb** (cluster_size 5, paths app/models:rb) — canonical: `app/models/comment.rb`
-- **test-ruby-minimal** (cluster_size 5, paths spec/models:rb) — canonical: `spec/models/comment_spec.rb`
+- **controller** (cluster_size 5, paths app/controllers:rb) — canonical: `app/controllers/comments_controller.rb`
+- **model** (cluster_size 5, paths app/models:rb) — canonical: `app/models/comment.rb`
+- **test** (cluster_size 5, paths spec/models:rb) — canonical: `spec/models/comment_spec.rb`
 
 ## Rules
 
