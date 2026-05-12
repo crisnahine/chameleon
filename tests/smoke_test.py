@@ -315,7 +315,9 @@ t("emits valid JSON",
 # Also drop any stale daemon process so the hook's daemon-fast-path doesn't
 # answer from code older than the current import (tests can outrun a daemon's
 # 10-minute idle window).
-import signal as _sig
+import signal as _sig  # noqa: E402, I001
+from chameleon_mcp.tools import trust_profile as _trust_for_smoke  # noqa: E402
+
 _pid_file = Path.home() / ".local/share/chameleon/.daemon.pid"
 if _pid_file.exists():
     try:
@@ -327,7 +329,6 @@ if _pid_file.exists():
     _sock_file = Path.home() / ".local/share/chameleon/.daemon.sock"
     _sock_file.unlink(missing_ok=True)
 
-from chameleon_mcp.tools import trust_profile as _trust_for_smoke
 _trust_for_smoke(str(TS_REPO), Path(TS_REPO).name)
 hook_input = json.dumps({
     "tool_name": "Edit",

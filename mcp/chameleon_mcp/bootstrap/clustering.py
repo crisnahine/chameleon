@@ -342,7 +342,7 @@ def _loose_merge_sparse_clusters(
         sparse_by_bucket[bucket_key].append(c)
 
     merged: list[Cluster] = []
-    for (bucket, jsx), group in sparse_by_bucket.items():
+    for group in sparse_by_bucket.values():
         if len(group) < 2:
             # Single sparse cluster — nothing to merge with; keep as-is.
             merged.extend(group)
@@ -350,16 +350,16 @@ def _loose_merge_sparse_clusters(
         # Greedy union-find on Jaccard >= 0.5.
         parent: list[int] = list(range(len(group)))
 
-        def find(i: int) -> int:
-            while parent[i] != i:
-                parent[i] = parent[parent[i]]
-                i = parent[i]
+        def _find(i: int, _p: list[int] = parent) -> int:
+            while _p[i] != i:
+                _p[i] = _p[_p[i]]
+                i = _p[i]
             return i
 
-        def union(i: int, j: int) -> None:
-            ri, rj = find(i), find(j)
+        def _union(i: int, j: int, _p: list[int] = parent) -> None:
+            ri, rj = _find(i, _p), _find(j, _p)
             if ri != rj:
-                parent[ri] = rj
+                _p[ri] = rj
 
         # Compute representative node-kinds-set per cluster (use the
         # first member's set as the cluster's shape signature).
@@ -368,13 +368,13 @@ def _loose_merge_sparse_clusters(
         for i in range(n):
             for j in range(i + 1, n):
                 if _jaccard(shapes[i], shapes[j]) >= 0.5:
-                    union(i, j)
+                    _union(i, j)
 
         # Build merged clusters from union-find buckets.
         by_root: dict[int, list[int]] = defaultdict(list)
         for i in range(n):
-            by_root[find(i)].append(i)
-        for root, indices in by_root.items():
+            by_root[_find(i)].append(i)
+        for indices in by_root.values():
             if len(indices) == 1:
                 merged.append(group[indices[0]])
                 continue

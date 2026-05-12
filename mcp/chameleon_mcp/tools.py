@@ -442,7 +442,7 @@ def _prefix_overlap_fallback(
         if not arch_segments or not file_segments:
             continue
         overlap = 0
-        for fs, asg in zip(file_segments, arch_segments):
+        for fs, asg in zip(file_segments, arch_segments, strict=False):
             if fs == asg:
                 overlap += 1
             else:
