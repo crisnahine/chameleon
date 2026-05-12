@@ -129,8 +129,15 @@ def _apply_trust_state(repo_tmp: Path, trust_state: str) -> None:
     """Per-scenario trust setup. Assumes CHAMELEON_PLUGIN_DATA is already set."""
     if trust_state in ("untrusted", "n/a"):
         return
+    if not (repo_tmp / ".chameleon").is_dir():
+        raise ValueError(
+            f"trust_state {trust_state!r} requires a .chameleon/ directory; "
+            f"use fixture_repo or trust_state 'untrusted'/'n/a' instead"
+        )
     from chameleon_mcp.tools import trust_profile
-    trust_profile(str(repo_tmp), repo_tmp.name)
+    result = trust_profile(str(repo_tmp), repo_tmp.name)
+    if result.get("data", {}).get("status") != "success":
+        raise ValueError(f"trust_profile failed: {result}")
     if trust_state == "stale":
         profile_path = repo_tmp / ".chameleon" / "profile.json"
         with open(profile_path, "ab") as f:
