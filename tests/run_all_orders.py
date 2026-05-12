@@ -20,6 +20,7 @@ TESTS = [
     TESTS_DIR / "bootstrap_mechanism_test.py",
     TESTS_DIR / "mcp_protocol_test.py",
     TESTS_DIR / "stubs_implemented_test.py",
+    TESTS_DIR / "hook_evals" / "runner.py",
 ]
 
 ORDERS = []
