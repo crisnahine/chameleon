@@ -31,8 +31,6 @@ tests/
     README.md
     runner.py
     scenarios/
-      _meta/
-        expected_fail.json
       ts/
         01-utility-export.json
         02-react-component.json
@@ -41,6 +39,7 @@ tests/
         01-active-record-model.json
         02-controller-action.json
         ...
+    runner_test.py          (unit tests for the runner itself, incl. self-test)
   fixtures/
     eval_repos/
       ts_minimal/
@@ -57,8 +56,6 @@ tests/
         app/controllers/examples_controller.rb
         spec/models/example_spec.rb
         Gemfile
-      no_profile_minimal/   (optional, see Open questions)
-        package.json
 scripts/
   refresh_eval_fixtures.sh
 ```
@@ -95,8 +92,8 @@ Two minimal repos, ~5 to 10 source files each, covering 3 to 4 archetypes apiece
 
 Fields:
 
-- `fixture_repo`: which fixture under `tests/fixtures/eval_repos/` to use.
-- `file_path`: path relative to the fixture root. Runner writes `file_content` here before the MCP call and removes it after.
+- `fixture_repo`: which fixture under `tests/fixtures/eval_repos/` to use. `null` means "synthesize a no-profile repo inline": runner writes only `file_content` to a fresh tmpdir (no `.chameleon/`, no fixture copy).
+- `file_path`: path relative to the (real or synthesized) repo root. Runner writes `file_content` here before the MCP call and removes it after.
 - `trust_state`: one of `"trusted" | "untrusted" | "stale"`. Runner sets state before the call (see runner steps).
 - `expected.archetype_name: null`: negative scenario, no archetype should match.
 - `_includes` lists are AND'd. Empty list means no assertion for that field. Match is a substring check on the relevant text, run AFTER chameleon's sanitizer has rewritten the canonical excerpt (so the substring must be sanitizer-safe; no `<chameleon-context>`-style markers).
@@ -115,7 +112,7 @@ cd mcp && CHAMELEON_RUN_FULL_EVALS=1 \
 
 **Default (MCP-layer) mode** per scenario:
 
-1. Allocate a new `tempfile.TemporaryDirectory`, copy the fixture repo into it. Call its path `<repo_tmp>`.
+1. Allocate a new `tempfile.TemporaryDirectory`. Call its path `<repo_tmp>`. If `fixture_repo` is non-null, copy the named fixture into `<repo_tmp>`. If `fixture_repo` is null, leave the tmpdir empty (no `.chameleon/`).
 2. Allocate a second tmpdir for plugin data, set `CHAMELEON_PLUGIN_DATA=<data_tmp>` for the duration of the scenario. This isolates trust state, index db, drift db, and hook error logs from the developer's real chameleon state.
 3. Apply `trust_state`:
    - `untrusted`: do nothing. Fresh `CHAMELEON_PLUGIN_DATA` means no trust record.
@@ -140,11 +137,13 @@ Exit 0 if all pass, 1 if any fail. Output shape mirrors `tests/calibration/harne
 
 ### Self-test
 
-`tests/hook_evals/scenarios/_meta/expected_fail.json` is a scenario whose `expected` block contains at least one assertion that CANNOT match a healthy run (e.g. `archetype_name: "definitely_not_real_archetype"`). The runner verifies this scenario produces at least one assertion mismatch, then inverts only the final pass/fail bit for `_meta/` scenarios in the summary.
+The runner's own logic is tested by `tests/hook_evals/runner_test.py` (a standard Python test, runs as part of `run_all_orders.py`). The unit test:
 
-The check is: "the runner detected ≥1 mismatch". Not: "the final result was FAIL". This prevents a degenerate case where a runner bug coincidentally produces an inverted pass.
+1. Constructs an in-memory scenario object whose `expected` block cannot match any healthy run (e.g. `archetype_name: "definitely_not_real_archetype"`).
+2. Calls the runner's assertion function directly with a known `get_pattern_context` response.
+3. Asserts the function returns at least one mismatch.
 
-(See Open questions for an alternative: replace this meta-scenario with a unit test on the runner module.)
+This is a normal unit test, no inversion logic, no special-case path in the scenario corpus. Trade-off accepted: it doesn't exercise the JSON loader / file-discovery layer, which is instead covered by parametric "load a real scenario file and check schema" assertions in the same test file.
 
 ### CI integration
 
@@ -174,7 +173,7 @@ Cross-cutting (one of each, either fixture):
 
 - `trust_state: "untrusted"`: advisory still returned, but trust flag surfaced to caller.
 - `trust_state: "stale"`: profile drift surfaced; advisory shape per `tools.py` stale-state branch.
-- Repo missing `.chameleon/` directory: `result.data.repo.profile_status == "no_profile"`, archetype null, no canonical injected. (See Open questions on whether this uses a dedicated `no_profile_minimal/` fixture or is synthesized inline.)
+- Repo missing `.chameleon/` directory: scenario uses `fixture_repo: null`; runner synthesizes an empty tmpdir and writes only `file_content`. Expected: `profile_status == "no_profile"`, archetype null, no canonical injected.
 
 ## Risks
 
@@ -193,16 +192,12 @@ Cross-cutting (one of each, either fixture):
 
 ## Open questions
 
-Two design forks the reviewers (myself + agents) flagged and I want a decision on before implementation:
+Resolved during round 1 review (recorded for traceability):
 
-1. **"Repo missing `.chameleon/`" scenario shape.** Either:
-   - Add a third fixture `tests/fixtures/eval_repos/no_profile_minimal/` (a `package.json` and one source file, nothing else). Pros: same code path as every other scenario, easy to extend (could later add `corrupted_profile_minimal/`, `untrusted_only_minimal/`, etc.). Cons: third checked-in fixture.
-   - Synthesize inline: runner detects a `fixture_repo: null` scenario and writes only the source file to a fresh tmpdir, skipping the copy step. Pros: no extra fixture. Cons: special-case branch in the runner.
-2. **`_meta/expected_fail.json` vs runner unit test.** Either:
-   - Keep the meta-scenario in `scenarios/_meta/` (current spec). Pros: same shape as a real scenario, exercises the whole assertion pipeline. Cons: special-case inversion code in the runner.
-   - Drop the meta-scenario; add a unit test that constructs a synthetic scenario object in-memory, feeds it to the runner's assertion function, and asserts the function reports a mismatch. Pros: no runner inversion code, simpler scenario corpus. Cons: doesn't exercise the JSON loader / file-discovery path.
+- No-profile case is handled by `fixture_repo: null` + inline synthesis, not by adding a third fixture dir.
+- Runner self-test is `runner_test.py`, not a meta-scenario with inversion.
 
 Implementation-time empirical:
 
 - Exact size of each fixture repo needed to form 3-4 archetypes reliably (will be measured by inspecting bootstrap output).
-- Whether `--full` mode runtime is acceptable for the next-tier CI gate (not on every PR, but on main).
+- Whether `--full` mode runtime is acceptable for a next-tier CI gate (not on every PR, but on main).
