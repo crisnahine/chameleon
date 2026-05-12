@@ -184,13 +184,116 @@ def run_scenario_mcp(scenario: dict) -> ScenarioResult:
             os.environ.pop("CHAMELEON_PLUGIN_DATA", None)
 
 
+def full_mode_capability_check() -> tuple[bool, str]:
+    """Return (ok, reason). All three must be present for --full mode."""
+    if shutil.which("bash") is None:
+        return False, "bash not on PATH"
+    if not HOOK_SCRIPT.is_file() or not os.access(HOOK_SCRIPT, os.X_OK):
+        return False, f"hook script missing or not executable: {HOOK_SCRIPT}"
+    venv_python = REPO_ROOT / "mcp" / ".venv" / "bin" / "python"
+    if not venv_python.is_file():
+        return False, f"mcp venv python missing: {venv_python}"
+    return True, "ok"
+
+
+def _read_mtime(p: Path) -> float | None:
+    try:
+        return p.stat().st_mtime
+    except FileNotFoundError:
+        return None
+
+
 def run_scenario_full(scenario: dict) -> ScenarioResult:
-    """Stub: --full mode lands in Task 11."""
-    return ScenarioResult(
-        name=scenario["name"],
-        status="ERROR",
-        mismatches=["--full mode not implemented yet"],
-    )
+    """Pipe a synthetic PreToolUse event through hooks/preflight-and-advise."""
+    fixture_repo = scenario.get("fixture_repo")
+    file_path = scenario["file_path"]
+    file_content = scenario.get("file_content", "")
+    trust_state = scenario.get("trust_state", "trusted")
+    name = scenario["name"]
+
+    with tempfile.TemporaryDirectory() as repo_tmp_str, tempfile.TemporaryDirectory() as data_tmp_str:
+        repo_tmp = Path(repo_tmp_str)
+        os.environ["CHAMELEON_PLUGIN_DATA"] = data_tmp_str
+        try:
+            if fixture_repo is not None:
+                src = FIXTURES_DIR / fixture_repo
+                shutil.copytree(src, repo_tmp, dirs_exist_ok=True)
+            else:
+                _synthesize_no_profile_marker(repo_tmp, file_path)
+
+            _apply_trust_state(repo_tmp, trust_state)
+
+            target = repo_tmp / file_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(file_content, encoding="utf-8")
+
+            event = {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(target)},
+                "session_id": "hook_evals",
+            }
+
+            log_mtime_before = _read_mtime(HOOK_ERROR_LOG)
+
+            proc = subprocess.run(
+                ["bash", str(HOOK_SCRIPT)],
+                input=json.dumps(event).encode("utf-8"),
+                capture_output=True,
+                env={**os.environ, "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT)},
+                timeout=10,
+            )
+
+            log_mtime_after = _read_mtime(HOOK_ERROR_LOG)
+            if log_mtime_before != log_mtime_after:
+                return ScenarioResult(
+                    name=name,
+                    status="HOOK_FAILED",
+                    mismatches=[
+                        f"hook fail-opened; .hook_errors.log grew (stderr tail: {proc.stderr.decode('utf-8', 'replace')[-400:]})"
+                    ],
+                )
+
+            try:
+                hook_out = json.loads(proc.stdout.decode("utf-8") or "{}")
+            except json.JSONDecodeError as exc:
+                return ScenarioResult(
+                    name=name,
+                    status="ERROR",
+                    mismatches=[f"hook stdout was not JSON: {exc!r}"],
+                )
+
+            advisory_text = ""
+            hook_specific = hook_out.get("hookSpecificOutput")
+            if isinstance(hook_specific, dict):
+                advisory_text = hook_specific.get("additionalContext", "")
+            if not advisory_text:
+                advisory_text = hook_out.get("additionalContext", "")
+
+            expected = scenario.get("expected", {})
+            mismatches = []
+            expected_arch = expected.get("archetype_name", "<unset>")
+            if expected_arch != "<unset>":
+                if expected_arch is None:
+                    if advisory_text:
+                        mismatches.append("expected no advisory but blob is non-empty")
+                else:
+                    if expected_arch not in advisory_text:
+                        mismatches.append(
+                            f"advisory blob missing archetype hint {expected_arch!r}"
+                        )
+            for needle in expected.get("canonical_excerpt_includes", []) or []:
+                if needle not in advisory_text:
+                    mismatches.append(f"advisory blob missing substring {needle!r}")
+
+            if mismatches:
+                return ScenarioResult(name=name, status="FAIL", mismatches=mismatches)
+            return ScenarioResult(name=name, status="PASS")
+        except subprocess.TimeoutExpired:
+            return ScenarioResult(name=name, status="HOOK_FAILED", mismatches=["hook timed out"])
+        except Exception as exc:
+            return ScenarioResult(name=name, status="ERROR", mismatches=[repr(exc)])
+        finally:
+            os.environ.pop("CHAMELEON_PLUGIN_DATA", None)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -200,6 +303,13 @@ def main(argv: list[str] | None = None) -> int:
 
     scenarios = discover_scenarios(SCENARIOS_DIR)
     results: list[ScenarioResult] = []
+
+    if args.full:
+        ok, reason = full_mode_capability_check()
+        if not ok:
+            print(json.dumps({"status": "skipped", "reason": reason}, indent=2))
+            print(f"Summary: 0 run, 0 passed, 0 failed (skipped: {reason})", file=sys.stderr)
+            return 0
 
     for scenario in scenarios:
         if args.full:

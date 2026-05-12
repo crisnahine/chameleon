@@ -103,6 +103,13 @@ class DiscoverScenariosTest(unittest.TestCase):
             self.assertEqual(names, ["c", "a", "b"])
 
 
+class FullModeCapabilityTest(unittest.TestCase):
+    def test_capability_check_passes_in_this_repo(self):
+        from runner import full_mode_capability_check
+        ok, reason = full_mode_capability_check()
+        self.assertTrue(ok, f"capability check failed: {reason}")
+
+
 if __name__ == "__main__":
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(unittest.TestLoader().loadTestsFromModule(sys.modules[__name__]))
