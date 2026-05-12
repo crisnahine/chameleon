@@ -6,7 +6,7 @@
   "file_content": "export const formatCurrency = (n: number): string => `$${n.toFixed(2)}`;\n",
   "trust_state": "trusted",
   "expected": {
-    "archetype_name": "test-utils-ts",
+    "archetype_name": "util",
     "canonical_excerpt_includes": ["export const"]
   }
 }

@@ -6,7 +6,7 @@
   "file_content": "export const Tooltip = (props: { text: string }) => <span>{props.text}</span>;\n",
   "trust_state": "trusted",
   "expected": {
-    "archetype_name": "test",
+    "archetype_name": "component",
     "canonical_excerpt_includes": ["<"]
   }
 }

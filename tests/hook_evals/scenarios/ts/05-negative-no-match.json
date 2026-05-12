@@ -6,6 +6,6 @@
   "file_content": "export type OneOff = { id: string };\n",
   "trust_state": "trusted",
   "expected": {
-    "archetype_name": "test-types-ts"
+    "archetype_name": "type-module"
   }
 }

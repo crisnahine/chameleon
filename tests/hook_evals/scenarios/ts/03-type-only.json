@@ -6,7 +6,7 @@
   "file_content": "export type Notification = { id: string; read: boolean };\n",
   "trust_state": "trusted",
   "expected": {
-    "archetype_name": "test-types-ts",
+    "archetype_name": "type-module",
     "canonical_excerpt_includes": ["export type"]
   }
 }

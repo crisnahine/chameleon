@@ -6,7 +6,7 @@
   "file_content": "export const formatEmail = (e: string): string => e.trim().toLowerCase();\n",
   "trust_state": "trusted",
   "expected": {
-    "archetype_name": "test-utils-ts",
+    "archetype_name": "util",
     "rules_must_include_substring": []
   }
 }

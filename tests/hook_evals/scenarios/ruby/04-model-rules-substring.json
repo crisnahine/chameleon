@@ -6,7 +6,7 @@
   "file_content": "class Photo < ApplicationRecord\n  belongs_to :user\nend\n",
   "trust_state": "trusted",
   "expected": {
-    "archetype_name": "test-models-rb",
+    "archetype_name": "model",
     "rules_must_include_substring": []
   }
 }

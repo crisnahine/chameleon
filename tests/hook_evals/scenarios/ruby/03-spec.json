@@ -6,7 +6,7 @@
   "file_content": "require \"rails_helper\"\n\nRSpec.describe Article, type: :model do\n  it { is_expected.to belong_to(:user) }\nend\n",
   "trust_state": "trusted",
   "expected": {
-    "archetype_name": "test-ruby-minimal",
+    "archetype_name": "test",
     "canonical_excerpt_includes": ["RSpec.describe"]
   }
 }

@@ -6,7 +6,7 @@
   "file_content": "class ArticlesController < ApplicationController\n  def index\n    @articles = Article.all\n  end\nend\n",
   "trust_state": "trusted",
   "expected": {
-    "archetype_name": "test",
+    "archetype_name": "controller",
     "canonical_excerpt_includes": ["ApplicationController"]
   }
 }
