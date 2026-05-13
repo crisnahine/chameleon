@@ -15,7 +15,7 @@ from tests.dogfood.scenario import Scenario
 # Placeholder modules that use a leading _ but should still be discovered.
 # Add names here only for stub files that are waiting to be replaced by a
 # real family module.
-_PLACEHOLDER_MODULES = {"_init_placeholder"}
+_PLACEHOLDER_MODULES: set[str] = set()
 
 
 def all_scenarios() -> list[Scenario]:
