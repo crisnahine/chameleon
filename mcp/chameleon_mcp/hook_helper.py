@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 
@@ -45,6 +46,19 @@ def _plugin_data_dir() -> Path:
 
 
 _TRUST_PROMPT_FILENAME = ".trust_prompted.{session}"
+_TRUST_MARKER_TTL_SECONDS = 24 * 3600  # re-prompt after 24h even on resumed session
+
+
+def _marker_is_fresh(marker_path: Path) -> bool:
+    """True if marker exists and was touched within TTL."""
+    try:
+        st = marker_path.stat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+    age = time.time() - st.st_mtime
+    return age < _TRUST_MARKER_TTL_SECONDS
 
 
 def _should_emit_untrusted_prompt(repo_id: str, session_id: str | None) -> bool:
@@ -66,7 +80,7 @@ def _should_emit_untrusted_prompt(repo_id: str, session_id: str | None) -> bool:
         marker_dir = _plugin_data_dir() / repo_id
         marker_dir.mkdir(parents=True, exist_ok=True)
         marker = marker_dir / _TRUST_PROMPT_FILENAME.format(session=_safe_session_marker(session_id))
-        if marker.exists():
+        if _marker_is_fresh(marker):
             return False
         marker.touch(exist_ok=True)
         return True
