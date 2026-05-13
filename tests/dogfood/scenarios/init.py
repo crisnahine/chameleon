@@ -39,6 +39,7 @@ def _run_init_cooperative(ctx) -> Result:
         "claude", "-p", prompt,
         "--plugin-dir", str(plugin_root),
         "--output-format", "stream-json",
+        "--verbose",
         "--include-hook-events",
         "--max-turns", "6",
         "--model", "sonnet",
@@ -46,13 +47,16 @@ def _run_init_cooperative(ctx) -> Result:
         "--allowedTools",
         "mcp__plugin_chameleon_chameleon-mcp__bootstrap_repo,"
         "mcp__plugin_chameleon_chameleon-mcp__detect_repo,"
+        "mcp__plugin_chameleon_chameleon-mcp__get_archetype,"
+        "mcp__plugin_chameleon_chameleon-mcp__get_canonical_excerpt,"
+        "mcp__plugin_chameleon_chameleon-mcp__get_rules,"
         "Read,Bash",
-        "--cwd", str(ts_repo),
     ]
 
     try:
         proc = subprocess.run(
             cmd,
+            cwd=str(ts_repo),
             capture_output=True,
             text=True,
             timeout=300,

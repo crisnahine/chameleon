@@ -27,6 +27,7 @@ def run_real_claude(
     allowed_tools: str,
     max_turns: int = 8,
     model: str = "sonnet",
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Invoke `claude -p` and return parsed stream-json events as a dict.
 
@@ -45,6 +46,7 @@ def run_real_claude(
          "--allowedTools", allowed_tools],
         cwd=str(repo),
         capture_output=True, text=True, timeout=300,
+        env=env,
     )
     events = []
     pretool_advisories = []

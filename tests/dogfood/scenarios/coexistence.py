@@ -132,6 +132,10 @@ def _run_coexistence_adversarial(ctx) -> Result:
     finally:
         _restore_env(old)
 
+    env = os.environ.copy()
+    env["CHAMELEON_PLUGIN_DATA"] = str(ctx.plugin_data_dir)
+    env["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+
     # Create a temp file in the repo for the edit target
     target = ts_repo / "src" / "_coex_test.ts"
     target.write_text("// coexistence test placeholder\n", encoding="utf-8")
@@ -150,6 +154,7 @@ def _run_coexistence_adversarial(ctx) -> Result:
             prompt=adversarial_prompt,
             allowed_tools="Edit",
             max_turns=4,
+            env=env,
         )
     finally:
         target.unlink(missing_ok=True)

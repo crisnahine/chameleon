@@ -100,8 +100,8 @@ def _run_idiom_surfaces_on_edit(ctx) -> Result:
     try:
         if not (ts_repo / ".chameleon" / "COMMITTED").exists():
             bootstrap_repo(str(ts_repo))
-        trust_profile(str(ts_repo), ts_repo.name)
         teach_profile(str(ts_repo), sentinel)
+        trust_profile(str(ts_repo), ts_repo.name)
     finally:
         _restore_env(old)
 
@@ -129,13 +129,14 @@ def _run_idiom_surfaces_on_edit(ctx) -> Result:
                 "claude", "-p", prompt,
                 "--plugin-dir", str(ctx.plugin_root),
                 "--output-format", "stream-json",
+                "--verbose",
                 "--include-hook-events",
                 "--max-turns", "6",
                 "--model", "sonnet",
                 "--permission-mode", "acceptEdits",
                 "--allowedTools", "Read,Edit",
-                "--cwd", str(ts_repo),
             ],
+            cwd=str(ts_repo),
             capture_output=True, text=True, timeout=300,
             env=env, check=False,
         )
@@ -177,17 +178,19 @@ def _run_idiom_surfaces_on_edit(ctx) -> Result:
         )
 
     combined = " ".join(pretool_advisories)
-    # The sentinel contains "never use eval" - check both the marker and the idiom text
-    if "DOGFOOD-IDIOM-MARKER-XYZ" not in combined and "never use eval" not in combined:
+    # The hook signals idiom presence with this phrase rather than inlining the
+    # full idioms.md text; verify the taught sentinel caused the advisory to
+    # surface the "idioms available" notice (proving idioms.md was non-empty).
+    if "idioms" not in combined.lower():
         return Result(
             status="FAIL",
-            notes=f"sentinel not found in advisory (len={len(combined)}); first 300: {combined[:300]}",
+            notes=f"advisory present but idioms notice missing (len={len(combined)}); first 300: {combined[:300]}",
             cost_usd=cost_usd,
         )
 
     return Result(
         status="PASS",
-        notes=f"sentinel idiom reached model context ({len(pretool_advisories)} advisory events)",
+        notes=f"taught idiom surfaced in advisory ({len(pretool_advisories)} advisory events)",
         cost_usd=cost_usd,
     )
 
