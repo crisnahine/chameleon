@@ -1451,6 +1451,12 @@ def _bootstrap_single(
     if language_hint is not None:
         profile_data["language_hint"] = language_hint
 
+    # v0.5.9: soft marker so consumers can detect post-clustering-fix profiles
+    # without a PROFILE_SCHEMA_VERSION bump. Absent or < 2 means the profile
+    # predates Option 1 (fuzzy top_level_node_kinds) and Option 4 (path bucket
+    # depth=2 with sub_bucket metadata).
+    profile_data["clustering_algorithm_version"] = 2
+
     # Build initial rules from tool configs (Phase 2C — basic; Phase 4 expands)
     if tool_configs.prettier:
         rules_data["rules"]["formatting"] = {
