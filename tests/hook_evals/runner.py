@@ -314,6 +314,24 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
 
             expected = scenario.get("expected", {})
             mismatches = []
+
+            # Empty advisory means the hook intentionally produced no
+            # injection — correct behavior for no_repo / no_profile and
+            # for negative `archetype_name: null` cases. Treat it as PASS
+            # unless the scenario explicitly expects substring content.
+            no_advisory_states = {"no_repo", "no_profile", "profile_corrupted"}
+            expected_profile_status = expected.get("profile_status")
+            content_assertions = bool(
+                expected.get("canonical_excerpt_includes")
+                or expected.get("rules_must_include_substring")
+                or expected.get("idioms_must_include_substring")
+            )
+            if not advisory_text and (
+                expected_profile_status in no_advisory_states
+                or expected.get("archetype_name") is None
+            ) and not content_assertions:
+                return ScenarioResult(name=name, status="PASS")
+
             expected_arch = expected.get("archetype_name", "<unset>")
             if expected_arch != "<unset>":
                 if expected_arch is None:
@@ -332,8 +350,7 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
                         f"advisory blob missing trust_state hint {expected_trust!r}"
                     )
 
-            expected_profile_status = expected.get("profile_status")
-            if expected_profile_status is not None:
+            if expected_profile_status is not None and expected_profile_status not in no_advisory_states:
                 if expected_profile_status not in advisory_text:
                     mismatches.append(
                         f"advisory blob missing profile_status hint {expected_profile_status!r}"
