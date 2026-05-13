@@ -39,6 +39,7 @@ else
     LOG_FILE="${LOG_DIR}/.hook_errors.log"
 fi
 mkdir -p "${LOG_DIR}" 2>/dev/null || true
+"${PYTHON}" -m chameleon_mcp.log_rotation "${LOG_FILE}" 2>/dev/null || true
 
 # 2-second hard timeout — log writes should be near-instant.
 PYTHONPATH="${MCP_DIR}" \
