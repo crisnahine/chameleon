@@ -45,3 +45,7 @@ tests/calibration/corpus.json
 # their entries; the per-app dumps stay local.
 docs/dogfood/**/REPORT-ef-*.md
 docs/dogfood/**/log-*.txt
+
+# Dogfood runner result artifacts (timestamped runs stay local)
+tests/dogfood/results/dogfood_*.json
+tests/dogfood/results/dogfood_*.md
