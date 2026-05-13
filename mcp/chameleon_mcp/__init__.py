@@ -13,6 +13,6 @@ try:
     try:
         __version__ = _pkg_version("chameleon-mcp")
     except _PkgNotFound:  # pragma: no cover
-        __version__ = "0.5.6"
+        __version__ = "0.5.8"
 except Exception:  # pragma: no cover
     __version__ = "0.5.6"

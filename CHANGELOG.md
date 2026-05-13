@@ -4,6 +4,55 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.8] - 2026-05-13
+
+Security hardening, correctness fixes, observability, and two new test layers. Surfaced from a 3-round code review on the new hook-eval scenario harness plus a 58-scenario end-to-end dogfood run against the test repos. No public-API breaking changes. `tests/hook_evals/` (fast deterministic synthetic-scenario suite) and `tests/dogfood/` (full lifecycle harness, runnable via `/chameleon-dogfood`) ship as additive coverage.
+
+### Security
+
+- **Witness path traversal blocked.** `get_pattern_context` and `get_canonical_excerpt` previously did `repo_root / witness_rel` followed by `.is_file()` + `.read_text()` with no boundary check. A hostile `.chameleon/canonicals.json` could point `witness_path` at `../../etc/passwd` and the file's content would reach the model's `<chameleon-context>` block. Reads now go through `safe_open.safe_read_text` which enforces NUL-free paths, NFC normalization, lstat-checked regular-file-only, repo-boundary realpath, and a 200KB size cap.
+- **World-writable repo roots refused.** `find_repo_root` now rejects `/tmp`, `$TMPDIR`, `tempfile.gettempdir()`, and their subdirs, plus any directory with the world-writable bit set. A planted `/tmp/.chameleon/profile.json` would otherwise let any local attacker drive chameleon's advisory for any user editing under `/tmp`. Tests can opt in via `CHAMELEON_ALLOW_TMP_REPO=1`.
+- **PYTHONPATH inheritance dropped.** All four hook scripts previously did `PYTHONPATH="${MCP_DIR}${PYTHONPATH:+:${PYTHONPATH}}"`. A malicious `.envrc` setting `PYTHONPATH=/tmp/evil` could shadow `chameleon_mcp` submodules. Now: `PYTHONPATH="${MCP_DIR}"` only.
+- **Loader read caps + lstat.** `_safe_read_artifact` lstats each profile artifact (refusing symlinks and non-regular files) and refuses files larger than 5 MB. Closes the OOM-via-1GB-profile.json class of attacks.
+- **Dangerous-token sanitizer expanded.** `_DANGEROUS_TOKENS` now includes `<system-reminder>`, `<system_reminder>`, `<im_start>`, `<im_end>`, and the `<|im_start|>` / `<|im_end|>` pipe-bracketed variants. A poisoned canonical witness can no longer inject fake system-reminder framing. Archetype name and confidence band are also sanitized before substitution into the `[chameleon: archetype=...]` header.
+- **`now=` parameter validation.** `bootstrap_repo` rejects NaN, +/-inf, negative numbers, non-numeric types, and bool (which is technically int) at the API boundary with a clear failed envelope.
+
+### Correctness
+
+- **`refresh_repo` fast-reject advisory lock.** Two concurrent `/chameleon-refresh` calls previously serialized at the 30s rename flock and both succeeded with last-writer-wins. Now `refresh_repo` acquires `.chameleon/.refresh.lock` (non-blocking) at the top and returns a fast contention envelope with the holder PID on busy. Mirrors the existing `teach_profile` pattern.
+- **Daemon spawn no longer hangs the hook.** `ensure_daemon_async` used to spawn a `threading.Thread` that called `start_daemon()`, which double-forks via `os.fork()`. On macOS, fork from inside a multi-threaded Python process can hang the parent for ~2s on libc/Cocoa locks held across the fork boundary, hitting the hook's 2s timeout. Now uses `subprocess.Popen(..., start_new_session=True)` so the OS performs fork+exec atomically and the freshly-exec'd Python's double-fork runs from a clean single-threaded process. ~3 to 10 percent of hook calls were fail-opening before; 0/30 after.
+- **`trust_profile` rejects unloadable profiles cleanly.** Previously caught `ProfileLoadError` but let raw `json.JSONDecodeError` bubble through when `profile.json` was malformed. Both now surface as the same failed envelope.
+- **`bootstrap_repo` upserts index.db on short-circuit.** When bootstrap returns `already_bootstrapped` (per the v0.5.6 force gate), it now also writes the repo's row to the shared `index.db` so `list_profiles` sees newly-cloned repos that ship a checked-in `.chameleon/`.
+- **`_member_relpaths` returns repo-relative paths.** The function name promised relative paths but returned absolute. The all-segments test-token check in `_looks_like_test` then false-positived on any repo whose absolute path contained `tests`, `spec`, or similar segments.
+- **Session marker hardening.** `session_id` now goes through a `sha256[:16]` hash before being used as a filename component, so `..` / `/` / NUL in `session_id` can no longer escape the marker directory. Trust-prompt markers age out after 24h so resumed Claude sessions re-prompt.
+- **`--full` mode hook errors land in a per-session log.** The four hook scripts honor `CHAMELEON_HOOK_ERROR_LOG`; `tests/hook_evals/runner.py --full` sets it to a tmpfile per scenario, closing the daemon-race false positive previously documented in the README.
+
+### Observability
+
+- **Per-call metrics emission.** Every `preflight-and-advise` invocation appends one JSON line to `${CHAMELEON_PLUGIN_DATA}/metrics.jsonl` with `ts`, `hook`, `repo_id`, `elapsed_ms`, `advisory_emitted`, `suppression_reason`, `fail_open`, `trust_state`, `archetype`, `confidence`. Best-effort emission; never breaks the hook.
+- **`.hook_errors.log` rotation.** Hooks call `python -m chameleon_mcp.log_rotation` before each append. Rotates at 10 MB with up to 5 backups; oldest is dropped. Closes the unbounded-log-growth finding from the operational review.
+- **`/chameleon-doctor` triage tool.** New MCP tool (`doctor`) + slash command. Returns a structured envelope with subsystem checks: Python version, bash + timeout(1) on PATH, plugin-data dir writability, HMAC key health, all four hook scripts executable, daemon liveness, recent hook error log tail, and per-known-repo `profile_status` + `trust_state`.
+
+### Testing
+
+- **`tests/hook_evals/`** - deterministic synthetic-scenario suite. Two checked-in fixture repos at `tests/fixtures/eval_repos/{ts,ruby}_minimal/` with committed `.chameleon/`. 13 scenarios; runs in <1s as a 6th entry in `tests/run_all_orders.py`. Optional `--full` mode pipes through the real bash hook. `scripts/refresh_eval_fixtures.sh` regenerates the fixtures with pinned `now=1700000000.0` for deterministic witness selection.
+- **`tests/dogfood/`** - comprehensive end-to-end test harness. 58 scenarios across 18 families (install, init, trust, injection, adversarial, teach, status, refresh, suppression, hooks, mcp, coexistence, resilience, isolation, harness, uninstall, observability, security). Reusable via `mcp/.venv/bin/python -m tests.dogfood.runner` or `/chameleon-dogfood`. Filter by `--phase`, `--family`, `--cost`; `--include-real-claude` opts in to 8 real Claude Code sessions (~$1.10 total). 50/50 free+cheap PASS, 8/8 real-Claude PASS in the validation run.
+- **New unit tests** for the `now=` plumbing (`tests/now_threading_test.py`), `_member_relpaths` repo-relative paths (`tests/looks_like_test_path_bias_test.py`), suppression precedence (`tests/suppression_precedence_test.py` - 11 layered cases), schema-version-too-high refusal (`tests/schema_version_test.py`), log rotation (`tests/log_rotation_test.py`), metrics emission (`tests/metrics_emit_test.py`), and doctor envelope (`tests/doctor_test.py`).
+- **Pinned `now=` plumbing.** `tools.bootstrap_repo`, `orchestrator.bootstrap_repo`, and `_bootstrap_single` accept an optional `now: float | None = None` kwarg that threads through to `select_canonicals`. Enables the refresh script to fix witness selection mtime-dependence.
+
+### Fixed
+
+- **`pretooluse_hook_test.py` docstring**: dropped the stale claim that `--permission-mode bypassPermissions` suppresses PreToolUse hook firing. Verified on Claude Code 2.1.140; PreToolUse fires normally in bypass mode.
+- **`mcp_protocol_test.py`**: registry now expects 21 tools (added `doctor`).
+
+### Schema
+
+No schema bump. `PROFILE_SCHEMA_VERSION` stays at 7.
+
+### Compatibility
+
+Python 3.11+ required for the dogfood harness. The MCP server's pinned floor was already 3.11.
+
 ## [0.5.5] — 2026-05-11
 
 Cycle-4 dogfood patch — single, targeted fix for a silent misroute the v0.5.4 cycle surfaced (3-app confirmed). Net cycle-4 result: 388 PASS / 0 FAIL / 3 FINDING across 9 apps (vs cycle-3's 378 / 0 / 13 — 77% finding reduction). v0.5.5 closes the last 3.
