@@ -37,6 +37,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "LISTEN_BACKLOG": 16,
     # lint_engine.py
     "MAX_CONCAT_FOLDS_PER_FILE": 1000,
+    # bootstrap/clustering.py — Option 1 shape-fuzzy merge
+    # Two clusters sharing (path_pattern_bucket, default_export_kind, jsx_present)
+    # merge when their UNION top_level_node_kinds Jaccard >= this threshold.
+    # Default 0.7: conservative enough to avoid over-merging genuinely different
+    # archetypes (ClassNode-only vs FunctionDeclaration-only scores 0.0).
+    "CLUSTER_SHAPE_JACCARD_THRESHOLD": 0.7,
 }
 
 DOCS: Final[dict[str, str]] = {
@@ -51,6 +57,11 @@ DOCS: Final[dict[str, str]] = {
     "SPAWN_WAIT_SECONDS": "Wait time for daemon socket to appear after spawn.",
     "LISTEN_BACKLOG": "Daemon UNIX socket listen() backlog.",
     "MAX_CONCAT_FOLDS_PER_FILE": "Cap on AST-walk concat-folding iterations to avoid pathological inputs.",
+    "CLUSTER_SHAPE_JACCARD_THRESHOLD": (
+        "Jaccard threshold for the Option 1 shape-fuzzy merge step in cluster_files. "
+        "Clusters sharing (path_pattern_bucket, default_export_kind, jsx_present) merge "
+        "when their union top_level_node_kinds Jaccard >= this value (default 0.7)."
+    ),
 }
 
 

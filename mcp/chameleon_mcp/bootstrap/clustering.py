@@ -22,6 +22,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from chameleon_mcp._thresholds import threshold_float
 from chameleon_mcp.extractors._base import ParsedFile
 from chameleon_mcp.signatures import ClusterKey, bucket_named_export_count, compute_signature
 
@@ -300,6 +301,17 @@ def cluster_files(
     # merged cluster is marked tier="loose" so consumers can apply
     # lower confidence to it.
     clusters = _loose_merge_sparse_clusters(clusters, resolved_threshold)
+
+    # Option 1: shape-fuzzy merge. After the sparse-cluster loose merge,
+    # any remaining clusters that share (path_pattern_bucket,
+    # default_export_kind, jsx_present) and whose UNION of member
+    # top_level_node_kinds has Jaccard >= CLUSTER_SHAPE_JACCARD_THRESHOLD
+    # get folded together. This fixes the "service-v1-rb" mislabel where
+    # files differing by a single CallNode landed in different tight
+    # clusters and never merged because neither was sparse enough for the
+    # loose-merge pass.
+    clusters = _shape_fuzzy_merge(clusters)
+
     clusters.sort(key=lambda c: c.size, reverse=True)
 
     return ClusteringResult(
@@ -391,3 +403,119 @@ def _loose_merge_sparse_clusters(
             merged.append(new_cluster)
 
     return tight + merged
+
+
+def _union_shape(cluster: Cluster) -> frozenset[str]:
+    """Union of all members' top_level_node_kinds for a cluster.
+
+    Using the union rather than a single member's set means statistical
+    outliers (files with one extra node kind) don't prevent the merge.
+    Empty-member clusters (shouldn't happen in practice) return empty set.
+    """
+    result: frozenset[str] = frozenset()
+    for member in cluster.members:
+        result = result | frozenset(member.top_level_node_kinds or ())
+    return result
+
+
+def _shape_fuzzy_merge(clusters: list[Cluster]) -> list[Cluster]:
+    """Option 1 post-pass: merge clusters with near-identical AST shapes.
+
+    Group clusters by ``(path_pattern_bucket, default_export_kind,
+    jsx_present)``. Within each group, build a union-find: two clusters
+    merge when the Jaccard similarity of their UNION top_level_node_kinds
+    sets is >= CLUSTER_SHAPE_JACCARD_THRESHOLD (default 0.7,
+    env-overridable via ``CHAMELEON_CLUSTER_SHAPE_JACCARD_THRESHOLD``).
+
+    The merged cluster:
+      - Takes the key of the SMALLEST-keyed original cluster (deterministic
+        across Python runs because ClusterKey is a frozen dataclass with
+        string fields, and Python tuples/strings have a stable total order
+        within a single run).
+      - Carries ``cluster_tier="shape-merged"`` so consumers can
+        distinguish it from tight (exact) or loose (sparse) clusters.
+      - Retains the sparse_threshold from the first cluster in the group
+        (all clusters in the same session share the same threshold).
+
+    Clusters that don't participate in any merge pass through with their
+    original tier and key unchanged.
+    """
+    jaccard_threshold = threshold_float("CLUSTER_SHAPE_JACCARD_THRESHOLD")
+
+    # Group by the three dimensions that must match for a shape merge to
+    # be valid. Merging clusters from different path buckets or with
+    # different default_export_kind would destroy the archetype semantics.
+    GroupKey = tuple  # (path_pattern_bucket, default_export_kind, jsx_present)
+    by_group: dict[GroupKey, list[Cluster]] = defaultdict(list)
+    for c in clusters:
+        gk: GroupKey = (
+            c.key.path_pattern_bucket or "",
+            c.key.default_export_kind,
+            bool(c.key.jsx_present),
+        )
+        by_group[gk].append(c)
+
+    result: list[Cluster] = []
+    for group in by_group.values():
+        if len(group) < 2:
+            result.extend(group)
+            continue
+
+        # Precompute each cluster's union shape once.
+        shapes = [_union_shape(c) for c in group]
+        n = len(group)
+
+        # Union-find on Jaccard >= threshold.
+        parent: list[int] = list(range(n))
+
+        def _find(i: int, _p: list[int] = parent) -> int:
+            while _p[i] != i:
+                _p[i] = _p[_p[i]]
+                i = _p[i]
+            return i
+
+        def _union(i: int, j: int, _p: list[int] = parent) -> None:
+            ri, rj = _find(i, _p), _find(j, _p)
+            if ri != rj:
+                _p[ri] = rj
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                if _jaccard(shapes[i], shapes[j]) >= jaccard_threshold:
+                    _union(i, j)
+
+        # Collect merged groups.
+        by_root: dict[int, list[int]] = defaultdict(list)
+        for i in range(n):
+            by_root[_find(i)].append(i)
+
+        for indices in by_root.values():
+            if len(indices) == 1:
+                result.append(group[indices[0]])
+                continue
+            # Combine all members; pick the smallest key for determinism.
+            combined_members: list[ParsedFile] = []
+            for idx in indices:
+                combined_members.extend(group[idx].members)
+            # Sort cluster keys as plain tuples for a stable total order.
+            representative_cluster = min(
+                (group[idx] for idx in indices),
+                key=lambda c: (
+                    c.key.path_pattern_bucket or "",
+                    c.key.content_signal_match or "",
+                    c.key.top_level_node_kinds,
+                    c.key.default_export_kind or "",
+                    c.key.named_export_count_bucket or "",
+                    c.key.import_module_set_hash or "",
+                    c.key.jsx_present,
+                ),
+            )
+            new_cluster = Cluster(
+                key=representative_cluster.key,
+                members=combined_members,
+                sparse_threshold=group[indices[0]].sparse_threshold,
+                cluster_tier="shape-merged",
+            )
+            result.append(new_cluster)
+
+    return result
