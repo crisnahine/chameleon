@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -82,6 +83,53 @@ class LoadedProfile:
     """Concatenated mtime fingerprint of all 4 JSON artifacts (for cache invalidation)."""
 
     archetype_names: list[str] = field(default_factory=list)
+
+
+def _is_unsafe_repo_root(root: Path) -> str | None:
+    """Return a human-readable refusal reason if `root` is not a safe
+    chameleon repo root, else None.
+
+    Refuses: /tmp, $TMPDIR (and subdirs of either), and world-writable
+    directories. The home-ancestor guard lives separately in tools.py
+    detect_repo.
+    """
+    if os.environ.get("CHAMELEON_ALLOW_TMP_REPO") == "1":
+        return None
+    try:
+        resolved = root.resolve(strict=False)
+    except OSError:
+        return None  # let downstream handle missing dirs
+    # Anchor against /tmp and $TMPDIR. Both can be the same; that's fine.
+    forbidden_anchors = []
+    try:
+        forbidden_anchors.append(Path("/tmp").resolve(strict=False))
+    except OSError:
+        pass
+    tmp_env = os.environ.get("TMPDIR")
+    if tmp_env:
+        try:
+            forbidden_anchors.append(Path(tmp_env).resolve(strict=False))
+        except OSError:
+            pass
+    # tempfile.gettempdir() may return something else again (e.g. /var/folders/... on macOS).
+    try:
+        forbidden_anchors.append(Path(tempfile.gettempdir()).resolve(strict=False))
+    except OSError:
+        pass
+    for anchor in forbidden_anchors:
+        try:
+            if resolved == anchor or anchor in resolved.parents:
+                return f"refusing repo_root inside temp dir {anchor}"
+        except OSError:
+            continue
+    # World-writable check (mode bit 0o002). Symlinks are followed by stat.
+    try:
+        st = os.stat(resolved)
+    except OSError:
+        return None
+    if st.st_mode & 0o002:
+        return f"refusing world-writable repo_root (mode={oct(st.st_mode)})"
+    return None
 
 
 REPO_ROOT_MARKERS: tuple[str, ...] = (
@@ -160,6 +208,9 @@ def find_repo_root(file_path: Path) -> Path | None:
 
     if first_marker_name == ".chameleon":
         # Closest marker is already a chameleon profile - done.
+        reason = _is_unsafe_repo_root(first_marker_ancestor)
+        if reason is not None:
+            return None
         return first_marker_ancestor
 
     # Pass 2: closest marker is a language manifest (package.json, etc).
@@ -169,14 +220,23 @@ def find_repo_root(file_path: Path) -> Path | None:
     # test isolation).
     walker = first_marker_ancestor.parent
     if walker == first_marker_ancestor:
+        reason = _is_unsafe_repo_root(first_marker_ancestor)
+        if reason is not None:
+            return None
         return first_marker_ancestor
     for _ in range(32):
         if (walker / ".chameleon").exists():
+            reason = _is_unsafe_repo_root(walker)
+            if reason is not None:
+                return None
             return walker
         parent = walker.parent
         if parent == walker:
             break
         walker = parent
+    reason = _is_unsafe_repo_root(first_marker_ancestor)
+    if reason is not None:
+        return None
     return first_marker_ancestor
 
 

@@ -161,7 +161,9 @@ def run_scenario_mcp(scenario: dict) -> ScenarioResult:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as repo_tmp_str, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data_tmp_str:
         repo_tmp = Path(repo_tmp_str)
         _prev_plugin_data = os.environ.get("CHAMELEON_PLUGIN_DATA")
+        _prev_allow_tmp = os.environ.get("CHAMELEON_ALLOW_TMP_REPO")
         os.environ["CHAMELEON_PLUGIN_DATA"] = data_tmp_str
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
         try:
             if fixture_repo is not None:
                 src = FIXTURES_DIR / fixture_repo
@@ -190,6 +192,10 @@ def run_scenario_mcp(scenario: dict) -> ScenarioResult:
                 os.environ.pop("CHAMELEON_PLUGIN_DATA", None)
             else:
                 os.environ["CHAMELEON_PLUGIN_DATA"] = _prev_plugin_data
+            if _prev_allow_tmp is None:
+                os.environ.pop("CHAMELEON_ALLOW_TMP_REPO", None)
+            else:
+                os.environ["CHAMELEON_ALLOW_TMP_REPO"] = _prev_allow_tmp
 
 
 def full_mode_capability_check() -> tuple[bool, str]:
@@ -222,7 +228,9 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as repo_tmp_str, tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as data_tmp_str:
         repo_tmp = Path(repo_tmp_str)
         _prev_plugin_data = os.environ.get("CHAMELEON_PLUGIN_DATA")
+        _prev_allow_tmp = os.environ.get("CHAMELEON_ALLOW_TMP_REPO")
         os.environ["CHAMELEON_PLUGIN_DATA"] = data_tmp_str
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
         try:
             if fixture_repo is not None:
                 src = FIXTURES_DIR / fixture_repo
@@ -327,6 +335,10 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
                 os.environ.pop("CHAMELEON_PLUGIN_DATA", None)
             else:
                 os.environ["CHAMELEON_PLUGIN_DATA"] = _prev_plugin_data
+            if _prev_allow_tmp is None:
+                os.environ.pop("CHAMELEON_ALLOW_TMP_REPO", None)
+            else:
+                os.environ["CHAMELEON_ALLOW_TMP_REPO"] = _prev_allow_tmp
 
 
 def main(argv: list[str] | None = None) -> int:
