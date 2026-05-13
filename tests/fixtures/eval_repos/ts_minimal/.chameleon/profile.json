@@ -1,8 +1,8 @@
 {
   "archetype_count": 3,
-  "created_at": "2026-05-12T22:37:30Z",
-  "engine_min_version": "0.5.6",
-  "generation": 1778625450,
+  "created_at": "2026-05-13T09:47:48Z",
+  "engine_min_version": "0.5.7",
+  "generation": 1778665667,
   "language": "typescript",
   "repo_id": "56be2544ddc9421f3d29c4373e7052aaff4d961af353ed75fc24a169413aa69b",
   "schema_version": 7,
