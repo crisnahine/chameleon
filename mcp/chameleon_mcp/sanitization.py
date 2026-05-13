@@ -24,6 +24,19 @@ _DANGEROUS_TOKENS = (
     # chameleon's tag, but injecting these into model context is suspicious)
     "</system>",
     "<system>",
+    # system-reminder variants: Claude treats <system-reminder> as
+    # load-bearing context; a hostile canonical witness could inject one.
+    "</system-reminder>",
+    "<system-reminder>",
+    "</system_reminder>",
+    "<system_reminder>",
+    # im_start / im_end: ChatML boundary tokens used by some model families.
+    # Pipe-bracketed variants are already handled below; bare-tag variants
+    # are also blocked in case Claude parses them.
+    "</im_start>",
+    "<im_start>",
+    "</im_end>",
+    "<im_end>",
     "<|im_start|>",
     "<|im_end|>",
     "<|endoftext|>",

@@ -284,10 +284,13 @@ def preflight_and_advise() -> int:
     rules_count = len(data.get("rules") or [])
     idioms_text = data.get("idioms") or ""
     has_idioms = bool(idioms_text.strip())
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+    safe_name = sanitize_for_chameleon_context(archetype_name or "")
+    safe_band = sanitize_for_chameleon_context(confidence_band or "unknown")
     block = (
         "<chameleon-context>\n"
-        f"[chameleon: archetype={archetype_name}, "
-        f"confidence={archetype_obj.get('confidence_band', 'unknown')}]\n\n"
+        f"[chameleon: archetype={safe_name}, "
+        f"confidence={safe_band}]\n\n"
     )
     if trust_state == "stale":
         # BUG-NEW-011 (v0.5.7): explain the "stale" cause. Pre-fix the
