@@ -9,6 +9,8 @@ Refuses to load if `COMMITTED` sentinel is missing (atomic-commit guard).
 from __future__ import annotations
 
 import json
+import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +38,33 @@ def _version_tuple(v: str) -> tuple[int, ...]:
 
 class ProfileLoadError(Exception):
     """Raised when a profile fails to load (missing sentinel, schema, generation)."""
+
+
+_MAX_ARTIFACT_BYTES = 5 * 1024 * 1024  # 5 MB hard cap per artifact
+
+
+def _safe_read_artifact(path: Path) -> str:
+    """Read a chameleon profile artifact with size + regular-file guards.
+
+    Refuses to read symlinks (lstat-checked) and files larger than 5MB.
+    Raises ProfileLoadError on either failure so callers funnel through
+    the existing error handling.
+    """
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise ProfileLoadError(f"could not stat {path}: {exc}") from exc
+    if not stat.S_ISREG(st.st_mode):
+        raise ProfileLoadError(
+            f"refusing to read {path}: not a regular file (mode={oct(st.st_mode)})"
+        )
+    if st.st_size > _MAX_ARTIFACT_BYTES:
+        raise ProfileLoadError(
+            f"artifact {path} is {st.st_size} bytes, exceeds {_MAX_ARTIFACT_BYTES} cap"
+        )
+    return path.read_text(encoding="utf-8")
 
 
 @dataclass
@@ -181,13 +210,16 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
     mtimes_before = tuple(p.stat().st_mtime_ns for p in artifact_paths)
 
     # Read all artifacts
-    profile = json.loads(artifact_paths[0].read_text(encoding="utf-8"))
-    archetypes = json.loads(artifact_paths[1].read_text(encoding="utf-8"))
-    rules = json.loads(artifact_paths[2].read_text(encoding="utf-8"))
-    canonicals = json.loads(artifact_paths[3].read_text(encoding="utf-8"))
+    profile = json.loads(_safe_read_artifact(artifact_paths[0]))
+    archetypes = json.loads(_safe_read_artifact(artifact_paths[1]))
+    rules = json.loads(_safe_read_artifact(artifact_paths[2]))
+    canonicals = json.loads(_safe_read_artifact(artifact_paths[3]))
 
     idioms_path = profile_dir / "idioms.md"
-    idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
+    try:
+        idioms_text = _safe_read_artifact(idioms_path)
+    except FileNotFoundError:
+        idioms_text = ""
 
     # Capture mtime tuple AFTER reads — must match
     mtimes_after = tuple(p.stat().st_mtime_ns for p in artifact_paths)
