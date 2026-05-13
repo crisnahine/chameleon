@@ -119,7 +119,10 @@ t(
 )
 
 if pretool_responses:
-    ev = pretool_responses[0]
+    # Claude Code may fire the PreToolUse hook multiple times per Edit; the
+    # chameleon hook dedups within one turn so only one emits content and the
+    # rest emit {}. Pick the first response with a non-empty output.
+    ev = next((e for e in pretool_responses if e.get("output")), pretool_responses[0])
     t(
         f"the TypeScript repo: hook_name is PreToolUse:Edit (got {ev.get('hook_name')})",
         ev.get("hook_name") == "PreToolUse:Edit",
@@ -164,7 +167,7 @@ t(
 )
 
 if pretool_responses:
-    ev = pretool_responses[0]
+    ev = next((e for e in pretool_responses if e.get("output")), pretool_responses[0])
     output_str = ev.get("output", "")
     try:
         parsed = json.loads(output_str)

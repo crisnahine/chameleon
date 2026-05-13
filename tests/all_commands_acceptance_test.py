@@ -197,7 +197,7 @@ for label, repo_root, _ in ACCEPTANCE_TARGETS:
 for label, repo_root, sample_rel in ACCEPTANCE_TARGETS:
     if not repo_root.is_dir():
         continue
-    section(f"Round 2 — {label}: 13 MCP tools batch invocation")
+    section(f"Round 2 — {label}: 15 MCP tools batch invocation")
 
     sample_abs = str(repo_root / sample_rel)
     repo_path = str(repo_root)
@@ -234,8 +234,10 @@ Call these tools with the listed args:
 11. bootstrap_repo(path={repo_path!r}, mode="full", paths_glob=null)
 12. refresh_repo(repo={repo_path!r}, force=false)
 13. trust_profile(repo={repo_path!r}, confirmation_token={repo_root.name!r})
+14. disable_session(repo={repo_path!r}, session_id="acceptance-test-session")
+15. pause_session(repo={repo_path!r}, minutes=15)
 
-After all 13 calls, print "ALL DONE".
+After all 15 calls, print "ALL DONE".
 """
 
     rc, events, stderr = run_claude(
@@ -250,6 +252,16 @@ After all 13 calls, print "ALL DONE".
     for tool_name in MCP_TOOLS:
         called = claude_called_tool(events, f"{MCP_PREFIX}{tool_name}")
         t(f"{label}: {tool_name} invoked via Claude Code", called)
+
+    # Teardown: this batch called pause_session and disable_session against
+    # the real test repo, which left .pause_until / .session_disable files
+    # under the per-repo plugin-data dir. Subsequent tests that probe the
+    # hook would short-circuit on suppression and report misleading
+    # failures. Clear those files now.
+    from chameleon_mcp.tools import _compute_repo_id
+    repo_data_dir = Path.home() / ".local" / "share" / "chameleon" / _compute_repo_id(repo_root)
+    for stale in (".pause_until", ".session_disable"):
+        (repo_data_dir / stale).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

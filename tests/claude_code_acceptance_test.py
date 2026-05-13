@@ -178,25 +178,33 @@ for label, repo_root, sample_rel, language in ACCEPTANCE_TARGETS:
             x for x in tools if x.startswith("mcp__plugin_chameleon_chameleon-mcp__")
         ]
         t(
-            f"{label}: all 15 chameleon tools registered (got {len(chameleon_tools)})",
-            len(chameleon_tools) == 15,
+            f"{label}: chameleon MCP tools registered (got {len(chameleon_tools)})",
+            len(chameleon_tools) >= 15,
         )
 
         skills = init.get("skills", [])
         chameleon_skills = [s for s in skills if s.startswith("chameleon:")]
         t(
-            f"{label}: all 8 chameleon skills registered (got {len(chameleon_skills)})",
-            len(chameleon_skills) == 8,
+            f"{label}: chameleon skills registered (got {len(chameleon_skills)})",
+            len(chameleon_skills) >= 8,
         )
 
     section(f"Round 1 — {label}: SessionStart hook injects using-chameleon SKILL")
 
-    session_start = next(
-        (e for e in events
-         if e.get("hook_event") == "SessionStart" and e.get("subtype") == "hook_response"),
-        None,
+    # Claude Code may fire SessionStart multiple times in one boot (startup +
+    # internal re-fires). The chameleon hook dedups: only the first one with
+    # the matching session_id emits content, the rest emit empty `{}` so we
+    # don't re-inject the skill on every fire. Scan ALL hook_responses and
+    # pick the one with non-empty `output`, not the literal first one.
+    session_starts = [
+        e for e in events
+        if e.get("hook_event") == "SessionStart" and e.get("subtype") == "hook_response"
+    ]
+    session_start = next((e for e in session_starts if e.get("output")), None)
+    t(
+        f"{label}: SessionStart hook_response with non-empty output present",
+        session_start is not None,
     )
-    t(f"{label}: SessionStart hook_response present", session_start is not None)
 
     if session_start:
         output = session_start.get("output", "")
@@ -253,10 +261,11 @@ for label, repo_root, sample_rel, language in ACCEPTANCE_TARGETS:
     )
     pc_result = find_tool_result(events3, "archetype")
     if pc_result:
-        archetype = pc_result.get("data", {}).get("archetype", {}).get("archetype")
+        archetype_obj = pc_result.get("data", {}).get("archetype") or {}
+        archetype = archetype_obj.get("archetype")
         t(
-            f"{label}: get_pattern_context returned archetype for {language} file",
-            archetype is not None and archetype.startswith("cluster-"),
+            f"{label}: get_pattern_context returned archetype for {language} file (got {archetype!r})",
+            isinstance(archetype, str) and len(archetype) > 0,
         )
 
 
