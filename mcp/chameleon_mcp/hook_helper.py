@@ -159,6 +159,37 @@ def preflight_and_advise() -> int:
     so the SECOND hook call sees the daemon ready. The current call
     proceeds via the in-process path either way.
     """
+    _started = time.time()
+
+    def _elapsed() -> int:
+        return int((time.time() - _started) * 1000)
+
+    def _metric(
+        *,
+        advisory_emitted: bool,
+        repo_id: str | None = None,
+        suppression_reason: str | None = None,
+        fail_open: bool = False,
+        trust_state: str | None = None,
+        archetype: str | None = None,
+        confidence: str | None = None,
+    ) -> None:
+        try:
+            from chameleon_mcp.metrics import emit_hook_metric
+            emit_hook_metric(
+                "preflight-and-advise",
+                elapsed_ms=_elapsed(),
+                repo_id=repo_id,
+                advisory_emitted=advisory_emitted,
+                suppression_reason=suppression_reason,
+                fail_open=fail_open,
+                trust_state=trust_state,
+                archetype=archetype,
+                confidence=confidence,
+            )
+        except Exception:
+            pass
+
     try:
         payload = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, ValueError):
@@ -175,6 +206,7 @@ def preflight_and_advise() -> int:
     # context so the edit proceeds without injection. Mirrors the docs'
     # "hook stack still fires (safety hard-deny preserved) but no
     # <chameleon-context> content is injected" promise.
+    repo_id_hint: str | None = None
     try:
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.loader import find_repo_root
@@ -189,6 +221,7 @@ def preflight_and_advise() -> int:
             session_id=session_id,
         )
         if suppressed is not None:
+            _metric(advisory_emitted=False, repo_id=repo_id_hint, suppression_reason=suppressed)
             _emit({})
             return 0
     except Exception:
@@ -221,6 +254,7 @@ def preflight_and_advise() -> int:
             result = get_pattern_context(file_path)
         except Exception:
             # Fail-open per ARCHITECTURE.md — never block edits on advisor failure
+            _metric(advisory_emitted=False, repo_id=repo_id_hint, fail_open=True)
             _emit({})
             return 0
 
@@ -234,6 +268,8 @@ def preflight_and_advise() -> int:
     archetype_name = archetype_obj.get("archetype")
 
     if not archetype_name:
+        repo_id = repo_info.get("id") or repo_id_hint
+        _metric(advisory_emitted=False, repo_id=repo_id, trust_state=trust_state)
         _emit({})
         return 0
 
@@ -283,6 +319,13 @@ def preflight_and_advise() -> int:
                 "hard deny.\n"
                 "</chameleon-context>"
             )
+            _metric(
+                advisory_emitted=True,
+                repo_id=repo_id,
+                trust_state="untrusted",
+                archetype=archetype_name,
+                confidence=confidence_band,
+            )
             _emit({
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
@@ -291,6 +334,14 @@ def preflight_and_advise() -> int:
             })
             return 0
         # Already prompted this session — stay silent.
+        _metric(
+            advisory_emitted=False,
+            repo_id=repo_id,
+            suppression_reason="session_disable",
+            trust_state="untrusted",
+            archetype=archetype_name,
+            confidence=confidence_band,
+        )
         _emit({})
         return 0
 
@@ -331,6 +382,13 @@ def preflight_and_advise() -> int:
         block += "Team idioms captured via /chameleon-teach are available via get_pattern_context.\n"
     block += "</chameleon-context>"
 
+    _metric(
+        advisory_emitted=True,
+        repo_id=repo_id,
+        trust_state=trust_state,
+        archetype=archetype_name,
+        confidence=confidence_band,
+    )
     _emit({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
