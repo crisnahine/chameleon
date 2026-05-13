@@ -5,7 +5,7 @@ runs the MCP handshake, lists tools, and invokes every tool through the
 real JSON-RPC pipeline.
 
 Two rounds:
-  Round 1: protocol handshake + list_tools + 15-tool registry
+  Round 1: protocol handshake + list_tools + tool registry
   Round 2: invoke each tool via call_tool with valid + invalid args
 """
 
@@ -53,6 +53,8 @@ EXPECTED_TOOLS = {
     "teach_profile_structured",
     # Phase 4.5 — long-lived daemon status
     "daemon_status",
+    # May 13 hardening sweep — triage tool
+    "doctor",
 }
 
 
