@@ -2084,6 +2084,32 @@ def bootstrap_repo(
         committed_marker = repo_root / ".chameleon" / "COMMITTED"
         if committed_marker.is_file():
             profile_path = str(repo_root / ".chameleon")
+            # Register the repo in index.db so list_profiles and other
+            # index-backed tools see it. New team members who clone a repo
+            # with a checked-in .chameleon/ hit this path and would otherwise
+            # be invisible to the index until they ran a full bootstrap.
+            try:
+                repo_id = _compute_repo_id(repo_root)
+                profile_dir = repo_root / ".chameleon"
+                _arch_count: int | None = None
+                try:
+                    import json as _json
+                    _arc_data = _json.loads(
+                        (profile_dir / "archetypes.json").read_text(encoding="utf-8")
+                    )
+                    _arch_count = len(_arc_data.get("archetypes", {}))
+                except Exception:
+                    pass
+                index_db.upsert_repo(
+                    repo_id,
+                    str(repo_root),
+                    profile_sha256=hash_profile(profile_dir),
+                    archetype_count=_arch_count,
+                    files_indexed=None,
+                    bootstrap_ms=None,
+                )
+            except Exception:
+                pass
             return _envelope({
                 "status": "already_bootstrapped",
                 "profile_path": profile_path,
