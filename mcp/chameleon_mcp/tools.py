@@ -1869,6 +1869,11 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
 
     v0.5.2 (Bug 1): `repo` accepts either an absolute repo path or a
     64-char repo_id hex digest. See `_resolve_repo_arg`.
+
+    Concurrency: acquires .chameleon/.refresh.lock (non-blocking flock) at
+    the top of the function. A second concurrent /chameleon-refresh call
+    returns a fast "failed" envelope instead of serializing on the 30s
+    rename flock inside atomic_profile_commit.
     """
     from chameleon_mcp import index_db
     from chameleon_mcp.bootstrap.discovery import discover_files
@@ -1876,6 +1881,7 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
         _glob_for_extractor,
         _select_extractor,
     )
+    from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
 
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
     if resolved_path is None:
@@ -1889,6 +1895,29 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             "status": "failed",
             "error": "refresh_repo expects an absolute repo path",
         })
+
+    refresh_lock_path = repo_path / ".chameleon" / ".refresh.lock"
+    try:
+        with acquire_advisory_lock(refresh_lock_path):
+            return _refresh_repo_locked(repo_path, force=force)
+    except LockHeldError as e:
+        return _envelope({
+            "status": "failed",
+            "error": (
+                f"another /chameleon-refresh is in progress (PID {e.holder_pid}); "
+                "retry shortly"
+            ),
+        })
+
+
+def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
+    """Execute refresh logic. Called while .chameleon/.refresh.lock is held."""
+    from chameleon_mcp import index_db
+    from chameleon_mcp.bootstrap.discovery import discover_files
+    from chameleon_mcp.bootstrap.orchestrator import (
+        _glob_for_extractor,
+        _select_extractor,
+    )
 
     started_at = time.time()
 
