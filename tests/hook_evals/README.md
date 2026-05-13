@@ -68,5 +68,4 @@ scripts/refresh_eval_fixtures.sh --apply    # write
 - `runner.py` discovers scenarios via `glob('scenarios/**/*.json')`, sorted.
 - Each scenario gets its own tmpdir for repo and plugin-data, isolated via `CHAMELEON_PLUGIN_DATA`.
 - `--full` mode pipes a synthetic PreToolUse event through `hooks/preflight-and-advise` and parses the advisory from `hookSpecificOutput.additionalContext` or top-level `additionalContext`.
-- Fail-open detection watches `~/.local/share/chameleon/.hook_errors.log` (hardcoded path in the bash hooks; not redirectable via env var). `--full` mode appends one line to that log on hook failure, an accepted cost.
-- Known false positive: if a chameleon daemon is running concurrently with `--full` mode (e.g., during an interactive Claude Code session), the daemon's writes to `.hook_errors.log` can spuriously trip the fail-open guard. Re-run `--full` after a brief idle period; per-second re-runs are stable. CI environments typically don't run a daemon and aren't affected.
+- Fail-open detection writes hook errors to a per-scenario tmpfile via the `CHAMELEON_HOOK_ERROR_LOG` env var (honored by all 4 chameleon hooks). The daemon-race false positive previously documented here is closed: a concurrent daemon writes to its own session's log path, not the runner's tmpfile.

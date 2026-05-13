@@ -26,7 +26,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures" / "eval_repos"
 HOOK_SCRIPT = REPO_ROOT / "hooks" / "preflight-and-advise"
 SCENARIOS_DIR = REPO_ROOT / "tests" / "hook_evals" / "scenarios"
-HOOK_ERROR_LOG = Path.home() / ".local" / "share" / "chameleon" / ".hook_errors.log"
 
 
 @dataclass
@@ -217,6 +216,13 @@ def _read_mtime(p: Path) -> float | None:
         return None
 
 
+def _read_size(p: Path) -> int:
+    try:
+        return p.stat().st_size
+    except (FileNotFoundError, OSError):
+        return 0
+
+
 def run_scenario_full(scenario: dict) -> ScenarioResult:
     """Pipe a synthetic PreToolUse event through hooks/preflight-and-advise."""
     fixture_repo = scenario.get("fixture_repo")
@@ -229,8 +235,11 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
         repo_tmp = Path(repo_tmp_str)
         _prev_plugin_data = os.environ.get("CHAMELEON_PLUGIN_DATA")
         _prev_allow_tmp = os.environ.get("CHAMELEON_ALLOW_TMP_REPO")
+        _prev_log = os.environ.get("CHAMELEON_HOOK_ERROR_LOG")
+        per_session_log = Path(data_tmp_str) / ".hook_errors.log"
         os.environ["CHAMELEON_PLUGIN_DATA"] = data_tmp_str
         os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        os.environ["CHAMELEON_HOOK_ERROR_LOG"] = str(per_session_log)
         try:
             if fixture_repo is not None:
                 src = FIXTURES_DIR / fixture_repo
@@ -256,7 +265,12 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
                 "session_id": "hook_evals",
             }
 
-            log_mtime_before = _read_mtime(HOOK_ERROR_LOG)
+            # Pre-create the log file at 0 bytes. The hook's ">>" redirect
+            # also creates it if absent, but writes nothing on success — so
+            # size stays 0. Any actual error write grows the file; we detect
+            # that via size rather than mtime to avoid sub-second false positives.
+            per_session_log.touch()
+            log_size_before = _read_size(per_session_log)
 
             proc = subprocess.run(
                 ["bash", str(HOOK_SCRIPT)],
@@ -266,13 +280,19 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
                 timeout=10,
             )
 
-            log_mtime_after = _read_mtime(HOOK_ERROR_LOG)
-            if log_mtime_before != log_mtime_after:
+            log_size_after = _read_size(per_session_log)
+            if log_size_after > log_size_before:
+                stderr_excerpt = proc.stderr.decode('utf-8', 'replace')[-400:]
+                log_excerpt = ""
+                try:
+                    log_excerpt = per_session_log.read_text(encoding="utf-8", errors="replace")[-400:]
+                except FileNotFoundError:
+                    pass
                 return ScenarioResult(
                     name=name,
                     status="HOOK_FAILED",
                     mismatches=[
-                        f"hook fail-opened; .hook_errors.log grew (stderr tail: {proc.stderr.decode('utf-8', 'replace')[-400:]})"
+                        f"hook fail-opened; per-session log grew. log: {log_excerpt!r}; stderr: {stderr_excerpt!r}"
                     ],
                 )
 
@@ -339,6 +359,10 @@ def run_scenario_full(scenario: dict) -> ScenarioResult:
                 os.environ.pop("CHAMELEON_ALLOW_TMP_REPO", None)
             else:
                 os.environ["CHAMELEON_ALLOW_TMP_REPO"] = _prev_allow_tmp
+            if _prev_log is None:
+                os.environ.pop("CHAMELEON_HOOK_ERROR_LOG", None)
+            else:
+                os.environ["CHAMELEON_HOOK_ERROR_LOG"] = _prev_log
 
 
 def main(argv: list[str] | None = None) -> int:

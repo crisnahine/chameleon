@@ -32,9 +32,14 @@ fi
 # system python3 lacks chameleon_mcp deps), keep a rotating error log so
 # users can diagnose why no advisory is firing. The log lives outside
 # the plugin tree to survive plugin upgrades.
-LOG_DIR="${HOME}/.local/share/chameleon"
+if [ -n "${CHAMELEON_HOOK_ERROR_LOG:-}" ]; then
+    LOG_FILE="${CHAMELEON_HOOK_ERROR_LOG}"
+    LOG_DIR="$(dirname "${LOG_FILE}")"
+else
+    LOG_DIR="${HOME}/.local/share/chameleon"
+    LOG_FILE="${LOG_DIR}/.hook_errors.log"
+fi
 mkdir -p "${LOG_DIR}" 2>/dev/null || true
-LOG_FILE="${LOG_DIR}/.hook_errors.log"
 
 # 2-second hard timeout (Round 5 Performance Engineer recommendation)
 PYTHONPATH="${MCP_DIR}" \

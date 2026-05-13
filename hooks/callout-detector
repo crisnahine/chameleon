@@ -30,9 +30,14 @@ else
 fi
 
 # BUG-NEW-010 (v0.5.7): rotating error log so silent failures are diagnosable.
-LOG_DIR="${HOME}/.local/share/chameleon"
+if [ -n "${CHAMELEON_HOOK_ERROR_LOG:-}" ]; then
+    LOG_FILE="${CHAMELEON_HOOK_ERROR_LOG}"
+    LOG_DIR="$(dirname "${LOG_FILE}")"
+else
+    LOG_DIR="${HOME}/.local/share/chameleon"
+    LOG_FILE="${LOG_DIR}/.hook_errors.log"
+fi
 mkdir -p "${LOG_DIR}" 2>/dev/null || true
-LOG_FILE="${LOG_DIR}/.hook_errors.log"
 
 # 2-second hard timeout — frustration hint is not worth blocking on.
 PYTHONPATH="${MCP_DIR}" \
