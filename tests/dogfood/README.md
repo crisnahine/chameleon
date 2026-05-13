@@ -9,7 +9,7 @@ Slash command: `/chameleon-dogfood` (`skills/chameleon-dogfood/SKILL.md`).
 
 ```bash
 cd /Users/crisn/Documents/Projects/chameleon
-.venv/bin/python -m tests.dogfood.runner
+mcp/.venv/bin/python -m tests.dogfood.runner
 ```
 
 Runs all `free` + `cheap` scenarios (50 scenarios, ~$0.96 ceiling). No real Claude calls, no money spent.
@@ -31,19 +31,19 @@ Examples:
 
 ```bash
 # List what the default run would touch
-.venv/bin/python -m tests.dogfood.runner --list
+mcp/.venv/bin/python -m tests.dogfood.runner --list
 
 # One phase only
-.venv/bin/python -m tests.dogfood.runner --phase 3.x
+mcp/.venv/bin/python -m tests.dogfood.runner --phase 3.x
 
 # One family only
-.venv/bin/python -m tests.dogfood.runner --family trust
+mcp/.venv/bin/python -m tests.dogfood.runner --family trust
 
 # Full suite including real-Claude scenarios
-.venv/bin/python -m tests.dogfood.runner --cost free,cheap,moderate --include-real-claude
+mcp/.venv/bin/python -m tests.dogfood.runner --cost free,cheap,moderate --include-real-claude
 
 # Save results somewhere else
-.venv/bin/python -m tests.dogfood.runner --results-dir /tmp/dogfood-run
+mcp/.venv/bin/python -m tests.dogfood.runner --results-dir /tmp/dogfood-run
 ```
 
 ## Cost table
@@ -68,7 +68,7 @@ Default + moderate + real-Claude: 58 scenarios, ~$2.56 ceiling.
 Capture everything:
 
 ```bash
-.venv/bin/python -m tests.dogfood.runner 2>&1 | tee /tmp/run.txt
+mcp/.venv/bin/python -m tests.dogfood.runner 2>&1 | tee /tmp/run.txt
 ```
 
 ## Prerequisites

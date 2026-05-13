@@ -15,10 +15,19 @@ Options:
 """
 from __future__ import annotations
 
+import sys
+
+if sys.version_info < (3, 11):
+    sys.stderr.write(
+        f"dogfood runner requires Python >= 3.11 (got {sys.version_info.major}."
+        f"{sys.version_info.minor}). Use mcp/.venv/bin/python instead, e.g.:\n"
+        f"  mcp/.venv/bin/python -m tests.dogfood.runner\n"
+    )
+    sys.exit(2)
+
 import argparse
 import json
 import os
-import sys
 import tempfile
 import time
 from datetime import datetime, timezone

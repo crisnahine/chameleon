@@ -17,7 +17,7 @@ From the chameleon repo root:
 
 ```bash
 cd /Users/crisn/Documents/Projects/chameleon
-.venv/bin/python -m tests.dogfood.runner
+mcp/.venv/bin/python -m tests.dogfood.runner
 ```
 
 Variations:
