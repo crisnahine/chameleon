@@ -14,12 +14,26 @@ matching reason for diagnostic logging.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 from chameleon_mcp.profile.trust import repo_data_dir
+
+
+def _safe_session_marker(session_id: str | None) -> str:
+    """Return a filesystem-safe identifier derived from session_id.
+
+    Uses sha256 of utf-8 bytes, truncated to 16 hex chars. Stable across
+    calls for the same session_id but contains no path-traversal chars.
+    Returns 'unknown' for None / empty input.
+    """
+    if not session_id:
+        return "unknown"
+    raw = session_id.encode("utf-8", errors="replace")
+    return hashlib.sha256(raw).hexdigest()[:16]
 
 
 def is_chameleon_suppressed(
@@ -42,7 +56,7 @@ def is_chameleon_suppressed(
         return "user_disable"
 
     if repo_id and session_id:
-        marker = repo_data_dir(repo_id) / f".session_disabled.{session_id}"
+        marker = repo_data_dir(repo_id) / f".session_disabled.{_safe_session_marker(session_id)}"
         if marker.is_file():
             return "session_disable"
 
@@ -68,7 +82,7 @@ def is_chameleon_suppressed(
 
 def write_session_disable(repo_id: str, session_id: str) -> Path:
     """Write the .session_disabled.<session_id> marker. Returns the path."""
-    marker = repo_data_dir(repo_id) / f".session_disabled.{session_id}"
+    marker = repo_data_dir(repo_id) / f".session_disabled.{_safe_session_marker(session_id)}"
     marker.write_text(
         f"disabled-at={time.time()}\nsession_id={session_id}\n",
         encoding="utf-8",
@@ -78,7 +92,7 @@ def write_session_disable(repo_id: str, session_id: str) -> Path:
 
 def clear_session_disable(repo_id: str, session_id: str) -> bool:
     """Remove the marker. Returns True if it existed."""
-    marker = repo_data_dir(repo_id) / f".session_disabled.{session_id}"
+    marker = repo_data_dir(repo_id) / f".session_disabled.{_safe_session_marker(session_id)}"
     if marker.is_file():
         marker.unlink()
         return True

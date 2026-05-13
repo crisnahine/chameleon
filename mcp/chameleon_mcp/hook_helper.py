@@ -62,9 +62,10 @@ def _should_emit_untrusted_prompt(repo_id: str, session_id: str | None) -> bool:
     if not repo_id or not session_id:
         return True
     try:
+        from chameleon_mcp.optouts import _safe_session_marker
         marker_dir = _plugin_data_dir() / repo_id
         marker_dir.mkdir(parents=True, exist_ok=True)
-        marker = marker_dir / _TRUST_PROMPT_FILENAME.format(session=session_id)
+        marker = marker_dir / _TRUST_PROMPT_FILENAME.format(session=_safe_session_marker(session_id))
         if marker.exists():
             return False
         marker.touch(exist_ok=True)

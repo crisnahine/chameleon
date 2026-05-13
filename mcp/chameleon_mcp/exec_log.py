@@ -143,7 +143,8 @@ def append_exec_log(
       }
     """
     key = _ensure_hmac_key()
-    log_path = _exec_log_dir(repo_id) / f"{session_id}.jsonl"
+    from chameleon_mcp.optouts import _safe_session_marker
+    log_path = _exec_log_dir(repo_id) / f"{_safe_session_marker(session_id)}.jsonl"
 
     # Truncate command to 1 KB to bound log size
     truncated_command = command[:1024]
