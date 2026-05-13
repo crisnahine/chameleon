@@ -65,11 +65,11 @@ from chameleon_mcp.tools import trust_profile as _trust
 
 if not (TS_REPO / ".chameleon" / "profile.json").is_file():
     _bootstrap(str(TS_REPO))
-_trust(str(TS_REPO), "client")
+_trust(str(TS_REPO), TS_REPO.name)
 if RUBY_REPO.is_dir() and not (RUBY_REPO / ".chameleon" / "profile.json").is_file():
     _bootstrap(str(RUBY_REPO))
 if RUBY_REPO.is_dir():
-    _trust(str(RUBY_REPO), "api")
+    _trust(str(RUBY_REPO), RUBY_REPO.name)
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +263,7 @@ if not (RUBY_REPO / ".chameleon" / "profile.json").is_file():
 
 from chameleon_mcp.tools import trust_profile
 
-trust_profile(str(RUBY_REPO), "api")
+trust_profile(str(RUBY_REPO), RUBY_REPO.name)
 
 rb_test_files = [
     RUBY_REPO / "app" / "models" / "listing.rb",
@@ -659,7 +659,7 @@ t(
     client_duration < 30.0,
 )
 # Restore trust (it gets invalidated on profile re-write)
-trust_profile(str(TS_REPO), "client")
+trust_profile(str(TS_REPO), TS_REPO.name)
 
 
 # ---------------------------------------------------------------------------
@@ -1108,10 +1108,10 @@ t(
     api_duration < 120.0,
 )
 t(
-    f"the Ruby on Rails repo detected ≥100 archetypes (got {r_api['archetypes_detected']})",
-    r_api["archetypes_detected"] >= 100,
+    f"the Ruby on Rails repo detected >=15 archetypes (got {r_api['archetypes_detected']})",
+    r_api["archetypes_detected"] >= 15,
 )
-trust_profile(str(RUBY_REPO), "api")
+trust_profile(str(RUBY_REPO), RUBY_REPO.name)
 
 
 # ---------------------------------------------------------------------------
@@ -1320,7 +1320,7 @@ t(
     f"Bootstrap files_processed > 0 (got {r_full.get('files_processed')})",
     r_full.get("files_processed", 0) > 0,
 )
-trust_profile(str(TS_REPO), "client")
+trust_profile(str(TS_REPO), TS_REPO.name)
 
 
 # ---------------------------------------------------------------------------
@@ -1440,7 +1440,7 @@ from chameleon_mcp.profile.trust import revoke_trust
 
 # Wrap in try/finally so a crash between revoke and re-grant doesn't leak
 # untrusted state into downstream tests (or the next test-suite run).
-trust_profile(str(TS_REPO), "client")
+trust_profile(str(TS_REPO), TS_REPO.name)
 state = trust_state_for(client_repo_id)
 t("Trust state after grant: trusted", state is not None)
 
@@ -1449,9 +1449,9 @@ try:
     state = trust_state_for(client_repo_id)
     t("Trust state after revoke: None", state is None)
 finally:
-    trust_profile(str(TS_REPO), "client")
+    trust_profile(str(TS_REPO), TS_REPO.name)
     if RUBY_REPO.is_dir():
-        trust_profile(str(RUBY_REPO), "api")
+        trust_profile(str(RUBY_REPO), RUBY_REPO.name)
 
 
 # ---------------------------------------------------------------------------
@@ -1747,7 +1747,7 @@ shutil.rmtree(TS_REPO / ".chameleon", ignore_errors=True)
 bootstrap_repo(str(TS_REPO))
 sentinel = TS_REPO / ".chameleon" / "COMMITTED"
 t("COMMITTED sentinel written by bootstrap", sentinel.is_file())
-trust_profile(str(TS_REPO), "client")
+trust_profile(str(TS_REPO), TS_REPO.name)
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,7 @@ from chameleon_mcp.tools import (
 # Ensure the TypeScript repo is bootstrapped + trusted
 if not (TS_REPO / ".chameleon" / "profile.json").is_file():
     bootstrap_repo(str(TS_REPO))
-trust_profile(str(TS_REPO), "client")
+trust_profile(str(TS_REPO), TS_REPO.name)
 from chameleon_mcp.tools import _compute_repo_id as _compute_repo_id_v6  # noqa: E402
 
 client_repo_id = _compute_repo_id_v6(TS_REPO)

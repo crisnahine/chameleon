@@ -52,7 +52,7 @@ from chameleon_mcp.tools import (
 # Ensure the TypeScript repo is bootstrapped + trusted
 if not (TS_REPO / ".chameleon" / "profile.json").is_file():
     bootstrap_repo(str(TS_REPO))
-trust_profile(str(TS_REPO), "client")
+trust_profile(str(TS_REPO), TS_REPO.name)
 
 
 # ---------------------------------------------------------------------------

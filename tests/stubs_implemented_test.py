@@ -201,7 +201,7 @@ with tempfile.TemporaryDirectory() as plugin_data_tmp:
     from chameleon_mcp.tools import trust_profile
     # We need to use the same env for the in-process call too
     os.environ["CHAMELEON_PLUGIN_DATA"] = plugin_data_tmp
-    trust_profile(str(TS_REPO), "client")
+    trust_profile(str(TS_REPO), TS_REPO.name)
 
     test_files = [
         TS_REPO / "src" / "components" / "base" / "SelectVettingStatus.tsx",

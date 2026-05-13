@@ -60,7 +60,7 @@ t(
 )
 
 # Exact basename accepted
-r = trust_profile(str(TS_REPO), "client")
+r = trust_profile(str(TS_REPO), TS_REPO.name)
 t("Exact repo basename token accepted", r["data"]["status"] == "success")
 client_repo_id = _compute_repo_id(TS_REPO)
 t("Trust state recorded after grant", trust_state_for(client_repo_id) is not None)
@@ -112,7 +112,7 @@ with tempfile.TemporaryDirectory() as tmp:
 # ---------------------------------------------------------------------------
 section("Round 1 — trust record fidelity")
 
-trust_profile(str(TS_REPO), "client")
+trust_profile(str(TS_REPO), TS_REPO.name)
 record = trust_state_for(client_repo_id)
 t("Trust record records correct repo_root", record.repo_root == str(TS_REPO.resolve()))
 t("Trust record has granted_by_user", bool(record.granted_by_user))
