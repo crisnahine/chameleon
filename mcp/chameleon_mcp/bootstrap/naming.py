@@ -222,11 +222,12 @@ def _pattern_contains(paths_pattern: str, token: str) -> bool:
 def _members_contain(member_paths: Iterable[str], token: str) -> bool:
     """Does at least one member's path contain ``token`` as a directory segment?
 
-    The signature v5 ``path_pattern_bucket_for`` collapses inner directory
-    segments for deep paths — ``app/controllers/api/v1/foo.rb`` becomes the
-    bucket ``app/api/v1`` and entirely loses the load-bearing ``controllers``
-    segment. Naming the cluster therefore can't rely on the bucket alone;
-    we also inspect the raw member paths.
+    The v0.5.9 depth-2 bucket for ``app/controllers/api/v1/foo.rb`` is
+    ``app/controllers``, which already carries the ``controllers`` segment.
+    However for unusual layouts where ``controllers`` isn't at parts[1],
+    or when running with an old profile generated at depth=3, the bucket
+    may still omit it. This fallback checks raw member paths so naming
+    stays correct in both cases.
 
     A cluster is considered to "be a controllers cluster" only if a strict
     majority of its members live under a ``controllers/`` directory, which

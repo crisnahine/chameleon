@@ -410,7 +410,9 @@ with open(log_file) as fh:
 section("End-to-end test repos (regression check)")
 from chameleon_mcp.tools import get_pattern_context as gpc
 
-r = gpc(f"{RUBY_REPO}/app/services/api/v1/users/create.rb")
+# Use a shallow model path (3 segments, formula unchanged by Option 4) so the
+# lookup still hits the existing profile at high confidence before /chameleon-refresh.
+r = gpc(f"{RUBY_REPO}/app/models/listing.rb")
 t("the Ruby on Rails repo: returns archetype", r["data"]["archetype"]["archetype"] is not None)
 t("the Ruby on Rails repo: confidence high", r["data"]["archetype"]["confidence_band"] == "high")
 

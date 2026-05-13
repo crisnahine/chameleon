@@ -31,6 +31,8 @@ import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from chameleon_mcp._thresholds import threshold_int
+
 # Bumped when the signature function's behavior changes.
 # Forces drift.db cache invalidation per ARCHITECTURE.md "Incremental algorithm".
 SIGNATURE_FUNCTION_VERSION = 1
@@ -115,8 +117,14 @@ def path_pattern_bucket_for(
     archetype_paths: dict[str, list[str]] | None = None,
     *,
     include_extension: bool = False,
-) -> str:
+) -> tuple[str, str]:
     """Bucket a file path so files with the same role cluster together.
+
+    Returns a 2-tuple ``(bucket, sub_bucket)`` where:
+    - ``bucket`` is the shallow cluster key used as ``ClusterKey.path_pattern_bucket``.
+    - ``sub_bucket`` is the deeper remaining path (empty string when the path
+      is not deep enough to have one). Stored as cluster metadata to preserve
+      visibility into subdirectory structure without fragmenting clusters.
 
     `archetype_paths` is accepted as a forward-compat parameter for future
     glob-against-known-archetypes matching, but the current implementation
@@ -147,21 +155,30 @@ def path_pattern_bucket_for(
     distinct workspaces don't collide on identical sub-directory shapes.
     The pre-v0.5.2 formula ``parts[0]/parts[-3]/parts[-2]`` dropped the
     workspace name for any ≥5-part monorepo path.
+
+    v0.5.9 (Option 4): for non-monorepo paths with 4+ segments, the bucket
+    depth dropped from 3 to 2 (``CLUSTER_PATH_BUCKET_DEPTH`` env var,
+    default 2). ``app/services/zoom/recordings.rb`` now maps to bucket
+    ``app/services`` (not ``app/services/zoom``), collapsing the long tail
+    of subdirectory fragmentation. The deeper ``parts[-3]/parts[-2]``
+    information is returned as ``sub_bucket`` so cluster metadata still
+    records which subdirectories contributed.
     """
     del archetype_paths  # reserved for forward-compat; not used today
 
     parts = [p for p in file_path.split("/") if p and p not in (".", "..")]
     if len(parts) < 2:
-        return "(root)"
-    # Examples:
-    #   app/controllers/api/v1/users.rb       → "app/api/v1"
-    #   spec/controllers/api/v1/users_spec.rb → "spec/api/v1"
-    #   app/models/listing.rb                 → "app/models"
-    #   src/components/base/Button.tsx        → "src/components/base"
-    #   src/components/Button.tsx             → "src/components"
-    #   Gemfile (1 part)                      → "(root)"
-    #   packages/excalidraw/components/Foo.tsx → "packages/excalidraw/components"
-    #   apps/web/routes/(marketing)/page.tsx  → "apps/web/routes"
+        return ("(root)", "")
+    # Examples with default depth=2:
+    #   app/controllers/api/v1/users.rb       → ("app/controllers", "api/v1")
+    #   spec/controllers/api/v1/users_spec.rb → ("spec/controllers", "api/v1")
+    #   app/models/listing.rb                 → ("app/models", "")
+    #   src/components/base/Button.tsx        → ("src/components", "base")
+    #   src/components/Button.tsx             → ("src/components", "")
+    #   Gemfile (1 part)                      → ("(root)", "")
+    #   packages/excalidraw/components/Foo.tsx → ("packages/excalidraw/components", "")
+    #   apps/web/routes/(marketing)/page.tsx  → ("apps/web/routes", "")
+    sub_bucket = ""
     if (
         len(parts) >= 4
         and parts[0] in _MONOREPO_WORKSPACE_ROOTS
@@ -172,10 +189,25 @@ def path_pattern_bucket_for(
         # packages/element/...) discriminated AND keeps every file inside
         # a workspace's top-level directory in the same cluster — which
         # is the same coarseness as `src/components` for a non-monorepo
-        # repo, just one segment deeper.
+        # repo, just one segment deeper. Monorepo paths are always depth-3
+        # regardless of CLUSTER_PATH_BUCKET_DEPTH.
         bucket = f"{parts[0]}/{parts[1]}/{parts[2]}"
     elif len(parts) >= 4:
-        bucket = f"{parts[0]}/{parts[-3]}/{parts[-2]}"
+        depth = threshold_int("CLUSTER_PATH_BUCKET_DEPTH")
+        if depth >= 3:
+            # Restore pre-v0.5.9 depth-3 formula.
+            bucket = f"{parts[0]}/{parts[-3]}/{parts[-2]}"
+        else:
+            # Default depth=2: top-level + first subdirectory.
+            bucket = f"{parts[0]}/{parts[1]}"
+            # Sub-bucket: the remaining inner directories before the file.
+            # For parts = ['app', 'services', 'zoom', 'recordings.rb'],
+            # sub_bucket = 'zoom'. For depth >= 6-part paths like
+            # ['app', 'controllers', 'api', 'v1', 'users_controller.rb'],
+            # sub_bucket = 'api/v1'.
+            if len(parts) >= 4:
+                inner = parts[2:-1]  # directory segments between depth-2 and filename
+                sub_bucket = "/".join(inner) if inner else ""
     else:
         bucket = f"{parts[0]}/{parts[-2]}"
 
@@ -188,7 +220,7 @@ def path_pattern_bucket_for(
         ext = _extension_of(parts[-1])
         if ext:
             bucket = f"{bucket}:{ext}"
-    return bucket
+    return (bucket, sub_bucket)
 
 
 def _extension_of(filename: str) -> str:
@@ -272,12 +304,13 @@ def compute_signature(
     (e.g. ``get_archetype`` reading v0.5.x ``paths_pattern`` entries)
     leave it False.
     """
+    bucket, _sub = path_pattern_bucket_for(
+        file_path,
+        archetype_paths,
+        include_extension=include_extension_in_bucket,
+    )
     return ClusterKey(
-        path_pattern_bucket=path_pattern_bucket_for(
-            file_path,
-            archetype_paths,
-            include_extension=include_extension_in_bucket,
-        ),
+        path_pattern_bucket=bucket,
         content_signal_match=content_signal_match_for(
             content_first_200_bytes, archetype_signals
         ),

@@ -508,7 +508,7 @@ if arch_path.is_file():
         if not witness_rels:
             continue
         witness_rel = witness_rels[0]["witness"]["path"]
-        expected_bucket = path_pattern_bucket_for(witness_rel)
+        expected_bucket, _ = path_pattern_bucket_for(witness_rel)
         # Some signature versions append :ext; allow either form.
         if a["paths_pattern"] not in {expected_bucket, f"{expected_bucket}:rb"}:
             bucket_matches_signature = False

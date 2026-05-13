@@ -219,8 +219,9 @@ cases = [
     ),
 ]
 for app_path, spec_path in cases:
-    app_bucket = path_pattern_bucket_for(app_path)
-    spec_bucket = path_pattern_bucket_for(spec_path)
+    # path_pattern_bucket_for returns (bucket, sub_bucket); unpack bucket only.
+    app_bucket, _ = path_pattern_bucket_for(app_path)
+    spec_bucket, _ = path_pattern_bucket_for(spec_path)
     t(
         f"{app_path!r} ≠ {spec_path!r} buckets",
         app_bucket != spec_bucket,
@@ -229,15 +230,17 @@ for app_path, spec_path in cases:
 
 # Spot-check that shallow paths still produce a coherent bucket and that
 # the bucket includes the top-level segment (the v4 → v5 fix).
+_shallow_b, _ = path_pattern_bucket_for("app/controllers/foo.rb")
 t(
     "shallow path keeps top-level segment",
-    path_pattern_bucket_for("app/controllers/foo.rb").startswith("app/"),
-    path_pattern_bucket_for("app/controllers/foo.rb"),
+    _shallow_b.startswith("app/"),
+    _shallow_b,
 )
+_deep_b, _ = path_pattern_bucket_for("app/controllers/api/v1/foo.rb")
 t(
     "deep path keeps top-level segment",
-    path_pattern_bucket_for("app/controllers/api/v1/foo.rb").startswith("app/"),
-    path_pattern_bucket_for("app/controllers/api/v1/foo.rb"),
+    _deep_b.startswith("app/"),
+    _deep_b,
 )
 
 

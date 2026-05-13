@@ -607,8 +607,8 @@ def get_archetype(repo: str, file_path: str) -> dict:
             rel_str = str(p.relative_to(repo_root))
         except ValueError:
             rel_str = str(p)
-    file_bucket = path_pattern_bucket_for(rel_str)
-    file_bucket_ext = path_pattern_bucket_for(rel_str, include_extension=True)
+    file_bucket, _sub = path_pattern_bucket_for(rel_str)
+    file_bucket_ext, _sub_ext = path_pattern_bucket_for(rel_str, include_extension=True)
 
     exact_matches: list[str] = []
     fallback_matches: list[str] = []  # substring fallback if no exact match

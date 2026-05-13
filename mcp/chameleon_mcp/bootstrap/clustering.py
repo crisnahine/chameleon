@@ -24,7 +24,12 @@ from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_float
 from chameleon_mcp.extractors._base import ParsedFile
-from chameleon_mcp.signatures import ClusterKey, bucket_named_export_count, compute_signature
+from chameleon_mcp.signatures import (
+    ClusterKey,
+    bucket_named_export_count,
+    compute_signature,
+    path_pattern_bucket_for,
+)
 
 # Files in clusters smaller than this aren't proposed as their own archetype
 # without explicit user confirmation.
@@ -69,6 +74,12 @@ class Cluster:
     # by the second-pass loose merge — same paths_pattern + AST shape
     # Jaccard >= 0.5 — get tier "loose" so consumers can distinguish.
     cluster_tier: str = "tight"
+    # v0.5.9 (Option 4): sub_bucket distribution for this cluster.
+    # Maps sub_bucket string → member count. Empty string key means
+    # "file sits directly under the depth-2 bucket with no further
+    # subdirectory". Empty dict for shallow repos where no member has
+    # a sub_bucket.
+    sub_bucket_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def size(self) -> int:
@@ -242,6 +253,11 @@ def cluster_files(
     from chameleon_mcp.bootstrap.discovery import is_likely_generated
 
     by_key: dict[ClusterKey, list[ParsedFile]] = defaultdict(list)
+    # v0.5.9 (Option 4): accumulate sub_bucket counts per cluster key so
+    # we can attach them to each Cluster after bucketing. Using a Counter
+    # per key would be expensive; we accumulate a flat Counter[sub_bucket]
+    # per ClusterKey instead.
+    sub_bucket_counter: dict[ClusterKey, Counter[str]] = defaultdict(Counter)
     skipped_generated: list[ParsedFile] = []
 
     for pf in parsed_files:
@@ -262,6 +278,10 @@ def cluster_files(
         # and .ts files in the same dir cluster separately. The runtime
         # archetype lookup keeps the extension-blind bucket so old
         # v0.5.x profiles remain matchable.
+        # v0.5.9 (Option 4): also capture sub_bucket for cluster metadata.
+        _, sub_bucket = path_pattern_bucket_for(
+            file_path_for_signature, include_extension=True
+        )
         key = compute_signature(
             file_path=file_path_for_signature,
             content_first_200_bytes=pf.content_first_200_bytes,
@@ -273,6 +293,7 @@ def cluster_files(
             include_extension_in_bucket=True,
         )
         by_key[key].append(pf)
+        sub_bucket_counter[key][sub_bucket] += 1
 
     # v0.5.2 (Bug 4): adaptive sparse threshold. Resolved AFTER bucketing
     # so the threshold reflects the actual clustered file count, not the
@@ -284,7 +305,12 @@ def cluster_files(
         resolved_threshold = max(1, int(min_cluster_size))
 
     clusters = [
-        Cluster(key=k, members=members, sparse_threshold=resolved_threshold)
+        Cluster(
+            key=k,
+            members=members,
+            sparse_threshold=resolved_threshold,
+            sub_bucket_counts=dict(sub_bucket_counter[k]),
+        )
         for k, members in by_key.items()
     ]
 
@@ -399,10 +425,21 @@ def _loose_merge_sparse_clusters(
                 members=combined_members,
                 sparse_threshold=sparse_threshold,
                 cluster_tier="loose",
+                sub_bucket_counts=_merge_sub_bucket_counts(
+                    [group[idx] for idx in indices]
+                ),
             )
             merged.append(new_cluster)
 
     return tight + merged
+
+
+def _merge_sub_bucket_counts(clusters: list[Cluster]) -> dict[str, int]:
+    """Combine sub_bucket_counts from multiple clusters into one dict."""
+    merged: Counter[str] = Counter()
+    for c in clusters:
+        merged.update(c.sub_bucket_counts)
+    return dict(merged)
 
 
 def _union_shape(cluster: Cluster) -> frozenset[str]:
@@ -515,6 +552,9 @@ def _shape_fuzzy_merge(clusters: list[Cluster]) -> list[Cluster]:
                 members=combined_members,
                 sparse_threshold=group[indices[0]].sparse_threshold,
                 cluster_tier="shape-merged",
+                sub_bucket_counts=_merge_sub_bucket_counts(
+                    [group[idx] for idx in indices]
+                ),
             )
             result.append(new_cluster)
 

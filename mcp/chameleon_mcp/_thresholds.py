@@ -43,6 +43,14 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # Default 0.7: conservative enough to avoid over-merging genuinely different
     # archetypes (ClassNode-only vs FunctionDeclaration-only scores 0.0).
     "CLUSTER_SHAPE_JACCARD_THRESHOLD": 0.7,
+    # signatures.py — Option 4 path bucket depth.
+    # Controls how many leading directory segments the path bucket uses for
+    # non-monorepo paths with 4+ segments. Default 2 gives parts[0]/parts[1],
+    # which collapses app/services/zoom and app/services/billing into one
+    # app/services bucket. Set to 3 to restore the pre-v0.5.9 depth-3 formula
+    # (parts[0]/parts[-3]/parts[-2]). The monorepo branch is always depth-3
+    # and is unaffected by this setting.
+    "CLUSTER_PATH_BUCKET_DEPTH": 2,
 }
 
 DOCS: Final[dict[str, str]] = {
@@ -61,6 +69,12 @@ DOCS: Final[dict[str, str]] = {
         "Jaccard threshold for the Option 1 shape-fuzzy merge step in cluster_files. "
         "Clusters sharing (path_pattern_bucket, default_export_kind, jsx_present) merge "
         "when their union top_level_node_kinds Jaccard >= this value (default 0.7)."
+    ),
+    "CLUSTER_PATH_BUCKET_DEPTH": (
+        "Number of leading directory segments used for the path bucket on non-monorepo "
+        "paths with 4+ segments (Option 4). Default 2: parts[0]/parts[1]. "
+        "Set to 3 to restore the pre-v0.5.9 depth-3 formula (parts[0]/parts[-3]/parts[-2]). "
+        "The monorepo branch is always depth-3 and is unaffected by this setting."
     ),
 }
 

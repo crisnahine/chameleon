@@ -1382,7 +1382,7 @@ def _bootstrap_single(
         # bucket when the witness path doesn't trigger the repair.
         bucket = cluster.key.path_pattern_bucket
         display_pattern = _displayed_paths_pattern(bucket, witness_relpath)
-        archetypes_data["archetypes"][effective_name] = {
+        archetype_entry: dict = {
             "cluster_id": cluster_id,
             "cluster_size": cluster.size,
             "paths_pattern": bucket,
@@ -1393,6 +1393,13 @@ def _bootstrap_single(
             "default_export_kind": cluster.key.default_export_kind,
             "named_export_count_bucket": cluster.key.named_export_count_bucket,
         }
+        # v0.5.9 (Option 4): surface sub_bucket distribution so callers can
+        # see which subdirectories contributed to the shallow-bucket cluster.
+        # Omit the key entirely for shallow repos with no sub_buckets so the
+        # JSON stays uncluttered for simple layouts.
+        if cluster.sub_bucket_counts:
+            archetype_entry["sub_buckets"] = dict(cluster.sub_bucket_counts)
+        archetypes_data["archetypes"][effective_name] = archetype_entry
         canonicals_data["canonicals"][effective_name] = [{
             "witness": {
                 "path": witness_relpath or str(sel.witness_path),

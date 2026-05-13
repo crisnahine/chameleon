@@ -126,8 +126,9 @@ def _pf(
 section("Bug 1 (verify-before) — default bucket ignores extension")
 
 # Default (include_extension=False) — v0.5.x behavior.
-tsx_default = path_pattern_bucket_for("packages/excalidraw/components/Foo.tsx")
-ts_default = path_pattern_bucket_for("packages/excalidraw/components/helper.ts")
+# path_pattern_bucket_for returns (bucket, sub_bucket); unpack bucket only.
+tsx_default, _ = path_pattern_bucket_for("packages/excalidraw/components/Foo.tsx")
+ts_default, _ = path_pattern_bucket_for("packages/excalidraw/components/helper.ts")
 t(
     "default bucket of .tsx and .ts in same dir collapse (verify-before)",
     tsx_default == ts_default,
@@ -137,10 +138,10 @@ t(
 
 section("Bug 1 (verify-after) — opt-in extension makes them distinct")
 
-tsx_ext = path_pattern_bucket_for(
+tsx_ext, _ = path_pattern_bucket_for(
     "packages/excalidraw/components/Foo.tsx", include_extension=True
 )
-ts_ext = path_pattern_bucket_for(
+ts_ext, _ = path_pattern_bucket_for(
     "packages/excalidraw/components/helper.ts", include_extension=True
 )
 t(
@@ -163,33 +164,32 @@ t(
     tsx_ext.startswith(tsx_default + ":"),
     f"got {tsx_ext!r} expected to start with {tsx_default!r}:",
 )
+_mk_ext, _ = path_pattern_bucket_for("scripts/Makefile", include_extension=True)
+_mk, _ = path_pattern_bucket_for("scripts/Makefile")
 t(
     "extensionless files leave the bucket unsuffixed",
-    path_pattern_bucket_for("scripts/Makefile", include_extension=True)
-    == path_pattern_bucket_for("scripts/Makefile"),
+    _mk_ext == _mk,
 )
+_gi_ext, _ = path_pattern_bucket_for("src/.gitignore", include_extension=True)
+_gi, _ = path_pattern_bucket_for("src/.gitignore")
 t(
     "dotfile (.gitignore) leaves the bucket unsuffixed",
-    path_pattern_bucket_for("src/.gitignore", include_extension=True)
-    == path_pattern_bucket_for("src/.gitignore"),
+    _gi_ext == _gi,
 )
+_test_tsx, _ = path_pattern_bucket_for("src/page.test.tsx", include_extension=True)
 t(
     ".test.tsx tracks the FINAL extension (tsx not test)",
-    path_pattern_bucket_for("src/page.test.tsx", include_extension=True).endswith(
-        ":tsx"
-    ),
+    _test_tsx.endswith(":tsx"),
 )
+_jsx, _ = path_pattern_bucket_for("src/components/Foo.jsx", include_extension=True)
 t(
     ".jsx tracks correctly",
-    path_pattern_bucket_for("src/components/Foo.jsx", include_extension=True).endswith(
-        ":jsx"
-    ),
+    _jsx.endswith(":jsx"),
 )
+_dts, _ = path_pattern_bucket_for("src/types/api.d.ts", include_extension=True)
 t(
     ".d.ts tracks the literal final extension 'ts'",
-    path_pattern_bucket_for("src/types/api.d.ts", include_extension=True).endswith(
-        ":ts"
-    ),
+    _dts.endswith(":ts"),
 )
 
 # end-to-end: clustering pipeline keeps them in DIFFERENT clusters
@@ -257,9 +257,9 @@ t(
 
 section("Bug 2 (verify-after) — workspace name is preserved")
 
-ba = path_pattern_bucket_for(a)
-bb = path_pattern_bucket_for(b)
-bc = path_pattern_bucket_for(c)
+ba, _ = path_pattern_bucket_for(a)
+bb, _ = path_pattern_bucket_for(b)
+bc, _ = path_pattern_bucket_for(c)
 t(
     "excalidraw bucket contains 'excalidraw'",
     "/excalidraw/" in ba or ba.endswith("excalidraw"),
@@ -285,28 +285,42 @@ t(
     ba == "packages/excalidraw/components",
     ba,
 )
+_apps_b, _ = path_pattern_bucket_for("apps/web/routes/marketing/page.tsx")
 t(
     "apps/ heuristic anchors on workspace + workspace-internal top dir",
-    path_pattern_bucket_for("apps/web/routes/marketing/page.tsx")
-    == "apps/web/routes",
+    _apps_b == "apps/web/routes",
+    _apps_b,
 )
+_ws_b, _ = path_pattern_bucket_for("workspaces/foo/src/main/Bar.ts")
 t(
     "workspaces/ heuristic also kicks in",
-    "/foo/" in path_pattern_bucket_for("workspaces/foo/src/main/Bar.ts"),
+    "/foo/" in _ws_b,
+    _ws_b,
+)
+_src_b, _ = path_pattern_bucket_for("src/components/base/Button.tsx")
+t(
+    "non-monorepo prefix (src/) uses depth-2 bucket (Option 4)",
+    _src_b == "src/components",
+    _src_b,
+)
+_rails_b, _rails_sub = path_pattern_bucket_for("app/controllers/api/v1/foo.rb")
+t(
+    "Rails app/controllers paths use depth-2 bucket (Option 4)",
+    _rails_b == "app/controllers",
+    _rails_b,
 )
 t(
-    "non-monorepo prefix (src/) keeps the v6 enclosing-dir formula",
-    path_pattern_bucket_for("src/components/base/Button.tsx") == "src/components/base",
+    "Rails app/controllers/api/v1 sub_bucket captures inner dirs",
+    _rails_sub == "api/v1",
+    _rails_sub,
 )
-t(
-    "Rails app/ paths unchanged (no workspace heuristic)",
-    path_pattern_bucket_for("app/controllers/api/v1/foo.rb") == "app/api/v1",
-)
+_shallow_b, _ = path_pattern_bucket_for("packages/x.ts")
 t(
     "shallow monorepo path (2 segments) falls through to v6 shape",
-    path_pattern_bucket_for("packages/x.ts") == "packages/x.ts".split("/")[0]
+    _shallow_b == "packages/x.ts".split("/")[0]
     + "/"
     + "packages/x.ts".split("/")[-2],
+    _shallow_b,
 )
 t(
     "_MONOREPO_WORKSPACE_ROOTS contains the three documented roots",
