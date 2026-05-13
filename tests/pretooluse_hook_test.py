@@ -1,15 +1,15 @@
 """Verify PreToolUse preflight-and-advise hook fires in real Claude Code.
 
-All earlier traces showed only SessionStart and UserPromptSubmit events.
-PreToolUse was not seen — turned out the diagnostic sessions used
-`--permission-mode bypassPermissions`, which suppresses PreToolUse hook
-firing. With the standard permission flow + --allowedTools, PreToolUse
-DOES fire.
-
 Round 1: synthetic Edit attempt against an the test repo file in real Claude
          Code; capture the PreToolUse event and verify it has the
          chameleon archetype context in additionalContext.
 Round 2: same on the Ruby on Rails repo with a Ruby file.
+
+History note: an earlier comment claimed `--permission-mode
+bypassPermissions` suppressed PreToolUse hook firing. Verified false on
+Claude Code 2.1.140 during the May 13 dogfood run; PreToolUse fires
+normally in bypass mode. The test still uses the standard permission
+flow + --allowedTools because that matches what real users hit.
 """
 
 import json
