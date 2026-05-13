@@ -225,6 +225,7 @@ os.environ["CHAMELEON_CLUSTER_PATH_BUCKET_DEPTH"] = "3"
 
 # Need to reload the threshold since it's evaluated at call time.
 from chameleon_mcp._thresholds import threshold_int  # noqa: E402
+
 assert threshold_int("CLUSTER_PATH_BUCKET_DEPTH") == 3, "env not picked up"
 
 zoom_b3, zoom_sub3 = path_pattern_bucket_for("app/services/zoom/recordings.rb")

@@ -4,6 +4,51 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.9] - 2026-05-13
+
+Clustering fix for "semantic, shape-based archetype clustering instead of path-based" — the most visible profile bug today. Two orthogonal levers ship together. Re-bootstrap a real Rails monolith and a real TS+React app to validate: ef-api went from 213 archetypes to 20 (-91%), ef-client from 139 to 39 (-72%). The mislabeled-controller-as-service clusters that named the bug are gone. No `PROFILE_SCHEMA_VERSION` bump; existing profiles continue to load and only pick up the new behavior on next `/chameleon-refresh` or `/chameleon-init --force`.
+
+### Fixed
+
+- **Option 1: fuzzy `top_level_node_kinds` merge.** The tight clustering pass keyed on an EXACT tuple match for `top_level_node_kinds`. Two files differing by one AST top-level kind (e.g. one extra `ConstantWriteNode` or a `ModuleNode` wrapper around the class) split into different clusters even when colocated and structurally similar. After the tight pass, a new shape-merge step now unions `top_level_node_kinds` across all members of each cluster and merges clusters sharing `(path_pattern_bucket, default_export_kind, jsx_present)` if their unions have Jaccard >= `CLUSTER_SHAPE_JACCARD_THRESHOLD` (default 0.7, env-tunable via `CHAMELEON_CLUSTER_SHAPE_JACCARD_THRESHOLD`). Closes the May 13 finding that 45 controllers in `app/controllers/api/v1/` clustered into an archetype literally named `service-v1-rb` because their `ModuleNode` wrapper put them in a different exact-tuple bucket than the dominant `ClassNode` controllers. (`mcp/chameleon_mcp/bootstrap/clustering.py` `_shape_fuzzy_merge` + `_union_shape`)
+- **Option 4: path bucket depth = 2.** `path_pattern_bucket_for` shifted from `parts[0]/parts[-3]/parts[-2]:ext` (effective depth ~3) to `parts[0]/parts[1]:ext`. Files like `app/services/zoom/recordings.rb` and `app/services/billing/invoices.rb` now share bucket `app/services:rb` instead of `app/services/zoom:rb` and `app/services/billing:rb`. The deeper path is preserved as the new `sub_bucket` field on each `ParsedFile` and aggregated into a `sub_buckets: {dir: count}` map on each archetype in `archetypes.json` so callers retain visibility into long-tail directory structure. Tunable via `CHAMELEON_CLUSTER_PATH_BUCKET_DEPTH` (default 2). Closes the May 13 finding that ef-api's `app/services/` (1397 files) fragmented into 102 archetypes — they now collapse into one `service` archetype with `sub_buckets={'models/listings': 103, 'models/users': 37, 'hubspot': 35, ...}`. (`mcp/chameleon_mcp/signatures.py` `path_pattern_bucket_for` + `compute_signature`)
+- **`naming.py` archetype-name derivation works correctly with depth=2.** The comment at `naming.py:228-229` previously acknowledged that the depth-3 bucket dropped the load-bearing `controllers` segment for `app/controllers/api/v1/foo.rb` and the naming code compensated via a `_members_contain` scan. With depth=2 the bucket itself contains `controllers`, so `_RAILS_PRIORS` and `_TS_PRIORS` match directly and the controllers-mislabeled-as-services case disappears. The `_members_contain` fallback stays in place as belt-and-suspenders for unusual layouts.
+
+### Added
+
+- **`clustering_algorithm_version: 2`** soft field written to `profile.json` so consumers can detect pre-v0.5.9 profiles without a schema-version bump. Absent or `< 2` means the profile predates the clustering fix and the user may want to re-bootstrap to pick up the improvements.
+- **`sub_buckets` field on each archetype in `archetypes.json`** — maps the deeper directory path to file count, e.g. `{'zoom': 47, 'billing': 33, '': 22}` for files directly under `app/services/`, `app/services/zoom/`, and `app/services/billing/`.
+- **`CLUSTER_SHAPE_JACCARD_THRESHOLD`** in `_thresholds.py` (default `0.7`, env `CHAMELEON_CLUSTER_SHAPE_JACCARD_THRESHOLD`).
+- **`CLUSTER_PATH_BUCKET_DEPTH`** in `_thresholds.py` (default `2`, env `CHAMELEON_CLUSTER_PATH_BUCKET_DEPTH`; set to `3` to restore pre-v0.5.9 behavior for A/B comparison).
+
+### Tests
+
+- New `tests/clustering_shape_fuzzy_test.py` (42 assertions covering Jaccard threshold edge cases, env override, single-cluster passthrough, cross-path-bucket isolation, ordering interaction with the existing loose-merge pass).
+- New `tests/clustering_path_bucket_depth_test.py` (37 assertions covering depth-2 unit cases, monorepo behavior, env override restoring depth=3, `sub_bucket_counts` distribution).
+- Updated `tests/v0_5_2_clustering_test.py` to unpack the new `(bucket, sub_bucket)` return shape of `path_pattern_bucket_for` and assert against the new bucket values.
+- Updated `tests/v0_2_regression_test.py`, `tests/v0_5_2_bootstrap_test.py`, `tests/smoke_test.py` for the 2-tuple return.
+
+### Empirical validation
+
+| Repo | Before | After | Delta |
+|---|---:|---:|---:|
+| ef-api (4805 .rb files) | 213 | 20 | -91% |
+| ef-client (2225 .ts/.tsx) | 139 | 39 | -72% |
+
+Specific mislabeled clusters gone:
+- `service-v1-rb` (was 45 controllers labeled "service") — folded into `controller` (89 files total with sub_buckets `{api/v1: 50, api/v1/admin: 32, ...}`).
+- `service-admin-rb` (was 40 admin controllers) — same fix, now part of `controller`.
+- `app/services/` 1397 files: was 102 archetypes, now 1 (`service`) with sub_bucket distribution.
+- `src/components/base/` 4-way split: was 4 archetypes, now most are in `component` (439 files) with `base` as a sub_bucket of 61 files.
+
+### Schema
+
+No `PROFILE_SCHEMA_VERSION` bump. The JSON structure is unchanged — existing v0.5.x consumers continue to load v0.5.9 profiles without modification. The new `sub_buckets` and `clustering_algorithm_version` fields are additive and ignored by older consumers.
+
+### Compatibility
+
+Existing profiles loaded by v0.5.9 work unchanged. Re-bootstrap or `/chameleon-refresh` is required to pick up the clustering improvements. Set `CHAMELEON_CLUSTER_SHAPE_JACCARD_THRESHOLD=1.0` and `CHAMELEON_CLUSTER_PATH_BUCKET_DEPTH=3` to fully restore pre-v0.5.9 clustering for comparison.
+
 ## [0.5.8] - 2026-05-13
 
 Security hardening, correctness fixes, observability, and two new test layers. Surfaced from a 3-round code review on the new hook-eval scenario harness plus a 58-scenario end-to-end dogfood run against the test repos. No public-API breaking changes. `tests/hook_evals/` (fast deterministic synthetic-scenario suite) and `tests/dogfood/` (full lifecycle harness, runnable via `/chameleon-dogfood`) ship as additive coverage.
