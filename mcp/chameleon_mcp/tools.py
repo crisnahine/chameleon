@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import secrets
 import subprocess
@@ -2060,6 +2061,22 @@ def bootstrap_repo(
             "status": "failed",
             "error": f"path is not a directory: {path}",
         })
+
+    # Validate the `now` parameter: reject NaN, +/-inf, negative values, and
+    # non-numeric types. Otherwise NaN/inf raise OverflowError/ValueError deep
+    # in clustering; negative values produce nonsense recency weights silently.
+    if now is not None:
+        if not isinstance(now, (int, float)) or isinstance(now, bool):
+            return _envelope({
+                "status": "failed",
+                "error": f"now must be a finite non-negative float; got {type(now).__name__}",
+            })
+        now_f = float(now)
+        if math.isnan(now_f) or math.isinf(now_f) or now_f < 0:
+            return _envelope({
+                "status": "failed",
+                "error": f"now must be a finite non-negative float; got {now_f!r}",
+            })
 
     # BUG-026: guard against accidental overwrite. A committed profile is
     # marked by the COMMITTED sentinel inside .chameleon/ (atomic write).
