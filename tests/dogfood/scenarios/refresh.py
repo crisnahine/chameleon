@@ -1,12 +1,9 @@
 """Phase 7.x: refresh and lock contention scenarios.
 
-Finding (7.2): refresh_repo does not acquire a top-level advisory lock before
-delegating to bootstrap_repo. The rename step inside atomic_profile_commit
-uses a per-.chameleon blocking flock (.chameleon.rename.lock), not a
-non-blocking advisory lock. There is therefore no "lock contention" path in
-refresh_repo that returns a fast error -- the second caller will either win
-the rename lock when the first finishes or simply re-run the full bootstrap
-in parallel. This is documented below as DONE_WITH_CONCERNS.
+Finding (7.2): refresh_repo acquires .chameleon/.refresh.lock (non-blocking
+flock) at the top of the function before delegating to bootstrap_repo. A
+concurrent /chameleon-refresh call gets a fast "failed" envelope instead of
+serializing on the 30s rename flock inside atomic_profile_commit.
 
 Finding (7.4): teach_profile uses a non-blocking advisory flock at
 .chameleon/.idioms.lock. If that lock is held, teach_profile returns a
@@ -105,21 +102,11 @@ def _run_normal_refresh(ctx) -> Result:
 # ---------------------------------------------------------------------------
 
 def _run_lock_contention_refresh(ctx) -> Result:
-    """Document refresh_repo's concurrency model.
+    """Hold .chameleon/.refresh.lock and verify refresh_repo returns failed quickly.
 
-    Finding: refresh_repo has no top-level non-blocking advisory lock. It
-    delegates to bootstrap_repo, which uses a BLOCKING flock inside
-    atomic_profile_commit (the rename step). There is no LockHeldError
-    / fast-fail path at the refresh level.
-
-    This means two concurrent refresh calls are serialized by the rename
-    lock but neither is rejected. Both eventually succeed; the second writer
-    overwrites the first's result.
-
-    This test verifies that refresh_repo itself succeeds (no top-level lock
-    contention error) and documents the concurrency model as DONE_WITH_CONCERNS.
-    We confirm the behavior without holding the blocking rename lock (which
-    would deadlock this test process for 30s waiting on itself).
+    refresh_repo acquires .chameleon/.refresh.lock (non-blocking flock) at the
+    top of the function. If we hold that lock in the test process, refresh_repo
+    must return a 'failed' envelope without blocking on the 30s rename flock.
     """
     _ensure_mcp_on_path(ctx)
     from chameleon_mcp.tools import refresh_repo, trust_profile  # type: ignore[import]
@@ -133,55 +120,67 @@ def _run_lock_contention_refresh(ctx) -> Result:
     try:
         trust_profile(str(repo), repo.name)
 
-        # Inspect whether refresh_repo exposes any advisory lock mechanism.
-        # Try to import LockHeldError and see if refresh_repo catches it.
-        import inspect
-        from chameleon_mcp import locks as _locks  # type: ignore[import]
-        refresh_src = inspect.getsource(refresh_repo)
-        has_lock_held_error = "LockHeldError" in refresh_src or "acquire_advisory_lock" in refresh_src
+        lock_path = repo / ".chameleon" / ".refresh.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Run refresh_repo twice in succession (sequential, not concurrent).
-        # Both should succeed - there's no rejection mechanism.
-        t0 = time.monotonic()
-        r1 = refresh_repo(str(repo), force=True)
-        t1 = time.monotonic()
-        r2 = refresh_repo(str(repo), force=True)
-        elapsed2 = time.monotonic() - t1
+        # Acquire the refresh lock exclusively (non-blocking; should succeed
+        # since no other process holds it yet).
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+        lock_held = False
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                lock_held = True
+                # Write PID + current time so acquire_advisory_lock sees a
+                # live holder (prevents the stale-lock bypass).
+                os.ftruncate(fd, 0)
+                os.write(fd, f"{os.getpid()} {time.time()}\n".encode())
+            except OSError:
+                pass
+
+            if not lock_held:
+                return Result(status="SKIP", notes="could not pre-acquire refresh lock for test")
+
+            # While holding the lock, call refresh_repo - must fail fast.
+            t0 = time.monotonic()
+            response = refresh_repo(str(repo), force=True)
+            elapsed = time.monotonic() - t0
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
     finally:
         _restore_env(old)
 
-    s1 = r1.get("data", {}).get("status")
-    s2 = r2.get("data", {}).get("status")
+    data = response.get("data", {})
+    status = data.get("status")
+    error = data.get("error", "")
 
-    if has_lock_held_error:
-        # refresh_repo does use lock contention - test finding is wrong.
-        return Result(
-            status="PASS",
-            notes=(
-                "refresh_repo source contains LockHeldError -- see concurrent test "
-                f"for contention path (s1={s1!r}, s2={s2!r})."
-            ),
-        )
-
-    # Document: no top-level advisory lock on refresh. Both calls succeed.
-    if s1 not in ("success", "noop") or s2 not in ("success", "noop"):
+    if status != "failed":
         return Result(
             status="FAIL",
-            notes=f"unexpected statuses: r1={s1!r}, r2={s2!r}",
+            notes=f"expected status=failed on lock contention, got {status!r} (elapsed={elapsed:.2f}s)",
         )
 
-    # DONE_WITH_CONCERNS (reported as PASS with note): refresh_repo has no
-    # top-level non-blocking advisory lock. The rename step uses a BLOCKING
-    # flock with a 30s timeout -- concurrent callers serialize there, not
-    # reject fast. Both callers eventually succeed; the second overwrites the
-    # first's result. This is the actual concurrency model.
+    # Must return quickly (non-blocking flock, not the 30s rename flock).
+    if elapsed > 1.0:
+        return Result(
+            status="FAIL",
+            notes=f"refresh_repo blocked for {elapsed:.2f}s instead of returning fast on lock contention",
+        )
+
+    # Error message should mention in-progress / lock / retry.
+    if "in progress" not in error and "lock" not in error.lower() and "retry" not in error.lower():
+        return Result(
+            status="FAIL",
+            notes=f"failed but error doesn't mention lock: {error!r}",
+        )
+
     return Result(
         status="PASS",
-        notes=(
-            f"[CONCERN] refresh_repo has no top-level advisory lock (s1={s1!r}, s2={s2!r}). "
-            "Concurrent refreshes serialize at the blocking rename flock (30s timeout), "
-            "not rejected fast. Both callers succeed; second overwrites first."
-        ),
+        notes=f"refresh_repo rejected fast on held lock (elapsed={elapsed:.2f}s, error={error[:80]!r})",
     )
 
 
