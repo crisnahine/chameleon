@@ -208,7 +208,7 @@ def _remove_sentinel_from_idioms(repo: Path, sentinel: str) -> None:
         out: list[str] = []
         skip = False
         for line in lines:
-            if "DOGFOOD-IDIOM-MARKER-XYZ" in line:
+            if sentinel in line:
                 skip = True
                 # Also remove the preceding header (### slug\nStatus: ...)
                 # Remove the last 2 lines we added (### header + Status line)
