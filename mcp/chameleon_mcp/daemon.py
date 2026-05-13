@@ -57,7 +57,6 @@ import socket
 import struct
 import subprocess
 import sys
-import threading
 import time
 import traceback
 from collections.abc import Callable

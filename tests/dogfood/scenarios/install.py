@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import sys
-from pathlib import Path
 
 from tests.dogfood.scenario import Result, Scenario
 
@@ -34,7 +33,7 @@ def _run_install_verify(ctx) -> Result:
     # chameleon_mcp/__init__.py importable from mcp/
     init_py = plugin_root / "mcp" / "chameleon_mcp" / "__init__.py"
     if not init_py.is_file():
-        failures.append(f"missing mcp/chameleon_mcp/__init__.py")
+        failures.append("missing mcp/chameleon_mcp/__init__.py")
     else:
         mcp_dir = str(plugin_root / "mcp")
         if mcp_dir not in sys.path:

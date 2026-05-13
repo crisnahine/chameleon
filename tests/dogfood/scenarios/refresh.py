@@ -81,7 +81,7 @@ def _run_normal_refresh(ctx) -> Result:
     if status == "noop":
         return Result(
             status="PASS",
-            notes=f"refresh_repo returned noop (no files changed since bootstrap)",
+            notes="refresh_repo returned noop (no files changed since bootstrap)",
         )
 
     if status == "success":

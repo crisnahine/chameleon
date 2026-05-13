@@ -18,7 +18,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -168,7 +167,9 @@ def _run_session_start_trust_reprompt(ctx) -> Result:
         os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
 
         # Import the helper directly to test the trust-prompt marker logic.
-        from chameleon_mcp.hook_helper import _marker_is_fresh, _should_emit_untrusted_prompt  # type: ignore[import]
+        from chameleon_mcp.hook_helper import (  # type: ignore[import]
+            _should_emit_untrusted_prompt,
+        )
         from chameleon_mcp.optouts import _safe_session_marker  # type: ignore[import]
 
         repo_id = "test-trust-reprompt-9-2"
@@ -252,7 +253,6 @@ def _run_posttool_log_dir_mode(ctx) -> Result:
         return Result(status="FAIL", notes="posttool-recorder hook timed out (>15s)")
 
     # Hook should exit 0 and emit {} regardless of log write success.
-    raw_stdout = proc.stdout.decode("utf-8", errors="replace").strip()
     if proc.returncode != 0:
         return Result(
             status="FAIL",

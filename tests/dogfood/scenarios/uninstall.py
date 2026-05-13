@@ -63,11 +63,11 @@ def _run_clean_uninstall(ctx) -> Result:
     saved = _set_env(ctx, plugin_data_override=pd)
     try:
         from chameleon_mcp.tools import (  # type: ignore[import]
+            _compute_repo_id,
             bootstrap_repo,
             get_pattern_context,
             list_profiles,
             trust_profile,
-            _compute_repo_id,
         )
 
         # Use force=True so the orchestrator runs even though the fixture ships

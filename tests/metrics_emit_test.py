@@ -33,7 +33,7 @@ class EmitHookMetricTest(unittest.TestCase):
         )
         path = Path(self._tmp) / "metrics.jsonl"
         text = path.read_text()
-        lines = [l for l in text.splitlines() if l]
+        lines = [line for line in text.splitlines() if line]
         self.assertEqual(len(lines), 1)
         record = json.loads(lines[0])
         self.assertEqual(record["hook"], "preflight-and-advise")
@@ -57,7 +57,7 @@ class EmitHookMetricTest(unittest.TestCase):
                 suppression_reason="user_disable",
             )
         path = Path(self._tmp) / "metrics.jsonl"
-        lines = [l for l in path.read_text().splitlines() if l]
+        lines = [line for line in path.read_text().splitlines() if line]
         self.assertEqual(len(lines), 5)
         for line in lines:
             record = json.loads(line)

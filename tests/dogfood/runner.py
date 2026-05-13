@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import sys
 
-if sys.version_info < (3, 11):
+if sys.version_info < (3, 11):  # noqa: UP036 — intentional runtime guard for users hitting this with system python
     sys.stderr.write(
         f"dogfood runner requires Python >= 3.11 (got {sys.version_info.major}."
         f"{sys.version_info.minor}). Use mcp/.venv/bin/python instead, e.g.:\n"
@@ -30,7 +30,7 @@ import json
 import os
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Ensure repo root is on sys.path so "tests.dogfood.*" imports work
@@ -38,7 +38,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tests.dogfood.scenario import CostBand, Context, Result, Scenario, StatusName
+from tests.dogfood.scenario import Context, CostBand, Result, Scenario, StatusName
 from tests.dogfood.scenarios import all_scenarios
 
 _COST_ORDER: list[CostBand] = ["free", "cheap", "moderate", "expensive"]
@@ -208,11 +208,11 @@ def _write_results(
     # Markdown summary
     lines = [
         "# Dogfood run results",
-        f"",
+        "",
         f"Run at: {timestamp}",
-        f"",
-        f"| phase | name | pass | notes |",
-        f"|-------|------|------|-------|",
+        "",
+        "| phase | name | pass | notes |",
+        "|-------|------|------|-------|",
     ]
     for r in results:
         icon = _status_icon(r["status"])
@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list_only:
         if not selected:
-            print(f"0 scenarios would run", file=sys.stderr)
+            print("0 scenarios would run", file=sys.stderr)
         else:
             print(f"{len(selected)} scenario(s) would run:", file=sys.stderr)
             for s in selected:
@@ -277,8 +277,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if not selected:
-        print(f"0 scenarios run", file=sys.stderr)
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        print("0 scenarios run", file=sys.stderr)
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         results_dir = Path(args.results_dir)
         json_path, md_path = _write_results([], results_dir, timestamp)
         print(f"Results: {json_path}", file=sys.stderr)
@@ -352,7 +352,7 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     results_dir = Path(args.results_dir)
     json_path, md_path = _write_results(all_results, results_dir, timestamp)
     print(f"Results: {json_path}", file=sys.stderr)

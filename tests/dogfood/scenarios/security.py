@@ -116,12 +116,13 @@ def _run_witness_path_traversal_blocked(ctx) -> Result:
 
     saved = _set_env(ctx, plugin_data_override=pd)
     try:
-        from chameleon_mcp.tools import bootstrap_repo, get_canonical_excerpt, trust_profile  # type: ignore[import]
-        from chameleon_mcp.tools import _compute_repo_id  # type: ignore[import]
+        from chameleon_mcp.tools import (  # type: ignore[import]
+            get_canonical_excerpt,
+            trust_profile,
+        )
 
         # Bootstrap and trust (the COMMITTED sentinel is already there from the copy)
         trust_profile(str(repo), repo.name)
-        repo_id = _compute_repo_id(repo)
 
         resp = get_canonical_excerpt(str(repo), first_archetype)
     finally:

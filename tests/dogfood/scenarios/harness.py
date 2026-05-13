@@ -4,7 +4,6 @@ from __future__ import annotations
 import io
 import os
 import sys
-from pathlib import Path
 
 from tests.dogfood.scenario import Result, Scenario
 
@@ -40,6 +39,7 @@ def _capture_session_start(env_overrides: dict[str, str | None]) -> str:
         # Import fresh each time so module-level env reads are re-evaluated.
         # Use importlib.reload to ensure _emit_session_context re-reads env.
         import importlib
+
         import chameleon_mcp.hook_helper as hh  # type: ignore[import]
         importlib.reload(hh)
         hh.session_start()

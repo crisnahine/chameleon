@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -134,7 +133,11 @@ def _run_synthetic_drift_escalates(ctx) -> Result:
     _ensure_mcp_on_path(ctx)
     from chameleon_mcp.drift.schema import init_drift_db  # type: ignore[import]
     from chameleon_mcp.profile.trust import plugin_data_dir  # type: ignore[import]
-    from chameleon_mcp.tools import _compute_repo_id, get_drift_status, trust_profile  # type: ignore[import]
+    from chameleon_mcp.tools import (  # type: ignore[import]
+        _compute_repo_id,
+        get_drift_status,
+        trust_profile,
+    )
 
     fixture_src = ctx.plugin_root / _FIXTURE_REL
     if not fixture_src.is_dir():

@@ -3,9 +3,7 @@ from __future__ import annotations
 
 import os
 import shutil
-import sqlite3
 import sys
-import tempfile
 from pathlib import Path
 
 from tests.dogfood.scenario import Result, Scenario
@@ -92,7 +90,11 @@ def _run_idiom_surfaces_on_edit(ctx) -> Result:
         return Result(status="SKIP", notes="CHAMELEON_TEST_TS_REPO not set")
 
     _ensure_mcp_on_path(ctx)
-    from chameleon_mcp.tools import bootstrap_repo, teach_profile, trust_profile  # type: ignore[import]
+    from chameleon_mcp.tools import (  # type: ignore[import]
+        bootstrap_repo,
+        teach_profile,
+        trust_profile,
+    )
 
     sentinel = "DOGFOOD-IDIOM-MARKER-XYZ: never use eval()"
 
@@ -230,7 +232,11 @@ def _remove_sentinel_from_idioms(repo: Path, sentinel: str) -> None:
 
 def _run_idiom_survives_refresh(ctx) -> Result:
     _ensure_mcp_on_path(ctx)
-    from chameleon_mcp.tools import refresh_repo, teach_profile, trust_profile  # type: ignore[import]
+    from chameleon_mcp.tools import (  # type: ignore[import]
+        refresh_repo,
+        teach_profile,
+        trust_profile,
+    )
 
     fixture_src = ctx.plugin_root / _FIXTURE_REL
     if not fixture_src.is_dir():
@@ -268,7 +274,11 @@ def _run_idiom_survives_refresh(ctx) -> Result:
 
 def _run_trust_reprompts_after_refresh(ctx) -> Result:
     _ensure_mcp_on_path(ctx)
-    from chameleon_mcp.tools import get_pattern_context, refresh_repo, trust_profile  # type: ignore[import]
+    from chameleon_mcp.tools import (  # type: ignore[import]
+        get_pattern_context,
+        refresh_repo,
+        trust_profile,
+    )
 
     fixture_src = ctx.plugin_root / _FIXTURE_REL
     if not fixture_src.is_dir():

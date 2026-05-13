@@ -6,7 +6,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from tests.dogfood.scenario import Result, Scenario
@@ -72,7 +71,11 @@ def _run_metrics_jsonl_required_fields(ctx) -> Result:
 
     saved = _set_env(ctx, plugin_data_override=pd)
     try:
-        from chameleon_mcp.tools import bootstrap_repo, get_pattern_context, trust_profile  # type: ignore[import]
+        from chameleon_mcp.tools import (  # type: ignore[import]
+            bootstrap_repo,
+            get_pattern_context,
+            trust_profile,
+        )
 
         boot = bootstrap_repo(str(repo))
         if boot.get("data", {}).get("status") not in ("success", "already_bootstrapped"):
@@ -133,7 +136,7 @@ def _run_metrics_jsonl_required_fields(ctx) -> Result:
             ),
         )
 
-    lines = [l.strip() for l in metrics_path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = [line.strip() for line in metrics_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     if not lines:
         return Result(status="FAIL", notes="metrics.jsonl exists but is empty")
 

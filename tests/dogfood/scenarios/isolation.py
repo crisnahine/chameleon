@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 from tests.dogfood.scenario import Result, Scenario
@@ -65,7 +64,11 @@ def _run_no_multi_repo_state_leak(ctx) -> Result:
 
     saved = _set_env(ctx, plugin_data_override=pd)
     try:
-        from chameleon_mcp.tools import bootstrap_repo, get_pattern_context, trust_profile  # type: ignore[import]
+        from chameleon_mcp.tools import (  # type: ignore[import]
+            bootstrap_repo,
+            get_pattern_context,
+            trust_profile,
+        )
 
         # Bootstrap and trust A only
         resp_boot = bootstrap_repo(str(repo_a))
@@ -100,8 +103,8 @@ def _run_no_multi_repo_state_leak(ctx) -> Result:
         return Result(
             status="FAIL",
             notes=(
-                f"B shows trust_state=trusted but only A was trusted; "
-                f"state leaked from A to B"
+                "B shows trust_state=trusted but only A was trusted; "
+                "state leaked from A to B"
             ),
         )
 
@@ -164,7 +167,7 @@ def _run_list_profiles_via_index_db(ctx) -> Result:
     saved = _set_env(ctx, plugin_data_override=pd)
     try:
         from chameleon_mcp import index_db  # type: ignore[import]
-        from chameleon_mcp.tools import list_profiles, _compute_repo_id  # type: ignore[import]
+        from chameleon_mcp.tools import _compute_repo_id, list_profiles  # type: ignore[import]
 
         id_a = _compute_repo_id(repo_a)
         id_b = _compute_repo_id(repo_b)
@@ -249,8 +252,12 @@ def _run_worktree_symlink_same_repo_id(ctx) -> Result:
 
     saved = _set_env(ctx, plugin_data_override=pd)
     try:
-        from chameleon_mcp.tools import bootstrap_repo, get_pattern_context, trust_profile  # type: ignore[import]
-        from chameleon_mcp.tools import _compute_repo_id  # type: ignore[import]
+        from chameleon_mcp.tools import (  # type: ignore[import]
+            _compute_repo_id,  # type: ignore[import]
+            bootstrap_repo,
+            get_pattern_context,
+            trust_profile,
+        )
 
         # Bootstrap A
         boot = bootstrap_repo(str(repo_a))

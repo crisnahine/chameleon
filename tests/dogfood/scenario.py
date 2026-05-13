@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Literal
 
 CostBand = Literal["free", "cheap", "moderate", "expensive"]
 StatusName = Literal["PASS", "FAIL", "SKIP", "ERROR"]

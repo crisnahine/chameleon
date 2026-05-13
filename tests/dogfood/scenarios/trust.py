@@ -4,7 +4,6 @@ from __future__ import annotations
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 from tests.dogfood.scenario import Result, Scenario
@@ -82,7 +81,7 @@ def _run_untrusted_surfaces_non_blocking(ctx) -> Result:
         return Result(status="FAIL", notes=f"expected trust_state=untrusted, got {trust_state!r}")
     if "api_version" not in response:
         return Result(status="FAIL", notes="response missing api_version envelope field")
-    return Result(status="PASS", notes=f"trust_state=untrusted, call succeeded non-blocking")
+    return Result(status="PASS", notes="trust_state=untrusted, call succeeded non-blocking")
 
 
 # ---------------------------------------------------------------------------

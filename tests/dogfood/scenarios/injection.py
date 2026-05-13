@@ -6,8 +6,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
-from pathlib import Path
 
 from tests.dogfood.scenario import Result, Scenario
 
@@ -289,7 +287,7 @@ def _run_session_start_dedup(ctx) -> Result:
 
     try:
         obj1 = json.loads(out1)
-        obj2 = json.loads(out2)
+        json.loads(out2)
     except json.JSONDecodeError as exc:
         return Result(status="FAIL", notes=f"session-start output not valid JSON: {exc}")
 

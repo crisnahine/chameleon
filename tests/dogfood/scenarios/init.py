@@ -11,7 +11,6 @@ from pathlib import Path
 
 from tests.dogfood.scenario import Result, Scenario
 
-
 # ---------------------------------------------------------------------------
 # 1.1 /chameleon-init cooperative  (real claude)
 # ---------------------------------------------------------------------------

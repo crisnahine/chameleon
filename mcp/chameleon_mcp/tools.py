@@ -1875,12 +1875,6 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     returns a fast "failed" envelope instead of serializing on the 30s
     rename flock inside atomic_profile_commit.
     """
-    from chameleon_mcp import index_db
-    from chameleon_mcp.bootstrap.discovery import discover_files
-    from chameleon_mcp.bootstrap.orchestrator import (
-        _glob_for_extractor,
-        _select_extractor,
-    )
     from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
 
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
@@ -2095,7 +2089,7 @@ def bootstrap_repo(
     # non-numeric types. Otherwise NaN/inf raise OverflowError/ValueError deep
     # in clustering; negative values produce nonsense recency weights silently.
     if now is not None:
-        if not isinstance(now, (int, float)) or isinstance(now, bool):
+        if not isinstance(now, int | float) or isinstance(now, bool):
             return _envelope({
                 "status": "failed",
                 "error": f"now must be a finite non-negative float; got {type(now).__name__}",

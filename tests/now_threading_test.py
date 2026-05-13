@@ -10,8 +10,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from chameleon_mcp import tools
 import chameleon_mcp.bootstrap.orchestrator as orchestrator_mod
+from chameleon_mcp import tools
 
 
 class NowThreadingTest(unittest.TestCase):
