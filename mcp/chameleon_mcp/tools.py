@@ -856,26 +856,25 @@ def get_pattern_context(file_path: str) -> dict:
             first = canonicals[0]
             witness_rel = first.get("witness", {}).get("path")
             if witness_rel:
-                witness_path = repo_root / witness_rel
-                if witness_path.is_file():
-                    try:
-                        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+                try:
+                    from chameleon_mcp.safe_open import UnsafeFileError, safe_read_text
+                    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-                        content = witness_path.read_text(errors="replace")
-                        # Truncate to ~800 tokens (~3200 chars approx)
-                        truncated = len(content) > 3200
-                        if truncated:
-                            content = content[:3200] + "\n... [truncated]"
-                        # Tag-boundary sanitization (Round 4/5 security mitigation)
-                        content = sanitize_for_chameleon_context(content)
-                        canonical_data = {
-                            "content": content,
-                            "witness_path": witness_rel,
-                            "truncated": truncated,
-                            "sha_hint": first.get("witness", {}).get("sha_hint"),
-                        }
-                    except OSError:
-                        pass
+                    content = safe_read_text(repo_root, witness_rel, max_size_bytes=200_000)
+                    # Truncate to ~800 tokens (~3200 chars approx)
+                    truncated = len(content) > 3200
+                    if truncated:
+                        content = content[:3200] + "\n... [truncated]"
+                    # Tag-boundary sanitization (Round 4/5 security mitigation)
+                    content = sanitize_for_chameleon_context(content)
+                    canonical_data = {
+                        "content": content,
+                        "witness_path": witness_rel,
+                        "truncated": truncated,
+                        "sha_hint": first.get("witness", {}).get("sha_hint"),
+                    }
+                except (UnsafeFileError, FileNotFoundError, OSError):
+                    pass
 
     # Surface team idioms (captured via /chameleon-teach) — sanitized + capped.
     # The using-chameleon skill says "shape your output using archetype,
@@ -1070,18 +1069,11 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             "sha_hint": witness.get("sha_hint"),
         })
 
-    witness_path = repo_root / witness_rel
-    if not witness_path.is_file():
-        return _envelope({
-            "content": "",
-            "witness_path": witness_rel,
-            "truncated": False,
-            "sha_hint": witness.get("sha_hint"),
-        })
-
     try:
-        content = witness_path.read_text(errors="replace")
-    except OSError:
+        from chameleon_mcp.safe_open import UnsafeFileError, safe_read_text
+
+        content = safe_read_text(repo_root, witness_rel, max_size_bytes=200_000)
+    except (UnsafeFileError, FileNotFoundError, OSError):
         return _envelope({
             "content": "",
             "witness_path": witness_rel,
