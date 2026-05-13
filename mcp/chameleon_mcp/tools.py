@@ -2670,14 +2670,10 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
 
     try:
         load_profile_dir(profile_dir)
-    except ProfileLoadError as exc:
+    except (ProfileLoadError, json.JSONDecodeError) as exc:
         return _envelope({
             "status": "failed",
-            "error": (
-                f"profile is not loadable; refuse to grant trust on an unreadable "
-                f"profile. Run /chameleon-init or /chameleon-refresh first. "
-                f"loader said: {exc}"
-            ),
+            "error": f"profile is not loadable: {exc}",
         })
 
     repo_id = _compute_repo_id(repo_path)
