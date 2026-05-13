@@ -55,6 +55,7 @@ import os
 import signal
 import socket
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -748,12 +749,8 @@ def daemon_info() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Background-thread helper for the hook
+# Hook-side helper for spawning the daemon out-of-process
 # ---------------------------------------------------------------------------
-
-
-_spawn_lock = threading.Lock()
-_spawn_in_flight = False
 
 
 def ensure_daemon_async() -> None:
@@ -761,31 +758,37 @@ def ensure_daemon_async() -> None:
 
     Called from preflight-and-advise's first invocation. The hook must
     not block on daemon spawn (that would defeat the whole point of the
-    optimization), so we delegate to a background thread and let the
-    caller fall through to the in-process path while the daemon warms up.
+    optimization).
+
+    Implementation note: an earlier version delegated to a background
+    thread that called ``start_daemon()`` directly. ``start_daemon`` does
+    a double-fork; on macOS, ``os.fork()`` from inside a Python thread
+    can hang the parent for seconds (libc/Cocoa locks held across the
+    fork boundary are not released cleanly when the child briefly held
+    them). That manifested as ~3 to 10 percent of hook calls hitting
+    the bash ``timeout 2`` ceiling and fail-opening.
+
+    The fix is to use ``subprocess.Popen`` with ``start_new_session=True``
+    so the OS performs ``fork()`` + ``execve()`` atomically, sidestepping
+    the threaded-fork landmine entirely. The freshly-exec'd Python
+    interpreter then calls ``start_daemon`` from a clean single-threaded
+    process where the double-fork is safe.
 
     Subsequent hook calls in the same session will find the daemon ready
     and route through the socket.
     """
-    global _spawn_in_flight
-    with _spawn_lock:
-        if _spawn_in_flight:
-            return
-        if is_daemon_alive():
-            return
-        _spawn_in_flight = True
-
-    def _runner() -> None:
-        global _spawn_in_flight
-        try:
-            start_daemon()
-        except Exception:  # noqa: BLE001 — never raise from the spawn thread
-            pass
-        finally:
-            with _spawn_lock:
-                _spawn_in_flight = False
-
-    threading.Thread(target=_runner, name="chameleon-daemon-spawn", daemon=True).start()
+    if is_daemon_alive():
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "chameleon_mcp.daemon", "start"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:  # noqa: BLE001 — never raise from the spawn helper
+        pass
 
 
 # ---------------------------------------------------------------------------
