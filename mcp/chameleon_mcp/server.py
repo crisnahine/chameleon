@@ -250,6 +250,23 @@ def daemon_status() -> dict:
     return tools.daemon_status()
 
 
+@mcp.tool()
+def doctor() -> dict:
+    """Triage report for chameleon installation health.
+
+    Returns a structured envelope with subsystem checks. Each check has a
+    status (ok | warn | error) and a brief detail string. Subsystems checked:
+    python version, bash on PATH, timeout(1) on PATH, plugin data dir
+    writable, all 4 hook scripts present and executable, HMAC key sane,
+    daemon liveness, last 5 hook error log lines, per-known-repo
+    profile/trust state.
+
+    Use /chameleon-doctor or inspect `data.overall` to get the overall
+    health status.
+    """
+    return tools.doctor()
+
+
 def main() -> None:
     """Entry point for `chameleon-mcp` CLI."""
     mcp.run()

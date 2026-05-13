@@ -3548,3 +3548,143 @@ def daemon_status() -> dict:
         "last_request_at": last_request_at,
         "running_version": running_version,
     })
+
+
+def _chameleon_version_or_unknown() -> str:
+    try:
+        from importlib.metadata import version
+        return version("chameleon-mcp")
+    except Exception:
+        return "unknown"
+
+
+def doctor() -> dict:
+    """Triage report for chameleon installation health.
+
+    Returns a structured envelope with subsystem checks. Each check
+    has a status (ok | warn | error) and a brief message.
+    """
+    import os
+    import platform
+    import shutil
+    import sys
+    from pathlib import Path
+
+    checks: list[dict] = []
+
+    # 1. Python version
+    py = sys.version_info
+    if py >= (3, 11):
+        checks.append({"name": "python_version", "status": "ok", "detail": f"{py.major}.{py.minor}.{py.micro}"})
+    else:
+        checks.append({"name": "python_version", "status": "error", "detail": f"{py.major}.{py.minor}.{py.micro} (need >= 3.11)"})
+
+    # 2. bash on PATH (hooks need it)
+    bash_path = shutil.which("bash")
+    if bash_path:
+        checks.append({"name": "bash_on_path", "status": "ok", "detail": bash_path})
+    else:
+        checks.append({"name": "bash_on_path", "status": "error", "detail": "bash not on PATH; hooks will not run"})
+
+    # 3. timeout(1) on PATH (hooks use it)
+    timeout_path = shutil.which("timeout")
+    if timeout_path:
+        checks.append({"name": "timeout_on_path", "status": "ok", "detail": timeout_path})
+    else:
+        checks.append({"name": "timeout_on_path", "status": "warn", "detail": "timeout(1) not on PATH; hook may hang Claude on stuck python"})
+
+    # 4. Plugin data dir writable
+    try:
+        from chameleon_mcp.profile.trust import plugin_data_dir
+        data_dir = plugin_data_dir()
+        data_dir.mkdir(parents=True, exist_ok=True)
+        probe = data_dir / ".doctor_probe"
+        probe.write_text("ok")
+        probe.unlink()
+        checks.append({"name": "plugin_data_writable", "status": "ok", "detail": str(data_dir)})
+    except Exception as exc:
+        checks.append({"name": "plugin_data_writable", "status": "error", "detail": f"{type(exc).__name__}: {exc}"})
+
+    # 5. Hook scripts exist + executable
+    plugin_root_env = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("CURSOR_PLUGIN_ROOT")
+    if plugin_root_env:
+        plugin_root = Path(plugin_root_env)
+        hook_dir = plugin_root / "hooks"
+        for hook_name in ("preflight-and-advise", "posttool-recorder", "session-start", "callout-detector"):
+            hpath = hook_dir / hook_name
+            if hpath.is_file() and os.access(hpath, os.X_OK):
+                checks.append({"name": f"hook_{hook_name}", "status": "ok", "detail": "executable"})
+            elif hpath.is_file():
+                checks.append({"name": f"hook_{hook_name}", "status": "error", "detail": "exists but not executable"})
+            else:
+                checks.append({"name": f"hook_{hook_name}", "status": "error", "detail": "missing"})
+    else:
+        checks.append({"name": "hooks", "status": "warn", "detail": "CLAUDE_PLUGIN_ROOT not set; cannot locate hook scripts"})
+
+    # 6. HMAC key sane (no exception means file present and ownership ok)
+    try:
+        from chameleon_mcp.exec_log import _ensure_hmac_key
+        _ensure_hmac_key()
+        checks.append({"name": "hmac_key", "status": "ok", "detail": "exists and owner-readable"})
+    except Exception as exc:
+        checks.append({"name": "hmac_key", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
+
+    # 7. Daemon liveness (re-uses existing daemon_status)
+    try:
+        ds = daemon_status()
+        if ds.get("data", {}).get("alive"):
+            checks.append({"name": "daemon", "status": "ok", "detail": f"alive (pid={ds['data'].get('pid')})"})
+        else:
+            checks.append({"name": "daemon", "status": "warn", "detail": "not running (will spawn on next hook)"})
+    except Exception as exc:
+        checks.append({"name": "daemon", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
+
+    # 8. Recent hook errors (last 5 from .hook_errors.log)
+    log = Path.home() / ".local" / "share" / "chameleon" / ".hook_errors.log"
+    if log.is_file():
+        try:
+            tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-5:]
+            checks.append({"name": "recent_hook_errors", "status": "warn" if tail else "ok", "detail": tail})
+        except Exception as exc:
+            checks.append({"name": "recent_hook_errors", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
+    else:
+        checks.append({"name": "recent_hook_errors", "status": "ok", "detail": "no errors logged"})
+
+    # 9. Per-known-repo profile_status + trust_state (from list_profiles)
+    try:
+        lp = list_profiles(limit=20)
+        profiles = lp.get("data", {}).get("profiles", [])
+        repo_states = [
+            {
+                "repo_root": r.get("repo_root"),
+                "profile_status": r.get("profile_status"),
+                "trust_state": r.get("trust_state"),
+            }
+            for r in profiles
+        ]
+        checks.append({"name": "known_repos", "status": "ok", "detail": repo_states})
+    except Exception as exc:
+        checks.append({"name": "known_repos", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
+
+    # Roll up
+    error_count = sum(1 for c in checks if c["status"] == "error")
+    warn_count = sum(1 for c in checks if c["status"] == "warn")
+    if error_count:
+        overall = "error"
+    elif warn_count:
+        overall = "warn"
+    else:
+        overall = "ok"
+
+    return _envelope({
+        "overall": overall,
+        "platform": {"system": platform.system(), "release": platform.release()},
+        "chameleon_version": _chameleon_version_or_unknown(),
+        "checks": checks,
+        "summary": {
+            "total": len(checks),
+            "ok": len(checks) - error_count - warn_count,
+            "warn": warn_count,
+            "error": error_count,
+        },
+    })
