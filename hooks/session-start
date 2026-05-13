@@ -32,7 +32,7 @@ mkdir -p "${LOG_DIR}" 2>/dev/null || true
 LOG_FILE="${LOG_DIR}/.hook_errors.log"
 
 # Run the helper with the MCP package on PYTHONPATH
-PYTHONPATH="${MCP_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
+PYTHONPATH="${MCP_DIR}" \
     "${PYTHON}" -m chameleon_mcp.hook_helper session-start \
     2>>"${LOG_FILE}" \
     || { echo "[$(date -u +%FT%TZ)] session-start failed (python=${PYTHON})" >>"${LOG_FILE}"; printf '{}\n'; }
