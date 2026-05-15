@@ -1,22 +1,137 @@
-# Installing Chameleon
+# Installing chameleon
 
-Chameleon is a Claude Code plugin that auto-derives codebase conventions and injects archetype-aware guidance per-edit for TypeScript and Ruby on Rails repos.
+chameleon is a Claude Code plugin that learns your repo's conventions and feeds the model archetype-aware context on every edit. It supports TypeScript and Ruby on Rails repos.
 
-This is the deep-dive install guide: prerequisites, every supported harness, the zero-touch dependency story, verification, opt-out, updates, uninstall, and troubleshooting. The [README](../README.md) links here for the long form.
+Two ways to read this guide:
 
-Contributors hacking on the plugin itself want [CONTRIBUTING.md](../.github/CONTRIBUTING.md), not this file — `--plugin-dir` and local clones live there.
+- **You already have `uv` and Node.js 20+.** Jump to [Quick path](#quick-path). Two commands and you are done.
+- **Fresh machine, or you are not sure what you have.** Start at [Full setup](#full-setup). It walks every prerequisite with copy-paste commands and a check after each one.
 
-## Prerequisites
+Working on chameleon itself (not just using it)? See [CONTRIBUTING.md](../.github/CONTRIBUTING.md) instead. This guide is for users.
 
-- **OS**: macOS or Linux. Windows works via Git Bash.
-- **[Claude Code](https://docs.claude.com/claude-code) 2.x** (or any supported harness — see [Other harnesses](#other-harnesses)).
-- **[uv](https://docs.astral.sh/uv/)** on `PATH`. Installs the MCP server's Python venv on first launch.
-- **[Node.js](https://nodejs.org/) ≥ 20** with `npm` on `PATH`. Powers the TypeScript extractor.
-- **[Ruby](https://www.ruby-lang.org/) ≥ 3.0** with the `prism` gem. Optional — only needed for Rails repos. Ruby ≥ 3.3 ships `prism` by default.
+---
 
-You do not need to run `uv sync` or `npm install` by hand. See [How dependencies are resolved](#how-dependencies-are-resolved).
+## Quick path
 
-## Install (Claude Code)
+You have `uv` on your `PATH` and Node.js 20 or newer. Inside any Claude Code session:
+
+```
+/plugin marketplace add crisnahine/chameleon
+/plugin install chameleon@chameleon
+```
+
+Restart Claude Code. Done. Verify it worked: [Verify the plugin loaded](#verify-the-plugin-loaded).
+
+Editing Ruby on Rails repos too? You also need Ruby 3.0+ with the `prism` gem. The [Full setup](#full-setup) section has the per-OS commands.
+
+---
+
+## Full setup
+
+### What you need
+
+| Tool | What it does | Do you need it? |
+|---|---|---|
+| Claude Code | the harness chameleon plugs into | Always |
+| `uv` | runs chameleon's Python server | Always |
+| Node.js 20+ | reads TypeScript/JavaScript files | Always |
+| Ruby 3.0+ with `prism` | reads Ruby files | Only if you edit Rails repos |
+
+You never run `uv sync` or `npm install` by hand. chameleon builds its own Python environment and Node dependencies the first time it runs. You only install the three tools above; chameleon handles the rest. See [How dependencies resolve](#how-dependencies-resolve) if you want the detail.
+
+The steps below are split by operating system. Do the one that matches your machine, then go to [Verify your prerequisites](#verify-your-prerequisites).
+
+### macOS
+
+These commands use [Homebrew](https://brew.sh). If you do not have it, install it first:
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+Then install `uv` and Node.js:
+
+```bash
+brew install uv node
+```
+
+`brew install node` gives you the current Node, which is well past 20.
+
+Ruby (only if you edit Rails repos):
+
+```bash
+brew install ruby
+```
+
+macOS ships an old system Ruby (2.6). The Homebrew one is 3.x and includes `prism`. After install, Homebrew prints a line to add it to your `PATH`; run that line, or open a new terminal.
+
+### Linux (Debian / Ubuntu)
+
+`uv`:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+This installs to `~/.local/bin`. Open a new terminal afterward, or run `source $HOME/.local/bin/env`, so `uv` is on your `PATH`.
+
+Node.js 20+ (the version in `apt` is usually too old, so use NodeSource):
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+```
+
+Ruby (only if you edit Rails repos):
+
+```bash
+sudo apt-get install -y ruby-full
+```
+
+If `ruby --version` reports older than 3.3, also run `gem install prism` (Ruby 3.3+ already bundles it). On a different distro, use its package manager or [rbenv](https://github.com/rbenv/rbenv); any Ruby 3.0+ with the `prism` gem works.
+
+### Windows
+
+chameleon's hooks run through `bash`, so install **Git for Windows** first (it provides Git Bash): https://git-scm.com/download/win . Run Claude Code from a shell where `bash` works. WSL2 also works and is smoother if you have it.
+
+`uv` (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Node.js 20+: download the LTS installer from https://nodejs.org (or `winget install OpenJS.NodeJS.LTS`).
+
+Ruby (only if you edit Rails repos): use [RubyInstaller](https://rubyinstaller.org), pick 3.3+ so `prism` is bundled.
+
+### Verify your prerequisites
+
+Run each command. If the version prints, that tool is ready.
+
+```bash
+uv --version       # expect: uv 0.x.x
+node --version     # expect: v20.x.x or higher
+npm --version      # expect: 10.x.x or similar (ships with Node)
+```
+
+Only if you edit Rails repos:
+
+```bash
+ruby --version                                  # expect: ruby 3.0.0 or higher
+ruby -e "require 'prism'; puts Prism::VERSION"  # expect: a version number, no error
+```
+
+If any command says "command not found", that tool is not on your `PATH`. The usual fix is to open a new terminal (installers update your `PATH` but existing shells do not pick it up). If it still fails, see [Troubleshooting](#troubleshooting).
+
+Important: run these in the **same kind of shell you start Claude Code from**. A tool can be on your `PATH` in one terminal and missing in another.
+
+---
+
+## Install the plugin
+
+Settings do not cross between harnesses. Install in whichever one you use.
+
+### Claude Code
 
 Inside any Claude Code session:
 
@@ -25,13 +140,7 @@ Inside any Claude Code session:
 /plugin install chameleon@chameleon
 ```
 
-Restart Claude Code. That is the entire user-facing install.
-
-The plugin lands at `~/.claude/plugins/cache/chameleon/chameleon/<version>/`.
-
-## Other harnesses
-
-Chameleon also targets Cursor, Codex CLI, and Gemini CLI. Install per harness — settings do not cross over.
+Restart Claude Code. That is the whole install. The plugin lands at `~/.claude/plugins/cache/chameleon/chameleon/<version>/`.
 
 ### Cursor
 
@@ -39,7 +148,7 @@ Chameleon also targets Cursor, Codex CLI, and Gemini CLI. Install per harness �
 /add-plugin chameleon
 ```
 
-> Pending marketplace listing. Until listed, install via local clone — see [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
+> Pending Cursor marketplace listing. Until it is listed, install from a local clone: see [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
 
 ### Codex CLI
 
@@ -47,9 +156,9 @@ Chameleon also targets Cursor, Codex CLI, and Gemini CLI. Install per harness �
 /plugins
 ```
 
-Search `chameleon` and select **Install Plugin**.
+Search `chameleon`, then select **Install Plugin**.
 
-> Pending marketplace listing. Until listed, install via local clone — see [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
+> Pending Codex marketplace listing. Until it is listed, install from a local clone: see [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
 
 ### Gemini CLI
 
@@ -59,71 +168,60 @@ gemini extensions install https://github.com/crisnahine/chameleon
 
 Update later with `gemini extensions update chameleon`.
 
-## How dependencies are resolved
+---
 
-Chameleon ships a Python MCP server and a Node-based TypeScript extractor. Both are resolved automatically — there is no manual `uv sync` or `npm install` step after marketplace install.
-
-- **Python (MCP server).** The plugin's [`.mcp.json`](../.mcp.json) invokes `uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp`. On first launch, `uv` builds an isolated venv in its own cache (~5–10s). Subsequent starts are instant.
-- **Node (TypeScript extractor).** The first `/chameleon-init` against a TypeScript repo lazily runs `npm install` inside `${CLAUDE_PLUGIN_ROOT}/mcp/` (~10s, one-time per plugin install). Ruby-only users never trigger this.
-
-Only `uv`, Node.js ≥ 20, and (optionally) Ruby ≥ 3.0 need to be on your `PATH`. The rest builds itself.
-
-## Verify the install
+## Verify the plugin loaded
 
 In a Claude Code session, ask:
 
-> *What chameleon tools do you have?*
+> What chameleon tools do you have?
 
-The model should list MCP tools like `detect_repo`, `get_archetype`, `bootstrap_repo`, etc. If it does not, see [Slash commands don't show up](#slash-commands-dont-show-up).
+The model should list tools like `detect_repo`, `get_archetype`, `bootstrap_repo`. If it lists nothing, see [Slash commands or tools do not show up](#slash-commands-or-tools-do-not-show-up).
 
-## First run inside a project
+The very first time the server starts it builds a Python environment (about 5 to 10 seconds). That is one-time. Later starts are instant.
 
-Open a TypeScript or Ruby on Rails repo in Claude Code, then:
+---
 
-1. **Bootstrap the profile** (skip if `.chameleon/` already exists and you trust its source):
+## Your first profile
+
+Open a TypeScript or Ruby on Rails repo in Claude Code.
+
+1. **Bootstrap a profile.** Skip this only if `.chameleon/` already exists and you trust who committed it.
 
    ```
    /chameleon-init
    ```
 
-   Builds `.chameleon/` (archetypes, canonical excerpts, rules) in 3–10 seconds for repos under 5,000 files. Commit the result.
+   This scans the repo, groups files into archetypes, and writes `.chameleon/`. It takes 3 to 10 seconds for repos under 5,000 files. Commit the result so your team shares it.
 
-2. **Trust the profile** for your user:
+   If this is a TypeScript repo, the first run also installs the Node side once (about 10 seconds). You do not do anything; it just takes a moment.
+
+2. **Trust the profile.**
 
    ```
    /chameleon-trust
    ```
 
-   You will be asked to type the repo's basename to confirm. Trust state lives in `~/.local/share/chameleon/<repo_id>/.trust` and is per-user, not committed.
+   You type the repo's folder name to confirm. Trust is per-user and lives at `~/.local/share/chameleon/<repo_id>/.trust`. It is not committed, so every teammate trusts once on their own machine.
 
-3. **Edit any file.** The `PreToolUse` hook fires; the model should mention the archetype and reference the canonical example before writing code.
+3. **Edit a file.** Before the edit lands, chameleon should mention which archetype the file matches and point at the canonical example. That is it working.
 
-## Slash commands
+---
 
-Seven user-invocable commands plus one auto-fired skill (`using-chameleon`). All commands accept `/cham-<name>` short aliases.
+## Opt-out
 
-| Command | Purpose |
-|---|---|
-| `/chameleon-init` | Bootstrap a new profile |
-| `/chameleon-refresh` | Re-analyze and update profile after team changes |
-| `/chameleon-status` | View profile state, drift score, plugin health |
-| `/chameleon-teach` | Capture a missed pattern as a team idiom |
-| `/chameleon-trust` | Approve a committed profile for your user |
-| `/chameleon-disable` | Suppress chameleon for the rest of this session |
-| `/chameleon-pause-15m` | Pause for 15 minutes (auto-resume) |
-
-## Opt-out hierarchy
-
-Four layers, ordered most-permanent to most-temporary:
+Four layers, most permanent at the top:
 
 ```
-.chameleon/.skip          per-repo, all users (committed)
-CHAMELEON_DISABLE=1        per-user globally (shell rc)
-/chameleon-disable         this session only
-/chameleon-pause-15m       next 15 minutes (auto-resume)
+.chameleon/.skip       per-repo, all users (committed to the repo)
+CHAMELEON_DISABLE=1     per-user, every repo (set in your shell rc)
+/chameleon-disable      this session only
+/chameleon-pause-15m    next 15 minutes, then auto-resumes
 ```
 
-Use `.chameleon/.skip` for repos chameleon should never analyze (e.g., docs-only). Use the env var to opt a user out across all repos. Use the slash commands for ad-hoc, scoped overrides.
+Use `.chameleon/.skip` for repos chameleon should never touch (a docs-only repo, for example). Use the env var to turn it off for yourself everywhere. Use the slash commands for a quick, scoped pause.
+
+---
 
 ## Updating
 
@@ -131,9 +229,18 @@ Use `.chameleon/.skip` for repos chameleon should never analyze (e.g., docs-only
 /plugin marketplace update chameleon
 ```
 
-Restart Claude Code. `uv` resolves the new Python deps on next MCP launch; the lazy `npm install` reruns the next time you invoke `/chameleon-init` against a TS repo.
+Restart Claude Code. The server is a long-lived process and does not pick up the new version until the session restarts. The Python and Node dependencies re-resolve on their own the next time chameleon runs.
 
-**v0.2.0 schema bump (one-time):** if you are upgrading from v0.1.x, the profile schema bumped from v4 → v5 and the loader refuses old profiles. Run `/chameleon-refresh` in each repo to rebuild, then re-run `/chameleon-trust` (the new profile has a new SHA). See [CHANGELOG.md](../CHANGELOG.md#020--2026-05-11) for the full v0.2.0 audit.
+Old versions stay in the plugin cache. To clear them after an update:
+
+```bash
+scripts/prune-plugin-cache.sh           # dry run, shows what would go
+scripts/prune-plugin-cache.sh --apply   # delete every cached version except the current one
+```
+
+**Upgrading from v0.1.x (one-time):** the profile format changed and old profiles are refused. In each repo, run `/chameleon-refresh` to rebuild, then `/chameleon-trust` again (the rebuilt profile has a new signature). Full detail in [CHANGELOG.md](../CHANGELOG.md#020--2026-05-11).
+
+---
 
 ## Uninstalling
 
@@ -142,59 +249,93 @@ Restart Claude Code. `uv` resolves the new Python deps on next MCP launch; the l
 /plugin marketplace remove chameleon
 ```
 
-Then remove your trust state and drift cache:
+Then clear your local trust and drift cache:
 
 ```bash
 rm -rf ~/.local/share/chameleon
 ```
 
-Committed `.chameleon/` directories in your repos are unaffected; delete them per-repo if you want.
+`.chameleon/` folders committed in your repos are untouched. Delete them per repo if you want them gone.
+
+---
+
+## How dependencies resolve
+
+You install three tools (`uv`, Node, optionally Ruby). chameleon builds everything else itself:
+
+- **Python server.** The plugin's [`.mcp.json`](../.mcp.json) runs `uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp`. On first launch `uv` builds an isolated environment in its own cache (5 to 10 seconds). After that, instant.
+- **TypeScript reader.** The first `/chameleon-init` on a TypeScript repo runs `npm install` once inside the plugin folder (about 10 seconds). If you only touch Ruby repos this never runs.
+
+This is why the prerequisite list is short: the tools build the rest on demand.
+
+---
 
 ## Troubleshooting
 
-### `uvx: command not found` / "chameleon-mcp not found"
+Each heading is the symptom you actually see.
 
-`uv` isn't on your `PATH`. Install it:
+### `uvx: command not found`, or "chameleon-mcp not found"
+
+`uv` is not on your `PATH` in the shell Claude Code launched from.
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-See the [uv docs](https://docs.astral.sh/uv/) for alternatives. Restart Claude Code afterward.
+Open a new terminal (so the `PATH` change takes effect), then restart Claude Code. On macOS, `brew install uv` is an alternative.
 
-### "npm not found on PATH" during `/chameleon-init` against a TS repo
+### "npm not found" during `/chameleon-init` on a TypeScript repo
 
-The TypeScript extractor needs Node.js ≥ 20 with `npm` reachable. Install Node, confirm `npm --version` works in the same shell Claude Code launched from, then retry `/chameleon-init`.
+Node is missing or not on your `PATH`. Install Node 20+ (see your OS section above), confirm `npm --version` prints in the same shell you start Claude Code from, then retry `/chameleon-init`.
 
-### MCP server slow on first start
+### A tool installed fine but is still "command not found"
 
-Expected. The first launch builds a venv via `uv` (~5–10s); subsequent starts are instant. The first `/chameleon-init` against a TS repo also runs `npm install` once (~10s, one-time per plugin install).
+The installer updated your `PATH`, but shells that were already open do not see it. Open a new terminal, or fully quit and reopen Claude Code. On macOS, the Homebrew Ruby and a few others need a `PATH` line that `brew` prints at install time; run that line.
 
-### `detect_repo` returns `trust_state: untrusted` after `/chameleon-trust`
+### `ruby` works but `require 'prism'` errors
 
-Check that `~/.local/share/chameleon/<repo_id>/.trust` exists. If not, re-run `/chameleon-trust` and confirm the repo basename when prompted.
+Your Ruby is older than 3.3, which does not bundle `prism`. Install it:
 
-If the trust state is `stale`, the committed profile changed after you granted trust — re-run `/chameleon-trust` to re-approve.
+```bash
+gem install prism
+```
 
-### Slash commands don't show up
+If `gem install` needs sudo and you do not want system-wide gems, use a version manager like rbenv so Ruby and gems live in your home directory.
 
-Run `/plugin list` and confirm `chameleon` is installed and enabled. If missing, re-run the install commands at the top. If listed but inactive, restart Claude Code.
+### Bootstrap fails with `failed_unsupported_language`
 
-### Hook latency feels high
+The repo has no TypeScript signal (`tsconfig.json` or `package.json`) and no Ruby signal (`Gemfile`). chameleon supports only those two stacks. There is nothing to fix; the repo is out of scope.
 
-The `PreToolUse` hook spawns a Python subprocess per invocation (200–500 ms on warm cache). For latency-sensitive editing sessions, use `/chameleon-pause-15m` or `/chameleon-disable`.
+### First MCP start is slow
 
-### Profile bootstrap fails with `failed_unsupported_language`
+Expected, once. `uv` builds the Python environment (5 to 10 seconds) on first launch. The first `/chameleon-init` on a TypeScript repo also runs `npm install` once (about 10 seconds). Both are one-time per install.
 
-The repo has no TypeScript signals (`tsconfig.json` / `package.json`) and no Ruby signals (`Gemfile`). Chameleon currently supports only those two languages.
+### Slash commands or tools do not show up
 
-### Windows: hooks open in an editor or `bash` is not recognized
+Run `/plugin list` and confirm `chameleon` is installed and enabled.
 
-Hooks go through a polyglot `.cmd` wrapper that needs Git for Windows installed at the default path.
+- Missing: re-run the two install commands in [Install the plugin](#install-the-plugin).
+- Listed but inactive: restart Claude Code.
+
+### `detect_repo` still says `untrusted` after `/chameleon-trust`
+
+Check that `~/.local/share/chameleon/<repo_id>/.trust` exists. If not, run `/chameleon-trust` again and type the repo's folder name exactly when asked.
+
+If the state is `stale`, the committed profile changed after you trusted it. Run `/chameleon-trust` once more to re-approve the new version.
+
+### Edits feel slow
+
+Before each edit chameleon runs a short check (200 to 500 ms warm). If you are in a fast editing burst and do not need it, run `/chameleon-pause-15m` or `/chameleon-disable`.
+
+### Windows: hooks open in an editor, or `bash` is not recognized
+
+chameleon's hooks need `bash`. Install Git for Windows (https://git-scm.com/download/win) and start Claude Code from a shell where `bash` runs. WSL2 also works.
+
+---
 
 ## Related docs
 
-- [README.md](../README.md) — quickstart and overview
-- [architecture.md](architecture.md) — design and invariants
-- [CHANGELOG.md](../CHANGELOG.md) — release notes
-- [CONTRIBUTING.md](../.github/CONTRIBUTING.md) — local dev setup, test suite, PR process
+- [README.md](../README.md) - what chameleon is and why
+- [architecture.md](architecture.md) - how it works internally
+- [CHANGELOG.md](../CHANGELOG.md) - release history
+- [CONTRIBUTING.md](../.github/CONTRIBUTING.md) - working on chameleon itself

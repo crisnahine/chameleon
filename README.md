@@ -9,16 +9,27 @@ chameleon learns your repo's actual conventions and injects archetype-aware guid
 
 ## Quickstart
 
-Install chameleon for your harness: [Claude Code](#claude-code), [Cursor](#cursor), [Codex CLI](#codex-cli), [Gemini CLI](#gemini-cli).
+**Before you start**, you need `uv` and Node.js 20+ on your `PATH`. Ruby 3.0+ is also needed if you edit Rails repos. On a fresh machine, [docs/install.md](docs/install.md) has copy-paste setup for macOS, Linux, and Windows, plus a check for each tool. Skip ahead if you already have them.
 
-Then, inside any TypeScript or Ruby on Rails repo:
+**1. Install the plugin.** In any Claude Code session:
 
 ```
-/chameleon-init    # bootstrap a profile (3–10s for repos under 5k files)
-/chameleon-trust   # approve the profile for your user
+/plugin marketplace add crisnahine/chameleon
+/plugin install chameleon@chameleon
+```
+
+Restart Claude Code. Confirm it loaded by asking *"What chameleon tools do you have?"*
+
+**2. Profile a repo.** Open a TypeScript or Ruby on Rails repo, then:
+
+```
+/chameleon-init    # build a profile (3-10s for repos under 5k files)
+/chameleon-trust   # approve it for your user
 ```
 
 After that, every Edit/Write in that repo gets archetype-aware context automatically.
+
+Using Cursor, Codex CLI, or Gemini CLI instead? Install steps for each are in [docs/install.md](docs/install.md).
 
 ## Why
 
@@ -42,65 +53,7 @@ Because the skills trigger automatically, you don't need to do anything special 
 
 ## Install
 
-Install differs by harness. If you use more than one, install separately for each.
-
-**Prerequisites (all harnesses):** [uv](https://docs.astral.sh/uv/), Node.js ≥ 20. Ruby ≥ 3.0 with the `prism` gem is only needed for Ruby on Rails repos (`prism` ships by default in Ruby ≥ 3.3).
-
-Both the Python MCP server and the Node-based TypeScript extractor are resolved automatically. `.mcp.json` invokes `uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp` (uv builds the venv on first launch, ~5–10s); the first `/chameleon-init` against a TypeScript repo lazy-runs `npm install` inside the plugin dir (~10s, one-time). No `uv sync` or `npm install` to run by hand.
-
-### Claude Code
-
-```
-/plugin marketplace add crisnahine/chameleon
-/plugin install chameleon@chameleon
-```
-
-Restart Claude Code. Verify by asking *"What chameleon tools do you have?"*
-
-See [docs/install.md](docs/install.md) for the deep walkthrough, troubleshooting, and uninstall instructions.
-
-#### Upgrading
-
-After `/plugin update chameleon` (or any reinstall), **restart Claude Code**. The MCP server is a long-lived subprocess and won't pick up the new version until the session restarts. To prune previous cached versions afterward:
-
-```
-scripts/prune-plugin-cache.sh           # dry run
-scripts/prune-plugin-cache.sh --apply   # delete every cached version except the current install
-```
-
-### Cursor
-
-In Cursor Agent chat:
-
-```
-/add-plugin chameleon
-```
-
-> Pending listing on Cursor's plugin marketplace.
-
-### Codex CLI
-
-Open the plugin search interface and install:
-
-```
-/plugins
-```
-
-Search for `chameleon`, then select **Install Plugin**.
-
-> Pending listing on Codex's plugin marketplace.
-
-### Gemini CLI
-
-```sh
-gemini extensions install https://github.com/crisnahine/chameleon
-```
-
-Update later:
-
-```sh
-gemini extensions update chameleon
-```
+The [Quickstart](#quickstart) above has the two commands for Claude Code. For the full guide - per-OS prerequisite setup (macOS, Linux, Windows), the other harnesses (Cursor, Codex, Gemini), verification, updating, uninstall, and troubleshooting - see **[docs/install.md](docs/install.md)**.
 
 ## Workflow
 
