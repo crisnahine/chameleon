@@ -1,6 +1,6 @@
 """Atomic multi-file commit pattern for chameleon profile writes.
 
-Per ARCHITECTURE.md "Atomicity & Crash Safety" → "Multi-file transactional commit":
+Per docs/architecture.md "Atomicity & Crash Safety" → "Multi-file transactional commit":
 
   1. Write all artifacts into .chameleon/.tmp/<txn-id>/
   2. Verify each artifact (fsync, schema-validate, secret-scan)
@@ -183,7 +183,7 @@ def atomic_profile_commit(target_dir: Path):
 def is_committed(target_dir: Path) -> bool:
     """Return True iff target_dir contains a valid COMMITTED sentinel.
 
-    Loaders use this to refuse incomplete profiles per ARCHITECTURE.md.
+    Loaders use this to refuse incomplete profiles per docs/architecture.md.
     """
     if not target_dir.is_dir():
         return False

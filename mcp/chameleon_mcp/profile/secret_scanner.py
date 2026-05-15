@@ -7,7 +7,7 @@ Round 1 + Round 4 critical security mitigation. The scanner runs on every
 candidate canonical file BEFORE the file is committed to `canonicals.json`.
 Files with detected secrets are excluded from the canonical pool.
 
-Per ARCHITECTURE.md "Security mitigations" #1.
+Per docs/architecture.md "Security mitigations" #1.
 """
 
 from __future__ import annotations

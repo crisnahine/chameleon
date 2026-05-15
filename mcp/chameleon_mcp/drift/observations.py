@@ -7,7 +7,7 @@ accumulate in drift.db's `edit_observations` table and power
 confidence, the repo's profile has drifted and `/chameleon-refresh` is
 recommended.
 
-Per ARCHITECTURE.md "drift.db" subsection.
+Per docs/architecture.md "drift.db" subsection.
 """
 
 from __future__ import annotations

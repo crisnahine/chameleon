@@ -393,6 +393,7 @@ t("generation counter consistent", isinstance(loaded.generation, int))
 # 18. exec_log
 section("exec_log (HMAC sign + verify)")
 from chameleon_mcp.exec_log import _exec_log_dir, append_exec_log, verify_exec_log_line
+from chameleon_mcp.optouts import _safe_session_marker
 
 append_exec_log(
     repo_id="test-repo-id-smoke",
@@ -400,7 +401,7 @@ append_exec_log(
     command="echo hello",
     exit_code=0,
 )
-log_file = _exec_log_dir("test-repo-id-smoke") / "smoke-test-session.jsonl"
+log_file = _exec_log_dir("test-repo-id-smoke") / f"{_safe_session_marker('smoke-test-session')}.jsonl"
 t("log file written", log_file.is_file())
 with open(log_file) as fh:
     t("HMAC verifies", verify_exec_log_line(fh.readlines()[-1]))

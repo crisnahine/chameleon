@@ -1,6 +1,6 @@
 """Canonical selection — pick a witness file for each cluster.
 
-Per ARCHITECTURE.md "Bootstrap interview flow" + "Profile schema" → canonicals.json:
+Per docs/architecture.md "Bootstrap interview flow" + "Profile schema" → canonicals.json:
 
 A canonical has three faces (trichotomized):
 1. Witness — the actual file (the one selected by this module)
@@ -14,8 +14,7 @@ Phase 2C selects the witness with deterministic recency weighting:
 - Among remaining: rank by recency weight (mtime-within-window doubles vote),
   break ties on (path length, lexicographic path) for reproducibility.
 
-The recency window + multiplier are calibration targets — see
-docs/chameleon/MAINTAINER.md "Calibration review".
+The recency window + multiplier are calibration targets.
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ from chameleon_mcp.profile.poisoning_scanner import scan_for_dangerous_patterns
 from chameleon_mcp.profile.secret_scanner import scan_for_secrets
 from chameleon_mcp.signatures import ClusterKey
 
-# Calibration constants per docs/chameleon/MAINTAINER.md.
+# Calibration constants.
 # Files modified within RECENCY_WINDOW_DAYS get RECENCY_WEIGHT_MULTIPLIER×
 # the selection weight of older files. Calibration target: increase the
 # probability that the canonical reflects current team practice rather than

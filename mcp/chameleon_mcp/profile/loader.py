@@ -1,6 +1,6 @@
 """Profile loader — reads committed `.chameleon/` directory contents.
 
-Per ARCHITECTURE.md "SQLite schemas" → "Cross-file referential integrity":
+Per docs/architecture.md "SQLite schemas" → "Cross-file referential integrity":
 applies the double-fstat loader pattern with generation counter verification.
 
 Refuses to load if `COMMITTED` sentinel is missing (atomic-commit guard).

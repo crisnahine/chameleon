@@ -1,6 +1,6 @@
 """Opt-out enforcement for the chameleon advisory hook.
 
-Per ARCHITECTURE.md "Opt-out hierarchy" (most-permanent → most-temporary):
+Per docs/architecture.md "Opt-out hierarchy" (most-permanent → most-temporary):
 
   1. .chameleon/.skip                    per-repo, all users (committed)
   2. CHAMELEON_DISABLE=1                 per-user, globally (env var)

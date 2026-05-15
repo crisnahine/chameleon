@@ -13,7 +13,7 @@ Phase 4: implements session-start (loads using-chameleon + profile primer)
 and preflight-and-advise (calls get_pattern_context). posttool-recorder and
 callout-detector remain Phase 4-end stubs.
 
-Per ARCHITECTURE.md "Bootstrap mechanism" + "Hook stack".
+Per docs/architecture.md "Bootstrap mechanism" + "Hook stack".
 """
 
 from __future__ import annotations
@@ -126,7 +126,7 @@ def session_start() -> int:
 
     skill_content = skill_path.read_text(encoding="utf-8", errors="replace")
 
-    # Wrap in <chameleon-context> per ARCHITECTURE.md
+    # Wrap in <chameleon-context> per docs/architecture.md
     wrapped = (
         "<chameleon-context>\n"
         "You have chameleon, a profile-aware coding assistant.\n\n"
@@ -253,7 +253,7 @@ def preflight_and_advise() -> int:
             from chameleon_mcp.tools import get_pattern_context
             result = get_pattern_context(file_path)
         except Exception:
-            # Fail-open per ARCHITECTURE.md — never block edits on advisor failure
+            # Fail-open per docs/architecture.md — never block edits on advisor failure
             _metric(advisory_emitted=False, repo_id=repo_id_hint, fail_open=True)
             _emit({})
             return 0

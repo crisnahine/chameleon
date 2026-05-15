@@ -8,7 +8,7 @@ Two exclusion sets:
 2. EXCLUDE_FROM_CANONICAL_POOL — clustered but never picked as canonical
    (tests, legacy, archive, deprecated)
 
-Per ARCHITECTURE.md "Bootstrap interview flow" steps (e), (f).
+Per docs/architecture.md "Bootstrap interview flow" steps (e), (f).
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ EXCLUDE_FROM_CLUSTERING_EXACT_RELPATHS = frozenset({
 })
 
 # Paths INCLUDED in clustering but EXCLUDED from canonical pool.
-# Per ARCHITECTURE.md: tests, legacy, archive directories shouldn't become
+# Per docs/architecture.md: tests, legacy, archive directories shouldn't become
 # the team's "this is how we do it" reference.
 EXCLUDE_FROM_CANONICAL_POOL_PATTERNS = (
     "**/__tests__/**",

@@ -47,7 +47,7 @@ through so the calibration job stays green on PRs.
 
 ## Calibration parameters under test
 
-Per `docs/chameleon/MAINTAINER.md` and `ARCHITECTURE.md`:
+Per `docs/architecture.md`:
 
 | Param | Default | Source |
 |---|---|---|

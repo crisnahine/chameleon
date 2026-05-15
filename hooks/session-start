@@ -6,7 +6,7 @@
 #   2. Wraps in <chameleon-context> tags
 #   3. Emits per-platform JSON dispatch (Cursor / Claude Code / SDK)
 #
-# See ARCHITECTURE.md "Bootstrap mechanism" for the full design.
+# See docs/architecture.md "Bootstrap mechanism" for the full design.
 
 set -euo pipefail
 

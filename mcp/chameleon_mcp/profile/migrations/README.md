@@ -3,7 +3,7 @@
 This directory holds migration scripts that transform `profile.json` (and
 sibling artifacts) between schema versions.
 
-See `ARCHITECTURE.md#migration-correctness-contract` for the complete
+See `docs/architecture.md#migration-correctness-contract` for the complete
 specification. Brief summary of the contract every migration must satisfy:
 
 1. **Idempotence** — running a migration `v_k → v_{k+1}` twice on the

@@ -26,7 +26,7 @@ model. The injection scanner flags such comments so the canonical can be
 excluded from the active pool. The secret scanner flags accidental
 credential leaks so they never reach the canonical excerpt at all.
 
-See ARCHITECTURE.md "Security mitigations" #1 (secrets) + #2 (injection).
+See docs/architecture.md "Security mitigations" #1 (secrets) + #2 (injection).
 """
 
 from __future__ import annotations

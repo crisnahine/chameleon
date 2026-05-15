@@ -6,7 +6,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 `chameleon` — a Claude Code plugin that auto-derives codebase conventions and injects archetype-aware guidance per-edit. Supports TypeScript and Ruby on Rails repos.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design.
+See [docs/architecture.md](./docs/architecture.md) for the full design.
 
 ## Project structure
 
@@ -20,7 +20,7 @@ chameleon/
 ├── mcp/               chameleon-mcp Python server (FastMCP, stdio transport)
 ├── scripts/           ts_dump.mjs, prism_dump.rb, bump-version.sh, merge driver
 ├── tests/             unit, integration, acceptance, real-Claude-Code tests
-└── docs/              ARCHITECTURE.md (design) + per-language docs
+└── docs/              architecture.md (design) + install.md
 ```
 
 ## Conventions

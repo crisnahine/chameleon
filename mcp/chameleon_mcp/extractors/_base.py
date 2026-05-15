@@ -29,7 +29,7 @@ class ParsedFile:
     top_level_node_kinds: tuple[str, ...]
     """Tuple of stringified node kinds for direct children of the root.
 
-    Used as part of the cluster signature function. See ARCHITECTURE.md
+    Used as part of the cluster signature function. See docs/architecture.md
     "Cluster signature function" for the full 7-tuple.
     """
 
@@ -49,7 +49,7 @@ class ParsedFile:
     """Whether the file contains JSX/TSX elements."""
 
     parse_diagnostics_count: int = 0
-    """Number of parse errors. Files with > 20 are skipped per ARCHITECTURE.md."""
+    """Number of parse errors. Files with > 20 are skipped per docs/architecture.md."""
 
     sha_hint: str | None = None
     """xxhash64 hex digest of the file content (for drift cache invalidation)."""

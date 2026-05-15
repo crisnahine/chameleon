@@ -10,7 +10,6 @@
   ],
   "audit": {
     "exclude": [
-      "RELEASE-NOTES.md",
       "CHANGELOG.md",
       "node_modules",
       ".git",

@@ -6,10 +6,10 @@
 #   2. Calls chameleon_mcp.tools.get_pattern_context(file_path)
 #   3. Emits archetype + canonical excerpt as additionalContext
 #
-# Fail-open contract per ARCHITECTURE.md "Hook stack": if anything fails,
+# Fail-open contract per docs/architecture.md "Hook stack": if anything fails,
 # emit empty JSON and let the edit proceed.
 #
-# See ARCHITECTURE.md "Hook stack" PreToolUse + "Performance characteristics"
+# See docs/architecture.md "Hook stack" PreToolUse + "Performance characteristics"
 # (the daemon model that replaces this subprocess-per-call form).
 
 set -euo pipefail

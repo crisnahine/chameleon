@@ -2,8 +2,6 @@
 
 Deterministic synthetic-file scenario suite for chameleon's pattern advisory.
 
-See `docs/superpowers/specs/2026-05-12-hook-evals-design.md` for the full design.
-
 ## Run
 
 Default (MCP layer, fast, deterministic):
@@ -20,9 +18,7 @@ cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/hook_evals/runner.py -
 
 `--full` mode silently skips when bash, the hook script, or the venv python is missing.
 
-## Spec deviations
-
-The implementation diverges from the original spec at `docs/superpowers/specs/2026-05-12-hook-evals-design.md` in three places:
+## Notable scenario choices
 
 - TS scenario 03 is `type-only` rather than `test`. The fixture doesn't ship `*.test.ts` files, so `type-only` is the third available archetype.
 - Ruby scenario 04 is "rules are present and empty" rather than `service`. The fixture doesn't ship a `services/` directory; with empty rules in the bootstrap output the scenario verifies the rules pipeline is reachable.

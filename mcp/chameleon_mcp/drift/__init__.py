@@ -5,5 +5,5 @@ drift.db (per-repo, in ${PLUGIN_DATA}/<repo_id>/) tracks:
 - cached cluster signatures
 - per-edit confidence observations (for drift-driven nags)
 
-See ARCHITECTURE.md "SQLite schemas" → "drift.db" subsection for full DDL.
+See docs/architecture.md "SQLite schemas" → "drift.db" subsection for full DDL.
 """

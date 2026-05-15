@@ -7,7 +7,7 @@ Phase 2A scope:
 - Single-process worker (one ts_dump.mjs subprocess) for simplicity.
 - Phase 2B will add the worker pool (cpu_count // 2 workers) for parallelism.
 
-Per ARCHITECTURE.md "TypeScript-first extractor" + "Performance characteristics".
+Per docs/architecture.md "TypeScript-first extractor" + "Performance characteristics".
 """
 
 from __future__ import annotations

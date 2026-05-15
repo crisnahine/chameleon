@@ -1,6 +1,6 @@
 """Tool config reading — `.prettierrc`, `tsconfig.json`, `.eslintrc*`, `.editorconfig`.
 
-Per ARCHITECTURE.md "Bootstrap interview flow" step (c) + "Tracked dimensions
+Per docs/architecture.md "Bootstrap interview flow" step (c) + "Tracked dimensions
 catalog" Tier 1 dimensions 30-34: tool configs are GROUND TRUTH for structural
 rules (formatting, linting, type-check strictness). Statistical analysis defers
 to these.

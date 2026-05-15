@@ -11,7 +11,7 @@
 #
 # Fail-open: any failure → emit empty JSON. Never block Bash from completing.
 #
-# See ARCHITECTURE.md "Hook stack" PostToolUse Bash + "Security mitigations"
+# See docs/architecture.md "Hook stack" PostToolUse Bash + "Security mitigations"
 # #5 (per-repo HMAC log directory).
 
 set -euo pipefail

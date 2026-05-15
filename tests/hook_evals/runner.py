@@ -1,7 +1,5 @@
 """Hook eval scenario runner.
 
-See docs/superpowers/specs/2026-05-12-hook-evals-design.md.
-
 Default mode: calls chameleon_mcp.tools.get_pattern_context in-process.
 --full mode: pipes a synthetic PreToolUse event through hooks/preflight-and-advise.
 

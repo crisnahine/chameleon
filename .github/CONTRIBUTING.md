@@ -1,13 +1,12 @@
 # Contributing to chameleon
 
 This document is for **developers working on chameleon itself**. For users
-of the plugin, see [README.md](README.md) and [INSTALL.md](INSTALL.md).
-For the design, start with [docs/chameleon/OVERVIEW.md](docs/chameleon/OVERVIEW.md)
-(5 minutes) before diving into [ARCHITECTURE.md](ARCHITECTURE.md).
+of the plugin, see [README.md](../README.md) and [INSTALL.md](../docs/install.md).
+For the design, see [architecture.md](../docs/architecture.md).
 
 ## Status
 
-chameleon is open source under the [MIT License](LICENSE). It went public
+chameleon is open source under the [MIT License](../LICENSE). It went public
 on 2026-05-11 (v0.2.0). Solo-maintained by Cris Nahine. External issues
 and PRs are welcome — read this file end-to-end before opening one.
 
@@ -27,7 +26,7 @@ writing code — see [Architecture changes](#architecture-changes) below.
 
 ## Dev prerequisites
 
-- macOS or Linux. Windows via Git Bash; see [docs/windows/polyglot-hooks.md](docs/windows/polyglot-hooks.md).
+- macOS or Linux. Windows via Git Bash.
 - Python ≥ 3.11
 - Node ≥ 20
 - Ruby ≥ 3.0 with the `prism` gem (ships by default in Ruby ≥ 3.3)
@@ -38,7 +37,7 @@ writing code — see [Architecture changes](#architecture-changes) below.
 
 Local contributor install uses `claude --plugin-dir` — the only place this
 project documents a local clone install. Marketplace users follow
-[INSTALL.md](INSTALL.md).
+[INSTALL.md](../docs/install.md).
 
 ```bash
 git clone https://github.com/crisnahine/chameleon
@@ -83,13 +82,9 @@ Tests skip gracefully when these are unset.
 ### Architecture changes
 
 For changes that touch more than one of: hook stack, MCP tool surface,
-profile schema, skill bodies — **author an ADR first**. ADRs live at
-[docs/chameleon/decisions/](docs/chameleon/decisions/). Use `0000-template.md`
-as the starting point. Existing ADRs (0001–0003) are short, scoped, and
-focused on the decision rather than the implementation; match that voice.
-
-The ADR documents the *decision* and rejected alternatives, not the *code*.
-Once accepted, the implementation can proceed.
+profile schema, skill bodies — open a discussion or issue first to align
+on approach. Document the *decision* and rejected alternatives in the
+issue, not the code, before implementation proceeds.
 
 ### Hook stack changes
 
@@ -113,7 +108,7 @@ echo '{"tool_name":"Edit","tool_input":{"file_path":"/abs/path/to/file.ts"},"ses
 ### MCP tool changes
 
 MCP tools (`mcp/chameleon_mcp/tools.py`) are a public API surface.
-Compatibility contract per [ARCHITECTURE.md](ARCHITECTURE.md):
+Compatibility contract per [architecture.md](../docs/architecture.md):
 
 **Non-breaking** (no major version bump):
 - Adding new MCP tools
@@ -142,10 +137,8 @@ in `mcp/chameleon_mcp/profile/schema.py`.
 - **Breaking** → bump both version anchors, write a migration at
   `mcp/chameleon_mcp/profile/migrations/v<old>_to_v<new>.py` with a fixture
   pair `(input_v<old>.json, expected_output_v<new>.json)`, update
-  `SUPPORTED_SCHEMA_RANGE`, write an ADR. See
-  [docs/chameleon/MAINTAINER.md#schema-migration-authoring](docs/chameleon/MAINTAINER.md#schema-migration-authoring)
-  for the full procedure. The migration MUST be idempotent, atomic, and
-  no-op when already at target.
+  `SUPPORTED_SCHEMA_RANGE`, and document the decision in an issue. The
+  migration MUST be idempotent, atomic, and no-op when already at target.
 
 v0.2.0 bumped schema v4 → v5 (`paths_pattern` semantics changed in
 `archetypes.json`). It's the most recent example to study.
@@ -172,7 +165,7 @@ before/after eval evidence will be sent back.
 - **Subject line**: 50 chars max, imperative mood ("Add X" not "Added X" or
   "Adds X").
 - **Body**: explain *why*, not *what* (the diff shows what).
-- **Reference issues / ADRs**: `Closes #42` / `Per ADR-0003`.
+- **Reference issues**: `Closes #42`.
 - **English only**: all code, comments, docs, error messages, commit
   messages are in English.
 
@@ -182,7 +175,7 @@ before/after eval evidence will be sent back.
 2. Read the section above that matches your change area.
 3. Run the full test suite. Real-Claude-Code acceptance is required for
    PRs touching hooks, skills, or the MCP tool surface.
-4. Open a PR using the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
+4. Open a PR using the [PR template](PULL_REQUEST_TEMPLATE.md).
    Fill in every section with real, specific answers.
 5. One problem per PR. Bundled unrelated changes will be sent back.
 6. Update `CHANGELOG.md` under `## [Unreleased]` (add the section if
@@ -228,10 +221,9 @@ Workflow run logs live under the repo's Actions tab on GitHub.
 
 ## Decision-making
 
-Solo maintainer. Architecture-touching changes are captured in ADRs.
-The maintainer reserves the right to decline PRs that don't fit the
-project's design goals — open an issue first for any non-trivial change
-so we can agree on the approach before you invest time.
+Solo maintainer. The maintainer reserves the right to decline PRs that
+don't fit the project's design goals — open an issue first for any
+non-trivial change so we can agree on the approach before you invest time.
 
 ## Data handling
 
@@ -244,5 +236,5 @@ so we can agree on the approach before you invest time.
 
 ## License
 
-MIT. See [LICENSE](LICENSE). By contributing, you grant the project the
+MIT. See [LICENSE](../LICENSE). By contributing, you grant the project the
 right to distribute your contribution under MIT.

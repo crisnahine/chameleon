@@ -7,4 +7,4 @@ Slash commands (Gemini extension):
 - Use the documented chameleon slash commands when explicitly invoked by the user. Each one has a corresponding skill at `skills/<command-name>/SKILL.md` describing its flow.
 - Before any code edit in a chameleon-enabled repo, look up the file's archetype + canonical via the `chameleon-mcp` server and shape your output to match.
 
-For full design + invariants, see `ARCHITECTURE.md`. For setup, see `INSTALL.md`.
+For full design + invariants, see `docs/architecture.md`. For setup, see `docs/install.md`.

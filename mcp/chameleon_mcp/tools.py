@@ -2325,7 +2325,7 @@ def _backfill_index_from_legacy_dirs() -> None:
 def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     """Three-way merge for git merge driver use.
 
-    Per ARCHITECTURE.md "merge_profiles algorithm": the canonical-correct
+    Per docs/architecture.md "merge_profiles algorithm": the canonical-correct
     merge of two profile JSONs is to re-cluster from the union — but the
     git merge driver only has the static .json content of base/ours/theirs,
     not the underlying repo. So we approximate: take the union of archetypes

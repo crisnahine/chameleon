@@ -1,6 +1,6 @@
 """chameleon_mcp — MCP server for chameleon plugin.
 
-See ARCHITECTURE.md for the full design.
+See docs/architecture.md for the full design.
 """
 
 # Top-level declaration: column-0 so release.yml's `^__version__ = ` regex

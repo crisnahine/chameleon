@@ -1,6 +1,6 @@
 """SQLite configuration helpers — applies hardening pragmas to every connection.
 
-Per ARCHITECTURE.md "SQLite schemas" hardening profile:
+Per docs/architecture.md "SQLite schemas" hardening profile:
 - WAL mode (concurrent readers + 1 writer)
 - busy_timeout=30000 (30s; tolerates concurrent /chameleon-refresh)
 - synchronous=NORMAL (durability OK for caches; transactional commit handled at application layer)

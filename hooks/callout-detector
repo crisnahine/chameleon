@@ -10,7 +10,7 @@
 #
 # Fail-open: any failure → emit empty JSON. Never block the user prompt.
 #
-# See ARCHITECTURE.md "Hook stack" UserPromptSubmit section + Round 5 UX
+# See docs/architecture.md "Hook stack" UserPromptSubmit section + Round 5 UX
 # Researcher recommendation #6 (discoverable disable on frustration).
 
 set -euo pipefail

@@ -5,7 +5,7 @@ mitigation: prevent canonical excerpts or idioms from containing literal
 `</chameleon-context>` (or near-tag-boundary tokens) that would be parsed
 as the closing tag and let attacker-controlled content escape.
 
-Per ARCHITECTURE.md "Security mitigations" #2.
+Per docs/architecture.md "Security mitigations" #2.
 """
 
 from __future__ import annotations

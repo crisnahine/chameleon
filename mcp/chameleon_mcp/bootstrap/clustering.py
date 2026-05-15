@@ -1,6 +1,6 @@
 """Cluster ParsedFile records by ClusterKey signature.
 
-Per ARCHITECTURE.md "Cluster signature function" → "Incremental algorithm":
+Per docs/architecture.md "Cluster signature function" → "Incremental algorithm":
 - Same ClusterKey → same cluster (exact-match equivalence)
 - Clusters become candidate archetypes (named in Phase 2C interview)
 - Sparse cluster threshold: <5 files → candidate for "miscellaneous" or merge

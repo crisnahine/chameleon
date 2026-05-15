@@ -1,6 +1,6 @@
 """Trust state management for committed profiles.
 
-Per ARCHITECTURE.md "Profile schema" → `.trust` file format + Round 4
+Per docs/architecture.md "Profile schema" → `.trust` file format + Round 4
 trust model with cooldown.
 
 Trust is per-user, per-repo. Stored at `${PLUGIN_DATA}/<repo_id>/.trust`.
@@ -291,7 +291,7 @@ def revoke_trust(repo_id: str) -> bool:
 def is_material_change(repo_id: str, current_profile_dir: Path) -> bool:
     """Return True iff the trusted profile_sha256 no longer matches current.
 
-    Per ARCHITECTURE.md material-change predicate: hash mismatch → re-prompt
+    Per docs/architecture.md material-change predicate: hash mismatch → re-prompt
     on next session. (Phase 2D simplification: any hash change is treated as
     material; Phase 4 refines to "any new archetype, new canonical witness file,
     or new active idiom" only.)

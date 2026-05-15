@@ -8,5 +8,5 @@ v1.0: typescript (TS Compiler API via Node subprocess)
 v1.5: ruby (Prism via Ruby subprocess)
 v2.0+: python (libcst), go (go/parser), rust (syn), php (nikic)
 
-See ARCHITECTURE.md "TypeScript-first extractor" + "Cluster signature function".
+See docs/architecture.md "TypeScript-first extractor" + "Cluster signature function".
 """

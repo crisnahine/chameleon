@@ -5,7 +5,7 @@ Phase 2 expands with full schema enforcement, JSON parser hardening
 (Round 4 #14: depth cap 64, duplicate-key rejection, numeric range bounds,
 NFC normalization before validation).
 
-See ARCHITECTURE.md "Profile schema" + "Security mitigations" #5 + #14.
+See docs/architecture.md "Profile schema" + "Security mitigations" #5 + #14.
 """
 
 from __future__ import annotations

@@ -8,7 +8,7 @@ This is the security-critical helper that prevents:
 - Null-byte path manipulation
 - Windows ADS streams
 
-See ARCHITECTURE.md "Security mitigations" #5 (symlink lstat + repo-boundary check)
+See docs/architecture.md "Security mitigations" #5 (symlink lstat + repo-boundary check)
 and Round 5 AppSec recommendation #3 (single safe_open helper).
 """
 

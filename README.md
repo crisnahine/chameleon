@@ -57,7 +57,7 @@ Both the Python MCP server and the Node-based TypeScript extractor are resolved 
 
 Restart Claude Code. Verify by asking *"What chameleon tools do you have?"*
 
-See [INSTALL.md](INSTALL.md) for the deep walkthrough, troubleshooting, and uninstall instructions.
+See [docs/install.md](docs/install.md) for the deep walkthrough, troubleshooting, and uninstall instructions.
 
 #### Upgrading
 
@@ -132,8 +132,6 @@ gemini extensions update chameleon
 
 All commands accept `/cham-<name>` short aliases. `using-chameleon` is the eighth skill — it auto-fires on `SessionStart` and orients the model.
 
-- [Vocabulary firewall and competitive analysis](docs/chameleon/VOCABULARY-AND-COMPETITIVE.md) — how chameleon's terms differ from lint rules, formatters, AI-rules files, and codebase retrievers, plus where the engine doesn't apply.
-
 ### Hooks
 
 Four hooks drive the runtime:
@@ -165,11 +163,11 @@ CHAMELEON_DISABLE=1       per-user globally (in your shell rc)
 - **Fail closed** — the canonical-selection pipeline rejects candidates that fail secret, injection, or poisoning scans; the profile is shipped with no example before it is shipped with a poisoned one.
 - **Opt-out at every layer** — four ways to silence the plugin, from committed repo flag to a 15-minute pause.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design: bootstrap pipeline, cluster signature function, atomic profile commit, drift model, and security mitigations.
+See [docs/architecture.md](docs/architecture.md) for the full design: bootstrap pipeline, cluster signature function, atomic profile commit, drift model, and security mitigations.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, test workflows, and the change conventions used in this repo. Contributors hacking on the plugin itself should use `--plugin-dir`, not the marketplace install above.
+See [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for dev setup, test workflows, and the change conventions used in this repo. Contributors hacking on the plugin itself should use `--plugin-dir`, not the marketplace install above.
 
 ## License
 

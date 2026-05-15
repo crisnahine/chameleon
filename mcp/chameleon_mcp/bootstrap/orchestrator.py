@@ -503,7 +503,7 @@ class BootstrapReport:
 
 
 def _compute_repo_id(repo_root: Path) -> str:
-    """Compute repo_id per ARCHITECTURE.md rule:
+    """Compute repo_id per docs/architecture.md rule:
     sha256(canonicalize(git_remote_url)) if remote present, else
     sha256(canonicalize_path(repo_root)).
 

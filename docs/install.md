@@ -2,13 +2,13 @@
 
 Chameleon is a Claude Code plugin that auto-derives codebase conventions and injects archetype-aware guidance per-edit for TypeScript and Ruby on Rails repos.
 
-This is the deep-dive install guide: prerequisites, every supported harness, the zero-touch dependency story, verification, opt-out, updates, uninstall, and troubleshooting. The [README](README.md) links here for the long form.
+This is the deep-dive install guide: prerequisites, every supported harness, the zero-touch dependency story, verification, opt-out, updates, uninstall, and troubleshooting. The [README](../README.md) links here for the long form.
 
-Contributors hacking on the plugin itself want [CONTRIBUTING.md](CONTRIBUTING.md), not this file — `--plugin-dir` and local clones live there.
+Contributors hacking on the plugin itself want [CONTRIBUTING.md](../.github/CONTRIBUTING.md), not this file — `--plugin-dir` and local clones live there.
 
 ## Prerequisites
 
-- **OS**: macOS or Linux. Windows works via Git Bash; see [docs/windows/polyglot-hooks.md](docs/windows/polyglot-hooks.md).
+- **OS**: macOS or Linux. Windows works via Git Bash.
 - **[Claude Code](https://docs.claude.com/claude-code) 2.x** (or any supported harness — see [Other harnesses](#other-harnesses)).
 - **[uv](https://docs.astral.sh/uv/)** on `PATH`. Installs the MCP server's Python venv on first launch.
 - **[Node.js](https://nodejs.org/) ≥ 20** with `npm` on `PATH`. Powers the TypeScript extractor.
@@ -39,7 +39,7 @@ Chameleon also targets Cursor, Codex CLI, and Gemini CLI. Install per harness �
 /add-plugin chameleon
 ```
 
-> Pending marketplace listing. Until listed, install via local clone — see [CONTRIBUTING.md](CONTRIBUTING.md).
+> Pending marketplace listing. Until listed, install via local clone — see [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
 
 ### Codex CLI
 
@@ -49,7 +49,7 @@ Chameleon also targets Cursor, Codex CLI, and Gemini CLI. Install per harness �
 
 Search `chameleon` and select **Install Plugin**.
 
-> Pending marketplace listing. Until listed, install via local clone — see [CONTRIBUTING.md](CONTRIBUTING.md).
+> Pending marketplace listing. Until listed, install via local clone — see [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
 
 ### Gemini CLI
 
@@ -63,7 +63,7 @@ Update later with `gemini extensions update chameleon`.
 
 Chameleon ships a Python MCP server and a Node-based TypeScript extractor. Both are resolved automatically — there is no manual `uv sync` or `npm install` step after marketplace install.
 
-- **Python (MCP server).** The plugin's [`.mcp.json`](.mcp.json) invokes `uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp`. On first launch, `uv` builds an isolated venv in its own cache (~5–10s). Subsequent starts are instant.
+- **Python (MCP server).** The plugin's [`.mcp.json`](../.mcp.json) invokes `uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp`. On first launch, `uv` builds an isolated venv in its own cache (~5–10s). Subsequent starts are instant.
 - **Node (TypeScript extractor).** The first `/chameleon-init` against a TypeScript repo lazily runs `npm install` inside `${CLAUDE_PLUGIN_ROOT}/mcp/` (~10s, one-time per plugin install). Ruby-only users never trigger this.
 
 Only `uv`, Node.js ≥ 20, and (optionally) Ruby ≥ 3.0 need to be on your `PATH`. The rest builds itself.
@@ -133,7 +133,7 @@ Use `.chameleon/.skip` for repos chameleon should never analyze (e.g., docs-only
 
 Restart Claude Code. `uv` resolves the new Python deps on next MCP launch; the lazy `npm install` reruns the next time you invoke `/chameleon-init` against a TS repo.
 
-**v0.2.0 schema bump (one-time):** if you are upgrading from v0.1.x, the profile schema bumped from v4 → v5 and the loader refuses old profiles. Run `/chameleon-refresh` in each repo to rebuild, then re-run `/chameleon-trust` (the new profile has a new SHA). See [CHANGELOG.md](CHANGELOG.md#020--2026-05-11) for the full v0.2.0 audit.
+**v0.2.0 schema bump (one-time):** if you are upgrading from v0.1.x, the profile schema bumped from v4 → v5 and the loader refuses old profiles. Run `/chameleon-refresh` in each repo to rebuild, then re-run `/chameleon-trust` (the new profile has a new SHA). See [CHANGELOG.md](../CHANGELOG.md#020--2026-05-11) for the full v0.2.0 audit.
 
 ## Uninstalling
 
@@ -190,12 +190,11 @@ The repo has no TypeScript signals (`tsconfig.json` / `package.json`) and no Rub
 
 ### Windows: hooks open in an editor or `bash` is not recognized
 
-Hooks go through a polyglot `.cmd` wrapper that needs Git for Windows installed at the default path. See [docs/windows/polyglot-hooks.md](docs/windows/polyglot-hooks.md) for the full diagnostic checklist.
+Hooks go through a polyglot `.cmd` wrapper that needs Git for Windows installed at the default path.
 
 ## Related docs
 
-- [README.md](README.md) — quickstart and overview
-- [ARCHITECTURE.md](ARCHITECTURE.md) — design and invariants
-- [CHANGELOG.md](CHANGELOG.md) — release notes (v0.2.0 is current)
-- [CONTRIBUTING.md](CONTRIBUTING.md) — local dev setup, test suite, PR process
-- [docs/windows/polyglot-hooks.md](docs/windows/polyglot-hooks.md) — Windows hook setup deep-dive
+- [README.md](../README.md) — quickstart and overview
+- [architecture.md](architecture.md) — design and invariants
+- [CHANGELOG.md](../CHANGELOG.md) — release notes
+- [CONTRIBUTING.md](../.github/CONTRIBUTING.md) — local dev setup, test suite, PR process

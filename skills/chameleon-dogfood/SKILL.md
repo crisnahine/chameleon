@@ -58,4 +58,4 @@ See `tests/dogfood/README.md` for the full pattern.
 
 ## Catalog
 
-Full catalog: `docs/superpowers/specs/2026-05-13-comprehensive-dogfood.md`.
+Scenario catalog lives in `tests/dogfood/`.

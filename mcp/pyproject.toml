@@ -51,8 +51,7 @@ ignore = [
     # Module-level imports are intentionally placed inside functions /
     # methods throughout chameleon_mcp/ to keep server startup fast (the
     # MCP cold-start budget is ~150ms; eagerly importing every tool's
-    # dependencies blows that). The pattern is documented in
-    # `docs/chameleon/OVERVIEW.md` under "Cold-start budget."
+    # dependencies blows that).
     "E402",
     # Long lines are mostly user-facing strings (error messages, idiom
     # markdown templates) where reflowing reduces readability.

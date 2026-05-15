@@ -3,8 +3,7 @@
 > *"Code that blends in."*
 
 > **Date:** 2026-05-10
-> **Author:** Cris Nahine + Claude
-> **Versions:** v1-v4 archived alongside this file. Round reports at `docs/chameleon/ROUND-{1,2,3,4,5}-*.md`.
+> **Author:** Cris Nahine
 
 ## Certainty markers (used throughout this doc)
 
@@ -88,7 +87,7 @@ AI-generated code in established codebases routinely violates local conventions 
 
 **Owner:** Cris (human partner). **Deadline:** before v1.0.0 semver tag.
 
-**Enforcement:** CI release-tag check — `tag-v*.*.*` requires `docs/chameleon/REAL-PROBLEM-EVIDENCE.md` to contain ≥5 H2 sections matching transcript schema. Build fails otherwise.
+**Enforcement:** CI release-tag check — `tag-v*.*.*` requires a real-problem evidence section in the release notes containing ≥5 H2 sections matching transcript schema. Build fails otherwise.
 
 ---
 
@@ -483,11 +482,10 @@ chameleon/
 ├── README.md # vocabulary firewall: 5 user-facing terms
 │ # competitive analysis section (v3 → v4 add)
 ├── CHANGELOG.md
-├── RELEASE-NOTES.md
 ├── LICENSE
 ├── package.json # version anchor
 ├── package-lock.json # MUST commit
-├── CONTRIBUTING.md # NEW: external contributor onboarding
+├── .github/CONTRIBUTING.md # external contributor onboarding
 ├── hooks/
 │ ├── hooks.json
 │ ├── run-hook.cmd # cross-platform polyglot wrapper
@@ -1716,14 +1714,13 @@ Magic numbers in the architecture, with evaluation protocols for validation:
 - Update Red Flags tables; bump `engine_min_version` if behavior shifts
 - CI gates `engine_min_version` bump on regression results
 
-**Runbook (`docs/chameleon/MAINTAINER.md` outline):**
+**Runbook outline:**
 - Quarterly dependency bump checklist (npm audit signatures + manual diff + checksum regen)
 - HMAC key generation + rotation
 - Schema migration authoring guide (per migration correctness contract)
 - Quarterly calibration review against corpus
 - Quarterly model re-baseline
 - Release checklist (CI gates: real-problem-evidence, golden-transcript, adversarial-transcript, skill-baselines, vendor-checksums)
-- Decision register (`docs/chameleon/decisions/`)
 - Threat model (insider profile poisoning, untrusted repo opening)
 
 ---

@@ -1,7 +1,7 @@
 """OS-level advisory locks for chameleon operations.
 
 Used by `/chameleon-refresh` to prevent concurrent invocations corrupting
-shared state. Per ARCHITECTURE.md "Atomicity & Crash Safety" → "OS-level locks".
+shared state. Per docs/architecture.md "Atomicity & Crash Safety" → "OS-level locks".
 
 POSIX `flock(2)` semantics:
 - LOCK_EX | LOCK_NB: exclusive non-blocking; returns immediately if held

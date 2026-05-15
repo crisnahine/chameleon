@@ -1,6 +1,6 @@
 """drift.db schema initialization.
 
-Per ARCHITECTURE.md "SQLite schemas" → "drift.db" subsection. drift.db is a
+Per docs/architecture.md "SQLite schemas" → "drift.db" subsection. drift.db is a
 per-repo cache (lives in `${PLUGIN_DATA}/<repo_id>/drift.db`).
 
 Migration policy: drift.db is a CACHE. Drop-and-recreate is permitted on
@@ -79,7 +79,7 @@ def init_drift_db(db_path: Path) -> sqlite3.Connection:
 def gc_old_observations(conn: sqlite3.Connection, *, max_age_seconds: int = 30 * 86_400) -> int:
     """Delete edit_observations older than `max_age_seconds`. Returns rows deleted.
 
-    Per ARCHITECTURE.md "drift.db" GC policy: 30-day record purge weekly.
+    Per docs/architecture.md "drift.db" GC policy: 30-day record purge weekly.
     """
     import time
 

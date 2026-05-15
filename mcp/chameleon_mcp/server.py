@@ -3,7 +3,7 @@
 Stdio transport. Long-lived process invoked by hooks via UNIX domain socket
 (Phase 4 daemon model) or directly per-call (Phase 1C-2 fallback).
 
-See ARCHITECTURE.md sections:
+See docs/architecture.md sections:
 - "MCP server (`chameleon-mcp`)" — full tool surface
 - "Performance characteristics" — daemon model
 - "Cluster signature function" — what tools rely on
@@ -137,7 +137,7 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     """Three-way merge: re-cluster from union of ours and theirs.
 
     Used by `.gitattributes` merge driver registration.
-    See ARCHITECTURE.md "SQLite schemas" → "merge_profiles algorithm" subsection.
+    See docs/architecture.md "SQLite schemas" → "merge_profiles algorithm" subsection.
     """
     return tools.merge_profiles(repo, base, ours, theirs)
 

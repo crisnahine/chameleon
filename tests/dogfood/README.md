@@ -2,7 +2,6 @@
 
 End-to-end harness that exercises chameleon's full lifecycle: install, init, profile write, trust, injection, hook routing, drift detection, suppression, and uninstall. Scenarios run against ephemeral temp dirs and optionally against real TS or Rails repos pointed to via env vars.
 
-Spec catalog: `docs/superpowers/specs/2026-05-13-comprehensive-dogfood.md`.
 Slash command: `/chameleon-dogfood` (`skills/chameleon-dogfood/SKILL.md`).
 
 ## Quick start

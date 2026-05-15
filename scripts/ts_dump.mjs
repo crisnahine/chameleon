@@ -5,13 +5,13 @@
  * Long-lived Node process consuming file paths from stdin (one per line)
  * and emitting NDJSON ParsedFile records to stdout.
  *
- * Per ARCHITECTURE.md "Cluster signature function" → "Compiler API mode":
+ * Per docs/architecture.md "Cluster signature function" → "Compiler API mode":
  *   - Uses ts.createSourceFile (syntax-only, no type checker)
  *   - Per-file caps: 50k AST nodes, 1 MB file size, 20 parse diagnostics
  *   - Files exceeding any cap emit { error: "<reason>" } and continue
  *   - One file's parse crash never aborts the whole bootstrap
  *
- * Per ARCHITECTURE.md "Performance characteristics" → "ts_dump.mjs batching":
+ * Per docs/architecture.md "Performance characteristics" → "ts_dump.mjs batching":
  *   - Long-lived process; TS Compiler loaded once at startup
  *   - Read paths from stdin, emit NDJSON to stdout
  *   - Worker pool managed by Python parent (extractors/typescript.py)

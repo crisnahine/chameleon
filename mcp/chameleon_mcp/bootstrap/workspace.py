@@ -1,7 +1,7 @@
 """Workspace detection for monorepos.
 
 Detects pnpm/yarn/lerna/turbo/nx workspaces and proposes per-workspace
-bootstrap. Per ARCHITECTURE.md "Bootstrap interview flow" step (b)
+bootstrap. Per docs/architecture.md "Bootstrap interview flow" step (b)
 + Round 2 bootstrap edge case adversary recommendations.
 
 Phase 2C.5 expands workspace_paths population beyond `package.json`

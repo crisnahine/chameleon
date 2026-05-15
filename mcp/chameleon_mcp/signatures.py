@@ -1,6 +1,6 @@
 """Cluster signature function — `f: file → ClusterKey`.
 
-Per ARCHITECTURE.md "Cluster signature function":
+Per docs/architecture.md "Cluster signature function":
 
   sig(file) = (
     path_pattern_bucket,         # /api/**/*.ts → "api-route"
@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from chameleon_mcp._thresholds import threshold_int
 
 # Bumped when the signature function's behavior changes.
-# Forces drift.db cache invalidation per ARCHITECTURE.md "Incremental algorithm".
+# Forces drift.db cache invalidation per docs/architecture.md "Incremental algorithm".
 SIGNATURE_FUNCTION_VERSION = 1
 
 

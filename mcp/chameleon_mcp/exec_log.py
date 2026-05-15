@@ -1,6 +1,6 @@
 """HMAC-signed exec log for the posttool-recorder hook.
 
-Per ARCHITECTURE.md "Hook stack" PostToolUse Bash + "Security mitigations" #5
+Per docs/architecture.md "Hook stack" PostToolUse Bash + "Security mitigations" #5
 (per-repo HMAC log directory, mode 0700, owner-checked).
 
 Design notes:
@@ -189,7 +189,7 @@ def verify_exec_log_line(line: str) -> bool:
 def gc_old_logs(*, max_age_seconds: int = 30 * 86_400) -> int:
     """Purge log files older than max_age_seconds. Returns count of files removed.
 
-    Per ARCHITECTURE.md GC policy: 30-day record purge, weekly cadence.
+    Per docs/architecture.md GC policy: 30-day record purge, weekly cadence.
     """
     tmpdir = Path(os.environ.get("TMPDIR") or "/tmp")
     base = tmpdir / ".chameleon_exec_log"

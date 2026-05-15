@@ -238,7 +238,7 @@ if len(renames_list) >= 2:
             post_canonicals[new_name] == pre_canonicals[old_name],
         )
 
-    # Step 7: hash semantics. Per ARCHITECTURE.md §"Material-change predicate"
+    # Step 7: hash semantics. Per docs/architecture.md §"Material-change predicate"
     # AND the implementation of `profile.trust.hash_profile`, the trust hash
     # covers ONLY `profile.json + idioms.md`. archetypes.json + canonicals.json
     # are key-renamed but their content (and profile.json) is byte-identical,

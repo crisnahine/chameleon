@@ -4,7 +4,7 @@ Spawns `scripts/prism_dump.rb` as a long-lived Ruby subprocess, sends file
 paths via stdin (one per line), reads NDJSON ParsedFile records via
 subprocess.communicate() (avoids the pipe-deadlock bug from Phase 5).
 
-Per ARCHITECTURE.md "TypeScript-first extractor" → "v1.5 expansion"
+Per docs/architecture.md "TypeScript-first extractor" → "v1.5 expansion"
 + ADR-0003.
 """
 
