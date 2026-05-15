@@ -11,6 +11,8 @@
 #     binary. Mirrors the local "cd mcp && PYTHONPATH=.:../tests" idiom.
 #   - lint:        ruff check on the MCP package + tests.
 #   - version-sync: bash scripts/bump-version.sh --check (fails CI on drift).
+#   - no-personal-paths: fails CI if a tracked file hardcodes a developer
+#                  home path (/Users/<name> or /home/<name>).
 #   - hook-smoke:  one-shot invocation of hooks/session-start with synthetic
 #                  stdin, asserting the hook emits valid JSON.
 
@@ -168,6 +170,18 @@ jobs:
 
       - name: Verify all 7 manifests agree on the version
         run: bash scripts/bump-version.sh --check
+
+  no-personal-paths:
+    name: no-personal-paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Fail on hardcoded developer home paths
+        run: bash scripts/check-no-personal-paths.sh
 
   hook-smoke:
     name: hook-smoke (session-start)

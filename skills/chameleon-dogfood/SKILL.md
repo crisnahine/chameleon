@@ -16,7 +16,6 @@ By default the harness runs only `free` + `cheap` scenarios -- no real Claude ca
 From the chameleon repo root:
 
 ```bash
-cd /Users/crisn/Documents/Projects/chameleon
 mcp/.venv/bin/python -m tests.dogfood.runner
 ```
 

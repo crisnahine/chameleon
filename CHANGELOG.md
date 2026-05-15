@@ -128,7 +128,7 @@ Algorithm in new helper `_pick_ancestor_or_freshest`:
 
 The `repo_root_hint` contract from v0.5.1 stays unchanged: explicit hints win when they match a row, fall through to the new ancestor-aware path when they miss.
 
-**Verify-after.** `_resolve_repo_root_by_id(plane_repo_id)` now returns `/Users/crisn/.../plane` (root), and `get_canonical_excerpt(repo_id, "action")` returns 793 bytes of content. Before the fix, the same calls returned `/Users/crisn/.../plane/packages/utils` and `{"status": "failed", "error": "archetype not found"}` respectively.
+**Verify-after.** `_resolve_repo_root_by_id(plane_repo_id)` now returns `<repo>/plane` (root), and `get_canonical_excerpt(repo_id, "action")` returns 793 bytes of content. Before the fix, the same calls returned `<repo>/plane/packages/utils` and `{"status": "failed", "error": "archetype not found"}` respectively.
 
 ### Tests
 
@@ -541,7 +541,7 @@ Closes out three Phase 7 items I forgot to schedule in the v0.3.0 plan, plus thr
 
 ### Test path portability fix (CI prerequisite)
 
-- 16 test files previously hardcoded `Path("/Users/crisn/Documents/Projects/chameleon")` as `PLUGIN_ROOT`. Replaced with `Path(__file__).resolve().parent.parent` so the suites run on GitHub-hosted runners (and any developer machine) without modification.
+- 16 test files previously hardcoded an absolute developer path as `PLUGIN_ROOT`. Replaced with `Path(__file__).resolve().parent.parent` so the suites run on GitHub-hosted runners (and any developer machine) without modification.
 
 ### Tests
 

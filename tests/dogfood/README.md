@@ -6,8 +6,9 @@ Slash command: `/chameleon-dogfood` (`skills/chameleon-dogfood/SKILL.md`).
 
 ## Quick start
 
+From the chameleon repo root:
+
 ```bash
-cd /Users/crisn/Documents/Projects/chameleon
 mcp/.venv/bin/python -m tests.dogfood.runner
 ```
 

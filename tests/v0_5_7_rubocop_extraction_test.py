@@ -10,6 +10,7 @@ Fix: gate the walk-up on "no own JS signals AND no own Ruby signals".
 """
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -76,8 +77,11 @@ Style/Documentation:
 # Case 2: Real ef-api fixture (uses inherit_from in its .rubocop.yml)
 # ---------------------------------------------------------------------------
 section("ef-api real fixture")
-ef = Path("/Users/crisn/Documents/Projects/Testing Apps/ef-api")
-if ef.is_dir() and (ef / ".rubocop.yml").is_file():
+# Set CHAMELEON_TEST_APPS_DIR to a directory containing an `ef-api`
+# checkout to exercise this; skips gracefully when unset or absent.
+_apps_dir = os.environ.get("CHAMELEON_TEST_APPS_DIR")
+ef = Path(_apps_dir) / "ef-api" if _apps_dir else None
+if ef and ef.is_dir() and (ef / ".rubocop.yml").is_file():
     shutil.rmtree(ef / ".chameleon", ignore_errors=True)
     resp = bootstrap_repo(str(ef))
     t("ef-api bootstrap success", resp["data"]["status"] == "success",

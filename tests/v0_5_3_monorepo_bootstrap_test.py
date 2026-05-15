@@ -506,15 +506,18 @@ shutil.rmtree(bug_e_none, ignore_errors=True)
 section("Bug E — real gitlabhq path (legacy assets/javascripts layout)")
 
 # Verify-after on the real repo: confirms the broadened predicate fires
-# on the legacy Rails 5 layout. Skips gracefully if the path is absent.
-gitlabhq = Path("/Users/crisn/Documents/Projects/Testing Apps/gitlabhq")
-if gitlabhq.is_dir():
+# on the legacy Rails 5 layout. Set CHAMELEON_TEST_APPS_DIR to a directory
+# containing a `gitlabhq` checkout to exercise this; skips gracefully when
+# unset or absent.
+_apps_dir = os.environ.get("CHAMELEON_TEST_APPS_DIR")
+gitlabhq = Path(_apps_dir) / "gitlabhq" if _apps_dir else None
+if gitlabhq and gitlabhq.is_dir():
     t(
         "real gitlabhq triggers _is_rails_with_frontend",
         _is_rails_with_frontend(gitlabhq) is True,
     )
 else:
-    print("  [SKIP] gitlabhq path not available; skipping real-repo check")
+    print("  [SKIP] CHAMELEON_TEST_APPS_DIR/gitlabhq not available; skipping real-repo check")
 
 
 # ---------------------------------------------------------------------------

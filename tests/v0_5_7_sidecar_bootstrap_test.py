@@ -7,6 +7,7 @@ RubyExtractor → glob "**/*.rb" → 0 files matched → failed_unsupported_lang
 Fix: count source files inside the sidecar and pick the dominant extractor.
 """
 
+import os
 import shutil
 import sys
 import tempfile
@@ -78,8 +79,11 @@ with tempfile.TemporaryDirectory() as tmp:
 # Case 3: Real forem fixture
 # ---------------------------------------------------------------------------
 section("Real forem fixture")
-forem_js = Path("/Users/crisn/Documents/Projects/Testing Apps/forem/app/javascript")
-if forem_js.is_dir():
+# Set CHAMELEON_TEST_APPS_DIR to a directory containing a `forem`
+# checkout to exercise this; skips gracefully when unset or absent.
+_apps_dir = os.environ.get("CHAMELEON_TEST_APPS_DIR")
+forem_js = Path(_apps_dir) / "forem" / "app" / "javascript" if _apps_dir else None
+if forem_js and forem_js.is_dir():
     shutil.rmtree(forem_js / ".chameleon", ignore_errors=True)
     resp = bootstrap_repo(str(forem_js))
     t("forem/app/javascript bootstrap succeeds", resp["data"]["status"] == "success",
