@@ -15,15 +15,21 @@ No lock: daemon.serve_forever handles one connection at a time
 (daemon.py:386-418). If the daemon ever becomes multi-threaded, wrap
 get_or_build in a threading.Lock.
 
-Accepted TOCTOU window: get_pattern_context calls safe_open() (which
+Bounded TOCTOU window: get_pattern_context calls safe_open() (which
 lstat-refuses symlinks, size-caps, and repo-boundary-checks at check
 time and returns the resolved real path), then stat()s and later
-read_text()s that resolved path inside the cache builder. The
-validate->read window is wider than a single safe_read_text(), but the
-witness path comes from the committed, trust-gated profile, the output
-is sanitized and advisory, and any race fails open to an empty excerpt
--- acceptable for this cache. If the daemon ever serves untrusted
-profile data, re-stat-and-compare inside the builder before read_text.
+read_text()s that resolved path inside the cache builder. The builder
+re-stat()s after the read and raises OSError if mtime advanced --
+caught by get_pattern_context's existing OSError handler, which fails
+open to an empty canonical_excerpt and stores nothing. A normal
+writer (editor save, refresh write) that advances mtime is detected.
+The residual window is an adversarial writer that preserves mtime
+across the swap (e.g. os.utime back to the prior value) -- bounded
+by the witness path coming from a committed, trust-gated profile,
+sanitization running on every cache miss, and the advisory nature of
+the output. Fully closing that residual would require an
+O_NOFOLLOW-opened fd whose fstat is trusted instead of a path-based
+stat; that is out of scope for this cache.
 
 CONTEXT_TRANSFORM_VERSION: bump on ANY change to the value-shaping
 transform applied between read and cache store — i.e. any change to

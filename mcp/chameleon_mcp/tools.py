@@ -896,6 +896,21 @@ def get_pattern_context(file_path: str) -> dict:
                         raw = safe_path.read_text(
                             encoding="utf-8", errors="replace"
                         )
+                        # R2-001/R2-002 TOCTOU mitigation: a writer can
+                        # mutate the witness between the stat that built
+                        # the cache key and this read. Re-stat after the
+                        # read; if mtime advanced, raise OSError so the
+                        # outer except yields an empty canonical_data
+                        # (the documented fail-open). Catches realistic
+                        # mtime-advancing writers; an adversary that
+                        # preserves mtime across the swap can still
+                        # defeat this — fully closing that requires
+                        # fstat-from-fd in safe_open, out of scope here.
+                        if _os.stat(safe_path).st_mtime_ns != mtime_ns:
+                            raise OSError(
+                                "witness mtime advanced mid-read; "
+                                "failing open"
+                            )
                         # Changing this truncation rule requires bumping
                         # _excerpt_cache.CONTEXT_TRANSFORM_VERSION.
                         is_trunc = len(raw) > 3200

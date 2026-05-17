@@ -311,6 +311,79 @@ class SlopInputTest(unittest.TestCase):
         )
 
 
+class ExcerptCacheRaceMitigationTest(unittest.TestCase):
+    """Pin the post-read re-stat mitigation: if a writer races and
+    advances the witness mtime between safe_open and read_text, the
+    cache MUST fail open to empty canonical_data, never store a
+    key/content-mismatched entry."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(
+            self.repo, "src/components/Widget.tsx",
+            "export const Widget = () => <div>ORIGINAL</div>;\n",
+        )
+        from chameleon_mcp import _excerpt_cache
+        _excerpt_cache.clear()
+        self.target = self.repo / "src" / "components" / "Other.tsx"
+        self.target.write_text("export const Other = () => null;\n")
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_mtime_advance_mid_read_fails_open_not_poison(self):
+        # Inject a writer race: between the stat that builds the cache
+        # key and the read_text inside _build, advance the witness's
+        # mtime to a distinct value. The mitigation must detect the
+        # advance and raise OSError so nothing is cached.
+        import pathlib
+        from chameleon_mcp import _excerpt_cache
+        from chameleon_mcp.tools import get_pattern_context
+
+        witness = (self.repo / "src" / "components" / "Widget.tsx").resolve()
+        real_read = pathlib.Path.read_text
+
+        def racey_read(self_, *a, **kw):
+            # Bump the on-disk mtime BEFORE the read returns, so the
+            # post-read re-stat sees a different mtime.
+            try:
+                if self_.resolve() == witness:
+                    os.utime(witness, ns=(9_000_000_000, 9_000_000_000))
+            except Exception:
+                pass
+            return real_read(self_, *a, **kw)
+
+        pathlib.Path.read_text = racey_read
+        try:
+            d = get_pattern_context(str(self.target))["data"]
+        finally:
+            pathlib.Path.read_text = real_read
+
+        # Mitigation: fail open to empty canonical_data, NOT a poisoned
+        # cache entry.
+        self.assertEqual(d["canonical_excerpt"]["content"], "")
+        self.assertIsNone(d["canonical_excerpt"]["witness_path"])
+        # No stale entry stored.
+        self.assertEqual(len(_excerpt_cache._CACHE), 0)
+
+    def test_normal_no_race_still_caches(self):
+        # Regression guard: in the no-race case, the cache still
+        # populates and returns the correct excerpt.
+        from chameleon_mcp import _excerpt_cache
+        from chameleon_mcp.tools import get_pattern_context
+        d = get_pattern_context(str(self.target))["data"]
+        self.assertIn("ORIGINAL", d["canonical_excerpt"]["content"])
+        self.assertEqual(len(_excerpt_cache._CACHE), 1)
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])
