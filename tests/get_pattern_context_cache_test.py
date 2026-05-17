@@ -169,6 +169,87 @@ class ExcerptCacheModuleTest(unittest.TestCase):
         self.assertEqual(n, [1])
 
 
+class ExcerptCacheIntegrationTest(unittest.TestCase):
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(
+            self.repo, "src/components/Widget.tsx",
+            "export const Widget = () => <div>ORIGINAL</div>;\n",
+        )
+        from chameleon_mcp import _excerpt_cache
+        _excerpt_cache.clear()
+        self.target = self.repo / "src" / "components" / "Other.tsx"
+        self.target.write_text("export const Other = () => null;\n")
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_repeated_call_hits_cache(self):
+        from chameleon_mcp import _excerpt_cache
+        from chameleon_mcp.tools import get_pattern_context
+        get_pattern_context(str(self.target))
+        sentinel = {"built": 0}
+        real = _excerpt_cache.get_or_build
+
+        def spy(key, build):
+            def wrapped():
+                sentinel["built"] += 1
+                return build()
+            return real(key, wrapped)
+
+        _excerpt_cache.get_or_build = spy
+        try:
+            d = get_pattern_context(str(self.target))["data"]
+        finally:
+            _excerpt_cache.get_or_build = real
+        self.assertIn("ORIGINAL", d["canonical_excerpt"]["content"])
+        self.assertEqual(sentinel["built"], 0, "witness re-read despite warm cache")
+
+    def test_in_place_witness_edit_busts_cache(self):
+        # The bug the original mtime_token design would have shipped.
+        from chameleon_mcp.tools import get_pattern_context
+        w = self.repo / "src" / "components" / "Widget.tsx"
+        d1 = get_pattern_context(str(self.target))["data"]
+        self.assertIn("ORIGINAL", d1["canonical_excerpt"]["content"])
+        w.write_text("export const Widget = () => <div>EDITED</div>;\n")
+        os.utime(w, ns=(2_000_000_000, 2_000_000_000))  # distinct mtime
+        d2 = get_pattern_context(str(self.target))["data"]
+        self.assertIn("EDITED", d2["canonical_excerpt"]["content"])
+        self.assertNotIn("ORIGINAL", d2["canonical_excerpt"]["content"])
+
+    def test_transform_version_bump_busts_cache(self):
+        from chameleon_mcp import _excerpt_cache
+        from chameleon_mcp.tools import get_pattern_context
+        get_pattern_context(str(self.target))
+        _excerpt_cache.CONTEXT_TRANSFORM_VERSION += 1
+        try:
+            rebuilt = []
+            real = _excerpt_cache.get_or_build
+
+            def spy(key, build):
+                def wrapped():
+                    rebuilt.append(1)
+                    return build()
+                return real(key, wrapped)
+
+            _excerpt_cache.get_or_build = spy
+            try:
+                get_pattern_context(str(self.target))
+            finally:
+                _excerpt_cache.get_or_build = real
+            self.assertEqual(rebuilt, [1], "version bump must force rebuild")
+        finally:
+            _excerpt_cache.CONTEXT_TRANSFORM_VERSION -= 1
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])

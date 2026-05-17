@@ -862,16 +862,44 @@ def get_pattern_context(file_path: str) -> dict:
             witness_rel = first.get("witness", {}).get("path")
             if witness_rel:
                 try:
-                    from chameleon_mcp.safe_open import UnsafeFileError, safe_read_text
-                    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+                    import os as _os
 
-                    content = safe_read_text(repo_root, witness_rel, max_size_bytes=200_000)
-                    # Truncate to ~800 tokens (~3200 chars approx)
-                    truncated = len(content) > 3200
-                    if truncated:
-                        content = content[:3200] + "\n... [truncated]"
-                    # Tag-boundary sanitization (Round 4/5 security mitigation)
-                    content = sanitize_for_chameleon_context(content)
+                    from chameleon_mcp import _excerpt_cache
+                    from chameleon_mcp.safe_open import (
+                        UnsafeFileError,
+                        safe_open,
+                    )
+                    from chameleon_mcp.sanitization import (
+                        sanitize_for_chameleon_context,
+                    )
+
+                    safe_path = safe_open(
+                        repo_root, witness_rel, max_size_bytes=200_000
+                    )
+                    mtime_ns = _os.stat(safe_path).st_mtime_ns
+                    key = (
+                        str(safe_path),
+                        mtime_ns,
+                        _excerpt_cache.CONTEXT_TRANSFORM_VERSION,
+                    )
+
+                    def _build() -> tuple[str, bool]:
+                        raw = safe_path.read_text(
+                            encoding="utf-8", errors="replace"
+                        )
+                        # Changing this truncation rule requires bumping
+                        # _excerpt_cache.CONTEXT_TRANSFORM_VERSION.
+                        is_trunc = len(raw) > 3200
+                        body = (
+                            raw[:3200] + "\n... [truncated]"
+                            if is_trunc
+                            else raw
+                        )
+                        return sanitize_for_chameleon_context(body), is_trunc
+
+                    content, truncated = _excerpt_cache.get_or_build(
+                        key, _build
+                    )
                     canonical_data = {
                         "content": content,
                         "witness_path": witness_rel,
