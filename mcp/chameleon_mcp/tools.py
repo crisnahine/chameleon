@@ -477,6 +477,26 @@ def _prefix_overlap_fallback(
     return primary, alternatives
 
 
+def _content_signal_for_path(p: Path) -> str:
+    """Read up to 200 bytes of `p` and classify the content signal.
+
+    Extracted from get_archetype (v0.5.2 Bug 3 logic) so the public
+    get_archetype and get_pattern_context's inlined archetype resolution
+    share one implementation. Returns one of
+    {"none","use_client","use_server","shebang","ts_pragma"}; never None.
+    """
+    from chameleon_mcp.signatures import content_signal_match_for
+
+    file_head: str | None = None
+    if p.is_file():
+        try:
+            file_head = p.read_bytes()[:200].decode("utf-8", errors="replace")
+        except OSError:
+            file_head = None
+    value = content_signal_match_for(file_head) if file_head is not None else "none"
+    return value if value is not None else "none"
+
+
 def get_archetype(repo: str, file_path: str) -> dict:
     """Look up the archetype a given file matches.
 
@@ -528,33 +548,7 @@ def get_archetype(repo: str, file_path: str) -> dict:
 
     p = Path(file_path).expanduser()
 
-    # v0.5.2 (Bug 3): read the first 200 bytes once, up-front, so EVERY
-    # return branch can populate `content_signal_match` consistently.
-    # When the file is unreadable / missing the field stays None to
-    # signal "we didn't look". The full-content read further down (used
-    # for AST scoring) is still gated on `p.is_file()` and capped at
-    # 100KB — the head-only read here is cheap, bounded by 200 bytes,
-    # and runs before any repo / profile validation so the directive is
-    # surfaced even when the repo isn't bootstrapped yet (the lint
-    # engine and using-chameleon skill both want the signal regardless
-    # of profile state).
-    file_head: str | None = None
-    if p.is_file():
-        try:
-            file_head = p.read_bytes()[:200].decode("utf-8", errors="replace")
-        except OSError:
-            file_head = None
-
-    # BUG-NEW-008 (v0.5.7): content_signal_match always returns a string
-    # from {"strong", "weak", "none"}. Pre-fix this could be None when the
-    # file couldn't be read, contradicting the documented schema. The
-    # downstream get_pattern_context envelope had a mix of "none" and null
-    # across hit vs miss paths.
-    content_signal_value: str = (
-        content_signal_match_for(file_head) if file_head is not None else "none"
-    )
-    if content_signal_value is None:
-        content_signal_value = "none"
+    content_signal_value: str = _content_signal_for_path(p)
 
     repo_root = find_repo_root(p)
     if repo_root is None or _compute_repo_id(repo_root) != repo:
