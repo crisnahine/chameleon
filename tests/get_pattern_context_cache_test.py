@@ -277,6 +277,40 @@ class ExcerptCacheIntegrationTest(unittest.TestCase):
             _excerpt_cache.CONTEXT_TRANSFORM_VERSION -= 1
 
 
+class SlopInputTest(unittest.TestCase):
+    """get_pattern_context must return a graceful no_repo envelope for
+    slop inputs (None, null-byte string) — matching the documented
+    fail-open contract used for paths outside any repo. Surfaced by
+    Round-1 real-world testing on ef-api."""
+
+    def test_none_input_returns_no_repo_envelope(self):
+        from chameleon_mcp.tools import get_pattern_context
+        r = get_pattern_context(None)
+        self.assertIn("data", r)
+        self.assertEqual(r["data"]["repo"]["profile_status"], "no_repo")
+        self.assertIsNone(r["data"]["repo"]["id"])
+
+    def test_null_byte_input_returns_no_repo_envelope(self):
+        from chameleon_mcp.tools import get_pattern_context
+        r = get_pattern_context("/some/path/with\x00null.tsx")
+        self.assertIn("data", r)
+        self.assertEqual(r["data"]["repo"]["profile_status"], "no_repo")
+        self.assertIsNone(r["data"]["repo"]["id"])
+
+    def test_empty_string_still_returns_envelope(self):
+        # Regression guard: the existing "" handling must not change.
+        from chameleon_mcp.tools import get_pattern_context
+        r = get_pattern_context("")
+        self.assertIn("data", r)
+        # The existing behavior returns no_profile (cwd may resolve to a
+        # repo without a chameleon profile) OR no_repo. Either is the
+        # documented graceful envelope — both must hold.
+        self.assertIn(
+            r["data"]["repo"]["profile_status"],
+            {"no_repo", "no_profile"},
+        )
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])
