@@ -10,6 +10,7 @@ All responses use the API versioning envelope per Round 5 API Designer:
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -222,6 +223,7 @@ def _git_remote_url(repo_root: Path) -> str | None:
     return url or None
 
 
+@functools.lru_cache(maxsize=64)
 def _compute_repo_id(repo_root: Path) -> str:
     """Canonical repo_id.
 

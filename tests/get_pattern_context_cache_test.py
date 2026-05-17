@@ -384,6 +384,90 @@ class ExcerptCacheRaceMitigationTest(unittest.TestCase):
         self.assertEqual(len(_excerpt_cache._CACHE), 1)
 
 
+class RepoIdMemoTest(unittest.TestCase):
+    """Pin: _compute_repo_id is memoized so a single git config
+    subprocess runs per repo_root per process lifetime. Surfaced by
+    Lens D performance profiling — the subprocess was ~70% of warm
+    get_pattern_context latency."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo_a = Path(tempfile.mkdtemp())
+        self.repo_b = Path(tempfile.mkdtemp())
+        for r in (self.repo_a, self.repo_b):
+            (r / "package.json").write_text("{}")
+        from chameleon_mcp.tools import _compute_repo_id
+        _compute_repo_id.cache_clear()
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        from chameleon_mcp.tools import _compute_repo_id
+        _compute_repo_id.cache_clear()
+
+    def test_same_repo_root_is_memoized(self):
+        # Count actual _git_remote_url calls — must run only once across
+        # 20 _compute_repo_id calls on the same repo_root.
+        from chameleon_mcp import tools as t
+        real = t._git_remote_url
+        calls = []
+
+        def counter(r):
+            calls.append(str(r))
+            return real(r)
+
+        t._git_remote_url = counter
+        try:
+            t._compute_repo_id.cache_clear()
+            ids = [t._compute_repo_id(self.repo_a) for _ in range(20)]
+        finally:
+            t._git_remote_url = real
+        self.assertEqual(len(set(ids)), 1, "all 20 calls must return the same id")
+        self.assertEqual(len(calls), 1, "_git_remote_url must run only once")
+
+    def test_distinct_repo_roots_get_distinct_ids(self):
+        from chameleon_mcp.tools import _compute_repo_id
+        _compute_repo_id.cache_clear()
+        ida = _compute_repo_id(self.repo_a)
+        idb = _compute_repo_id(self.repo_b)
+        self.assertNotEqual(ida, idb)
+
+    def test_cache_clear_forces_recompute(self):
+        from chameleon_mcp import tools as t
+        real = t._git_remote_url
+        calls = []
+
+        def counter(r):
+            calls.append(1)
+            return real(r)
+
+        t._git_remote_url = counter
+        try:
+            t._compute_repo_id.cache_clear()
+            t._compute_repo_id(self.repo_a)  # 1
+            t._compute_repo_id(self.repo_a)  # cached
+            t._compute_repo_id.cache_clear()
+            t._compute_repo_id(self.repo_a)  # 2
+        finally:
+            t._git_remote_url = real
+        self.assertEqual(len(calls), 2)
+
+    def test_memoized_value_matches_uncached(self):
+        from chameleon_mcp.tools import _compute_repo_id
+        _compute_repo_id.cache_clear()
+        first = _compute_repo_id(self.repo_a)
+        # Force recompute and verify identical
+        _compute_repo_id.cache_clear()
+        second = _compute_repo_id(self.repo_a)
+        self.assertEqual(first, second)
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])
