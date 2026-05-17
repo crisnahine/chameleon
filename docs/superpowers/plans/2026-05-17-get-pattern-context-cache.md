@@ -290,13 +290,12 @@ In `tools.py`, define a new private function. Its body is the **scoring tail of 
 def _get_archetype_with_loaded(
     p: Path,
     repo_root: Path,
-    loaded: "LoadedProfile",
+    loaded: LoadedProfile,
     content_signal_value: str,
 ) -> dict:
     """Archetype scoring tail shared by get_archetype and
     get_pattern_context. Assumes repo_root + a successfully loaded
     profile; does no find_repo_root / load_profile_dir of its own.
-    Body is the pre-refactor get_archetype scoring logic, unchanged.
     """
     from chameleon_mcp.lint_engine import (
         canonical_confidence,
@@ -305,12 +304,27 @@ def _get_archetype_with_loaded(
     )
     from chameleon_mcp.signatures import path_pattern_bucket_for
 
-    # >>> begin verbatim move of pre-refactor tools.py:579-758 <<<
+    # >>> begin verbatim move of the pre-refactor get_archetype scoring tail <<<
     # (the block starting "# Compute the file's bucket via the same
     #  function clustering used." through the final `return _envelope({...})`)
 ```
 
-Cut that exact block (`# Compute the file's bucket ...` through the final `return _envelope({...})`) from `get_archetype` and paste it unchanged into the helper body after the imports. `LoadedProfile` is already importable in this module (used by `get_archetype` via `from chameleon_mcp.profile.loader import LoadedProfile, ...`); hoist that import to module top if not already there, or keep the string annotation as shown.
+Cut that exact block (`# Compute the file's bucket ...` through the final `return _envelope({...})`) from `get_archetype` and paste it unchanged into the helper body after the imports.
+
+**Annotation resolution (do NOT use a quoted string or a body-local import here).** The bare `loaded: LoadedProfile` parameter annotation is evaluated in *module* scope, not the helper's body scope, so a function-local `from chameleon_mcp.profile.loader import LoadedProfile` does NOT satisfy it (ruff `F821`), and `from __future__ import annotations` (already at the top of `tools.py`) makes such a body-local import `F401`-dead. Add a module-level type-only import at the top of `tools.py` instead:
+
+```python
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type-only: keeps the MCP cold-start budget intact (the real import
+    # stays function-local in get_archetype) while letting the bare
+    # `loaded: LoadedProfile` signature annotation resolve under
+    # `from __future__ import annotations`.
+    from chameleon_mcp.profile.loader import LoadedProfile
+```
+
+This costs zero runtime import (preserving the module's deliberate function-local-import / cold-start convention).
 
 - [ ] **Step 4: Rewrite public `get_archetype` to delegate**
 
@@ -340,7 +354,7 @@ In `get_archetype`, everything from `repo_root = find_repo_root(p)` down to the 
     return _get_archetype_with_loaded(p, repo_root, loaded, content_signal_value)
 ```
 
-Keep `get_archetype`'s remaining top imports it still uses (`find_repo_root`, `load_profile_dir`, `LoadedProfile`). Remove now-unused names from its import block (`canonical_confidence`, `detect_language`, `extract_dimensions`, `path_pattern_bucket_for`, `content_signal_match_for`) — they moved into the helpers.
+In `get_archetype`'s function-local import block, keep only `from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir`. Remove now-unused names: `canonical_confidence`, `detect_language`, `extract_dimensions`, `path_pattern_bucket_for`, `content_signal_match_for` (moved into the helpers), AND `LoadedProfile` (it now resolves via the module-level `TYPE_CHECKING` block from Step 3 — leaving it in the function-local import is `F401`-dead since `from __future__ import annotations` stringifies `get_archetype`'s own `loaded: LoadedProfile` body annotation).
 
 - [ ] **Step 5: Rewire `get_pattern_context` — reuse `loaded`, drop the probe**
 
