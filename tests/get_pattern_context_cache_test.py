@@ -70,6 +70,59 @@ class DedupRefactorTest(unittest.TestCase):
         self.assertEqual(_content_signal_for_path(missing), "none")
 
 
+class ArchetypeReuseTest(unittest.TestCase):
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(
+            self.repo, "src/components/Widget.tsx",
+            "export const Widget = () => <div>hi</div>;\n",
+        )
+        from chameleon_mcp import _excerpt_cache
+        _excerpt_cache.clear()
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_public_get_archetype_contract_unchanged(self):
+        from chameleon_mcp.tools import _compute_repo_id, get_archetype
+        target = self.repo / "src" / "components" / "Other.tsx"
+        target.write_text("export const Other = () => null;\n")
+        repo_id = _compute_repo_id(self.repo.resolve())
+        r = get_archetype(repo_id, str(target))["data"]
+        self.assertEqual(
+            set(r.keys()),
+            {"archetype", "alternatives", "content_signal_match", "confidence_band"},
+        )
+        self.assertEqual(r["archetype"], "widget")
+
+    def test_get_pattern_context_resolves_archetype_and_excerpt(self):
+        from chameleon_mcp.tools import get_pattern_context
+        target = self.repo / "src" / "components" / "Other.tsx"
+        target.write_text("export const Other = () => null;\n")
+        d = get_pattern_context(str(target))["data"]
+        self.assertEqual(d["archetype"]["archetype"], "widget")
+        self.assertIn("hi", d["canonical_excerpt"]["content"])
+        self.assertEqual(d["repo"]["trust_state"], "untrusted")
+
+    def test_corrupt_profile_json_still_profile_corrupted(self):
+        # Probe deletion regression guard: a corrupt profile.json must still
+        # yield profile_corrupted via the load_profile_dir except handler.
+        (self.repo / ".chameleon" / "profile.json").write_text("{ not json")
+        from chameleon_mcp.tools import get_pattern_context
+        target = self.repo / "src" / "components" / "Other.tsx"
+        target.write_text("x\n")
+        d = get_pattern_context(str(target))["data"]
+        self.assertEqual(d["repo"]["profile_status"], "profile_corrupted")
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])

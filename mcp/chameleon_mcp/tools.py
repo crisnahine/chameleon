@@ -18,6 +18,14 @@ import secrets
 import subprocess
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type-only: keeps the MCP cold-start budget intact (the real import
+    # stays function-local in get_archetype) while letting the bare
+    # `loaded: LoadedProfile` signature annotation resolve under
+    # `from __future__ import annotations`.
+    from chameleon_mcp.profile.loader import LoadedProfile
 
 
 def _envelope(data: dict, truncated: bool = False, next_cursor: str | None = None) -> dict:
@@ -535,16 +543,7 @@ def get_archetype(repo: str, file_path: str) -> dict:
     also check the extension-aware variant as a secondary key so
     profiles written by v0.5.2 still hit the exact-match path.
     """
-    from chameleon_mcp.lint_engine import (
-        canonical_confidence,
-        detect_language,
-        extract_dimensions,
-    )
-    from chameleon_mcp.profile.loader import LoadedProfile, find_repo_root, load_profile_dir
-    from chameleon_mcp.signatures import (
-        content_signal_match_for,
-        path_pattern_bucket_for,
-    )
+    from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir
 
     p = Path(file_path).expanduser()
 
@@ -569,6 +568,26 @@ def get_archetype(repo: str, file_path: str) -> dict:
             "content_signal_match": content_signal_value,
             "confidence_band": "low",
         })
+
+    return _get_archetype_with_loaded(p, repo_root, loaded, content_signal_value)
+
+
+def _get_archetype_with_loaded(
+    p: Path,
+    repo_root: Path,
+    loaded: LoadedProfile,
+    content_signal_value: str,
+) -> dict:
+    """Archetype scoring tail shared by get_archetype and
+    get_pattern_context. Assumes repo_root + a successfully loaded
+    profile; does no find_repo_root / load_profile_dir of its own.
+    """
+    from chameleon_mcp.lint_engine import (
+        canonical_confidence,
+        detect_language,
+        extract_dimensions,
+    )
+    from chameleon_mcp.signatures import path_pattern_bucket_for
 
     # Compute the file's bucket via the same function clustering used.
     # Match archetypes by EXACT bucket equality (not substring).
@@ -812,18 +831,6 @@ def get_pattern_context(file_path: str) -> dict:
             _empty_pattern_envelope(repo_id, "no_profile", "n/a")
         )
 
-    # BUG-021/022: detect corrupted profile.json here too so the response
-    # carries an explicit status and the consistent envelope shape.
-    try:
-        import json as _json
-
-        with profile_file.open("r", encoding="utf-8") as fh:
-            _json.load(fh)
-    except (OSError, ValueError):
-        return _envelope(
-            _empty_pattern_envelope(repo_id, "profile_corrupted", "n/a")
-        )
-
     from chameleon_mcp.profile.trust import is_material_change
     trust = trust_state_for(repo_id)
     if trust is None:
@@ -841,7 +848,10 @@ def get_pattern_context(file_path: str) -> dict:
         )
 
     # Reuse get_archetype logic
-    arch_response = get_archetype(repo_id, file_path)
+    content_signal_value = _content_signal_for_path(p)
+    arch_response = _get_archetype_with_loaded(
+        p, repo_root, loaded, content_signal_value
+    )
     arch_data = arch_response["data"]
 
     canonical_data = {"content": "", "witness_path": None, "truncated": False, "sha_hint": None}
