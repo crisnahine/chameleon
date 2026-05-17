@@ -878,40 +878,71 @@ def get_pattern_context(file_path: str) -> dict:
                     from chameleon_mcp import _excerpt_cache
                     from chameleon_mcp.safe_open import (
                         UnsafeFileError,
-                        safe_open,
+                        safe_open_fd,
                     )
                     from chameleon_mcp.sanitization import (
                         sanitize_for_chameleon_context,
                     )
 
-                    safe_path = safe_open(
+                    fd, st, safe_path = safe_open_fd(
                         repo_root, witness_rel, max_size_bytes=200_000
                     )
-                    mtime_ns = _os.stat(safe_path).st_mtime_ns
+                    # The 7-tuple key. Including st_dev + st_ino pins
+                    # the inode (a dirent swap to a different file
+                    # produces a different ino). st_size and st_ctime_ns
+                    # close the mtime-preservation residual: an
+                    # adversary that preserves st_mtime_ns must also
+                    # preserve size and ctime, which content
+                    # modification advances. The fd-based read below
+                    # reads from the same inode the fstat saw, so a
+                    # mid-read dirent swap is irrelevant.
                     key = (
                         str(safe_path),
-                        mtime_ns,
+                        st.st_dev,
+                        st.st_ino,
+                        st.st_size,
+                        st.st_mtime_ns,
+                        st.st_ctime_ns,
                         _excerpt_cache.CONTEXT_TRANSFORM_VERSION,
                     )
 
                     def _build() -> tuple[str, bool]:
-                        raw = safe_path.read_text(
-                            encoding="utf-8", errors="replace"
+                        # Read all bytes from the fd (NOT a path-based
+                        # read), so a mid-read dirent swap reads from
+                        # the original inode.
+                        chunks = []
+                        try:
+                            while True:
+                                buf = _os.read(fd, 65_536)
+                                if not buf:
+                                    break
+                                chunks.append(buf)
+                        except OSError as e:
+                            raise OSError(f"read failed: {e}") from e
+                        raw_bytes = b"".join(chunks)
+                        raw = raw_bytes.decode(
+                            "utf-8", errors="replace"
                         )
-                        # R2-001/R2-002 TOCTOU mitigation: a writer can
-                        # mutate the witness between the stat that built
-                        # the cache key and this read. Re-stat after the
-                        # read; if mtime advanced, raise OSError so the
-                        # outer except yields an empty canonical_data
-                        # (the documented fail-open). Catches realistic
-                        # mtime-advancing writers; an adversary that
-                        # preserves mtime across the swap can still
-                        # defeat this — fully closing that requires
-                        # fstat-from-fd in safe_open, out of scope here.
-                        if _os.stat(safe_path).st_mtime_ns != mtime_ns:
+                        # Post-read re-fstat to catch any inode-level
+                        # change while we read (rare; defense in
+                        # depth). The fd still points at the same
+                        # inode by definition, but its size or mtime
+                        # could have changed if a writer truncated or
+                        # extended the file. If any of our key fields
+                        # changed, fail open.
+                        try:
+                            st2 = _os.fstat(fd)
+                        except OSError as e:
                             raise OSError(
-                                "witness mtime advanced mid-read; "
-                                "failing open"
+                                f"fstat after read failed: {e}"
+                            ) from e
+                        if (
+                            st2.st_size != st.st_size
+                            or st2.st_mtime_ns != st.st_mtime_ns
+                            or st2.st_ctime_ns != st.st_ctime_ns
+                        ):
+                            raise OSError(
+                                "witness changed mid-read; failing open"
                             )
                         # Changing this truncation rule requires bumping
                         # _excerpt_cache.CONTEXT_TRANSFORM_VERSION.
@@ -923,9 +954,17 @@ def get_pattern_context(file_path: str) -> dict:
                         )
                         return sanitize_for_chameleon_context(body), is_trunc
 
-                    content, truncated = _excerpt_cache.get_or_build(
-                        key, _build
-                    )
+                    try:
+                        content, truncated = _excerpt_cache.get_or_build(
+                            key, _build
+                        )
+                    finally:
+                        # Always close the fd, hit or miss.
+                        try:
+                            _os.close(fd)
+                        except OSError:
+                            pass
+
                     canonical_data = {
                         "content": content,
                         "witness_path": witness_rel,

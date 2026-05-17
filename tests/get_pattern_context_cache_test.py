@@ -340,32 +340,36 @@ class ExcerptCacheRaceMitigationTest(unittest.TestCase):
                 os.environ[k] = v
 
     def test_mtime_advance_mid_read_fails_open_not_poison(self):
-        # Inject a writer race: between the stat that builds the cache
-        # key and the read_text inside _build, advance the witness's
-        # mtime to a distinct value. The mitigation must detect the
-        # advance and raise OSError so nothing is cached.
-        import pathlib
+        # Inject a writer race: between the fstat that builds the cache
+        # key and the read inside _build, advance the witness's mtime
+        # to a distinct value. The post-read re-fstat mitigation must
+        # detect the advance and raise OSError so nothing is cached.
+        # The fd-based read forces this test to patch _os.read instead
+        # of pathlib.Path.read_text (the bytes come from the fd, not a
+        # path lookup).
         from chameleon_mcp import _excerpt_cache
         from chameleon_mcp.tools import get_pattern_context
 
         witness = (self.repo / "src" / "components" / "Widget.tsx").resolve()
-        real_read = pathlib.Path.read_text
+        # The witness block does `import os as _os` inside the try; the
+        # _build closure reads via `_os.read(fd, n)`. Patch the os.read
+        # at the os-module level since _os is the same module object.
+        real_read = os.read
 
-        def racey_read(self_, *a, **kw):
-            # Bump the on-disk mtime BEFORE the read returns, so the
-            # post-read re-stat sees a different mtime.
+        def racey_read(fd, n):
+            # Bump the on-disk mtime BEFORE the first read returns, so
+            # the post-read re-fstat sees a different mtime.
             try:
-                if self_.resolve() == witness:
-                    os.utime(witness, ns=(9_000_000_000, 9_000_000_000))
+                os.utime(witness, ns=(9_000_000_000, 9_000_000_000))
             except Exception:
                 pass
-            return real_read(self_, *a, **kw)
+            return real_read(fd, n)
 
-        pathlib.Path.read_text = racey_read
+        os.read = racey_read
         try:
             d = get_pattern_context(str(self.target))["data"]
         finally:
-            pathlib.Path.read_text = real_read
+            os.read = real_read
 
         # Mitigation: fail open to empty canonical_data, NOT a poisoned
         # cache entry.
@@ -466,6 +470,182 @@ class RepoIdMemoTest(unittest.TestCase):
         _compute_repo_id.cache_clear()
         second = _compute_repo_id(self.repo_a)
         self.assertEqual(first, second)
+
+
+class ExcerptCacheFdSafetyTest(unittest.TestCase):
+    """Pin the fd-based safe_open + enriched cache key closes both
+    BUG-R2-001 mtime-preservation and BUG-R2-002 dirent-swap-leak."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(
+            self.repo, "src/components/Widget.tsx",
+            "export const Widget = () => <div>ORIGINAL</div>;\n",
+        )
+        from chameleon_mcp import _excerpt_cache
+        from chameleon_mcp.tools import _compute_repo_id
+        _excerpt_cache.clear()
+        self.target = self.repo / "src" / "components" / "Other.tsx"
+        self.target.write_text("export const Other = () => null;\n")
+        # Warm the repo_id memoization. Without this, the os.read
+        # monkeypatches below would fire on the subprocess pipe read
+        # from `_git_remote_url` BEFORE the witness fd read, making the
+        # "first read" guard useless. Warming hoists the subprocess
+        # out of the timed window so the very next os.read in the
+        # test is the witness chunk read.
+        _compute_repo_id.cache_clear()
+        _compute_repo_id(self.repo.resolve())
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_mtime_preserving_swap_does_not_poison(self):
+        # Adversarial mtime-preservation residual: write attacker
+        # content, then os.utime back to the original mtime. The new
+        # code reads via _os.read(fd, ...). Patch os.read so the attack
+        # fires before the first chunk; the post-read fstat sees a
+        # different st_size or st_ctime_ns and fails open.
+        from chameleon_mcp import _excerpt_cache
+        from chameleon_mcp.tools import get_pattern_context
+
+        witness = (self.repo / "src" / "components" / "Widget.tsx").resolve()
+        orig_bytes = witness.read_bytes()
+        orig_st = os.stat(witness)
+        attacker = b"export const Widget = () => <div>POISONED_R3</div>;\n"
+        real_read = os.read
+        fired = []
+
+        def racey_read(fd, n):
+            # First read on this fd: stage the attack BEFORE returning
+            # bytes. write_bytes truncates the witness inode and writes
+            # the attacker bytes; os.utime then resets mtime to preserve
+            # it. ctime is bumped by os.utime, size differs from orig.
+            if not fired:
+                fired.append(1)
+                try:
+                    witness.write_bytes(attacker)
+                    os.utime(
+                        witness,
+                        ns=(orig_st.st_mtime_ns, orig_st.st_mtime_ns),
+                    )
+                except Exception:
+                    pass
+            return real_read(fd, n)
+
+        os.read = racey_read
+        try:
+            d = get_pattern_context(str(self.target))["data"]
+        finally:
+            os.read = real_read
+            # Restore witness byte-exact.
+            witness.write_bytes(orig_bytes)
+            os.utime(
+                witness,
+                ns=(orig_st.st_mtime_ns, orig_st.st_mtime_ns),
+            )
+
+        # Attack actually fired (the patch ran at least once).
+        self.assertEqual(fired, [1])
+        # No POISONED content reached the envelope.
+        self.assertNotIn("POISONED_R3", d["canonical_excerpt"]["content"])
+        # Nothing got cached (post-read fstat caught the size/ctime
+        # divergence and raised OSError -> outer except -> empty
+        # canonical_data -> get_or_build's exception path skips storage).
+        self.assertEqual(len(_excerpt_cache._CACHE), 0)
+
+    def test_dirent_swap_to_outside_repo_does_not_leak(self):
+        # BUG-R2-002 closure: swap the witness dirent for a symlink
+        # pointing OUT of the repo. With O_NOFOLLOW-opened fd + read-
+        # from-fd, the read uses the already-opened inode, not the
+        # swapped dirent. Even if the swap "succeeds" mid-read, the
+        # decoy's bytes cannot enter the cache because the fd is bound
+        # to the original inode.
+        from chameleon_mcp import _excerpt_cache
+        from chameleon_mcp.tools import get_pattern_context
+
+        witness = (self.repo / "src" / "components" / "Widget.tsx").resolve()
+        orig_bytes = witness.read_bytes()
+        orig_st = os.stat(witness)
+        decoy_dir = Path(tempfile.mkdtemp())
+        decoy = decoy_dir / "leaked_secret.txt"
+        decoy.write_text("OUT_OF_REPO_SECRET_R3_FIX\n")
+        real_read = os.read
+        fired = []
+
+        def swap_read(fd, n):
+            if not fired:
+                fired.append(1)
+                try:
+                    witness.unlink()
+                    witness.symlink_to(decoy)
+                except Exception:
+                    pass
+            return real_read(fd, n)
+
+        os.read = swap_read
+        try:
+            d = get_pattern_context(str(self.target))["data"]
+        finally:
+            os.read = real_read
+            # Restore: undo any symlink, write original bytes, reset mtime.
+            try:
+                if witness.is_symlink():
+                    witness.unlink()
+            except Exception:
+                pass
+            witness.write_bytes(orig_bytes)
+            os.utime(
+                witness,
+                ns=(orig_st.st_mtime_ns, orig_st.st_mtime_ns),
+            )
+            decoy.unlink(missing_ok=True)
+            try:
+                decoy_dir.rmdir()
+            except OSError:
+                pass
+
+        # Attack actually fired.
+        self.assertEqual(fired, [1])
+        # Decoy content NEVER appears in the excerpt OR the cache.
+        self.assertNotIn("OUT_OF_REPO_SECRET", d["canonical_excerpt"]["content"])
+        for v in _excerpt_cache._CACHE.values():
+            self.assertNotIn("OUT_OF_REPO_SECRET", v[0])
+
+    def test_normal_case_still_caches_correctly(self):
+        from chameleon_mcp import _excerpt_cache
+        from chameleon_mcp.tools import get_pattern_context
+        d1 = get_pattern_context(str(self.target))["data"]
+        self.assertIn("ORIGINAL", d1["canonical_excerpt"]["content"])
+        # Second call must be a warm hit.
+        d2 = get_pattern_context(str(self.target))["data"]
+        self.assertEqual(
+            d1["canonical_excerpt"]["content"],
+            d2["canonical_excerpt"]["content"],
+        )
+        self.assertEqual(len(_excerpt_cache._CACHE), 1)
+
+    def test_cache_key_includes_inode_and_size(self):
+        # Pin the key shape so a regression that loses st_ino or
+        # st_size from the key fails this test.
+        from chameleon_mcp import _excerpt_cache
+        from chameleon_mcp.tools import get_pattern_context
+        get_pattern_context(str(self.target))
+        # Exactly one entry; its key tuple has 7 components.
+        self.assertEqual(len(_excerpt_cache._CACHE), 1)
+        key = next(iter(_excerpt_cache._CACHE))
+        # (path_str, st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns, version)
+        self.assertEqual(len(key), 7)
+        self.assertIsInstance(key[0], str)
+        for i in range(1, 7):
+            self.assertIsInstance(key[i], int)
 
 
 if __name__ == "__main__":

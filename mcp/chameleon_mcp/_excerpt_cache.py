@@ -15,21 +15,23 @@ No lock: daemon.serve_forever handles one connection at a time
 (daemon.py:386-418). If the daemon ever becomes multi-threaded, wrap
 get_or_build in a threading.Lock.
 
-Bounded TOCTOU window: get_pattern_context calls safe_open() (which
-lstat-refuses symlinks, size-caps, and repo-boundary-checks at check
-time and returns the resolved real path), then stat()s and later
-read_text()s that resolved path inside the cache builder. The builder
-re-stat()s after the read and raises OSError if mtime advanced --
-caught by get_pattern_context's existing OSError handler, which fails
-open to an empty canonical_excerpt and stores nothing. A normal
-writer (editor save, refresh write) that advances mtime is detected.
-The residual window is an adversarial writer that preserves mtime
-across the swap (e.g. os.utime back to the prior value) -- bounded
-by the witness path coming from a committed, trust-gated profile,
-sanitization running on every cache miss, and the advisory nature of
-the output. Fully closing that residual would require an
-O_NOFOLLOW-opened fd whose fstat is trusted instead of a path-based
-stat; that is out of scope for this cache.
+Race-resistant fd-based open: get_pattern_context opens the witness
+via safe_open_fd, which calls os.open(path, O_RDONLY | O_NOFOLLOW
+| O_CLOEXEC) and fstat()s the returned fd. The cache key uses the
+fstat's (st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns) plus the
+resolved path and CONTEXT_TRANSFORM_VERSION. The builder reads bytes
+from the open fd (not a path-based read_text), so a mid-read dirent
+swap is structurally impossible -- the fd points at the inode the
+fstat saw. A post-read fstat re-check on the fd catches any size /
+mtime / ctime change while we read (truncation, extension, in-place
+overwrite). The cache key shape means an attacker who preserves
+st_mtime_ns across a swap must ALSO produce a file with the same
+st_ino + st_dev + st_size + st_ctime_ns -- in practice impossible
+without root, since ctime advances on every metadata operation
+(including os.utime) and ino is filesystem-assigned. The residual is
+a contrived no-content-change race (same ino, same size, same
+mtime, same ctime, but somehow different bytes) which is benign
+because the bytes are identical to the cached value.
 
 CONTEXT_TRANSFORM_VERSION: bump on ANY change to the value-shaping
 transform applied between read and cache store — i.e. any change to
