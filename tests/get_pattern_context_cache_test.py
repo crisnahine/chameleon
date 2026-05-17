@@ -168,6 +168,33 @@ class ExcerptCacheModuleTest(unittest.TestCase):
         _excerpt_cache.get_or_build(("x", 0, 1), lambda: n.append(1) or ("X", False))
         self.assertEqual(n, [1])
 
+    def test_lru_recency_on_hit_protects_touched_key(self):
+        # Pins move_to_end-on-hit: a pure FIFO (no recency) would evict r0
+        # here and fail this test.
+        from chameleon_mcp import _excerpt_cache
+        cap = _excerpt_cache._CAP
+        for i in range(cap):  # fill exactly to cap: r0(oldest)..r{cap-1}
+            _excerpt_cache.get_or_build(
+                (f"r{i}", 0, 1), lambda i=i: (str(i), False)
+            )
+        # Touch r0 -> hit -> move_to_end makes it most-recent; r1 is now oldest.
+        _excerpt_cache.get_or_build(("r0", 0, 1), lambda: ("UNUSED", False))
+        # Overflow by one -> evicts the current oldest (r1), NOT r0.
+        _excerpt_cache.get_or_build(("rNEW", 0, 1), lambda: ("new", False))
+        # r0 must still be cached (recency protected it): build must NOT run.
+        r0 = []
+        v0 = _excerpt_cache.get_or_build(
+            ("r0", 0, 1), lambda: r0.append(1) or ("X", False)
+        )
+        self.assertEqual(r0, [], "r0 was touched; LRU recency must protect it")
+        self.assertEqual(v0, ("0", False))
+        # r1 must have been evicted (it became oldest after r0's touch).
+        r1 = []
+        _excerpt_cache.get_or_build(
+            ("r1", 0, 1), lambda: r1.append(1) or ("r1b", False)
+        )
+        self.assertEqual(r1, [1], "r1 was the oldest; it must have been evicted")
+
 
 class ExcerptCacheIntegrationTest(unittest.TestCase):
     def setUp(self):
