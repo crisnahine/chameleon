@@ -648,6 +648,172 @@ class ExcerptCacheFdSafetyTest(unittest.TestCase):
             self.assertIsInstance(key[i], int)
 
 
+class ArchetypePathLocalityTest(unittest.TestCase):
+    """When two archetypes share a paths_pattern and AST scoring
+    cannot differentiate them, prefer the one whose canonical witness
+    lives in a deeper subdir matching the query. Closes the
+    cluster_size-only tiebreak gap that left some archetypes
+    structurally unreachable (e.g. ef-api's service-plaid shadowed by
+    service)."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        from chameleon_mcp import _excerpt_cache
+        _excerpt_cache.clear()
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def _plant_two_archetypes_one_bucket(
+        self,
+        primary_name: str,
+        primary_witness_rel: str,
+        primary_cluster_size: int,
+        secondary_name: str,
+        secondary_witness_rel: str,
+        secondary_cluster_size: int,
+        paths_pattern: str,
+    ) -> None:
+        """Two archetypes sharing one paths_pattern, primary has higher
+        cluster_size, secondary has a deeper-subdir witness. Both
+        witnesses get a similar trivial body so AST scoring is the same
+        for both (no normative_shape -> ratio = 0 on every candidate,
+        falling through to the new tiebreak)."""
+        (self.repo / "package.json").write_text("{}")
+        for w in (primary_witness_rel, secondary_witness_rel):
+            wpath = self.repo / w
+            wpath.parent.mkdir(parents=True, exist_ok=True)
+            wpath.write_text(f"# witness body for {w}\n")
+        pd = self.repo / ".chameleon"
+        pd.mkdir(parents=True, exist_ok=True)
+        base = {
+            "engine_min_version": "0.1.0",
+            "generation": 1,
+            "schema_version": 1,
+        }
+        (pd / "profile.json").write_text(json.dumps({**base, "language": "ruby"}))
+        (pd / "archetypes.json").write_text(json.dumps({
+            **base,
+            "archetypes": {
+                primary_name: {
+                    "paths_pattern": paths_pattern,
+                    "cluster_size": primary_cluster_size,
+                },
+                secondary_name: {
+                    "paths_pattern": paths_pattern,
+                    "cluster_size": secondary_cluster_size,
+                },
+            },
+        }))
+        (pd / "canonicals.json").write_text(json.dumps({
+            **base,
+            "canonicals": {
+                primary_name: [{
+                    "witness": {
+                        "path": primary_witness_rel,
+                        "sha_hint": "p",
+                    },
+                    "normative_shape": {"ast_query": {}},
+                }],
+                secondary_name: [{
+                    "witness": {
+                        "path": secondary_witness_rel,
+                        "sha_hint": "s",
+                    },
+                    "normative_shape": {"ast_query": {}},
+                }],
+            },
+        }))
+        (pd / "rules.json").write_text(json.dumps({**base, "rules": {}}))
+        (pd / "idioms.md").write_text("# idioms\n")
+        (pd / "COMMITTED").write_text("c\n")
+
+    def test_deeper_subdir_witness_wins_over_higher_cluster_size(self):
+        # Realistic case modeled on ef-api: `service` (big cluster,
+        # generic witness) vs `service-plaid` (small cluster, witness
+        # in a deeper subdir).
+        from chameleon_mcp.tools import _compute_repo_id, get_archetype
+        _compute_repo_id.cache_clear()
+        self._plant_two_archetypes_one_bucket(
+            primary_name="service",
+            primary_witness_rel="app/services/notifier.rb",
+            primary_cluster_size=10,
+            secondary_name="service-plaid",
+            secondary_witness_rel="app/services/plaid/link.rb",
+            secondary_cluster_size=2,
+            paths_pattern="app/services",
+        )
+        # Query lives in app/services/plaid/ -> should resolve to
+        # service-plaid, NOT service.
+        target = self.repo / "app" / "services" / "plaid" / "transfer.rb"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# query file body\n")
+        repo_id = _compute_repo_id(self.repo.resolve())
+        r = get_archetype(repo_id, str(target))["data"]
+        self.assertEqual(
+            r["archetype"], "service-plaid",
+            f"expected service-plaid; got {r['archetype']} (alternates: {r['alternatives']})",
+        )
+
+    def test_same_dir_witnesses_fall_back_to_cluster_size(self):
+        # When both witnesses live in the SAME directory, path-locality
+        # cannot differentiate -- primary (larger cluster) still wins.
+        # This documents the resolver's limit; the bootstrap-level fix
+        # (archetype collapsing for same-bucket-same-dir) is separate
+        # work.
+        from chameleon_mcp.tools import _compute_repo_id, get_archetype
+        _compute_repo_id.cache_clear()
+        self._plant_two_archetypes_one_bucket(
+            primary_name="model",
+            primary_witness_rel="app/models/user.rb",
+            primary_cluster_size=10,
+            secondary_name="model-models-rb",
+            secondary_witness_rel="app/models/account.rb",
+            secondary_cluster_size=2,
+            paths_pattern="app/models",
+        )
+        target = self.repo / "app" / "models" / "profile.rb"
+        target.write_text("# query body\n")
+        repo_id = _compute_repo_id(self.repo.resolve())
+        r = get_archetype(repo_id, str(target))["data"]
+        # cluster_size tiebreak -> primary wins (documented limit).
+        self.assertEqual(r["archetype"], "model")
+        # secondary should be visible in alternates.
+        self.assertIn("model-models-rb", r["alternatives"])
+
+    def test_query_in_parent_dir_does_not_prefer_subdir_archetype(self):
+        # Symmetric guard: a query in `app/services/X.rb` (parent dir of
+        # the secondary's `app/services/plaid/Y.rb` witness) should NOT
+        # be tricked into picking the deeper-subdir archetype -- the
+        # query doesn't live there.
+        from chameleon_mcp.tools import _compute_repo_id, get_archetype
+        _compute_repo_id.cache_clear()
+        self._plant_two_archetypes_one_bucket(
+            primary_name="service",
+            primary_witness_rel="app/services/notifier.rb",
+            primary_cluster_size=10,
+            secondary_name="service-plaid",
+            secondary_witness_rel="app/services/plaid/link.rb",
+            secondary_cluster_size=2,
+            paths_pattern="app/services",
+        )
+        target = self.repo / "app" / "services" / "mailer.rb"
+        target.write_text("# query in parent dir\n")
+        repo_id = _compute_repo_id(self.repo.resolve())
+        r = get_archetype(repo_id, str(target))["data"]
+        # Path-locality should not promote service-plaid here because
+        # the query doesn't live under app/services/plaid/.
+        self.assertEqual(r["archetype"], "service")
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])

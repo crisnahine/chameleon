@@ -487,6 +487,30 @@ def _prefix_overlap_fallback(
     return primary, alternatives
 
 
+def _witness_path_overlap(rel_str: str, canonicals: dict, archetype_name: str) -> int:
+    """Count leading directory segments shared between `rel_str` (the
+    query file's repo-relative path) and the archetype's canonical
+    witness path. Used as a tiebreak after AST scoring when multiple
+    archetypes share a paths_pattern. Excludes the filename segment so
+    files in the same directory get the same overlap regardless of name.
+    """
+    entries = canonicals.get(archetype_name) or []
+    if not entries:
+        return 0
+    witness_path = ((entries[0] or {}).get("witness") or {}).get("path") or ""
+    if not witness_path:
+        return 0
+    q_parts = rel_str.split("/")[:-1]
+    w_parts = witness_path.split("/")[:-1]
+    common = 0
+    for a, b in zip(q_parts, w_parts, strict=False):
+        if a == b:
+            common += 1
+        else:
+            break
+    return common
+
+
 def _content_signal_for_path(p: Path) -> str:
     """Read up to 200 bytes of `p` and classify the content signal.
 
@@ -668,10 +692,15 @@ def _get_archetype_with_loaded(
 
     # Path-bucket gave us one or more candidates; try AST shape verification.
     # The cluster-size ordering becomes our stable tiebreak when AST signals
-    # are absent or tied.
+    # are absent or tied. Path-locality (witness-vs-query subdir overlap)
+    # sits between AST score and cluster_size so a deeper-subdir archetype
+    # beats a higher-cluster sibling when the query lives in that subdir.
+    canonicals_for_locality = loaded.canonicals.get("canonicals", {}) or {}
     exact_matches.sort(
-        key=lambda n: archetypes.get(n, {}).get("cluster_size", 0),
-        reverse=True,
+        key=lambda n: (
+            -_witness_path_overlap(rel_str, canonicals_for_locality, n),
+            -archetypes.get(n, {}).get("cluster_size", 0),
+        )
     )
 
     # Read the file's content if it exists. If it doesn't, fall back to
@@ -736,8 +765,9 @@ def _get_archetype_with_loaded(
     if any(s > -1.0 for _, s, _ in scored):
         scored.sort(
             key=lambda item: (
-                -item[1],  # highest score first
-                -archetypes.get(item[0], {}).get("cluster_size", 0),
+                -item[1],  # highest AST score first
+                -_witness_path_overlap(rel_str, canonicals, item[0]),  # then prefer deeper subdir overlap
+                -archetypes.get(item[0], {}).get("cluster_size", 0),   # then cluster size
             )
         )
         primary = scored[0][0]
