@@ -65,6 +65,8 @@ _BIDI_CONTROLS = (
 _BIDI_RE = re.compile(f"[{_BIDI_CONTROLS}]")
 
 
+# NOTE: changing this transform (token list, bidi set, order, NFC step)
+# is a cache-visible change. Bump _excerpt_cache.CONTEXT_TRANSFORM_VERSION.
 def sanitize_for_chameleon_context(content: str) -> str:
     """Replace dangerous tag-boundary tokens with neutral text.
 

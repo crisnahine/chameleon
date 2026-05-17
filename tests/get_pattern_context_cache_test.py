@@ -123,6 +123,52 @@ class ArchetypeReuseTest(unittest.TestCase):
         self.assertEqual(d["repo"]["profile_status"], "profile_corrupted")
 
 
+class ExcerptCacheModuleTest(unittest.TestCase):
+    def setUp(self):
+        from chameleon_mcp import _excerpt_cache
+        _excerpt_cache.clear()
+
+    def test_get_miss_then_hit(self):
+        from chameleon_mcp import _excerpt_cache
+        calls = []
+
+        def build():
+            calls.append(1)
+            return ("SANITIZED", False)
+
+        k = ("/abs/Witness.tsx", 12345, _excerpt_cache.CONTEXT_TRANSFORM_VERSION)
+        self.assertEqual(_excerpt_cache.get_or_build(k, build), ("SANITIZED", False))
+        self.assertEqual(_excerpt_cache.get_or_build(k, build), ("SANITIZED", False))
+        self.assertEqual(len(calls), 1, "second call must be a cache hit")
+
+    def test_distinct_keys_are_independent(self):
+        from chameleon_mcp import _excerpt_cache
+        a = _excerpt_cache.get_or_build(("a", 1, 1), lambda: ("A", False))
+        b = _excerpt_cache.get_or_build(("b", 1, 1), lambda: ("B", True))
+        self.assertEqual(a, ("A", False))
+        self.assertEqual(b, ("B", True))
+
+    def test_lru_eviction_at_cap(self):
+        from chameleon_mcp import _excerpt_cache
+        cap = _excerpt_cache._CAP
+        for i in range(cap + 5):
+            _excerpt_cache.get_or_build((f"k{i}", 0, 1), lambda i=i: (str(i), False))
+        # Oldest (k0) evicted; rebuild must run again.
+        rebuilt = []
+        _excerpt_cache.get_or_build(
+            ("k0", 0, 1), lambda: rebuilt.append(1) or ("0", False)
+        )
+        self.assertEqual(rebuilt, [1])
+
+    def test_clear_empties_cache(self):
+        from chameleon_mcp import _excerpt_cache
+        _excerpt_cache.get_or_build(("x", 0, 1), lambda: ("X", False))
+        _excerpt_cache.clear()
+        n = []
+        _excerpt_cache.get_or_build(("x", 0, 1), lambda: n.append(1) or ("X", False))
+        self.assertEqual(n, [1])
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])
