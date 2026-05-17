@@ -811,6 +811,61 @@ def _build_bimodal_warnings(bimodal_clusters, repo_root: Path) -> list[dict]:
     return warnings
 
 
+def _collapse_same_pattern_archetypes(
+    archetypes: dict,
+    canonicals: dict,
+) -> tuple[dict, dict]:
+    """Merge archetypes that share a paths_pattern into the
+    highest-cluster_size sibling. Discarded archetypes' canonical
+    entries are appended to the kept archetype's canonicals list
+    (preserving the kept archetype's primary canonical at index 0).
+    Cluster sizes accumulate. Result: paths_pattern is unique across
+    archetypes, eliminating the resolver's cluster_size-tiebreak
+    unreachability for same-directory-witness siblings.
+    """
+    # Group archetype names by paths_pattern.
+    by_pattern: dict[str, list[str]] = {}
+    for name, meta in archetypes.items():
+        pat = meta.get("paths_pattern", "")
+        if not pat:
+            continue
+        by_pattern.setdefault(pat, []).append(name)
+
+    new_archetypes = dict(archetypes)
+    new_canonicals = dict(canonicals)
+
+    for _pat, names in by_pattern.items():
+        if len(names) <= 1:
+            continue
+        # Sort by cluster_size desc; ties broken by name for determinism.
+        names_sorted = sorted(
+            names,
+            key=lambda n: (
+                -archetypes[n].get("cluster_size", 0),
+                n,
+            ),
+        )
+        keeper = names_sorted[0]
+        losers = names_sorted[1:]
+        # Accumulate cluster_size.
+        kept_meta = dict(new_archetypes[keeper])
+        kept_meta["cluster_size"] = sum(
+            archetypes[n].get("cluster_size", 0) for n in names_sorted
+        )
+        new_archetypes[keeper] = kept_meta
+        # Append losers' canonicals to keeper's list (preserve order:
+        # losers ordered by descending cluster_size, then name).
+        merged_canonicals = list(new_canonicals.get(keeper, []))
+        for loser in losers:
+            for entry in new_canonicals.get(loser, []):
+                merged_canonicals.append(entry)
+            new_canonicals.pop(loser, None)
+            new_archetypes.pop(loser, None)
+        new_canonicals[keeper] = merged_canonicals
+
+    return new_archetypes, new_canonicals
+
+
 def bootstrap_repo(
     repo_root: Path,
     *,
@@ -1420,6 +1475,16 @@ def _bootstrap_single(
             "poisoning_scan_passed": sel.poisoning_scan_passed,
             "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }]
+
+    # Collapse archetypes that share a paths_pattern so the resolver's
+    # path-bucket lookup is unambiguous. Losers' canonicals are kept as
+    # alternates on the winner so AST scoring still sees them.
+    archetypes_data["archetypes"], canonicals_data["canonicals"] = (
+        _collapse_same_pattern_archetypes(
+            archetypes_data["archetypes"],
+            canonicals_data["canonicals"],
+        )
+    )
 
     archetype_count = len(archetypes_data["archetypes"])
 

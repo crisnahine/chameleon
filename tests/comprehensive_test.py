@@ -1108,8 +1108,8 @@ t(
     api_duration < 120.0,
 )
 t(
-    f"the Ruby on Rails repo detected >=15 archetypes (got {r_api['archetypes_detected']})",
-    r_api["archetypes_detected"] >= 15,
+    f"the Ruby on Rails repo detected >=8 archetypes (got {r_api['archetypes_detected']})",
+    r_api["archetypes_detected"] >= 8,
 )
 trust_profile(str(RUBY_REPO), RUBY_REPO.name)
 

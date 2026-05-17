@@ -814,6 +814,98 @@ class ArchetypePathLocalityTest(unittest.TestCase):
         self.assertEqual(r["archetype"], "service")
 
 
+class BootstrapCollapseTest(unittest.TestCase):
+    """Pin the bootstrap-time archetype collapse: archetypes sharing
+    a paths_pattern are merged into the largest-cluster one, with the
+    smaller's canonicals retained as alternates."""
+
+    def test_collapse_helper_merges_same_pattern(self):
+        # Direct unit test against the helper. Same paths_pattern,
+        # different cluster sizes → kept is the larger; smaller's
+        # canonical entries appended; smaller's archetype entry dropped.
+        # Use whatever the actual helper import path turns out to be —
+        # adjust if needed.
+        from chameleon_mcp.bootstrap.orchestrator import (
+            _collapse_same_pattern_archetypes,
+        )
+        archetypes = {
+            "model": {
+                "paths_pattern": "app/models:rb",
+                "cluster_size": 10,
+            },
+            "model-models-rb": {
+                "paths_pattern": "app/models:rb",
+                "cluster_size": 3,
+            },
+            "controller": {
+                "paths_pattern": "app/controllers:rb",
+                "cluster_size": 7,
+            },
+        }
+        canonicals = {
+            "model": [{"witness": {"path": "app/models/user.rb", "sha_hint": "p"}}],
+            "model-models-rb": [{"witness": {"path": "app/models/account.rb", "sha_hint": "s"}}],
+            "controller": [{"witness": {"path": "app/controllers/x.rb", "sha_hint": "c"}}],
+        }
+        new_archetypes, new_canonicals = _collapse_same_pattern_archetypes(
+            archetypes, canonicals
+        )
+        # model-models-rb is gone from archetypes.
+        self.assertNotIn("model-models-rb", new_archetypes)
+        self.assertIn("model", new_archetypes)
+        # Kept's cluster_size accumulates the merged sibling's count.
+        self.assertEqual(new_archetypes["model"]["cluster_size"], 13)
+        # Controller is untouched.
+        self.assertEqual(new_archetypes["controller"]["cluster_size"], 7)
+        # Canonicals for model now include both witnesses (kept first).
+        kept_canonicals = new_canonicals["model"]
+        self.assertEqual(len(kept_canonicals), 2)
+        self.assertEqual(kept_canonicals[0]["witness"]["path"], "app/models/user.rb")
+        self.assertEqual(kept_canonicals[1]["witness"]["path"], "app/models/account.rb")
+        # The dropped archetype's canonicals are removed.
+        self.assertNotIn("model-models-rb", new_canonicals)
+        # Controller's canonicals are untouched.
+        self.assertEqual(len(new_canonicals["controller"]), 1)
+
+    def test_collapse_helper_handles_three_way_share(self):
+        from chameleon_mcp.bootstrap.orchestrator import (
+            _collapse_same_pattern_archetypes,
+        )
+        # Three archetypes share a pattern. Kept = highest cluster_size.
+        archetypes = {
+            "a": {"paths_pattern": "x", "cluster_size": 5},
+            "b": {"paths_pattern": "x", "cluster_size": 10},
+            "c": {"paths_pattern": "x", "cluster_size": 3},
+        }
+        canonicals = {
+            "a": [{"witness": {"path": "p/a.rb", "sha_hint": "a"}}],
+            "b": [{"witness": {"path": "p/b.rb", "sha_hint": "b"}}],
+            "c": [{"witness": {"path": "p/c.rb", "sha_hint": "c"}}],
+        }
+        new_a, new_c = _collapse_same_pattern_archetypes(archetypes, canonicals)
+        self.assertEqual(list(new_a), ["b"])  # only the winner
+        self.assertEqual(new_a["b"]["cluster_size"], 18)
+        # b's canonical first, then a's, then c's (sorted by source cluster_size desc).
+        paths = [e["witness"]["path"] for e in new_c["b"]]
+        self.assertEqual(paths, ["p/b.rb", "p/a.rb", "p/c.rb"])
+
+    def test_collapse_helper_noop_when_all_unique(self):
+        from chameleon_mcp.bootstrap.orchestrator import (
+            _collapse_same_pattern_archetypes,
+        )
+        archetypes = {
+            "a": {"paths_pattern": "x", "cluster_size": 5},
+            "b": {"paths_pattern": "y", "cluster_size": 3},
+        }
+        canonicals = {
+            "a": [{"witness": {"path": "x/a.rb"}}],
+            "b": [{"witness": {"path": "y/b.rb"}}],
+        }
+        new_a, new_c = _collapse_same_pattern_archetypes(archetypes, canonicals)
+        self.assertEqual(new_a, archetypes)
+        self.assertEqual(new_c, canonicals)
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])
