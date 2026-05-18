@@ -4,6 +4,66 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.10] - 2026-05-18
+
+Per-edit hot path overhaul. Three concurrent themes ship together: a process-global excerpt LRU cache that collapses repeated `get_pattern_context` calls; security hardening of the witness-read path against TOCTOU + dirent-swap races via O_NOFOLLOW fd-based open with a 7-tuple `(path, st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns, version)` cache key; and consistency cleanup across the MCP tool surface (slop-input handling, archetype-resolver tiebreak, bootstrap-time archetype collapse). Warm `get_pattern_context` p50 drops from ~15ms to ~1.2ms (~13x speedup, measured on real ef-client + ef-api). Backwards-compatible; existing profiles continue to work; re-bootstrap picks up the collapse improvements.
+
+### Performance
+
+- **`_compute_repo_id` memoized** with `@functools.lru_cache(maxsize=64)`. Was forking `git config --get remote.origin.url` on every `get_pattern_context` call (~13ms warm, 70% of call per cProfile). Memo is process-lifetime; the documented "repo_id follows the project" contract is preserved. Warm p50 on real ef-client: 15ms -> 1.2ms.
+- **Process-global excerpt LRU cache** (`mcp/chameleon_mcp/_excerpt_cache.py`). Sanitized canonical-witness excerpt memoized for the daemon's process lifetime. Default 64 entries, env-tunable via `CHAMELEON_EXCERPT_CACHE_CAP=<int>`. Key includes `CONTEXT_TRANSFORM_VERSION` so a sanitization-rule change is automatically a cache-bust.
+- **Dedup in-call work in `get_pattern_context`.** Previously loaded `LoadedProfile` twice (once at top-level, once inside `get_archetype`) and parsed `profile.json` a third time for a corruption probe. Now: one load, one parse. Extracts `_get_archetype_with_loaded(p, repo_root, loaded, content_signal_value)` from `get_archetype`'s body so both paths share the scoring tail.
+
+### Security
+
+- **TOCTOU race closed via fd-based open.** `safe_open_fd(repo_root, rel_path, max_size_bytes)` opens with `O_RDONLY | O_NOFOLLOW | O_CLOEXEC`, `fstat`s the fd, runs all `safe_open` validations on the `fstat` result, and the cache builder reads from the open fd — so a mid-read `unlink(witness); symlink(witness, /etc/passwd)` swap can't redirect the read (POSIX rename of the dirent doesn't affect an already-open fd, which is bound to the original inode).
+- **7-tuple cache key** `(path, st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns, CONTEXT_TRANSFORM_VERSION)` defeats an adversary who preserves `st_mtime_ns` via `os.utime`: that operation advances `st_ctime_ns`, which the post-read re-fstat compares against the key (verified empirically on Darwin). Closes BUG-R2-001 (cache key/content mismatch via writer race) and BUG-R2-002 (out-of-repo content leak via dirent-swap-to-symlink).
+- **Post-read re-fstat check** raises `OSError` on any (size, mtime, ctime) drift between key-build and read-complete. Outer `except (UnsafeFileError, FileNotFoundError, OSError): pass` converts to fail-open empty `canonical_excerpt`; never stores a poisoned entry.
+- **C0 control bytes stripped from sanitized output.** `sanitize_for_chameleon_context` removes `U+0000`–`U+001F` (except `\t \n \r`). NUL can't escape the `<chameleon-context>` tag, but can corrupt downstream parsers/loggers/metrics.
+
+### Fixed
+
+- **Bootstrap archetype collapse.** Same-`paths_pattern` archetypes are merged at bootstrap time into the highest-`cluster_size` keeper, with the smaller siblings' canonicals preserved as alternates. ef-api 19 -> 12 archetypes, ef-client 39 -> 16. Closes the unreachable-archetype bug (5 of 19 ef-api archetypes were dead because the resolver only returned the largest-`cluster_size` match per bucket and the AST signatures of the smaller siblings were too similar to differentiate). All canonicals retained. (`mcp/chameleon_mcp/bootstrap/orchestrator.py` `_collapse_same_pattern_archetypes`)
+- **Path-locality tiebreak** in `_get_archetype_with_loaded`. When two archetypes share `paths_pattern` and AST scoring can't differentiate, prefer the one whose canonical witness lives in a deeper subdir matching the query file's path. Sort key is now `(-ast_score, -path_locality_overlap, -cluster_size)`.
+- **Slop-input consistency across MCP tool surface.** Only `get_pattern_context` had a null-byte / empty-string / non-str guard; `detect_repo`, `get_archetype`, `lint_file`, `bootstrap_repo`, `refresh_repo` raised `ToolError` at the MCP wire boundary. Shared helper `_validate_file_path_arg(path) -> bool` applied uniformly. Also fixes: `detect_repo("")` was falling through to `Path("").expanduser()` -> `find_repo_root(cwd)`, leaking the MCP server's CWD repo data to any caller passing empty.
+- **`get_pattern_context` length cap** at `_MAX_PATH_LEN = 4096`. Was raising `OSError: File name too long` for overlong single-component paths that hit the kernel `ENAMETOOLONG` before resolution.
+- **`get_archetype` accepts path-form `repo` argument.** A strict-equality check against the computed hex repo_id silently returned `archetype: null` when callers passed the path form (the form every other tool in the module accepts via `_resolve_repo_arg`). Hex passes through unchanged (contract preserved for existing callers); path is resolved via `_resolve_repo_arg`.
+- **Bootstrap transaction artifact cleanup.** Successful commits no longer leak `..chameleon.rename.lock` (0-byte file) or `..chameleon.tmp/` (empty dir) into the repo root. Race-safe: `rmdir` only succeeds when empty; concurrent in-flight commit's tmp_root keeps it non-empty and cleanup is a no-op.
+- **Symlinked `.chameleon/` cleanup.** If a user symlinks `.chameleon` to external storage, bootstrap now cleans up the post-rename backup symlink with `os.unlink` instead of `shutil.rmtree(..., ignore_errors=True)` (which silently fails on macOS for a symlinked dir, leaving a dangling `..chameleon.backup-<pid>-<uuid>-<ts>` symlink).
+- **Fail open on None / empty / null-byte `file_path` in `get_pattern_context`.** Returns the documented `no_repo` envelope instead of raising `TypeError` / `ValueError` from deep inside `Path.resolve()` / `lstat`.
+
+### Added
+
+- `CHAMELEON_EXCERPT_CACHE_CAP` — env var overriding the default 64-entry LRU cap.
+- `safe_open_fd(repo_root, rel_path, max_size_bytes) -> (fd, stat, path)` in `mcp/chameleon_mcp/safe_open.py` — sibling to `safe_open` for race-resistant reads. Existing `safe_open` and `safe_read_text` unchanged.
+- `_excerpt_cache.CONTEXT_TRANSFORM_VERSION` constant (now 2) so any change to `sanitize_for_chameleon_context` or the 3200-char truncation rule cascades automatically through the cache key.
+
+### Tests
+
+- 12 new test classes in `tests/get_pattern_context_cache_test.py`, 48 new cases total. Covers: dedup refactor, archetype-reuse contract preservation, excerpt-cache LRU semantics + recency + eviction + version bump, fd-based safety (mtime-preservation + dirent-swap closure), bootstrap collapse, path-locality tiebreak, slop guard (None / empty / null-byte / overlong / wrong-type), TOCTOU mitigations, transaction artifact cleanup, symlinked backup cleanup, MCP-tool slop consistency. Standalone unittest harness — `cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/get_pattern_context_cache_test.py` exercises the whole branch.
+- Real `claude_code_acceptance_test.py`: 26/26 against both ef-client and ef-api.
+- 10,000-call daemon socket stress: 0 errors, 0 None responses, 0 FD growth, RSS flat after warm-up.
+
+### Empirical validation
+
+| Metric | Before | After |
+|---|---:|---:|
+| Warm `get_pattern_context` p50 (real ef-client) | ~15ms | ~1.2ms (~13x) |
+| ef-api distinct archetypes after bootstrap | 19 (5 unreachable) | 12 (all reachable) |
+| ef-client distinct archetypes after bootstrap | 39 | 16 |
+| Mixed-call hit rate (default cap, real session) | n/a | >95% |
+| FD growth over 10k daemon-socket calls | n/a | 0 |
+
+### Compatibility
+
+- Existing profiles work unchanged. Re-bootstrap (`bootstrap_repo(force=True)` or `/chameleon-refresh --force`) is needed to pick up the archetype-collapse improvements; refresh on existing profiles continues to work.
+- Existing trust grants invalidate on next refresh if the user re-bootstraps (different `profile_sha256` after collapse). Standard `/chameleon-trust` re-grants.
+- No `PROFILE_SCHEMA_VERSION` bump. v0.5.x consumers load v0.5.10 profiles without modification.
+
+### Schema
+
+No `PROFILE_SCHEMA_VERSION` bump. Collapse-time merging of `canonicals[arch]` to include alternate witnesses uses the existing list shape — older readers correctly see the additional entries.
+
 ## [0.5.9] - 2026-05-13
 
 Clustering fix for "semantic, shape-based archetype clustering instead of path-based" — the most visible profile bug today. Two orthogonal levers ship together. Re-bootstrap a real Rails monolith and a real TS+React app to validate: ef-api went from 213 archetypes to 20 (-91%), ef-client from 139 to 39 (-72%). The mislabeled-controller-as-service clusters that named the bug are gone. No `PROFILE_SCHEMA_VERSION` bump; existing profiles continue to load and only pick up the new behavior on next `/chameleon-refresh` or `/chameleon-init --force`.
