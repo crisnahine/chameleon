@@ -1033,6 +1033,70 @@ class R6TransactionCleanupTest(unittest.TestCase):
         )
 
 
+class R8SymlinkedBackupTest(unittest.TestCase):
+    """If .chameleon/ is a symlink to external storage, atomic bootstrap
+    must NOT leak `..chameleon.backup-<...>` (a dangling symlink) in
+    the repo root. Found by R8 BB3."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        (self.repo / "package.json").write_text("{}")
+        (self.repo / "src").mkdir()
+        (self.repo / "src" / "App.tsx").write_text(
+            "export const App = () => null;\n"
+        )
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_bootstrap_does_not_leak_backup_when_chameleon_is_symlinked(self):
+        # Setup: .chameleon/ is a symlink to external storage.
+        external = Path(tempfile.mkdtemp()) / "shared"
+        external.mkdir()
+        (self.repo / ".chameleon").symlink_to(external)
+
+        from chameleon_mcp.tools import bootstrap_repo
+        r = bootstrap_repo(str(self.repo))
+        self.assertEqual(r["data"]["status"], "success")
+
+        # Repo root must NOT contain any `..chameleon.backup-*` artifact.
+        leaks = sorted(
+            p.name for p in self.repo.iterdir()
+            if p.name.startswith("..chameleon.backup-")
+        )
+        self.assertEqual(
+            leaks, [],
+            f"bootstrap leaked symlinked backup: {leaks}",
+        )
+
+    def test_regular_chameleon_dir_still_cleaned_up(self):
+        # Regression guard: with a REGULAR .chameleon/ (not symlinked),
+        # the existing rmtree cleanup still works (no `..chameleon.backup-*`
+        # leak, no `..chameleon.tmp/` leak).
+        from chameleon_mcp.tools import bootstrap_repo
+        # First bootstrap creates the profile.
+        bootstrap_repo(str(self.repo))
+        # Re-bootstrap with force=True triggers the backup/rename/cleanup path.
+        r = bootstrap_repo(str(self.repo), force=True)
+        self.assertEqual(r["data"]["status"], "success")
+        suspects = sorted(
+            p.name for p in self.repo.iterdir()
+            if "chameleon" in p.name and p.name != ".chameleon"
+        )
+        self.assertEqual(
+            suspects, [],
+            f"unexpected chameleon-related siblings: {suspects}",
+        )
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])

@@ -165,8 +165,19 @@ def atomic_profile_commit(target_dir: Path):
                 if backup_dir.exists():
                     os.rename(backup_dir, target_dir)
                 raise
-            if backup_dir.exists():
-                shutil.rmtree(backup_dir, ignore_errors=True)
+            if backup_dir.exists() or backup_dir.is_symlink():
+                if backup_dir.is_symlink():
+                    # POSIX rename on a symlink target_dir moved the
+                    # symlink itself into backup_dir. shutil.rmtree of a
+                    # symlinked dir raises OSError on macOS (silently
+                    # swallowed by ignore_errors=True), leaving a
+                    # dangling symlink in the repo root. Use os.unlink.
+                    try:
+                        backup_dir.unlink()
+                    except OSError:
+                        pass
+                else:
+                    shutil.rmtree(backup_dir, ignore_errors=True)
         finally:
             try:
                 fcntl.flock(rename_lock_fd, fcntl.LOCK_UN)
