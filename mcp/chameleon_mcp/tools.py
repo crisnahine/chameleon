@@ -134,6 +134,35 @@ def _resolve_repo_arg(repo: str) -> tuple[Path | None, str | None]:
     return path, None
 
 
+# Maximum path length we'll accept on any MCP tool boundary. Real
+# filesystems cap at ~4096 (Linux PATH_MAX) or 1024 (macOS) for the
+# total path; rejecting over that bound preserves the fail-open
+# envelope contract instead of letting Path.resolve() hit a kernel
+# ENAMETOOLONG.
+_MAX_PATH_LEN = 4096
+
+
+def _validate_file_path_arg(file_path: object) -> bool:
+    """Return True if `file_path` is a safe-to-process string.
+
+    Tools that take a `file_path` argument should call this first and
+    return their documented no_repo / failed envelope on False. Catches:
+    - non-str (None, int, dict, etc.)
+    - empty string
+    - null-byte (lstat raises ValueError mid-resolution)
+    - over-length (kernel ENAMETOOLONG before resolution completes)
+    """
+    if not isinstance(file_path, str):
+        return False
+    if not file_path:
+        return False
+    if "\x00" in file_path:
+        return False
+    if len(file_path) > _MAX_PATH_LEN:
+        return False
+    return True
+
+
 # Hosts whose URLs are case-insensitive — folded to lowercase before hashing.
 _CASE_INSENSITIVE_HOSTS: frozenset[str] = frozenset(
     {"github.com", "gitlab.com", "bitbucket.org", "dev.azure.com", "ssh.dev.azure.com"}
@@ -289,6 +318,18 @@ def detect_repo(file_path: str) -> dict:
     """
     from chameleon_mcp.profile.loader import find_repo_root
     from chameleon_mcp.profile.trust import is_material_change, trust_state_for
+
+    # Defensive slop guard: non-str, empty, null-byte, or over-length
+    # inputs cannot reach `find_repo_root` safely. An empty string would
+    # otherwise fall through `Path("").expanduser()` → `Path(".")` and
+    # walk up from the SERVER's CWD, leaking the server's working dir.
+    if not _validate_file_path_arg(file_path):
+        return _envelope({
+            "repo_id": None,
+            "repo_root": None,
+            "profile_status": "no_repo",
+            "trust_state": "n/a",
+        })
 
     p = Path(file_path).expanduser()
     repo_root = find_repo_root(p)
@@ -571,18 +612,59 @@ def get_archetype(repo: str, file_path: str) -> dict:
     """
     from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir
 
+    # Defensive slop guard: reject non-str / empty / null-byte / over-
+    # length file_path before any path operations. The early-return
+    # envelope matches the existing "low-confidence, archetype: null"
+    # shape used by the resolver-failure branch below.
+    if not _validate_file_path_arg(file_path):
+        return _envelope({
+            "archetype": None,
+            "alternatives": [],
+            "content_signal_match": "none",
+            "confidence_band": "low",
+        })
+
     p = Path(file_path).expanduser()
 
     content_signal_value: str = _content_signal_for_path(p)
 
     repo_root = find_repo_root(p)
-    if repo_root is None or _compute_repo_id(repo_root) != repo:
+    if repo_root is None:
         return _envelope({
             "archetype": None,
             "alternatives": [],
             "content_signal_match": content_signal_value,
             "confidence_band": "low",
         })
+
+    # v0.5.10 (Bug 4): accept either a 64-char hex repo_id OR an
+    # absolute repo path for the `repo` argument, matching every other
+    # MCP tool that takes a repo arg. Pre-fix the strict equality
+    # `_compute_repo_id(repo_root) != repo` silently returned
+    # archetype: null for path-form callers. Behavior for hex repo_id
+    # is BYTE-IDENTICAL to pre-fix; the change is ADDITIVE.
+    expected_repo_id = _compute_repo_id(repo_root)
+    if _REPO_ID_RE.match(repo) if isinstance(repo, str) else False:
+        # Hex form: keep strict identity check (pre-fix contract).
+        if expected_repo_id != repo:
+            return _envelope({
+                "archetype": None,
+                "alternatives": [],
+                "content_signal_match": content_signal_value,
+                "confidence_band": "low",
+            })
+    else:
+        # Path form (or anything else): route through `_resolve_repo_arg`
+        # and check the resolved id matches the file's repo. Anything
+        # neither shape resolves to (None, None) → mismatch → low-conf.
+        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
+        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
+            return _envelope({
+                "archetype": None,
+                "alternatives": [],
+                "content_signal_match": content_signal_value,
+                "confidence_band": "low",
+            })
 
     profile_dir = repo_root / ".chameleon"
     try:
@@ -849,10 +931,10 @@ def get_pattern_context(file_path: str) -> dict:
     from chameleon_mcp.profile.trust import trust_state_for
 
     # Defensive slop guard (Round-1 real-test finding): non-str, empty,
-    # or null-byte inputs cannot reach repo resolution safely. Fail open
-    # with a no_repo envelope, matching the contract used for paths
-    # outside any repo.
-    if not isinstance(file_path, str) or not file_path or "\x00" in file_path:
+    # null-byte, or over-length inputs cannot reach repo resolution
+    # safely. Fail open with a no_repo envelope, matching the contract
+    # used for paths outside any repo.
+    if not _validate_file_path_arg(file_path):
         return _envelope(
             _empty_pattern_envelope(None, "no_repo", "n/a")
         )
@@ -1283,6 +1365,40 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
         scan_secrets as _scan_secrets,
     )
     from chameleon_mcp.profile.loader import load_profile_dir
+
+    # 0. Defensive type guard: `content` must be a str (architecture
+    # contract). Passing a non-str silently exploded at `len(content)`
+    # / `content[:...]` with a confusing TypeError far from the call
+    # site. Same for `archetype`. Return the function's stub envelope
+    # so callers get a graceful no-op instead of a wire-level crash.
+    if not isinstance(content, str):
+        return _envelope(
+            {
+                "stub": True,
+                "stub_reason": (
+                    "content must be a string; got "
+                    f"{type(content).__name__}"
+                ),
+                "violations": [],
+                "canonical_confidence": 0.0,
+                "unparseable_regions": [],
+                "content_size": 0,
+            },
+        )
+    if not isinstance(archetype, str):
+        return _envelope(
+            {
+                "stub": True,
+                "stub_reason": (
+                    "archetype must be a string; got "
+                    f"{type(archetype).__name__}"
+                ),
+                "violations": [],
+                "canonical_confidence": 0.0,
+                "unparseable_regions": [],
+                "content_size": len(content),
+            },
+        )
 
     # 1. Cap content (architecture's lint_file size contract).
     content_size = len(content)
@@ -2004,6 +2120,16 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     """
     from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
 
+    # Defensive slop guard: non-str / empty / null-byte / over-length
+    # inputs explode downstream at `Path.resolve()` (ValueError for
+    # null-byte, OSError ENAMETOOLONG for over-length). Reject at the
+    # boundary so callers get a graceful failure envelope.
+    if not _validate_file_path_arg(repo):
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
     if resolved_path is None:
         return _envelope({
@@ -2196,6 +2322,16 @@ def bootstrap_repo(
     from chameleon_mcp.bootstrap.orchestrator import bootstrap_repo as _bootstrap
     from chameleon_mcp.profile.trust import hash_profile
 
+    # Defensive slop guard: non-str / empty / null-byte / over-length
+    # inputs explode downstream at `Path.resolve()` (ValueError for
+    # null-byte, OSError ENAMETOOLONG for over-length). Reject at the
+    # boundary so callers get a graceful failure envelope.
+    if not _validate_file_path_arg(path):
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+
     resolved_path, _resolved_id = _resolve_repo_arg(path)
     if resolved_path is None:
         return _envelope({
@@ -2204,7 +2340,7 @@ def bootstrap_repo(
         })
     try:
         repo_root = resolved_path.resolve()
-    except OSError:
+    except (OSError, ValueError):
         repo_root = resolved_path
     if not repo_root.is_dir():
         return _envelope({

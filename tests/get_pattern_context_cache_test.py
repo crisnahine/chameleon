@@ -1097,6 +1097,124 @@ class R8SymlinkedBackupTest(unittest.TestCase):
         )
 
 
+class R9MCPSlopConsistencyTest(unittest.TestCase):
+    """All path-accepting MCP tools must return graceful envelopes
+    on slop input (non-str, empty, null-byte, overlong). Found by
+    R9 BUG-R9-001/002 + ef-api Bug 1/2."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # detect_repo
+    def test_detect_repo_null_byte_is_graceful(self):
+        from chameleon_mcp.tools import detect_repo
+        r = detect_repo("/some/path/with\x00null.tsx")
+        self.assertIn("data", r)  # graceful envelope, not a raise
+        # Shape: detect_repo returns its standard no_repo / failure envelope.
+
+    def test_detect_repo_empty_does_not_leak_cwd(self):
+        from chameleon_mcp.tools import detect_repo
+        r = detect_repo("")
+        # Must NOT return the server's CWD repo data.
+        self.assertIn("data", r)
+        # The data field should NOT contain a real repo_root path.
+        # Either profile_status=no_repo OR repo_root is null/empty.
+        if "repo_root" in r["data"]:
+            self.assertFalse(
+                r["data"]["repo_root"],
+                f"detect_repo('') leaked repo_root: {r['data']['repo_root']}",
+            )
+
+    def test_detect_repo_overlong_is_graceful(self):
+        from chameleon_mcp.tools import detect_repo
+        r = detect_repo("a" * 5000)
+        self.assertIn("data", r)  # no raise
+
+    # get_archetype
+    def test_get_archetype_null_byte_file_path_is_graceful(self):
+        from chameleon_mcp.tools import get_archetype
+        r = get_archetype(
+            "0" * 64,  # fake hex
+            "/some/path/with\x00null.tsx",
+        )
+        self.assertIn("data", r)
+
+    def test_get_archetype_accepts_path_form_repo(self):
+        # Bug 4: passing the absolute repo path (not hex repo_id) was
+        # silently returning archetype: null. After fix, behavior must
+        # match passing the hex.
+        from chameleon_mcp.tools import (
+            bootstrap_repo, get_archetype, _compute_repo_id,
+        )
+        from pathlib import Path
+        repo = Path(tempfile.mkdtemp())
+        (repo / "package.json").write_text("{}")
+        (repo / "src" / "components").mkdir(parents=True)
+        # Need 2+ similar files to produce a real archetype after
+        # clustering; a single file collapses to no clusters.
+        for i in range(3):
+            (repo / "src" / "components" / f"Comp{i}.tsx").write_text(
+                f"export const C{i} = () => 1;\n"
+            )
+        bootstrap_repo(str(repo))
+        _compute_repo_id.cache_clear()
+        target = str(repo / "src" / "components" / "Comp0.tsx")
+        repo_id = _compute_repo_id(repo.resolve())
+        # Hex form (current contract)
+        hex_result = get_archetype(repo_id, target)["data"]
+        # Sanity: this setup must produce a non-None archetype so the
+        # equality below is meaningful (not None == None).
+        self.assertIsNotNone(
+            hex_result["archetype"],
+            "test setup failure: bootstrap produced no archetype",
+        )
+        # Path form (the bug case)
+        path_result = get_archetype(str(repo), target)["data"]
+        # Both should resolve to the SAME archetype (the new helper
+        # routes path → hex; not_found case stays consistent).
+        self.assertEqual(
+            hex_result["archetype"], path_result["archetype"],
+            f"path-form repo gave different archetype: hex={hex_result['archetype']!r} path={path_result['archetype']!r}",
+        )
+
+    # get_pattern_context — length cap (already had null-byte etc.)
+    def test_get_pattern_context_overlong_is_graceful(self):
+        from chameleon_mcp.tools import get_pattern_context
+        r = get_pattern_context("x" * 8192)
+        self.assertIn("data", r)
+        self.assertEqual(r["data"]["repo"]["profile_status"], "no_repo")
+
+    # lint_file
+    def test_lint_file_wrong_content_type_is_graceful(self):
+        from chameleon_mcp.tools import lint_file
+        # int instead of str for content
+        r = lint_file("0" * 64, "fake-arch", 12345)
+        self.assertIn("data", r)  # no TypeError
+
+    # bootstrap_repo / refresh_repo
+    def test_bootstrap_repo_null_byte_is_graceful(self):
+        from chameleon_mcp.tools import bootstrap_repo
+        r = bootstrap_repo("/tmp/with\x00null/repo")
+        self.assertIn("data", r)
+        self.assertEqual(r["data"].get("status"), "failed")
+
+    def test_refresh_repo_null_byte_is_graceful(self):
+        from chameleon_mcp.tools import refresh_repo
+        r = refresh_repo("/tmp/with\x00null/repo")
+        self.assertIn("data", r)
+        self.assertIn("status", r["data"])
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])
