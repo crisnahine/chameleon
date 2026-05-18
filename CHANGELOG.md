@@ -4,6 +4,24 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.11] - 2026-05-19
+
+Two bug fixes surfaced by real-workflow testing on a TypeScript repo and a Ruby on Rails repo. Patch release. Existing profiles work unchanged.
+
+### Fixed
+
+- **Daemon listen backlog 16 -> 128.** Parallel-agent bursts of 100 concurrent connects (dispatching-parallel-agents, multi-worktree sessions sharing the per-user daemon) produced ECONNREFUSED on roughly 80 of 100 connects against released v0.5.10. Single-threaded accept loop couldn't drain the queue fast enough at backlog 16. Bump absorbs realistic burst sizes with margin; the client still fails open if the queue ever overflows. (`mcp/chameleon_mcp/daemon.py:86`)
+- **idioms.md cumulative size cap at 200KB.** The 50KB per-call check on `teach_profile` stops single large feedback strings but doesn't prevent sustained drift: hundreds of small teaches grew the file past 100KB while the envelope cap at 8000 chars meant nothing past the first ~80 idioms reached the model. Cumulative guard runs inside the advisory lock; rejection error points at `/chameleon-refresh` or manual trim. (`mcp/chameleon_mcp/tools.py` `_IDIOMS_FILE_CAP`)
+
+### Tests
+
+- `R10DaemonBacklogTest` guards `_LISTEN_BACKLOG >= 128` against regression.
+- `R10IdiomsFileCapTest` verifies the cumulative cap rejects past-cap writes without modifying idioms.md, plus a small-teach sanity case. Falsified pre-fix: both growth tests fail without the change.
+
+### Compatibility
+
+- Existing profiles work unchanged. No `PROFILE_SCHEMA_VERSION` bump. No re-bootstrap required.
+
 ## [0.5.10] - 2026-05-18
 
 Per-edit hot path overhaul. Three concurrent themes ship together: a process-global excerpt LRU cache that collapses repeated `get_pattern_context` calls; security hardening of the witness-read path against TOCTOU + dirent-swap races via O_NOFOLLOW fd-based open with a 7-tuple `(path, st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns, version)` cache key; and consistency cleanup across the MCP tool surface (slop-input handling, archetype-resolver tiebreak, bootstrap-time archetype collapse). Warm `get_pattern_context` p50 drops from ~15ms to ~1.2ms (~13x speedup, measured on real ef-client + ef-api). Backwards-compatible; existing profiles continue to work; re-bootstrap picks up the collapse improvements.
