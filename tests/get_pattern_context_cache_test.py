@@ -917,7 +917,6 @@ class R4ConsistencyFixesTest(unittest.TestCase):
         # Pre-fix the M1/M2 guard only checked None + null-byte, so
         # Path("").expanduser() resolved to "." and find_repo_root
         # walked up CWD to find a profile.
-        import os, tempfile
         from chameleon_mcp.tools import get_pattern_context
 
         # Build a tmp profiled repo so we have a CWD with a profile.
@@ -1154,9 +1153,11 @@ class R9MCPSlopConsistencyTest(unittest.TestCase):
         # silently returning archetype: null. After fix, behavior must
         # match passing the hex.
         from chameleon_mcp.tools import (
-            bootstrap_repo, get_archetype, _compute_repo_id,
+            _compute_repo_id,
+            bootstrap_repo,
+            get_archetype,
         )
-        from pathlib import Path
+
         repo = Path(tempfile.mkdtemp())
         (repo / "package.json").write_text("{}")
         (repo / "src" / "components").mkdir(parents=True)
