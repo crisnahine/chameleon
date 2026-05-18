@@ -81,9 +81,14 @@ DEFAULT_IDLE_TIMEOUT_S = 600.0  # 10 minutes
 # How long start_daemon() waits for the socket to become connectable.
 _SPAWN_WAIT_SECONDS = 3.0
 
-# Backlog for socket.listen(). Hooks are sequential per Claude Code session
-# so we don't need a huge backlog; 16 is generous.
-_LISTEN_BACKLOG = 16
+# Backlog for socket.listen(). Per-session hooks fire sequentially, but
+# parallel-agent flows (dispatching-parallel-agents, multi-worktree sessions
+# sharing one per-user daemon) can stampede with N parallel connects at the
+# same instant. Backlog must outrun the single-threaded accept loop's per-
+# request latency (~1ms warm) for the slowest realistic burst. 128 absorbs
+# 100+ concurrent connects with margin; cost is a few KB of kernel-side
+# queue space.
+_LISTEN_BACKLOG = 128
 
 # Logging: stderr only (no file journal in this MVP). Daemons launched via
 # start_daemon() redirect stderr to a per-run log under PLUGIN_DATA so the

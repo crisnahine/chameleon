@@ -2662,6 +2662,15 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     })
 
 
+# Cumulative cap on idioms.md size. The per-call cap (50KB) bounds a single
+# feedback string but doesn't stop sustained drift: hundreds of small teaches
+# can push the file far past anything the model actually consumes (envelope is
+# capped at 8000 chars in get_pattern_context). Beyond ~200KB the file becomes
+# unreadable, parse cost grows linearly on every load, and the user signal is
+# "this profile needs refresh or trim" anyway.
+_IDIOMS_FILE_CAP = 200_000
+
+
 def teach_profile(repo: str, feedback: str) -> dict:
     """Append a captured idiom to .chameleon/idioms.md.
 
@@ -2806,6 +2815,17 @@ def teach_profile(repo: str, feedback: str) -> dict:
                 new_content = current.replace("## active\n", f"## active\n{addition}", 1)
             else:
                 new_content = current + addition
+            if len(new_content.encode("utf-8")) > _IDIOMS_FILE_CAP:
+                return _envelope({
+                    "status": "failed",
+                    "error": (
+                        f"idioms.md would exceed {_IDIOMS_FILE_CAP // 1000}KB "
+                        f"cumulative cap ({len(new_content.encode('utf-8'))} bytes "
+                        f"after append). Move older idioms to '## deprecated', "
+                        f"trim the file, or run /chameleon-refresh before "
+                        f"capturing more."
+                    ),
+                })
             idioms_path.write_text(new_content, encoding="utf-8")
     except LockHeldError as e:
         return _envelope({

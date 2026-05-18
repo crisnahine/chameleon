@@ -1216,6 +1216,87 @@ class R9MCPSlopConsistencyTest(unittest.TestCase):
         self.assertIn("status", r["data"])
 
 
+class R10DaemonBacklogTest(unittest.TestCase):
+    """R10 found ECONNREFUSED on 100 parallel connects with backlog=16
+    (79/100 and 83/100 failures across ef-client + ef-api agents).
+    Single-threaded daemon plus parallel-agent flows need a larger
+    listen queue. Guard the constant so a future "optimization" can't
+    regress it."""
+
+    def test_listen_backlog_at_least_128(self):
+        from chameleon_mcp.daemon import _LISTEN_BACKLOG
+        self.assertGreaterEqual(
+            _LISTEN_BACKLOG, 128,
+            "Backlog must be at least 128 to absorb parallel-agent bursts; "
+            "R10 reproduced ECONNREFUSED at backlog=16 under 100-parallel load."
+        )
+
+
+class R10IdiomsFileCapTest(unittest.TestCase):
+    """R10 found idioms.md grows unbounded: the 50KB per-call cap doesn't
+    stop sustained drift. After ~200 small teaches the file passed 100KB
+    while the envelope cap of 8000 chars meant nothing past the first ~80
+    idioms was ever consumed. Enforce a 200KB cumulative cap with a clear
+    error pointing at /chameleon-refresh or manual trim."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(self.repo, "src/components/Widget.tsx", "export const X = 1;")
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        import shutil
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def test_small_teach_still_accepted(self):
+        """Sanity: pre-cap teaches must succeed."""
+        from chameleon_mcp.tools import teach_profile
+        r = teach_profile(str(self.repo), "small idiom about widgets")
+        self.assertEqual(r["data"]["status"], "success", f"unexpected: {r}")
+
+    def test_cumulative_growth_past_cap_is_rejected(self):
+        from chameleon_mcp.tools import teach_profile
+        # Pre-fill idioms.md to just under the cap with 4 large-but-legal
+        # teaches (49KB each, well under the 50KB per-call cap). After 4
+        # teaches idioms.md is ~196KB; the next 49KB teach pushes total
+        # past the 200KB cap and must be rejected.
+        large = "x" * 49_000
+        for i in range(4):
+            r = teach_profile(str(self.repo), large)
+            self.assertEqual(
+                r["data"]["status"], "success",
+                f"pre-cap teach #{i} unexpectedly failed: {r['data']}"
+            )
+        r = teach_profile(str(self.repo), large)
+        self.assertEqual(r["data"]["status"], "failed", f"unexpected: {r['data']}")
+        err = r["data"].get("error", "")
+        self.assertIn("cumulative cap", err)
+        self.assertIn("/chameleon-refresh", err)
+
+    def test_rejected_teach_does_not_grow_file(self):
+        from chameleon_mcp.tools import teach_profile
+        large = "y" * 49_000
+        for _ in range(4):
+            teach_profile(str(self.repo), large)
+        idioms_path = self.repo / ".chameleon" / "idioms.md"
+        size_before = idioms_path.stat().st_size
+        r = teach_profile(str(self.repo), large)
+        self.assertEqual(r["data"]["status"], "failed")
+        size_after = idioms_path.stat().st_size
+        self.assertEqual(
+            size_before, size_after,
+            "rejected teach must leave idioms.md byte-identical"
+        )
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])
