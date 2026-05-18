@@ -848,11 +848,11 @@ def get_pattern_context(file_path: str) -> dict:
     from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir
     from chameleon_mcp.profile.trust import trust_state_for
 
-    # Defensive slop guard (Round-1 real-test finding): non-str or
-    # null-byte inputs cannot reach repo resolution safely. Fail open
+    # Defensive slop guard (Round-1 real-test finding): non-str, empty,
+    # or null-byte inputs cannot reach repo resolution safely. Fail open
     # with a no_repo envelope, matching the contract used for paths
     # outside any repo.
-    if not isinstance(file_path, str) or "\x00" in file_path:
+    if not isinstance(file_path, str) or not file_path or "\x00" in file_path:
         return _envelope(
             _empty_pattern_envelope(None, "no_repo", "n/a")
         )

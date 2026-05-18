@@ -47,7 +47,7 @@ import os
 from collections import OrderedDict
 from collections.abc import Callable
 
-CONTEXT_TRANSFORM_VERSION = 1
+CONTEXT_TRANSFORM_VERSION = 2
 
 
 def _resolve_cap() -> int:

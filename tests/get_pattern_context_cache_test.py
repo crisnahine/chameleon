@@ -906,6 +906,71 @@ class BootstrapCollapseTest(unittest.TestCase):
         self.assertEqual(new_c, canonicals)
 
 
+class R4ConsistencyFixesTest(unittest.TestCase):
+    """R4 real-world testing surfaced two consistency gaps:
+    (1) empty-string file_path bypassed the M1/M2 slop guard,
+    (2) NUL + C0 control bytes survived sanitization."""
+
+    def test_empty_string_input_returns_no_repo_envelope(self):
+        # Even from a CWD that is itself a profiled repo, an empty
+        # file_path must return the documented no_repo envelope.
+        # Pre-fix the M1/M2 guard only checked None + null-byte, so
+        # Path("").expanduser() resolved to "." and find_repo_root
+        # walked up CWD to find a profile.
+        import os, tempfile
+        from chameleon_mcp.tools import get_pattern_context
+
+        # Build a tmp profiled repo so we have a CWD with a profile.
+        prev_env = {k: os.environ.get(k) for k in
+                    ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(
+            repo, "src/components/Widget.tsx",
+            "export const Widget = () => null;\n",
+        )
+        prev_cwd = os.getcwd()
+        os.chdir(repo)
+        try:
+            r = get_pattern_context("")
+        finally:
+            os.chdir(prev_cwd)
+            for k, v in prev_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertEqual(r["data"]["repo"]["profile_status"], "no_repo")
+        self.assertIsNone(r["data"]["repo"]["id"])
+
+    def test_sanitizer_strips_nul_and_c0_controls(self):
+        from chameleon_mcp.sanitization import (
+            sanitize_for_chameleon_context,
+        )
+        # NUL (0x00), SOH (0x01), STX (0x02), VT (0x0b), FF (0x0c),
+        # SO (0x0e), US (0x1f) all get stripped. Whitespace tab/LF/CR
+        # is preserved.
+        raw = "a\x00b\x01c\x02d\x0be\x0cf\x0eg\x1fh\ti\nj\rk"
+        out = sanitize_for_chameleon_context(raw)
+        # All C0 controls except whitespace must be gone:
+        for c in ("\x00", "\x01", "\x02", "\x0b", "\x0c", "\x0e", "\x1f"):
+            self.assertNotIn(c, out, f"unexpected C0 char {c!r} in output")
+        # Whitespace preserved:
+        self.assertIn("\t", out)
+        self.assertIn("\n", out)
+        self.assertIn("\r", out)
+        # Plain content preserved:
+        self.assertIn("abcdefghi", out.replace("\t", "").replace("\n", "").replace("\r", ""))
+
+    def test_context_transform_version_bumped(self):
+        # The sanitizer change is cache-visible; the version MUST be
+        # bumped so a daemon that warms a cache pre-upgrade rebuilds
+        # post-upgrade.
+        from chameleon_mcp import _excerpt_cache
+        self.assertGreaterEqual(_excerpt_cache.CONTEXT_TRANSFORM_VERSION, 2)
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])
