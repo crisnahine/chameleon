@@ -971,6 +971,68 @@ class R4ConsistencyFixesTest(unittest.TestCase):
         self.assertGreaterEqual(_excerpt_cache.CONTEXT_TRANSFORM_VERSION, 2)
 
 
+class R6TransactionCleanupTest(unittest.TestCase):
+    """Bootstrap must not leak `..{name}.rename.lock` or `..{name}.tmp/`
+    siblings into the repo root. R6 from-scratch lifecycle surfaced this
+    on both ef-client and ef-api: every user with a chameleon profile
+    saw two untracked artifacts in `git status`."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        # A throwaway repo to bootstrap into; we don't care about the
+        # produced profile, only the sibling artifacts.
+        self.repo = Path(tempfile.mkdtemp())
+        (self.repo / "package.json").write_text("{}")
+        (self.repo / "src").mkdir()
+        (self.repo / "src" / "App.tsx").write_text(
+            "export const App = () => <div>hi</div>;\n"
+        )
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_bootstrap_does_not_leak_rename_lock(self):
+        from chameleon_mcp.tools import bootstrap_repo
+        r = bootstrap_repo(str(self.repo))
+        self.assertEqual(r["data"]["status"], "success")
+        leaked = self.repo / "..chameleon.rename.lock"
+        self.assertFalse(
+            leaked.exists(),
+            f"bootstrap leaked rename-lock artifact: {leaked}",
+        )
+
+    def test_bootstrap_does_not_leak_tmp_dir(self):
+        from chameleon_mcp.tools import bootstrap_repo
+        r = bootstrap_repo(str(self.repo))
+        self.assertEqual(r["data"]["status"], "success")
+        leaked = self.repo / "..chameleon.tmp"
+        self.assertFalse(
+            leaked.exists(),
+            f"bootstrap leaked tmp-root artifact: {leaked}",
+        )
+
+    def test_bootstrap_leaves_only_dot_chameleon(self):
+        # Belt-and-suspenders: the only chameleon-related sibling in the
+        # repo root after a bootstrap must be `.chameleon/` itself.
+        from chameleon_mcp.tools import bootstrap_repo
+        bootstrap_repo(str(self.repo))
+        suspects = [
+            p for p in self.repo.iterdir()
+            if "chameleon" in p.name and p.name != ".chameleon"
+        ]
+        self.assertEqual(
+            suspects, [],
+            f"unexpected chameleon-named siblings: {suspects}",
+        )
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])
