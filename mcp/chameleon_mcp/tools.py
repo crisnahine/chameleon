@@ -10,6 +10,7 @@ All responses use the API versioning envelope per Round 5 API Designer:
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -18,6 +19,14 @@ import secrets
 import subprocess
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type-only: keeps the MCP cold-start budget intact (the real import
+    # stays function-local in get_archetype) while letting the bare
+    # `loaded: LoadedProfile` signature annotation resolve under
+    # `from __future__ import annotations`.
+    from chameleon_mcp.profile.loader import LoadedProfile
 
 
 def _envelope(data: dict, truncated: bool = False, next_cursor: str | None = None) -> dict:
@@ -125,6 +134,35 @@ def _resolve_repo_arg(repo: str) -> tuple[Path | None, str | None]:
     return path, None
 
 
+# Maximum path length we'll accept on any MCP tool boundary. Real
+# filesystems cap at ~4096 (Linux PATH_MAX) or 1024 (macOS) for the
+# total path; rejecting over that bound preserves the fail-open
+# envelope contract instead of letting Path.resolve() hit a kernel
+# ENAMETOOLONG.
+_MAX_PATH_LEN = 4096
+
+
+def _validate_file_path_arg(file_path: object) -> bool:
+    """Return True if `file_path` is a safe-to-process string.
+
+    Tools that take a `file_path` argument should call this first and
+    return their documented no_repo / failed envelope on False. Catches:
+    - non-str (None, int, dict, etc.)
+    - empty string
+    - null-byte (lstat raises ValueError mid-resolution)
+    - over-length (kernel ENAMETOOLONG before resolution completes)
+    """
+    if not isinstance(file_path, str):
+        return False
+    if not file_path:
+        return False
+    if "\x00" in file_path:
+        return False
+    if len(file_path) > _MAX_PATH_LEN:
+        return False
+    return True
+
+
 # Hosts whose URLs are case-insensitive — folded to lowercase before hashing.
 _CASE_INSENSITIVE_HOSTS: frozenset[str] = frozenset(
     {"github.com", "gitlab.com", "bitbucket.org", "dev.azure.com", "ssh.dev.azure.com"}
@@ -214,6 +252,7 @@ def _git_remote_url(repo_root: Path) -> str | None:
     return url or None
 
 
+@functools.lru_cache(maxsize=64)
 def _compute_repo_id(repo_root: Path) -> str:
     """Canonical repo_id.
 
@@ -279,6 +318,18 @@ def detect_repo(file_path: str) -> dict:
     """
     from chameleon_mcp.profile.loader import find_repo_root
     from chameleon_mcp.profile.trust import is_material_change, trust_state_for
+
+    # Defensive slop guard: non-str, empty, null-byte, or over-length
+    # inputs cannot reach `find_repo_root` safely. An empty string would
+    # otherwise fall through `Path("").expanduser()` → `Path(".")` and
+    # walk up from the SERVER's CWD, leaking the server's working dir.
+    if not _validate_file_path_arg(file_path):
+        return _envelope({
+            "repo_id": None,
+            "repo_root": None,
+            "profile_status": "no_repo",
+            "trust_state": "n/a",
+        })
 
     p = Path(file_path).expanduser()
     repo_root = find_repo_root(p)
@@ -477,6 +528,50 @@ def _prefix_overlap_fallback(
     return primary, alternatives
 
 
+def _witness_path_overlap(rel_str: str, canonicals: dict, archetype_name: str) -> int:
+    """Count leading directory segments shared between `rel_str` (the
+    query file's repo-relative path) and the archetype's canonical
+    witness path. Used as a tiebreak after AST scoring when multiple
+    archetypes share a paths_pattern. Excludes the filename segment so
+    files in the same directory get the same overlap regardless of name.
+    """
+    entries = canonicals.get(archetype_name) or []
+    if not entries:
+        return 0
+    witness_path = ((entries[0] or {}).get("witness") or {}).get("path") or ""
+    if not witness_path:
+        return 0
+    q_parts = rel_str.split("/")[:-1]
+    w_parts = witness_path.split("/")[:-1]
+    common = 0
+    for a, b in zip(q_parts, w_parts, strict=False):
+        if a == b:
+            common += 1
+        else:
+            break
+    return common
+
+
+def _content_signal_for_path(p: Path) -> str:
+    """Read up to 200 bytes of `p` and classify the content signal.
+
+    Extracted from get_archetype (v0.5.2 Bug 3 logic) so the public
+    get_archetype and get_pattern_context's inlined archetype resolution
+    share one implementation. Returns one of
+    {"none","use_client","use_server","shebang","ts_pragma"}; never None.
+    """
+    from chameleon_mcp.signatures import content_signal_match_for
+
+    file_head: str | None = None
+    if p.is_file():
+        try:
+            file_head = p.read_bytes()[:200].decode("utf-8", errors="replace")
+        except OSError:
+            file_head = None
+    value = content_signal_match_for(file_head) if file_head is not None else "none"
+    return value if value is not None else "none"
+
+
 def get_archetype(repo: str, file_path: str) -> dict:
     """Look up the archetype a given file matches.
 
@@ -515,55 +610,61 @@ def get_archetype(repo: str, file_path: str) -> dict:
     also check the extension-aware variant as a secondary key so
     profiles written by v0.5.2 still hit the exact-match path.
     """
-    from chameleon_mcp.lint_engine import (
-        canonical_confidence,
-        detect_language,
-        extract_dimensions,
-    )
-    from chameleon_mcp.profile.loader import LoadedProfile, find_repo_root, load_profile_dir
-    from chameleon_mcp.signatures import (
-        content_signal_match_for,
-        path_pattern_bucket_for,
-    )
+    from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir
+
+    # Defensive slop guard: reject non-str / empty / null-byte / over-
+    # length file_path before any path operations. The early-return
+    # envelope matches the existing "low-confidence, archetype: null"
+    # shape used by the resolver-failure branch below.
+    if not _validate_file_path_arg(file_path):
+        return _envelope({
+            "archetype": None,
+            "alternatives": [],
+            "content_signal_match": "none",
+            "confidence_band": "low",
+        })
 
     p = Path(file_path).expanduser()
 
-    # v0.5.2 (Bug 3): read the first 200 bytes once, up-front, so EVERY
-    # return branch can populate `content_signal_match` consistently.
-    # When the file is unreadable / missing the field stays None to
-    # signal "we didn't look". The full-content read further down (used
-    # for AST scoring) is still gated on `p.is_file()` and capped at
-    # 100KB — the head-only read here is cheap, bounded by 200 bytes,
-    # and runs before any repo / profile validation so the directive is
-    # surfaced even when the repo isn't bootstrapped yet (the lint
-    # engine and using-chameleon skill both want the signal regardless
-    # of profile state).
-    file_head: str | None = None
-    if p.is_file():
-        try:
-            file_head = p.read_bytes()[:200].decode("utf-8", errors="replace")
-        except OSError:
-            file_head = None
-
-    # BUG-NEW-008 (v0.5.7): content_signal_match always returns a string
-    # from {"strong", "weak", "none"}. Pre-fix this could be None when the
-    # file couldn't be read, contradicting the documented schema. The
-    # downstream get_pattern_context envelope had a mix of "none" and null
-    # across hit vs miss paths.
-    content_signal_value: str = (
-        content_signal_match_for(file_head) if file_head is not None else "none"
-    )
-    if content_signal_value is None:
-        content_signal_value = "none"
+    content_signal_value: str = _content_signal_for_path(p)
 
     repo_root = find_repo_root(p)
-    if repo_root is None or _compute_repo_id(repo_root) != repo:
+    if repo_root is None:
         return _envelope({
             "archetype": None,
             "alternatives": [],
             "content_signal_match": content_signal_value,
             "confidence_band": "low",
         })
+
+    # v0.5.10 (Bug 4): accept either a 64-char hex repo_id OR an
+    # absolute repo path for the `repo` argument, matching every other
+    # MCP tool that takes a repo arg. Pre-fix the strict equality
+    # `_compute_repo_id(repo_root) != repo` silently returned
+    # archetype: null for path-form callers. Behavior for hex repo_id
+    # is BYTE-IDENTICAL to pre-fix; the change is ADDITIVE.
+    expected_repo_id = _compute_repo_id(repo_root)
+    if _REPO_ID_RE.match(repo) if isinstance(repo, str) else False:
+        # Hex form: keep strict identity check (pre-fix contract).
+        if expected_repo_id != repo:
+            return _envelope({
+                "archetype": None,
+                "alternatives": [],
+                "content_signal_match": content_signal_value,
+                "confidence_band": "low",
+            })
+    else:
+        # Path form (or anything else): route through `_resolve_repo_arg`
+        # and check the resolved id matches the file's repo. Anything
+        # neither shape resolves to (None, None) → mismatch → low-conf.
+        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
+        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
+            return _envelope({
+                "archetype": None,
+                "alternatives": [],
+                "content_signal_match": content_signal_value,
+                "confidence_band": "low",
+            })
 
     profile_dir = repo_root / ".chameleon"
     try:
@@ -575,6 +676,26 @@ def get_archetype(repo: str, file_path: str) -> dict:
             "content_signal_match": content_signal_value,
             "confidence_band": "low",
         })
+
+    return _get_archetype_with_loaded(p, repo_root, loaded, content_signal_value)
+
+
+def _get_archetype_with_loaded(
+    p: Path,
+    repo_root: Path,
+    loaded: LoadedProfile,
+    content_signal_value: str,
+) -> dict:
+    """Archetype scoring tail shared by get_archetype and
+    get_pattern_context. Assumes repo_root + a successfully loaded
+    profile; does no find_repo_root / load_profile_dir of its own.
+    """
+    from chameleon_mcp.lint_engine import (
+        canonical_confidence,
+        detect_language,
+        extract_dimensions,
+    )
+    from chameleon_mcp.signatures import path_pattern_bucket_for
 
     # Compute the file's bucket via the same function clustering used.
     # Match archetypes by EXACT bucket equality (not substring).
@@ -653,10 +774,15 @@ def get_archetype(repo: str, file_path: str) -> dict:
 
     # Path-bucket gave us one or more candidates; try AST shape verification.
     # The cluster-size ordering becomes our stable tiebreak when AST signals
-    # are absent or tied.
+    # are absent or tied. Path-locality (witness-vs-query subdir overlap)
+    # sits between AST score and cluster_size so a deeper-subdir archetype
+    # beats a higher-cluster sibling when the query lives in that subdir.
+    canonicals_for_locality = loaded.canonicals.get("canonicals", {}) or {}
     exact_matches.sort(
-        key=lambda n: archetypes.get(n, {}).get("cluster_size", 0),
-        reverse=True,
+        key=lambda n: (
+            -_witness_path_overlap(rel_str, canonicals_for_locality, n),
+            -archetypes.get(n, {}).get("cluster_size", 0),
+        )
     )
 
     # Read the file's content if it exists. If it doesn't, fall back to
@@ -721,8 +847,9 @@ def get_archetype(repo: str, file_path: str) -> dict:
     if any(s > -1.0 for _, s, _ in scored):
         scored.sort(
             key=lambda item: (
-                -item[1],  # highest score first
-                -archetypes.get(item[0], {}).get("cluster_size", 0),
+                -item[1],  # highest AST score first
+                -_witness_path_overlap(rel_str, canonicals, item[0]),  # then prefer deeper subdir overlap
+                -archetypes.get(item[0], {}).get("cluster_size", 0),   # then cluster size
             )
         )
         primary = scored[0][0]
@@ -803,6 +930,15 @@ def get_pattern_context(file_path: str) -> dict:
     from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir
     from chameleon_mcp.profile.trust import trust_state_for
 
+    # Defensive slop guard (Round-1 real-test finding): non-str, empty,
+    # null-byte, or over-length inputs cannot reach repo resolution
+    # safely. Fail open with a no_repo envelope, matching the contract
+    # used for paths outside any repo.
+    if not _validate_file_path_arg(file_path):
+        return _envelope(
+            _empty_pattern_envelope(None, "no_repo", "n/a")
+        )
+
     p = Path(file_path).expanduser()
     repo_root = find_repo_root(p)
     if repo_root is None:
@@ -816,18 +952,6 @@ def get_pattern_context(file_path: str) -> dict:
     if not profile_file.exists():
         return _envelope(
             _empty_pattern_envelope(repo_id, "no_profile", "n/a")
-        )
-
-    # BUG-021/022: detect corrupted profile.json here too so the response
-    # carries an explicit status and the consistent envelope shape.
-    try:
-        import json as _json
-
-        with profile_file.open("r", encoding="utf-8") as fh:
-            _json.load(fh)
-    except (OSError, ValueError):
-        return _envelope(
-            _empty_pattern_envelope(repo_id, "profile_corrupted", "n/a")
         )
 
     from chameleon_mcp.profile.trust import is_material_change
@@ -847,7 +971,10 @@ def get_pattern_context(file_path: str) -> dict:
         )
 
     # Reuse get_archetype logic
-    arch_response = get_archetype(repo_id, file_path)
+    content_signal_value = _content_signal_for_path(p)
+    arch_response = _get_archetype_with_loaded(
+        p, repo_root, loaded, content_signal_value
+    )
     arch_data = arch_response["data"]
 
     canonical_data = {"content": "", "witness_path": None, "truncated": False, "sha_hint": None}
@@ -858,16 +985,98 @@ def get_pattern_context(file_path: str) -> dict:
             witness_rel = first.get("witness", {}).get("path")
             if witness_rel:
                 try:
-                    from chameleon_mcp.safe_open import UnsafeFileError, safe_read_text
-                    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+                    import os as _os
 
-                    content = safe_read_text(repo_root, witness_rel, max_size_bytes=200_000)
-                    # Truncate to ~800 tokens (~3200 chars approx)
-                    truncated = len(content) > 3200
-                    if truncated:
-                        content = content[:3200] + "\n... [truncated]"
-                    # Tag-boundary sanitization (Round 4/5 security mitigation)
-                    content = sanitize_for_chameleon_context(content)
+                    from chameleon_mcp import _excerpt_cache
+                    from chameleon_mcp.safe_open import (
+                        UnsafeFileError,
+                        safe_open_fd,
+                    )
+                    from chameleon_mcp.sanitization import (
+                        sanitize_for_chameleon_context,
+                    )
+
+                    fd, st, safe_path = safe_open_fd(
+                        repo_root, witness_rel, max_size_bytes=200_000
+                    )
+                    # The 7-tuple key. Including st_dev + st_ino pins
+                    # the inode (a dirent swap to a different file
+                    # produces a different ino). st_size and st_ctime_ns
+                    # close the mtime-preservation residual: an
+                    # adversary that preserves st_mtime_ns must also
+                    # preserve size and ctime, which content
+                    # modification advances. The fd-based read below
+                    # reads from the same inode the fstat saw, so a
+                    # mid-read dirent swap is irrelevant.
+                    key = (
+                        str(safe_path),
+                        st.st_dev,
+                        st.st_ino,
+                        st.st_size,
+                        st.st_mtime_ns,
+                        st.st_ctime_ns,
+                        _excerpt_cache.CONTEXT_TRANSFORM_VERSION,
+                    )
+
+                    def _build() -> tuple[str, bool]:
+                        # Read all bytes from the fd (NOT a path-based
+                        # read), so a mid-read dirent swap reads from
+                        # the original inode.
+                        chunks = []
+                        try:
+                            while True:
+                                buf = _os.read(fd, 65_536)
+                                if not buf:
+                                    break
+                                chunks.append(buf)
+                        except OSError as e:
+                            raise OSError(f"read failed: {e}") from e
+                        raw_bytes = b"".join(chunks)
+                        raw = raw_bytes.decode(
+                            "utf-8", errors="replace"
+                        )
+                        # Post-read re-fstat to catch any inode-level
+                        # change while we read (rare; defense in
+                        # depth). The fd still points at the same
+                        # inode by definition, but its size or mtime
+                        # could have changed if a writer truncated or
+                        # extended the file. If any of our key fields
+                        # changed, fail open.
+                        try:
+                            st2 = _os.fstat(fd)
+                        except OSError as e:
+                            raise OSError(
+                                f"fstat after read failed: {e}"
+                            ) from e
+                        if (
+                            st2.st_size != st.st_size
+                            or st2.st_mtime_ns != st.st_mtime_ns
+                            or st2.st_ctime_ns != st.st_ctime_ns
+                        ):
+                            raise OSError(
+                                "witness changed mid-read; failing open"
+                            )
+                        # Changing this truncation rule requires bumping
+                        # _excerpt_cache.CONTEXT_TRANSFORM_VERSION.
+                        is_trunc = len(raw) > 3200
+                        body = (
+                            raw[:3200] + "\n... [truncated]"
+                            if is_trunc
+                            else raw
+                        )
+                        return sanitize_for_chameleon_context(body), is_trunc
+
+                    try:
+                        content, truncated = _excerpt_cache.get_or_build(
+                            key, _build
+                        )
+                    finally:
+                        # Always close the fd, hit or miss.
+                        try:
+                            _os.close(fd)
+                        except OSError:
+                            pass
+
                     canonical_data = {
                         "content": content,
                         "witness_path": witness_rel,
@@ -1156,6 +1365,40 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
         scan_secrets as _scan_secrets,
     )
     from chameleon_mcp.profile.loader import load_profile_dir
+
+    # 0. Defensive type guard: `content` must be a str (architecture
+    # contract). Passing a non-str silently exploded at `len(content)`
+    # / `content[:...]` with a confusing TypeError far from the call
+    # site. Same for `archetype`. Return the function's stub envelope
+    # so callers get a graceful no-op instead of a wire-level crash.
+    if not isinstance(content, str):
+        return _envelope(
+            {
+                "stub": True,
+                "stub_reason": (
+                    "content must be a string; got "
+                    f"{type(content).__name__}"
+                ),
+                "violations": [],
+                "canonical_confidence": 0.0,
+                "unparseable_regions": [],
+                "content_size": 0,
+            },
+        )
+    if not isinstance(archetype, str):
+        return _envelope(
+            {
+                "stub": True,
+                "stub_reason": (
+                    "archetype must be a string; got "
+                    f"{type(archetype).__name__}"
+                ),
+                "violations": [],
+                "canonical_confidence": 0.0,
+                "unparseable_regions": [],
+                "content_size": len(content),
+            },
+        )
 
     # 1. Cap content (architecture's lint_file size contract).
     content_size = len(content)
@@ -1877,6 +2120,16 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     """
     from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
 
+    # Defensive slop guard: non-str / empty / null-byte / over-length
+    # inputs explode downstream at `Path.resolve()` (ValueError for
+    # null-byte, OSError ENAMETOOLONG for over-length). Reject at the
+    # boundary so callers get a graceful failure envelope.
+    if not _validate_file_path_arg(repo):
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
     if resolved_path is None:
         return _envelope({
@@ -2069,6 +2322,16 @@ def bootstrap_repo(
     from chameleon_mcp.bootstrap.orchestrator import bootstrap_repo as _bootstrap
     from chameleon_mcp.profile.trust import hash_profile
 
+    # Defensive slop guard: non-str / empty / null-byte / over-length
+    # inputs explode downstream at `Path.resolve()` (ValueError for
+    # null-byte, OSError ENAMETOOLONG for over-length). Reject at the
+    # boundary so callers get a graceful failure envelope.
+    if not _validate_file_path_arg(path):
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+
     resolved_path, _resolved_id = _resolve_repo_arg(path)
     if resolved_path is None:
         return _envelope({
@@ -2077,7 +2340,7 @@ def bootstrap_repo(
         })
     try:
         repo_root = resolved_path.resolve()
-    except OSError:
+    except (OSError, ValueError):
         repo_root = resolved_path
     if not repo_root.is_dir():
         return _envelope({

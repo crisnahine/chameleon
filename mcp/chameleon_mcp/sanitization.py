@@ -65,6 +65,8 @@ _BIDI_CONTROLS = (
 _BIDI_RE = re.compile(f"[{_BIDI_CONTROLS}]")
 
 
+# NOTE: changing this transform (token list, bidi set, order, NFC step)
+# is a cache-visible change. Bump _excerpt_cache.CONTEXT_TRANSFORM_VERSION.
 def sanitize_for_chameleon_context(content: str) -> str:
     """Replace dangerous tag-boundary tokens with neutral text.
 
@@ -81,14 +83,18 @@ def sanitize_for_chameleon_context(content: str) -> str:
        Trojan Source / CVE-2021-42574 character set. Removed byte-for-byte
        (no replacement marker) so the underlying logical order is restored.
     3. Strip ANSI CSI/OSC escapes.
-    4. NFC normalize (defeat decomposed `<`, `>` variants).
-    5. Replace each dangerous token with a `[chameleon-sanitized: <text>]`
+    4. Strip C0 control bytes (U+0000–U+001F) except whitespace (tab U+0009,
+       LF U+000A, CR U+000D). NUL and other C0 bytes cannot escape the tag,
+       but they can corrupt downstream parsers, loggers, and metrics.
+    5. NFC normalize (defeat decomposed `<`, `>` variants).
+    6. Replace each dangerous token with a `[chameleon-sanitized: <text>]`
        annotation so the meaning is preserved but the structure is broken.
     """
     cleaned = re.sub(r"[​-‍﻿⁠]", "", content)
     cleaned = _BIDI_RE.sub("", cleaned)
     cleaned = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", cleaned)
     cleaned = re.sub(r"\x1b\][^\x07]*\x07?", "", cleaned)
+    cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", cleaned)
     cleaned = unicodedata.normalize("NFC", cleaned)
 
     for token in _DANGEROUS_TOKENS:

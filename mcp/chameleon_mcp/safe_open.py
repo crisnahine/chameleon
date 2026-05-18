@@ -109,3 +109,89 @@ def safe_read_text(
     """Convenience: validate path with safe_open, then read as text."""
     safe_path = safe_open(repo_root, rel_path, max_size_bytes=max_size_bytes)
     return safe_path.read_text(encoding=encoding, errors="replace")
+
+
+def safe_open_fd(
+    repo_root: Path,
+    rel_path: str,
+    *,
+    max_size_bytes: int = 1_000_000,
+) -> tuple[int, os.stat_result, Path]:
+    """Atomic open + fstat for race-resistant reads.
+
+    Returns (fd, stat_result, resolved_abs_path). The fd is opened with
+    O_NOFOLLOW + O_CLOEXEC (if available) so a dirent swap to a symlink
+    between this call and a later read is impossible -- the read happens
+    against the inode this fstat saw. Caller MUST os.close(fd).
+
+    Same validations as safe_open (null byte, ADS, NFC traversal,
+    forbidden segments, repo boundary, file size cap, regular-file
+    only). Symlink refusal is enforced both by O_NOFOLLOW (which raises
+    OSError(ELOOP) at open time) and by an explicit st_mode check.
+
+    Used by the excerpt cache builder; other callers should keep using
+    safe_open or safe_read_text.
+    """
+    # Apply the same input-validation gauntlet as safe_open.
+    if "\x00" in rel_path:
+        raise UnsafeFileError("path contains null byte")
+    if ":" in rel_path and not rel_path.startswith(("./", "../")):
+        if "$DATA" in rel_path or "$SECURITY" in rel_path:
+            raise UnsafeFileError("path contains Windows alternate data stream")
+    normalized = unicodedata.normalize("NFC", rel_path)
+    if normalized != rel_path:
+        if ".." in normalized:
+            raise UnsafeFileError("path contains .. after NFC normalization")
+    suspicious_segments = {"..", ".git", ".ssh", ".aws", ".gnupg"}
+    parts = Path(rel_path).parts
+    for part in parts:
+        if part in suspicious_segments:
+            raise UnsafeFileError(f"path contains forbidden segment: {part}")
+
+    unresolved = repo_root / rel_path
+    # Resolve up-front for the repo-boundary check (no symlinks to
+    # follow since we'll O_NOFOLLOW the open below).
+    candidate = unresolved.resolve(strict=False)
+    repo_resolved = repo_root.resolve(strict=False)
+    try:
+        candidate.relative_to(repo_resolved)
+    except ValueError as e:
+        raise UnsafeFileError(
+            f"path escapes repo boundary: {candidate} not under {repo_resolved}"
+        ) from e
+
+    # Open via os.open with O_NOFOLLOW. O_CLOEXEC is POSIX-standard but
+    # we guard against absence so non-POSIX runtimes don't error.
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    flags |= cloexec
+    try:
+        fd = os.open(str(candidate), flags)
+    except FileNotFoundError as e:
+        raise UnsafeFileError(f"path does not exist: {candidate}") from e
+    except OSError as e:
+        # ELOOP on symlinks; other failures get mapped to UnsafeFileError.
+        raise UnsafeFileError(f"open failed: {e}") from e
+
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise UnsafeFileError(
+                f"path is not a regular file: {candidate}"
+            )
+        if stat.S_ISLNK(st.st_mode):
+            # O_NOFOLLOW should have refused this at open already;
+            # belt-and-suspenders.
+            raise UnsafeFileError(f"path is a symlink (refused): {candidate}")
+        if st.st_size > max_size_bytes:
+            raise UnsafeFileError(
+                f"file too large: {st.st_size} bytes > {max_size_bytes} cap"
+            )
+    except UnsafeFileError:
+        os.close(fd)
+        raise
+    except OSError as e:
+        os.close(fd)
+        raise UnsafeFileError(f"fstat failed: {e}") from e
+
+    return fd, st, candidate

@@ -165,14 +165,41 @@ def atomic_profile_commit(target_dir: Path):
                 if backup_dir.exists():
                     os.rename(backup_dir, target_dir)
                 raise
-            if backup_dir.exists():
-                shutil.rmtree(backup_dir, ignore_errors=True)
+            if backup_dir.exists() or backup_dir.is_symlink():
+                if backup_dir.is_symlink():
+                    # POSIX rename on a symlink target_dir moved the
+                    # symlink itself into backup_dir. shutil.rmtree of a
+                    # symlinked dir raises OSError on macOS (silently
+                    # swallowed by ignore_errors=True), leaving a
+                    # dangling symlink in the repo root. Use os.unlink.
+                    try:
+                        backup_dir.unlink()
+                    except OSError:
+                        pass
+                else:
+                    shutil.rmtree(backup_dir, ignore_errors=True)
         finally:
             try:
                 fcntl.flock(rename_lock_fd, fcntl.LOCK_UN)
             except OSError:
                 pass
             os.close(rename_lock_fd)
+            # Best-effort cleanup of sibling artifacts so they don't
+            # pollute the user's git status. The lock-file unlink has a
+            # benign race window if another commit is starting (both
+            # processes see different inodes briefly); the lock contract
+            # only matters within one commit cycle, so the race is
+            # acceptable. The tmp_root rmdir succeeds only when empty —
+            # a concurrent in-flight commit's txn_dir keeps it non-empty
+            # and the rmdir fails harmlessly.
+            try:
+                rename_lock_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                tmp_root.rmdir()
+            except OSError:
+                pass
     except Exception:
         # Clean up partial txn dir on any failure
         if txn_dir.exists():
