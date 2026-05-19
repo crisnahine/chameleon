@@ -1,6 +1,6 @@
 {
   "name": "chameleon",
-  "version": "0.5.12",
+  "version": "0.5.13",
   "description": "Code that blends in. Auto-derives codebase conventions and injects archetype-aware guidance for AI-generated code in TypeScript and Ruby on Rails repos.",
   "author": {
     "name": "Cris Nahine",

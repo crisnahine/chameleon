@@ -4,6 +4,43 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.13] - 2026-05-19
+
+Five bug fixes plus an additive envelope flag and a doc sweep. External edge-case reports against v0.5.12 surfaced the gaps; two further claims from those reports did not reproduce and are left untouched. Existing profiles work unchanged.
+
+### Fixed
+
+- **`get_rules` archetype-name footgun.** Pre-fix, passing an archetype name (`archetype="component"`) silently returned `{rules: []}` because the function did a substring match against rules.json keys (which are tool/source names like `eslint`, `formatting`, `typescript`, `rubocop`, never archetype names). Three-tier routing now: (1) exact rule-key match wins, preserving back-compat for callers that pass `"eslint"` directly; (2) if the value matches an archetype in the profile, return `{status: failed, error: ...}` pointing at the right semantic and listing available sources; (3) the existing substring fallback still handles partial matches like `"lint"` -> `eslint`. (`mcp/chameleon_mcp/tools.py:1336`)
+- **`teach_profile_structured` slug-collision + status routing.** Pre-fix, calling with an existing slug ADDED a new entry instead of transitioning, and `status="deprecated"` on a brand-new slug silently appended to `## active` because the wrapper delegated to `teach_profile` (which ignores the rendered `Status:` line). Five cases now: new-active delegates; new-deprecated routes to a direct-deprecated writer; in-active + active is rejected; in-active + deprecated transitions the block to `## deprecated`; in-deprecated rejects with explicit error. Both transition and direct-deprecated paths now sanitize rationale / example / counterexample through `_sanitize_user_input` + `_escape_markdown_section_headings` and respect the 200KB `_IDIOMS_FILE_CAP` cumulative cap. (`mcp/chameleon_mcp/tools.py:3933`)
+- **`doctor` stale hook errors + env var.** `doctor()` hardcoded `~/.local/share/chameleon/.hook_errors.log` and never aged out entries, so 5-day-old tracebacks from dev worktrees showed up as `warn` forever. Now honors `CHAMELEON_HOOK_ERROR_LOG` (matching the env var the hooks themselves read) and drops timestamped entries older than 72h. Untimestamped traceback rows continue to attach to the most recent kept entry so context survives the filter. (`mcp/chameleon_mcp/tools.py:4446`)
+- **`lint_file` `noop_reason` rename.** The stub-branches use `stub_reason`, but the no-op-with-engine-running branch emitted a separate `reason` field. Renamed to `noop_reason` for internal consistency. Lint-engine test asserts the new field name. (`mcp/chameleon_mcp/tools.py:1571`)
+- **Slug validation error echoes the bad value.** `teach_profile_structured` rejected six different invalid slugs with the same error string. The archetype validator one branch over already echoed the bad value; slug now matches that shape (`slug 'BAD-UPPER' must match ...`). Also fixed the slug/archetype `!r` asymmetry on the regex pattern repr. (`mcp/chameleon_mcp/tools.py:3823`)
+
+### Added
+
+- **`match_quality` envelope field** on `get_archetype` + `get_pattern_context`. One of `"ast"` (AST scoring verified the match), `"exact"` (path bucket matched but no AST signal — file missing or no `ast_query` on any candidate), `"fallback"` (no exact bucket match; picked via `_prefix_overlap_fallback`), or `"none"` (no archetype returned). Callers can now distinguish AST-grade `confidence_band="low"` from "we picked something arbitrary after the file's cluster got dropped at bootstrap" — surfaced by the test report's sparse-cluster finding.
+
+### Documented
+
+- `lint_file` docstring now states explicitly that it runs a regex heuristic, not a real TS/Ruby parser, and that `unparseable_regions` is always `[]` in the current implementation. A file with unclosed braces or syntax errors will not be flagged.
+- `propose_archetype_renames` docstring and `skills/chameleon-init/SKILL.md` now state the `top_n` 1..64 range. Default remains 8.
+- `trust_profile` error message now spells out exactly what the `yes-trust-<first-8-hex>` form means and notes that substring / prefix variants are NOT accepted.
+- `apply_archetype_renames` docstring documents the empty-mapping and all-self-renames idempotent shape: `{status: success, renames_applied: 0, new_profile_sha256: <unchanged>, note: "no effective renames..."}`. The returned sha matches the existing profile byte-for-byte so trust grants stay valid across successive no-op calls.
+
+### Tests
+
+- 17 new regression cases under `V0_5_13_*` classes in `tests/get_pattern_context_cache_test.py`. Coverage: `get_rules` archetype-name guard + source-key exact match + substring back-compat; slug-collision routing (transition, active-active collision, new-slug deprecated, already-deprecated rejection); transition-path input sanitization against `## active` / `## deprecated` injection in rationale; `match_quality` field presence for AST / fallback / none paths; `doctor` env-var override and 72h age filter; slug error echo. Falsified pre-fix: 11 of 17 fail without the source changes.
+
+### Did NOT reproduce (no code change)
+
+Two external claims against v0.5.12 did not reproduce in verification: (a) `apply_archetype_renames({})` was reported to write a fresh `new_profile_sha256` per call and invalidate trust; `hash_profile` is deterministic over unchanged on-disk bytes and 4 successive no-op calls returned the identical sha. (b) `teach_profile` was reported to half-strip ANSI sequences (stripping `\x1b` but leaving visible `[31m` / `[0m` bracket codes); the SGR matcher in `sanitization.py` strips the entire CSI sequence per repro. Both claims were likely setup-specific; the first agent verification round documented the divergence in detail.
+
+### Compatibility
+
+- Existing profiles work unchanged. No `PROFILE_SCHEMA_VERSION` bump. No re-bootstrap required.
+- `match_quality` is additive: callers reading the archetype envelope by name keep working. The cache-test contract assertion (`test_public_get_archetype_contract_unchanged`) updated to include the new key.
+- Existing `lint_file` callers reading the `reason` field will break. The renamed `noop_reason` field carries the same string. Update accordingly.
+
 ## [0.5.12] - 2026-05-19
 
 Single bug fix. Patch release. Existing profiles work unchanged.
