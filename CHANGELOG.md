@@ -4,6 +4,22 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.12] - 2026-05-19
+
+Single bug fix. Patch release. Existing profiles work unchanged.
+
+### Fixed
+
+- **`get_rules` accepts path argument.** Pre-fix the function used `_resolve_repo_root_by_id` which only matches a 64-char hex repo_id; passing an absolute path silently returned `{rules: []}` even though `get_pattern_context` (which takes a file path) routinely surfaces the same rules through its envelope. Reported externally: the rules were visible on one tool, missing on the other. Switched to `_resolve_repo_arg` so both forms work. Same fix shape as v0.5.2 Bug 5 (`get_canonical_excerpt`) and v0.5.10 (`get_archetype`). (`mcp/chameleon_mcp/tools.py`)
+
+### Tests
+
+- `GetRulesPathFormTest` covers path-form acceptance, archetype filter on path form, unknown-archetype empty result, and nonexistent-path graceful empty. Falsified pre-fix: 2 of 4 cases fail before the resolver change.
+
+### Compatibility
+
+- Hex repo_id form unchanged. No `PROFILE_SCHEMA_VERSION` bump. No re-bootstrap required.
+
 ## [0.5.11] - 2026-05-19
 
 Two bug fixes surfaced by real-workflow testing on a TypeScript repo and a Ruby on Rails repo. Patch release. Existing profiles work unchanged.
