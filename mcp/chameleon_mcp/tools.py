@@ -622,6 +622,7 @@ def get_archetype(repo: str, file_path: str) -> dict:
             "alternatives": [],
             "content_signal_match": "none",
             "confidence_band": "low",
+            "match_quality": "none",
         })
 
     p = Path(file_path).expanduser()
@@ -635,6 +636,7 @@ def get_archetype(repo: str, file_path: str) -> dict:
             "alternatives": [],
             "content_signal_match": content_signal_value,
             "confidence_band": "low",
+            "match_quality": "none",
         })
 
     # v0.5.10 (Bug 4): accept either a 64-char hex repo_id OR an
@@ -652,6 +654,7 @@ def get_archetype(repo: str, file_path: str) -> dict:
                 "alternatives": [],
                 "content_signal_match": content_signal_value,
                 "confidence_band": "low",
+                "match_quality": "none",
             })
     else:
         # Path form (or anything else): route through `_resolve_repo_arg`
@@ -664,6 +667,7 @@ def get_archetype(repo: str, file_path: str) -> dict:
                 "alternatives": [],
                 "content_signal_match": content_signal_value,
                 "confidence_band": "low",
+                "match_quality": "none",
             })
 
     profile_dir = repo_root / ".chameleon"
@@ -675,6 +679,7 @@ def get_archetype(repo: str, file_path: str) -> dict:
             "alternatives": [],
             "content_signal_match": content_signal_value,
             "confidence_band": "low",
+            "match_quality": "none",
         })
 
     return _get_archetype_with_loaded(p, repo_root, loaded, content_signal_value)
@@ -765,11 +770,17 @@ def _get_archetype_with_loaded(
                 rel_str, archetypes
             )
             confidence = "low"
+        # v0.5.13: surface match_quality="fallback" so callers can
+        # distinguish "AST-weak match" (real archetype with thin AST
+        # signal) from "we picked something arbitrary because no bucket
+        # matched." Sparse-cluster files that got dropped at bootstrap
+        # land here.
         return _envelope({
             "archetype": primary,
             "alternatives": alternatives,
             "content_signal_match": content_signal_value,
             "confidence_band": confidence,
+            "match_quality": "fallback" if primary is not None else "none",
         })
 
     # Path-bucket gave us one or more candidates; try AST shape verification.
@@ -808,6 +819,7 @@ def _get_archetype_with_loaded(
             "alternatives": exact_matches[1:],
             "content_signal_match": content_signal_value,
             "confidence_band": "high" if len(exact_matches) == 1 else "low",
+            "match_quality": "exact",
         })
 
     # Extract dimensions and score each candidate against its ast_query.
@@ -861,10 +873,19 @@ def _get_archetype_with_loaded(
             confidence = "medium"
         else:
             confidence = "low"
+        # AST verification happened (at least one candidate carried an
+        # ast_query and we scored against it). Even if confidence ended
+        # at "low", that's an AST-grade low — meaningfully different from
+        # the path-only "low" the fallback branch produces.
+        match_quality = "ast"
     else:
         primary = exact_matches[0]
         alternatives = exact_matches[1:]
         confidence = "high" if len(exact_matches) == 1 else "low"
+        # Bucket matched, but no candidate carried an ast_query, so the
+        # archetype was picked by cluster-size only. Distinguishable from
+        # "ast" because no structural verification ran.
+        match_quality = "exact"
 
     # v0.5.2 (Bug 3): prefer the head-only signal computed up-front so
     # all return branches agree on the {"none", "use_client",
@@ -882,6 +903,7 @@ def _get_archetype_with_loaded(
         "alternatives": alternatives,
         "content_signal_match": final_signal,
         "confidence_band": confidence,
+        "match_quality": match_quality,
     })
 
 
@@ -909,6 +931,7 @@ def _empty_pattern_envelope(
             "alternatives": [],
             "content_signal_match": "none",
             "confidence_band": "low",
+            "match_quality": "none",
         },
         "canonical_excerpt": {
             "content": "",
@@ -1304,14 +1327,31 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
 
 
 def get_rules(repo: str, archetype: str | None = None) -> dict:
-    """Return rules + citations for repo, filtered by archetype if provided.
+    """Return repo-global rules (eslint, prettier, rubocop, tsconfig) keyed
+    by source/tool.
+
+    The `archetype` parameter name is historical — rules are SOURCE-scoped,
+    not archetype-scoped. The keys in `rules.rules` are tool names
+    (`eslint`, `formatting`, `typescript`, `rubocop`, `rubocop_todo`), never
+    archetype names. Passing a value matching an archetype in the profile
+    returns a typed error pointing at the right semantic (pre-v0.5.13 it
+    returned a silent empty `[]`, which is a footgun: a caller filtering by
+    archetype gets no rules but no signal).
+
+    Backward compatible usage:
+      - `archetype=None` → all rules (full source map).
+      - `archetype="eslint"` → only the eslint source block.
+      - `archetype="lint"` → substring match against source keys; matches
+        `eslint`. Kept for callers that relied on partial matching.
+
+    New v0.5.13 behavior:
+      - `archetype="component"` (or any name that resolves to an archetype
+        in archetypes.json) → `{status: failed, error: ...}` envelope with
+        a hint to omit the argument or pass a source key.
 
     Accepts `repo` as either an absolute path or a 64-char hex repo_id.
-    Pre-fix the function only accepted hex via `_resolve_repo_root_by_id`
-    and silently returned `{rules: []}` for any path argument, even though
-    `get_pattern_context` (which receives a file path) routinely surfaces
-    the same rules via the envelope's `rules` field. Same shape-resolver
-    pattern as `get_canonical_excerpt` and `get_archetype`.
+    Same shape-resolver pattern as `get_canonical_excerpt` and
+    `get_archetype`.
     """
     from chameleon_mcp.profile.loader import load_profile_dir
 
@@ -1329,7 +1369,37 @@ def get_rules(repo: str, archetype: str | None = None) -> dict:
     rules_dict = loaded.rules.get("rules", {}) or {}
     if archetype is None:
         return _envelope({"rules": list(rules_dict.items())})
-    # Filter rules whose key matches archetype prefix or exact name
+
+    # Exact-match against rules_dict keys wins first. This preserves the
+    # natural "give me rules whose key is exactly X" semantic and lets
+    # profiles that happen to scope a rule block under an archetype name
+    # (rare today, but valid given the rules.json schema) still resolve
+    # without tripping the footgun guard below.
+    if archetype in rules_dict:
+        return _envelope({"rules": [(archetype, rules_dict[archetype])]})
+
+    # Footgun guard: if the caller passed an archetype name (matches an
+    # entry in archetypes.json) AND that name is NOT a rules_dict key,
+    # surface an explicit error rather than the pre-v0.5.13 silent `[]`.
+    # The substring fallback below would either return empty or
+    # accidentally match (e.g. `archetype="lint"` would match `eslint`
+    # even when the caller meant "give me rules for the lint archetype").
+    if archetype in loaded.archetype_names:
+        sources = sorted(rules_dict.keys())
+        return _envelope({
+            "status": "failed",
+            "error": (
+                f"{archetype!r} is an archetype name, but rules are "
+                "source-scoped (eslint / formatting / typescript / "
+                "rubocop), not archetype-scoped. Omit the argument to "
+                "get all rules, or pass a source key. "
+                f"Available sources in this profile: {sources}"
+            ),
+            "rules": [],
+        })
+
+    # Substring match against source keys. Kept for callers that pass
+    # partial source names like 'lint' to match 'eslint'.
     filtered = [(k, v) for k, v in rules_dict.items() if archetype in str(k)]
     return _envelope({"rules": filtered})
 
@@ -1343,12 +1413,25 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
     `lint_engine.extract_dimensions`) and compares them against the
     archetype's `ast_query` block in canonicals.json.
 
+    **Heuristic, not a parser.** `lint_file` runs regex-based extraction,
+    not a real TS/Ruby parser. It detects top-level structural patterns
+    (export shape, class/module/function counts, content directives, JSX
+    presence) but will NOT flag syntax errors. `unparseable_regions` is
+    always `[]` in the current implementation. A file with unclosed
+    braces, mid-token cuts, or invalid syntax may still score against an
+    archetype's structural fingerprint — the engine reports what it sees,
+    not whether the file parses. Real-parser validation happens at
+    bootstrap time via `scripts/ts_dump.mjs` / `scripts/prism_dump.rb`,
+    not on the per-edit hot path.
+
     Resolution rules:
     - If `repo` can be resolved to a profile dir AND the archetype has a
       non-null ast_query, run the real engine and return `"stub": False`.
     - If the archetype exists but its ast_query is null / missing, return
-      a real-envelope shape with `"stub": False` and a `"reason"` field
-      explaining the no-op (the engine ran; it just had nothing to check).
+      a real-envelope shape with `"stub": False` and a `"noop_reason"`
+      field explaining the no-op (the engine ran; it just had nothing to
+      check). Pre-v0.5.13 this field was named `reason`; rename is
+      internal-consistency only.
     - If the repo / profile cannot be resolved at all, fall back to the
       legacy stub envelope (`"stub": True`) so callers without a real
       profile continue to see the no-op semantics they relied on in v0.2.
@@ -1486,6 +1569,9 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
     # 4. If the archetype is unknown OR its ast_query is null/empty, run
     # the engine as a no-op. This is the real-impl envelope (stub: False)
     # because the engine *did* run — there just wasn't a query to evaluate.
+    # `noop_reason` carries the human explanation so it mirrors
+    # `stub_reason` (used when the engine never ran). Pre-v0.5.13 this was
+    # spelled `reason`; the rename is internal-consistency only.
     if not ast_query:
         return _envelope(
             {
@@ -1495,7 +1581,7 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
                 "canonical_confidence": 0.0,
                 "unparseable_regions": [],
                 "content_size": content_size,
-                "reason": (
+                "noop_reason": (
                     "no ast_query for archetype "
                     f"{archetype!r} — re-bootstrap via /chameleon-refresh"
                 ),
@@ -3025,8 +3111,11 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
         return _envelope({
             "status": "failed",
             "error": (
-                f"confirmation_token must be the repo name {repo_path.name!r} "
-                f"or yes-trust-{expected_short}"
+                "confirmation_token must be exactly the repo basename "
+                f"{repo_path.name!r}, or the literal string "
+                f"'yes-trust-{expected_short}' "
+                f"(yes-trust- prefix + the first 8 hex chars of repo_id "
+                f"{repo_id!r}). Substring / prefix variants are NOT accepted."
             ),
         })
 
@@ -3260,6 +3349,11 @@ def propose_archetype_renames(repo: str, top_n: int = 8) -> dict:
     Drives the chameleon-init interview prompt 1+2 (skill-side prose).
     The MCP is stateless — the skill collects the user's choices and
     submits them as a single mapping via apply_archetype_renames.
+
+    `top_n` must be an integer in 1..64 (inclusive). Values outside that
+    range return `{status: failed, error: "top_n must be an int in
+    1..64"}`. Default is 8, which is what the chameleon-init skill uses
+    for its interview prompts.
 
     v0.5.2 (Bug 1): `repo` accepts either an absolute repo path or a
     64-char repo_id hex digest. See `_resolve_repo_arg`.
@@ -3592,6 +3686,14 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     Uses atomic_profile_commit so a crash mid-write leaves the previous
     profile untouched. Returns status, renames_applied, new_profile_sha256.
 
+    Idempotent on no-ops: an empty mapping (`{}`) or a mapping where every
+    entry is a self-rename (`{"x": "x"}`) returns
+    `{status: success, renames_applied: 0, new_profile_sha256: <unchanged>,
+    note: "no effective renames (all no-ops or empty mapping)"}` WITHOUT
+    rewriting any profile files. The returned sha matches the existing
+    profile.json byte-for-byte, so trust grants remain valid across
+    successive no-op calls.
+
     v0.5.2 (Bug 1): `repo` accepts either an absolute repo path or a
     64-char repo_id hex digest. See `_resolve_repo_arg`.
     """
@@ -3778,7 +3880,7 @@ def teach_profile_structured(
     if not isinstance(slug, str) or not _SLUG_RE.match(slug):
         return _envelope({
             "status": "failed",
-            "error": f"slug must match {_SLUG_RE.pattern!r}",
+            "error": f"slug {slug!r} must match {_SLUG_RE.pattern!r}",
         })
     if not isinstance(rationale, str) or not rationale.strip():
         return _envelope({"status": "failed", "error": "rationale is required"})
@@ -3791,7 +3893,7 @@ def teach_profile_structured(
         return _envelope({
             "status": "failed",
             "error": (
-                f"archetype {archetype!r} must match {ARCHETYPE_NAME_RE.pattern}"
+                f"archetype {archetype!r} must match {ARCHETYPE_NAME_RE.pattern!r}"
             ),
         })
 
@@ -3828,9 +3930,372 @@ def teach_profile_structured(
         lines.append("```")
     rendered = "\n".join(lines)
 
-    # Delegate to teach_profile so we inherit the lock + sanitization +
-    # placeholder-strip code path. The leading "### " header is honored.
-    return teach_profile(repo, rendered)
+    # v0.5.13: slug-collision + status routing. Pre-v0.5.13 the function
+    # delegated straight to `teach_profile` which appends to `## active`
+    # regardless of whether `### slug` already exists AND regardless of
+    # the caller's status argument, producing two bugs at once: (a)
+    # duplicates on repeat-capture, (b) the documented "capture as
+    # deprecated" path silently landed in `## active` with a `Status:
+    # deprecated` body line the section split never honored.
+    #
+    # The five cases the wrapper now handles:
+    #   - new slug + status=active     -> delegate to teach_profile.
+    #   - new slug + status=deprecated -> direct-deprecated writer.
+    #   - in active + status=active     -> reject (collision).
+    #   - in active + status=deprecated -> transition to deprecated.
+    #   - in deprecated + any status    -> reject (already deprecated;
+    #     callers must pick a new slug or edit the file directly).
+    repo_path, _repo_id = _resolve_repo_arg(repo)
+    if repo_path is None:
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+    if not repo_path.is_dir():
+        return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
+    idioms_path = repo_path / ".chameleon" / "idioms.md"
+    if not idioms_path.parent.exists():
+        return _envelope({"status": "failed", "error": "no profile in this repo (run /chameleon-init)"})
+
+    sections = _find_all_slug_sections(idioms_path, slug)
+    in_active = "active" in sections
+    in_deprecated = "deprecated" in sections
+
+    if in_deprecated:
+        return _envelope({
+            "status": "failed",
+            "error": (
+                f"slug {slug!r} already exists in '## deprecated'. Pick a "
+                "new slug or edit idioms.md directly to reactivate."
+            ),
+        })
+    if in_active and status == "active":
+        return _envelope({
+            "status": "failed",
+            "error": (
+                f"slug {slug!r} already exists in '## active'. To "
+                "deprecate it, pass status=\"deprecated\"; to update its "
+                "body, edit idioms.md directly or pick a new slug."
+            ),
+        })
+    if in_active and status == "deprecated":
+        return _transition_slug_to_deprecated(
+            idioms_path, slug, archetype=archetype,
+            rationale=rationale.strip(), timestamp=timestamp,
+            example=example, counterexample=counterexample,
+        )
+
+    # No collision in either section.
+    if status == "active":
+        # Delegate to teach_profile for sanitization + lock + 200KB cap.
+        return teach_profile(repo, rendered)
+    # status == "deprecated" + brand-new slug: write directly into the
+    # deprecated section. Goes through the same sanitization + cap +
+    # advisory-lock helpers teach_profile uses.
+    return _write_new_deprecated_idiom(
+        idioms_path, slug, archetype=archetype,
+        rationale=rationale.strip(), timestamp=timestamp,
+        example=example, counterexample=counterexample,
+    )
+
+
+def _find_all_slug_sections(idioms_path: Path, slug: str) -> frozenset[str]:
+    """Return the set of sections (`"active"`, `"deprecated"`) where
+    `### {slug}` appears in idioms.md. Empty when the slug isn't present
+    or the file doesn't exist. Captures the corrupted-state case (slug
+    in BOTH sections) so the wrapper can surface it explicitly rather
+    than silently adding a third entry.
+    """
+    if not idioms_path.is_file():
+        return frozenset()
+    try:
+        text = idioms_path.read_text(encoding="utf-8")
+    except OSError:
+        return frozenset()
+    header = f"### {slug}"
+    found: set[str] = set()
+    section: str = "active"
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == "## active":
+            section = "active"
+            continue
+        if stripped == "## deprecated":
+            section = "deprecated"
+            continue
+        if stripped == header:
+            found.add(section)
+    return frozenset(found)
+
+
+def _render_idiom_block(
+    slug: str,
+    *,
+    status: str,
+    archetype: str | None,
+    rationale: str,
+    timestamp: str,
+    example: str | None,
+    counterexample: str | None,
+) -> str:
+    """Render one idioms.md block. Used by both the transition path and
+    the direct-deprecated writer. Sanitization is delegated to the
+    caller before this runs because each entry point sanitizes the raw
+    inputs differently (some via teach_profile's per-feedback pipeline,
+    some via the local _sanitize_user_input helper)."""
+    status_line = (
+        f"Status: active (added {timestamp})"
+        if status == "active"
+        else f"Status: deprecated {timestamp}"
+    )
+    lines: list[str] = [f"### {slug}", status_line]
+    if archetype:
+        lines.append(f"Archetype: {archetype}")
+    lines.append(rationale)
+    if example:
+        lines.append("")
+        lines.append("Example:")
+        lines.append("```")
+        lines.append(example.rstrip())
+        lines.append("```")
+    if counterexample:
+        lines.append("")
+        lines.append("Counterexample:")
+        lines.append("```")
+        lines.append(counterexample.rstrip())
+        lines.append("```")
+    return "\n".join(lines) + "\n"
+
+
+def _sanitize_idiom_inputs(
+    rationale: str,
+    example: str | None,
+    counterexample: str | None,
+) -> tuple[str, str | None, str | None]:
+    """Run rationale / example / counterexample through
+    _sanitize_user_input + _escape_markdown_section_headings so the
+    transition + direct-deprecated paths match teach_profile's
+    sanitization. Returns the sanitized triple; empty strings normalize
+    to None for example/counterexample so the renderer can skip them."""
+    san_rationale = _escape_markdown_section_headings(
+        _sanitize_user_input(rationale)
+    )
+    san_example: str | None = None
+    if example is not None:
+        cleaned = _escape_markdown_section_headings(_sanitize_user_input(example))
+        san_example = cleaned if cleaned.strip() else None
+    san_counter: str | None = None
+    if counterexample is not None:
+        cleaned = _escape_markdown_section_headings(_sanitize_user_input(counterexample))
+        san_counter = cleaned if cleaned.strip() else None
+    return san_rationale, san_example, san_counter
+
+
+def _transition_slug_to_deprecated(
+    idioms_path: Path,
+    slug: str,
+    *,
+    archetype: str | None,
+    rationale: str,
+    timestamp: str,
+    example: str | None,
+    counterexample: str | None,
+) -> dict:
+    """Move an existing `### {slug}` block from `## active` to
+    `## deprecated`, replacing its status line with
+    `Status: deprecated {timestamp}` and overwriting its body with the
+    new rationale / example / counterexample / archetype. Sanitizes the
+    rationale / example / counterexample inputs the same way
+    teach_profile does (NFC + ANSI + zero-width strip + heading
+    escape), and respects the 200KB _IDIOMS_FILE_CAP cumulative cap.
+    Acquires the same advisory lock teach_profile uses.
+    """
+    from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+
+    san_rationale, san_example, san_counter = _sanitize_idiom_inputs(
+        rationale, example, counterexample
+    )
+    new_block = _render_idiom_block(
+        slug, status="deprecated", archetype=archetype,
+        rationale=san_rationale, timestamp=timestamp,
+        example=san_example, counterexample=san_counter,
+    )
+
+    lock_path = idioms_path.parent / ".idioms.lock"
+    try:
+        with acquire_advisory_lock(lock_path):
+            text = idioms_path.read_text(encoding="utf-8")
+            header = f"### {slug}"
+            # Split into active / deprecated bodies. We deliberately use
+            # the simplest split that respects the section ordering
+            # described by `_write_profiled_repo` so callers reading the
+            # rewritten file see the expected layout.
+            lines = text.splitlines(keepends=True)
+            active_body: list[str] = []
+            deprecated_body: list[str] = []
+            preamble: list[str] = []
+            phase = "preamble"  # preamble -> active -> deprecated
+            i = 0
+            removed = False
+            while i < len(lines):
+                line = lines[i]
+                stripped = line.strip()
+                if stripped == "## active":
+                    phase = "active"
+                    i += 1
+                    continue
+                if stripped == "## deprecated":
+                    phase = "deprecated"
+                    i += 1
+                    continue
+                if phase == "preamble":
+                    preamble.append(line)
+                    i += 1
+                    continue
+                # Inside active or deprecated section. Look for the slug
+                # header; if it matches, skip until the next header.
+                if phase == "active" and stripped == header and not removed:
+                    removed = True
+                    i += 1
+                    while i < len(lines):
+                        nxt = lines[i].strip()
+                        if nxt.startswith("### ") or nxt.startswith("## "):
+                            break
+                        i += 1
+                    continue
+                if phase == "active":
+                    active_body.append(line)
+                else:
+                    deprecated_body.append(line)
+                i += 1
+
+            if not removed:
+                # Race: another writer mutated the file between our pre-
+                # check and now. Bail without writing rather than appending
+                # a duplicate block in `## active`.
+                return _envelope({
+                    "status": "failed",
+                    "error": (
+                        f"slug {slug!r} no longer present in '## active' "
+                        "(concurrent write?); retry"
+                    ),
+                })
+
+            rebuilt: list[str] = []
+            rebuilt.extend(preamble)
+            rebuilt.append("## active\n")
+            rebuilt.extend(active_body)
+            rebuilt.append("## deprecated\n")
+            rebuilt.append(new_block)
+            rebuilt.extend(deprecated_body)
+            new_content = "".join(rebuilt)
+            if len(new_content.encode("utf-8")) > _IDIOMS_FILE_CAP:
+                return _envelope({
+                    "status": "failed",
+                    "error": (
+                        f"idioms.md would exceed {_IDIOMS_FILE_CAP // 1000}KB "
+                        f"cumulative cap ({len(new_content.encode('utf-8'))} "
+                        "bytes after transition). Trim the file or move older "
+                        "entries before transitioning more slugs."
+                    ),
+                })
+            idioms_path.write_text(new_content, encoding="utf-8")
+    except LockHeldError as e:
+        return _envelope({
+            "status": "failed",
+            "error": (
+                f"another /chameleon-teach is in progress (PID {e.holder_pid}); "
+                "retry shortly"
+            ),
+        })
+
+    return _envelope({
+        "status": "success",
+        "idioms_added": 0,
+        "idioms_deprecated": 1,
+        "slug": slug,
+        "note": f"moved '### {slug}' from '## active' to '## deprecated'",
+    })
+
+
+def _write_new_deprecated_idiom(
+    idioms_path: Path,
+    slug: str,
+    *,
+    archetype: str | None,
+    rationale: str,
+    timestamp: str,
+    example: str | None,
+    counterexample: str | None,
+) -> dict:
+    """Append a brand-new `### {slug}` block directly under `##
+    deprecated`. Used when teach_profile_structured is called with
+    status='deprecated' on a slug that doesn't yet exist in either
+    section. Sanitizes inputs and respects the cumulative cap, same as
+    the transition path.
+    """
+    from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+
+    san_rationale, san_example, san_counter = _sanitize_idiom_inputs(
+        rationale, example, counterexample
+    )
+    new_block = _render_idiom_block(
+        slug, status="deprecated", archetype=archetype,
+        rationale=san_rationale, timestamp=timestamp,
+        example=san_example, counterexample=san_counter,
+    )
+
+    lock_path = idioms_path.parent / ".idioms.lock"
+    try:
+        with acquire_advisory_lock(lock_path):
+            if idioms_path.is_file():
+                current = idioms_path.read_text(encoding="utf-8")
+            else:
+                current = "# idioms\n\n## active\n\n## deprecated\n"
+            current = current.replace(
+                "_(no idioms yet — run /chameleon-teach to capture team conventions)_\n\n",
+                "",
+                1,
+            )
+            if "## deprecated" in current:
+                new_content = current.replace(
+                    "## deprecated\n",
+                    f"## deprecated\n{new_block}",
+                    1,
+                )
+            else:
+                # Profile somehow lacks the section header. Append both
+                # the heading and the block so the file stays parseable.
+                if not current.endswith("\n"):
+                    current += "\n"
+                new_content = current + "\n## deprecated\n" + new_block
+            if len(new_content.encode("utf-8")) > _IDIOMS_FILE_CAP:
+                return _envelope({
+                    "status": "failed",
+                    "error": (
+                        f"idioms.md would exceed {_IDIOMS_FILE_CAP // 1000}KB "
+                        f"cumulative cap ({len(new_content.encode('utf-8'))} "
+                        "bytes after append). Trim the file or move older "
+                        "entries before capturing more."
+                    ),
+                })
+            idioms_path.write_text(new_content, encoding="utf-8")
+    except LockHeldError as e:
+        return _envelope({
+            "status": "failed",
+            "error": (
+                f"another /chameleon-teach is in progress (PID {e.holder_pid}); "
+                "retry shortly"
+            ),
+        })
+
+    return _envelope({
+        "status": "success",
+        "idioms_added": 0,
+        "idioms_deprecated": 1,
+        "slug": slug,
+        "note": f"appended '### {slug}' directly under '## deprecated'",
+    })
 
 
 def daemon_status() -> dict:
@@ -3977,12 +4442,49 @@ def doctor() -> dict:
     except Exception as exc:
         checks.append({"name": "daemon", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
 
-    # 8. Recent hook errors (last 5 from .hook_errors.log)
-    log = Path.home() / ".local" / "share" / "chameleon" / ".hook_errors.log"
+    # 8. Recent hook errors (last 5 from .hook_errors.log within 72h).
+    # v0.5.13: honor CHAMELEON_HOOK_ERROR_LOG to match the hooks' own
+    # resolution (preflight-and-advise / session-start / posttool-recorder
+    # / callout-detector all read this env var first). Pre-v0.5.13 doctor
+    # always hit the default home path, which surfaced stale errors from
+    # dev worktrees forever. Also drop entries older than 72h so an old
+    # one-time traceback stops warning indefinitely.
+    log_env = os.environ.get("CHAMELEON_HOOK_ERROR_LOG")
+    if log_env:
+        log = Path(log_env)
+    else:
+        log = Path.home() / ".local" / "share" / "chameleon" / ".hook_errors.log"
     if log.is_file():
         try:
-            tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-5:]
-            checks.append({"name": "recent_hook_errors", "status": "warn" if tail else "ok", "detail": tail})
+            import re as _re
+            from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+            cutoff = _dt.now(_tz.utc) - _td(hours=72)
+            ts_re = _re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
+            recent: list[str] = []
+            for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+                m = ts_re.match(line)
+                if not m:
+                    # Non-timestamped lines (e.g. python traceback rows
+                    # written via `2>>"${LOG_FILE}"`) attach to the most
+                    # recent kept timestamped line so context survives the
+                    # age filter.
+                    if recent:
+                        recent.append(line)
+                    continue
+                try:
+                    when = _dt.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_tz.utc)
+                except ValueError:
+                    if recent:
+                        recent.append(line)
+                    continue
+                if when >= cutoff:
+                    recent.append(line)
+            tail = recent[-5:]
+            if tail:
+                checks.append({"name": "recent_hook_errors", "status": "warn", "detail": tail})
+            else:
+                checks.append({"name": "recent_hook_errors", "status": "ok", "detail": "no errors in the last 72h"})
         except Exception as exc:
             checks.append({"name": "recent_hook_errors", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
     else:

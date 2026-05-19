@@ -97,11 +97,22 @@ class ArchetypeReuseTest(unittest.TestCase):
         target.write_text("export const Other = () => null;\n")
         repo_id = _compute_repo_id(self.repo.resolve())
         r = get_archetype(repo_id, str(target))["data"]
+        # v0.5.13 adds `match_quality` as an additive envelope field
+        # (one of "ast" | "exact" | "fallback" | "none"). Pre-v0.5.13
+        # callers reading by name keep working; this assertion guards the
+        # full key set so future field-removal regressions surface.
         self.assertEqual(
             set(r.keys()),
-            {"archetype", "alternatives", "content_signal_match", "confidence_band"},
+            {
+                "archetype",
+                "alternatives",
+                "content_signal_match",
+                "confidence_band",
+                "match_quality",
+            },
         )
         self.assertEqual(r["archetype"], "widget")
+        self.assertIn(r["match_quality"], {"ast", "exact", "fallback", "none"})
 
     def test_get_pattern_context_resolves_archetype_and_excerpt(self):
         from chameleon_mcp.tools import get_pattern_context
@@ -1365,6 +1376,385 @@ class GetRulesPathFormTest(unittest.TestCase):
         from chameleon_mcp.tools import get_rules
         r = get_rules("/no/such/dir/at/all")
         self.assertEqual(r["data"]["rules"], [])
+
+
+class V0_5_13_GetRulesFootgunTest(unittest.TestCase):
+    """v0.5.13 #5: get_rules used to silently return [] when caller passed
+    an archetype name (e.g. `archetype="component"`). Now surfaces an
+    explicit error pointing at the source-key semantic."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(self.repo, "src/components/Widget.tsx",
+                             "export const X = 1;")
+        # rules.json keyed by source/tool names, not archetype names.
+        pd = self.repo / ".chameleon"
+        base = {"engine_min_version": "0.1.0", "generation": 1, "schema_version": 1}
+        (pd / "rules.json").write_text(json.dumps({
+            **base,
+            "rules": {
+                "eslint": [{"id": "react/hook-deps"}],
+                "formatting": [{"id": "prettier"}],
+            },
+        }))
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        import shutil
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def test_archetype_name_returns_explicit_error(self):
+        from chameleon_mcp.tools import get_rules
+        # widget is in archetypes.json but NOT in rules_dict, so this is
+        # the footgun case: pre-v0.5.13 returned silent [], v0.5.13
+        # returns failed.
+        r = get_rules(str(self.repo), archetype="widget")
+        self.assertEqual(r["data"]["status"], "failed", f"unexpected: {r['data']}")
+        self.assertIn("archetype name", r["data"]["error"])
+        self.assertIn("eslint", r["data"]["error"])
+
+    def test_rule_source_key_still_works(self):
+        from chameleon_mcp.tools import get_rules
+        r = get_rules(str(self.repo), archetype="eslint")
+        self.assertNotIn("status", r["data"], f"unexpected failed: {r['data']}")
+        self.assertEqual(len(r["data"]["rules"]), 1)
+        self.assertEqual(r["data"]["rules"][0][0], "eslint")
+
+    def test_substring_match_still_works(self):
+        from chameleon_mcp.tools import get_rules
+        # "lint" matches "eslint" via substring (back-compat).
+        r = get_rules(str(self.repo), archetype="lint")
+        self.assertNotIn("status", r["data"])
+        self.assertEqual(len(r["data"]["rules"]), 1)
+
+    def test_omit_returns_full_rules(self):
+        from chameleon_mcp.tools import get_rules
+        r = get_rules(str(self.repo))
+        self.assertNotIn("status", r["data"])
+        self.assertEqual(len(r["data"]["rules"]), 2)
+
+
+class V0_5_13_LintFileNoopReasonTest(unittest.TestCase):
+    """v0.5.13 #3: rename `reason` -> `noop_reason` in the no-op branch
+    of lint_file so it mirrors `stub_reason` used in the stub branches."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(self.repo, "src/components/Widget.tsx",
+                             "export const X = 1;")
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        import shutil
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def test_unknown_archetype_uses_noop_reason(self):
+        from chameleon_mcp.tools import lint_file
+        r = lint_file(str(self.repo), "no-such-archetype", "x = 1")["data"]
+        self.assertIs(r["stub"], False)
+        self.assertIsNone(r["stub_reason"])
+        self.assertIn("noop_reason", r)
+        self.assertIn("no ast_query", r["noop_reason"])
+        self.assertNotIn("reason", r,
+                         "v0.5.13 renamed `reason` to `noop_reason`")
+
+
+class V0_5_13_SlugErrorEchoesBadValueTest(unittest.TestCase):
+    """v0.5.13 #16: slug validation error now includes the rejected slug."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(self.repo, "src/components/Widget.tsx",
+                             "export const X = 1;")
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        import shutil
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def test_uppercase_slug_includes_bad_value_in_error(self):
+        from chameleon_mcp.tools import teach_profile_structured
+        r = teach_profile_structured(
+            str(self.repo), slug="BAD-UPPER", rationale="test"
+        )
+        self.assertEqual(r["data"]["status"], "failed")
+        self.assertIn("BAD-UPPER", r["data"]["error"])
+
+    def test_distinct_slugs_produce_distinct_errors(self):
+        from chameleon_mcp.tools import teach_profile_structured
+        e1 = teach_profile_structured(str(self.repo), slug="UpA", rationale="r")["data"]["error"]
+        e2 = teach_profile_structured(str(self.repo), slug="UpB", rationale="r")["data"]["error"]
+        self.assertNotEqual(e1, e2, "errors should echo the distinct slugs")
+        self.assertIn("UpA", e1)
+        self.assertIn("UpB", e2)
+
+
+class V0_5_13_TeachStructuredSlugTransitionTest(unittest.TestCase):
+    """v0.5.13 #10: teach_profile_structured used to ADD a new entry on
+    every call even when the slug already existed. Now:
+      - status=deprecated + existing active slug -> move to ## deprecated
+      - status=active + existing slug -> rejected with explicit error"""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(self.repo, "src/components/Widget.tsx",
+                             "export const X = 1;")
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        import shutil
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def _idioms_text(self) -> str:
+        return (self.repo / ".chameleon" / "idioms.md").read_text(encoding="utf-8")
+
+    def test_deprecation_moves_block(self):
+        from chameleon_mcp.tools import teach_profile_structured
+        # Initial active capture.
+        r1 = teach_profile_structured(
+            str(self.repo), slug="transition-me", rationale="first take"
+        )
+        self.assertEqual(r1["data"]["status"], "success")
+        text_after_add = self._idioms_text()
+        self.assertIn("### transition-me", text_after_add)
+
+        # Deprecate the same slug. Block should move to ## deprecated.
+        r2 = teach_profile_structured(
+            str(self.repo), slug="transition-me",
+            rationale="superseded by X", status="deprecated"
+        )
+        self.assertEqual(r2["data"]["status"], "success", f"got: {r2['data']}")
+        self.assertEqual(r2["data"]["idioms_deprecated"], 1)
+        self.assertEqual(r2["data"]["idioms_added"], 0)
+        text_after_dep = self._idioms_text()
+        # Exactly one `### transition-me` header in the file.
+        self.assertEqual(
+            text_after_dep.count("### transition-me"), 1,
+            f"expected one header, idioms.md:\n{text_after_dep}"
+        )
+        # That header must be in the deprecated section.
+        active_idx = text_after_dep.index("## active")
+        dep_idx = text_after_dep.index("## deprecated")
+        header_idx = text_after_dep.index("### transition-me")
+        self.assertGreater(header_idx, dep_idx,
+                           "header must live in ## deprecated section")
+        self.assertGreater(dep_idx, active_idx)
+        # Status line was rewritten to deprecated form.
+        self.assertIn("Status: deprecated", text_after_dep)
+
+    def test_active_active_collision_rejected(self):
+        from chameleon_mcp.tools import teach_profile_structured
+        teach_profile_structured(str(self.repo), slug="dupe", rationale="first")
+        r2 = teach_profile_structured(str(self.repo), slug="dupe", rationale="second")
+        self.assertEqual(r2["data"]["status"], "failed")
+        self.assertIn("dupe", r2["data"]["error"])
+        # File still has exactly one block.
+        self.assertEqual(self._idioms_text().count("### dupe"), 1)
+
+    def test_brand_new_slug_with_deprecated_status_lands_in_deprecated(self):
+        """Code review #10d gap: pre-fix, a brand-new slug + status=
+        'deprecated' silently appended to ## active because the wrapper
+        delegated to teach_profile (which ignores the Status: line).
+        Fix routes to _write_new_deprecated_idiom directly."""
+        from chameleon_mcp.tools import teach_profile_structured
+        r = teach_profile_structured(
+            str(self.repo), slug="dep-from-the-start",
+            rationale="never active", status="deprecated"
+        )
+        self.assertEqual(r["data"]["status"], "success", f"got: {r['data']}")
+        self.assertEqual(r["data"]["idioms_deprecated"], 1)
+        self.assertEqual(r["data"]["idioms_added"], 0)
+        text = self._idioms_text()
+        self.assertEqual(text.count("### dep-from-the-start"), 1)
+        dep_idx = text.index("## deprecated")
+        header_idx = text.index("### dep-from-the-start")
+        self.assertGreater(header_idx, dep_idx,
+                           "new slug + status=deprecated must land in ## deprecated, not ## active")
+        active_idx = text.index("## active")
+        self.assertLess(active_idx, dep_idx, "section ordering preserved")
+
+    def test_slug_already_in_deprecated_blocks_any_capture(self):
+        """If slug is already in ## deprecated, any further teach with
+        the same slug must fail (no resurrection, no second deprecated
+        entry)."""
+        from chameleon_mcp.tools import teach_profile_structured
+        r1 = teach_profile_structured(
+            str(self.repo), slug="already-dead",
+            rationale="rip", status="deprecated"
+        )
+        self.assertEqual(r1["data"]["status"], "success")
+        for status in ("active", "deprecated"):
+            r = teach_profile_structured(
+                str(self.repo), slug="already-dead",
+                rationale="second take", status=status
+            )
+            self.assertEqual(r["data"]["status"], "failed",
+                             f"status={status!r} unexpectedly succeeded: {r['data']}")
+            self.assertIn("already-dead", r["data"]["error"])
+            self.assertIn("deprecated", r["data"]["error"])
+        # Exactly one ### already-dead header in the file.
+        self.assertEqual(self._idioms_text().count("### already-dead"), 1)
+
+    def test_transition_sanitizes_rationale_with_section_heading(self):
+        """A rationale containing '## active' or '## deprecated' must be
+        escaped before going to idioms.md so it can't fork the section
+        split. Pre-fix the transition path skipped sanitization."""
+        from chameleon_mcp.tools import teach_profile_structured
+        teach_profile_structured(
+            str(self.repo), slug="will-transition", rationale="initial"
+        )
+        r = teach_profile_structured(
+            str(self.repo), slug="will-transition",
+            rationale="## deprecated\nthis would have forked the file",
+            status="deprecated",
+        )
+        self.assertEqual(r["data"]["status"], "success", f"got: {r['data']}")
+        text = self._idioms_text()
+        # Exactly one '## deprecated' section header (the raw `##
+        # deprecated` line in the rationale was escaped by
+        # _escape_markdown_section_headings).
+        self.assertEqual(
+            sum(1 for line in text.splitlines() if line.strip() == "## deprecated"),
+            1,
+            f"rationale-derived `## deprecated` leaked into section structure:\n{text}"
+        )
+
+
+class V0_5_13_MatchQualityFlagTest(unittest.TestCase):
+    """v0.5.13 #4: archetype envelope now carries match_quality so callers
+    distinguish AST-verified picks from prefix-overlap fallback."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(self.repo, "src/components/Widget.tsx",
+                             "export const X = 1;")
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        import shutil
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def test_match_quality_present_for_exact_match(self):
+        from chameleon_mcp.tools import _compute_repo_id, get_archetype
+        target = self.repo / "src" / "components" / "Other.tsx"
+        target.write_text("export const Other = () => null;\n")
+        repo_id = _compute_repo_id(self.repo.resolve())
+        r = get_archetype(repo_id, str(target))["data"]
+        self.assertIn("match_quality", r)
+        self.assertIn(r["match_quality"], {"ast", "exact"})
+
+    def test_match_quality_fallback_for_no_bucket_match(self):
+        from chameleon_mcp.tools import _compute_repo_id, get_archetype
+        # No archetype matches `tests/utils/random.ts` so we should land
+        # on the prefix-overlap fallback path with match_quality=fallback.
+        target = self.repo / "tests" / "utils" / "random.ts"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("export const r = Math.random();\n")
+        repo_id = _compute_repo_id(self.repo.resolve())
+        r = get_archetype(repo_id, str(target))["data"]
+        self.assertIn("match_quality", r)
+        # Fallback if any archetype matched by prefix, else "none".
+        self.assertIn(r["match_quality"], {"fallback", "none"})
+
+
+class V0_5_13_DoctorAgeFilterTest(unittest.TestCase):
+    """v0.5.13 #6: doctor now (a) honors CHAMELEON_HOOK_ERROR_LOG env var
+    so worktree-private logs surface instead of $HOME's default, and
+    (b) drops entries older than 72h so a stale traceback stops warning
+    forever."""
+
+    def setUp(self):
+        self._prev = os.environ.get("CHAMELEON_HOOK_ERROR_LOG")
+        self.tmp_log = Path(tempfile.mkstemp(suffix=".hook_errors.log")[1])
+
+    def tearDown(self):
+        if self._prev is None:
+            os.environ.pop("CHAMELEON_HOOK_ERROR_LOG", None)
+        else:
+            os.environ["CHAMELEON_HOOK_ERROR_LOG"] = self._prev
+        try:
+            self.tmp_log.unlink()
+        except FileNotFoundError:
+            pass
+
+    def _doctor_hook_check(self) -> dict:
+        from chameleon_mcp.tools import doctor
+        result = doctor()["data"]["checks"]
+        return next(c for c in result if c["name"] == "recent_hook_errors")
+
+    def test_env_var_overrides_default_path(self):
+        from datetime import datetime, timedelta, timezone
+        ts = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        self.tmp_log.write_text(f"[{ts}Z] preflight-and-advise failed (env-probe)\n")
+        os.environ["CHAMELEON_HOOK_ERROR_LOG"] = str(self.tmp_log)
+        check = self._doctor_hook_check()
+        self.assertEqual(check["status"], "warn")
+        joined = "\n".join(check["detail"]) if isinstance(check["detail"], list) else str(check["detail"])
+        self.assertIn("env-probe", joined)
+
+    def test_old_entries_filtered(self):
+        from datetime import datetime, timedelta, timezone
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+        self.tmp_log.write_text(f"[{old_ts}Z] preflight-and-advise failed (stale)\n")
+        os.environ["CHAMELEON_HOOK_ERROR_LOG"] = str(self.tmp_log)
+        check = self._doctor_hook_check()
+        self.assertEqual(check["status"], "ok")
+        self.assertIn("72h", check["detail"])
+
+    def test_recent_kept_old_dropped(self):
+        from datetime import datetime, timedelta, timezone
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+        recent_ts = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
+        self.tmp_log.write_text(
+            f"[{old_ts}Z] preflight-and-advise failed (ancient)\n"
+            f"[{recent_ts}Z] preflight-and-advise failed (fresh)\n"
+        )
+        os.environ["CHAMELEON_HOOK_ERROR_LOG"] = str(self.tmp_log)
+        check = self._doctor_hook_check()
+        self.assertEqual(check["status"], "warn")
+        joined = "\n".join(check["detail"]) if isinstance(check["detail"], list) else str(check["detail"])
+        self.assertIn("fresh", joined)
+        self.assertNotIn("ancient", joined)
 
 
 if __name__ == "__main__":

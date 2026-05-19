@@ -40,7 +40,9 @@ The interview is a strict three-prompt protocol. Do not exceed three
 user-facing prompts. The MCP exposes two stateless tools the skill drives:
 
 - `propose_archetype_renames(repo, top_n=8)` — returns the top-N largest
-  archetypes plus 3-5 candidate names per archetype.
+  archetypes plus 3-5 candidate names per archetype. `top_n` is an
+  integer in 1..64 (inclusive). 8 is the recommended default for the
+  three-prompt interview.
 - `apply_archetype_renames(repo, renames)` — atomically rewrites
   archetypes.json + canonicals.json + profile.summary.md keys.
 

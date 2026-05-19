@@ -502,8 +502,8 @@ try:
             json.dumps(r, indent=2)[:300],
         )
         t(
-            "lint_file on unknown archetype → carries 'reason' field",
-            isinstance(r.get("reason"), str) and "no ast_query" in r["reason"],
+            "lint_file on unknown archetype → carries 'noop_reason' field",
+            isinstance(r.get("noop_reason"), str) and "no ast_query" in r["noop_reason"],
         )
 
     # No-profile / unresolvable repo → legacy stub envelope preserved.
