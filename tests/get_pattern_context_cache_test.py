@@ -1297,6 +1297,76 @@ class R10IdiomsFileCapTest(unittest.TestCase):
         )
 
 
+class GetRulesPathFormTest(unittest.TestCase):
+    """get_rules previously only accepted hex repo_id via
+    _resolve_repo_root_by_id; passing an absolute path silently returned
+    {rules: []} even though get_pattern_context surfaced the same rules
+    through its envelope. User reported the discrepancy: rules visible in
+    get_pattern_context output, get_rules returns empty. Same fix shape
+    as v0.5.2 Bug 5 (get_canonical_excerpt) and v0.5.10 (get_archetype):
+    switch to _resolve_repo_arg to accept both forms."""
+
+    def setUp(self):
+        self._prev = {k: os.environ.get(k) for k in
+                      ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_ALLOW_TMP_REPO")}
+        os.environ["CHAMELEON_PLUGIN_DATA"] = tempfile.mkdtemp()
+        os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
+        self.repo = Path(tempfile.mkdtemp())
+        _write_profiled_repo(self.repo, "src/components/Widget.tsx",
+                             "export const X = 1;")
+        pd = self.repo / ".chameleon"
+        base = {"engine_min_version": "0.1.0", "generation": 1, "schema_version": 1}
+        rules = {
+            **base,
+            "rules": {
+                "widget": [
+                    {"id": "use-fc", "severity": "warn", "msg": "prefer FC"},
+                    {"id": "no-default-export", "severity": "error",
+                     "msg": "named exports only"},
+                ],
+            },
+        }
+        (pd / "rules.json").write_text(json.dumps(rules))
+
+    def tearDown(self):
+        for k, v in self._prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        import shutil
+        shutil.rmtree(self.repo, ignore_errors=True)
+
+    def test_path_form_returns_non_empty_rules(self):
+        from chameleon_mcp.tools import get_rules
+        r = get_rules(str(self.repo))
+        rules = r["data"]["rules"]
+        self.assertEqual(
+            len(rules), 1,
+            f"expected one archetype rule set with path-form repo, got: {rules}"
+        )
+        arch_name, entries = rules[0]
+        self.assertEqual(arch_name, "widget")
+        self.assertEqual(len(entries), 2)
+
+    def test_path_form_with_archetype_filter(self):
+        from chameleon_mcp.tools import get_rules
+        r = get_rules(str(self.repo), archetype="widget")
+        rules = r["data"]["rules"]
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0][0], "widget")
+
+    def test_path_form_filter_for_unknown_archetype_is_empty(self):
+        from chameleon_mcp.tools import get_rules
+        r = get_rules(str(self.repo), archetype="nonexistent")
+        self.assertEqual(r["data"]["rules"], [])
+
+    def test_nonexistent_path_still_returns_empty(self):
+        from chameleon_mcp.tools import get_rules
+        r = get_rules("/no/such/dir/at/all")
+        self.assertEqual(r["data"]["rules"], [])
+
+
 if __name__ == "__main__":
     _loader = unittest.TestLoader()
     _suite = _loader.loadTestsFromModule(sys.modules[__name__])

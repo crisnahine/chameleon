@@ -1304,11 +1304,21 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
 
 
 def get_rules(repo: str, archetype: str | None = None) -> dict:
-    """Return rules + citations for repo, filtered by archetype if provided."""
+    """Return rules + citations for repo, filtered by archetype if provided.
+
+    Accepts `repo` as either an absolute path or a 64-char hex repo_id.
+    Pre-fix the function only accepted hex via `_resolve_repo_root_by_id`
+    and silently returned `{rules: []}` for any path argument, even though
+    `get_pattern_context` (which receives a file path) routinely surfaces
+    the same rules via the envelope's `rules` field. Same shape-resolver
+    pattern as `get_canonical_excerpt` and `get_archetype`.
+    """
     from chameleon_mcp.profile.loader import load_profile_dir
 
-    repo_root = _resolve_repo_root_by_id(repo)
-    if repo_root is None:
+    repo_root, repo_id = _resolve_repo_arg(repo)
+    if repo_root is None and repo_id is not None:
+        repo_root = _resolve_repo_root_by_id(repo_id)
+    if repo_root is None or not repo_root.is_dir():
         return _envelope({"rules": []})
 
     try:
