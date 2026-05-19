@@ -4,6 +4,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED.svg)](https://docs.claude.com/claude-code)
+[![SafeSkill 94/100](https://img.shields.io/badge/SafeSkill-94%2F100_Verified%20Safe-brightgreen)](https://safeskill.dev/scan/crisnahine-chameleon)
 
 chameleon learns your repo's actual conventions and injects archetype-aware guidance per-edit, so AI-generated code matches your existing style on the first try. Supports TypeScript and Ruby on Rails.
 
