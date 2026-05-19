@@ -4457,9 +4457,11 @@ def doctor() -> dict:
     if log.is_file():
         try:
             import re as _re
-            from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+            from datetime import UTC as _UTC
+            from datetime import datetime as _dt
+            from datetime import timedelta as _td
 
-            cutoff = _dt.now(_tz.utc) - _td(hours=72)
+            cutoff = _dt.now(_UTC) - _td(hours=72)
             ts_re = _re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")
             recent: list[str] = []
             for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -4473,7 +4475,7 @@ def doctor() -> dict:
                         recent.append(line)
                     continue
                 try:
-                    when = _dt.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_tz.utc)
+                    when = _dt.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_UTC)
                 except ValueError:
                     if recent:
                         recent.append(line)

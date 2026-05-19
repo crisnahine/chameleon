@@ -1723,8 +1723,8 @@ class V0_5_13_DoctorAgeFilterTest(unittest.TestCase):
         return next(c for c in result if c["name"] == "recent_hook_errors")
 
     def test_env_var_overrides_default_path(self):
-        from datetime import datetime, timedelta, timezone
-        ts = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        from datetime import UTC, datetime, timedelta
+        ts = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
         self.tmp_log.write_text(f"[{ts}Z] preflight-and-advise failed (env-probe)\n")
         os.environ["CHAMELEON_HOOK_ERROR_LOG"] = str(self.tmp_log)
         check = self._doctor_hook_check()
@@ -1733,8 +1733,8 @@ class V0_5_13_DoctorAgeFilterTest(unittest.TestCase):
         self.assertIn("env-probe", joined)
 
     def test_old_entries_filtered(self):
-        from datetime import datetime, timedelta, timezone
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+        from datetime import UTC, datetime, timedelta
+        old_ts = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
         self.tmp_log.write_text(f"[{old_ts}Z] preflight-and-advise failed (stale)\n")
         os.environ["CHAMELEON_HOOK_ERROR_LOG"] = str(self.tmp_log)
         check = self._doctor_hook_check()
@@ -1742,9 +1742,9 @@ class V0_5_13_DoctorAgeFilterTest(unittest.TestCase):
         self.assertIn("72h", check["detail"])
 
     def test_recent_kept_old_dropped(self):
-        from datetime import datetime, timedelta, timezone
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
-        recent_ts = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
+        from datetime import UTC, datetime, timedelta
+        old_ts = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S")
+        recent_ts = (datetime.now(UTC) - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
         self.tmp_log.write_text(
             f"[{old_ts}Z] preflight-and-advise failed (ancient)\n"
             f"[{recent_ts}Z] preflight-and-advise failed (fresh)\n"
