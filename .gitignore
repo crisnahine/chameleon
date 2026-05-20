@@ -49,3 +49,6 @@ docs/dogfood/**/log-*.txt
 # Dogfood runner result artifacts (timestamped runs stay local)
 tests/dogfood/results/dogfood_*.json
 tests/dogfood/results/dogfood_*.md
+
+# Local Claude Code state (worktrees, session caches, agent transcripts)
+.claude/
