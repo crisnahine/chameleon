@@ -434,9 +434,12 @@ nofallback = propose_archetype_name(
     existing2,
 )
 # No 'controllers' segment in 'legacy' → base name comes from class default.
+# Post-rec-7: a class-default with usable path-tail signal ("legacy") is
+# demoted into ``class-<suffix>`` rather than bare ``class`` so the long
+# tail of generic ``class`` archetypes doesn't dominate large Ruby trees.
 t(
-    "non-rails ClassDeclaration with no /controllers/ bucket falls through to 'class'",
-    nofallback in {"class", "controller-2"},
+    "non-rails ClassDeclaration with no /controllers/ bucket gets demoted class-* name",
+    nofallback in {"class", "class-legacy", "controller-2"},
     nofallback,
 )
 

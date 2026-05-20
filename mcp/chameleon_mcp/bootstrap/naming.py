@@ -835,11 +835,32 @@ def _base_name_for(
     if jsx_present and is_arrow_default:
         return "component"
 
-    # TS class default with no JSX — generic ``class`` is intentionally
-    # distinct from ``lib-module`` (which encodes the ``lib/`` location).
-    # A class outside any conventional directory keeps the structural
-    # name rather than a misleading directory-flavored one.
+    # TS / Ruby class default with no JSX. Bare ``class`` is the historical
+    # fallback but produces uninformative archetype names on large trees
+    # with many class-default files outside conventional Rails / Next.js
+    # directories (gems/, lib/, vendor-internal modules). Demote bare
+    # ``class`` below the path-tail disambiguators: pick the most-specific
+    # path-tail segment to produce something like ``class-active-context``
+    # straight away, and fall back to bare ``class`` only when no
+    # meaningful path-tail signal exists.
+    # The downstream collision disambiguator at ``propose_archetype_name``
+    # still suffixes if two clusters happen to share the same demoted
+    # name.
+    #
+    # ``(root)`` is a synthetic bucket marker for root-level files, not a
+    # real path segment; treat it as "no signal" so a class at the repo
+    # root still ends up at bare ``class``.
     if is_class_default and not jsx_present:
+        if paths_pattern and paths_pattern != "(root)":
+            suffix_candidates = _disambiguation_suffixes(
+                cluster, repo_root=repo_root
+            )
+            for suffix in suffix_candidates:
+                if suffix == "root":
+                    continue
+                candidate = _sanitize(f"class-{suffix}")
+                if candidate is not None:
+                    return candidate
         return "class"
 
     return None
@@ -883,6 +904,11 @@ def _disambiguation_suffixes(cluster: Any, repo_root: str | None = None) -> list
     meaningful path segment) to least.
     """
     paths_pattern = _cluster_attr(cluster, "path_pattern_bucket") or ""
+    # Strip the v0.5.2 extension marker (e.g. ``app/services:rb``) before
+    # segmenting so the suffix list doesn't leak ``rb`` / ``tsx`` into
+    # archetype names like ``class-billing-rb``.
+    if ":" in paths_pattern:
+        paths_pattern = paths_pattern.split(":", 1)[0]
     candidate_streams: list[list[str]] = []
     bucket_segs = _segments(paths_pattern)
     if len(bucket_segs) > 1:
@@ -1006,8 +1032,18 @@ def propose_archetype_name(
     # decreasing specificity before falling back to a numeric counter, so
     # we get ``react-component-button`` / ``react-component-icons`` /
     # ``react-component-modal`` instead of ``react-component-10``.
+    #
+    # Skip suffixes that already appear as a hyphen-separated segment of
+    # the base name so demoted names like ``class-billing`` don't stutter
+    # into ``class-billing-billing`` when the path-tail signal that
+    # produced the base also matches as a disambiguator. Pre-existing
+    # issue for ``lib-module`` + ``lib`` etc.; rec 7 makes the surface
+    # large enough to be visible so the fix lands alongside.
     suffix_candidates = _disambiguation_suffixes(cluster, repo_root=repo_root)
+    base_segs = set(base.split("-"))
     for suffix in suffix_candidates:
+        if suffix in base_segs:
+            continue
         candidate = _sanitize(f"{base}-{suffix}")
         if candidate is not None and candidate not in existing_names:
             return candidate
@@ -1016,6 +1052,8 @@ def propose_archetype_name(
     # where every single-segment suffix collides too.
     for i in range(len(suffix_candidates)):
         for j in range(i + 1, len(suffix_candidates)):
+            if suffix_candidates[i] in base_segs or suffix_candidates[j] in base_segs:
+                continue
             paired = f"{suffix_candidates[i]}-{suffix_candidates[j]}"
             candidate = _sanitize(f"{base}-{paired}")
             if candidate is not None and candidate not in existing_names:
