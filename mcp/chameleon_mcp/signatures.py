@@ -16,13 +16,18 @@ Properties (per architecture):
 - Computable in a single forEachChild pass on the AST (work happens in ts_dump.mjs)
 - Cluster keys are exact-match equivalence classes; archetypes are clusters
 - Stability: same input → byte-identical signature (idempotence)
-- Cache cell: keyed by (path, content_sha256, sig_function_version, ts_version)
+- Per-file cache key: ``(repo_id, path, mtime_ns, cardinality)`` (see
+  ``tools._refresh_repo_locked`` max-mtime short-circuit).
 
-Cache invalidation triggers:
-- TS version bump → invalidate all cached sigs
-- tsconfig.json change affecting parse mode → invalidate all
-- This module's SIGNATURE_FUNCTION_VERSION bump → invalidate all
-- Per-file content change (sha mismatch) → invalidate that file
+The live cache-invalidation lever for the whole profile is
+``chameleon_mcp.profile.schema.CURRENT_SCHEMA_VERSION``. Bumping it past
+``SUPPORTED_SCHEMA_RANGE``'s floor (CURRENT_SCHEMA_VERSION - 2) causes
+``load_profile_dir`` to reject the now-out-of-range on-disk profile,
+which the orchestrator handles by re-bootstrapping. A previous draft kept
+a SIGNATURE_FUNCTION_VERSION constant here as a finer-grained lever for
+signature-only invalidation, but it was never wired into any cache key
+and was therefore documentation theatre; the constant has been removed
+so future contributors aren't misled.
 """
 
 from __future__ import annotations
@@ -32,10 +37,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from chameleon_mcp._thresholds import threshold_int
-
-# Bumped when the signature function's behavior changes.
-# Forces drift.db cache invalidation per docs/architecture.md "Incremental algorithm".
-SIGNATURE_FUNCTION_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
