@@ -2272,9 +2272,19 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
         })
 
     refresh_lock_path = repo_path / ".chameleon" / ".refresh.lock"
+    # Rec 6: capture pre-refresh archetype names so we can report a
+    # rename-aware diff in the response (what changed, not just how
+    # many archetypes the final profile has). The capture has to
+    # happen UNDER the lock — between the lock acquisition and the
+    # _refresh_repo_locked call — so a concurrent /chameleon-rename
+    # can't mutate the profile mid-capture. Reading is cheap; on any
+    # error we fall back to "no diff available" rather than crashing.
     try:
         with acquire_advisory_lock(refresh_lock_path):
-            return _refresh_repo_locked(repo_path, force=force)
+            pre_state = _capture_pre_refresh_state(repo_path)
+            envelope = _refresh_repo_locked(repo_path, force=force)
+            _inject_archetype_diff(envelope, repo_path, pre_state)
+            return envelope
     except LockHeldError as e:
         return _envelope({
             "status": "failed",
@@ -2283,6 +2293,123 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
                 "retry shortly"
             ),
         })
+
+
+def _capture_pre_refresh_state(repo_path: Path) -> dict | None:
+    """Snapshot the pre-refresh archetypes for rename-aware diff in the
+    response envelope. Tolerant: returns None on any error so the diff
+    silently degrades to empty rather than breaking refresh.
+    """
+    from chameleon_mcp.profile.loader import ProfileLoadError, load_profile_dir
+
+    profile_dir = repo_path / ".chameleon"
+    if not profile_dir.is_dir():
+        return None
+    try:
+        loaded = load_profile_dir(profile_dir)
+    except (ProfileLoadError, OSError):
+        return None
+    archetypes = loaded.archetypes.get("archetypes", {}) or {}
+    return {
+        "names": set(archetypes.keys()),
+        "renames_overlay": _read_renames_overlay(profile_dir),
+    }
+
+
+def _inject_archetype_diff(
+    envelope: dict,
+    repo_path: Path,
+    pre_state: dict | None,
+) -> None:
+    """Mutate ``envelope`` to add a sanitized ``archetype_diff`` field.
+
+    Rec 6: surface what actually changed across a refresh
+    (added / removed / renamed / unchanged) instead of just an
+    archetype_count delta. Renames are detected via the
+    ``renames.json`` overlay: a name that appears in
+    ``renames.json[old] == new`` is reported as a rename instead of
+    an add + remove pair.
+
+    All archetype names returned are filtered through
+    ``ARCHETYPE_NAME_RE``; non-conformant entries are dropped and
+    counted in ``dropped_invalid_names`` so a hand-edited
+    archetypes.json can't smuggle prompt-injection text through the
+    refresh response. Empty diff is safe to emit (no-op refresh).
+    """
+    from chameleon_mcp.profile.loader import ProfileLoadError, load_profile_dir
+    from chameleon_mcp.profile.schema import ARCHETYPE_NAME_RE
+
+    if pre_state is None:
+        return  # no baseline available; silently skip
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return
+
+    profile_dir = repo_path / ".chameleon"
+    try:
+        loaded = load_profile_dir(profile_dir)
+    except (ProfileLoadError, OSError):
+        return
+    post_names_raw = set((loaded.archetypes.get("archetypes", {}) or {}).keys())
+    pre_names = pre_state.get("names") or set()
+
+    renames_after = _read_renames_overlay(profile_dir)
+    # The overlay is keyed auto-name -> user-name; for the diff we want
+    # to know "this old archetype became this new archetype". A rename
+    # is when (a) old name appears in pre_names, (b) the new name (the
+    # value) appears in post_names, AND (c) the old name does NOT appear
+    # in post_names. That filter keeps us from confusing self-renames
+    # or no-op overlay entries with real renames.
+    renamed_pairs: list[tuple[str, str]] = []
+    rename_old: set[str] = set()
+    rename_new: set[str] = set()
+    for old, new in renames_after.items():
+        if old in pre_names and new in post_names_raw and old not in post_names_raw:
+            renamed_pairs.append((old, new))
+            rename_old.add(old)
+            rename_new.add(new)
+
+    def _sane(names: set[str]) -> tuple[list[str], int]:
+        good: list[str] = []
+        dropped = 0
+        for n in sorted(names):
+            if isinstance(n, str) and ARCHETYPE_NAME_RE.match(n):
+                good.append(n)
+            else:
+                dropped += 1
+        return good, dropped
+
+    added_raw = post_names_raw - pre_names - rename_new
+    removed_raw = pre_names - post_names_raw - rename_old
+    unchanged_raw = pre_names & post_names_raw
+
+    added, d_added = _sane(added_raw)
+    removed, d_removed = _sane(removed_raw)
+    unchanged, d_unchanged = _sane(unchanged_raw)
+
+    renamed: list[dict] = []
+    d_renamed = 0
+    for old, new in sorted(renamed_pairs):
+        if (
+            isinstance(old, str)
+            and isinstance(new, str)
+            and ARCHETYPE_NAME_RE.match(old)
+            and ARCHETYPE_NAME_RE.match(new)
+        ):
+            renamed.append({"from": old, "to": new})
+        else:
+            d_renamed += 1
+
+    diff: dict = {
+        "added": added,
+        "removed": removed,
+        "renamed": renamed,
+        "unchanged_count": len(unchanged),
+    }
+    dropped = d_added + d_removed + d_unchanged + d_renamed
+    if dropped:
+        diff["dropped_invalid_names"] = dropped
+    data["archetype_diff"] = diff
 
 
 def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
