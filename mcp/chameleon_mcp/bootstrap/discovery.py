@@ -14,6 +14,7 @@ Per docs/architecture.md "Bootstrap interview flow" steps (e), (f).
 from __future__ import annotations
 
 import fnmatch
+import os
 from pathlib import Path
 
 # Hard ceiling on file count post-exclusion. Bootstrap refuses above this
@@ -213,6 +214,19 @@ def discovery_stats(
     Unlike ``discover_files`` this never raises ``TooManyFilesError`` —
     coverage telemetry on an oversized repo is still useful diagnostics.
 
+    Counter semantics (post-rec-13):
+    - Symlinks and non-regular files are dropped before either counter
+      increments — they are never eligible for clustering, so counting
+      them would overstate the discoverable surface.
+    - ``pre_exclusion`` counts files that survive the symlink + is_file
+      gate but before the EXCLUDE_FROM_CLUSTERING_* sets are applied.
+    - ``post_exclusion`` counts files that survive both gates.
+
+    Hardlinks are not detected — that requires same-filesystem write
+    access to the repo, which the threat model already assumes a
+    trusted user has. The symlink filter targets the cross-filesystem
+    teammate-planted-link attack class.
+
     Returns:
         ``{"pre_exclusion": int, "post_exclusion": int}``.
     """
@@ -222,6 +236,11 @@ def discovery_stats(
     pre = 0
     post = 0
     for p in candidates:
+        # Refuse symlinks before is_file() (which follows symlinks):
+        # a teammate-planted symlink to /etc/passwd would otherwise be
+        # opened by the AST extractors. Counts as neither pre nor post.
+        if os.path.islink(p):
+            continue
         if not p.is_file():
             continue
         pre += 1
@@ -274,6 +293,13 @@ def discover_files(
     # Apply path-based exclusions (component-based, not fnmatch-glob)
     filtered: list[Path] = []
     for p in candidates:
+        # Refuse symlinks before is_file() (which follows them). A symlink
+        # planted in the source tree would otherwise be read by the AST
+        # extractors and could leak target-file content into the canonical
+        # excerpt / cluster signal. Dropping them at discovery means the
+        # downstream extractor never sees the path.
+        if os.path.islink(p):
+            continue
         if not p.is_file():
             continue
         try:

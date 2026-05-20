@@ -31,8 +31,9 @@
  * On error for a file:
  *   { "path": str, "error": "<reason>", ... }
  *
- * Reasons: file_too_large | read_error | too_many_parse_errors |
- *          ast_node_ceiling_exceeded | walk_error | extractor_crash
+ * Reasons: file_too_large | read_error | symlink_refused |
+ *          too_many_parse_errors | ast_node_ceiling_exceeded |
+ *          walk_error | extractor_crash
  */
 
 import * as readline from "node:readline";
@@ -114,12 +115,21 @@ function importKindFor(importClause) {
 }
 
 function extractFile(filePath) {
-  // 1. File size cap
+  // 1. File size + symlink refusal. lstatSync does NOT follow links so
+  //    a path that resolves to a symlink at extractor-time is refused
+  //    here. The production path (extractors/typescript.py) calls
+  //    Path.resolve() before passing paths in, so this script-side
+  //    defense fires only for direct-CLI invocations that bypass the
+  //    Python extractor — the production pipeline is protected one
+  //    layer up at chameleon_mcp.bootstrap.discovery (rec 13).
   let stat;
   try {
-    stat = fs.statSync(filePath);
+    stat = fs.lstatSync(filePath);
   } catch (e) {
     return { path: filePath, error: "read_error", message: String(e?.message ?? e) };
+  }
+  if (stat.isSymbolicLink()) {
+    return { path: filePath, error: "symlink_refused" };
   }
   if (stat.size > MAX_FILE_SIZE) {
     return { path: filePath, error: "file_too_large", size: stat.size };

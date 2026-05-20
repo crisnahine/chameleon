@@ -24,8 +24,9 @@
 #   }
 #
 # On error: { "path": str, "error": "<reason>", ... }
-# Reasons: file_too_large | read_error | too_many_parse_errors |
-#          ast_node_ceiling_exceeded | extractor_crash
+# Reasons: file_too_large | read_error | symlink_refused |
+#          too_many_parse_errors | ast_node_ceiling_exceeded |
+#          extractor_crash
 
 require 'json'
 require 'prism'
@@ -81,11 +82,21 @@ def is_top_level_export?(node)
 end
 
 def extract_file(file_path)
-  # 1. Size cap
+  # 1. Size cap + symlink refusal. lstat does NOT follow links so a
+  #    path that resolves to a symlink at extractor-time is refused
+  #    here. The production path (extractors/ruby.py) calls
+  #    Path.resolve() before passing paths in, so this script-side
+  #    defense fires only for direct-CLI invocations that bypass the
+  #    Python extractor — the production pipeline is protected one
+  #    layer up at chameleon_mcp.bootstrap.discovery (rec 13).
   begin
-    stat = File.stat(file_path)
+    stat = File.lstat(file_path)
   rescue StandardError => e
     return { path: file_path, error: 'read_error', message: e.message }
+  end
+
+  if stat.symlink?
+    return { path: file_path, error: 'symlink_refused' }
   end
 
   if stat.size > MAX_FILE_SIZE
