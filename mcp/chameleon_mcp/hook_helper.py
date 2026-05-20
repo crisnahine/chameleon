@@ -154,6 +154,118 @@ def _emit_session_context(content: str) -> None:
         _emit({"additionalContext": content})
 
 
+_DRIFT_BANNER_FILENAME = ".drift_banner.last"
+
+
+def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> str | None:
+    """Return a one-line drift advisory for SessionStart, or None.
+
+    Rec 4: surfaces "profile drift is high — consider /chameleon-refresh"
+    at session start so the user sees the signal without having to opt
+    in via /chameleon-status. Three gates must all hold:
+      1. observation count >= CHAMELEON_DRIFT_BANNER_MIN_OBSERVATIONS
+      2. score >= CHAMELEON_DRIFT_BANNER_THRESHOLD
+      3. per-repo cooldown marker older than CHAMELEON_DRIFT_BANNER_TTL_SECONDS
+
+    Honors the optouts hierarchy (CHAMELEON_DISABLE, .chameleon/.skip,
+    .session_disabled.<sid>, .pause_until) — never fires when chameleon
+    has been explicitly silenced.
+
+    Walks up from ``repo_root`` via ``find_repo_root`` so a subdir-launched
+    session resolves to the same repo_id the drift.db is keyed under
+    (matters for non-git repos where ``_compute_repo_id`` falls back to a
+    path hash).
+
+    Marker lives under ``plugin_data_dir`` (per-user state), NOT in-repo,
+    so a shared filesystem or git checkout doesn't race the cooldown.
+    """
+    try:
+        from chameleon_mcp._thresholds import threshold_float, threshold_int
+        from chameleon_mcp.drift.observations import compute_drift_stats
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.tools import _compute_repo_id
+
+        # Walk up to the actual repo root; for non-git repos this is what
+        # bootstrap keyed drift.db under.
+        resolved_root = find_repo_root(repo_root) or repo_root
+        repo_id = _compute_repo_id(resolved_root)
+
+        # Honor opt-outs BEFORE touching the cooldown marker so a user
+        # who later re-enables sees the banner on the next eligible
+        # session instead of having the cooldown silently consumed
+        # during the disabled period.
+        if is_chameleon_suppressed(resolved_root, repo_id, session_id) is not None:
+            return None
+
+        stats = compute_drift_stats(repo_id)
+        if stats is None:
+            return None
+        if stats["count"] < threshold_int("DRIFT_BANNER_MIN_OBSERVATIONS"):
+            return None
+        if stats["score"] < threshold_float("DRIFT_BANNER_THRESHOLD"):
+            return None
+
+        marker = _plugin_data_dir() / repo_id / _DRIFT_BANNER_FILENAME
+        ttl = threshold_int("DRIFT_BANNER_TTL_SECONDS")
+        if _marker_path_is_fresh(marker, ttl):
+            return None
+
+        # Touch the marker so the banner stays quiet for the cooldown
+        # window. mkdir(mode=0o700) is silently ignored when the dir
+        # already exists (e.g. the trust-prompt path created it earlier),
+        # so chmod explicitly afterwards.
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(marker.parent, 0o700)
+        except OSError:
+            pass
+        marker.write_text(str(int(time.time())), encoding="utf-8")
+        try:
+            os.chmod(marker, 0o600)
+        except OSError:
+            pass
+
+        score_str = f"{stats['score']:.2f}"
+        return (
+            "[chameleon: drift]\n"
+            f"Observed drift score is {score_str} over the last 14 days "
+            f"(N={stats['count']} edits). The profile may not match how "
+            "the team actually writes code today. Suggest "
+            "**/chameleon-refresh** when you have a moment."
+        )
+    except Exception as exc:
+        # Fail-open: drift telemetry is observability, never blocks
+        # the SessionStart hook. But surface to stderr so the bash
+        # wrapper's .hook_errors.log captures real bugs in the path
+        # (silent fail-opens earlier in chameleon's life produced 70+
+        # unattributed events on a single workstation, see rec 3).
+        try:
+            print(
+                f"chameleon: drift banner failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
+def _marker_path_is_fresh(marker: Path, ttl_seconds: int) -> bool:
+    """Mirror of _marker_is_fresh with a per-call TTL.
+
+    The trust-prompt marker uses a fixed TTL; the drift-banner marker
+    uses a longer one. Kept as a separate helper so neither caller
+    accidentally shares a constant.
+    """
+    try:
+        st = marker.stat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+    return (time.time() - st.st_mtime) < ttl_seconds
+
+
 def session_start() -> int:
     """SessionStart: inject using-chameleon SKILL.md + profile primer."""
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
@@ -169,14 +281,44 @@ def session_start() -> int:
 
     skill_content = skill_path.read_text(encoding="utf-8", errors="replace")
 
-    # Wrap in <chameleon-context> per docs/architecture.md
-    wrapped = (
-        "<chameleon-context>\n"
-        "You have chameleon, a profile-aware coding assistant.\n\n"
-        "Below is the full content of your `using-chameleon` skill. Follow it.\n\n"
-        f"{skill_content}\n"
-        "</chameleon-context>"
-    )
+    # Rec 4: append a drift banner when the repo's profile is drifting
+    # (high observed_drift_score). Honors opt-outs (CHAMELEON_DISABLE,
+    # .skip, /chameleon-disable, /chameleon-pause-15m); requires a min
+    # observation count plus a 7-day cooldown so it doesn't fire on
+    # every SessionStart in an active repo. Banner sits AFTER the skill
+    # body so it's the freshest signal at the end of the inject,
+    # immediately before whatever comes next in the model's context
+    # (recency dominates retrieval; the always-on skill rules stay at
+    # the top where the model expects them).
+    session_id: str | None = None
+    try:
+        # Best-effort read of the hook payload. Claude Code passes
+        # SessionStart payload on stdin; session_id is one of the
+        # fields. Do not block on a missing stdin (test harnesses).
+        if not sys.stdin.isatty():
+            raw = sys.stdin.read()
+            if raw.strip():
+                payload = json.loads(raw)
+                sid = payload.get("session_id")
+                if isinstance(sid, str):
+                    session_id = sid
+    except Exception:
+        session_id = None
+    drift_banner = _drift_banner_for_repo(Path.cwd(), session_id=session_id)
+
+    wrapped_parts = [
+        "<chameleon-context>",
+        "You have chameleon, a profile-aware coding assistant.",
+        "",
+        "Below is the full content of your `using-chameleon` skill. Follow it.",
+        "",
+        skill_content,
+    ]
+    if drift_banner:
+        wrapped_parts.append("")
+        wrapped_parts.append(drift_banner)
+    wrapped_parts.append("</chameleon-context>")
+    wrapped = "\n".join(wrapped_parts)
 
     _emit_session_context(wrapped)
     return 0

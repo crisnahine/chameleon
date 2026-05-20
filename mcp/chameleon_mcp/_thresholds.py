@@ -62,6 +62,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # refuses to write when the on-disk overlay is over-cap so a single
     # /chameleon-rename cannot silently wipe a teammate's larger overlay.
     "RENAMES_OVERLAY_CAP": 256,
+    # hook_helper.py — drift banner gates surfaced at SessionStart.
+    # Banner fires when (drift_score >= threshold) AND (observation
+    # count >= min_observations) AND (per-repo cooldown marker is older
+    # than TTL seconds). Marker lives under plugin_data_dir, not in-repo.
+    "DRIFT_BANNER_THRESHOLD": 0.4,
+    "DRIFT_BANNER_MIN_OBSERVATIONS": 10,
+    "DRIFT_BANNER_TTL_SECONDS": 7 * 24 * 3600,
 }
 
 DOCS: Final[dict[str, str]] = {
@@ -92,6 +99,20 @@ DOCS: Final[dict[str, str]] = {
         "Loads that exceed the cap return an empty overlay (the workflow self-heals "
         "on next /chameleon-rename). Default 256 ~ 3.6x the largest realistic "
         "archetype_count."
+    ),
+    "DRIFT_BANNER_THRESHOLD": (
+        "Minimum observed_drift_score (0.0-1.0) needed for the SessionStart "
+        "drift banner to fire. Default 0.4 (avg confidence ~0.6, mostly medium). "
+        "Raise to ~0.55 if banner fires too often on active repos."
+    ),
+    "DRIFT_BANNER_MIN_OBSERVATIONS": (
+        "Minimum edit_observations count in the 14-day window before the "
+        "drift banner is allowed to fire. Stops a single low-confidence edit "
+        "from spiking the score and producing a false positive."
+    ),
+    "DRIFT_BANNER_TTL_SECONDS": (
+        "Per-repo cooldown for the drift banner. Once fired, the next banner "
+        "for the same repo is suppressed for this many seconds (default 7 days)."
     ),
 }
 

@@ -197,6 +197,25 @@ def compute_drift_score(repo_id: str, *, window_days: int = 14) -> float | None:
     1 - mean(confidence_observed) over the trailing `window_days`. Returns
     None if no observations exist.
     """
+    stats = compute_drift_stats(repo_id, window_days=window_days)
+    if stats is None:
+        return None
+    return stats["score"]
+
+
+def compute_drift_stats(
+    repo_id: str,
+    *,
+    window_days: int = 14,
+) -> dict | None:
+    """Like ``compute_drift_score`` but returns ``{"score", "count"}``.
+
+    Rec 4: SessionStart needs the observation count to apply a
+    minimum-observations floor before surfacing the drift banner — a
+    single low-confidence edit produces score=0.7, which would otherwise
+    fire a banner on a repo that has barely been touched. Returns None
+    when the drift.db is missing or no rows match the window.
+    """
     db_path = _drift_db_path(repo_id)
     if not db_path.is_file():
         return None
@@ -221,4 +240,5 @@ def compute_drift_score(repo_id: str, *, window_days: int = 14) -> float | None:
     avg_conf, count = row
     if not count:
         return None
-    return max(0.0, min(1.0, 1.0 - float(avg_conf or 0.0)))
+    score = max(0.0, min(1.0, 1.0 - float(avg_conf or 0.0)))
+    return {"score": score, "count": int(count)}
