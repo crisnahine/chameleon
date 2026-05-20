@@ -338,6 +338,13 @@ def cluster_files(
     # loose-merge pass.
     clusters = _shape_fuzzy_merge(clusters)
 
+    # Rec 2: split mixed clusters that carry a semantic sub-bucket suffix
+    # (concerns/, base/, __tests__/, spec/) so a Rails ``model`` cluster
+    # that absorbed 36 concerns yields a clean ``model`` plus a
+    # ``model-concern`` cluster instead of one heterogenous bucket. Runs
+    # AFTER the merge passes so it operates on the final cluster shape.
+    clusters = _split_by_sub_bucket(clusters, resolved_threshold)
+
     clusters.sort(key=lambda c: c.size, reverse=True)
 
     return ClusteringResult(
@@ -440,6 +447,158 @@ def _merge_sub_bucket_counts(clusters: list[Cluster]) -> dict[str, int]:
     for c in clusters:
         merged.update(c.sub_bucket_counts)
     return dict(merged)
+
+
+# Rec 2: sub-bucket suffixes that carry semantic weight strong enough to
+# warrant splitting a cluster. A Rails ``app/models`` cluster that absorbed
+# 36 concerns under ``app/models/concerns/`` produces a heterogenous
+# canonical witness; splitting yields a clean ``model`` archetype plus a
+# distinct ``model-concern`` archetype that the existing _RAILS_PRIORS
+# table at naming.py:318 can pick up.
+#
+# The check is "first path segment of sub_bucket matches one of these"
+# rather than substring so ``base/`` doesn't accidentally trip on
+# legitimate path components.
+_SPLIT_BY_SUB_BUCKET_SUFFIXES: frozenset[str] = frozenset({
+    "concerns",
+    "base",
+    "__tests__",
+    "spec",
+    "tests",
+    "test",
+})
+
+
+def _member_sub_bucket(member: ParsedFile) -> str:
+    """Recompute a member's sub_bucket so the split pass can re-partition.
+
+    sub_bucket_counts on the cluster is aggregate; we need per-member
+    classification to actually split. Recomputes via the same
+    ``path_pattern_bucket_for`` helper used during initial clustering
+    so the buckets stay in lockstep.
+    """
+    from chameleon_mcp.signatures import path_pattern_bucket_for
+
+    if member.path is None:
+        return ""
+    rel = str(member.path)
+    _, sub = path_pattern_bucket_for(rel)
+    return sub or ""
+
+
+def _split_by_sub_bucket(
+    clusters: list[Cluster],
+    sparse_threshold: int,
+) -> list[Cluster]:
+    """Split clusters whose sub_bucket distribution carries a semantic suffix.
+
+    Rec 2: for each cluster, examine sub_bucket_counts; if a
+    _SPLIT_BY_SUB_BUCKET_SUFFIXES entry holds ``>= sparse_threshold``
+    members AND the dominant non-suffix sub_bucket holds
+    ``>= BIMODAL_DOMINANT_SHARE_THRESHOLD`` of the remaining members,
+    split into two child clusters:
+      - one for members whose sub_bucket starts with the suffix
+      - one for everything else
+
+    Both children inherit the parent's ``key``, ``sparse_threshold``,
+    and ``cluster_tier``, but get freshly-computed ``sub_bucket_counts``.
+    Naming sees them as distinct clusters and picks distinct names
+    (e.g. ``model`` vs ``model-concern`` via the _RAILS_PRIORS table).
+
+    Idempotent: a cluster already at the suffix or already non-suffix
+    only is unaffected.
+    """
+    result: list[Cluster] = []
+    for cluster in clusters:
+        if cluster.size < 2:
+            result.append(cluster)
+            continue
+
+        # Partition members by "starts with a known semantic suffix?".
+        # Recompute per-member sub_bucket rather than trusting the
+        # aggregate sub_bucket_counts on the cluster, because some merge
+        # passes upstream may not have refreshed the counter.
+        member_buckets = [
+            (m, _member_sub_bucket(m)) for m in cluster.members
+        ]
+
+        def _split_key(sb: str) -> str | None:
+            if not sb:
+                return None
+            head = sb.split("/", 1)[0]
+            if head in _SPLIT_BY_SUB_BUCKET_SUFFIXES:
+                return head
+            return None
+
+        with_suffix: dict[str, list[tuple[ParsedFile, str]]] = {}
+        without_suffix: list[tuple[ParsedFile, str]] = []
+        for m, sb in member_buckets:
+            tag = _split_key(sb)
+            if tag is None:
+                without_suffix.append((m, sb))
+            else:
+                with_suffix.setdefault(tag, []).append((m, sb))
+
+        if not with_suffix or not without_suffix:
+            result.append(cluster)
+            continue
+
+        # The "with suffix" partition must clear the sparse threshold;
+        # below it, the suffix is just noise.
+        keep_split = False
+        for _tag, members in with_suffix.items():
+            if len(members) < sparse_threshold:
+                continue
+            keep_split = True
+            break
+
+        if not keep_split:
+            result.append(cluster)
+            continue
+
+        # The "without suffix" partition's dominant sub_bucket must
+        # carry the bulk of the non-suffix members; if it's also
+        # heterogenous, splitting on just the suffix is not a win.
+        no_suffix_subs = Counter(sb for _m, sb in without_suffix)
+        if not no_suffix_subs:
+            result.append(cluster)
+            continue
+        dominant_share = max(no_suffix_subs.values()) / len(without_suffix)
+        if dominant_share < BIMODAL_DOMINANT_SHARE_THRESHOLD:
+            result.append(cluster)
+            continue
+
+        # Commit the split: parent vanishes, two (or more) children
+        # take its place.
+        for _tag, suffix_members in with_suffix.items():
+            if len(suffix_members) < sparse_threshold:
+                # Below-threshold suffix partitions stay with the
+                # non-suffix bucket so they don't become orphan sparse
+                # clusters of their own.
+                without_suffix.extend(suffix_members)
+                continue
+            sub_counts = Counter(sb for _m, sb in suffix_members)
+            result.append(
+                Cluster(
+                    key=cluster.key,
+                    members=[m for m, _sb in suffix_members],
+                    sparse_threshold=cluster.sparse_threshold,
+                    cluster_tier=cluster.cluster_tier,
+                    sub_bucket_counts=dict(sub_counts),
+                )
+            )
+        sub_counts = Counter(sb for _m, sb in without_suffix)
+        result.append(
+            Cluster(
+                key=cluster.key,
+                members=[m for m, _sb in without_suffix],
+                sparse_threshold=cluster.sparse_threshold,
+                cluster_tier=cluster.cluster_tier,
+                sub_bucket_counts=dict(sub_counts),
+            )
+        )
+
+    return result
 
 
 def _union_shape(cluster: Cluster) -> frozenset[str]:
