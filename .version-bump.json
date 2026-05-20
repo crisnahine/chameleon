@@ -7,7 +7,8 @@
     { "path": "gemini-extension.json", "field": "version" },
     { "path": "package.json", "field": "version" },
     { "path": "mcp/package.json", "field": "version" },
-    { "path": "mcp/pyproject.toml", "field": "project.version" }
+    { "path": "mcp/pyproject.toml", "field": "project.version" },
+    { "path": "mcp/chameleon_mcp/__init__.py", "field": "__version__" }
   ],
   "audit": {
     "exclude": [

@@ -25,6 +25,10 @@ read_json_field() {
     _read_toml_field "$file" "$field"
     return
   fi
+  if [[ "$file" == *.py ]]; then
+    _read_py_field "$file" "$field"
+    return
+  fi
   local jq_path
   jq_path=$(echo "$field" | sed -E 's/\.([0-9]+)/[\1]/g' | sed 's/^/./' | sed 's/\.\././g')
   jq -r "$jq_path" "$file"
@@ -36,10 +40,39 @@ write_json_field() {
     _write_toml_field "$file" "$field" "$value"
     return
   fi
+  if [[ "$file" == *.py ]]; then
+    _write_py_field "$file" "$field" "$value"
+    return
+  fi
   local jq_path
   jq_path=$(echo "$field" | sed -E 's/\.([0-9]+)/[\1]/g' | sed 's/^/./' | sed 's/\.\././g')
   local tmp="${file}.tmp"
   jq "$jq_path = \"$value\"" "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
+# Minimal Python support for module-level scalar assignments like
+# `__version__ = "0.5.13"`. Field is the bare attribute name; only the
+# first matching assignment is read/written.
+_read_py_field() {
+  local file="$1" field="$2"
+  awk -v k="$field" '
+    $0 ~ "^"k"[[:space:]]*=" {
+      sub(/^[^=]*=[[:space:]]*/, "")
+      gsub(/^["'\'']|["'\'']$/, "")
+      print; exit
+    }
+  ' "$file"
+}
+
+_write_py_field() {
+  local file="$1" field="$2" value="$3"
+  local tmp="${file}.tmp"
+  awk -v k="$field" -v v="$value" '
+    !done && $0 ~ "^"k"[[:space:]]*=" {
+      print k " = \"" v "\""; done=1; next
+    }
+    {print}
+  ' "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
 # Minimal TOML support for `project.version` / `tool.<name>.version`
