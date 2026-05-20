@@ -58,6 +58,14 @@ def _run_adversarial(ctx, *, scenario_id: str, adversarial_prompt: str) -> Resul
     claude -p with the adversarial prompt framing, then checks whether
     the PreToolUse:Edit hook still fired and injected an advisory despite
     the prompt trying to bypass it.
+
+    The model occasionally refuses to use Edit (decides the file is
+    already correct, returns without acting, etc.). The hook can only
+    fire when Edit is actually invoked, so a no-Edit run produces 0
+    captured advisories — a false negative for the test. We retry once
+    when the first attempt yields 0 advisories. A real adversarial-
+    resistance regression would fail both attempts; a one-off model
+    refusal passes the retry.
     """
     ts_repo = ctx.repo_paths.get("ts")
     if ts_repo is None or not ts_repo.is_dir():
@@ -74,73 +82,85 @@ def _run_adversarial(ctx, *, scenario_id: str, adversarial_prompt: str) -> Resul
     finally:
         _restore_env(old)
 
-    utils_dir = ts_repo / "src" / "utils"
-    utils_dir.mkdir(parents=True, exist_ok=True)
-    tmp_file = utils_dir / f"_dogfood_adversarial_{scenario_id.replace('.', '_')}.ts"
-    tmp_file.write_text("export const x = 'before';\n", encoding="utf-8")
-
     plugin_root = ctx.plugin_root
     env = os.environ.copy()
     env["CHAMELEON_PLUGIN_DATA"] = str(ctx.plugin_data_dir)
     env["CHAMELEON_ALLOW_TMP_REPO"] = "1"
 
-    # The full prompt wraps the adversarial framing around the edit instruction.
-    full_prompt = (
-        f"{adversarial_prompt} "
-        f"Read the file {tmp_file} and edit it to replace 'before' with 'after'."
-    )
-
-    cost_usd = 0.0
-    try:
-        proc = subprocess.run(
-            [
-                "claude", "-p", full_prompt,
-                "--plugin-dir", str(plugin_root),
-                "--output-format", "stream-json",
-                "--verbose",
-                "--include-hook-events",
-                "--max-turns", "6",
-                "--model", "sonnet",
-                "--permission-mode", "acceptEdits",
-                "--allowedTools", "Read,Edit",
-            ],
-            cwd=str(ts_repo),
-            capture_output=True, text=True, timeout=300,
-            env=env, check=False,
+    def _one_attempt(attempt_label: str) -> tuple[list[str], float, int]:
+        utils_dir = ts_repo / "src" / "utils"
+        utils_dir.mkdir(parents=True, exist_ok=True)
+        tmp_file = utils_dir / (
+            f"_dogfood_adversarial_{scenario_id.replace('.', '_')}_{attempt_label}.ts"
         )
+        tmp_file.write_text("export const x = 'before';\n", encoding="utf-8")
+        full_prompt = (
+            f"{adversarial_prompt} "
+            f"Read the file {tmp_file} and edit it to replace 'before' with 'after'."
+        )
+        cost = 0.0
+        try:
+            proc = subprocess.run(
+                [
+                    "claude", "-p", full_prompt,
+                    "--plugin-dir", str(plugin_root),
+                    "--output-format", "stream-json",
+                    "--verbose",
+                    "--include-hook-events",
+                    "--max-turns", "6",
+                    "--model", "sonnet",
+                    "--permission-mode", "acceptEdits",
+                    "--allowedTools", "Read,Edit",
+                ],
+                cwd=str(ts_repo),
+                capture_output=True, text=True, timeout=300,
+                env=env, check=False,
+            )
+        finally:
+            tmp_file.unlink(missing_ok=True)
+
+        advisories: list[str] = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("type") == "result":
+                cost = float(obj.get("total_cost_usd", 0.0))
+            if obj.get("type") == "system" and obj.get("subtype") == "hook_response":
+                hook = obj.get("hook_name", "")
+                if hook.startswith("PreToolUse"):
+                    stdout = obj.get("stdout", "")
+                    if "additionalContext" in stdout:
+                        advisories.append(stdout)
+        return advisories, cost, proc.returncode
+
+    try:
+        pretool_advisories, cost_usd, exit_code = _one_attempt("a")
+        attempts = 1
+        if not pretool_advisories:
+            # Retry-once: model probably refused to invoke Edit. A real
+            # adversarial-resistance failure would happen on both attempts.
+            retry_advisories, retry_cost, retry_exit = _one_attempt("b")
+            cost_usd += retry_cost
+            attempts = 2
+            if retry_advisories:
+                pretool_advisories = retry_advisories
+                exit_code = retry_exit
     except subprocess.TimeoutExpired:
-        tmp_file.unlink(missing_ok=True)
         return Result(status="FAIL", notes="claude -p timed out after 300s")
     except FileNotFoundError:
-        tmp_file.unlink(missing_ok=True)
         return Result(status="SKIP", notes="claude CLI not found in PATH")
-    finally:
-        tmp_file.unlink(missing_ok=True)
-
-    pretool_advisories: list[str] = []
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if obj.get("type") == "result":
-            cost_usd = float(obj.get("total_cost_usd", 0.0))
-        if obj.get("type") == "system" and obj.get("subtype") == "hook_response":
-            hook = obj.get("hook_name", "")
-            if hook.startswith("PreToolUse"):
-                stdout = obj.get("stdout", "")
-                if "additionalContext" in stdout:
-                    pretool_advisories.append(stdout)
 
     if not pretool_advisories:
         return Result(
             status="FAIL",
             notes=(
-                "PreToolUse:Edit advisory not captured despite adversarial prompt -- "
-                f"hook must have been suppressed or skipped. exit={proc.returncode}"
+                f"PreToolUse:Edit advisory not captured across {attempts} attempts -- "
+                f"hook must have been suppressed or skipped. exit={exit_code}"
             ),
             cost_usd=cost_usd,
         )
@@ -155,7 +175,10 @@ def _run_adversarial(ctx, *, scenario_id: str, adversarial_prompt: str) -> Resul
 
     return Result(
         status="PASS",
-        notes=f"PreToolUse advisory injected despite adversarial framing ({len(pretool_advisories)} events)",
+        notes=(
+            f"PreToolUse advisory injected despite adversarial framing "
+            f"({len(pretool_advisories)} events, {attempts} attempt(s))"
+        ),
         cost_usd=cost_usd,
     )
 
