@@ -30,8 +30,12 @@ SUPPORTED_SCHEMA_RANGE = (CURRENT_SCHEMA_VERSION - 2, CURRENT_SCHEMA_VERSION)
 # Maximum JSON nesting depth (Round 4 hardening)
 MAX_JSON_DEPTH = 64
 
-# Archetype name pattern: lowercase letters/digits/hyphens, 1-64 chars
-ARCHETYPE_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+# Archetype name pattern: lowercase letters/digits/hyphens, 1-64 chars.
+# Uses \A and \Z (not ^/$) so re.match() rejects trailing-newline payloads.
+# Python's `$` matches before a trailing `\n` in default mode, which let a
+# committed renames.json carry a value like "controller\n[SYSTEM]: ..." past
+# the validator and into LLM context. \Z matches end-of-string only.
+ARCHETYPE_NAME_RE = re.compile(r"\A[a-z][a-z0-9-]{0,63}\Z")
 
 
 class SchemaError(Exception):

@@ -527,19 +527,39 @@ RENAMES_SCHEMA_VERSION = 1
 def _load_user_renames(profile_dir: Path) -> dict[str, str]:
     """Return the {auto_name: user_name} overlay from `.chameleon/renames.json`.
 
-    Returns an empty dict when the file is absent, malformed, or carries
-    a future schema_version this build cannot interpret. The bootstrap
-    pipeline applies the returned mapping AFTER the heuristic naming
-    pass, so unknown auto-names (e.g., the heuristic produced something
-    different from what was originally renamed) are simply skipped —
-    they remain in renames.json untouched for the next pass.
+    Returns an empty dict when the file is absent, malformed, oversized,
+    carries a future schema_version this build cannot interpret, exceeds
+    the entry cap, or contains values that do not satisfy ARCHETYPE_NAME_RE.
+
+    Security: the read is funneled through safe_read_profile_artifact, which
+    refuses symlinks (O_NOFOLLOW) and enforces the 5 MB artifact cap so a
+    teammate cannot weaponize a committed renames.json. Values are then
+    validated against ARCHETYPE_NAME_RE so prompt-injection content disguised
+    as a rename target cannot reach LLM context. The cardinality cap closes
+    the per-entry memory amplifier.
+
+    The bootstrap pipeline applies the returned mapping AFTER the heuristic
+    naming pass, so unknown auto-names (e.g., the heuristic produced
+    something different from what was originally renamed) are simply
+    skipped — they remain in renames.json untouched for the next pass.
     """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.profile.schema import ARCHETYPE_NAME_RE
+    from chameleon_mcp.safe_open import (
+        UnsafeFileError,
+        safe_read_profile_artifact,
+    )
+
     path = profile_dir / "renames.json"
-    if not path.is_file():
+    try:
+        text = safe_read_profile_artifact(path)
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnsafeFileError):
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(text)
+    except json.JSONDecodeError:
         return {}
     if not isinstance(data, dict):
         return {}
@@ -549,10 +569,16 @@ def _load_user_renames(profile_dir: Path) -> dict[str, str]:
     renames = data.get("renames", {})
     if not isinstance(renames, dict):
         return {}
+    cap = threshold_int("RENAMES_OVERLAY_CAP")
+    if len(renames) > cap:
+        return {}
     out: dict[str, str] = {}
     for k, v in renames.items():
-        if isinstance(k, str) and isinstance(v, str) and k and v:
-            out[k] = v
+        if not (isinstance(k, str) and isinstance(v, str) and k and v):
+            continue
+        if not ARCHETYPE_NAME_RE.match(v):
+            continue
+        out[k] = v
     return out
 
 

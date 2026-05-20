@@ -51,6 +51,17 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # (parts[0]/parts[-3]/parts[-2]). The monorepo branch is always depth-3
     # and is unaffected by this setting.
     "CLUSTER_PATH_BUCKET_DEPTH": 2,
+    # bootstrap/orchestrator.py + tools.py — renames overlay entry cap.
+    # The merge logic at tools.py:_merge_rename_overlay walks back to the
+    # auto-name on re-rename so the overlay can never exceed the number of
+    # archetypes in the profile. Real chameleon profiles seen in dogfood
+    # have on the order of 50-150 archetypes; 256 bounds DoS while leaving
+    # generous headroom. Override via CHAMELEON_RENAMES_OVERLAY_CAP if a
+    # genuinely larger monorepo needs more. Overlay loads that exceed the
+    # cap return {} from the read path; apply_archetype_renames separately
+    # refuses to write when the on-disk overlay is over-cap so a single
+    # /chameleon-rename cannot silently wipe a teammate's larger overlay.
+    "RENAMES_OVERLAY_CAP": 256,
 }
 
 DOCS: Final[dict[str, str]] = {
@@ -75,6 +86,12 @@ DOCS: Final[dict[str, str]] = {
         "paths with 4+ segments (Option 4). Default 2: parts[0]/parts[1]. "
         "Set to 3 to restore the pre-v0.5.9 depth-3 formula (parts[0]/parts[-3]/parts[-2]). "
         "The monorepo branch is always depth-3 and is unaffected by this setting."
+    ),
+    "RENAMES_OVERLAY_CAP": (
+        "Max number of entries accepted from a .chameleon/renames.json overlay. "
+        "Loads that exceed the cap return an empty overlay (the workflow self-heals "
+        "on next /chameleon-rename). Default 256 ~ 3.6x the largest realistic "
+        "archetype_count."
     ),
 }
 

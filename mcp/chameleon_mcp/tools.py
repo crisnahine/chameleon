@@ -2096,12 +2096,24 @@ def _attempt_partial_refresh(
     # v0.5.1 (Bug 3): preserve `.chameleon/renames.json` across the
     # atomic_profile_commit's dir-replacement so the user's rename
     # mapping survives a partial refresh.
+    #
+    # The preservation read goes through the same safe helper as the rest
+    # of the renames-loading code (rec 12) — O_NOFOLLOW so a symlink swap
+    # cannot trick the partial-refresh into copying an attacker-controlled
+    # file into the new transaction directory, plus the 5 MB cap.
     renames_text: str | None = None
     renames_path_partial = profile_dir / "renames.json"
     if renames_path_partial.is_file():
+        from chameleon_mcp.safe_open import (
+            UnsafeFileError as _UnsafeFileError,
+        )
+        from chameleon_mcp.safe_open import (
+            safe_read_profile_artifact as _safe_read_profile_artifact,
+        )
+
         try:
-            renames_text = renames_path_partial.read_text(encoding="utf-8")
-        except OSError:
+            renames_text = _safe_read_profile_artifact(renames_path_partial)
+        except (OSError, FileNotFoundError, _UnsafeFileError):
             renames_text = None
 
     # Step 10: atomic commit. Any exception here leaves the existing
@@ -3616,18 +3628,59 @@ def _rewrite_summary_md(
 #     "updated_at": "<ISO 8601 Z>" }
 
 
+class _RenamesOverlayOverCap(Exception):
+    """Raised by _read_renames_overlay_strict when the overlay exceeds the cap.
+
+    apply_archetype_renames catches this to refuse the operation rather
+    than silently wiping a teammate's larger committed overlay. The
+    tolerant `_read_renames_overlay` (bootstrap path) still returns {}
+    on over-cap so the read does not crash bootstrap.
+    """
+
+
 def _read_renames_overlay(profile_dir: Path) -> dict[str, str]:
     """Return the current `.chameleon/renames.json` mapping, or {}.
 
-    Tolerant of missing / malformed files — the next `apply_archetype_renames`
-    rewrites the file from scratch, so a malformed renames.json self-heals.
+    Tolerant of missing / malformed / over-cap files — bootstrap-time
+    callers want fail-open. apply_archetype_renames must NOT call this
+    helper directly; it uses `_read_renames_overlay_strict` so a corrupt
+    or over-cap overlay refuses the rename instead of silently wiping it.
+
+    Security: read goes through safe_read_profile_artifact (O_NOFOLLOW +
+    5 MB cap). Values are validated against ARCHETYPE_NAME_RE so a teammate
+    cannot inject prompt-tokens via a committed rename target. Entry count
+    is capped at RENAMES_OVERLAY_CAP (default 256). Empty string keys are
+    also dropped to match orchestrator._load_user_renames.
     """
+    try:
+        return _read_renames_overlay_strict(profile_dir)
+    except _RenamesOverlayOverCap:
+        return {}
+
+
+def _read_renames_overlay_strict(profile_dir: Path) -> dict[str, str]:
+    """Like `_read_renames_overlay` but raises on over-cap.
+
+    Used by apply_archetype_renames to detect "would-wipe" situations
+    before merging incoming renames into an empty dict.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.profile.schema import ARCHETYPE_NAME_RE
+    from chameleon_mcp.safe_open import (
+        UnsafeFileError,
+        safe_read_profile_artifact,
+    )
+
     path = profile_dir / "renames.json"
-    if not path.is_file():
+    try:
+        text = safe_read_profile_artifact(path)
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnsafeFileError):
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(text)
+    except json.JSONDecodeError:
         return {}
     if not isinstance(data, dict):
         return {}
@@ -3637,7 +3690,19 @@ def _read_renames_overlay(profile_dir: Path) -> dict[str, str]:
     raw = data.get("renames", {})
     if not isinstance(raw, dict):
         return {}
-    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
+    if len(raw) > threshold_int("RENAMES_OVERLAY_CAP"):
+        raise _RenamesOverlayOverCap(
+            f"renames.json has {len(raw)} entries, exceeds cap "
+            f"{threshold_int('RENAMES_OVERLAY_CAP')}"
+        )
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if not (isinstance(k, str) and isinstance(v, str) and k):
+            continue
+        if not ARCHETYPE_NAME_RE.match(v):
+            continue
+        out[k] = v
+    return out
 
 
 def _merge_rename_overlay(
@@ -3777,7 +3842,18 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     # renaming an already-renamed archetype), we walk back to the
     # original auto-name and update that entry. Otherwise the incoming
     # source is itself an auto-name and gets a brand-new entry.
-    existing_renames = _read_renames_overlay(profile_dir)
+    try:
+        existing_renames = _read_renames_overlay_strict(profile_dir)
+    except _RenamesOverlayOverCap as exc:
+        return _envelope({
+            "status": "failed",
+            "error": (
+                f"refusing to rename: {exc}. The on-disk overlay is too "
+                "large to safely merge — review .chameleon/renames.json "
+                "and remove stale entries (or raise CHAMELEON_RENAMES_OVERLAY_CAP) "
+                "before re-running /chameleon-rename."
+            ),
+        })
     merged_renames = _merge_rename_overlay(existing_renames, effective)
     renames_payload = {
         "schema_version": 1,

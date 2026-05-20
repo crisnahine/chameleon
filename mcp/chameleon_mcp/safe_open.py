@@ -111,6 +111,85 @@ def safe_read_text(
     return safe_path.read_text(encoding=encoding, errors="replace")
 
 
+_DEFAULT_PROFILE_ARTIFACT_MAX_BYTES = 5 * 1024 * 1024  # 5 MB; matches loader._safe_read_artifact
+
+
+def _open_profile_artifact_fd(path: Path, max_bytes: int) -> tuple[int, os.stat_result]:
+    """Atomic O_NOFOLLOW open + fstat for a chameleon profile artifact.
+
+    Used by ``safe_read_profile_artifact`` / ``safe_read_profile_artifact_bytes``.
+    The caller is responsible for the file living in a trusted profile_dir;
+    this helper enforces only the per-file checks (no symlink, regular file,
+    size cap). O_NOFOLLOW closes the lstat-then-open TOCTOU window a
+    teammate could exploit by swapping a committed renames.json for a
+    symlink between checks.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    flags |= cloexec
+    try:
+        fd = os.open(str(path), flags)
+    except FileNotFoundError:
+        raise
+    except OSError as e:
+        # ELOOP from O_NOFOLLOW or any other open failure
+        raise UnsafeFileError(f"open failed for {path}: {e}") from e
+    try:
+        st = os.fstat(fd)
+    except OSError as e:
+        os.close(fd)
+        raise UnsafeFileError(f"fstat failed for {path}: {e}") from e
+    if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        raise UnsafeFileError(f"not a regular file: {path}")
+    if st.st_size > max_bytes:
+        os.close(fd)
+        raise UnsafeFileError(
+            f"profile artifact {path} is {st.st_size} bytes, exceeds {max_bytes} cap"
+        )
+    return fd, st
+
+
+def safe_read_profile_artifact(
+    path: Path,
+    *,
+    max_bytes: int = _DEFAULT_PROFILE_ARTIFACT_MAX_BYTES,
+) -> str:
+    """Read a chameleon profile artifact as text with O_NOFOLLOW + size cap.
+
+    Use for files inside a known-trusted ``.chameleon/`` directory (the
+    caller has already resolved the directory via ``find_repo_root`` or
+    trust-record lookup). Returns the decoded UTF-8 text.
+
+    Closes the lstat-then-open TOCTOU window: a teammate-controlled symlink
+    swap between two syscalls cannot reach the read.
+
+    Raises:
+        UnsafeFileError: on symlink (O_NOFOLLOW), non-regular file, size cap.
+        FileNotFoundError: passed through so callers can distinguish absent
+                           from unsafe.
+    """
+    fd, _ = _open_profile_artifact_fd(path, max_bytes)
+    with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def safe_read_profile_artifact_bytes(
+    path: Path,
+    *,
+    max_bytes: int = _DEFAULT_PROFILE_ARTIFACT_MAX_BYTES,
+) -> bytes:
+    """Read a chameleon profile artifact as raw bytes with O_NOFOLLOW + cap.
+
+    Same atomicity + size guarantees as ``safe_read_profile_artifact`` but
+    returns bytes (used by ``profile.trust.hash_profile`` so the hash input
+    matches the exact on-disk byte sequence).
+    """
+    fd, _ = _open_profile_artifact_fd(path, max_bytes)
+    with os.fdopen(fd, "rb") as f:
+        return f.read()
+
+
 def safe_open_fd(
     repo_root: Path,
     rel_path: str,

@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from chameleon_mcp import __version__ as ENGINE_VERSION
 from chameleon_mcp.bootstrap.transaction import is_committed
+from chameleon_mcp.safe_open import (
+    _DEFAULT_PROFILE_ARTIFACT_MAX_BYTES,
+    UnsafeFileError,
+    safe_read_profile_artifact,
+)
 
 # BUG-023: schema_version is monotonic. A profile written by a future
 # chameleon with a higher schema_version may contain fields this engine
@@ -41,31 +45,26 @@ class ProfileLoadError(Exception):
     """Raised when a profile fails to load (missing sentinel, schema, generation)."""
 
 
-_MAX_ARTIFACT_BYTES = 5 * 1024 * 1024  # 5 MB hard cap per artifact
+# Back-compat re-export so existing readers that imported the loader cap
+# (e.g. older tests) keep finding the constant at the same name.
+_MAX_ARTIFACT_BYTES = _DEFAULT_PROFILE_ARTIFACT_MAX_BYTES
 
 
 def _safe_read_artifact(path: Path) -> str:
-    """Read a chameleon profile artifact with size + regular-file guards.
+    """Read a chameleon profile artifact via the shared safe helper.
 
-    Refuses to read symlinks (lstat-checked) and files larger than 5MB.
-    Raises ProfileLoadError on either failure so callers funnel through
-    the existing error handling.
+    Thin wrapper that translates UnsafeFileError into ProfileLoadError so
+    existing callers (load_profile_dir, etc.) keep seeing a single
+    exception type. The actual atomic open + size cap + symlink refusal
+    now lives in chameleon_mcp.safe_open.safe_read_profile_artifact so all
+    four hashed-artifact consumers share one implementation.
     """
     try:
-        st = os.lstat(path)
+        return safe_read_profile_artifact(path)
     except FileNotFoundError:
         raise
-    except OSError as exc:
-        raise ProfileLoadError(f"could not stat {path}: {exc}") from exc
-    if not stat.S_ISREG(st.st_mode):
-        raise ProfileLoadError(
-            f"refusing to read {path}: not a regular file (mode={oct(st.st_mode)})"
-        )
-    if st.st_size > _MAX_ARTIFACT_BYTES:
-        raise ProfileLoadError(
-            f"artifact {path} is {st.st_size} bytes, exceeds {_MAX_ARTIFACT_BYTES} cap"
-        )
-    return path.read_text(encoding="utf-8")
+    except UnsafeFileError as exc:
+        raise ProfileLoadError(str(exc)) from exc
 
 
 @dataclass

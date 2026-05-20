@@ -16,6 +16,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from chameleon_mcp.safe_open import (
+    UnsafeFileError,
+    safe_read_profile_artifact_bytes,
+)
+
 
 def plugin_data_dir() -> Path:
     """Resolve where chameleon stores per-user state (trust DB, drift.db).
@@ -178,10 +183,26 @@ def hash_profile(profile_dir: Path) -> str:
     h = hashlib.sha256()
     for filename in _HASHED_ARTIFACTS:
         artifact = profile_dir / filename
-        if not artifact.is_file():
+        try:
+            body = safe_read_profile_artifact_bytes(artifact)
+        except FileNotFoundError:
+            # Genuinely absent: skip framing. Adding the file later produces
+            # a distinct hash because the framing bytes appear then.
+            continue
+        except (OSError, UnsafeFileError) as exc:
+            # Symlink, non-regular, or oversized artifact. A teammate-
+            # committed 100 MB idioms.md (or a symlink to /etc/passwd)
+            # must not balloon trust-check memory — and must not collide
+            # with the "absent" hash, otherwise an attacker who plants
+            # an unsafe artifact after grant cannot be detected as a
+            # material change. Frame a distinguishing sentinel that
+            # depends on the failure reason so post-grant swaps trip
+            # the trust re-prompt.
+            h.update(b"\x01" + filename.encode("utf-8") + b"\x01")
+            h.update(b"UNSAFE:" + type(exc).__name__.encode("ascii"))
             continue
         h.update(b"\x00" + filename.encode("utf-8") + b"\x00")
-        h.update(artifact.read_bytes())
+        h.update(body)
     return h.hexdigest()
 
 
