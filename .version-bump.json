@@ -6,7 +6,8 @@
     { "path": ".codex-plugin/plugin.json", "field": "version" },
     { "path": "gemini-extension.json", "field": "version" },
     { "path": "package.json", "field": "version" },
-    { "path": "mcp/package.json", "field": "version" }
+    { "path": "mcp/package.json", "field": "version" },
+    { "path": "mcp/pyproject.toml", "field": "project.version" }
   ],
   "audit": {
     "exclude": [

@@ -21,6 +21,10 @@ fi
 
 read_json_field() {
   local file="$1" field="$2"
+  if [[ "$file" == *.toml ]]; then
+    _read_toml_field "$file" "$field"
+    return
+  fi
   local jq_path
   jq_path=$(echo "$field" | sed -E 's/\.([0-9]+)/[\1]/g' | sed 's/^/./' | sed 's/\.\././g')
   jq -r "$jq_path" "$file"
@@ -28,10 +32,61 @@ read_json_field() {
 
 write_json_field() {
   local file="$1" field="$2" value="$3"
+  if [[ "$file" == *.toml ]]; then
+    _write_toml_field "$file" "$field" "$value"
+    return
+  fi
   local jq_path
   jq_path=$(echo "$field" | sed -E 's/\.([0-9]+)/[\1]/g' | sed 's/^/./' | sed 's/\.\././g')
   local tmp="${file}.tmp"
   jq "$jq_path = \"$value\"" "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
+# Minimal TOML support for `project.version` / `tool.<name>.version`
+# style scalar fields. Operates on the first `key = "..."` under the
+# matching section header, which covers pyproject.toml's needs without
+# pulling in a real TOML parser.
+_read_toml_field() {
+  local file="$1" field="$2"
+  local section key
+  section=$(echo "$field" | awk -F. '{NF--; print}' OFS=.)
+  key=$(echo "$field" | awk -F. '{print $NF}')
+  if [[ -z "$section" ]]; then
+    awk -v k="$key" 'BEGIN{FS="[[:space:]]*=[[:space:]]*"} $1==k {gsub(/^"|"$/, "", $2); print $2; exit}' "$file"
+    return
+  fi
+  awk -v sect="[$section]" -v k="$key" '
+    $0==sect {in_sect=1; next}
+    /^\[/ {in_sect=0}
+    in_sect && $0 ~ "^"k"[[:space:]]*=" {
+      sub(/^[^=]*=[[:space:]]*/, "")
+      gsub(/^"|"$/, "")
+      print; exit
+    }
+  ' "$file"
+}
+
+_write_toml_field() {
+  local file="$1" field="$2" value="$3"
+  local section key
+  section=$(echo "$field" | awk -F. '{NF--; print}' OFS=.)
+  key=$(echo "$field" | awk -F. '{print $NF}')
+  local tmp="${file}.tmp"
+  if [[ -z "$section" ]]; then
+    awk -v k="$key" -v v="$value" '
+      !done && $1==k {sub(/=.*/, "= \""v"\""); done=1}
+      {print}
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
+    return
+  fi
+  awk -v sect="[$section]" -v k="$key" -v v="$value" '
+    $0==sect {in_sect=1; print; next}
+    /^\[/ {in_sect=0}
+    in_sect && !done && $0 ~ "^"k"[[:space:]]*=" {
+      sub(/=.*/, "= \""v"\""); done=1
+    }
+    {print}
+  ' "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
 declared_files() {
