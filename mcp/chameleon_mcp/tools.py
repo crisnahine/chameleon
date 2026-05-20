@@ -932,6 +932,7 @@ def _empty_pattern_envelope(
             "content_signal_match": "none",
             "confidence_band": "low",
             "match_quality": "none",
+            "sub_buckets_count": 0,
         },
         "canonical_excerpt": {
             "content": "",
@@ -999,6 +1000,25 @@ def get_pattern_context(file_path: str) -> dict:
         p, repo_root, loaded, content_signal_value
     )
     arch_data = arch_response["data"]
+
+    # Rec 1: surface sub_buckets_count alongside the archetype so the hook
+    # can tell the model "this archetype has N sub-buckets" — a single
+    # cheap integer that signals when an archetype is heterogenous (e.g.,
+    # a controller cluster that absorbed 36 concerns lives at a different
+    # sub_buckets_count than a pure-controllers cluster). The full
+    # sub_buckets map is in archetypes.json; here we surface only the
+    # count to keep the per-edit advisory budget tight.
+    if arch_data.get("archetype"):
+        arch_entry = (
+            loaded.archetypes.get("archetypes", {}).get(arch_data["archetype"], {})
+            or {}
+        )
+        sub_buckets = arch_entry.get("sub_buckets") or {}
+        arch_data["sub_buckets_count"] = (
+            len(sub_buckets) if isinstance(sub_buckets, dict) else 0
+        )
+    else:
+        arch_data["sub_buckets_count"] = 0
 
     canonical_data = {"content": "", "witness_path": None, "truncated": False, "sha_hint": None}
     if arch_data["archetype"]:

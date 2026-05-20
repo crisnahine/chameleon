@@ -350,13 +350,26 @@ def preflight_and_advise() -> int:
     rules_count = len(data.get("rules") or [])
     idioms_text = data.get("idioms") or ""
     has_idioms = bool(idioms_text.strip())
+    # Rec 1: enrich the header with match_quality (exact|ast|fallback|none)
+    # so the model can calibrate how much to trust the canonical excerpt
+    # below, and sub_buckets so the model knows whether the archetype is
+    # a clean cluster or a heterogenous group (e.g., a controller cluster
+    # silently absorbing concerns shows sub_buckets >= 2). Both values
+    # come from the get_pattern_context envelope and stay inside the
+    # existing bracketed header — pinned substrings ``[chameleon: archetype=``
+    # and ``Canonical witness:`` are preserved verbatim.
+    match_quality = archetype_obj.get("match_quality") or "unknown"
+    sub_buckets_count = archetype_obj.get("sub_buckets_count") or 0
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
     safe_name = sanitize_for_chameleon_context(archetype_name or "")
     safe_band = sanitize_for_chameleon_context(confidence_band or "unknown")
+    safe_match = sanitize_for_chameleon_context(str(match_quality))
     block = (
         "<chameleon-context>\n"
         f"[chameleon: archetype={safe_name}, "
-        f"confidence={safe_band}]\n\n"
+        f"confidence={safe_band}, "
+        f"match_quality={safe_match}, "
+        f"sub_buckets={int(sub_buckets_count)}]\n\n"
     )
     if trust_state == "stale":
         # BUG-NEW-011 (v0.5.7): explain the "stale" cause. Pre-fix the
