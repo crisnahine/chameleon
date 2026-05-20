@@ -15,8 +15,9 @@ import sys
 from pathlib import Path
 
 from _test_config import TS_REPO
-from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+from mcp import ClientSession, StdioServerParameters
 
 # CI / fresh-clone guard: this suite exercises a real repo end-to-end.
 if TS_REPO is None:

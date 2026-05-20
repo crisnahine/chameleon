@@ -28,9 +28,9 @@ from chameleon_mcp.safe_open import (
     safe_read_profile_artifact_bytes,
 )
 from chameleon_mcp.tools import (
-    _RenamesOverlayOverCap,
     _read_renames_overlay,
     _read_renames_overlay_strict,
+    _RenamesOverlayOverCap,
 )
 
 PASS: list[tuple[str, str]] = []
