@@ -33,6 +33,49 @@ def _emit(output: dict) -> None:
     sys.stdout.write("\n")
 
 
+def _emit_chameleon_context(block: str) -> None:
+    """Wrap a ``<chameleon-context>`` block in the PreToolUse hook envelope.
+
+    Rec 3: one helper for every advisory or degradation block the hook
+    surfaces, so the envelope shape stays consistent across the five
+    historically-divergent emit sites.
+    """
+    _emit(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": block,
+            }
+        }
+    )
+
+
+def _degraded_banner(reason: str, detail: str | None = None) -> str:
+    """Tiny advisory block naming a degradation cause.
+
+    Rec 3 + 4.1: when chameleon goes silent for a system-degradation
+    reason (not a user opt-out), surface a one-line banner so the model
+    can mention to the human partner that the advisory was unavailable.
+    The model should not assume "no banner == healthy".
+
+    ``reason`` is a short slug rendered inside the bracketed header;
+    optional ``detail`` adds a single line of prose so the user knows
+    what to investigate.
+    """
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    safe_reason = sanitize_for_chameleon_context(reason)
+    parts = [
+        "<chameleon-context>",
+        f"[chameleon: degraded — {safe_reason}]",
+    ]
+    if detail:
+        parts.append("")
+        parts.append(sanitize_for_chameleon_context(detail))
+    parts.append("</chameleon-context>")
+    return "\n".join(parts)
+
+
 def _plugin_data_dir() -> Path:
     """Return the per-user chameleon plugin data dir (override-aware).
 
@@ -253,9 +296,20 @@ def preflight_and_advise() -> int:
             from chameleon_mcp.tools import get_pattern_context
             result = get_pattern_context(file_path)
         except Exception:
-            # Fail-open per docs/architecture.md — never block edits on advisor failure
+            # Fail-open per docs/architecture.md — never block edits on advisor
+            # failure. Rec 3 + 4.1: surface a banner so the model knows the
+            # advisory was unavailable (silent fail-opens accumulate without
+            # any visible signal — observed locally as 70+ events on a single
+            # workstation). Use _emit_chameleon_context so the envelope shape
+            # matches the normal path.
             _metric(advisory_emitted=False, repo_id=repo_id_hint, fail_open=True)
-            _emit({})
+            _emit_chameleon_context(
+                _degraded_banner(
+                    "advisor_unavailable",
+                    "get_pattern_context failed; this edit proceeds without chameleon "
+                    "guidance. If this repeats, run /chameleon-doctor.",
+                )
+            )
             return 0
 
     data = result.get("data", {})
@@ -326,18 +380,18 @@ def preflight_and_advise() -> int:
                 archetype=archetype_name,
                 confidence=confidence_band,
             )
-            _emit({
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "additionalContext": block,
-                }
-            })
+            _emit_chameleon_context(block)
             return 0
-        # Already prompted this session — stay silent.
+        # Already prompted this session — stay silent. Rec 4.2: the
+        # historical label was "session_disable", which conflated this
+        # trust-prompt dedup with the user's explicit /chameleon-disable.
+        # Operators reading metrics couldn't distinguish "the user has
+        # not run /chameleon-trust yet" from "the user actively disabled
+        # chameleon" — both showed up as session_disable.
         _metric(
             advisory_emitted=False,
             repo_id=repo_id,
-            suppression_reason="session_disable",
+            suppression_reason="trust_prompt_dedup",
             trust_state="untrusted",
             archetype=archetype_name,
             confidence=confidence_band,
@@ -402,12 +456,7 @@ def preflight_and_advise() -> int:
         archetype=archetype_name,
         confidence=confidence_band,
     )
-    _emit({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "additionalContext": block,
-        }
-    })
+    _emit_chameleon_context(block)
     return 0
 
 
