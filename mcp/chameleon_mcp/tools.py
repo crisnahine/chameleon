@@ -3852,6 +3852,86 @@ def _read_renames_overlay_strict(profile_dir: Path) -> dict[str, str]:
     return out
 
 
+_ARCHETYPE_RENAMES_LEDGER_FILENAME = ".archetype_renames.json"
+
+
+def _append_rename_ledger_entries(
+    profile_dir: Path,
+    effective: dict[str, str],
+) -> dict | None:
+    """Build the next ledger payload by appending ``effective`` to the
+    on-disk history. Returns None when there's nothing to append.
+
+    Rec 11b: each call to ``apply_archetype_renames`` appends an entry
+    per effective rename so the audit trail records who changed what
+    when. FIFO-pruned at RENAMES_OVERLAY_CAP entries (default 256)
+    using the same threshold as the overlay so an automated tool can't
+    balloon the ledger and blow the trust-check memory ceiling.
+
+    The ledger lives at ``.chameleon/.archetype_renames.json`` and is
+    in ``_HASHED_ARTIFACTS`` so a teammate cannot smuggle a rename in
+    silently — modifying the ledger trips the material-change re-prompt.
+
+    Reads use ``safe_read_profile_artifact`` (O_NOFOLLOW + size cap),
+    validates entries through ``ARCHETYPE_NAME_RE`` (so a hand-edited
+    ledger with prompt-injection text in a name doesn't poison the
+    next refresh).
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.profile.schema import ARCHETYPE_NAME_RE
+    from chameleon_mcp.safe_open import (
+        UnsafeFileError,
+        safe_read_profile_artifact,
+    )
+
+    if not effective:
+        return None
+
+    ledger_path = profile_dir / _ARCHETYPE_RENAMES_LEDGER_FILENAME
+    history: list[dict] = []
+    if ledger_path.is_file():
+        try:
+            text = safe_read_profile_artifact(ledger_path)
+            existing = json.loads(text)
+            if isinstance(existing, dict):
+                raw_history = existing.get("history")
+                if isinstance(raw_history, list):
+                    for entry in raw_history:
+                        if not isinstance(entry, dict):
+                            continue
+                        old = entry.get("from")
+                        new = entry.get("to")
+                        if not (isinstance(old, str) and isinstance(new, str)):
+                            continue
+                        if not (ARCHETYPE_NAME_RE.match(old) and ARCHETYPE_NAME_RE.match(new)):
+                            continue
+                        history.append(
+                            {
+                                "from": old,
+                                "to": new,
+                                "ts": entry.get("ts") if isinstance(entry.get("ts"), str) else "",
+                            }
+                        )
+        except (FileNotFoundError, OSError, UnsafeFileError, json.JSONDecodeError):
+            history = []
+
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    for old, new in sorted(effective.items()):
+        if not (ARCHETYPE_NAME_RE.match(old) and ARCHETYPE_NAME_RE.match(new)):
+            continue
+        history.append({"from": old, "to": new, "ts": now_iso})
+
+    cap = threshold_int("RENAMES_OVERLAY_CAP")
+    if len(history) > cap:
+        history = history[-cap:]  # keep most-recent
+
+    return {
+        "schema_version": 1,
+        "history": history,
+        "updated_at": now_iso,
+    }
+
+
 def _merge_rename_overlay(
     existing: dict[str, str],
     incoming: dict[str, str],
@@ -4007,6 +4087,13 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         "renames": merged_renames,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    # Rec 11b: append each effective rename to the historical ledger
+    # `.archetype_renames.json`. The ledger is the audit trail (who
+    # renamed what, when) — distinct from `renames.json` which is the
+    # current auto-name → user-name overlay applied at bootstrap. The
+    # ledger is FIFO-pruned at 256 entries so a runaway loop of
+    # automated renames can't balloon the trust-hashed surface.
+    ledger_payload = _append_rename_ledger_entries(profile_dir, effective)
 
     try:
         with atomic_profile_commit(profile_dir) as txn_dir:
@@ -4028,6 +4115,11 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
                 json.dumps(renames_payload, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
+            if ledger_payload is not None:
+                (txn_dir / ".archetype_renames.json").write_text(
+                    json.dumps(ledger_payload, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
     except Exception as e:
         return _envelope({"status": "failed", "error": f"atomic commit failed: {e}"})
 

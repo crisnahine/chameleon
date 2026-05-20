@@ -138,6 +138,7 @@ class TrustRecord:
 # value can be reproduced offline (e.g., from a git diff) without needing
 # to consult the source. Each entry is hashed only when present on disk.
 _HASHED_ARTIFACTS: tuple[str, ...] = (
+    ".archetype_renames.json",
     "archetypes.json",
     "canonicals.json",
     "idioms.md",
