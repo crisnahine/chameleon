@@ -10,7 +10,6 @@ All responses use the API versioning envelope per Round 5 API Designer:
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import json
 import math
@@ -252,7 +251,45 @@ def _git_remote_url(repo_root: Path) -> str | None:
     return url or None
 
 
-@functools.lru_cache(maxsize=64)
+def _effective_profile_dir(repo_root: Path) -> Path:
+    """Return the profile dir READS should use for this repo.
+
+    v0.6.0: when ``.chameleon/config.json`` sets ``canonical_ref`` (e.g.
+    ``"origin/main"``), reads come from a canonical-ref cache instead
+    of the working tree — so a developer on a feature branch sees the
+    team's main-branch conventions regardless of what their local
+    checkout has. Writes (bootstrap_repo, refresh_repo, apply_renames,
+    teach_profile_*, grant_trust) always target the working tree;
+    only reads (get_pattern_context, get_archetype, get_rules,
+    get_canonical_excerpt, lint_file, etc.) follow the pin.
+
+    Falls back to the working tree when:
+      - the repo isn't chameleon-aware (no .chameleon/config.json)
+      - config.json is malformed
+      - canonical_ref isn't set
+      - the ref can't be resolved or the materialize fails
+      - any unexpected error
+    """
+    working = repo_root / ".chameleon"
+    config_file = working / "config.json"
+    if not config_file.is_file():
+        return working
+    try:
+        from chameleon_mcp.profile.canonical_loader import materialize_canonical
+        from chameleon_mcp.profile.config import load_config
+
+        cfg = load_config(working)
+        if not cfg.branch_pinning_enabled:
+            return working
+        repo_id = _compute_repo_id(repo_root)
+        canonical = materialize_canonical(repo_root, repo_id, cfg.canonical_ref)
+        if canonical is None:
+            return working
+        return canonical
+    except Exception:  # noqa: BLE001 - any failure → fall back to working tree
+        return working
+
+
 def _compute_repo_id(repo_root: Path) -> str:
     """Canonical repo_id.
 
@@ -670,7 +707,8 @@ def get_archetype(repo: str, file_path: str) -> dict:
                 "match_quality": "none",
             })
 
-    profile_dir = repo_root / ".chameleon"
+    # v0.6.0: follow canonical_ref pin on reads.
+    profile_dir = _effective_profile_dir(repo_root)
     try:
         loaded: LoadedProfile = load_profile_dir(profile_dir)
     except Exception:
@@ -971,7 +1009,11 @@ def get_pattern_context(file_path: str) -> dict:
         )
 
     repo_id = _compute_repo_id(repo_root)
-    profile_dir = repo_root / ".chameleon"
+    # v0.6.0: when canonical_ref is set in .chameleon/config.json,
+    # _effective_profile_dir materializes the ref's profile into a
+    # cache and returns that. Reads of pattern context follow the
+    # pin so a developer on a feature branch sees main's conventions.
+    profile_dir = _effective_profile_dir(repo_root)
     profile_file = profile_dir / "profile.json"
     if not profile_file.exists():
         return _envelope(
@@ -1257,7 +1299,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         })
 
     try:
-        loaded = load_profile_dir(repo_root / ".chameleon")
+        loaded = load_profile_dir(_effective_profile_dir(repo_root))
     except Exception:
         return _envelope({
             "content": "",
@@ -1414,7 +1456,7 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         return _envelope(env)
 
     try:
-        loaded = load_profile_dir(repo_root / ".chameleon")
+        loaded = load_profile_dir(_effective_profile_dir(repo_root))
     except Exception:
         env = {"rules": []}
         if deprecation_note:
@@ -1610,7 +1652,7 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
 
     # 3. Load the profile + look up the archetype's ast_query.
     try:
-        loaded = load_profile_dir(repo_root / ".chameleon")
+        loaded = load_profile_dir(_effective_profile_dir(repo_root))
     except Exception:
         return _envelope(
             {
@@ -2461,10 +2503,18 @@ def _maybe_preserve_trust_across_refresh(
     /chameleon-refresh re-analyzes "without clearing trust state", but
     the implementation invalidated trust on every refresh because the
     generation counter bumped on each run (changing the trust hash).
-    Now: when the structural hashes (everything except generation +
-    timestamps) match pre/post AND no archetype names changed AND a
-    trust record existed pre-refresh, auto re-grant at the new hash.
-    Any real content change still invalidates trust.
+
+    Three paths re-grant trust:
+      1. Structural-equality (v0.5.15): pre/post hashes match AND
+         archetype_diff is empty AND a trust record existed.
+      2. Pulled-from-remote (v0.6.0): the profile change came from a
+         git pull by a different author AND
+         ``config.trust.auto_preserve_when == "pulled_from_remote"``.
+         Lets a teammate's profile update flow through without forcing
+         the user to re-trust every time someone else pushes a refresh.
+
+    Any real content change made by the same user still invalidates
+    trust (the user typed it; they should re-trust their own change).
     """
     if pre_state is None:
         return
@@ -2473,31 +2523,107 @@ def _maybe_preserve_trust_across_refresh(
     data = envelope.get("data") if isinstance(envelope, dict) else None
     if not isinstance(data, dict):
         return
-    diff = data.get("archetype_diff") or {}
-    # Any structural archetype change → don't preserve.
-    if (
-        diff.get("added")
-        or diff.get("removed")
-        or diff.get("renamed")
-        or diff.get("dropped_invalid_names")
-    ):
-        return
+
     profile_dir = repo_path / ".chameleon"
-    post_hashes = _structural_hashes(profile_dir)
-    pre_hashes = pre_state.get("structural_hashes") or {}
-    if post_hashes != pre_hashes:
+    diff = data.get("archetype_diff") or {}
+    structurally_identical = (
+        not (
+            diff.get("added")
+            or diff.get("removed")
+            or diff.get("renamed")
+            or diff.get("dropped_invalid_names")
+        )
+        and _structural_hashes(profile_dir)
+        == (pre_state.get("structural_hashes") or {})
+    )
+
+    preserve_reason: str | None = None
+    if structurally_identical:
+        preserve_reason = "structural_equality"
+    else:
+        # v0.6.0: try the pulled-from-remote path.
+        try:
+            from chameleon_mcp.profile.config import load_config
+
+            cfg = load_config(profile_dir)
+            if cfg.trust.auto_preserve_when == "pulled_from_remote":
+                if _profile_change_came_from_remote_pull(repo_path):
+                    preserve_reason = "pulled_from_remote"
+        except Exception:  # noqa: BLE001
+            pass
+
+    if preserve_reason is None:
         return
-    # All checks pass: re-grant trust at the new hash. Same user, same
-    # repo_root — grant_trust handles the in-place hash update via its
-    # same-root branch.
+
     try:
         from chameleon_mcp.profile.trust import grant_trust
 
         grant_trust(pre_state["repo_id"], profile_dir)
         data["trust_preserved"] = True
+        data["trust_preserve_reason"] = preserve_reason
     except Exception:
         # Best-effort; if regrant fails, fall back to stale (status quo).
         pass
+
+
+def _profile_change_came_from_remote_pull(repo_path: Path) -> bool:
+    """Heuristic: was the latest ``.chameleon/profile.json`` change pulled?
+
+    Returns True when the most-recent commit touching ``profile.json`` was
+    authored by someone OTHER than the current local user. That's the
+    shape of a teammate's profile update flowing in via ``git pull``.
+
+    Returns False when:
+      - the repo isn't a git repo (``git`` returns non-zero)
+      - the latest commit author matches the current user (local edit)
+      - any subprocess call fails
+
+    The git work is bounded by a 2-second timeout so a hung subprocess
+    can never block trust preservation indefinitely.
+    """
+    import subprocess as _sp
+
+    try:
+        # Current user's email (from `git config`)
+        current = _sp.run(
+            ["git", "-C", str(repo_path), "config", "user.email"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if current.returncode != 0:
+            return False
+        current_email = (current.stdout or "").strip().lower()
+        if not current_email:
+            return False
+
+        # Author of the latest commit that touched .chameleon/profile.json
+        commit_author = _sp.run(
+            [
+                "git",
+                "-C",
+                str(repo_path),
+                "log",
+                "-1",
+                "--format=%ae",
+                "--",
+                ".chameleon/profile.json",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if commit_author.returncode != 0:
+            return False
+        latest_author = (commit_author.stdout or "").strip().lower()
+        if not latest_author:
+            return False
+
+        return latest_author != current_email
+    except Exception:  # noqa: BLE001 (subprocess.TimeoutExpired, OSError)
+        return False
 
 
 def _inject_archetype_diff(

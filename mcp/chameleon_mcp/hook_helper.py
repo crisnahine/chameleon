@@ -250,6 +250,105 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
         return None
 
 
+_AUTO_REFRESH_COOLDOWN_FILENAME = ".auto_refresh_cooldown"
+
+
+def _maybe_auto_refresh(repo_root: Path) -> None:
+    """Fire ``refresh_repo`` in background when v0.6.0 auto-refresh fires.
+
+    Gates (ALL must hold):
+      - ``.chameleon/config.json`` has ``auto_refresh.enabled == true``
+      - drift stats >= ``drift_threshold`` OR profile mtime older than
+        ``max_age_hours``
+      - per-repo cooldown marker is stale (don't re-fire every session)
+
+    Best-effort: any exception is swallowed silently — auto-refresh is
+    convenience, never blocks the session.
+    """
+    try:
+        from chameleon_mcp.drift.observations import compute_drift_stats
+        from chameleon_mcp.profile.config import load_config
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.tools import _compute_repo_id
+
+        resolved_root = find_repo_root(repo_root) or repo_root
+        profile_dir = resolved_root / ".chameleon"
+        if not profile_dir.is_dir():
+            return
+        cfg = load_config(profile_dir)
+        if not cfg.auto_refresh.enabled:
+            return
+
+        repo_id = _compute_repo_id(resolved_root)
+
+        # Cooldown: don't re-fire within (max_age_hours / 4) hours so a
+        # repo with frequent SessionStart hits doesn't auto-refresh
+        # back-to-back.
+        cooldown_seconds = max(60, (cfg.auto_refresh.max_age_hours * 3600) // 4)
+        cooldown_marker = (
+            _plugin_data_dir() / repo_id / _AUTO_REFRESH_COOLDOWN_FILENAME
+        )
+        if _marker_path_is_fresh(cooldown_marker, cooldown_seconds):
+            return
+
+        # Trigger condition: drift is high OR profile is old.
+        should_fire = False
+        try:
+            stats = compute_drift_stats(repo_id)
+            if stats and stats.get("score", 0.0) >= cfg.auto_refresh.drift_threshold:
+                should_fire = True
+        except Exception:  # noqa: BLE001
+            pass
+        if not should_fire:
+            profile_json = profile_dir / "profile.json"
+            if profile_json.is_file():
+                age_hours = (time.time() - profile_json.stat().st_mtime) / 3600
+                if age_hours >= cfg.auto_refresh.max_age_hours:
+                    should_fire = True
+        if not should_fire:
+            return
+
+        # Touch the cooldown BEFORE spawning so a refresh that takes longer
+        # than the next SessionStart doesn't get double-fired.
+        cooldown_marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(cooldown_marker.parent, 0o700)
+        except OSError:
+            pass
+        cooldown_marker.write_text(str(int(time.time())), encoding="utf-8")
+        try:
+            os.chmod(cooldown_marker, 0o600)
+        except OSError:
+            pass
+
+        # Fire detached: refresh_repo can take seconds; we don't block
+        # the SessionStart hook on it.
+        import subprocess as _sp
+
+        _sp.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; from chameleon_mcp.tools import refresh_repo; "
+                    f"refresh_repo({str(resolved_root)!r})"
+                ),
+            ],
+            stdout=_sp.DEVNULL,
+            stderr=_sp.DEVNULL,
+            stdin=_sp.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:
+        try:
+            print(
+                f"chameleon: auto-refresh check failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _marker_path_is_fresh(marker: Path, ttl_seconds: int) -> bool:
     """Mirror of _marker_is_fresh with a per-call TTL.
 
@@ -305,6 +404,13 @@ def session_start() -> int:
     except Exception:
         session_id = None
     drift_banner = _drift_banner_for_repo(Path.cwd(), session_id=session_id)
+
+    # v0.6.0: opt-in auto-refresh. Reads .chameleon/config.json; if
+    # auto_refresh.enabled AND drift is high enough / profile is stale
+    # enough, fires refresh_repo in the background so the user doesn't
+    # have to manually /chameleon-refresh. The session_start hook
+    # returns immediately — the refresh runs detached.
+    _maybe_auto_refresh(Path.cwd())
 
     wrapped_parts = [
         "<chameleon-context>",

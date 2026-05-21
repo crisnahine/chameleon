@@ -5,10 +5,10 @@ description: Use when the user explicitly invokes /chameleon-init to bootstrap a
 
 # /chameleon-init
 
-Bootstrap a chameleon profile for the current repo, then drive a short
-≤3-prompt interview so the user can rename auto-generated archetype labels
-to something their team will recognize. Profile artifacts are written
-atomically via the commit-marker pattern.
+Bootstrap a chameleon profile for the current repo, then auto-apply
+rename proposals so the archetype labels match the team's vocabulary
+without a user interview. Profile artifacts are written atomically via
+the commit-marker pattern.
 
 ## When to use
 
@@ -27,86 +27,68 @@ running init twice would overwrite the existing profile.
    discovery, AST parse, clustering, canonical selection, atomic profile
    commit). Archetypes start out with heuristic names like `controller`,
    `react-component`, `service`, `migration`.
-4. Run the **≤3-prompt rename interview** (below) so the user can override
-   any name that doesn't match their team's vocabulary.
+4. **Auto-apply rename proposals** (see below) so cluster-* / class-* /
+   numeric-suffix fallback names get replaced with the team's vocabulary.
 5. Report the BootstrapReport to the user: archetype count, files
-   processed, duration, profile path.
+   processed, duration, profile path, and what got renamed.
 6. Suggest the user run `/chameleon-trust` to approve the profile for
    their session.
 
-## The ≤3-prompt rename interview (after bootstrap succeeds)
+## v0.6.0 default: auto-apply renames (no user interview)
 
-The interview is a strict three-prompt protocol. Do not exceed three
-user-facing prompts. The MCP exposes two stateless tools the skill drives:
+Renames are purely cosmetic — they just rekey archetypes.json /
+canonicals.json / rules.json / idioms.md. Pattern quality, witness
+selection, and lint behavior are unaffected. So v0.6.0 makes
+auto-rename the default: the skill picks the best candidate per
+archetype from `propose_archetype_renames` and applies them without
+asking.
 
-- `propose_archetype_renames(repo, top_n=8)` — returns the top-N largest
-  archetypes plus 3-5 candidate names per archetype. `top_n` is an
-  integer in 1..64 (inclusive). 8 is the recommended default for the
-  three-prompt interview.
-- `apply_archetype_renames(repo, renames)` — atomically rewrites
-  archetypes.json + canonicals.json + profile.summary.md keys.
+### Auto-apply algorithm
 
-### Prompt 1 — "Any names to override?"
+1. Call `propose_archetype_renames(repo=<abs-repo-path>, top_n=16)`.
+2. For each proposal, decide whether to rename:
+   - **Always rename** when the current name is a low-information
+     fallback: starts with `cluster-` (raw hash), starts with `class-`
+     (generic Ruby class name when the witness is more specific), or
+     ends in a bare numeric disambiguator like `-2` / `-3` with no
+     semantic suffix.
+   - **Skip** when the current name is already descriptive
+     (`controller`, `service`, `model`, `migration`, `worker`,
+     `react-component`, `next-page`, etc.) AND the top suggested
+     alternative isn't materially better.
+   - **Tie-break** on multiple candidates: prefer the alternative the
+     proposal ranks first (`suggested_alternatives[0]`), unless it
+     duplicates an existing archetype name in the same profile (skip
+     in that case).
+3. Validate every chosen new name against `\A[a-z][a-z0-9-]{0,63}\Z`.
+   Discard any invalid pick silently.
+4. Apply the resulting `{old: new}` map via
+   `apply_archetype_renames(repo=<abs-repo-path>, renames=...)`.
+5. Report what got renamed in the BootstrapReport summary (e.g.
+   "renamed 3 archetypes: cluster-25874012 → test-models-spec,
+   class-foo → service-foo, controller-2 → admin-controller").
 
-Call `propose_archetype_renames(repo=<abs-repo-path>, top_n=8)`. Format
-the response as a numbered list and ask the user (verbatim or close):
+### When to skip auto-apply entirely
 
-> Bootstrap found these archetypes (largest first). Any names you'd like
-> to override?
->
-> 1. **controller** (12 files) — canonical `app/controllers/users_controller.rb`
-> 2. **react-component** (89 files) — canonical `src/components/Button.tsx`
-> 3. **service** (8 files) — canonical `app/services/UserCreator.rb`
-> ...
->
-> Reply with the numbers you want to rename (e.g. "2, 4"), or "no" to
-> keep the auto-derived names.
+- `propose_archetype_renames` returns `status: failed` (no profile, etc.)
+  → skip silently.
+- The proposal returns zero archetypes that meet the "always rename"
+  bar → skip silently, report "renames applied: 0".
+- The repo's `.chameleon/config.json` sets `auto_rename: false` → fall
+  back to the legacy ≤3-prompt interview below.
 
-If the user says "no" / "skip" / "all good" → skip to **Prompt 3**.
+### Legacy ≤3-prompt interview (only when `auto_rename: false`)
 
-### Prompt 2 — "What should each become?"
+If `.chameleon/config.json` is present AND sets `auto_rename: false`,
+run the interactive interview from the v0.5.x flow:
 
-For each number the user picked, show the **suggested_alternatives**
-list from the propose response and ask:
+- Prompt 1: list top-8 archetypes, ask "any to override?"
+- Prompt 2: per picked archetype, show `suggested_alternatives` and
+  let the user pick a number, type a custom name, or "keep".
+- Prompt 3: confirm the final mapping, then `apply_archetype_renames`.
 
-> For #2 (**react-component**), suggested alternatives:
-> - react-component (current)
-> - button
-> - components
-> - class
-> - react-component-button
->
-> Pick a number, type a custom name, or "keep" to leave it as-is.
-
-Repeat per archetype the user picked. Collect the responses into a single
-`{old_name: new_name}` dict. Skip entries where the user picks "keep" or
-types the existing name (no-op).
-
-If the user types an invalid name (uppercase letters, leading digit,
-underscores, spaces) silently re-ask with a one-line correction:
-
-> Names must match `[a-z][a-z0-9-]{0,63}` — try again?
-
-### Prompt 3 — Confirm + apply
-
-Show the user the final mapping and ask for confirmation:
-
-> About to rename:
-> - react-component → button
-> - service → user-orchestrator
->
-> Apply? (y/n)
-
-On "y": call `apply_archetype_renames(repo=<abs-repo-path>, renames={...})`.
-On "n" or empty mapping: skip the apply, move straight to the trust step.
-
-Then report `renames_applied` + suggest `/chameleon-trust`.
-
-### What if propose returns nothing useful?
-
-If `propose_archetype_renames` returns `status: failed` (no profile, etc.),
-silently skip the rename interview and continue to the trust step. The
-auto-derived names are good enough.
+Invalid names get one re-ask with the regex hint
+(`\A[a-z][a-z0-9-]{0,63}\Z`). The interview is strictly ≤3 prompts.
 
 ## What to tell the user before running bootstrap
 
