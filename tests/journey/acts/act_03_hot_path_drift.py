@@ -1,0 +1,179 @@
+"""Act 3: Hot path advisory + drift (Edit + Write + NotebookEdit) (Phases 8, 9, 10, 11)."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from tests.journey.acts.act_base import ActResult, build_act_prompt
+from tests.journey.harness import expect
+from tests.journey.harness.checkpoints import parse_checkpoint_file
+from tests.journey.harness.claude import spawn_claude
+from tests.journey.harness.context import JourneyContext
+
+
+_PROMPT_BODY = """\
+In trusted working/ts_basic, perform three operations using THREE DIFFERENT tools
+across archetypes. Use absolute paths for all file references.
+
+PHASE 8 - MCP read sweep (all read-only tools):
+  emit checkpoint started phase 8
+  Call the following chameleon-mcp read-only tools and verify each responds:
+    chameleon-mcp::detect_repo (on the current fixture path)
+    chameleon-mcp::get_archetype (pick any archetype from the profile)
+    chameleon-mcp::get_canonical_excerpt (pick the util or component archetype)
+    chameleon-mcp::get_drift_status
+    chameleon-mcp::get_pattern_context (file_path=src/utils/format_date.ts)
+    chameleon-mcp::get_rules
+    chameleon-mcp::list_profiles
+  For get_pattern_context, confirm the envelope contains match_quality set to one
+  of: ast, exact, fallback, none. Record the archetype name returned.
+  emit checkpoint completed phase 8
+
+PHASE 9 - Excerpt LRU cache dedup:
+  emit checkpoint started phase 9
+  Edit src/utils/format_date.ts (a one-line change, e.g. add a comment).
+  This is the FIRST edit in the util archetype - a PreToolUse advisory should fire.
+  Note whether chameleon-mcp::get_canonical_excerpt was called to build the advisory.
+  Now make a second edit in the same archetype: edit src/utils/format_currency.ts
+  (another one-line change). This is the SECOND edit in the same archetype within
+  this session. The excerpt LRU cache should serve the canonical without a new MCP
+  fetch (hook-model dedup: same archetype, same session).
+  Verify that the advisory shape on the first edit contained:
+    - archetype name
+    - sub_buckets list
+    - match_quality field
+    - a canonical witness (code snippet)
+  emit checkpoint completed phase 9
+
+PHASE 10 - PreToolUse advisory fires on Edit + Write + NotebookEdit (or Write fallback):
+  emit checkpoint started phase 10
+  Perform the following three operations in order:
+  1. EDIT an existing util file (e.g. src/utils/slugify.ts): change one line.
+     The PreToolUse hook must inject a <chameleon-context> advisory before the edit lands.
+  2. WRITE a new component file: create src/components/NewWidget.tsx from scratch
+     with a simple React component. The PreToolUse hook must inject advisory before Write.
+  3. WRITE a test file: create tests/NewWidget.test.tsx (since no notebook is present,
+     this satisfies the NotebookEdit-or-fallback matcher coverage).
+     The PreToolUse hook must inject advisory before this Write.
+  After all three operations, confirm:
+    - Each advisory contained archetype + sub_buckets + match_quality + canonical witness.
+    - Total advisory token count stayed under 1500 tokens (estimate based on advisory length).
+    - The hook-model dedup fired: the 2nd edit in the util archetype (from Phase 9)
+      skipped injecting a new advisory (no new get_canonical_excerpt call needed).
+  emit checkpoint completed phase 10
+
+PHASE 11 - Drift injection + banner + refresh recovery:
+  emit checkpoint started phase 11
+  Use the Bash tool to inject drift: copy 50 files with unconventional naming into src/utils/:
+    for i in $(seq 1 50); do cp src/utils/format_date.ts "src/utils/UNCONVENTIONAL-FILE-${i}.ts"; done
+  Then start a fresh sub-session to observe the drift banner. Use Bash to run:
+    claude -p "Run chameleon-mcp::get_drift_status and report the result" \\
+      --output-format stream-json --max-turns 3 \\
+      --permission-mode acceptEdits 2>&1 | head -50
+  If the drift score is above threshold, a drift banner should appear in the fresh session.
+  After observing the drift, run /chameleon-refresh in the current session.
+  After refresh completes, verify:
+    - working/ts_basic/.chameleon/profile.json still exists.
+    - working/ts_basic/.chameleon/COMMITTED still exists.
+    - The trust state is preserved (structural-equality path: no renames, no idiom
+      changes, only cluster size shifts from the 50 new files).
+    - chameleon-mcp::get_drift_status now returns a lower score or "ok" status.
+  emit checkpoint completed phase 11
+
+Reminder: emit checkpoints as plain Bash echo lines outside any code fences.
+Use absolute paths when referencing fixture directories.
+"""
+
+
+def run(ctx: JourneyContext) -> ActResult:
+    cwd = ctx.fixture("ts_basic")
+    transcript = ctx.run_dir / "transcripts" / "act_03.txt"
+    transcript.parent.mkdir(exist_ok=True)
+
+    session = spawn_claude(
+        prompt=build_act_prompt(_PROMPT_BODY),
+        cwd=cwd,
+        env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
+        transcript_path=transcript,
+        max_turns=25,
+        allowed_tools=[
+            "Bash",
+            "Read",
+            "Edit",
+            "Write",
+            "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
+            "mcp__plugin_chameleon_chameleon-mcp__get_archetype",
+            "mcp__plugin_chameleon_chameleon-mcp__get_canonical_excerpt",
+            "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
+            "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
+            "mcp__plugin_chameleon_chameleon-mcp__get_rules",
+            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
+            "mcp__plugin_chameleon_chameleon-mcp__refresh_repo",
+            "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
+        ],
+        plugin_root=ctx.plugin_root,
+        timeout_s=900,
+    )
+
+    outcomes, parse_errors = parse_checkpoint_file(
+        ctx.current_checkpoint_file, expected_phases=[8, 9, 10, 11]
+    )
+
+    # Runner-side cross-checks (defense in depth)
+    notes_extra: dict[int, str] = {}
+
+    # Phase 8: verify get_pattern_context match_quality field appeared in hook events
+    try:
+        hook_events_with_context = [
+            e for e in session.hook_events
+            if "<chameleon-context>" in e.stdout
+        ]
+        if not hook_events_with_context:
+            notes_extra[8] = "no hook events with <chameleon-context> found in transcript"
+    except expect.PhaseAssertionError as e:
+        notes_extra[8] = str(e)
+
+    # Phase 9: heuristic check - count get_canonical_excerpt mentions in transcript
+    # A cache hit on 2nd same-archetype edit means fewer MCP calls in transcript
+    try:
+        transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
+        excerpt_call_count = transcript_text.count("get_canonical_excerpt")
+        # Record count in notes; the checkpoint result is the primary signal
+        if excerpt_call_count == 0:
+            notes_extra[9] = "no get_canonical_excerpt calls visible in transcript (may be normal if cache hit)"
+    except expect.PhaseAssertionError as e:
+        notes_extra[9] = str(e)
+
+    # Phase 10: assert at least 3 PreToolUse hook events fired (one each Edit/Write/Write)
+    try:
+        pre_tool_events = [
+            e for e in session.hook_events
+            if "PreToolUse" in e.hook_name
+        ]
+        if len(pre_tool_events) < 3:
+            notes_extra[10] = (
+                f"expected >= 3 PreToolUse hook events, got {len(pre_tool_events)}"
+            )
+    except expect.PhaseAssertionError as e:
+        notes_extra[10] = str(e)
+
+    # Phase 11: profile.json + COMMITTED still present after refresh;
+    # also check if a trust file exists under plugin_data_dir
+    ts_basic_chameleon = ctx.fixture("ts_basic") / ".chameleon"
+    try:
+        expect.path_exists(11, ts_basic_chameleon / "profile.json")
+        expect.path_exists(11, ts_basic_chameleon / "COMMITTED")
+    except expect.PhaseAssertionError as e:
+        notes_extra[11] = str(e)
+
+    # Apply cross-check findings to outcomes
+    for phase, extra in notes_extra.items():
+        if phase in outcomes and outcomes[phase].status == "PASS":
+            outcomes[phase].status = "FAIL"
+            outcomes[phase].notes = (outcomes[phase].notes + "; " + extra).strip("; ")
+
+    return ActResult(
+        act_id="03_hot_path_drift",
+        cost_usd=session.cost_usd,
+        phase_outcomes=list(outcomes.values()),
+        checkpoint_parse_errors=parse_errors,
+    )
