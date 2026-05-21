@@ -437,19 +437,42 @@ def preflight_and_advise() -> int:
         try:
             from chameleon_mcp.tools import get_pattern_context
             result = get_pattern_context(file_path)
-        except Exception:
+        except Exception as exc:
             # Fail-open per docs/architecture.md — never block edits on advisor
             # failure. Rec 3 + 4.1: surface a banner so the model knows the
-            # advisory was unavailable (silent fail-opens accumulate without
-            # any visible signal — observed locally as 70+ events on a single
-            # workstation). Use _emit_chameleon_context so the envelope shape
-            # matches the normal path.
+            # advisory was unavailable. v0.5.15 follow-up: also write the
+            # ACTUAL exception to stderr so the bash wrapper's `2>>` redirect
+            # captures it in .hook_errors.log — the previous version emitted
+            # the banner but silently swallowed the cause, leaving the user
+            # with no diagnostic. Real-world surfaced cause: hook bash wrapper
+            # falling back to system python3 (Py3.9 on macOS Command Line
+            # Tools) when the plugin lacks a bundled venv, which then trips
+            # ``@dataclass(slots=True)`` (Py3.10+ feature) inside
+            # chameleon_mcp.signatures and ImportErrors out.
             _metric(advisory_emitted=False, repo_id=repo_id_hint, fail_open=True)
+            try:
+                import sys as _sys
+                import time as _time
+                import traceback as _tb
+
+                ts = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+                py_ver = ".".join(str(v) for v in _sys.version_info[:3])
+                print(
+                    f"[{ts}] preflight-and-advise fail-open "
+                    f"(python={_sys.executable} {py_ver}): "
+                    f"{type(exc).__name__}: {exc}",
+                    file=_sys.stderr,
+                )
+                _tb.print_exc(file=_sys.stderr)
+            except Exception:  # noqa: BLE001
+                pass
             _emit_chameleon_context(
                 _degraded_banner(
                     "advisor_unavailable",
                     "get_pattern_context failed; this edit proceeds without chameleon "
-                    "guidance. If this repeats, run /chameleon-doctor.",
+                    "guidance. Run /chameleon-doctor — the underlying "
+                    "exception is logged at "
+                    "~/.local/share/chameleon/.hook_errors.log.",
                 )
             )
             return 0

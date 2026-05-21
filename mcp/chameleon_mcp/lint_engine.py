@@ -61,7 +61,7 @@ _TS_EXTENSIONS: frozenset[str] = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs"
 _RUBY_EXTENSIONS: frozenset[str] = frozenset({".rb"})
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Violation:
     """A single discrepancy between a file's shape and the archetype's ast_query.
 

@@ -508,7 +508,7 @@ def _prefix_overlap_fallback(
         if not arch_segments or not file_segments:
             continue
         overlap = 0
-        for fs, asg in zip(file_segments, arch_segments, strict=False):
+        for fs, asg in zip(file_segments, arch_segments):  # noqa: B905
             if fs == asg:
                 overlap += 1
             else:
@@ -544,7 +544,7 @@ def _witness_path_overlap(rel_str: str, canonicals: dict, archetype_name: str) -
     q_parts = rel_str.split("/")[:-1]
     w_parts = witness_path.split("/")[:-1]
     common = 0
-    for a, b in zip(q_parts, w_parts, strict=False):
+    for a, b in zip(q_parts, w_parts):  # noqa: B905
         if a == b:
             common += 1
         else:

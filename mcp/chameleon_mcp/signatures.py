@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from chameleon_mcp._thresholds import threshold_int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ClusterKey:
     """The 7-tuple cluster signature.
 
