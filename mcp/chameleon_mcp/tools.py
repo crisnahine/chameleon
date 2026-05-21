@@ -276,18 +276,74 @@ def _effective_profile_dir(repo_root: Path) -> Path:
         return working
     try:
         from chameleon_mcp.profile.canonical_loader import materialize_canonical
-        from chameleon_mcp.profile.config import load_config
+        from chameleon_mcp.profile.config import (
+            ChameleonConfigError,
+            load_config,
+        )
 
-        cfg = load_config(working)
+        try:
+            cfg = load_config(working)
+        except ChameleonConfigError as cfg_exc:
+            # v0.6.1: a malformed config used to be swallowed silently,
+            # leaving the user with no idea their pin was inactive.
+            # Surface to stderr so the bash wrapper's `2>>` captures
+            # it in .hook_errors.log AND so /chameleon-doctor's recent
+            # hook errors check picks it up.
+            _log_effective_profile_dir_fallback(
+                repo_root,
+                "config_invalid",
+                f"{type(cfg_exc).__name__}: {cfg_exc}",
+            )
+            return working
         if not cfg.branch_pinning_enabled:
             return working
         repo_id = _compute_repo_id(repo_root)
         canonical = materialize_canonical(repo_root, repo_id, cfg.canonical_ref)
         if canonical is None:
+            _log_effective_profile_dir_fallback(
+                repo_root,
+                "canonical_unresolvable",
+                f"canonical_ref={cfg.canonical_ref!r} could not be materialized "
+                "(unresolvable ref / missing .chameleon at ref / scan-rejected); "
+                "falling back to working tree",
+            )
             return working
         return canonical
-    except Exception:  # noqa: BLE001 - any failure → fall back to working tree
+    except Exception as exc:  # noqa: BLE001
+        _log_effective_profile_dir_fallback(
+            repo_root,
+            "unexpected_error",
+            f"{type(exc).__name__}: {exc}",
+        )
         return working
+
+
+def _log_effective_profile_dir_fallback(
+    repo_root: Path, reason: str, detail: str
+) -> None:
+    """Write a single-line note to stderr when branch pinning falls back.
+
+    Best-effort: any failure here is silently ignored (logging must
+    not break the hot path). The bash hook wrappers redirect stderr
+    to ``~/.local/share/chameleon/.hook_errors.log`` so doctor's
+    ``recent_hook_errors`` check surfaces these to the user.
+    """
+    try:
+        import sys as _sys
+        import time as _time
+
+        ts = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+        # v0.6.1: repr() the path + reason + detail so a malicious
+        # repo dir containing newlines / ANSI escapes (legal on POSIX)
+        # can't inject log lines or terminal control sequences into
+        # .hook_errors.log.
+        print(
+            f"[{ts}] chameleon: branch-pinning fallback "
+            f"(repo={str(repo_root)!r}, reason={reason!r}): {detail!r}",
+            file=_sys.stderr,
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _compute_repo_id(repo_root: Path) -> str:
@@ -1022,9 +1078,17 @@ def get_pattern_context(file_path: str) -> dict:
 
     from chameleon_mcp.profile.trust import is_material_change
     trust = trust_state_for(repo_id)
+    # v0.6.1: trust state is meaningful only against the WORKING TREE.
+    # When canonical_ref is pinned, reads come from the canonical
+    # cache (profile_dir != repo_root / ".chameleon") but trust grants
+    # are bound to the working-tree hash via trust_profile. Comparing
+    # the trust record against the canonical-cache hash would always
+    # report "stale" once the local branch diverges from main, which
+    # defeats the entire branch-pinning feature.
+    trust_check_dir = repo_root / ".chameleon"
     if trust is None:
         trust_state_str = "untrusted"
-    elif is_material_change(repo_id, profile_dir):
+    elif is_material_change(repo_id, trust_check_dir):
         trust_state_str = "stale"
     else:
         trust_state_str = "trusted"
@@ -5397,6 +5461,58 @@ def doctor() -> dict:
             checks.append({"name": "recent_hook_errors", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
     else:
         checks.append({"name": "recent_hook_errors", "status": "ok", "detail": "no errors logged"})
+
+    # v0.6.1: Check the CWD's .chameleon/config.json (if present) so
+    # users can see at a glance whether their v0.6.0 features are
+    # active AND whether the file is valid. A malformed config used
+    # to be invisible — chameleon silently degraded to v0.5.x
+    # behavior. Now doctor surfaces it.
+    cwd_config = Path.cwd() / ".chameleon" / "config.json"
+    if cwd_config.is_file():
+        try:
+            from chameleon_mcp.profile.config import (
+                ChameleonConfigError,
+                load_config,
+            )
+
+            cfg = load_config(cwd_config.parent)
+            detail = {
+                "schema_version": cfg.schema_version,
+                "canonical_ref": cfg.canonical_ref,
+                "branch_pinning_enabled": cfg.branch_pinning_enabled,
+                "auto_refresh.enabled": cfg.auto_refresh.enabled,
+                "auto_refresh.drift_threshold": cfg.auto_refresh.drift_threshold,
+                "auto_refresh.max_age_hours": cfg.auto_refresh.max_age_hours,
+                "trust.auto_preserve_when": cfg.trust.auto_preserve_when,
+                "auto_rename": cfg.auto_rename,
+            }
+            checks.append({"name": "config_json", "status": "ok", "detail": detail})
+        except ChameleonConfigError as cfg_exc:
+            checks.append({
+                "name": "config_json",
+                "status": "error",
+                "detail": (
+                    f"{cwd_config} is present but malformed: "
+                    f"{type(cfg_exc).__name__}: {cfg_exc}. v0.6.0 features "
+                    "are inactive until fixed."
+                ),
+            })
+        except Exception as exc:
+            checks.append({
+                "name": "config_json",
+                "status": "warn",
+                "detail": f"{type(exc).__name__}: {exc}",
+            })
+    else:
+        checks.append({
+            "name": "config_json",
+            "status": "ok",
+            "detail": (
+                "no .chameleon/config.json (v0.5.x defaults). Drop a "
+                "config.json to opt into v0.6.0 features (canonical_ref, "
+                "auto_refresh, trust.auto_preserve_when, auto_rename)."
+            ),
+        })
 
     # 9. Per-known-repo profile_status + trust_state (from list_profiles)
     try:

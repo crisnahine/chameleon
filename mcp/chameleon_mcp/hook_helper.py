@@ -308,8 +308,65 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
         if not should_fire:
             return
 
-        # Touch the cooldown BEFORE spawning so a refresh that takes longer
-        # than the next SessionStart doesn't get double-fired.
+        # v0.6.1: redirect detached refresh stderr to a per-repo log so
+        # post-spawn failures (parse exceptions, OOM, schema rejection)
+        # are queryable. v0.6.0 used DEVNULL → silent failures + 42h
+        # cooldown burn per crash. The bash hook wrapper can't capture
+        # detached subprocess stderr because Popen replaces the fd.
+        repo_log_dir = _plugin_data_dir() / _compute_repo_id(resolved_root)
+        repo_log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(repo_log_dir, 0o700)
+        except OSError:
+            pass
+        log_path = repo_log_dir / "auto_refresh.log"
+        # Bound the log to ~64 KB by truncating before each spawn (cheap
+        # rotation — append-mode within a single refresh is fine).
+        try:
+            if log_path.exists() and log_path.stat().st_size > 65536:
+                log_path.write_text("", encoding="utf-8")
+        except OSError:
+            pass
+        log_fd = None
+        try:
+            log_fd = os.open(
+                str(log_path),
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                0o600,
+            )
+        except OSError:
+            log_fd = None
+
+        # Fire detached: refresh_repo can take seconds; we don't block
+        # the SessionStart hook on it.
+        import subprocess as _sp
+
+        try:
+            _sp.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import sys; from chameleon_mcp.tools import refresh_repo; "
+                        f"refresh_repo({str(resolved_root)!r})"
+                    ),
+                ],
+                stdout=log_fd if log_fd is not None else _sp.DEVNULL,
+                stderr=log_fd if log_fd is not None else _sp.DEVNULL,
+                stdin=_sp.DEVNULL,
+                start_new_session=True,
+            )
+        finally:
+            if log_fd is not None:
+                try:
+                    os.close(log_fd)
+                except OSError:
+                    pass
+
+        # v0.6.1: touch cooldown AFTER Popen returns successfully so a
+        # transient spawn failure (OSError / ENOMEM) doesn't burn the
+        # 42h cooldown window. Inner refresh_repo flock will catch any
+        # racing concurrent SessionStart that slipped past this point.
         cooldown_marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             os.chmod(cooldown_marker.parent, 0o700)
@@ -320,25 +377,6 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
             os.chmod(cooldown_marker, 0o600)
         except OSError:
             pass
-
-        # Fire detached: refresh_repo can take seconds; we don't block
-        # the SessionStart hook on it.
-        import subprocess as _sp
-
-        _sp.Popen(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import sys; from chameleon_mcp.tools import refresh_repo; "
-                    f"refresh_repo({str(resolved_root)!r})"
-                ),
-            ],
-            stdout=_sp.DEVNULL,
-            stderr=_sp.DEVNULL,
-            stdin=_sp.DEVNULL,
-            start_new_session=True,
-        )
     except Exception as exc:
         try:
             print(

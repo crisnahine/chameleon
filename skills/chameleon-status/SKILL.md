@@ -16,6 +16,12 @@ What's plumbed today (read straight from `.chameleon/` and `drift.db`):
 3. **Drift** — `days_since_refresh`, `observed_drift_score`, and a `recommended_action` string from `get_drift_status`.
 4. **Language hint** — when a Rails-with-frontend (or TS-with-Ruby-sidecar) was detected, name the secondary tree so the user can bootstrap it separately.
 5. **Version coherence** (v0.5.7) — call `daemon_status` to get `running_version`. Read `~/.claude/plugins/installed_plugins.json` for the installed plugin version. If they disagree, surface "Running v<X>, installed v<Y> — restart Claude Code to pick up the new MCP." This catches BUG-NEW-001 / BUG-018 in the wild.
+6. **v0.6.0 config** — when `.chameleon/config.json` exists, surface the active settings so the user can see at a glance whether their v0.6.0 features are on:
+   - `canonical_ref` (and whether materialize is currently working, via `branch_pinning_enabled`)
+   - `auto_refresh.enabled` + `drift_threshold` + `max_age_hours`
+   - `trust.auto_preserve_when`
+   - `auto_rename`
+   Read these via `chameleon-mcp::doctor` — its `config_json` check returns the parsed config. When the file is malformed, doctor surfaces a clear error and v0.6.0 features silently fall back to v0.5.x behavior; show the error prominently so the user can fix the typo.
 
 ## The flow
 
