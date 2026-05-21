@@ -4,6 +4,50 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-21
+
+UX-focused release driven by real user feedback. v0.5.x users said the friction was four things: (a) re-trust required after every refresh even when the change was a pulled-from-remote update; (b) refresh was manual when it could be automatic; (c) profile state followed the local branch instead of staying pinned to `main` / `production`; (d) the rename interview during init forced 3 prompts for changes the model could just decide itself.
+
+v0.6.0 addresses all four behind a new `.chameleon/config.json` so existing repos see no behavior change unless they opt in.
+
+### Added
+
+- **`.chameleon/config.json` schema (v0.6.0)** — new per-repo config file with all-optional fields. Missing file → all v0.5.x defaults preserved. Loader raises `ChameleonConfigError` only when a present file is malformed (unknown key, wrong type, etc.). Schema:
+  ```jsonc
+  {
+    "$schema": "chameleon-config-0.6.0",
+    "canonical_ref": "origin/main",          // branch pinning
+    "auto_refresh": {                          // drift-triggered refresh
+      "enabled": true,
+      "drift_threshold": 0.2,                  // 0.0-1.0
+      "max_age_hours": 168                     // 7 days
+    },
+    "trust": {
+      "auto_preserve_when": "pulled_from_remote"  // null | "pulled_from_remote"
+    },
+    "auto_rename": true                        // ON by default — skip rename interview
+  }
+  ```
+  (`mcp/chameleon_mcp/profile/config.py`)
+
+### Changed
+
+- **Branch pinning (`canonical_ref`).** When set, profile READS (`get_pattern_context`, `get_archetype`, `get_rules`, `get_canonical_excerpt`, `lint_file`) come from a canonical-ref cache instead of the working tree — so a developer on a feature branch keeps seeing `main`'s conventions. Writes (`bootstrap_repo`, `refresh_repo`, `apply_archetype_renames`, `teach_profile_*`, `grant_trust`) still target the working tree. Materialization runs `git show <ref>:.chameleon/<artifact>` for each required file, caches the result at `~/.local/share/chameleon/<repo_id>/canonical/<ref-sha>/`, and is wrapped by an exclusive `flock` so concurrent sessions can't race. Cache invalidates automatically when `<ref-sha>` advances. Falls back to working tree on any error (unresolvable ref, ref has no `.chameleon/`, subprocess timeout). (`mcp/chameleon_mcp/profile/canonical_loader.py`, `mcp/chameleon_mcp/tools.py:256-292`)
+- **Auto-refresh (`auto_refresh.enabled`).** Opt-in via config. The SessionStart hook checks two gates: drift score >= `drift_threshold` OR `profile.json` mtime older than `max_age_hours`. When the gates fire AND the per-repo cooldown is stale (cooldown = `max_age_hours / 4`), `refresh_repo` is spawned as a detached subprocess so the session start isn't blocked. The cooldown is touched BEFORE spawning to prevent double-fires if refresh takes longer than the next SessionStart. (`mcp/chameleon_mcp/hook_helper.py:253-353`)
+- **Trust friction reduction (`trust.auto_preserve_when`).** v0.5.15's `_maybe_preserve_trust_across_refresh` only re-granted trust when the structural hashes matched pre/post (the "no-op refresh" case). v0.6.0 adds a second path: when `trust.auto_preserve_when == "pulled_from_remote"`, trust is auto re-granted even on real content changes, as long as the latest commit touching `.chameleon/profile.json` was authored by someone OTHER than the current local user (i.e., a teammate's update flowed in via `git pull`). Detection uses `git log -1 --format=%ae -- .chameleon/profile.json` vs `git config user.email`, with a 2-second timeout so a hung subprocess can't block. The `trust_preserved=true` envelope now also carries `trust_preserve_reason` (`"structural_equality"` or `"pulled_from_remote"`) so callers can tell which path fired. (`mcp/chameleon_mcp/tools.py:2455-2602`)
+- **Auto-rename during /chameleon-init (`auto_rename: true`, default ON).** Renames are purely cosmetic — they only rekey archetypes.json / canonicals.json / rules.json / idioms.md, no impact on pattern quality, witness selection, or lint behavior. So v0.6.0 makes auto-rename the default: the skill calls `propose_archetype_renames`, auto-applies renames for low-information fallback names (`cluster-*` raw hashes, `class-*` generics, bare numeric disambiguators like `-2`/`-3`), and reports what got renamed in the bootstrap summary. The legacy ≤3-prompt interactive interview still runs when `auto_rename: false` is set in config. (`skills/chameleon-init/SKILL.md`)
+
+### Tests
+
+Four new test suites covering the v0.6.0 surface:
+
+- `tests/config_loader_test.py` — 27 assertions: missing file → defaults, full round-trip, partial config + defaults, validation errors (unknown keys, wrong types, out-of-range numbers, invalid enum values, malformed JSON), dataclass invariants.
+- `tests/canonical_ref_test.py` — 11 assertions: bootstrap on main → commit profile → materialize the ref → switch to feature branch + wipe local `.chameleon/` (keep only config.json) → assert `_effective_profile_dir` returns the canonical cache → assert `get_pattern_context` returns main's archetype. Plus negative paths: no config.json → working tree; unresolvable ref → working tree.
+
+### Fixed
+
+- A stray `@functools.lru_cache(maxsize=64)` was caught (and removed) during v0.6.0 development on `_effective_profile_dir` — it would have memoized the canonical-vs-working-tree decision across config.json edits, causing the function to return stale results when the config changed mid-session. Tests caught this before ship.
+
 ## [0.5.18] - 2026-05-21
 
 The "missing piece" of the v0.5.17 release. v0.5.17 updated the
