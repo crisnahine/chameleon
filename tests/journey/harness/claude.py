@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -90,11 +91,13 @@ def spawn_claude(
     if allowed_tools:
         args += ["--allowedTools", ",".join(allowed_tools)]
 
+    merged_env = os.environ.copy()
+    merged_env.update(env)
     try:
         proc = subprocess.run(
             args,
             cwd=str(cwd),
-            env=env,
+            env=merged_env,
             capture_output=True,
             text=True,
             timeout=timeout_s,

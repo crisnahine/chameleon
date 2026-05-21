@@ -7,6 +7,7 @@ bootstrap_repo() defeats the test purpose.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,9 @@ def call_mcp_tool(
         "-m",
         "chameleon_mcp.server",
     ]
-    proc_env = {**env, "PYTHONPATH": str(plugin_root / "mcp")}
+    proc_env = os.environ.copy()
+    proc_env.update(env)
+    proc_env["PYTHONPATH"] = str(plugin_root / "mcp")
 
     init_msg = json.dumps({
         "jsonrpc": "2.0",
