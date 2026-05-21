@@ -32,34 +32,24 @@ chameleon/
 
 ## Working on this codebase
 
-### Run the full test suite
+### Run the journey harness
 
 ```bash
-cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/run_all_orders.py
+mcp/.venv/bin/python -m tests.journey.runner               # full run (~$25, ~65 min)
+mcp/.venv/bin/python -m tests.journey.runner --list        # list acts
+mcp/.venv/bin/python -m tests.journey.runner --dry-run     # preflight only, no Claude spawn
+mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 20
 ```
 
-This runs all five core suites in four randomized orders to verify order-independence.
+The journey harness drives real `claude -p` subprocesses against committed seed fixtures. Run before each release. All state is isolated to a per-run dir under `tests/journey/results/`; the developer's own `~/.local/share/chameleon/` is never touched.
 
-### Run individual test files
+### Run unit tests for the harness library
 
 ```bash
-cd mcp
-PYTHONPATH=.:../tests .venv/bin/python ../tests/smoke_test.py
-PYTHONPATH=.:../tests .venv/bin/python ../tests/comprehensive_test.py
-PYTHONPATH=.:../tests .venv/bin/python ../tests/mcp_protocol_test.py
-PYTHONPATH=.:../tests .venv/bin/python ../tests/claude_code_acceptance_test.py    # ~$0.20 — real claude
+PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/journey/harness/tests/ -v
 ```
 
-### Test parameterization
-
-Real-Claude-Code tests need a TypeScript repo and/or a Ruby on Rails repo to point at. Set in `.env` (gitignored):
-
-```
-CHAMELEON_TEST_TS_REPO=/abs/path/to/typescript/repo
-CHAMELEON_TEST_RUBY_REPO=/abs/path/to/rails/repo
-```
-
-When unset, the tests skip gracefully.
+These verify the harness library itself (context, checkpoints, expect, fixtures setup). They do NOT test chameleon; that's the journey runner's job.
 
 ### Test a hook locally
 
@@ -87,7 +77,6 @@ sqlite> SELECT * FROM edit_observations ORDER BY observed_at DESC LIMIT 10;
 - `CHAMELEON_DISABLE=1` — disable plugin globally for this session
 - `CHAMELEON_PLUGIN_DATA` — override `~/.local/share/chameleon/` (tests only)
 - `CHAMELEON_HMAC_KEY_PATH` — override the HMAC key location (tests only)
-- `CHAMELEON_TEST_TS_REPO` / `CHAMELEON_TEST_RUBY_REPO` — test repo paths (see `.env.example`)
 - `CLAUDE_PLUGIN_ROOT` — set by Claude Code; path to installed plugin
 - `TMPDIR` — honored for HMAC exec log location
 
