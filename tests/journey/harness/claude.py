@@ -71,10 +71,11 @@ def spawn_claude(
     transcript_path: Path,
     max_turns: int = 25,
     allowed_tools: list[str] | None = None,
-    permission_mode: str = "acceptEdits",
+    permission_mode: str = "bypassPermissions",
     timeout_s: int = 900,
     model: str = "sonnet",
     plugin_root: Path | None = None,
+    add_dirs: list[Path] | None = None,
 ) -> ClaudeSession:
     """Spawn `claude -p` and capture its stream-json output."""
     args = [
@@ -90,6 +91,9 @@ def spawn_claude(
         args += ["--plugin-dir", str(plugin_root)]
     if allowed_tools:
         args += ["--allowedTools", ",".join(allowed_tools)]
+    if add_dirs:
+        for d in add_dirs:
+            args += ["--add-dir", str(d)]
 
     merged_env = os.environ.copy()
     merged_env.update(env)
