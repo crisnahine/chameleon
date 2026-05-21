@@ -1346,82 +1346,118 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     })
 
 
-def get_rules(repo: str, archetype: str | None = None) -> dict:
+def get_rules(
+    repo: str,
+    source: str | None = None,
+    *,
+    archetype: str | None = None,
+) -> dict:
     """Return repo-global rules (eslint, prettier, rubocop, tsconfig) keyed
     by source/tool.
 
-    The `archetype` parameter name is historical — rules are SOURCE-scoped,
-    not archetype-scoped. The keys in `rules.rules` are tool names
-    (`eslint`, `formatting`, `typescript`, `rubocop`, `rubocop_todo`), never
-    archetype names. Passing a value matching an archetype in the profile
-    returns a typed error pointing at the right semantic (pre-v0.5.13 it
-    returned a silent empty `[]`, which is a footgun: a caller filtering by
-    archetype gets no rules but no signal).
+    v0.5.16 rename: the primary parameter is now ``source`` (the
+    semantically-correct name — rules are keyed by tool/source, not
+    by archetype). The legacy ``archetype`` keyword is kept as a
+    deprecated alias and forwards to ``source``; calling with
+    ``archetype=`` emits a `deprecation` field in the envelope.
 
-    Backward compatible usage:
-      - `archetype=None` → all rules (full source map).
-      - `archetype="eslint"` → only the eslint source block.
-      - `archetype="lint"` → substring match against source keys; matches
-        `eslint`. Kept for callers that relied on partial matching.
+    Usage:
+      - ``get_rules(repo)`` → all rules (full source map).
+      - ``get_rules(repo, "eslint")`` → only the eslint source block.
+      - ``get_rules(repo, "lint")`` → substring match against source
+        keys; matches ``eslint``. Kept for callers that relied on
+        partial matching.
+      - ``get_rules(repo, "component")`` where ``"component"`` matches
+        an entry in ``archetypes.json`` → ``{status: failed, error: ...}``
+        envelope with a hint to omit the argument or pass a source key.
 
-    New v0.5.13 behavior:
-      - `archetype="component"` (or any name that resolves to an archetype
-        in archetypes.json) → `{status: failed, error: ...}` envelope with
-        a hint to omit the argument or pass a source key.
-
-    Accepts `repo` as either an absolute path or a 64-char hex repo_id.
-    Same shape-resolver pattern as `get_canonical_excerpt` and
-    `get_archetype`.
+    Accepts ``repo`` as either an absolute path or a 64-char hex
+    repo_id. Same shape-resolver pattern as ``get_canonical_excerpt``
+    and ``get_archetype``.
     """
     from chameleon_mcp.profile.loader import load_profile_dir
+
+    # Back-compat: archetype= kwarg forwards to source= and emits a
+    # deprecation envelope field. If both are passed, source wins (the
+    # canonical name) and the deprecation note still fires.
+    deprecation_note = None
+    if archetype is not None and source is None:
+        source = archetype
+        deprecation_note = (
+            "the 'archetype' parameter is deprecated; rename to 'source' — "
+            "rules are tool-scoped (eslint / rubocop / etc), not archetype-scoped."
+        )
+    elif archetype is not None and source is not None:
+        deprecation_note = (
+            "both 'source' and 'archetype' were passed; 'source' wins. "
+            "Rename 'archetype' to 'source' in your call."
+        )
 
     repo_root, repo_id = _resolve_repo_arg(repo)
     if repo_root is None and repo_id is not None:
         repo_root = _resolve_repo_root_by_id(repo_id)
     if repo_root is None or not repo_root.is_dir():
-        return _envelope({"rules": []})
+        env = {"rules": []}
+        if deprecation_note:
+            env["deprecation"] = deprecation_note
+        return _envelope(env)
 
     try:
         loaded = load_profile_dir(repo_root / ".chameleon")
     except Exception:
-        return _envelope({"rules": []})
+        env = {"rules": []}
+        if deprecation_note:
+            env["deprecation"] = deprecation_note
+        return _envelope(env)
 
     rules_dict = loaded.rules.get("rules", {}) or {}
-    if archetype is None:
-        return _envelope({"rules": list(rules_dict.items())})
+    if source is None:
+        env = {"rules": list(rules_dict.items())}
+        if deprecation_note:
+            env["deprecation"] = deprecation_note
+        return _envelope(env)
 
     # Exact-match against rules_dict keys wins first. This preserves the
     # natural "give me rules whose key is exactly X" semantic and lets
     # profiles that happen to scope a rule block under an archetype name
     # (rare today, but valid given the rules.json schema) still resolve
     # without tripping the footgun guard below.
-    if archetype in rules_dict:
-        return _envelope({"rules": [(archetype, rules_dict[archetype])]})
+    if source in rules_dict:
+        env = {"rules": [(source, rules_dict[source])]}
+        if deprecation_note:
+            env["deprecation"] = deprecation_note
+        return _envelope(env)
 
     # Footgun guard: if the caller passed an archetype name (matches an
     # entry in archetypes.json) AND that name is NOT a rules_dict key,
     # surface an explicit error rather than the pre-v0.5.13 silent `[]`.
     # The substring fallback below would either return empty or
-    # accidentally match (e.g. `archetype="lint"` would match `eslint`
+    # accidentally match (e.g. `source="lint"` would match `eslint`
     # even when the caller meant "give me rules for the lint archetype").
-    if archetype in loaded.archetype_names:
+    if source in loaded.archetype_names:
         sources = sorted(rules_dict.keys())
-        return _envelope({
+        env = {
             "status": "failed",
             "error": (
-                f"{archetype!r} is an archetype name, but rules are "
+                f"{source!r} is an archetype name, but rules are "
                 "source-scoped (eslint / formatting / typescript / "
                 "rubocop), not archetype-scoped. Omit the argument to "
                 "get all rules, or pass a source key. "
                 f"Available sources in this profile: {sources}"
             ),
             "rules": [],
-        })
+        }
+        if deprecation_note:
+            env["deprecation"] = deprecation_note
+        return _envelope(env)
 
     # Substring match against source keys. Kept for callers that pass
     # partial source names like 'lint' to match 'eslint'.
-    filtered = [(k, v) for k, v in rules_dict.items() if archetype in str(k)]
-    return _envelope({"rules": filtered})
+    filtered = [(k, v) for k, v in rules_dict.items() if source in str(k)]
+    env = {"rules": filtered}
+    if deprecation_note:
+        env["deprecation"] = deprecation_note
+    return _envelope(env)
 
 
 def lint_file(repo: str, archetype: str, content: str) -> dict:
@@ -3024,11 +3060,40 @@ def _is_dead_temp_repo_root(repo_root: str | None) -> bool:
     return not Path(repo_root).is_dir()
 
 
+def _is_dead_chameleon_profile(repo_root: str | None) -> bool:
+    """True if ``repo_root`` exists but its ``.chameleon/profile.json`` is gone.
+
+    v0.5.16: external report flagged that a user who deletes
+    ``.chameleon/`` from a still-extant repo (``rm -rf .chameleon``)
+    leaves a tombstone row in index_db that surfaces in
+    list_profiles forever. Pruning ANY repo whose profile no longer
+    exists is a stronger sweep than the temp-only variant — the user
+    has explicitly removed the profile, so the index row should
+    follow suit.
+    """
+    if not repo_root or not isinstance(repo_root, str):
+        return False
+    root = Path(repo_root)
+    if not root.is_dir():
+        # Root itself gone is handled by `_is_dead_temp_repo_root`
+        # within its conservative temp scope; this helper covers the
+        # broader case (any repo root that still exists on disk).
+        return False
+    return not (root / ".chameleon" / "profile.json").is_file()
+
+
 def _prune_dead_temp_repos() -> int:
-    """Remove index_db rows for temp-dir repos that no longer exist.
+    """Remove index_db rows for repos whose profile no longer exists.
+
+    Two prune rules:
+      1. ``repo_root`` is a temp-dir path AND no longer exists on disk
+         (handles dogfood / test-run leftovers).
+      2. ``repo_root`` is a real path AND exists BUT
+         ``<repo_root>/.chameleon/profile.json`` is missing (user
+         deleted the profile via ``rm -rf .chameleon``).
 
     Returns the number of rows removed. Best-effort: any error returns
-    0 and leaves the index alone.
+    the running count and leaves the index alone.
     """
     from chameleon_mcp import index_db
 
@@ -3039,7 +3104,10 @@ def _prune_dead_temp_repos() -> int:
         return 0
     for row in rows:
         repo_root = row.get("repo_root")
-        if not _is_dead_temp_repo_root(repo_root):
+        if not (
+            _is_dead_temp_repo_root(repo_root)
+            or _is_dead_chameleon_profile(repo_root)
+        ):
             continue
         try:
             if index_db.forget_repo(row["repo_id"], repo_root=repo_root):
@@ -3396,17 +3464,38 @@ def _escape_markdown_section_headings(text: str) -> str:
 def disable_session(repo: str, session_id: str) -> dict:
     """Mark chameleon disabled for the given session_id.
 
-    Writes a `.session_disabled.<session_id>` marker under the per-repo
-    plugin data dir. preflight-and-advise checks this marker before
-    injecting context — when present, no <chameleon-context> content
-    is added to Edit/Write/NotebookEdit operations for that session.
+    Writes an HMAC-signed `.session_disabled.<session_id>` marker under
+    the per-repo plugin data dir. preflight-and-advise checks this
+    marker before injecting context — when present AND validly signed,
+    no <chameleon-context> content is added to Edit/Write/NotebookEdit
+    operations for that session.
 
     Used by the /chameleon-disable slash command.
 
     v0.5.2 (Bug 1): `repo` now accepts either an absolute repo path or
     a 64-char repo_id hex digest. See `_resolve_repo_arg`.
+
+    v0.5.16 (Bug 8 partial follow-up): chameleon-mcp cannot
+    cryptographically authenticate the caller — MCP doesn't pass
+    process identity, so any client can claim any session_id. The
+    HMAC-signed marker (v0.5.15) defends against an OUT-OF-PROCESS
+    attacker who writes the marker file directly without the key.
+    For IN-PROCESS attackers (anything that can call this MCP tool),
+    we add two defenses:
+
+    1. REQUIRE a trust grant: disable_session fails when the repo
+       has no `.trust` record — a caller has to demonstrate they can
+       go through `/chameleon-trust` (which validates against the
+       repo basename / yes-trust-<short8> token) before they can
+       suppress chameleon. Limits the attack surface to callers who
+       have already authenticated against the repo.
+    2. SURFACE a `session_unknown_to_chameleon` warning in the response
+       when this session_id has never invoked another chameleon tool
+       (per the exec_log). The legitimate user / their review tooling
+       can flag that as suspicious.
     """
     from chameleon_mcp.optouts import write_session_disable
+    from chameleon_mcp.profile.trust import trust_state_for
 
     if not session_id or not isinstance(session_id, str):
         return _envelope({"status": "failed", "error": "session_id required"})
@@ -3418,13 +3507,88 @@ def disable_session(repo: str, session_id: str) -> dict:
             "error": "expected absolute repo path or 64-char repo_id hex digest",
         })
 
+    # v0.5.16: require an existing trust grant. A caller who has not
+    # been through /chameleon-trust cannot disable. Closes the
+    # cheap "any-MCP-client can suppress chameleon" attack vector for
+    # untrusted repos.
+    if trust_state_for(repo_id) is None:
+        return _envelope({
+            "status": "failed",
+            "error": (
+                "disable_session requires a trust grant for the repo. "
+                "Run /chameleon-trust first."
+            ),
+        })
+
+    # v0.5.16: warn when the session_id has never appeared in any
+    # other chameleon tool call for this repo. A legitimate session
+    # almost always touches get_pattern_context (via the PreToolUse
+    # hook) before calling disable_session.
+    session_unknown = _session_unseen_for_repo(repo_id, session_id)
+
     marker = write_session_disable(repo_id, session_id)
-    return _envelope({
+    envelope: dict = {
         "status": "success",
         "marker_path": str(marker),
         "session_id": session_id,
         "scope": "session",
-    })
+    }
+    if session_unknown:
+        envelope["session_unknown_to_chameleon"] = True
+        envelope["warning"] = (
+            "This session_id has not invoked any other chameleon tool "
+            "for this repo. If you did not call /chameleon-disable, "
+            "investigate immediately — the marker may have been "
+            "planted by another caller that knows your session_id."
+        )
+    return _envelope(envelope)
+
+
+def _session_unseen_for_repo(repo_id: str, session_id: str) -> bool:
+    """True if `session_id` has never appeared in the exec_log for `repo_id`.
+
+    Best-effort: any error returns False (don't false-warn on a system
+    where exec_log isn't readable).
+    """
+    try:
+        from chameleon_mcp.exec_log import _exec_log_dir
+    except Exception:
+        return False
+    try:
+        exec_dir = _exec_log_dir(repo_id)
+    except Exception:
+        return False
+    if not exec_dir.is_dir():
+        return True  # no exec_log entries at all → session is unseen
+    # exec_log files are JSONL with session_id field; scan recent ones.
+    import json as _json
+
+    needle = f'"session_id":"{session_id}"'
+    try:
+        log_files = sorted(
+            (p for p in exec_dir.glob("*.jsonl") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:5]
+    except OSError:
+        return False
+    for log_file in log_files:
+        try:
+            with log_file.open("r", encoding="utf-8") as f:
+                for line in f:
+                    if needle in line:
+                        return False
+                    # Parse to be precise (avoid substring matching false
+                    # positives on similar IDs).
+                    try:
+                        rec = _json.loads(line)
+                        if rec.get("session_id") == session_id:
+                            return False
+                    except (ValueError, _json.JSONDecodeError):
+                        continue
+        except OSError:
+            continue
+    return True
 
 
 def pause_session(repo: str, minutes: int = 15) -> dict:

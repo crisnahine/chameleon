@@ -60,21 +60,30 @@ t(
 )
 
 
-section("_prune_dead_temp_repos drops dead temp rows, keeps real ones")
-# Insert two rows: one fake temp, one real-looking
+section("_prune_dead_temp_repos drops dead temp rows, keeps real-with-profile ones")
+# Insert two rows: one fake temp, one real-WITH-profile
+# v0.5.16: prune now ALSO removes rows whose real-path .chameleon/
+# profile.json is gone (covers `rm -rf .chameleon` case), so the
+# "preserve real path" test needs a real .chameleon/ to survive.
 fake_temp = "/private/var/folders/zz/zz/T/tmpdead/never_existed"
-real_keep = str(Path(__file__).resolve().parent)
+real_dir = tempfile.mkdtemp(prefix="real_with_profile_")
+import shutil as _shutil
+
+(Path(real_dir) / ".chameleon").mkdir()
+(Path(real_dir) / ".chameleon" / "profile.json").write_text("{}", encoding="utf-8")
+
 index_db.upsert_repo("aaaa11111111", fake_temp, archetype_count=1)
-index_db.upsert_repo("bbbb22222222", real_keep, archetype_count=1)
+index_db.upsert_repo("bbbb22222222", real_dir, archetype_count=1)
 
 removed = _prune_dead_temp_repos()
 t("at least 1 dead temp row pruned", removed >= 1, f"removed={removed}")
 
-# After prune, the real one should still be present
+# After prune, the real-with-profile one should still be present
 rows, _next, total = index_db.list_repos(None, 100)
 remaining_roots = [r.get("repo_root") for r in rows]
-t("real (non-temp) row preserved", real_keep in remaining_roots)
+t("real (non-temp, has .chameleon/profile.json) row preserved", real_dir in remaining_roots)
 t("dead temp row removed", fake_temp not in remaining_roots)
+_shutil.rmtree(real_dir, ignore_errors=True)
 
 
 section("list_profiles runs the prune transparently")
