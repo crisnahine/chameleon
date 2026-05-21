@@ -4,6 +4,26 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.17] - 2026-05-21
+
+Follow-up to v0.5.16 addressing three open issues from the external report. Confirms the v0.5.15 `.claude/worktrees/` exclusion is in place (unconfirmed in the report but verified via direct test).
+
+### Changed
+
+- **`get_rules`: the `archetype=` kwarg is removed from the public schema.** v0.5.16 kept it as a deprecated schema-visible alias; v0.5.17 hides it from the MCP tool description so the schema only advertises `repo` and `source`. The function still accepts `archetype=` via `**kwargs` for back-compat, resolving the call AND emitting a `deprecation` field that cites the v0.5.17 removal. Stale callers see no behavior change beyond the deprecation notice; new callers see the cleaner signature. Unknown kwargs now return a `failed` envelope with the offending key listed. (`mcp/chameleon_mcp/tools.py:1349-1395`)
+- **`disable_session` refuses unknown sessions unless `force=True`.** v0.5.16 added a `session_unknown_to_chameleon` warning but still wrote the marker, leaving a window where an attacker who learned a session_id could plant a marker that suppressed chameleon silently until the legitimate user happened to call `/chameleon-disable` themselves. v0.5.17 REFUSES the marker write for unknown sessions and returns a `failed` envelope explaining the gate; the caller can pass `force=True` to override (for legitimate first-time-disable cases from a brand-new session). The forced path still surfaces the warning. (`mcp/chameleon_mcp/tools.py:3464-3540`)
+- **Doctor: `daemon: not running` is now `status: ok` (lazy) instead of `warn`.** The daemon is intentionally lazy — it spawns on the first hook call, not on doctor probes. Treating "not running" as warn made every fresh session report degraded health even though the system was working as designed. The check now reports `ok` with detail `lazy (will spawn on next hook)`; only an actual `daemon_status` exception remains `warn`. `doctor.overall` no longer drops to `warn` purely because the daemon hasn't been pinged yet. (`mcp/chameleon_mcp/tools.py:5204-5217`)
+
+### Not changed (rejected from the report)
+
+- **"UNCONFIRMED — default bootstrap discovery and `.claude/worktrees/`."** Already fixed in v0.5.15 — `.claude` joined `EXCLUDE_FROM_CLUSTERING_DIRS` in `mcp/chameleon_mcp/bootstrap/discovery.py:65`. The reporter didn't re-test this in v0.5.16; verified working via direct test against both repos.
+
+### Tests
+
+`tests/v0_5_17_followup_test.py` — 13 assertions covering: get_rules public schema is exactly `[repo, source]`; `archetype=` still resolves via `**kwargs`; deprecation note cites v0.5.17; unknown kwargs return failed envelope; disable_session refuses unknown session without force; succeeds with force AND still warns; doctor daemon check is `ok` (not warn) when lazy.
+
+Updated `tests/v0_5_16_followup_test.py` so the disable_session "succeeds after trust grant" sub-test passes `force=True` (matches v0.5.17's stricter default) and the deprecation-substring check matches the updated wording.
+
 ## [0.5.16] - 2026-05-21
 
 Follow-up release addressing three residual issues from the external v0.5.15 report. The reporter confirmed 6 of 9 v0.5.14 bugs fixed in v0.5.15; v0.5.16 closes the remaining 3.
