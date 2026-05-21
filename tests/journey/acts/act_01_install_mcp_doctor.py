@@ -1,0 +1,104 @@
+"""Act 1: Install + MCP boot + Doctor + using-chameleon verify (Phases 1-4)."""
+from __future__ import annotations
+
+from pathlib import Path
+
+from tests.journey.acts.act_base import ActResult, build_act_prompt
+from tests.journey.harness import expect, mcp
+from tests.journey.harness.checkpoints import parse_checkpoint_file
+from tests.journey.harness.claude import spawn_claude
+from tests.journey.harness.context import JourneyContext
+
+
+_PROMPT_BODY = """\
+Verify the chameleon plugin install.
+
+PHASE 1, manifests:
+  emit checkpoint started phase 1
+  Use the Bash tool to `ls` and parse each of:
+    .claude-plugin/plugin.json
+    .claude-plugin/marketplace.json
+    .cursor-plugin/plugin.json
+    .codex-plugin/plugin.json
+    gemini-extension.json
+    hooks/hooks.json
+  Verify each is valid JSON. Verify the chameleon plugin name is present.
+  emit checkpoint completed phase 1
+
+PHASE 2, MCP boot + 20 tools:
+  emit checkpoint started phase 2
+  The MCP server is launched automatically by Claude Code (chameleon-mcp).
+  Use the chameleon-mcp::doctor tool (a no-arg tool). Verify the response.
+  Also verify the tool registry: count the chameleon-mcp::* tools you have
+  access to via your tool listing. Expected: 20 tools.
+  emit checkpoint completed phase 2
+
+PHASE 3, Doctor baseline:
+  emit checkpoint started phase 3
+  Inspect the doctor envelope. All 9 subsystems should report status "ok":
+  python, bash, timeout, plugin_data_writable, hook_scripts, hmac_key,
+  daemon, recent_errors, per_repo_state. Report any non-ok subsystem.
+  emit checkpoint completed phase 3
+
+PHASE 4, bootstrap resource limits + using-chameleon:
+  emit checkpoint started phase 4
+  Use Bash to verify `mcp/typescript-checksums.json` exists. Parse it,
+  count entries. Verify each listed file exists under mcp/node_modules/typescript/.
+  Then describe (in plain text) what you can see of the using-chameleon
+  skill content in your current session context. The runner will inspect
+  your transcript for chameleon-context markers in the SessionStart system message.
+  emit checkpoint completed phase 4
+
+Reminder: emit checkpoints as plain Bash echo lines, never inside code fences.
+"""
+
+
+def run(ctx: JourneyContext) -> ActResult:
+    cwd = ctx.fixture("ts_basic")
+    transcript = ctx.run_dir / "transcripts" / "act_01.txt"
+    transcript.parent.mkdir(exist_ok=True)
+
+    session = spawn_claude(
+        prompt=build_act_prompt(_PROMPT_BODY),
+        cwd=cwd,
+        env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
+        transcript_path=transcript,
+        max_turns=15,
+        plugin_root=ctx.plugin_root,
+        timeout_s=600,
+    )
+
+    outcomes, parse_errors = parse_checkpoint_file(
+        ctx.current_checkpoint_file, expected_phases=[1, 2, 3, 4]
+    )
+
+    # Runner-side additional assertions
+    notes_extra: dict[int, str] = {}
+    try:
+        # Phase 2 cross-check: query MCP directly for tools/list
+        tools_result = mcp.call_mcp_tool(
+            tool_name="doctor",  # use doctor as a roundtrip probe
+            plugin_root=ctx.plugin_root,
+            env=ctx.env,
+        )
+        if tools_result.get("status") != "ok":
+            notes_extra[2] = f"MCP doctor returned status={tools_result.get('status')!r}"
+    except Exception as e:
+        notes_extra[2] = f"MCP direct probe failed: {e}"
+
+    # Phase 4 cross-check: chameleon-context marker in transcript
+    if "<chameleon-context>" not in transcript.read_text(encoding="utf-8"):
+        notes_extra[4] = "no <chameleon-context> in transcript (using-chameleon not injected?)"
+
+    for phase, extra in notes_extra.items():
+        if phase in outcomes and outcomes[phase].status == "PASS":
+            # Demote to FAIL if cross-check found an issue
+            outcomes[phase].status = "FAIL"
+            outcomes[phase].notes = (outcomes[phase].notes + "; " + extra).strip("; ")
+
+    return ActResult(
+        act_id="01_install_mcp_doctor",
+        cost_usd=session.cost_usd,
+        phase_outcomes=list(outcomes.values()),
+        checkpoint_parse_errors=parse_errors,
+    )
