@@ -52,3 +52,9 @@ tests/dogfood/results/dogfood_*.md
 
 # Local Claude Code state (worktrees, session caches, agent transcripts)
 .claude/
+
+# Journey harness run output (per-run ephemeral dirs)
+tests/journey/results/
+# Pytest cache for harness library tests
+tests/journey/harness/tests/__pycache__/
+tests/journey/harness/tests/.pytest_cache/
