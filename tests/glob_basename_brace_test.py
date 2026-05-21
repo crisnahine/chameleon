@@ -160,6 +160,41 @@ t(
 )
 
 
+section("nested braces expand correctly (review finding)")
+nested = sorted(_expand_brace_groups("{a,{b,c}}/*.ts"))
+t(
+    "nested {a,{b,c}}/*.ts → ['a/*.ts','b/*.ts','c/*.ts']",
+    nested == sorted(["a/*.ts", "b/*.ts", "c/*.ts"]),
+    str(nested),
+)
+
+
+section("malformed braces don't crash, pass through unchanged")
+t(
+    "unbalanced open brace → identity",
+    _expand_brace_groups("foo{bar/*.ts") == ["foo{bar/*.ts"],
+)
+t(
+    "empty body → identity",
+    _expand_brace_groups("foo{}/*.ts") == ["foo{}/*.ts"],
+)
+
+
+section("exponential blowup is capped (review finding)")
+# 4 alternatives × 6 levels = 4096 patterns; cap at 512 means we
+# return at most 512 patterns instead of OOM/runaway.
+pathological = (
+    "{a,b,c,d}/{a,b,c,d}/{a,b,c,d}/{a,b,c,d}/{a,b,c,d}/{a,b,c,d}/*.ts"
+)
+out = _expand_brace_groups(pathological)
+t(
+    "pathological pattern bounded at cap (no OOM)",
+    len(out) <= 512,
+    f"got {len(out)} patterns (cap 512)",
+)
+t("cap output is non-empty (gave partial coverage)", len(out) > 0)
+
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

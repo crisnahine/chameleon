@@ -214,26 +214,87 @@ def _glob_candidates(
     return candidates
 
 
+# Hard cap on the total expanded pattern count. A pathological pattern
+# like `{a,b,c,d}/{a,b,c,d}/{a,b,c,d}/...` blows up combinatorially; we
+# refuse to expand past this many patterns and fall back to passing the
+# raw pattern to pathlib.glob (which won't expand braces but also won't
+# crash). Override via CHAMELEON_BRACE_EXPANSION_CAP.
+_BRACE_EXPANSION_CAP = 512
+
+
+def _find_matching_brace(pattern: str, open_idx: int) -> int:
+    """Return the index of the `}` matching `pattern[open_idx]`, or -1.
+
+    Walks the pattern from ``open_idx + 1``, tracking nesting depth so
+    `{a,{b,c}}` correctly pairs the outermost `}` with the outermost `{`
+    instead of the inner one. Returns -1 if unbalanced.
+    """
+    depth = 1
+    i = open_idx + 1
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _split_top_alternatives(body: str) -> list[str]:
+    """Split `body` on top-level commas, respecting nested `{...}`.
+
+    `a,{b,c},d` → `["a", "{b,c}", "d"]`, NOT `["a", "{b", "c}", "d"]`.
+    """
+    out: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for ch in body:
+        if ch == "{":
+            depth += 1
+            current.append(ch)
+        elif ch == "}":
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            out.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    out.append("".join(current))
+    return out
+
+
 def _expand_brace_groups(pattern: str, _depth: int = 0) -> list[str]:
     """Fully expand `{a,b,c}` brace groups in a glob pattern.
 
     ``"{src,cypress}/**/*.{ts,tsx}"`` → ``["src/**/*.ts", "src/**/*.tsx",
     "cypress/**/*.ts", "cypress/**/*.tsx"]``.
 
-    Recursive on the LEFTMOST brace; each alternative is then expanded
-    further. Bounded depth so a pathological pattern can't infinite-
-    loop. A pattern without braces returns ``[pattern]`` unchanged.
+    Uses balanced brace matching so nested groups like `{a,{b,c}}`
+    expand correctly. Recursive on the LEFTMOST brace group; each
+    alternative is then expanded further. Output is capped at
+    ``_BRACE_EXPANSION_CAP`` patterns; pathological inputs fall back
+    to the raw pattern (pathlib.glob handles or ignores it gracefully).
+
+    A pattern without braces, with unbalanced braces, or with an empty
+    body returns ``[pattern]`` unchanged.
     """
-    if _depth > 16 or "{" not in pattern or "}" not in pattern:
+    if _depth > 16:
         return [pattern]
-    open_idx = pattern.index("{")
-    close_idx = pattern.index("}", open_idx)
-    if close_idx <= open_idx + 1:
+    open_idx = pattern.find("{")
+    if open_idx < 0:
+        return [pattern]
+    close_idx = _find_matching_brace(pattern, open_idx)
+    if close_idx < 0 or close_idx <= open_idx + 1:
+        # Unbalanced or empty body: leave the pattern alone.
         return [pattern]
     prefix = pattern[:open_idx]
     body = pattern[open_idx + 1 : close_idx]
     suffix = pattern[close_idx + 1 :]
-    alts = [a.strip() for a in body.split(",") if a.strip()]
+    alts = [a.strip() for a in _split_top_alternatives(body) if a.strip()]
     if not alts:
         return [pattern]
     out: list[str] = []
@@ -241,6 +302,11 @@ def _expand_brace_groups(pattern: str, _depth: int = 0) -> list[str]:
         for sub in _expand_brace_groups(prefix + alt + suffix, _depth + 1):
             if sub not in out:
                 out.append(sub)
+                if len(out) >= _BRACE_EXPANSION_CAP:
+                    # Pathological combinatorial blowup; bail out and
+                    # return what we have. Better partial coverage than
+                    # OOM / 100k-pattern walk.
+                    return out
     return out
 
 

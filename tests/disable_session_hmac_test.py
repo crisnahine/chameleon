@@ -66,9 +66,10 @@ t(
 marker.unlink(missing_ok=True)
 
 
-section("forged marker (no signature, attacker bypassed write_session_disable) — honored for back-compat")
-# Pre-v0.5.14 marker shape: no sig line. Back-compat must honor it
-# so existing markers from older installs keep working.
+section("DOWNGRADE-ATTACK: attacker writes unsigned marker — REJECTED (review finding)")
+# An attacker who learned a session_id could pre-write a marker with
+# NO sig= line, exploiting the original back-compat branch. Post-fix:
+# when the local HMAC key is available, unsigned markers are REJECTED.
 marker = (
     repo_data_dir(REPO_ID) / f".session_disabled.{_safe_session_marker(SESSION_ID)}"
 )
@@ -77,9 +78,9 @@ marker.write_text(
 )
 reason = is_chameleon_suppressed(None, REPO_ID, SESSION_ID)
 t(
-    "unsigned marker honored (back-compat with v0.5.13)",
-    reason == "session_disable",
-    repr(reason),
+    "unsigned marker is REJECTED (closes downgrade attack)",
+    reason is None,
+    f"got reason={reason!r}",
 )
 marker.unlink(missing_ok=True)
 

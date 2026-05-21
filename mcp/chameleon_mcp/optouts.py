@@ -58,11 +58,21 @@ def _marker_has_valid_signature(
 ) -> bool:
     """Verify the HMAC signature on a session-disable marker.
 
-    Returns True when the signature is present AND verifies, OR when
-    no signature is present (back-compat for v0.5.13 markers and for
-    systems that can't load the HMAC key). Returns False ONLY when
-    a signature is present but invalid — i.e. a third-party process
-    planted a marker without the key.
+    Defense against an attacker who knows another user's session_id and
+    writes a marker file directly (bypassing /chameleon-disable):
+
+    1. If the local HMAC key IS available, the marker MUST carry a
+       valid `sig=` line. No sig = REJECT (closes the downgrade attack
+       where an attacker writes an unsigned marker and the back-compat
+       path honors it).
+    2. If the local HMAC key is NOT available (very unusual — only
+       happens when /dev/urandom is unreachable AND no override path
+       is writable, which is itself a major system compromise), we
+       fail-open and honor the marker. Without the key the system
+       can't verify ANY marker, including legitimate ones, so refusing
+       them would break the disable flow on systems without an HMAC
+       key. The attacker scenario here already requires the attacker
+       to have caused the key to be unavailable.
     """
     import hmac as _hmac
 
@@ -77,20 +87,22 @@ def _marker_has_valid_signature(
             sig_line = line[len("sig=") :].strip()
         elif line.startswith("disabled-at="):
             disabled_at_line = line[len("disabled-at=") :].strip()
-    if not sig_line:
-        # Unsigned marker: honor it (back-compat). Pre-v0.5.14
-        # markers and any system whose HMAC key is unavailable land
-        # here, so refusing them would break legitimate disables.
-        return True
+
+    # If THIS system can produce signatures, the marker MUST be signed.
+    # Compute the expected signature first so we know whether the key
+    # is available; if it is, the absence of a sig line is rejection.
     try:
         disabled_at = float(disabled_at_line)
     except ValueError:
         return False
     expected = _sign_marker(repo_id, session_id, disabled_at)
     if not expected:
-        # Key unavailable AT VERIFICATION TIME → fail-open (back-compat
-        # with the original honor-the-marker behavior).
+        # Key unavailable: can't verify anything; fail-open.
         return True
+    if not sig_line:
+        # Key IS available but marker has no signature: this is the
+        # downgrade-attack shape. Reject.
+        return False
     return _hmac.compare_digest(sig_line, expected)
 
 
