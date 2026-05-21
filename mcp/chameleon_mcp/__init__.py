@@ -6,7 +6,7 @@ See docs/architecture.md for the full design.
 # Top-level declaration: column-0 so release.yml's `^__version__ = ` regex
 # can grep it. Overwritten at import time by the importlib.metadata block
 # below when the package is installed (the normal runtime case).
-__version__ = "0.5.15"
+__version__ = "0.5.16"
 
 # v0.5.6: read version from installed package metadata so a single bump
 # of pyproject.toml propagates to every reader (profile.json's

@@ -4,6 +4,30 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.16] - 2026-05-21
+
+Follow-up release addressing three residual issues from the external v0.5.15 report. The reporter confirmed 6 of 9 v0.5.14 bugs fixed in v0.5.15; v0.5.16 closes the remaining 3.
+
+### Changed
+
+- **`get_rules` parameter renamed `archetype` → `source`** with a back-compat alias. The legacy `archetype=` keyword still works but the response now carries a `deprecation` field telling the caller to rename. The semantic was "tool/source" all along (`eslint`, `rubocop`, etc.); the historical name caused real confusion in the v0.5.15 report. (`mcp/chameleon_mcp/tools.py:1349-1463`)
+- **`disable_session` requires a trust grant.** A caller who has not been through `/chameleon-trust` cannot suppress chameleon — the chameleon-mcp protocol can't authenticate the caller's session_id, but we can require the repo has been authenticated against in some other way first. Closes the cheap "any MCP client can disable chameleon for any session_id" attack vector on untrusted repos. (`mcp/chameleon_mcp/tools.py:3502-3510`)
+- **`disable_session` warns when the session_id is unknown.** The response now carries `session_unknown_to_chameleon: true` + a `warning` field when the supplied `session_id` has never invoked any other chameleon tool for this repo (checked via the exec_log). Legitimate sessions almost always touch `get_pattern_context` via the PreToolUse hook before calling `/chameleon-disable`; an unseen session_id is suspicious. Defense-in-depth alongside v0.5.15's HMAC marker signing. (`mcp/chameleon_mcp/tools.py:3515-3596`)
+
+### Fixed
+
+- **`list_profiles` now prunes any repo whose `.chameleon/profile.json` is missing.** v0.5.15's prune only caught temp-dir paths; a user who deletes `.chameleon/` from an extant repo (via `rm -rf .chameleon`) left a tombstone row in `index_db` forever. Reporter saw this with `/Users/crisn/Documents/Projects/empire-flippers/wordpress` post-cleanup. The new `_is_dead_chameleon_profile` helper handles both: real-path-no-profile AND temp-dir-no-root. (`mcp/chameleon_mcp/tools.py:3022-3043,3055-3082`)
+
+### Not fixed (out of scope)
+
+- **MCP protocol limitation around session-id authentication.** chameleon-mcp cannot cryptographically authenticate the caller because MCP doesn't pass calling-process identity. The HMAC-signed marker (v0.5.15) closes the out-of-process file-forgery attack; the trust-grant gate + `session_unknown_to_chameleon` warning (v0.5.16) raise the bar for in-process MCP clients. Anything stronger requires Claude Code / the MCP host to surface the calling session_id to the tool server, which is not currently supported.
+
+### Tests
+
+`tests/v0_5_16_followup_test.py` — 14 assertions covering: get_rules rename works both ways (new + legacy), legacy kwarg emits deprecation field; broader prune catches real-path-no-profile rows; disable_session refused without trust; disable_session warns on unknown session.
+
+Updated `tests/list_profiles_prune_temp_test.py` — the "preserve non-temp real path" case now plants a real `.chameleon/profile.json` so it survives the v0.5.16 broader prune.
+
 ## [0.5.15] - 2026-05-21
 
 Bug-fix release driven by an external test report against v0.5.14 plus a real-world driving of `claude -p` against both test repos that surfaced two more bugs the synthetic test suite missed entirely. Nine reported bugs investigated, seven verified and fixed, two declined as cosmetic / unreproducible. Existing profiles work unchanged; v0.5.14 trust grants re-prompt once on first refresh because `.archetype_renames.json` joined `_HASHED_ARTIFACTS` in v0.5.14 (carryover note).
