@@ -76,7 +76,7 @@ with tempfile.TemporaryDirectory() as td:
     )
     t(
         "deprecation field emitted when archetype= used",
-        "deprecation" in r and "rename to 'source'" in r["deprecation"],
+        "deprecation" in r and "'source'" in r["deprecation"],
         r.get("deprecation", "")[:80],
     )
 
@@ -126,9 +126,14 @@ with tempfile.TemporaryDirectory() as td:
 
     # Grant trust
     trust_profile(str(repo), repo.name)
-    # Now disable_session succeeds BUT warns because session is unseen
-    r = disable_session(str(repo), "never-seen-this-session-id")["data"]
-    t("disable_session succeeds after trust grant", r.get("status") == "success")
+    # v0.5.17 (Bug 2 follow-up): unknown session is now REFUSED by default;
+    # caller has to pass force=True to override. The warning still surfaces
+    # in the forced-success envelope.
+    r = disable_session(str(repo), "never-seen-this-session-id", force=True)["data"]
+    t(
+        "disable_session succeeds after trust grant + force=True",
+        r.get("status") == "success",
+    )
     t(
         "session_unknown_to_chameleon=True for unseen session",
         r.get("session_unknown_to_chameleon") is True,
@@ -136,7 +141,7 @@ with tempfile.TemporaryDirectory() as td:
     )
     t(
         "warning string explains the surface",
-        "warning" in r and "planted" in r["warning"].lower(),
+        "warning" in r and "force=True" in r["warning"],
         r.get("warning", "")[:80],
     )
 

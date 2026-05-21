@@ -1346,20 +1346,22 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     })
 
 
-def get_rules(
-    repo: str,
-    source: str | None = None,
-    *,
-    archetype: str | None = None,
-) -> dict:
+def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     """Return repo-global rules (eslint, prettier, rubocop, tsconfig) keyed
     by source/tool.
 
-    v0.5.16 rename: the primary parameter is now ``source`` (the
-    semantically-correct name — rules are keyed by tool/source, not
-    by archetype). The legacy ``archetype`` keyword is kept as a
-    deprecated alias and forwards to ``source``; calling with
-    ``archetype=`` emits a `deprecation` field in the envelope.
+    Parameters:
+      ``repo``: absolute path or 64-char hex repo_id.
+      ``source``: optional tool/source filter (``"eslint"``,
+                  ``"rubocop"``, ``"formatting"``, etc.). When omitted,
+                  returns all rules.
+
+    v0.5.17 (Bug 1 follow-up): the historical ``archetype=`` kwarg has
+    been REMOVED from the public schema. The signature accepts
+    ``**kwargs`` so a stale caller passing ``archetype=`` gets a clear
+    deprecation error envelope instead of a TypeError — but the kwarg
+    is no longer advertised in the MCP tool description. Callers must
+    migrate to ``source=``.
 
     Usage:
       - ``get_rules(repo)`` → all rules (full source map).
@@ -1369,28 +1371,37 @@ def get_rules(
         partial matching.
       - ``get_rules(repo, "component")`` where ``"component"`` matches
         an entry in ``archetypes.json`` → ``{status: failed, error: ...}``
-        envelope with a hint to omit the argument or pass a source key.
-
-    Accepts ``repo`` as either an absolute path or a 64-char hex
-    repo_id. Same shape-resolver pattern as ``get_canonical_excerpt``
-    and ``get_archetype``.
+        envelope explaining rules are source-scoped.
     """
     from chameleon_mcp.profile.loader import load_profile_dir
 
-    # Back-compat: archetype= kwarg forwards to source= and emits a
-    # deprecation envelope field. If both are passed, source wins (the
-    # canonical name) and the deprecation note still fires.
+    # Deprecation: if the legacy `archetype=` kwarg appears, redirect
+    # it to `source` and emit a deprecation envelope. v0.5.16 kept
+    # this as a schema-visible alias; v0.5.17 removes it from the
+    # schema but still accepts it via **kwargs so existing client
+    # code doesn't break with TypeError.
     deprecation_note = None
-    if archetype is not None and source is None:
-        source = archetype
+    legacy_archetype = kwargs.pop("archetype", None)
+    if kwargs:
+        unknown = sorted(kwargs.keys())
+        return _envelope({
+            "status": "failed",
+            "error": (
+                f"get_rules got unexpected keyword argument(s): {unknown!r}. "
+                "Use `repo` and (optionally) `source`."
+            ),
+        })
+    if legacy_archetype is not None and source is None:
+        source = legacy_archetype
         deprecation_note = (
-            "the 'archetype' parameter is deprecated; rename to 'source' — "
-            "rules are tool-scoped (eslint / rubocop / etc), not archetype-scoped."
+            "the 'archetype' parameter was removed in v0.5.17; the call "
+            "still resolves but rename it to 'source' — rules are "
+            "tool-scoped (eslint / rubocop / etc), not archetype-scoped."
         )
-    elif archetype is not None and source is not None:
+    elif legacy_archetype is not None and source is not None:
         deprecation_note = (
-            "both 'source' and 'archetype' were passed; 'source' wins. "
-            "Rename 'archetype' to 'source' in your call."
+            "both 'source' and 'archetype' were passed; 'archetype' is "
+            "removed in v0.5.17. Drop it; 'source' wins."
         )
 
     repo_root, repo_id = _resolve_repo_arg(repo)
@@ -3461,7 +3472,7 @@ def _escape_markdown_section_headings(text: str) -> str:
     return "\n".join(out)
 
 
-def disable_session(repo: str, session_id: str) -> dict:
+def disable_session(repo: str, session_id: str, force: bool = False) -> dict:
     """Mark chameleon disabled for the given session_id.
 
     Writes an HMAC-signed `.session_disabled.<session_id>` marker under
@@ -3493,6 +3504,17 @@ def disable_session(repo: str, session_id: str) -> dict:
        when this session_id has never invoked another chameleon tool
        (per the exec_log). The legitimate user / their review tooling
        can flag that as suspicious.
+
+    v0.5.17 (Bug 2 follow-up): unknown sessions are now REFUSED by
+    default. The reporter pointed out that the warning in v0.5.16 is
+    a useful audit signal but the marker is still written, so an
+    attacker who learned the session_id silently suppressed chameleon
+    until the legitimate user happened to disable themselves. Now the
+    marker is only written when:
+      - the session_id has invoked chameleon before (exec_log hit), OR
+      - the caller passes ``force=True`` (explicit override for
+        legitimate "first-time disable from a brand-new session" cases,
+        which intentionally requires the caller to opt past the gate).
     """
     from chameleon_mcp.optouts import write_session_disable
     from chameleon_mcp.profile.trust import trust_state_for
@@ -3526,6 +3548,25 @@ def disable_session(repo: str, session_id: str) -> dict:
     # hook) before calling disable_session.
     session_unknown = _session_unseen_for_repo(repo_id, session_id)
 
+    # v0.5.17 (Bug 2 follow-up): refuse the marker write for unseen
+    # sessions unless the caller explicitly forces. The legitimate
+    # user is normally on a session that has touched chameleon many
+    # times by the time they /chameleon-disable; an unseen session
+    # is the attacker shape we want to block.
+    if session_unknown and not force:
+        return _envelope({
+            "status": "failed",
+            "error": (
+                "session_id has not invoked any other chameleon tool "
+                "for this repo (session_unknown_to_chameleon). The "
+                "marker was NOT written. If this is a legitimate "
+                "first-time disable from a brand-new session, retry "
+                "with force=True."
+            ),
+            "session_unknown_to_chameleon": True,
+            "session_id": session_id,
+        })
+
     marker = write_session_disable(repo_id, session_id)
     envelope: dict = {
         "status": "success",
@@ -3535,11 +3576,12 @@ def disable_session(repo: str, session_id: str) -> dict:
     }
     if session_unknown:
         envelope["session_unknown_to_chameleon"] = True
+        envelope["forced"] = True
         envelope["warning"] = (
-            "This session_id has not invoked any other chameleon tool "
-            "for this repo. If you did not call /chameleon-disable, "
-            "investigate immediately — the marker may have been "
-            "planted by another caller that knows your session_id."
+            "Marker written despite the session_id being unknown to "
+            "chameleon, because force=True was passed. If you did not "
+            "call /chameleon-disable yourself, investigate — your "
+            "session_id may have leaked."
         )
     return _envelope(envelope)
 
@@ -5159,13 +5201,19 @@ def doctor() -> dict:
     except Exception as exc:
         checks.append({"name": "hmac_key", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
 
-    # 7. Daemon liveness (re-uses existing daemon_status)
+    # 7. Daemon liveness (re-uses existing daemon_status).
+    # v0.5.17 (Bug 3 follow-up): the daemon is intentionally lazy —
+    # it spawns on the first hook call, not on doctor probes. Treating
+    # "not running" as warn made every fresh session report degraded
+    # health even though the system was working as designed. Now we
+    # report "ok" with a "(lazy)" detail in that case; only an actual
+    # daemon_status exception remains warn.
     try:
         ds = daemon_status()
         if ds.get("data", {}).get("alive"):
             checks.append({"name": "daemon", "status": "ok", "detail": f"alive (pid={ds['data'].get('pid')})"})
         else:
-            checks.append({"name": "daemon", "status": "warn", "detail": "not running (will spawn on next hook)"})
+            checks.append({"name": "daemon", "status": "ok", "detail": "lazy (will spawn on next hook)"})
     except Exception as exc:
         checks.append({"name": "daemon", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
 
