@@ -89,9 +89,18 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
 
 
 @mcp.tool()
-def get_rules(repo: str, archetype: str | None = None) -> dict:
-    """Return rules + citations for repo, filtered by archetype if provided."""
-    return tools.get_rules(repo, archetype)
+def get_rules(repo: str, source: str | None = None) -> dict:
+    """Return repo-global rules (eslint / rubocop / formatting / typescript), keyed by tool/source.
+
+    `source` filters to a single source key (`"eslint"`, `"rubocop"`,
+    `"formatting"`, `"typescript"`). Omit to return all. Passing an
+    archetype name (e.g. `"component"`) returns a failed envelope —
+    rules are SOURCE-scoped, not archetype-scoped. The legacy
+    `archetype=` kwarg was removed from the MCP schema in v0.5.17
+    (still accepted by the in-process function with a deprecation
+    field, but no longer advertised to callers).
+    """
+    return tools.get_rules(repo, source)
 
 
 @mcp.tool()
@@ -162,14 +171,25 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
 
 
 @mcp.tool()
-def disable_session(repo: str, session_id: str) -> dict:
+def disable_session(
+    repo: str,
+    session_id: str,
+    force: bool = False,
+) -> dict:
     """Suppress chameleon advisory injections for this Claude Code session.
 
     Per /chameleon-disable. preflight-and-advise checks the
-    `.session_disabled.<session_id>` marker before injecting; when present,
-    no <chameleon-context> is added.
+    `.session_disabled.<session_id>` marker before injecting; when present
+    AND validly HMAC-signed, no <chameleon-context> is added.
+
+    Defenses (v0.5.15-17): the marker is HMAC-signed so an out-of-process
+    attacker can't plant a forgery. The repo must have a trust grant
+    before disable_session will write. Sessions whose session_id has never
+    invoked another chameleon tool for this repo are REFUSED by default;
+    pass `force=True` for legitimate first-time-disable cases from a
+    brand-new session (the response still surfaces a warning).
     """
-    return tools.disable_session(repo, session_id)
+    return tools.disable_session(repo, session_id, force=force)
 
 
 @mcp.tool()
