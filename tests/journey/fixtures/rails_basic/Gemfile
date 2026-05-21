@@ -1,0 +1,13 @@
+source "https://rubygems.org"
+ruby "3.3.0"
+
+gem "rails", "~> 7.1"
+gem "pg"
+gem "puma"
+gem "sidekiq"
+
+group :development, :test do
+  gem "rspec-rails"
+  gem "rubocop", require: false
+  gem "factory_bot_rails"
+end
