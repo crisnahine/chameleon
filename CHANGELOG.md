@@ -16,7 +16,7 @@ Follow-up release addressing three residual issues from the external v0.5.15 rep
 
 ### Fixed
 
-- **`list_profiles` now prunes any repo whose `.chameleon/profile.json` is missing.** v0.5.15's prune only caught temp-dir paths; a user who deletes `.chameleon/` from an extant repo (via `rm -rf .chameleon`) left a tombstone row in `index_db` forever. Reporter saw this with `/Users/crisn/Documents/Projects/empire-flippers/wordpress` post-cleanup. The new `_is_dead_chameleon_profile` helper handles both: real-path-no-profile AND temp-dir-no-root. (`mcp/chameleon_mcp/tools.py:3022-3043,3055-3082`)
+- **`list_profiles` now prunes any repo whose `.chameleon/profile.json` is missing.** v0.5.15's prune only caught temp-dir paths; a user who deletes `.chameleon/` from an extant repo (via `rm -rf .chameleon`) left a tombstone row in `index_db` forever. Reporter saw this with a real-path repo where `.chameleon/` had been deleted post-cleanup. The new `_is_dead_chameleon_profile` helper handles both: real-path-no-profile AND temp-dir-no-root. (`mcp/chameleon_mcp/tools.py:3022-3043,3055-3082`)
 
 ### Not fixed (out of scope)
 
