@@ -4,6 +4,25 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.18] - 2026-05-21
+
+The "missing piece" of the v0.5.17 release. v0.5.17 updated the
+in-process `chameleon_mcp.tools.get_rules` signature, but the MCP
+server wrapper in `chameleon_mcp.server.py` was a separate function
+that still exposed the old shape. As a result the MCP schema and
+tool description continued to advertise `archetype` — which is what
+the external tester actually saw, so the bug they re-reported in
+their v0.5.17 retest was real.
+
+### Fixed
+
+- **MCP schema for `get_rules` now advertises `source`, not `archetype`.** The wrapper at `mcp/chameleon_mcp/server.py:91` was overriding the tool signature with the legacy name. Updated the wrapper to `(repo: str, source: str | None = None)`. The description string also said "filtered by archetype if provided"; replaced with the source-scoped explanation. Existing callers that still pass `archetype=` get a clear failure from the MCP layer (the param no longer exists) and can use the deprecation-aware in-process function directly if they need the back-compat. (`mcp/chameleon_mcp/server.py:91-103`)
+- **MCP schema for `disable_session` now advertises `force`.** v0.5.17 added the `force=True` override to `tools.disable_session` but the server wrapper hadn't been updated, so callers couldn't opt past the unknown-session refusal via MCP. Updated the wrapper to forward `force`. (`mcp/chameleon_mcp/server.py:174-194`)
+
+### Verification
+
+`get_rules` MCP schema now reports `properties: ['repo', 'source']`. `disable_session` reports `['repo', 'session_id', 'force']`. All 13 v0.5.17 tests + 14 v0.5.16 tests + 32 v0.2 regression tests + 54 dogfood scenarios pass. Lint green via CI ruff 0.6.0.
+
 ## [0.5.17] - 2026-05-21
 
 Follow-up to v0.5.16 addressing three open issues from the external report. Confirms the v0.5.15 `.claude/worktrees/` exclusion is in place (unconfirmed in the report but verified via direct test).
