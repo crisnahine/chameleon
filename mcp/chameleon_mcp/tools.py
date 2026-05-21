@@ -2284,6 +2284,12 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             pre_state = _capture_pre_refresh_state(repo_path)
             envelope = _refresh_repo_locked(repo_path, force=force)
             _inject_archetype_diff(envelope, repo_path, pre_state)
+            # v0.5.14 bug 2 / rec-2 follow-up: preserve trust when the
+            # refresh produced a materially-identical profile (only
+            # the generation counter bumped). Must run AFTER
+            # _inject_archetype_diff because the preservation gate
+            # reads the diff's added/removed/renamed lists.
+            _maybe_preserve_trust_across_refresh(repo_path, pre_state, envelope)
             return envelope
     except LockHeldError as e:
         return _envelope({
@@ -2297,10 +2303,13 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
 
 def _capture_pre_refresh_state(repo_path: Path) -> dict | None:
     """Snapshot the pre-refresh archetypes for rename-aware diff in the
-    response envelope. Tolerant: returns None on any error so the diff
-    silently degrades to empty rather than breaking refresh.
+    response envelope, plus the structural hashes + trust record so we
+    can preserve trust across no-op refreshes (rec-2/v0.5.14 bug 2).
+    Tolerant: returns None on any error so the diff silently degrades
+    to empty rather than breaking refresh.
     """
     from chameleon_mcp.profile.loader import ProfileLoadError, load_profile_dir
+    from chameleon_mcp.profile.trust import trust_state_for
 
     profile_dir = repo_path / ".chameleon"
     if not profile_dir.is_dir():
@@ -2310,10 +2319,120 @@ def _capture_pre_refresh_state(repo_path: Path) -> dict | None:
     except (ProfileLoadError, OSError):
         return None
     archetypes = loaded.archetypes.get("archetypes", {}) or {}
+    repo_id = _compute_repo_id(repo_path)
+    trust = trust_state_for(repo_id)
     return {
         "names": set(archetypes.keys()),
         "renames_overlay": _read_renames_overlay(profile_dir),
+        "structural_hashes": _structural_hashes(profile_dir),
+        "trust_record_existed": trust is not None,
+        "repo_id": repo_id,
     }
+
+
+def _structural_hashes(profile_dir: Path) -> dict[str, str]:
+    """Hash the LLM-visible content of each artifact, EXCLUDING the
+    generation counter + created_at timestamp.
+
+    Used by `_maybe_preserve_trust_across_refresh` to detect a refresh
+    that produced byte-identical content (modulo the always-bumping
+    generation field). When all structural hashes match pre/post, the
+    refresh is materially a no-op and trust should be preserved per
+    the chameleon-init skill ("Run /chameleon-refresh to re-analyze
+    without clearing trust state").
+    """
+    import hashlib
+
+    from chameleon_mcp.safe_open import (
+        UnsafeFileError,
+        safe_read_profile_artifact_bytes,
+    )
+
+    # Fields to strip before hashing (vary on every refresh even when
+    # the substantive content is unchanged).
+    _STRIP_KEYS = ("generation", "created_at", "updated_at", "computed_at")
+
+    def _hash_json(path: Path) -> str | None:
+        try:
+            raw = safe_read_profile_artifact_bytes(path)
+        except (FileNotFoundError, OSError, UnsafeFileError):
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return hashlib.sha256(raw).hexdigest()
+        if isinstance(data, dict):
+            for k in _STRIP_KEYS:
+                data.pop(k, None)
+        canonical = json.dumps(data, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        return hashlib.sha256(canonical).hexdigest()
+
+    def _hash_text(path: Path) -> str | None:
+        try:
+            raw = safe_read_profile_artifact_bytes(path)
+        except (FileNotFoundError, OSError, UnsafeFileError):
+            return None
+        return hashlib.sha256(raw).hexdigest()
+
+    out: dict[str, str] = {}
+    for fname in ("archetypes.json", "canonicals.json", "rules.json"):
+        h = _hash_json(profile_dir / fname)
+        if h is not None:
+            out[fname] = h
+    h = _hash_text(profile_dir / "idioms.md")
+    if h is not None:
+        out["idioms.md"] = h
+    return out
+
+
+def _maybe_preserve_trust_across_refresh(
+    repo_path: Path, pre_state: dict | None, envelope: dict
+) -> None:
+    """Re-grant trust if refresh produced a materially-identical profile.
+
+    v0.5.14 bug 2 / rec-2 follow-up: the chameleon-init skill states
+    /chameleon-refresh re-analyzes "without clearing trust state", but
+    the implementation invalidated trust on every refresh because the
+    generation counter bumped on each run (changing the trust hash).
+    Now: when the structural hashes (everything except generation +
+    timestamps) match pre/post AND no archetype names changed AND a
+    trust record existed pre-refresh, auto re-grant at the new hash.
+    Any real content change still invalidates trust.
+    """
+    if pre_state is None:
+        return
+    if not pre_state.get("trust_record_existed"):
+        return
+    data = envelope.get("data") if isinstance(envelope, dict) else None
+    if not isinstance(data, dict):
+        return
+    diff = data.get("archetype_diff") or {}
+    # Any structural archetype change → don't preserve.
+    if (
+        diff.get("added")
+        or diff.get("removed")
+        or diff.get("renamed")
+        or diff.get("dropped_invalid_names")
+    ):
+        return
+    profile_dir = repo_path / ".chameleon"
+    post_hashes = _structural_hashes(profile_dir)
+    pre_hashes = pre_state.get("structural_hashes") or {}
+    if post_hashes != pre_hashes:
+        return
+    # All checks pass: re-grant trust at the new hash. Same user, same
+    # repo_root — grant_trust handles the in-place hash update via its
+    # same-root branch.
+    try:
+        from chameleon_mcp.profile.trust import grant_trust
+
+        grant_trust(pre_state["repo_id"], profile_dir)
+        data["trust_preserved"] = True
+    except Exception:
+        # Best-effort; if regrant fails, fall back to stale (status quo).
+        pass
 
 
 def _inject_archetype_diff(
@@ -4772,9 +4891,14 @@ def doctor() -> dict:
     if log.is_file():
         try:
             import re as _re
-            from datetime import UTC as _UTC
             from datetime import datetime as _dt
             from datetime import timedelta as _td
+            from datetime import timezone as _tz
+
+            try:
+                from datetime import UTC as _UTC  # type: ignore[attr-defined]
+            except ImportError:  # pragma: no cover - Python <3.11
+                _UTC = _tz.utc  # type: ignore[assignment]  # noqa: UP017
 
             cutoff = _dt.now(_UTC) - _td(hours=72)
             ts_re = _re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z\]")

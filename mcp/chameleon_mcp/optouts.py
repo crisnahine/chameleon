@@ -17,8 +17,17 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
+
+# Polyfill for Python <3.11 (system python3 on macOS Command Line Tools
+# is 3.9; Debian-stable ships 3.11+ only). The hook-side bash wrapper
+# falls back to system python3 when no venv is bundled with the plugin,
+# so this module MUST import cleanly on 3.9.
+try:
+    from datetime import UTC  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - exercised on Py<3.11 only
+    UTC = timezone.utc  # type: ignore[assignment]  # noqa: UP017
 
 from chameleon_mcp.profile.trust import repo_data_dir
 

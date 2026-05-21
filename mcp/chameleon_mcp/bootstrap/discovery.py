@@ -63,6 +63,7 @@ EXCLUDE_FROM_CLUSTERING_DIRS = frozenset({
     ".idea",
     ".vscode",
     ".chameleon",  # never analyze our own profile dir
+    ".claude",  # Claude Code session state + git worktrees under .claude/worktrees/
 })
 
 # Filename patterns to exclude (handle leaf-name globs separately).
