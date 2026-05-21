@@ -115,6 +115,7 @@ def run(ctx: JourneyContext) -> ActResult:
         ],
         plugin_root=ctx.plugin_root,
         timeout_s=600,
+        add_dirs=[ctx.run_dir],
     )
 
     outcomes, parse_errors = parse_checkpoint_file(
