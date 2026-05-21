@@ -2917,6 +2917,30 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
             "error": "limit must be an integer in 1..1000",
         })
 
+    # v0.2 contract: an unknown/malformed cursor MUST return an explicit
+    # failure envelope even on a fresh install where no index.db exists.
+    # index_db.list_repos short-circuits to [] when the db file is
+    # absent, which means the ValueError it would otherwise raise on a
+    # bad cursor doesn't fire. Validate the cursor SHAPE here so the
+    # tool-level contract holds regardless of db state.
+    if cursor is not None:
+        if not isinstance(cursor, str) or not cursor:
+            return _envelope({
+                "status": "failed",
+                "error": (
+                    f"unknown cursor {cursor!r}; pass the next_cursor value from a prior page"
+                ),
+            })
+        # Format: "<last_seen_at>|<repo_id>" or
+        # "<last_seen_at>|<repo_id>|<repo_root>".
+        if cursor.count("|") not in (1, 2):
+            return _envelope({
+                "status": "failed",
+                "error": (
+                    f"unknown cursor {cursor!r}; pass the next_cursor value from a prior page"
+                ),
+            })
+
     # Backfill from legacy directory layout BEFORE serving the query so
     # existing v0.1/v0.2 installs keep working. This is a no-op once the
     # index has caught up with the on-disk state.
