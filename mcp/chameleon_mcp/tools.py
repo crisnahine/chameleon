@@ -2348,9 +2348,29 @@ def _structural_hashes(profile_dir: Path) -> dict[str, str]:
         safe_read_profile_artifact_bytes,
     )
 
-    # Fields to strip before hashing (vary on every refresh even when
-    # the substantive content is unchanged).
-    _STRIP_KEYS = ("generation", "created_at", "updated_at", "computed_at")
+    # Fields to strip recursively before hashing (vary on every refresh
+    # even when the substantive content is unchanged).
+    #   - generation / created_at / updated_at / computed_at: top-level
+    #   - scanned_at: per-canonical-entry timestamp inside
+    #     canonicals.json["canonicals"][archetype][i]["scanned_at"]
+    _STRIP_KEYS = frozenset({
+        "generation",
+        "created_at",
+        "updated_at",
+        "computed_at",
+        "scanned_at",
+    })
+
+    def _strip_volatile(obj):
+        if isinstance(obj, dict):
+            return {
+                k: _strip_volatile(v)
+                for k, v in obj.items()
+                if k not in _STRIP_KEYS
+            }
+        if isinstance(obj, list):
+            return [_strip_volatile(item) for item in obj]
+        return obj
 
     def _hash_json(path: Path) -> str | None:
         try:
@@ -2361,12 +2381,10 @@ def _structural_hashes(profile_dir: Path) -> dict[str, str]:
             data = json.loads(raw)
         except json.JSONDecodeError:
             return hashlib.sha256(raw).hexdigest()
-        if isinstance(data, dict):
-            for k in _STRIP_KEYS:
-                data.pop(k, None)
-        canonical = json.dumps(data, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
+        stripped = _strip_volatile(data)
+        canonical = json.dumps(
+            stripped, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
         return hashlib.sha256(canonical).hexdigest()
 
     def _hash_text(path: Path) -> str | None:
@@ -2531,6 +2549,30 @@ def _inject_archetype_diff(
     data["archetype_diff"] = diff
 
 
+def _persisted_paths_glob(profile_dir: Path) -> str | None:
+    """Return the persisted user-supplied paths_glob from profile.json, or None.
+
+    v0.5.14 bug 1 / rec-1 follow-up: bootstrap_repo persists the
+    user-supplied paths_glob under profile_data["discovery"]["paths_glob"];
+    /chameleon-refresh reads it here so the same scope re-applies on a
+    full re-bootstrap. Tolerant: any error returns None and refresh
+    falls back to the default extractor-driven glob (status-quo
+    pre-fix behavior).
+    """
+    profile_path = profile_dir / "profile.json"
+    if not profile_path.is_file():
+        return None
+    try:
+        data = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    discovery = data.get("discovery") if isinstance(data, dict) else None
+    if not isinstance(discovery, dict):
+        return None
+    pg = discovery.get("paths_glob")
+    return pg if isinstance(pg, str) and pg else None
+
+
 def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     """Execute refresh logic. Called while .chameleon/.refresh.lock is held."""
     from chameleon_mcp import index_db
@@ -2541,12 +2583,16 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     )
 
     started_at = time.time()
+    profile_dir = repo_path / ".chameleon"
+    persisted_pg = _persisted_paths_glob(profile_dir)
 
     if force:
         # BUG-026: refresh_repo's internal bootstrap calls always overwrite
         # the existing profile (that's the whole point of refresh); skip the
         # already_bootstrapped guard meant for accidental re-invocation.
-        return bootstrap_repo(str(repo_path), force=True)
+        # v0.5.14 bug 1: re-apply the persisted paths_glob so a scoped
+        # bootstrap stays scoped across refresh.
+        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
     # Phase 4.3 no-op optimization.
     repo_root = repo_path.resolve()
@@ -2554,34 +2600,29 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     # v0.5.1 (Bug 1): pin the lookup to this repo_root so a monorepo
     # sub-workspace doesn't surface a sibling workspace's cached row.
     cached = index_db.get_repo(repo_id, repo_root_hint=str(repo_root))
-    profile_dir = repo_root / ".chameleon"
     profile_path = profile_dir / "profile.json"
 
     if not (cached and profile_path.is_file()):
-        # BUG-026: refresh_repo's internal bootstrap calls always overwrite
-        # the existing profile (that's the whole point of refresh); skip the
-        # already_bootstrapped guard meant for accidental re-invocation.
-        return bootstrap_repo(str(repo_path), force=True)
+        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
     try:
         extractor = _select_extractor(repo_root)
     except Exception:
         extractor = None
     if extractor is None:
-        # BUG-026: refresh_repo's internal bootstrap calls always overwrite
-        # the existing profile (that's the whole point of refresh); skip the
-        # already_bootstrapped guard meant for accidental re-invocation.
-        return bootstrap_repo(str(repo_path), force=True)
+        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
     try:
+        # Honor the persisted paths_glob during the freshness/cardinality
+        # check too — otherwise the candidate set would balloon vs what
+        # the cached profile was built from, and the no-op short-circuit
+        # would never fire.
+        discovery_glob = persisted_pg or _glob_for_extractor(extractor)
         candidates = discover_files(
-            repo_root, glob=_glob_for_extractor(extractor)
+            repo_root, glob=discovery_glob, paths_glob=persisted_pg
         )
     except Exception:
-        # BUG-026: refresh_repo's internal bootstrap calls always overwrite
-        # the existing profile (that's the whole point of refresh); skip the
-        # already_bootstrapped guard meant for accidental re-invocation.
-        return bootstrap_repo(str(repo_path), force=True)
+        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
     cached_files = cached.get("files_indexed") or 0
     last_seen_iso = cached.get("last_seen_at") or ""
@@ -2635,7 +2676,9 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
             return partial_envelope
 
     # BUG-026: full re-bootstrap from inside refresh — always overwrite.
-    return bootstrap_repo(str(repo_path), force=True)
+    # v0.5.14 bug 1: pass the persisted paths_glob so the rebuild stays
+    # scoped to what the user originally specified.
+    return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
 
 def _iso_to_epoch(ts: str) -> float:
@@ -2879,6 +2922,14 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
     # index has caught up with the on-disk state.
     _backfill_index_from_legacy_dirs()
 
+    # v0.5.14 bug 7: prune entries whose repo_root is a temp-dir path
+    # that no longer exists on disk. The reporter's `list_profiles`
+    # returned 533 total_known with the first ~85 all
+    # /private/var/folders/.../tmp.../... paths from prior dogfood runs.
+    # Conservative: only prune temp paths so a user who moved a real
+    # repo doesn't lose its trust/archetype_count cache.
+    _prune_dead_temp_repos()
+
     try:
         page_rows, next_cursor, total_known = index_db.list_repos(cursor, limit)
     except ValueError:
@@ -2918,6 +2969,60 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
         {"profiles": profiles, "total_known": total_known},
         next_cursor=next_cursor,
     )
+
+
+_TEMP_PATH_PREFIXES: tuple[str, ...] = (
+    "/private/var/folders/",
+    "/var/folders/",
+    "/tmp/",
+    "/private/tmp/",
+)
+
+
+def _is_dead_temp_repo_root(repo_root: str | None) -> bool:
+    """True if ``repo_root`` is a temp-dir path that no longer exists.
+
+    Used by `_prune_dead_temp_repos` to safely identify
+    list_profiles entries left behind by prior test runs. Returns
+    False for any non-temp path so a user who moved or detached a
+    real repo doesn't lose its cached state.
+    """
+    import os as _os
+
+    if not repo_root or not isinstance(repo_root, str):
+        return False
+    if not any(repo_root.startswith(p) for p in _TEMP_PATH_PREFIXES):
+        # Honor TMPDIR too — macOS sets it to /var/folders/... but other
+        # platforms (or CI runners) can point it elsewhere.
+        tmp_env = _os.environ.get("TMPDIR", "").rstrip("/")
+        if not tmp_env or not repo_root.startswith(tmp_env + "/"):
+            return False
+    return not Path(repo_root).is_dir()
+
+
+def _prune_dead_temp_repos() -> int:
+    """Remove index_db rows for temp-dir repos that no longer exist.
+
+    Returns the number of rows removed. Best-effort: any error returns
+    0 and leaves the index alone.
+    """
+    from chameleon_mcp import index_db
+
+    removed = 0
+    try:
+        rows, _next, _total = index_db.list_repos(None, 1000)
+    except (ValueError, Exception):  # noqa: BLE001
+        return 0
+    for row in rows:
+        repo_root = row.get("repo_root")
+        if not _is_dead_temp_repo_root(repo_root):
+            continue
+        try:
+            if index_db.forget_repo(row["repo_id"], repo_root=repo_root):
+                removed += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return removed
 
 
 def _backfill_index_from_legacy_dirs() -> None:

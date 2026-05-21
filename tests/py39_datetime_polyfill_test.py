@@ -68,7 +68,7 @@ mod = _reload_under_simulated_py39("chameleon_mcp.optouts")
 t("optouts imported without ImportError", mod is not None)
 t(
     "optouts.UTC is the timezone.utc fallback",
-    mod.UTC is _datetime.timezone.utc,
+    mod.UTC is _datetime.UTC,
 )
 
 

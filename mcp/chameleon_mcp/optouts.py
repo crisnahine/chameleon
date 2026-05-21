@@ -32,6 +32,68 @@ except ImportError:  # pragma: no cover - exercised on Py<3.11 only
 from chameleon_mcp.profile.trust import repo_data_dir
 
 
+def _sign_marker(repo_id: str, session_id: str, disabled_at: float) -> str:
+    """Compute the HMAC signature for a session-disable marker.
+
+    Returns an empty string when the local HMAC key cannot be loaded
+    (the caller then writes the marker unsigned and signature
+    verification short-circuits to "valid" for back-compat).
+    """
+    import hmac as _hmac
+
+    try:
+        from chameleon_mcp.exec_log import _ensure_hmac_key
+    except Exception:
+        return ""
+    try:
+        key = _ensure_hmac_key()
+    except Exception:
+        return ""
+    msg = f"{repo_id}|{session_id}|{disabled_at}".encode()
+    return _hmac.new(key, msg, hashlib.sha256).hexdigest()
+
+
+def _marker_has_valid_signature(
+    marker: Path, repo_id: str, session_id: str
+) -> bool:
+    """Verify the HMAC signature on a session-disable marker.
+
+    Returns True when the signature is present AND verifies, OR when
+    no signature is present (back-compat for v0.5.13 markers and for
+    systems that can't load the HMAC key). Returns False ONLY when
+    a signature is present but invalid — i.e. a third-party process
+    planted a marker without the key.
+    """
+    import hmac as _hmac
+
+    try:
+        text = marker.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    sig_line = ""
+    disabled_at_line = ""
+    for line in text.splitlines():
+        if line.startswith("sig="):
+            sig_line = line[len("sig=") :].strip()
+        elif line.startswith("disabled-at="):
+            disabled_at_line = line[len("disabled-at=") :].strip()
+    if not sig_line:
+        # Unsigned marker: honor it (back-compat). Pre-v0.5.14
+        # markers and any system whose HMAC key is unavailable land
+        # here, so refusing them would break legitimate disables.
+        return True
+    try:
+        disabled_at = float(disabled_at_line)
+    except ValueError:
+        return False
+    expected = _sign_marker(repo_id, session_id, disabled_at)
+    if not expected:
+        # Key unavailable AT VERIFICATION TIME → fail-open (back-compat
+        # with the original honor-the-marker behavior).
+        return True
+    return _hmac.compare_digest(sig_line, expected)
+
+
 def _safe_session_marker(session_id: str | None) -> str:
     """Return a filesystem-safe identifier derived from session_id.
 
@@ -66,7 +128,7 @@ def is_chameleon_suppressed(
 
     if repo_id and session_id:
         marker = repo_data_dir(repo_id) / f".session_disabled.{_safe_session_marker(session_id)}"
-        if marker.is_file():
+        if marker.is_file() and _marker_has_valid_signature(marker, repo_id, session_id):
             return "session_disable"
 
     if repo_id:
@@ -90,12 +152,33 @@ def is_chameleon_suppressed(
 
 
 def write_session_disable(repo_id: str, session_id: str) -> Path:
-    """Write the .session_disabled.<session_id> marker. Returns the path."""
+    """Write the .session_disabled.<session_id> marker, HMAC-signed.
+
+    v0.5.14 bug 8: the marker is HMAC-signed with the local HMAC key
+    (the same key the exec_log uses) over `repo_id|session_id|disabled-at`.
+    A third-party process that learns a session_id cannot forge a valid
+    marker without the HMAC key, so `is_chameleon_suppressed` won't
+    honor a planted marker.
+
+    On a system where the HMAC key cannot be created (very unusual —
+    only happens when /dev/urandom is unavailable AND no override path
+    is writable) the marker is still written but without a signature.
+    `_marker_has_valid_signature` treats unsigned markers as valid for
+    back-compat with v0.5.13 and earlier — the security gate only
+    rejects markers whose signature is PRESENT BUT WRONG.
+    """
     marker = repo_data_dir(repo_id) / f".session_disabled.{_safe_session_marker(session_id)}"
+    disabled_at = time.time()
+    sig = _sign_marker(repo_id, session_id, disabled_at)
+    sig_line = f"sig={sig}\n" if sig else ""
     marker.write_text(
-        f"disabled-at={time.time()}\nsession_id={session_id}\n",
+        f"disabled-at={disabled_at}\nsession_id={session_id}\n{sig_line}",
         encoding="utf-8",
     )
+    try:
+        os.chmod(marker, 0o600)
+    except OSError:
+        pass
     return marker
 
 

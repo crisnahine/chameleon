@@ -138,6 +138,23 @@ class TooManyFilesError(Exception):
         )
 
 
+def _has_brace_in_basename(glob_pattern: str) -> bool:
+    """True if ``glob_pattern`` has `{...}` brace expansion in the basename.
+
+    pathlib.Path.glob expands braces in directory segments via the walker
+    but NOT in the leaf filename, so patterns like ``src/**/*.{ts,tsx}``
+    silently return zero candidates. This helper lets the bootstrap
+    error-message branch tell the user that's the cause instead of the
+    generic "No source files found".
+    """
+    if "{" not in glob_pattern or "}" not in glob_pattern:
+        return False
+    # Basename = portion after the last "/"; if there's no slash, the
+    # whole pattern is the basename.
+    basename = glob_pattern.rsplit("/", 1)[-1]
+    return "{" in basename and "}" in basename
+
+
 def _matches_any(rel_path: str, patterns: tuple[str, ...]) -> bool:
     """Return True if rel_path matches any fnmatch pattern.
 
@@ -176,26 +193,55 @@ def _glob_candidates(
     else:
         bases = [repo_root]
 
+    # v0.5.14 bug 6: expand ALL brace groups in the pattern, not just the
+    # first. Pre-fix behavior expanded only the leftmost brace, so a
+    # pattern like ``{src,cypress}/**/*.{ts,tsx,js,jsx}`` produced
+    # leftover braces in the basename that pathlib.glob doesn't honor →
+    # zero matches. The recursive expander below produces every
+    # combinatorial pattern.
+    expanded_globs = _expand_brace_groups(target_glob)
+
     candidates: list[Path] = []
     seen: set[Path] = set()
     for base in bases:
         if not base.is_dir():
             continue
-        if "{" in target_glob and "}" in target_glob:
-            prefix, _, rest = target_glob.partition("{")
-            body, _, suffix = rest.partition("}")
-            alts = [a.strip() for a in body.split(",")]
-            for alt in alts:
-                for p in base.glob(f"{prefix}{alt}{suffix}"):
-                    if p not in seen:
-                        seen.add(p)
-                        candidates.append(p)
-        else:
-            for p in base.glob(target_glob):
+        for pattern in expanded_globs:
+            for p in base.glob(pattern):
                 if p not in seen:
                     seen.add(p)
                     candidates.append(p)
     return candidates
+
+
+def _expand_brace_groups(pattern: str, _depth: int = 0) -> list[str]:
+    """Fully expand `{a,b,c}` brace groups in a glob pattern.
+
+    ``"{src,cypress}/**/*.{ts,tsx}"`` → ``["src/**/*.ts", "src/**/*.tsx",
+    "cypress/**/*.ts", "cypress/**/*.tsx"]``.
+
+    Recursive on the LEFTMOST brace; each alternative is then expanded
+    further. Bounded depth so a pathological pattern can't infinite-
+    loop. A pattern without braces returns ``[pattern]`` unchanged.
+    """
+    if _depth > 16 or "{" not in pattern or "}" not in pattern:
+        return [pattern]
+    open_idx = pattern.index("{")
+    close_idx = pattern.index("}", open_idx)
+    if close_idx <= open_idx + 1:
+        return [pattern]
+    prefix = pattern[:open_idx]
+    body = pattern[open_idx + 1 : close_idx]
+    suffix = pattern[close_idx + 1 :]
+    alts = [a.strip() for a in body.split(",") if a.strip()]
+    if not alts:
+        return [pattern]
+    out: list[str] = []
+    for alt in alts:
+        for sub in _expand_brace_groups(prefix + alt + suffix, _depth + 1):
+            if sub not in out:
+                out.append(sub)
+    return out
 
 
 def discovery_stats(

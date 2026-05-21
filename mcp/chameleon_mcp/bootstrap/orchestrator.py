@@ -1331,6 +1331,22 @@ def _bootstrap_single(
         # Both are semantically the same case (nothing for chameleon to do).
         # Unify on failed_unsupported_language with the original detail
         # appended so callers don't need to track two distinct statuses.
+        #
+        # v0.5.14 bug 6: when paths_glob was supplied and matched nothing,
+        # echo the glob back so the user can tell whether they mistyped
+        # the pattern or chose extensions the repo doesn't have. Brace
+        # expansion (both dir AND basename) is now handled by
+        # discovery._expand_brace_groups so a leftover-brace bug isn't
+        # the cause — a literally-empty match is.
+        if paths_glob:
+            err_msg = (
+                f"No source files found matching paths_glob {paths_glob!r}. "
+                "Verify the pattern (brace expansion is supported in both "
+                "directory and basename) and that the chosen extensions "
+                "actually exist under the repo."
+            )
+        else:
+            err_msg = "No source files found matching the discovery glob"
         return BootstrapReport(
             status="failed_unsupported_language",
             archetypes_detected=0,
@@ -1342,7 +1358,7 @@ def _bootstrap_single(
             files_skipped_parse=0,
             duration_ms=int((time.time() - started_at) * 1000),
             profile_path=None,
-            error="No source files found matching the discovery glob",
+            error=err_msg,
             workspace_roots=list(workspace_roots),
             fanout_capped=fanout_capped,
             discovered_files_pre_exclusion=pre_exclusion_count,
@@ -1547,6 +1563,15 @@ def _bootstrap_single(
     # predates Option 1 (fuzzy top_level_node_kinds) and Option 4 (path bucket
     # depth=2 with sub_bucket metadata).
     profile_data["clustering_algorithm_version"] = 2
+
+    # v0.5.14 bug 1 / rec-1 follow-up: persist the user-supplied
+    # paths_glob in profile.json so /chameleon-refresh can re-apply
+    # the same scope on a full re-bootstrap. Without this, a refresh
+    # of a profile that was scoped to e.g. "{app,db,lib}/**/*.rb"
+    # silently walked the whole tree and inflated the cluster set
+    # (including .claude/worktrees/ and other excluded-by-scope dirs).
+    if paths_glob is not None:
+        profile_data["discovery"] = {"paths_glob": paths_glob}
 
     # Build initial rules from tool configs (Phase 2C — basic; Phase 4 expands)
     if tool_configs.prettier:

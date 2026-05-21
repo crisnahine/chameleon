@@ -18,7 +18,6 @@ import json
 import os
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 # Force the test to use a sandboxed plugin-data dir so a trust grant
@@ -27,9 +26,7 @@ _TMP_PD = tempfile.TemporaryDirectory()
 os.environ["CHAMELEON_PLUGIN_DATA"] = _TMP_PD.name
 os.environ["CHAMELEON_ALLOW_TMP_REPO"] = "1"
 
-from chameleon_mcp.profile.trust import trust_state_for  # noqa: E402
 from chameleon_mcp.tools import (  # noqa: E402
-    _compute_repo_id,
     bootstrap_repo,
     get_pattern_context,
     refresh_repo,
