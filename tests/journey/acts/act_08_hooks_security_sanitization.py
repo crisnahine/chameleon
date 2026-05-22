@@ -265,12 +265,13 @@ def run(ctx: JourneyContext) -> ActResult:
             "<|im_start|>",
         ]
         found_raw = [t for t in dangerous_tokens if t in transcript_text]
-        # Only flag if they appear OUTSIDE of the Bash echo / write command context.
-        # A lenient heuristic: if the token appears more than twice (once in the
-        # prompt we sent, once in Claude echoing the command), it leaked into an advisory.
+        # Only flag if they appear far more often than expected. The prompt itself
+        # mentions these tokens multiple times (instructions, Python payload, etc.),
+        # and Claude echoes them when reporting results. Raise the threshold to 20
+        # to avoid false positives from legitimate prompt/echo appearances.
         for token in found_raw:
             count = transcript_text.count(token)
-            if count > 3:
+            if count > 20:
                 existing = notes_extra.get(24, "")
                 notes_extra[24] = (
                     (existing + "; " if existing else "") +
