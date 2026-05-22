@@ -30,6 +30,10 @@ PHASE 16 - structured idiom teach:
   Test the slug length boundary:
     - Try a 64-char slug (e.g. "a" + "b" * 63). Expect success.
     - Try a 65-char slug (e.g. "a" + "b" * 64). Expect an error (exceeds 64-char limit).
+  Test the 50KB per-idiom cap:
+    - Run /chameleon-teach (structured) with slug "fifty-kb-test" and a rationale that is
+      51000 characters long (just over 50KB). Expect a "failed" status with an error
+      mentioning the 50KB cap. Do NOT add this idiom successfully; the failure is expected.
   emit checkpoint completed phase 16.
 
 PHASE 17 - status output surface:
