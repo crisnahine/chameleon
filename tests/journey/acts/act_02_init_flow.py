@@ -26,7 +26,7 @@ PHASE 5 - cold-start init interactive:
     .chameleon/archetypes.json
     .chameleon/rules.json
     .chameleon/idioms.md
-    .chameleon/summary.md
+    .chameleon/profile.summary.md
   Use Bash to read .chameleon/profile.json and confirm schema_version is 7.
   emit checkpoint completed phase 5
 
@@ -123,7 +123,7 @@ def run(ctx: JourneyContext) -> ActResult:
         expect.path_exists(5, ts_basic_chameleon / "canonicals.json")
         expect.path_exists(5, ts_basic_chameleon / "archetypes.json")
         expect.path_exists(5, ts_basic_chameleon / "idioms.md")
-        expect.path_exists(5, ts_basic_chameleon / "summary.md")
+        expect.path_exists(5, ts_basic_chameleon / "profile.summary.md")
     except expect.PhaseAssertionError as e:
         notes_extra[5] = str(e)
 
