@@ -242,7 +242,7 @@ def _pid_alive(pid: int) -> bool:
         return e.errno != errno.ESRCH
 
 
-def cleanup_orphan_tmp_dirs(target_parent: Path, profile_dir_name: str = ".chameleon") -> int:
+def cleanup_orphan_tmp_dirs(target_parent: Path, profile_dir_name: str = "chameleon") -> int:
     """Sweep orphaned .tmp/<txn-id>/ directories that lack COMMITTED sentinels.
 
     Called on MCP server startup. Returns count of cleaned-up directories.
