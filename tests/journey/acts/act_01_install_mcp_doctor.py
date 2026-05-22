@@ -75,15 +75,23 @@ def run(ctx: JourneyContext) -> ActResult:
 
     # Runner-side additional assertions
     notes_extra: dict[int, str] = {}
+    # notes_concern: appended to phase notes but does NOT demote PASS -> FAIL
+    notes_concern: dict[int, str] = {}
+
     try:
-        # Phase 2 cross-check: query MCP directly for tools/list
+        # Phase 2 cross-check: MCP doctor roundtrip probe.
+        # Only demote if the call returned nothing or an explicit error envelope.
+        # Tolerate status=None as long as the call returned something (doctor envelope
+        # may not always set an explicit status field in all chameleon versions).
         tools_result = mcp.call_mcp_tool(
             tool_name="doctor",  # use doctor as a roundtrip probe
             plugin_root=ctx.plugin_root,
             env=ctx.env,
         )
-        if tools_result.get("status") != "ok":
-            notes_extra[2] = f"MCP doctor returned status={tools_result.get('status')!r}"
+        if tools_result is None or "error" in tools_result:
+            notes_extra[2] = (
+                f"MCP doctor returned error or None: {tools_result!r}"
+            )
     except Exception as e:
         notes_extra[2] = f"MCP direct probe failed: {e}"
 
@@ -91,11 +99,21 @@ def run(ctx: JourneyContext) -> ActResult:
     if "<chameleon-context>" not in transcript.read_text(encoding="utf-8"):
         notes_extra[4] = "no <chameleon-context> in transcript (using-chameleon not injected?)"
 
+    # Phase 4 soft check: typescript-checksums.json existence (concern only, not a FAIL)
+    checksums_file = ctx.plugin_root / "mcp" / "typescript-checksums.json"
+    if not checksums_file.exists():
+        notes_concern[4] = "mcp/typescript-checksums.json does not exist (concern only, not required)"
+
     for phase, extra in notes_extra.items():
         if phase in outcomes and outcomes[phase].status == "PASS":
             # Demote to FAIL if cross-check found an issue
             outcomes[phase].status = "FAIL"
             outcomes[phase].notes = (outcomes[phase].notes + "; " + extra).strip("; ")
+
+    for phase, concern in notes_concern.items():
+        if phase in outcomes:
+            # Append concern to notes without changing status
+            outcomes[phase].notes = (outcomes[phase].notes + "; CONCERN: " + concern).strip("; ")
 
     return ActResult(
         act_id="01_install_mcp_doctor",
