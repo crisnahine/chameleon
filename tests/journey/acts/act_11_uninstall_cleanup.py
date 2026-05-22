@@ -146,8 +146,14 @@ def run(ctx: JourneyContext) -> ActResult:
     plugin_data = ctx.plugin_data_dir
     if plugin_data.exists():
         contents = list(plugin_data.iterdir())
-        # Allow a stale lockfile but nothing else
-        non_lock = [p for p in contents if p.name not in (".lock", ".daemon.sock")]
+        # Allow stale lock files (.lock, *.lock) and socket/gitkeep files left
+        # by the harness - the flock-based .lock is acquired by preflight and
+        # never released within the session, so it legitimately persists after wipe.
+        non_lock = [
+            p for p in contents
+            if p.name not in (".lock", ".daemon.sock", ".gitkeep")
+            and not p.suffix == ".lock"
+        ]
         if non_lock:
             notes_extra[37] = (
                 f"plugin_data_dir {plugin_data} not fully wiped; "
