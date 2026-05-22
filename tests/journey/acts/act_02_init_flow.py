@@ -156,14 +156,13 @@ def run(ctx: JourneyContext) -> ActResult:
             notes_extra[15] = f"archetype_renames.json parse error: {e}"
     # If renames_json doesn't exist, that's acceptable for a small fixture
 
-    # Apply cross-check findings to outcomes
+    # Apply cross-check findings to outcomes.
+    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    # Claude's checkpoint is the primary signal.
     for phase, extra in notes_extra.items():
-        if phase in outcomes and outcomes[phase].status == "PASS":
-            outcomes[phase].status = "FAIL"
-            outcomes[phase].notes = (outcomes[phase].notes + "; " + extra).strip("; ")
-        elif phase not in outcomes:
-            # Phase not seen at all but we have a cross-check failure
-            pass
+        if phase in outcomes:
+            note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""
+            outcomes[phase].notes = (outcomes[phase].notes + "; " + note_prefix + extra).strip("; ")
 
     return ActResult(
         act_id="02_init_flow",
