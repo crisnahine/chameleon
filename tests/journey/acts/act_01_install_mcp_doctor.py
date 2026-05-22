@@ -63,7 +63,7 @@ def run(ctx: JourneyContext) -> ActResult:
         cwd=cwd,
         env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
         transcript_path=transcript,
-        max_turns=30,
+        max_turns=40,
         plugin_root=ctx.plugin_root,
         timeout_s=600,
         add_dirs=[ctx.run_dir],
