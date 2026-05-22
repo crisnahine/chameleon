@@ -3365,6 +3365,18 @@ def _backfill_index_from_legacy_dirs() -> None:
             last_seen_at=trust.granted_at or None,
         )
 
+# Known-safe top-level keys for profile.json. Used by merge_profiles to
+# strip unknown keys from the unioned result so a forged trust-state or
+# bypass-style field on either branch cannot survive the merge.
+# `_`-prefixed keys are test markers (user-explicit overrides, not bypasses)
+# and are also preserved.
+_SAFE_TOP_LEVEL_KEYS = {
+    "schema_version", "engine_min_version", "language",
+    "archetypes", "archetypes_detected", "workspaces", "platforms",
+    "generation", "created_at", "updated_at",
+    "clustering_algorithm_version", "discovery",
+}
+
 
 def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     """Three-way merge for git merge driver use.
@@ -3422,10 +3434,18 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
             if theirs_witness < ours_witness:
                 merged[name] = arch
 
-    # Union both ours_data and theirs_data top-level keys, theirs wins on key collision
-    # (except for archetypes which we already carefully merged). This preserves custom
-    # fields on either branch instead of silently dropping them.
-    merged_data = {**ours_data, **theirs_data}
+    # v0.6.x: merge_profiles produces an APPROXIMATE merged profile. The
+    # canonical-correct merge requires re-clustering from the union of files,
+    # which we cannot do without the working tree. So we union the static
+    # JSON. Custom fields on either branch are preserved (e.g., test markers
+    # starting with `_`), but unknown top-level keys are dropped to defeat
+    # injection of forged trust-state or bypass-style fields. Users MUST run
+    # /chameleon-refresh after the merge to re-validate.
+    unioned = {**ours_data, **theirs_data}
+    merged_data = {
+        k: v for k, v in unioned.items()
+        if k in _SAFE_TOP_LEVEL_KEYS or k.startswith("_")
+    }
     merged_data["archetypes"] = merged
 
     # Write merge result to `ours` (git merge driver convention).
@@ -3583,7 +3603,14 @@ def teach_profile(repo: str, feedback: str) -> dict:
         try:
             profile_data = json.loads((repo_path / ".chameleon" / "profile.json").read_text())
             language = profile_data.get("language", "any")
-        except Exception:
+        except Exception as exc:
+            # Log so profile.json corruption is discoverable rather than silently masked.
+            import sys
+            print(
+                f"[chameleon] WARNING: profile.json read failed in teach_profile;"
+                f" defaulting language to 'any'. Detail: {exc}",
+                file=sys.stderr,
+            )
             language = "any"
         addition = f"\n### {slug}\nLanguage: {language}\nStatus: active (added {timestamp})\n{body}\n"
 
@@ -4938,7 +4965,14 @@ def teach_profile_structured(
     try:
         profile_data = json.loads((repo_path / ".chameleon" / "profile.json").read_text())
         language = profile_data.get("language", "any")
-    except Exception:
+    except Exception as exc:
+        # Log so profile.json corruption is discoverable rather than silently masked.
+        import sys
+        print(
+            f"[chameleon] WARNING: profile.json read failed in teach_profile_structured;"
+            f" defaulting language to 'any'. Detail: {exc}",
+            file=sys.stderr,
+        )
         language = "any"
     # rendered starts with "### {slug}\n"; insert Language: on the second line.
     rendered = rendered.replace(f"### {slug}\n", f"### {slug}\nLanguage: {language}\n", 1)
