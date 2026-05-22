@@ -3579,7 +3579,13 @@ def teach_profile(repo: str, feedback: str) -> dict:
             slug = _new_slug()
             if f"### {slug}\n" in existing_text or f"### {slug} " in existing_text:
                 slug = _new_slug()
-        addition = f"\n### {slug}\nStatus: active (added {timestamp})\n{body}\n"
+        # Read language from profile.json so each idiom is language-scoped (v0.5.2 contract)
+        try:
+            profile_data = json.loads((repo_path / ".chameleon" / "profile.json").read_text())
+            language = profile_data.get("language", "any")
+        except Exception:
+            language = "any"
+        addition = f"\n### {slug}\nLanguage: {language}\nStatus: active (added {timestamp})\n{body}\n"
 
     lock_path = idioms_path.parent / ".idioms.lock"
     try:
@@ -4927,6 +4933,15 @@ def teach_profile_structured(
     idioms_path = repo_path / ".chameleon" / "idioms.md"
     if not idioms_path.parent.exists():
         return _envelope({"status": "failed", "error": "no profile in this repo (run /chameleon-init)"})
+
+    # Language scoping per v0.5.2: inject Language: line after ### slug heading.
+    try:
+        profile_data = json.loads((repo_path / ".chameleon" / "profile.json").read_text())
+        language = profile_data.get("language", "any")
+    except Exception:
+        language = "any"
+    # rendered starts with "### {slug}\n"; insert Language: on the second line.
+    rendered = rendered.replace(f"### {slug}\n", f"### {slug}\nLanguage: {language}\n", 1)
 
     sections = _find_all_slug_sections(idioms_path, slug)
     in_active = "active" in sections
