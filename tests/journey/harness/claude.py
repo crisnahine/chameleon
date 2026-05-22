@@ -108,8 +108,12 @@ def spawn_claude(
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        # Persist whatever we have
-        transcript_path.write_text(exc.stdout or "", encoding="utf-8")
+        # Persist whatever we have. exc.stdout may be bytes even with text=True
+        # if the process was killed mid-stream.
+        raw = exc.stdout or b""
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        transcript_path.write_text(raw, encoding="utf-8")
         return ClaudeSession(
             cost_usd=0.0,
             hook_events=[],
