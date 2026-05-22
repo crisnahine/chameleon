@@ -76,38 +76,53 @@ PHASE 28 - atomic-txn recovery:
   emit checkpoint started phase 28
 
   STEP 1 - dead-PID orphan cleanup:
-    Use Bash to plant a partial transaction directory in working/ts_basic:
+    Use Bash to plant a partial transaction directory in working/ts_basic.
+    NOTE: the tmp root is .chameleon.tmp/ (a sibling of .chameleon/, NOT
+    inside it). The txn_id format is "<pid>-<uuid8>-<epoch>"; a name with
+    no PID prefix (like "abc123") is treated as a legacy orphan and cleaned
+    unconditionally regardless of the .txn_pid file contents.
       python3 -c "
       import pathlib, json
-      tmp = pathlib.Path('working/ts_basic/.chameleon/.tmp/abc123')
+      tmp = pathlib.Path('working/ts_basic/.chameleon.tmp/abc123')
       tmp.mkdir(parents=True, exist_ok=True)
       # Partial profile (no COMMITTED sentinel)
       (tmp / 'profile.json').write_text(json.dumps({'schema_version': 7, 'partial': True}))
-      # Sentinel pidfile with guaranteed-dead PID 99999
-      (tmp / '.txn_pid').write_text('99999')
-      print('planted orphan txn abc123 with dead PID 99999')
+      print('planted orphan txn abc123 (no PID prefix - legacy format, cleaned unconditionally)')
       "
     Call chameleon-mcp::bootstrap_repo with path=working/ts_basic (no force flag).
     Verify the orphan transaction abc123 was cleaned up: after the call, check
-    that working/ts_basic/.chameleon/.tmp/abc123 no longer exists.
+    that working/ts_basic/.chameleon.tmp/abc123 no longer exists.
     Report the bootstrap result (expect already_bootstrapped or ok).
 
   STEP 2 - alive-PID no cleanup:
-    Use Bash to plant a second transaction directory with the CURRENT runner PID:
+    Use Bash to plant a second transaction directory using the PID-prefixed format
+    with the CURRENT runner PID so it looks like a live in-flight transaction:
       python3 -c "
       import os, pathlib, json
-      tmp = pathlib.Path('working/ts_basic/.chameleon/.tmp/def456')
+      pid = os.getpid()
+      import uuid, time
+      txn_id = f'{pid}-{uuid.uuid4().hex[:8]}-{int(time.time())}'
+      tmp = pathlib.Path('working/ts_basic/.chameleon.tmp') / txn_id
       tmp.mkdir(parents=True, exist_ok=True)
       (tmp / 'profile.json').write_text(json.dumps({'schema_version': 7, 'partial': True}))
-      # Use current PID (alive) as the sentinel
-      (tmp / '.txn_pid').write_text(str(os.getpid()))
-      print(f'planted alive-PID txn def456 with PID {os.getpid()}')
+      print(f'planted alive-PID txn {txn_id} with PID {pid}')
+      # Write txn_id for cleanup step
+      pathlib.Path('/tmp/alive_txn_id.txt').write_text(txn_id)
       "
     Call chameleon-mcp::bootstrap_repo with path=working/ts_basic (no force flag).
-    Verify working/ts_basic/.chameleon/.tmp/def456 STILL EXISTS after the call
+    Read /tmp/alive_txn_id.txt to get the txn_id, then verify
+    working/ts_basic/.chameleon.tmp/<txn_id> STILL EXISTS after the call
     (alive PID means in-progress - should not be cleaned up).
-    Clean up manually afterward:
-      rm -rf working/ts_basic/.chameleon/.tmp/def456
+    Clean up manually afterward using the txn_id from /tmp/alive_txn_id.txt:
+      python3 -c "
+      import pathlib
+      txn_id = pathlib.Path('/tmp/alive_txn_id.txt').read_text().strip()
+      import shutil
+      p = pathlib.Path('working/ts_basic/.chameleon.tmp') / txn_id
+      if p.exists():
+          shutil.rmtree(p)
+          print(f'cleaned up {p}')
+      "
 
   emit checkpoint completed phase 28
 
@@ -401,8 +416,10 @@ def run(ctx: JourneyContext) -> ActResult:
     except Exception as exc:
         notes_extra[27] = f"transcript scan error for phase 27: {exc}"
 
-    # Phase 28: orphan txn abc123 should be GONE after bootstrap
-    tmp_abc123 = cwd / ".chameleon" / ".tmp" / "abc123"
+    # Phase 28: orphan txn abc123 should be GONE after bootstrap.
+    # cleanup_orphan_tmp_dirs scans <repo_root>/.chameleon.tmp/ (sibling of
+    # .chameleon/, not inside it). The test plants abc123 there.
+    tmp_abc123 = cwd / ".chameleon.tmp" / "abc123"
     if tmp_abc123.exists():
         notes_extra[28] = (
             f"orphan txn dir {tmp_abc123} still exists after bootstrap_repo; "
