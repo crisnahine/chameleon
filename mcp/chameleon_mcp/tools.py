@@ -3018,6 +3018,15 @@ def bootstrap_repo(
                 "error": f"now must be a finite non-negative float; got {now_f!r}",
             })
 
+    # Clean up any orphaned .tmp/<txn-id>/ dirs from dead writer processes.
+    # Must run BEFORE the already_bootstrapped short-circuit so existing-profile
+    # bootstrap calls still recover orphans.
+    try:
+        from chameleon_mcp.bootstrap.transaction import cleanup_orphan_tmp_dirs
+        cleanup_orphan_tmp_dirs(repo_root)
+    except Exception:
+        pass  # best-effort; cleanup failures shouldn't block bootstrap
+
     # BUG-026: guard against accidental overwrite. A committed profile is
     # marked by the COMMITTED sentinel inside .chameleon/ (atomic write).
     if not force:
