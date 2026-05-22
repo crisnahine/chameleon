@@ -3422,7 +3422,10 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
             if theirs_witness < ours_witness:
                 merged[name] = arch
 
-    merged_data = dict(ours_data)
+    # Union both ours_data and theirs_data top-level keys, theirs wins on key collision
+    # (except for archetypes which we already carefully merged). This preserves custom
+    # fields on either branch instead of silently dropping them.
+    merged_data = {**ours_data, **theirs_data}
     merged_data["archetypes"] = merged
 
     # Write merge result to `ours` (git merge driver convention).
