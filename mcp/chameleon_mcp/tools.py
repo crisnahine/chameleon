@@ -3371,8 +3371,15 @@ def _backfill_index_from_legacy_dirs() -> None:
 # `_`-prefixed keys are test markers (user-explicit overrides, not bypasses)
 # and are also preserved.
 _SAFE_TOP_LEVEL_KEYS = {
-    "schema_version", "engine_min_version", "language",
-    "archetypes", "archetypes_detected", "workspaces", "platforms",
+    # Schema / engine
+    "schema_version", "engine_min_version",
+    # Identity / language
+    "repo_id", "language", "language_hint", "source",
+    # Bootstrap workspace metadata
+    "workspace", "workspaces", "platforms",
+    # Bootstrap-emitted archetype + tool data
+    "archetypes", "archetypes_detected", "archetype_count", "tool_configs",
+    # Generation / clustering / discovery state
     "generation", "created_at", "updated_at",
     "clustering_algorithm_version", "discovery",
 }
