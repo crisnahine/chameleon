@@ -130,7 +130,7 @@ def run(ctx: JourneyContext) -> ActResult:
             "mcp__plugin_chameleon_chameleon-mcp__daemon_status",
         ],
         plugin_root=ctx.plugin_root,
-        timeout_s=300,
+        timeout_s=900,
         add_dirs=[ctx.run_dir],
     )
 

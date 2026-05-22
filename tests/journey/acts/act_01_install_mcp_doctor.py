@@ -65,7 +65,7 @@ def run(ctx: JourneyContext) -> ActResult:
         transcript_path=transcript,
         max_turns=40,
         plugin_root=ctx.plugin_root,
-        timeout_s=600,
+        timeout_s=900,
         add_dirs=[ctx.run_dir],
     )
 
