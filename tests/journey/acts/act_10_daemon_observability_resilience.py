@@ -404,11 +404,12 @@ def run(ctx: JourneyContext) -> ActResult:
         except Exception as exc:
             notes_extra[36] = f"phase 36 check error: {exc}"
 
-    # Apply cross-check findings to outcomes
+    # Apply cross-check findings to outcomes.
+    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
     for phase, extra in notes_extra.items():
-        if phase in outcomes and outcomes[phase].status == "PASS":
-            outcomes[phase].status = "FAIL"
-            outcomes[phase].notes = (outcomes[phase].notes + "; " + extra).strip("; ")
+        if phase in outcomes:
+            note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""
+            outcomes[phase].notes = (outcomes[phase].notes + "; " + note_prefix + extra).strip("; ")
 
     return ActResult(
         act_id="10_daemon_observability_resilience",

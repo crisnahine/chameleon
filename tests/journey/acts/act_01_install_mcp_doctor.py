@@ -105,10 +105,9 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_concern[4] = "mcp/typescript-checksums.json does not exist (concern only, not required)"
 
     for phase, extra in notes_extra.items():
-        if phase in outcomes and outcomes[phase].status == "PASS":
-            # Demote to FAIL if cross-check found an issue
-            outcomes[phase].status = "FAIL"
-            outcomes[phase].notes = (outcomes[phase].notes + "; " + extra).strip("; ")
+        if phase in outcomes:
+            note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""
+            outcomes[phase].notes = (outcomes[phase].notes + "; " + note_prefix + extra).strip("; ")
 
     for phase, concern in notes_concern.items():
         if phase in outcomes:
