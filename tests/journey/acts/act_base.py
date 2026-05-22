@@ -17,19 +17,15 @@ class ActResult:
 
 
 _CHECKPOINT_PREAMBLE = """\
-At each phase boundary, emit a checkpoint by running this Bash command:
+At the END of each phase (after running all its steps), emit a checkpoint by running this Bash command:
 
-  echo '{"phase": <N>, "status": "started", "ts": "'$(date -u +%FT%TZ)'"}' >> "$CHAMELEON_JOURNEY_CHECKPOINT"
-
-Then run the phase steps. When the phase succeeds, emit:
-
-  echo '{"phase": <N>, "status": "completed", "ts": "'$(date -u +%FT%TZ)'"}' >> "$CHAMELEON_JOURNEY_CHECKPOINT"
+  echo '{"phase": <N>, "status": "passed"}' >> "$CHAMELEON_JOURNEY_CHECKPOINT"
 
 If an assertion fails inside the phase, emit:
 
-  echo '{"phase": <N>, "status": "failed", "ts": "'$(date -u +%FT%TZ)'", "notes": "what failed"}' >> "$CHAMELEON_JOURNEY_CHECKPOINT"
+  echo '{"phase": <N>, "status": "failed", "notes": "what failed"}' >> "$CHAMELEON_JOURNEY_CHECKPOINT"
 
-Emit each checkpoint as a SINGLE LINE outside any code fence. Never wrap them in markdown.
+ONE checkpoint per phase, after the phase completes (or fails). Do NOT emit a "started" event. Emit each checkpoint as a SINGLE LINE outside any code fence.
 """
 
 

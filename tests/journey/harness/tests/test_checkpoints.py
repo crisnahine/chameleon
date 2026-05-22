@@ -78,6 +78,23 @@ def test_malformed_line_is_skipped(tmp_path: Path) -> None:
     assert outcomes[4].status == "PASS"
 
 
+def test_single_passed_event(tmp_path: Path) -> None:
+    """New single-event schema: status=passed -> PASS."""
+    f = tmp_path / "cp.jsonl"
+    f.write_text('{"phase": 1, "status": "passed"}\n')
+    outcomes, _ = parse_checkpoint_file(f, expected_phases=[1])
+    assert outcomes[1].status == "PASS"
+
+
+def test_single_failed_event(tmp_path: Path) -> None:
+    """New single-event schema: status=failed -> FAIL with notes."""
+    f = tmp_path / "cp.jsonl"
+    f.write_text('{"phase": 2, "status": "failed", "notes": "boom"}\n')
+    outcomes, _ = parse_checkpoint_file(f, expected_phases=[2])
+    assert outcomes[2].status == "FAIL"
+    assert "boom" in outcomes[2].notes
+
+
 def test_skip_phase_with_parse_errors_includes_hint(tmp_path: Path) -> None:
     """SKIP-attributed phases include corruption hint when parse_errors > 0."""
     f = tmp_path / "cp.jsonl"

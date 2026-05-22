@@ -1,6 +1,9 @@
 """Parse JSONL checkpoint file emitted by Claude inside an act session.
 
-Schema per line:
+New schema per line (single event per phase):
+  {"phase": <int>, "status": "passed"|"failed", "notes": "<optional>"}
+
+Legacy schema (backwards compat, still accepted):
   {"phase": <int>, "status": "started"|"completed"|"failed", "ts": "<ISO 8601>", "notes": "<optional>"}
 
 Malformed lines are logged (caller decides where) and skipped via a parse-error count.
@@ -31,13 +34,16 @@ def parse_checkpoint_file(
 
     Returns (outcomes, parse_errors_count).
 
-    Behavior:
-      - Malformed JSON line -> increments parse_errors, skipped.
+    Behavior (new single-event schema):
+      - Phase with status "passed" -> PASS.
+      - Phase with status "failed" -> FAIL with notes from event.
+      - Expected phase with no events -> SKIP "phase not attempted (likely upstream failure)".
+      - When parse_errors > 0, SKIP-attributed phases get an extra corruption hint.
+
+    Backwards compat (legacy started/completed schema):
       - Phase with started + completed -> PASS.
       - Phase with started + failed -> FAIL.
       - Phase with started only -> FAIL "phase incomplete (no completion event)".
-      - Expected phase with no events -> SKIP "phase not attempted (likely upstream failure)".
-      - When parse_errors > 0, SKIP-attributed phases get an extra corruption hint.
     """
     events: dict[int, list[dict]] = {}
     parse_errors = 0
@@ -68,19 +74,30 @@ def parse_checkpoint_file(
             outcomes[phase] = PhaseOutcome(phase=phase, status="SKIP", notes=note)
             continue
 
+        # New single-event schema: "passed" or "failed"
+        passed_event = next((e for e in phase_events if e.get("status") == "passed"), None)
+        failed_event = next((e for e in phase_events if e.get("status") == "failed"), None)
+
+        # Legacy schema events
         started = next((e for e in phase_events if e.get("status") == "started"), None)
         completed = next((e for e in phase_events if e.get("status") == "completed"), None)
-        failed = next((e for e in phase_events if e.get("status") == "failed"), None)
 
-        if failed:
+        if passed_event:
+            outcomes[phase] = PhaseOutcome(
+                phase=phase,
+                status="PASS",
+                notes=passed_event.get("notes", ""),
+            )
+        elif failed_event:
             outcomes[phase] = PhaseOutcome(
                 phase=phase,
                 status="FAIL",
-                notes=failed.get("notes", "explicit failed status"),
+                notes=failed_event.get("notes", "explicit failed status"),
                 started_ts=started.get("ts") if started else None,
-                completed_ts=failed.get("ts"),
+                completed_ts=failed_event.get("ts"),
             )
         elif started and completed:
+            # Legacy: started + completed pair -> PASS
             outcomes[phase] = PhaseOutcome(
                 phase=phase,
                 status="PASS",
@@ -89,6 +106,7 @@ def parse_checkpoint_file(
                 completed_ts=completed.get("ts"),
             )
         elif started and not completed:
+            # Legacy: started only -> FAIL
             outcomes[phase] = PhaseOutcome(
                 phase=phase,
                 status="FAIL",
