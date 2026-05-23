@@ -204,6 +204,7 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     notes_extra: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
     # Phase 22: verify HMAC sig field present in exec log; verify key file mode 0o600
     try:
@@ -254,6 +255,7 @@ def run(ctx: JourneyContext) -> ActResult:
             expect.file_mode(22, hmac_key, 0o600)
         except expect.PhaseAssertionError as e:
             notes_extra[22] = str(e)
+    cross_check_passed[22] = 22 not in notes_extra
 
     # Phase 24: verify advisory does NOT contain raw dangerous tokens
     # (they should have been replaced with [chameleon-sanitized: ...])
@@ -280,6 +282,7 @@ def run(ctx: JourneyContext) -> ActResult:
                 ).strip("; ")
     except Exception as exc:
         notes_extra[24] = f"transcript scan error for phase 24: {exc}"
+    cross_check_passed[24] = 24 not in notes_extra
 
     # Phase 25: verify symlink target archetype did NOT appear in advisory
     # (i.e., O_NOFOLLOW worked and chameleon fell back to degraded or no advisory)
@@ -294,6 +297,7 @@ def run(ctx: JourneyContext) -> ActResult:
             )
     except Exception as exc:
         notes_extra[25] = f"transcript scan error for phase 25: {exc}"
+    cross_check_passed[25] = 25 not in notes_extra
 
     # Phase 26: verify 5MB cap rejection occurred
     # Heuristic: look for oversized/rejected/cap mentions in transcript near 5MB context
@@ -319,9 +323,15 @@ def run(ctx: JourneyContext) -> ActResult:
             )
     except Exception as exc:
         notes_extra[26] = f"transcript scan error for phase 26: {exc}"
+    cross_check_passed[26] = 26 not in notes_extra
 
-    # Apply cross-check findings to outcomes.
-    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

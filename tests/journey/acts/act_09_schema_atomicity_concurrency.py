@@ -392,6 +392,7 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     notes_extra: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
     # Phase 27: transcript mentions schema_version migration or refusal
     try:
@@ -415,6 +416,7 @@ def run(ctx: JourneyContext) -> ActResult:
             )
     except Exception as exc:
         notes_extra[27] = f"transcript scan error for phase 27: {exc}"
+    cross_check_passed[27] = 27 not in notes_extra
 
     # Phase 28: orphan txn abc123 should be GONE after bootstrap.
     # cleanup_orphan_tmp_dirs scans <repo_root>/.chameleon.tmp/ (sibling of
@@ -425,6 +427,7 @@ def run(ctx: JourneyContext) -> ActResult:
             f"orphan txn dir {tmp_abc123} still exists after bootstrap_repo; "
             "dead-PID cleanup may not have fired"
         )
+    cross_check_passed[28] = 28 not in notes_extra
 
     # Phase 29: transcript shows failed.*PID envelope from one of the parallel calls
     try:
@@ -448,6 +451,7 @@ def run(ctx: JourneyContext) -> ActResult:
             )
     except Exception as exc:
         notes_extra[29] = f"transcript scan error for phase 29: {exc}"
+    cross_check_passed[29] = 29 not in notes_extra
 
     # Phase 30: glob expansion mentioned (4 patterns from {components,hooks} x {ts,tsx})
     try:
@@ -471,6 +475,7 @@ def run(ctx: JourneyContext) -> ActResult:
             )
     except Exception as exc:
         notes_extra[30] = f"transcript scan error for phase 30: {exc}"
+    cross_check_passed[30] = 30 not in notes_extra
 
     # Phase 31: transcript shows 3-way merge success (no conflict markers)
     try:
@@ -505,16 +510,24 @@ def run(ctx: JourneyContext) -> ActResult:
                 break
     except Exception as exc:
         notes_extra[31] = f"transcript scan error for phase 31: {exc}"
+    cross_check_passed[31] = 31 not in notes_extra
 
     # Phase 32: working/ts_monorepo/.chameleon/profile.json exists with workspaces field
     ts_monorepo_profile = ctx.fixture("ts_monorepo") / ".chameleon" / "profile.json"
     try:
         expect.path_exists(32, ts_monorepo_profile)
+        cross_check_passed[32] = True
     except expect.PhaseAssertionError as e:
         notes_extra[32] = str(e)
+        cross_check_passed[32] = False
 
-    # Apply cross-check findings to outcomes.
-    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

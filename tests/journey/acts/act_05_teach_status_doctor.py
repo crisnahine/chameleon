@@ -81,21 +81,34 @@ def run(ctx: JourneyContext) -> ActResult:
 
     # Runner-side cross-checks (defense in depth)
     notes_extra: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
-    # Phase 16: read idioms.md, verify total size <= 200KB and Language: typescript present
+    # Phase 16: read idioms.md, verify it exists and has at least one ### header
     ts_basic_chameleon = ctx.fixture("ts_basic") / ".chameleon"
     idioms_md = ts_basic_chameleon / "idioms.md"
     try:
         expect.path_exists(16, idioms_md)
         expect.file_size_between(16, idioms_md, 1, 200 * 1024)
         idioms_content = idioms_md.read_text(encoding="utf-8")
+        _phase16_fail = False
         if "Language: typescript" not in idioms_content and "Language:typescript" not in idioms_content:
             notes_extra[16] = "idioms.md missing 'Language: typescript' frontmatter"
+            _phase16_fail = True
+        if "###" not in idioms_content:
+            notes_extra[16] = (notes_extra.get(16, "") + "; idioms.md has no ### headers").strip("; ")
+            _phase16_fail = True
+        cross_check_passed[16] = not _phase16_fail
     except expect.PhaseAssertionError as e:
         notes_extra[16] = str(e)
+        cross_check_passed[16] = False
 
-    # Apply cross-check findings to outcomes.
-    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

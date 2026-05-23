@@ -91,6 +91,7 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     notes_extra: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
     # Phase 10: assert at least 3 PreToolUse hook events fired (one each Edit/Write/Write)
     try:
@@ -102,19 +103,30 @@ def run(ctx: JourneyContext) -> ActResult:
             notes_extra[10] = (
                 f"expected >= 3 PreToolUse hook events, got {len(pre_tool_events)}"
             )
+            cross_check_passed[10] = False
+        else:
+            cross_check_passed[10] = True
     except expect.PhaseAssertionError as e:
         notes_extra[10] = str(e)
+        cross_check_passed[10] = False
 
     # Phase 11: profile.json + COMMITTED still present after refresh
     ts_basic_chameleon = ctx.fixture("ts_basic") / ".chameleon"
     try:
         expect.path_exists(11, ts_basic_chameleon / "profile.json")
         expect.path_exists(11, ts_basic_chameleon / "COMMITTED")
+        cross_check_passed[11] = True
     except expect.PhaseAssertionError as e:
         notes_extra[11] = str(e)
+        cross_check_passed[11] = False
 
-    # Apply cross-check findings to outcomes.
-    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

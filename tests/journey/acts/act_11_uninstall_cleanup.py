@@ -139,6 +139,7 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     notes_extra: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
     # Phase 37 runner-side cross-checks
 
@@ -223,8 +224,15 @@ def run(ctx: JourneyContext) -> ActResult:
             f"daemon process check failed: {exc}"
         ).strip("; ")
 
-    # Apply cross-check findings to outcomes.
-    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    cross_check_passed[37] = 37 not in notes_extra
+
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

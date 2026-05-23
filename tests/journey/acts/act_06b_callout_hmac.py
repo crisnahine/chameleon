@@ -100,6 +100,7 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     notes_extra: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
     # Phase 20: count distinct frustration patterns matched via UserPromptSubmit
     try:
@@ -122,8 +123,12 @@ def run(ctx: JourneyContext) -> ActResult:
                 "/chameleon-teach) found in transcript; frustration prompts may not "
                 "have triggered UserPromptSubmit injection"
             )
+            cross_check_passed[20] = False
+        else:
+            cross_check_passed[20] = True
     except Exception as exc:
         notes_extra[20] = f"error scanning transcript for callout hints: {exc}"
+        cross_check_passed[20] = False
 
     # Phase 23: forged-HMAC defense - verify advisory fired during forged-marker edit
     try:
@@ -133,11 +138,20 @@ def run(ctx: JourneyContext) -> ActResult:
                 "transcript does not mention forged marker test; "
                 "HMAC tampering defense may not have been exercised"
             )
+            cross_check_passed[23] = False
+        else:
+            cross_check_passed[23] = True
     except Exception as exc:
         notes_extra[23] = f"error scanning transcript for forged marker evidence: {exc}"
+        cross_check_passed[23] = False
 
-    # Apply cross-check findings to outcomes.
-    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

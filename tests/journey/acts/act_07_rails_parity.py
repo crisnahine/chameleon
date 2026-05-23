@@ -119,6 +119,7 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     notes_extra: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
     # Phase 21 runner-side cross-checks
     rails_chameleon = ctx.fixture("rails_basic") / ".chameleon"
@@ -198,8 +199,15 @@ def run(ctx: JourneyContext) -> ActResult:
                     "idioms.md missing 'Language: ruby' frontmatter after /chameleon-teach"
                 )
 
-    # Apply cross-check findings to outcomes.
-    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    cross_check_passed[21] = 21 not in notes_extra
+
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

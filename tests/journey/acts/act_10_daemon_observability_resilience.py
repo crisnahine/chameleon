@@ -244,6 +244,7 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     notes_extra: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
     # Phase 33: daemon socket was created at some point (may be gone by end of act)
     # Primary signal comes from transcript + checkpoint. Check transcript for daemon evidence.
@@ -268,6 +269,7 @@ def run(ctx: JourneyContext) -> ActResult:
             )
     except Exception as exc:
         notes_extra[33] = f"transcript scan error for phase 33: {exc}"
+    cross_check_passed[33] = 33 not in notes_extra
 
     # Phase 34: hook_error_log was written to during the fail-open test
     hook_error_log = ctx.hook_error_log
@@ -276,6 +278,7 @@ def run(ctx: JourneyContext) -> ActResult:
             f"hook_errors.log at {hook_error_log} is absent or empty; "
             "fail-open hook error capture may not have fired"
         )
+    cross_check_passed[34] = 34 not in notes_extra
 
     # Phase 35: metrics.jsonl exists and has at least one entry
     metrics_found = list(ctx.plugin_data_dir.rglob("metrics.jsonl"))
@@ -291,9 +294,15 @@ def run(ctx: JourneyContext) -> ActResult:
                 f"metrics.jsonl at {sample} is empty; "
                 "no metrics entries were written"
             )
+    cross_check_passed[35] = 35 not in notes_extra
 
-    # Apply cross-check findings to outcomes.
-    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

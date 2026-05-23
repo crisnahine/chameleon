@@ -75,6 +75,7 @@ def run(ctx: JourneyContext) -> ActResult:
 
     # Runner-side cross-checks (defense in depth)
     notes_extra: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
     # Phase 12: assert auto_refresh.log exists under plugin_data_dir/<repo_id>/
     # and check file mode 0o600 and size <= 64KB
@@ -83,21 +84,32 @@ def run(ctx: JourneyContext) -> ActResult:
         auto_refresh_logs = list(ctx.plugin_data_dir.rglob("auto_refresh.log"))
         if not auto_refresh_logs:
             notes_extra[12] = "auto_refresh.log not found under plugin_data_dir"
+            cross_check_passed[12] = False
         else:
             log_path = auto_refresh_logs[0]
+            _phase12_fail = False
             try:
                 expect.file_mode(12, log_path, 0o600)
             except expect.PhaseAssertionError as e:
                 notes_extra[12] = str(e)
+                _phase12_fail = True
             try:
                 expect.file_size_between(12, log_path, 0, 64 * 1024)
             except expect.PhaseAssertionError as e:
                 notes_extra[12] = (notes_extra.get(12, "") + "; " + str(e)).strip("; ")
+                _phase12_fail = True
+            cross_check_passed[12] = not _phase12_fail
     except expect.PhaseAssertionError as e:
         notes_extra[12] = str(e)
+        cross_check_passed[12] = False
 
-    # Apply cross-check findings to outcomes.
-    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

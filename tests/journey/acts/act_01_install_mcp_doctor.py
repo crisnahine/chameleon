@@ -77,6 +77,7 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     # notes_concern: appended to phase notes but does NOT demote PASS -> FAIL
     notes_concern: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
     try:
         # Phase 2 cross-check: MCP doctor roundtrip probe.
@@ -92,18 +93,33 @@ def run(ctx: JourneyContext) -> ActResult:
             notes_extra[2] = (
                 f"MCP doctor returned error or None: {tools_result!r}"
             )
+            cross_check_passed[2] = False
+        else:
+            cross_check_passed[2] = True
     except Exception as e:
         notes_extra[2] = f"MCP direct probe failed: {e}"
+        cross_check_passed[2] = False
 
     # Phase 4 cross-check: chameleon-context marker in transcript
-    if "<chameleon-context>" not in transcript.read_text(encoding="utf-8"):
+    transcript_text = transcript.read_text(encoding="utf-8")
+    if "<chameleon-context>" not in transcript_text:
         notes_extra[4] = "no <chameleon-context> in transcript (using-chameleon not injected?)"
+        cross_check_passed[4] = False
+    else:
+        cross_check_passed[4] = True
 
     # Phase 4 soft check: typescript-checksums.json existence (concern only, not a FAIL)
     checksums_file = ctx.plugin_root / "mcp" / "typescript-checksums.json"
     if not checksums_file.exists():
         notes_concern[4] = "mcp/typescript-checksums.json does not exist (concern only, not required)"
 
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

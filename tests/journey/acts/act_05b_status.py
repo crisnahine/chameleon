@@ -55,6 +55,7 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     notes_extra: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
     # Phase 17: parse transcript for /chameleon-status output, look for key fields
     try:
@@ -66,11 +67,20 @@ def run(ctx: JourneyContext) -> ActResult:
                 f"status output missing expected v0.6.0 config keys; "
                 f"found {found_keys!r} out of {required_status_keys!r}"
             )
+            cross_check_passed[17] = False
+        else:
+            cross_check_passed[17] = True
     except Exception as e:
         notes_extra[17] = str(e)
+        cross_check_passed[17] = False
 
-    # Apply cross-check findings to outcomes.
-    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

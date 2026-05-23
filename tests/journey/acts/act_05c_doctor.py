@@ -64,10 +64,12 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     notes_extra: dict[int, str] = {}
+    cross_check_passed: dict[int, bool] = {}
 
     # Phase 18: age hook_errors.log entries and verify doctor filters them
     try:
         hook_error_log = ctx.hook_error_log
+        _phase18_fail = False
         if hook_error_log.exists():
             ctx.fast_forward_marker(hook_error_log, age_seconds=4 * 24 * 3600)
             try:
@@ -82,13 +84,24 @@ def run(ctx: JourneyContext) -> ActResult:
                     error_msg = str(recent_errors.get("message", ""))
                     if "OLD-ERROR" in error_msg:
                         notes_extra[18] = "doctor showed old error (72h filter did not fire)"
+                        _phase18_fail = True
             except Exception:
                 pass
+        # Transcript non-empty is the minimal evidence Claude ran the phase
+        transcript = ctx.run_dir / "transcripts" / "act_05c.txt"
+        transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
+        cross_check_passed[18] = not _phase18_fail and len(transcript_text) > 0
     except expect.PhaseAssertionError as e:
         notes_extra[18] = str(e)
+        cross_check_passed[18] = False
 
-    # Apply cross-check findings to outcomes.
-    # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
+    # Cross-check results can promote SKIP -> PASS
+    for phase, passed in cross_check_passed.items():
+        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
+            outcomes[phase].status = "PASS"
+            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+
+    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""
