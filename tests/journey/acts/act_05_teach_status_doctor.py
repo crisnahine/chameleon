@@ -52,7 +52,7 @@ def run(ctx: JourneyContext) -> ActResult:
         cwd=cwd,
         env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
         transcript_path=transcript,
-        max_turns=30,
+        max_turns=60,
         allowed_tools=[
             "Bash",
             "Read",
@@ -71,7 +71,7 @@ def run(ctx: JourneyContext) -> ActResult:
             "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
         ],
         plugin_root=ctx.plugin_root,
-        timeout_s=900,
+        timeout_s=1200,
         add_dirs=[ctx.run_dir],
     )
 
