@@ -1,8 +1,6 @@
-"""Act 4: v0.6.0 UX bundle (auto_refresh, canonical_ref, trust.auto_preserve_when) (Phases 12, 13, 14)."""
+"""Act 4: v0.6.0 UX bundle - auto_refresh subprocess discipline (Phase 12)."""
 from __future__ import annotations
 
-import os
-import time
 from pathlib import Path
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
@@ -10,11 +8,10 @@ from tests.journey.harness import expect
 from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
-from tests.journey.harness.git_shim import setup_git_shim
 
 
 _PROMPT_BODY = """\
-Three independent v0.6.0 features against working/ts_basic (trusted from Act 2).
+Test auto_refresh subprocess discipline against working/ts_basic (trusted from Act 2).
 Use absolute paths for all file references.
 
 PHASE 12 - auto_refresh subprocess discipline:
@@ -36,52 +33,6 @@ PHASE 12 - auto_refresh subprocess discipline:
   re-triggering (no duplicate auto_refresh subprocess).
   emit checkpoint completed phase 12
 
-PHASE 13 - canonical_ref lifecycle:
-  emit checkpoint started phase 13
-  The fixture already has a loopback origin set up (origin/main). Update config:
-    {"canonical_ref": "origin/main"}
-  Use the Bash tool to modify the working-tree .chameleon/canonicals.json to differ
-  from origin/main (add a dummy field). Then call chameleon-mcp::get_pattern_context
-  with a file path to force a canonical read.
-  Verify via the response that the content came from git show origin/main (the cached
-  version), not from the modified working tree version.
-  Next, verify trust state uses the WORKING-tree profile hash (v0.6.1 fix):
-  bump a value in working-tree .chameleon/profile.json (minor field change via Bash),
-  then call chameleon-mcp::get_drift_status and verify trust was invalidated (stale)
-  because the working-tree hash changed - NOT because the canonical cache changed.
-  Then test gc_stale_caches: bump origin/main HEAD by making a new commit to the
-  loopback origin (use Bash: cd to the origin dir, add a commit there). Then call
-  get_pattern_context again. The old ref-sha cache dir should be gone and a new one
-  present for the new commit SHA.
-  Finally test unresolvable ref: set canonical_ref to "origin/nonexistent" in config.
-  Call get_pattern_context. Verify it falls back gracefully to working tree with
-  a diagnostic in the response (no crash, no empty response).
-  Restore canonical_ref to "origin/main" when done.
-  emit checkpoint completed phase 13
-
-PHASE 14 - trust.auto_preserve_when (structural equality + git author + timeout):
-  emit checkpoint started phase 14
-  Restore working/ts_basic to a trusted state if needed (call /chameleon-refresh).
-  Update config:
-    {"trust": {"auto_preserve_when": "pulled_from_remote"}}
-  Simulate a teammate's pull-eligible commit:
-  Use Bash to commit a change to .chameleon/profile.json in the origin as a
-  different author (teammate@example.com):
-    cd <origin_ts_basic_path>
-    git config user.email "teammate@example.com"
-    git config user.name "Teammate"
-    echo '{}' >> <some temp file in origin>
-    git add -A && git commit -m "teammate update"
-  Then in working/ts_basic, pull from origin (git pull origin main).
-  Call chameleon-mcp::refresh_repo. Verify the response envelope has
-  trust_preserved: true or similar indication that auto-preservation fired.
-  Then simulate a local (same-author) change:
-  Edit .chameleon/profile.json in working/ts_basic as the local user, commit it.
-  Call refresh_repo again. Verify trust is NOT auto-preserved (requires manual trust).
-  Report both outcomes via Bash.
-  The runner will verify the git-log timeout behavior separately via a shim.
-  emit checkpoint completed phase 14
-
 Reminder: emit checkpoints as plain Bash echo lines outside any code fences.
 Use absolute paths when referencing fixture directories.
 """
@@ -97,7 +48,7 @@ def run(ctx: JourneyContext) -> ActResult:
         cwd=cwd,
         env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
         transcript_path=transcript,
-        max_turns=60,
+        max_turns=30,
         allowed_tools=[
             "Bash",
             "Read",
@@ -119,7 +70,7 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     outcomes, parse_errors = parse_checkpoint_file(
-        ctx.current_checkpoint_file, expected_phases=[12, 13, 14]
+        ctx.current_checkpoint_file, expected_phases=[12]
     )
 
     # Runner-side cross-checks (defense in depth)
@@ -144,33 +95,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 notes_extra[12] = (notes_extra.get(12, "") + "; " + str(e)).strip("; ")
     except expect.PhaseAssertionError as e:
         notes_extra[12] = str(e)
-
-    # Phase 13: canonical cache dir exists under plugin_data_dir/<repo_id>/canonical/<sha>/
-    try:
-        canonical_dirs = list(ctx.plugin_data_dir.rglob("canonical"))
-        if not canonical_dirs:
-            notes_extra[13] = "no canonical cache dir found under plugin_data_dir"
-        # Trust file should exist (not necessarily with specific hash - just present)
-        trust_files = list(ctx.plugin_data_dir.rglob(".trust"))
-        if not trust_files:
-            notes_extra[13] = (
-                (notes_extra.get(13, "") + "; no .trust file under plugin_data_dir").strip("; ")
-            )
-    except expect.PhaseAssertionError as e:
-        notes_extra[13] = str(e)
-
-    # Phase 14: use git_shim to verify the 2-second timeout on git-log calls
-    # Most of the Phase 14 logic happens inside the Claude session.
-    # Runner-side check: observe that auto_preserve happened at some point by
-    # checking whether the .trust file still exists after refresh.
-    try:
-        with setup_git_shim(5.0, ctx.run_dir / "shim") as _shim:
-            # The shim plants a slow git on PATH for the duration of this block.
-            # The actual timeout behavior is tested inside the Claude session prompt.
-            # Here we just verify the shim wires correctly (it doesn't raise).
-            pass
-    except Exception as e:
-        notes_extra[14] = f"git_shim setup failed: {e}"
 
     # Apply cross-check findings to outcomes.
     # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.

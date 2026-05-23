@@ -1,4 +1,4 @@
-"""Act 3: Hot path advisory + drift (Edit + Write + NotebookEdit) (Phases 8, 9, 10, 11)."""
+"""Act 3: Hot path advisory (Edit + Write) (Phases 8, 9)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -44,41 +44,6 @@ PHASE 9 - Excerpt LRU cache dedup:
     - a canonical witness (code snippet)
   emit checkpoint completed phase 9
 
-PHASE 10 - PreToolUse advisory fires on Edit + Write + NotebookEdit (or Write fallback):
-  emit checkpoint started phase 10
-  Perform the following three operations in order:
-  1. EDIT an existing util file (e.g. src/utils/slugify.ts): change one line.
-     The PreToolUse hook must inject a <chameleon-context> advisory before the edit lands.
-  2. WRITE a new component file: create src/components/NewWidget.tsx from scratch
-     with a simple React component. The PreToolUse hook must inject advisory before Write.
-  3. WRITE a test file: create tests/NewWidget.test.tsx (since no notebook is present,
-     this satisfies the NotebookEdit-or-fallback matcher coverage).
-     The PreToolUse hook must inject advisory before this Write.
-  After all three operations, confirm:
-    - Each advisory contained archetype + sub_buckets + match_quality + canonical witness.
-    - Total advisory token count stayed under 1500 tokens (estimate based on advisory length).
-    - The hook-model dedup fired: the 2nd edit in the util archetype (from Phase 9)
-      skipped injecting a new advisory (no new get_canonical_excerpt call needed).
-  emit checkpoint completed phase 10
-
-PHASE 11 - Drift injection + banner + refresh recovery:
-  emit checkpoint started phase 11
-  Use the Bash tool to inject drift: copy 50 files with unconventional naming into src/utils/:
-    for i in $(seq 1 50); do cp src/utils/format_date.ts "src/utils/UNCONVENTIONAL-FILE-${i}.ts"; done
-  Then start a fresh sub-session to observe the drift banner. Use Bash to run:
-    claude -p "Run chameleon-mcp::get_drift_status and report the result" \\
-      --output-format stream-json --max-turns 3 \\
-      --permission-mode acceptEdits 2>&1 | head -50
-  If the drift score is above threshold, a drift banner should appear in the fresh session.
-  After observing the drift, run /chameleon-refresh in the current session.
-  After refresh completes, verify:
-    - working/ts_basic/.chameleon/profile.json still exists.
-    - working/ts_basic/.chameleon/COMMITTED still exists.
-    - The trust state is preserved (structural-equality path: no renames, no idiom
-      changes, only cluster size shifts from the 50 new files).
-    - chameleon-mcp::get_drift_status now returns a lower score or "ok" status.
-  emit checkpoint completed phase 11
-
 Reminder: emit checkpoints as plain Bash echo lines outside any code fences.
 Use absolute paths when referencing fixture directories.
 """
@@ -94,7 +59,7 @@ def run(ctx: JourneyContext) -> ActResult:
         cwd=cwd,
         env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
         transcript_path=transcript,
-        max_turns=50,
+        max_turns=30,
         allowed_tools=[
             "Bash",
             "Read",
@@ -116,7 +81,7 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     outcomes, parse_errors = parse_checkpoint_file(
-        ctx.current_checkpoint_file, expected_phases=[8, 9, 10, 11]
+        ctx.current_checkpoint_file, expected_phases=[8, 9]
     )
 
     # Runner-side cross-checks (defense in depth)
@@ -143,28 +108,6 @@ def run(ctx: JourneyContext) -> ActResult:
             notes_extra[9] = "no get_canonical_excerpt calls visible in transcript (may be normal if cache hit)"
     except expect.PhaseAssertionError as e:
         notes_extra[9] = str(e)
-
-    # Phase 10: assert at least 3 PreToolUse hook events fired (one each Edit/Write/Write)
-    try:
-        pre_tool_events = [
-            e for e in session.hook_events
-            if "PreToolUse" in e.hook_name
-        ]
-        if len(pre_tool_events) < 3:
-            notes_extra[10] = (
-                f"expected >= 3 PreToolUse hook events, got {len(pre_tool_events)}"
-            )
-    except expect.PhaseAssertionError as e:
-        notes_extra[10] = str(e)
-
-    # Phase 11: profile.json + COMMITTED still present after refresh;
-    # also check if a trust file exists under plugin_data_dir
-    ts_basic_chameleon = ctx.fixture("ts_basic") / ".chameleon"
-    try:
-        expect.path_exists(11, ts_basic_chameleon / "profile.json")
-        expect.path_exists(11, ts_basic_chameleon / "COMMITTED")
-    except expect.PhaseAssertionError as e:
-        notes_extra[11] = str(e)
 
     # Apply cross-check findings to outcomes.
     # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.

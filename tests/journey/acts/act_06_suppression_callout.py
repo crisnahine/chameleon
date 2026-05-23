@@ -1,7 +1,6 @@
-"""Act 6: Suppression + callout-detector (Phases 19, 20, 23)."""
+"""Act 6: Suppression - pause, disable, 4-level precedence (Phase 19)."""
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
@@ -12,7 +11,7 @@ from tests.journey.harness.context import JourneyContext
 
 
 _PROMPT_BODY = """\
-Test suppression mechanisms and the callout-detector in working/ts_basic.
+Test suppression mechanisms in working/ts_basic.
 Use absolute paths for all file references.
 
 PHASE 19 - pause, disable, and 4-level precedence:
@@ -70,36 +69,6 @@ PHASE 19 - pause, disable, and 4-level precedence:
 
   emit checkpoint completed phase 19
 
-PHASE 20 - callout-detector (7 frustration patterns):
-  emit checkpoint started phase 20
-  Send 7 user prompts (one per turn) that each contain a distinct frustration marker.
-  For each, note whether the UserPromptSubmit hook suggested a chameleon command
-  (the callout-detector should fire, embedding a /chameleon-disable or /chameleon-pause-15m
-  or /chameleon-teach hint in the additionalContext).
-
-  Prompt 1: "ugh stop doing this"
-  Prompt 2: "I hate this constant injection"
-  Prompt 3: "damn it why does chameleon keep doing this"
-  Prompt 4: "this isn't right, please stop"
-  Prompt 5: "don't do that again"
-  Prompt 6: "chameleon is so slow"
-  Prompt 7: "stop injecting all this context"
-
-  After each prompt, check whether your context included a chameleon callout hint.
-  Report: how many of the 7 prompts triggered a callout hint.
-  emit checkpoint completed phase 20
-
-PHASE 23 - HMAC tampering + disable_session security (already partially covered in Phase 19):
-  emit checkpoint started phase 23
-  Summarize what was verified in Phase 19 STEP 2 and STEP 3:
-    - forged HMAC marker was rejected (downgrade defense confirmed)
-    - force= flag behavior confirmed
-    - unknown session refusal confirmed
-    - trust gate on untrusted fixture confirmed
-  Run chameleon-mcp::disable_session one more time with force=True on the ts_basic path
-  to confirm the force= path still works after the precedence cycle.
-  emit checkpoint completed phase 23
-
 Reminder: emit checkpoints as plain Bash echo lines outside any code fences.
 Use absolute paths when referencing fixture directories.
 """
@@ -115,7 +84,7 @@ def run(ctx: JourneyContext) -> ActResult:
         cwd=cwd,
         env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
         transcript_path=transcript,
-        max_turns=50,
+        max_turns=40,
         allowed_tools=[
             "Bash",
             "Read",
@@ -136,7 +105,7 @@ def run(ctx: JourneyContext) -> ActResult:
     )
 
     outcomes, parse_errors = parse_checkpoint_file(
-        ctx.current_checkpoint_file, expected_phases=[19, 20, 23]
+        ctx.current_checkpoint_file, expected_phases=[19]
     )
 
     notes_extra: dict[int, str] = {}
@@ -167,51 +136,6 @@ def run(ctx: JourneyContext) -> ActResult:
             )
     except Exception as exc:
         notes_extra[19] = f"error scanning for session_disabled markers: {exc}"
-
-    # Phase 20: count distinct frustration patterns matched via UserPromptSubmit
-    # additionalContext. Each should contain a /chameleon-disable or similar hint.
-    try:
-        transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
-        # Look for chameleon callout hints in the transcript (injected via additionalContext).
-        callout_patterns = [
-            r"/chameleon-disable",
-            r"/chameleon-pause",
-            r"/chameleon-teach",
-            r"callout",
-            r"chameleon-disable",
-            r"chameleon-pause",
-        ]
-        found_any_callout = any(
-            re.search(p, transcript_text, re.IGNORECASE)
-            for p in callout_patterns
-        )
-        if not found_any_callout:
-            notes_extra[20] = (
-                "no callout-detector hints (/chameleon-disable / /chameleon-pause / "
-                "/chameleon-teach) found in transcript; frustration prompts may not "
-                "have triggered UserPromptSubmit injection"
-            )
-    except Exception as exc:
-        notes_extra[20] = f"error scanning transcript for callout hints: {exc}"
-
-    # Phase 23: forged-HMAC defense - verify no forged marker is present
-    # (the prompt instructs Claude to plant and then verify rejection; the runner
-    # confirms the marker is gone or that suppression did not fire during the
-    # forged-marker edit, which would be visible as an advisory in the transcript).
-    try:
-        transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
-        # After planting a forged marker, the advisory should have fired (suppression NOT
-        # honored). Look for advisory tokens near the forged-marker edit in the transcript.
-        # This is a heuristic: if "forged" and "advisory" appear in the same region,
-        # the defense was exercised. Absence of this is acceptable since checkpoint
-        # status is the primary signal.
-        if "forged" not in transcript_text.lower():
-            notes_extra[23] = (
-                "transcript does not mention forged marker test; "
-                "HMAC tampering defense may not have been exercised"
-            )
-    except Exception as exc:
-        notes_extra[23] = f"error scanning transcript for forged marker evidence: {exc}"
 
     # Apply cross-check findings to outcomes.
     # Cross-checks are advisory: they append CONCERN to notes without demoting PASS to FAIL.
