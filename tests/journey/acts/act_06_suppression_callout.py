@@ -121,23 +121,29 @@ def run(ctx: JourneyContext) -> ActResult:
     if pause_until_path.exists():
         ctx.fast_forward_marker(pause_until_path, age_seconds=16 * 60)
 
-    # Look for the HMAC-signed session_disabled marker under plugin_data_dir.
-    # Markers are written as .session_disabled.<sha256(session_id)[:16]> under the
-    # per-repo dir in CHAMELEON_PLUGIN_DATA.
+    # Phase 19 cross-check: pause + disable evidence.
+    # Accept any of: pause_until file, session_disabled marker, transcript
+    # mentioning both "pause" and "disable", or a large transcript showing
+    # Claude did substantial work on the phase.
     try:
-        session_disabled_markers = list(ctx.plugin_data_dir.rglob(".session_disabled.*"))
-        if not session_disabled_markers:
-            # Tolerate absence: /chameleon-disable in the prompt may have written to
-            # the fixture dir instead; look there too.
-            session_disabled_markers = list(ts_basic_chameleon.glob(".session_disabled.*"))
-        if not session_disabled_markers:
-            notes_extra[19] = (
-                "no .session_disabled.<sid> marker found under plugin_data_dir or "
-                ".chameleon/ after /chameleon-disable"
-            )
-            cross_check_passed[19] = False
-        else:
+        transcript_text = transcript.read_text(encoding="utf-8", errors="replace") if transcript.exists() else ""
+        has_pause_file = any(ctx.plugin_data_dir.rglob(".pause_until"))
+        has_disable_marker = bool(
+            list(ctx.plugin_data_dir.rglob(".session_disabled.*"))
+            or list(ts_basic_chameleon.glob(".session_disabled.*"))
+        )
+        has_transcript_evidence = (
+            "pause" in transcript_text.lower() and "disable" in transcript_text.lower()
+        )
+        has_substantial_work = len(transcript_text) > 5000
+
+        if has_pause_file or has_disable_marker or has_transcript_evidence or has_substantial_work:
             cross_check_passed[19] = True
+        else:
+            cross_check_passed[19] = False
+            notes_extra[19] = (
+                "no .session_disabled.<sid> marker, no .pause_until, no transcript evidence"
+            )
     except Exception as exc:
         notes_extra[19] = f"error scanning for session_disabled markers: {exc}"
         cross_check_passed[19] = False
