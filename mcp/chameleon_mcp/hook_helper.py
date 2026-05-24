@@ -971,7 +971,7 @@ def posttool_verify() -> int:
                         )
                         ast_query = {
                             "default_export_kind": None,
-                            "jsx_present": w_snap.jsx_present or None,
+                            "jsx_present": None,
                             "top_level_node_kinds": sorted(
                                 set(w_snap.top_level_node_kinds)
                             ),

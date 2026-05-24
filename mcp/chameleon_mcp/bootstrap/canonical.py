@@ -192,19 +192,49 @@ def select_canonicals(
             no_eligible.append(cluster)
             continue
 
-        # Compute recency weight per candidate up front so the sort is
-        # stable and inspectable. Use a negative sort key on weight so
-        # higher weight sorts first.
+        # Compute structural typicality: for each candidate, extract regex
+        # dimensions and count how many siblings share the same normalized
+        # kind signature. The candidate with the most matches represents
+        # the dominant pattern. This avoids base classes (unique structure)
+        # and outliers (unusual combinations).
+        from collections import Counter
+
+        from chameleon_mcp.lint_engine import (
+            _normalize_kind,
+            detect_language,
+            extract_dimensions,
+        )
+
+        signatures: dict[int, tuple[str, ...]] = {}
+        for i, pf in enumerate(eligible):
+            try:
+                content = pf.path.read_bytes()[:50_000].decode("utf-8", errors="replace")
+                lang = detect_language(str(pf.path))
+                snap = extract_dimensions(content, language=lang, file_path=str(pf.path))
+                jsx_tag = ("jsx",) if snap.jsx_present else ()
+                sig = tuple(sorted(set(_normalize_kind(k) for k in snap.top_level_node_kinds))) + jsx_tag
+            except Exception:
+                sig = ()
+            signatures[i] = sig
+
+        sig_counts = Counter(signatures.values())
+        # Typicality = how common this file's signature is (higher = more typical)
+        typicality = {i: sig_counts[sig] for i, sig in signatures.items()}
+
         scored = [
-            (pf, _file_recency_weight(pf.path, now=now))
-            for pf in eligible
+            (pf, _file_recency_weight(pf.path, now=now), typicality.get(i, 0))
+            for i, pf in enumerate(eligible)
         ]
-        scored.sort(key=lambda item: (-item[1], len(item[0].path.parts), str(item[0].path)))
+        scored.sort(key=lambda item: (
+            -item[1],
+            -item[2],
+            str(item[0].path),
+        ))
 
         # Try each candidate in order; pick the first that passes all scanners.
         # Track failing candidates for diagnostic reporting.
         chosen: CanonicalSelection | None = None
-        for candidate, weight in scored:
+        for candidate, weight, _typ in scored:
             try:
                 content = candidate.path.read_text(errors="replace")
             except OSError:

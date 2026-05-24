@@ -1745,7 +1745,7 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
                 w_snap = _extract_dimensions(w_raw, language=w_lang)
                 ast_query = {
                     "default_export_kind": None,
-                    "jsx_present": w_snap.jsx_present or None,
+                    "jsx_present": None,
                     "top_level_node_kinds": sorted(set(w_snap.top_level_node_kinds)),
                     "named_export_count_bucket": None,
                     "content_signal": w_snap.content_signal,
