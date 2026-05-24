@@ -275,20 +275,27 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[24] = f"transcript scan error for phase 24: {exc}"
         cross_check_passed[24] = False
 
-    # Phase 25: verify symlink target archetype did NOT appear in advisory
-    # (i.e., O_NOFOLLOW worked and chameleon fell back to degraded or no advisory)
+    # Phase 25: verify symlink content did NOT leak into hook advisory output.
+    # Check only PreToolUse hook events - 'passwd' in the transcript prose is expected
+    # because the prompt itself instructs Claude to plant a symlink to /etc/passwd.
     try:
-        transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
-        # If O_NOFOLLOW failed, the advisory might reference /etc/passwd content or
-        # a "passwd" archetype. Look for suspicious references.
-        if "passwd" in transcript_text.lower() and "advisory" in transcript_text.lower():
+        symlink_leaked = False
+        for he in session.hook_events:
+            if "PreToolUse" in he.hook_name and "passwd" in he.stdout.lower():
+                symlink_leaked = True
+                break
+
+        if symlink_leaked:
+            cross_check_passed[25] = False
             notes_extra[25] = (
-                "transcript mentions 'passwd' near 'advisory'; symlink may have been "
-                "followed (O_NOFOLLOW may not have fired correctly)"
+                "REAL CONCERN: symlink content (passwd) leaked into PreToolUse advisory"
             )
+        else:
+            # No leak in advisory. Symlink was refused or advisory was empty (both OK).
+            cross_check_passed[25] = True
     except Exception as exc:
-        notes_extra[25] = f"transcript scan error for phase 25: {exc}"
-    cross_check_passed[25] = 25 not in notes_extra
+        notes_extra[25] = f"hook event scan error for phase 25: {exc}"
+        cross_check_passed[25] = False
 
     # Phase 26: verify 5MB cap rejection occurred
     # Heuristic: look for oversized/rejected/cap mentions in transcript near 5MB context

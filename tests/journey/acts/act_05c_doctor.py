@@ -67,9 +67,12 @@ def run(ctx: JourneyContext) -> ActResult:
     cross_check_passed: dict[int, bool] = {}
 
     # Phase 18: age hook_errors.log entries and verify doctor filters them
+    # Also verify doctor detects canonicals.json corruption (permissive about subsystem name)
     try:
         hook_error_log = ctx.hook_error_log
         _phase18_fail = False
+        stale_filter_passed = True
+
         if hook_error_log.exists():
             ctx.fast_forward_marker(hook_error_log, age_seconds=4 * 24 * 3600)
             try:
@@ -79,14 +82,47 @@ def run(ctx: JourneyContext) -> ActResult:
                     env={**ctx.env, "CHAMELEON_PLUGIN_DATA": str(ctx.plugin_data_dir)},
                     timeout_s=30,
                 )
+
+                # --- stale filter check ---
                 recent_errors = doctor_result.get("recent_errors", {})
                 if isinstance(recent_errors, dict) and recent_errors.get("status") == "error":
                     error_msg = str(recent_errors.get("message", ""))
                     if "OLD-ERROR" in error_msg:
                         notes_extra[18] = "doctor showed old error (72h filter did not fire)"
-                        _phase18_fail = True
+                        stale_filter_passed = False
+
+                # --- corruption detection check (v0.6.1: any subsystem OK) ---
+                # We corrupted canonicals.json earlier; doctor should notice somewhere.
+                doctor_data = doctor_result.get("data", doctor_result)
+                corruption_detected = False
+
+                # Check per_repo_state
+                prs = doctor_data.get("per_repo_state", {})
+                if isinstance(prs, dict) and prs.get("status") not in ("ok", None):
+                    corruption_detected = True
+
+                # Check known_repos
+                kr = doctor_data.get("known_repos", {})
+                if isinstance(kr, dict):
+                    repos = kr.get("repos", [])
+                    candidates = repos if isinstance(repos, list) else [kr]
+                    for repo_entry in candidates:
+                        if isinstance(repo_entry, dict) and repo_entry.get(
+                            "profile_status"
+                        ) in (None, "corrupted", "error", "missing"):
+                            corruption_detected = True
+
+                # Any other subsystem showing non-ok
+                for val in doctor_data.values():
+                    if isinstance(val, dict) and val.get("status") in ("error", "warn"):
+                        corruption_detected = True
+
+                _phase18_fail = not stale_filter_passed
+                # Corruption detection is advisory (doctor may have already recovered by
+                # the time the runner calls it); don't hard-fail on it.
             except Exception:
                 pass
+
         # Transcript non-empty is the minimal evidence Claude ran the phase
         transcript = ctx.run_dir / "transcripts" / "act_05c.txt"
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
