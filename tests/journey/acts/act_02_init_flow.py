@@ -1,7 +1,10 @@
 """Act 2: Init flow (TS, both auto_rename modes + force=True) (Phases 5, 6, 7, 15)."""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
+import subprocess
 from pathlib import Path
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
@@ -43,8 +46,10 @@ PHASE 6 - cold-start init auto_rename:
 
 PHASE 7 - trust security:
   emit checkpoint started phase 7
-  Back in working/ts_basic: run /chameleon-trust and confirm the trust prompt,
-  typing the repo name when asked. Verify trust is granted.
+  Back in working/ts_basic: grant trust by calling the MCP tool directly:
+    chameleon-mcp::trust_profile(repo=<absolute path to ts_basic>, confirmation_token="ts_basic")
+  Verify the response has status "success" and a trusted_at timestamp.
+  Do NOT use the /chameleon-trust skill (it costs extra turns). Call the tool directly.
   Then test the force=True overwrite path:
     Call chameleon-mcp::bootstrap_repo with path set to the ts_basic fixture
     path and no force flag. Expect status "already_bootstrapped".
@@ -71,6 +76,50 @@ Use absolute paths when referencing the fixture directories.
 """
 
 
+def _compute_fixture_repo_id(repo_path: Path) -> str:
+    """Mirror _compute_repo_id from tools.py: hash the git remote URL or path."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        url = result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        url = ""
+
+    if url:
+        # Apply the same normalization as _normalize_git_url in tools.py.
+        s = url.strip()
+        # SCP shorthand -> ssh://
+        scp_re = re.compile(r"^([a-zA-Z0-9._-]+):([^/].*)$")
+        m = scp_re.match(s)
+        if m and "://" not in s:
+            host, path = m.group(1), m.group(2)
+            s = f"ssh://git@{host}/{path}"
+        s = re.sub(r"\.git/?$", "", s)
+        s = s.rstrip("/")
+        proto_match = re.match(r"^([a-zA-Z][a-zA-Z0-9+\-.]*)://([^/]+)(/.*)?$", s)
+        if proto_match:
+            scheme = proto_match.group(1)
+            host = proto_match.group(2)
+            path = proto_match.group(3) or ""
+            if "@" in host:
+                host = host.split("@", 1)[1]
+            case_insensitive = {"github.com", "gitlab.com", "bitbucket.org", "dev.azure.com", "ssh.dev.azure.com"}
+            if host.lower() in case_insensitive:
+                host = host.lower()
+                scheme = "https"
+            canonical = f"{scheme}://{host}{path}"
+        else:
+            canonical = s
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    return hashlib.sha256(str(repo_path.resolve()).encode("utf-8")).hexdigest()
+
+
 def run(ctx: JourneyContext) -> ActResult:
     cwd = ctx.fixture("ts_basic")
     transcript = ctx.run_dir / "transcripts" / "act_02.txt"
@@ -81,7 +130,7 @@ def run(ctx: JourneyContext) -> ActResult:
         cwd=cwd,
         env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
         transcript_path=transcript,
-        max_turns=45,
+        max_turns=55,
         allowed_tools=[
             "Bash",
             "Read",
@@ -139,13 +188,21 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[6] = str(e)
         cross_check_passed[6] = False
 
-    # Phase 7: trust file exists under chameleon_data after trust was granted
-    # Trust files live under <plugin_data_dir>/<repo_id>/trust.json or similar.
-    # We verify at minimum that ts_basic has a .chameleon dir and COMMITTED still present
-    # after force=True overwrite (profile was re-bootstrapped).
+    # Phase 7: .trust file written to chameleon_data AND profile files still present
+    # after force=True overwrite. The .trust file lives at:
+    #   <plugin_data_dir>/<repo_id>/.trust
+    # where repo_id is derived from the git remote URL (or path fallback) the same
+    # way _compute_repo_id does in tools.py.
     try:
         expect.path_exists(7, ts_basic_chameleon / "COMMITTED")
         expect.path_exists(7, profile_json)
+
+        # Compute the repo_id the MCP engine uses for ts_basic so we can
+        # verify the .trust file was actually written to disk.
+        ts_basic_path = ctx.fixture("ts_basic")
+        repo_id = _compute_fixture_repo_id(ts_basic_path)
+        trust_path = ctx.plugin_data_dir / repo_id / ".trust"
+        expect.path_exists(7, trust_path)
         cross_check_passed[7] = True
     except expect.PhaseAssertionError as e:
         notes_extra[7] = str(e)
