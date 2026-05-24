@@ -1,15 +1,12 @@
 """Act 4b: canonical_ref lifecycle + trust.auto_preserve_when (Phases 13, 14)."""
 from __future__ import annotations
 
-from pathlib import Path
-
 from tests.journey.acts.act_base import ActResult, build_act_prompt
 from tests.journey.harness import expect
 from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
 from tests.journey.harness.git_shim import setup_git_shim
-
 
 _PROMPT_BODY = """\
 Test canonical_ref and trust.auto_preserve_when against working/ts_basic

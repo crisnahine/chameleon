@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
-from tests.journey.harness import expect
 from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
-
 
 _PROMPT_BODY = """\
 Daemon lifecycle, metrics observability, log rotation, and hook fail-open

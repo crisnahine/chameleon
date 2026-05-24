@@ -21,10 +21,9 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from tests.journey.harness import preflight
 from tests.journey.harness.context import JourneyContext, build_context
 from tests.journey.harness.fixtures import setup_fixture
-from tests.journey.harness import preflight
-
 
 _ACTS = [
     ("00_preflight", "Pre-flight wipe + isolation setup", 0.30, [0]),

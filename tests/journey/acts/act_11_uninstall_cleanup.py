@@ -1,7 +1,6 @@
 """Act 11: Uninstall + cleanup + isolation verify (Phase 37)."""
 from __future__ import annotations
 
-import re
 import subprocess
 from pathlib import Path
 
@@ -10,7 +9,6 @@ from tests.journey.harness import expect
 from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
-
 
 _PROMPT_BODY = """\
 Uninstall chameleon from the EPHEMERAL per-run plugin data directory and verify

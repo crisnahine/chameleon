@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from tests.journey.harness import expect
 
 

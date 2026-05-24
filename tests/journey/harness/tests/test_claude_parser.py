@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from tests.journey.harness.claude import parse_stream_json
 
-
 SAMPLE_STREAM = """
 {"type": "system", "subtype": "init", "session_id": "abc"}
 {"type": "system", "subtype": "hook_response", "hook_name": "PreToolUse:Edit", "stdout": "{\\"hookSpecificOutput\\":{\\"additionalContext\\":\\"<chameleon-context>archetype=util</chameleon-context>\\"}}"}

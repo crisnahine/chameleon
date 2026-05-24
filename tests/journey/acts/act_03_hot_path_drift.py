@@ -1,14 +1,11 @@
 """Act 3: Hot path advisory (Edit + Write) (Phases 8, 9)."""
 from __future__ import annotations
 
-from pathlib import Path
-
 from tests.journey.acts.act_base import ActResult, build_act_prompt
 from tests.journey.harness import expect
 from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
-
 
 _PROMPT_BODY = """\
 In trusted working/ts_basic, perform three operations using THREE DIFFERENT tools

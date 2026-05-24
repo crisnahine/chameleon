@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
 
 from tests.journey.harness.checkpoints import PhaseOutcome
 

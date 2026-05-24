@@ -9,7 +9,6 @@ from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
 
-
 _PROMPT_BODY = """\
 Test log rotation in working/ts_basic (profile bootstrapped and trusted from earlier acts).
 Use absolute paths everywhere.

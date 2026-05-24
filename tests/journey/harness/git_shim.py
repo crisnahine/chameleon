@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import stat
-import tempfile
 from pathlib import Path
 
 
@@ -17,7 +16,7 @@ class ShimHandle:
         self.shim_dir = shim_dir
         self.original_path = original_path
 
-    def __enter__(self) -> "ShimHandle":
+    def __enter__(self) -> ShimHandle:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:

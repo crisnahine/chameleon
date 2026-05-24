@@ -3,10 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from tests.journey.harness.checkpoints import (
-    PhaseOutcome,
     parse_checkpoint_file,
 )
 

@@ -3613,7 +3613,7 @@ def teach_profile(repo: str, feedback: str) -> dict:
                 slug = _new_slug()
         # Read language from profile.json so each idiom is language-scoped (v0.5.2 contract)
         try:
-            from chameleon_mcp.safe_open import UnsafeFileError, safe_read_profile_artifact
+            from chameleon_mcp.safe_open import safe_read_profile_artifact
 
             profile_data = json.loads(
                 safe_read_profile_artifact(repo_path / ".chameleon" / "profile.json")
@@ -4979,7 +4979,7 @@ def teach_profile_structured(
 
     # Language scoping per v0.5.2: inject Language: line after ### slug heading.
     try:
-        from chameleon_mcp.safe_open import UnsafeFileError, safe_read_profile_artifact
+        from chameleon_mcp.safe_open import safe_read_profile_artifact
 
         profile_data = json.loads(
             safe_read_profile_artifact(repo_path / ".chameleon" / "profile.json")

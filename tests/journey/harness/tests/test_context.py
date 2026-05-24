@@ -1,12 +1,9 @@
 """Unit tests for JourneyContext."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-import pytest
-
-from tests.journey.harness.context import JourneyContext, build_context
+from tests.journey.harness.context import build_context
 
 
 def test_build_context_creates_run_dir(tmp_path: Path) -> None:

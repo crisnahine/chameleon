@@ -1,14 +1,11 @@
 """Act 5c: Doctor stale errors filter (Phase 18)."""
 from __future__ import annotations
 
-from pathlib import Path
-
 from tests.journey.acts.act_base import ActResult, build_act_prompt
 from tests.journey.harness import expect, mcp
 from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
-
 
 _PROMPT_BODY = """\
 Run doctor checks in working/ts_basic (profile bootstrapped and trusted from earlier acts).
@@ -93,30 +90,6 @@ def run(ctx: JourneyContext) -> ActResult:
 
                 # --- corruption detection check (v0.6.1: any subsystem OK) ---
                 # We corrupted canonicals.json earlier; doctor should notice somewhere.
-                doctor_data = doctor_result.get("data", doctor_result)
-                corruption_detected = False
-
-                # Check per_repo_state
-                prs = doctor_data.get("per_repo_state", {})
-                if isinstance(prs, dict) and prs.get("status") not in ("ok", None):
-                    corruption_detected = True
-
-                # Check known_repos
-                kr = doctor_data.get("known_repos", {})
-                if isinstance(kr, dict):
-                    repos = kr.get("repos", [])
-                    candidates = repos if isinstance(repos, list) else [kr]
-                    for repo_entry in candidates:
-                        if isinstance(repo_entry, dict) and repo_entry.get(
-                            "profile_status"
-                        ) in (None, "corrupted", "error", "missing"):
-                            corruption_detected = True
-
-                # Any other subsystem showing non-ok
-                for val in doctor_data.values():
-                    if isinstance(val, dict) and val.get("status") in ("error", "warn"):
-                        corruption_detected = True
-
                 _phase18_fail = not stale_filter_passed
                 # Corruption detection is advisory (doctor may have already recovered by
                 # the time the runner calls it); don't hard-fail on it.

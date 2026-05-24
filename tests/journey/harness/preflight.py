@@ -10,11 +10,9 @@ Checked:
 from __future__ import annotations
 
 import os
-import re
 import shutil
 from pathlib import Path
 
-from tests.journey.harness.bash import run_bash
 from tests.journey.harness.fixtures import check_git_version
 
 

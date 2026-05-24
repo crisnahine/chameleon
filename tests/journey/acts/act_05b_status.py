@@ -1,13 +1,10 @@
 """Act 5b: Status v0.6.0 config surface (Phase 17)."""
 from __future__ import annotations
 
-from pathlib import Path
-
 from tests.journey.acts.act_base import ActResult, build_act_prompt
 from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
-
 
 _PROMPT_BODY = """\
 Check status output in working/ts_basic (profile bootstrapped and trusted from earlier acts).

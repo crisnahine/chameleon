@@ -3,11 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from tests.journey.harness.bash import run_bash
 from tests.journey.harness.fixtures import (
-    GitVersionError,
     check_git_version,
     setup_fixture,
 )

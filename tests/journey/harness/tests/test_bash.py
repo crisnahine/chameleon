@@ -4,8 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from tests.journey.harness.bash import BashResult, run_bash
+from tests.journey.harness.bash import run_bash
 
 
 def test_basic_command_capture(tmp_path: Path) -> None:
