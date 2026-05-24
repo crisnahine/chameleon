@@ -77,9 +77,10 @@ jobs:
         run: .venv/bin/python -c "from chameleon_mcp.server import mcp; print('mcp ok')"
 
       - name: Run journey harness library tests
+        working-directory: mcp
         env:
-          PYTHONPATH: '.'
-        run: .venv/bin/python -m pytest tests/journey/harness/tests/ -v
+          PYTHONPATH: '.:..'
+        run: .venv/bin/python -m pytest ../tests/journey/harness/tests/ -v
 
   lint:
     name: lint (ruff)

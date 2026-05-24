@@ -148,9 +148,10 @@ jobs:
         run: npm ci
 
       - name: Run journey harness library tests
+        working-directory: mcp
         env:
-          PYTHONPATH: '.'
-        run: .venv/bin/python -m pytest tests/journey/harness/tests/ -v
+          PYTHONPATH: '.:..'
+        run: .venv/bin/python -m pytest ../tests/journey/harness/tests/ -v
 
   build-tarball:
     name: build-tarball
