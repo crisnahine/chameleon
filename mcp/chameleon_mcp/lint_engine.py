@@ -362,31 +362,65 @@ _RUBY_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^require_relative\b", re.MULTILINE), "CallNode"),
 )
 
+_RUBY_SUPERCLASS_RE = re.compile(r"^class\s+\w[\w:]*\s*<\s*([\w:]+)", re.MULTILINE)
+_RUBY_INCLUDE_RE = re.compile(r"^\s+include\s+([\w:]+)", re.MULTILINE)
+_RUBY_DSL_CALLS = frozenset({
+    "validates", "validate", "belongs_to", "has_many", "has_one",
+    "has_and_belongs_to_many", "before_action", "after_action",
+    "around_action", "before_validation", "after_commit", "scope",
+    "enum", "delegate", "attr_accessor", "attr_reader",
+})
+_RUBY_DSL_RE = re.compile(
+    r"^\s+(" + "|".join(_RUBY_DSL_CALLS) + r")\b", re.MULTILINE
+)
+
 
 def _extract_ruby(content: str) -> DimensionSnapshot:
     """Best-effort Ruby dimension extraction.
 
-    Phase 4.1 covers the structural cases (class / module / def at column 0).
-    Ruby has no JSX and no `export default` analogue: prism_dump.rb sets
-    default_export_kind to the *kind* of the single top-level class/module
-    when exactly one is present.
+    Detects top-level class/module/def at column 0, plus enriched
+    dimensions for archetype differentiation:
+    - Superclass (ClassNode:ApplicationRecord vs ClassNode:ApplicationController)
+    - Include calls (IncludeCall:Sidekiq::Job)
+    - DSL calls (DslCall:validates, DslCall:belongs_to)
     """
     stripped = _strip_ruby_strings_and_comments(content)
 
     top_level: list[str] = []
     top_level_class_or_module: list[str] = []
     named_export_count = 0
+
+    superclass: str | None = None
+    sc_match = _RUBY_SUPERCLASS_RE.search(stripped)
+    if sc_match:
+        superclass = sc_match.group(1)
+
     for line in stripped.splitlines():
         if not line or line.startswith(" ") or line.startswith("\t"):
             continue
         for pat, kind in _RUBY_TOP_LEVEL_RULES:
             if pat.match(line):
-                top_level.append(kind)
-                if kind in ("ClassNode", "ModuleNode"):
-                    top_level_class_or_module.append(kind)
+                if kind == "ClassNode" and superclass:
+                    enriched = f"ClassNode:{superclass}"
+                    top_level.append(enriched)
+                    top_level_class_or_module.append(enriched)
+                else:
+                    top_level.append(kind)
+                    if kind in ("ClassNode", "ModuleNode"):
+                        top_level_class_or_module.append(kind)
                 if kind in ("ClassNode", "ModuleNode", "DefNode"):
                     named_export_count += 1
                 break
+
+    for m in _RUBY_INCLUDE_RE.finditer(stripped):
+        top_level.append(f"IncludeCall:{m.group(1)}")
+
+    seen_dsl: set[str] = set()
+    for m in _RUBY_DSL_RE.finditer(stripped):
+        dsl_name = m.group(1)
+        if dsl_name not in seen_dsl:
+            seen_dsl.add(dsl_name)
+            top_level.append(f"DslCall:{dsl_name}")
 
     default_export_kind = (
         top_level_class_or_module[0]
@@ -394,9 +428,6 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
         else None
     )
 
-    # Ruby files have no JSX. content_signal is best-effort via the shared
-    # function (catches shebangs); ruby-specific signals like `frozen_string_literal`
-    # aren't part of the v0.3 cluster signature alphabet.
     head = content[:200]
     cs = content_signal_match_for(head)
     content_signal = cs if cs != "none" else None
