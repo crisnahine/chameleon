@@ -122,27 +122,42 @@ def run(ctx: JourneyContext) -> ActResult:
         ctx.fast_forward_marker(pause_until_path, age_seconds=16 * 60)
 
     # Phase 19 cross-check: pause + disable evidence.
-    # Accept any of: pause_until file, session_disabled marker, transcript
-    # mentioning both "pause" and "disable", or a large transcript showing
-    # Claude did substantial work on the phase.
+    # Strong check: prefer marker files (direct evidence the tools ran). Fall back
+    # to transcript evidence that Claude invoked BOTH commands. Never pass on
+    # "transcript is large" — that tests nothing about suppression.
     try:
         transcript_text = transcript.read_text(encoding="utf-8", errors="replace") if transcript.exists() else ""
+
+        # Tier 1: marker files written by the actual suppression tools.
         has_pause_file = any(ctx.plugin_data_dir.rglob(".pause_until"))
         has_disable_marker = bool(
             list(ctx.plugin_data_dir.rglob(".session_disabled.*"))
             or list(ts_basic_chameleon.glob(".session_disabled.*"))
         )
-        has_transcript_evidence = (
-            "pause" in transcript_text.lower() and "disable" in transcript_text.lower()
-        )
-        has_substantial_work = len(transcript_text) > 5000
 
-        if has_pause_file or has_disable_marker or has_transcript_evidence or has_substantial_work:
+        # Tier 2: transcript shows Claude attempted both commands (tool-call names
+        # or slash-command names appear together — weaker, but acceptable fallback).
+        # We require BOTH to appear to avoid a one-sided transcript passing.
+        t_lower = transcript_text.lower()
+        attempted_pause = (
+            "chameleon-pause" in t_lower
+            or "pause_session" in t_lower
+            or "/chameleon-pause" in t_lower
+        )
+        attempted_disable = (
+            "chameleon-disable" in t_lower
+            or "disable_session" in t_lower
+            or "/chameleon-disable" in t_lower
+        )
+        has_both_commands_attempted = attempted_pause and attempted_disable
+
+        if has_pause_file or has_disable_marker or has_both_commands_attempted:
             cross_check_passed[19] = True
         else:
             cross_check_passed[19] = False
             notes_extra[19] = (
-                "no .session_disabled.<sid> marker, no .pause_until, no transcript evidence"
+                "no .session_disabled.<sid> marker, no .pause_until, and transcript "
+                "does not show both pause_session and disable_session were invoked"
             )
     except Exception as exc:
         notes_extra[19] = f"error scanning for session_disabled markers: {exc}"

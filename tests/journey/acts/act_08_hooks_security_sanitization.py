@@ -257,20 +257,33 @@ def run(ctx: JourneyContext) -> ActResult:
             notes_extra[22] = str(e)
     cross_check_passed[22] = 22 not in notes_extra
 
-    # Phase 24 cross-check: sanitization evidence (positive signal, not raw token counting).
-    # The prompt mentions dangerous tokens by name, so they always appear in the transcript.
-    # Instead look for positive proof that sanitization ran or was discussed.
+    # Phase 24 cross-check: sanitization evidence.
+    # Strong check: look for the actual [chameleon-sanitized: ...] marker that the
+    # sanitizer writes when it strips dangerous tokens. Check hook event stdout first
+    # (most direct), then transcript (Claude may quote it). Generic "sanitiz" keyword
+    # and "transcript is large" are NOT accepted — they test nothing about the sanitizer.
     try:
         transcript_text = transcript.read_text(encoding="utf-8", errors="replace") if transcript.exists() else ""
-        has_sanitized_marker = "[chameleon-sanitized:" in transcript_text
-        has_sanitization_discussion = "sanitiz" in transcript_text.lower()
-        has_substantial_work = len(transcript_text) > 5000
 
-        if has_sanitized_marker or has_sanitization_discussion or has_substantial_work:
+        # Tier 1: the sanitizer marker appears in a PreToolUse hook event's stdout.
+        hook_event_marker = any(
+            "[chameleon-sanitized:" in he.stdout
+            for he in session.hook_events
+            if "PreToolUse" in he.hook_name
+        )
+
+        # Tier 2: the marker appears anywhere in the transcript (Claude reporting it).
+        transcript_marker = "[chameleon-sanitized:" in transcript_text
+
+        if hook_event_marker or transcript_marker:
             cross_check_passed[24] = True
         else:
             cross_check_passed[24] = False
-            notes_extra[24] = "no sanitization evidence in transcript"
+            notes_extra[24] = (
+                "no [chameleon-sanitized: ...] marker found in PreToolUse hook events "
+                "or transcript; sanitizer may not have run or adversarial payload was "
+                "not passed through get_pattern_context"
+            )
     except Exception as exc:
         notes_extra[24] = f"transcript scan error for phase 24: {exc}"
         cross_check_passed[24] = False
@@ -297,27 +310,39 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[25] = f"hook event scan error for phase 25: {exc}"
         cross_check_passed[25] = False
 
-    # Phase 26: verify 5MB cap rejection occurred
-    # Heuristic: look for oversized/rejected/cap mentions in transcript near 5MB context
+    # Phase 26: verify 5MB cap rejection occurred.
+    # Strong check: require chameleon-specific rejection language ("too large",
+    # "exceeds", "size limit", "cap exceeded", "maximum size", or the exact byte
+    # count 5242880) near the canonicals context. Also accept evidence that the
+    # 4.99MB file was accepted (positive confirmation the boundary test ran).
+    # Generic "rejected"/"oversized" without size context, and "5MB" from the
+    # prompt text itself, are NOT accepted as sufficient evidence.
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
-        size_patterns = [
-            r"5\s*mb",
-            r"oversized",
-            r"size\s+cap",
-            r"too large",
-            r"rejected",
-            r"5120",  # 5*1024 KB
-            r"5242880",  # 5*1024*1024 bytes
+        t_lower = transcript_text.lower()
+
+        # Chameleon-specific rejection phrases (safe_open / size cap path).
+        size_cap_phrases = [
+            "too large",
+            "exceeds",
+            "size limit",
+            "cap exceeded",
+            "maximum size",
+            "5242880",  # exact byte count for 5MB
         ]
-        found_size_signal = any(
-            re.search(p, transcript_text, re.IGNORECASE)
-            for p in size_patterns
-        )
-        if not found_size_signal:
+        size_cap_evidence = any(phrase in t_lower for phrase in size_cap_phrases)
+
+        # Positive confirmation: 4.99MB accepted (the boundary test ran both sides).
+        accepted_evidence = "4.99" in transcript_text or "4mb99" in t_lower
+
+        if size_cap_evidence or accepted_evidence:
+            cross_check_passed[26] = True
+        else:
             notes_extra[26] = (
-                "no 5MB boundary rejection signal found in transcript; "
-                "the size cap test may not have been exercised"
+                "no chameleon size-cap rejection language found in transcript "
+                "('too large', 'exceeds', 'size limit', 'cap exceeded', 'maximum size', "
+                "'5242880'); and no 4.99MB-accepted confirmation either; "
+                "the 5MB boundary test may not have been exercised"
             )
     except Exception as exc:
         notes_extra[26] = f"transcript scan error for phase 26: {exc}"
