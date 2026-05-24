@@ -395,6 +395,10 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
     if sc_match:
         superclass = sc_match.group(1)
 
+    _NESTED_CLASS_RE = re.compile(
+        r"^\s{2,}class\s+(\w[\w:]*)\s*(?:<\s*([\w:\[\]]+))?", re.MULTILINE
+    )
+
     for line in stripped.splitlines():
         if not line or line.startswith(" ") or line.startswith("\t"):
             continue
@@ -410,6 +414,21 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
                 if kind in ("ClassNode", "ModuleNode", "DefNode"):
                     named_export_count += 1
                 break
+
+    # Detect classes nested inside modules (2-space indent).
+    # module Api; class FooController < ApplicationController; end; end
+    # The column-0 scan sees ModuleNode but misses the class inside.
+    has_module = any(
+        k == "ModuleNode" or k.startswith("ModuleNode:") for k in top_level
+    )
+    if has_module:
+        for m in _NESTED_CLASS_RE.finditer(stripped):
+            nested_sc = m.group(2)
+            if nested_sc:
+                top_level.append(f"ClassNode:{nested_sc}")
+            else:
+                top_level.append("ClassNode")
+            top_level_class_or_module.append("ClassNode")
 
     for m in _RUBY_INCLUDE_RE.finditer(stripped):
         top_level.append(f"IncludeCall:{m.group(1)}")
@@ -536,7 +555,22 @@ def _top_level_kinds_match(file_kinds: list[str], expected: list[str]) -> bool:
         if kind in file_set or _normalize_kind(kind) in normalized_file:
             matched += 1
 
-    return matched >= len(expected_deduped) * 0.5
+    if matched < len(expected_deduped) * 0.5:
+        return False
+
+    # DSL conflict check: archetype expects DslCall:ActiveRecord but file
+    # has DslCall:ActionController -> wrong framework. Only triggers when
+    # BOTH sides have DSL calls from different categories.
+    expected_dsl = {
+        _normalize_kind(k) for k in expected if k.startswith("DslCall:")
+    }
+    file_dsl = {
+        _normalize_kind(k) for k in file_kinds if k.startswith("DslCall:")
+    }
+    if expected_dsl and file_dsl and not (expected_dsl & file_dsl):
+        return False
+
+    return True
 
 
 def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]:
