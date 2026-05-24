@@ -478,16 +478,40 @@ def extract_dimensions(
 # -----------------------------------------------------------------------------
 
 
-def _normalize_kind(kind: str) -> str:
-    """Normalize an enriched node kind for fuzzy matching.
+_TS_CODE_KINDS = frozenset({
+    "FunctionDeclaration", "FirstStatement", "ExportAssignment",
+})
 
-    ClassNode:ApplicationRecord -> ClassNode (base kind, strips superclass)
-    DslCall:validates -> DslCall:validates (exact, DSL identity matters)
-    IncludeCall:Sidekiq::Job -> IncludeCall:Sidekiq::Job (exact)
-    ImportDeclaration -> ImportDeclaration (no enrichment)
+_DSL_CATEGORY: dict[str, str] = {}
+for _d in ("validates", "validate", "belongs_to", "has_many", "has_one",
+           "has_and_belongs_to_many", "scope", "enum",
+           "before_validation", "after_commit"):
+    _DSL_CATEGORY[_d] = "DslCall:ActiveRecord"
+for _d in ("before_action", "after_action", "around_action"):
+    _DSL_CATEGORY[_d] = "DslCall:ActionController"
+for _d in ("delegate", "attr_accessor", "attr_reader"):
+    _DSL_CATEGORY[_d] = "DslCall:Ruby"
+
+
+def _normalize_kind(kind: str) -> str:
+    """Normalize a node kind for fuzzy matching.
+
+    ClassNode:ApplicationRecord -> ClassNode (strips superclass).
+    DslCall:validates -> DslCall:ActiveRecord (DSL category, so models
+    with different ActiveRecord DSLs still match, but controllers with
+    ActionController DSLs don't).
+    IncludeCall:* -> IncludeCall (any include matches any include).
+    TS FunctionDeclaration/FirstStatement/ExportAssignment -> CodeDeclaration.
     """
+    if kind.startswith("DslCall:"):
+        dsl_name = kind.split(":", 1)[1]
+        return _DSL_CATEGORY.get(dsl_name, "DslCall")
+    if kind.startswith("IncludeCall:"):
+        return "IncludeCall"
     if kind.startswith(("ClassNode:", "ModuleNode:")):
         return kind.split(":")[0]
+    if kind in _TS_CODE_KINDS:
+        return "CodeDeclaration"
     return kind
 
 
