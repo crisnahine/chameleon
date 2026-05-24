@@ -394,29 +394,46 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 27: transcript mentions schema_version migration or refusal
+    # Phase 27: detect_repo was actually called and returned a response for the
+    # test profiles. Look for the MCP tool-call name and a response that carries
+    # either a graceful-handling envelope (error/status fields) or migration data.
+    # Generic "migration" keyword alone is not enough — the prompt uses that word
+    # too, so it will always appear.
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
-        schema_signals = [
-            r"schema_version",
-            r"unsupported_schema",
-            r"migration",
-            r"v0\.3",
-            r"v99",
-            r"clustering_algorithm",
-        ]
-        found_signal = any(
-            re.search(p, transcript_text, re.IGNORECASE)
-            for p in schema_signals
+
+        # Require evidence that detect_repo was called AND chameleon responded with
+        # a structured outcome. Look for the specific error token for v99 refusal
+        # or graceful migration wording in a response context.
+        detect_repo_called = "detect_repo" in transcript_text
+        has_refusal_response = bool(
+            re.search(r"unsupported_schema_version", transcript_text, re.IGNORECASE)
+            or re.search(r'"status".*"error"', transcript_text)
+            or re.search(r'"error".*"unsupported"', transcript_text, re.IGNORECASE)
         )
-        if not found_signal:
+        has_migration_response = bool(
+            re.search(r"already_bootstrapped|bootstrapped|migrated|handled\s+gracefully", transcript_text, re.IGNORECASE)
+            or re.search(r'"status".*"ok"', transcript_text)
+        )
+        has_v99_handled = bool(
+            re.search(r"v99|schema.*99|99.*schema", transcript_text, re.IGNORECASE)
+            and detect_repo_called
+        )
+
+        if detect_repo_called and (has_refusal_response or has_migration_response or has_v99_handled):
+            cross_check_passed[27] = True
+        else:
+            cross_check_passed[27] = False
             notes_extra[27] = (
-                "no schema migration/refusal signal found in transcript; "
-                "schema tests may not have been exercised"
+                "detect_repo call not confirmed or no structured response found; "
+                f"detect_repo_called={detect_repo_called}, "
+                f"has_refusal_response={has_refusal_response}, "
+                f"has_migration_response={has_migration_response}, "
+                f"has_v99_handled={has_v99_handled}"
             )
     except Exception as exc:
         notes_extra[27] = f"transcript scan error for phase 27: {exc}"
-    cross_check_passed[27] = 27 not in notes_extra
+        cross_check_passed[27] = False
 
     # Phase 28: orphan txn abc123 should be GONE after bootstrap.
     # cleanup_orphan_tmp_dirs scans <repo_root>/.chameleon.tmp/ (sibling of
@@ -429,53 +446,93 @@ def run(ctx: JourneyContext) -> ActResult:
         )
     cross_check_passed[28] = 28 not in notes_extra
 
-    # Phase 29: transcript shows failed.*PID envelope from one of the parallel calls
+    # Phase 29: transcript shows the specific failed+PID envelope from one of the
+    # parallel refresh calls. Require the {"status":"failed",...} envelope pattern
+    # combined with a PID reference or "in progress" message — generic "flock" or
+    # "retry" keywords can appear for other reasons.
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
-        concurrent_signals = [
-            r"in progress",
-            r"PID\s+\d+",
-            r"already.*running",
-            r"flock",
-            r"retry",
-            r"status.*failed",
-        ]
-        found_concurrent = any(
-            re.search(p, transcript_text, re.IGNORECASE)
-            for p in concurrent_signals
+
+        # The spec says one call returns a failed envelope with "in progress" or "PID".
+        # Look for the JSON status:failed pattern combined with the contention message.
+        has_failed_envelope = bool(
+            re.search(r'"status"\s*:\s*"failed"', transcript_text)
+            or re.search(r"status.*failed.*PID\s*\d+", transcript_text, re.IGNORECASE)
         )
-        if not found_concurrent:
+        has_pid_contention = bool(
+            re.search(r"in\s+progress.*PID|PID.*in\s+progress", transcript_text, re.IGNORECASE)
+            or re.search(r'"error".*PID\s*\d+', transcript_text)
+            or re.search(r"already.*running.*PID\s*\d+", transcript_text, re.IGNORECASE)
+        )
+        # Also accept "OUT1:" / "OUT2:" pattern that the test script prints —
+        # confirms the parallel invocation actually ran.
+        has_parallel_output = bool(
+            re.search(r"OUT[12]\s*:", transcript_text)
+        )
+
+        if (has_failed_envelope or has_pid_contention) and has_parallel_output:
+            cross_check_passed[29] = True
+        elif has_failed_envelope and has_pid_contention:
+            # Both contention signals without the OUT prefix is still strong evidence.
+            cross_check_passed[29] = True
+        else:
+            cross_check_passed[29] = False
             notes_extra[29] = (
-                "no flock/concurrent-refresh signal found in transcript; "
-                "concurrent refresh contention may not have been exercised"
+                "concurrent refresh contention not confirmed: need a {'status':'failed'} "
+                "envelope with PID/in-progress message plus OUT1/OUT2 parallel output; "
+                f"has_failed_envelope={has_failed_envelope}, "
+                f"has_pid_contention={has_pid_contention}, "
+                f"has_parallel_output={has_parallel_output}"
             )
     except Exception as exc:
         notes_extra[29] = f"transcript scan error for phase 29: {exc}"
-    cross_check_passed[29] = 29 not in notes_extra
+        cross_check_passed[29] = False
 
-    # Phase 30: glob expansion mentioned (4 patterns from {components,hooks} x {ts,tsx})
+    # Phase 30: glob brace expansion verified by specific output evidence.
+    # Require that:
+    #   (a) refresh_repo was called with the brace-glob profile, AND
+    #   (b) transcript shows specific expansion results (4 patterns from
+    #       {components,hooks} x {ts,tsx}) or the 512-cap enforcement.
+    # Generic "brace" / "expansion" keywords from the prompt text are not enough.
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
-        glob_signals = [
-            r"components.*\.ts",
-            r"hooks.*\.ts",
-            r"brace",
-            r"512",
-            r"expansion",
-            r"paths_glob",
-        ]
-        found_glob = any(
-            re.search(p, transcript_text, re.IGNORECASE)
-            for p in glob_signals
+
+        refresh_called = "refresh_repo" in transcript_text
+
+        # 4-pattern expansion evidence: both component and hooks arm appeared together
+        # in an expanded-patterns context (not just the prompt text repeating them).
+        has_expansion_result = bool(
+            re.search(r"components.*hooks|hooks.*components", transcript_text, re.IGNORECASE)
+            and re.search(r"\b4\s+(?:expanded\s+)?patterns?\b|4\s+(?:path|glob)", transcript_text, re.IGNORECASE)
         )
-        if not found_glob:
+
+        # 512-cap enforcement: specific cap number near "pattern" or "glob".
+        has_512_cap = bool(
+            re.search(r"512\s*(?:pattern|glob|cap|limit)", transcript_text, re.IGNORECASE)
+            or re.search(r"(?:pattern|glob|cap|limit)\s*512", transcript_text, re.IGNORECASE)
+            or re.search(r"(?:exceeds?|over|too\s+many).*512|512.*(?:exceeds?|over|too\s+many)", transcript_text, re.IGNORECASE)
+        )
+
+        # paths_glob was updated (profile was actually modified)
+        has_paths_glob_written = bool(
+            re.search(r"updated\s+paths_glob|paths_glob.*brace|brace.*paths_glob", transcript_text, re.IGNORECASE)
+        )
+
+        if refresh_called and (has_expansion_result or has_512_cap or has_paths_glob_written):
+            cross_check_passed[30] = True
+        else:
+            cross_check_passed[30] = False
             notes_extra[30] = (
-                "no glob expansion signal found in transcript; "
-                "brace expansion tests may not have been exercised"
+                "glob brace expansion not confirmed: need refresh_repo call + "
+                "specific expansion result (4-pattern count or 512-cap enforcement); "
+                f"refresh_called={refresh_called}, "
+                f"has_expansion_result={has_expansion_result}, "
+                f"has_512_cap={has_512_cap}, "
+                f"has_paths_glob_written={has_paths_glob_written}"
             )
     except Exception as exc:
         notes_extra[30] = f"transcript scan error for phase 30: {exc}"
-    cross_check_passed[30] = 30 not in notes_extra
+        cross_check_passed[30] = False
 
     # Phase 31: transcript shows 3-way merge success (no conflict markers)
     try:

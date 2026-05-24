@@ -246,30 +246,48 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 33: daemon socket was created at some point (may be gone by end of act)
-    # Primary signal comes from transcript + checkpoint. Check transcript for daemon evidence.
+    # Phase 33: daemon lifecycle verified by daemon_status response fields.
+    # The spec says daemon_status should return {alive, pid, uptime_s, socket_path}.
+    # Check that the transcript shows daemon_status was called AND the response
+    # contains the expected field names. Generic "daemon started" text from the
+    # prompt instruction itself is not sufficient.
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
-        daemon_signals = [
-            r"daemon.*start",
-            r"\.daemon\.sock",
-            r"daemon_status",
-            r"uptime_s",
-            r"idle.*timeout",
-            r"pidfile",
-        ]
-        found_daemon = any(
-            re.search(p, transcript_text, re.IGNORECASE)
-            for p in daemon_signals
+
+        daemon_status_called = "daemon_status" in transcript_text
+
+        # Look for the response fields that daemon_status should return.
+        has_alive_field = bool(re.search(r'"alive"\s*:\s*(?:true|false)', transcript_text))
+        has_pid_field = bool(re.search(r'"pid"\s*:\s*\d+', transcript_text))
+        has_uptime_field = bool(re.search(r'"uptime_s"\s*:\s*[\d.]+', transcript_text))
+        has_socket_path_field = bool(re.search(r'"socket_path"\s*:', transcript_text))
+
+        # At least alive + pid must be present (core lifecycle fields).
+        response_fields_present = has_alive_field and has_pid_field
+
+        # Also accept idle-shutdown confirmation as strong lifecycle evidence.
+        idle_shutdown_confirmed = bool(
+            re.search(r"PASS.*daemon.*exited|daemon.*exited.*idle|exited after idle", transcript_text, re.IGNORECASE)
+            or re.search(r"pidfile\s+removed|pidfile.*PASS", transcript_text, re.IGNORECASE)
         )
-        if not found_daemon:
+
+        if daemon_status_called and (response_fields_present or idle_shutdown_confirmed):
+            cross_check_passed[33] = True
+        else:
+            cross_check_passed[33] = False
             notes_extra[33] = (
-                "no daemon lifecycle signal found in transcript; "
-                "daemon start/stop/status tests may not have been exercised"
+                "daemon lifecycle not confirmed: need daemon_status call + "
+                "response with 'alive' + 'pid' fields (or idle-shutdown confirmation); "
+                f"daemon_status_called={daemon_status_called}, "
+                f"has_alive_field={has_alive_field}, "
+                f"has_pid_field={has_pid_field}, "
+                f"has_uptime_field={has_uptime_field}, "
+                f"has_socket_path_field={has_socket_path_field}, "
+                f"idle_shutdown_confirmed={idle_shutdown_confirmed}"
             )
     except Exception as exc:
         notes_extra[33] = f"transcript scan error for phase 33: {exc}"
-    cross_check_passed[33] = 33 not in notes_extra
+        cross_check_passed[33] = False
 
     # Phase 34: hook_error_log was written to during the fail-open test
     hook_error_log = ctx.hook_error_log
