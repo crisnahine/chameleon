@@ -2121,19 +2121,24 @@ def _attempt_partial_refresh(
 
     # Step 4: load existing archetypes + canonicals to plan the amend.
     try:
+        from chameleon_mcp.safe_open import (
+            UnsafeFileError,
+            safe_read_profile_artifact,
+        )
+
         archetypes_data = json.loads(
-            (profile_dir / "archetypes.json").read_text(encoding="utf-8")
+            safe_read_profile_artifact(profile_dir / "archetypes.json")
         )
         canonicals_data = json.loads(
-            (profile_dir / "canonicals.json").read_text(encoding="utf-8")
+            safe_read_profile_artifact(profile_dir / "canonicals.json")
         )
         profile_data = json.loads(
-            (profile_dir / "profile.json").read_text(encoding="utf-8")
+            safe_read_profile_artifact(profile_dir / "profile.json")
         )
         rules_data = json.loads(
-            (profile_dir / "rules.json").read_text(encoding="utf-8")
+            safe_read_profile_artifact(profile_dir / "rules.json")
         )
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnsafeFileError):
         return None
 
     # Build a cluster_id → archetype_name map for fast lookup.
@@ -3608,7 +3613,11 @@ def teach_profile(repo: str, feedback: str) -> dict:
                 slug = _new_slug()
         # Read language from profile.json so each idiom is language-scoped (v0.5.2 contract)
         try:
-            profile_data = json.loads((repo_path / ".chameleon" / "profile.json").read_text())
+            from chameleon_mcp.safe_open import UnsafeFileError, safe_read_profile_artifact
+
+            profile_data = json.loads(
+                safe_read_profile_artifact(repo_path / ".chameleon" / "profile.json")
+            )
             language = profile_data.get("language", "any")
         except Exception as exc:
             # Log so profile.json corruption is discoverable rather than silently masked.
@@ -4970,7 +4979,11 @@ def teach_profile_structured(
 
     # Language scoping per v0.5.2: inject Language: line after ### slug heading.
     try:
-        profile_data = json.loads((repo_path / ".chameleon" / "profile.json").read_text())
+        from chameleon_mcp.safe_open import UnsafeFileError, safe_read_profile_artifact
+
+        profile_data = json.loads(
+            safe_read_profile_artifact(repo_path / ".chameleon" / "profile.json")
+        )
         language = profile_data.get("language", "any")
     except Exception as exc:
         # Log so profile.json corruption is discoverable rather than silently masked.
