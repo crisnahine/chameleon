@@ -76,53 +76,10 @@ jobs:
         working-directory: mcp
         run: .venv/bin/python -c "from chameleon_mcp.server import mcp; print('mcp ok')"
 
-      - name: Run comprehensive_test.py
-        working-directory: mcp
+      - name: Run journey harness library tests
         env:
-          PYTHONPATH: '.:../tests'
-        run: .venv/bin/python ../tests/comprehensive_test.py
-
-      - name: Run mcp_protocol_test.py
-        working-directory: mcp
-        env:
-          PYTHONPATH: '.:../tests'
-        run: .venv/bin/python ../tests/mcp_protocol_test.py
-
-      - name: Run v0_2_regression_test.py
-        working-directory: mcp
-        env:
-          PYTHONPATH: '.:../tests'
-        run: .venv/bin/python ../tests/v0_2_regression_test.py
-
-      - name: Run lint_engine_test.py
-        working-directory: mcp
-        env:
-          PYTHONPATH: '.:../tests'
-        run: .venv/bin/python ../tests/lint_engine_test.py
-
-      - name: Run index_db_test.py
-        working-directory: mcp
-        env:
-          PYTHONPATH: '.:../tests'
-        run: .venv/bin/python ../tests/index_db_test.py
-
-      - name: Run archetype_naming_test.py
-        working-directory: mcp
-        env:
-          PYTHONPATH: '.:../tests'
-        run: .venv/bin/python ../tests/archetype_naming_test.py
-
-      - name: Run canonical_v03_test.py
-        working-directory: mcp
-        env:
-          PYTHONPATH: '.:../tests'
-        run: .venv/bin/python ../tests/canonical_v03_test.py
-
-      - name: Run tool_config_v03_test.py
-        working-directory: mcp
-        env:
-          PYTHONPATH: '.:../tests'
-        run: .venv/bin/python ../tests/tool_config_v03_test.py
+          PYTHONPATH: '.'
+        run: .venv/bin/python -m pytest tests/journey/harness/tests/ -v
 
   lint:
     name: lint (ruff)
@@ -154,7 +111,7 @@ jobs:
         # Use uvx so we don't need a full `uv sync` just to lint. Ruff
         # config (line-length, target-version, select) lives in
         # mcp/pyproject.toml — uvx picks it up from the working directory.
-        run: uvx ruff@0.6.0 check chameleon_mcp/ ../tests/
+        run: uvx ruff@0.6.0 check chameleon_mcp/ ../tests/journey/
 
   version-sync:
     name: version-sync (bump-version.sh --check)

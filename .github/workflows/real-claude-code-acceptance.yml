@@ -135,4 +135,4 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CHAMELEON_TEST_TS_REPO: ${{ secrets.CHAMELEON_TEST_TS_REPO }}
           CHAMELEON_TEST_RUBY_REPO: ${{ secrets.CHAMELEON_TEST_RUBY_REPO }}
-        run: .venv/bin/python ../tests/claude_code_acceptance_test.py
+        run: .venv/bin/python -m tests.journey.runner --dry-run
