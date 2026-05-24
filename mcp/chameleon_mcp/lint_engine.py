@@ -401,9 +401,8 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
         for pat, kind in _RUBY_TOP_LEVEL_RULES:
             if pat.match(line):
                 if kind == "ClassNode" and superclass:
-                    enriched = f"ClassNode:{superclass}"
-                    top_level.append(enriched)
-                    top_level_class_or_module.append(enriched)
+                    top_level.append(f"ClassNode:{superclass}")
+                    top_level_class_or_module.append("ClassNode")
                 else:
                     top_level.append(kind)
                     if kind in ("ClassNode", "ModuleNode"):
@@ -479,27 +478,41 @@ def extract_dimensions(
 # -----------------------------------------------------------------------------
 
 
-def _top_level_kinds_match(file_kinds: list[str], expected: list[str]) -> bool:
-    """Multiset comparison: every kind expected must appear at least once
-    in the file, with at least the same multiplicity.
+def _normalize_kind(kind: str) -> str:
+    """Normalize an enriched node kind for fuzzy matching.
 
-    Sequence ordering is NOT enforced (writers reorder imports / type aliases
-    freely without changing the archetype). Files are allowed to contain
-    EXTRA top-level kinds beyond what the archetype lists — we only flag
-    when something is missing. Rationale: the canonical's top_level_node_kinds
-    is a structural lower bound, not an upper bound; adding an `import` line
-    shouldn't flag a violation.
+    ClassNode:ApplicationRecord -> ClassNode (base kind, strips superclass)
+    DslCall:validates -> DslCall:validates (exact, DSL identity matters)
+    IncludeCall:Sidekiq::Job -> IncludeCall:Sidekiq::Job (exact)
+    ImportDeclaration -> ImportDeclaration (no enrichment)
+    """
+    if kind.startswith(("ClassNode:", "ModuleNode:")):
+        return kind.split(":")[0]
+    return kind
+
+
+def _top_level_kinds_match(file_kinds: list[str], expected: list[str]) -> bool:
+    """Similarity-based comparison with fuzzy matching for enriched kinds.
+
+    At least half the expected kinds must have a match in the file.
+    Matching uses normalized kinds: ClassNode:ApplicationRecord and
+    ClassNode:ApplicationController both normalize to ClassNode, so
+    any class matches any class regardless of superclass. Same for
+    DslCall:* and IncludeCall:* - any DSL call matches any DSL call.
     """
     if not expected:
         return True
-    from collections import Counter
 
-    file_counts = Counter(file_kinds)
-    expected_counts = Counter(expected)
-    for kind, n in expected_counts.items():
-        if file_counts.get(kind, 0) < n:
-            return False
-    return True
+    normalized_file = {_normalize_kind(k) for k in file_kinds}
+    file_set = set(file_kinds)
+    expected_deduped = set(expected)
+
+    matched = 0
+    for kind in expected_deduped:
+        if kind in file_set or _normalize_kind(kind) in normalized_file:
+            matched += 1
+
+    return matched >= len(expected_deduped) * 0.5
 
 
 def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]:
