@@ -28,6 +28,10 @@ If the call fails (timeout, MCP unavailable, parse error): **fail open**. Make t
 - Chameleon is an *output-layer* advisory: archetype + canonical + rules + idioms shape the code you write.
 - Process-gating skills (e.g. brainstorming, planning, TDD frameworks) run BEFORE chameleon's advisory if both fire on the same Edit. Process gates take priority — finish the brainstorm/plan first, then apply chameleon's pattern context to the actual write.
 
+## Post-edit verification
+
+Chameleon may provide post-edit feedback via `additionalContext` after Edit/Write/NotebookEdit. If you see a `[chameleon: post-edit verification]` block listing archetype violations, fix them in your next edit. Call `get_pattern_context` to see the canonical if you need guidance.
+
 ## Red Flags — STOP and call MCP
 
 These thoughts mean you're rationalizing past the rule:

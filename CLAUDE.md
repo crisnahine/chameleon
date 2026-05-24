@@ -43,6 +43,14 @@ mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 20
 
 The journey harness drives real `claude -p` subprocesses against committed seed fixtures. Run before each release. All state is isolated to a per-run dir under `tests/journey/results/`; the developer's own `~/.local/share/chameleon/` is never touched.
 
+### Run unit tests for chameleon
+
+```bash
+PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ -v
+```
+
+These verify chameleon's hook functions (posttool_verify, etc.) with mocked dependencies.
+
 ### Run unit tests for the harness library
 
 ```bash

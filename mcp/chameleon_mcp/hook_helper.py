@@ -4,7 +4,7 @@ Hooks invoke this via:
     python -m chameleon_mcp.hook_helper <command>
 
 Where <command> is one of: session-start | preflight-and-advise |
-posttool-recorder | callout-detector.
+posttool-recorder | posttool-verify | callout-detector.
 
 Reads JSON from stdin, calls the appropriate MCP tool, emits a Claude Code
 hook output JSON to stdout.
@@ -44,6 +44,18 @@ def _emit_chameleon_context(block: str) -> None:
         {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
+                "additionalContext": block,
+            }
+        }
+    )
+
+
+def _emit_posttool_context(block: str) -> None:
+    """Wrap a ``<chameleon-context>`` block in the PostToolUse hook envelope."""
+    _emit(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
                 "additionalContext": block,
             }
         }
@@ -748,9 +760,7 @@ def preflight_and_advise() -> int:
         )
     if excerpt_content:
         block += "Canonical witness:\n```\n"
-        block += excerpt_content[:6000]  # ~1500 tokens
-        if len(excerpt_content) > 6000:
-            block += "\n... [truncated]"
+        block += excerpt_content
         block += "\n```\n\n"
     if rules_count:
         block += f"Rules: {rules_count} entries available via get_rules({archetype_name!r}).\n"
@@ -803,6 +813,231 @@ def posttool_recorder() -> int:
 
     _emit({})
     return 0
+
+
+_EDIT_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "NotebookEdit"})
+_VERIFY_SEEN_TTL_SECONDS = 30
+
+
+def posttool_verify() -> int:
+    """PostToolUse Edit/Write/NotebookEdit: archetype conformance lint.
+
+    After a successful edit in a profiled repo, lints the written file
+    against its archetype and injects violations as additionalContext
+    so the model can self-correct.
+
+    Default ON. Set CHAMELEON_VERIFY=0 to disable.
+    Honors all opt-out mechanisms.
+    Fails open on any error.
+    """
+    if os.environ.get("CHAMELEON_VERIFY") == "0":
+        _emit({})
+        return 0
+
+    _started = time.time()
+
+    try:
+        payload = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, ValueError):
+        _emit({})
+        return 0
+
+    tool_name = payload.get("tool_name", "")
+    if tool_name not in _EDIT_TOOLS:
+        _emit({})
+        return 0
+
+    tool_input = payload.get("tool_input", {})
+    file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
+    if not file_path:
+        _emit({})
+        return 0
+
+    tool_response = payload.get("tool_response", {})
+    if isinstance(tool_response, dict):
+        if "error" in tool_response or tool_response.get("success") is False:
+            _emit({})
+            return 0
+
+    session_id = payload.get("session_id")
+
+    try:
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.tools import _compute_repo_id
+
+        repo_root = find_repo_root(Path(file_path).expanduser())
+        if repo_root is None:
+            _emit({})
+            return 0
+
+        repo_id = _compute_repo_id(repo_root)
+
+        if is_chameleon_suppressed(repo_root, repo_id, session_id) is not None:
+            _emit({})
+            return 0
+
+        # Per-file cooldown: skip re-verification within 30s
+        file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
+        marker = _plugin_data_dir() / repo_id / f".verify_seen.{file_hash}"
+        if _marker_path_is_fresh(marker, _VERIFY_SEEN_TTL_SECONDS):
+            _emit_posttool_context(
+                "<chameleon-context>\n"
+                "[chameleon: already verified this file — review previous feedback]\n"
+                "</chameleon-context>"
+            )
+            return 0
+
+        p = Path(file_path).expanduser()
+        if not p.is_file():
+            _emit({})
+            return 0
+        content = p.read_bytes().decode("utf-8", errors="replace")
+
+        # Resolve archetype — daemon fast path, then in-process fallback
+        archetype_name: str | None = None
+        try:
+            from chameleon_mcp import daemon_client
+
+            arch_result = daemon_client.call(
+                "get_archetype", {"repo": str(repo_root), "file_path": file_path}
+            )
+            if arch_result:
+                archetype_name = (arch_result.get("data") or {}).get("archetype")
+        except Exception:
+            pass
+
+        if not archetype_name:
+            from chameleon_mcp.tools import get_archetype
+
+            arch_result = get_archetype(str(repo_root), file_path)
+            archetype_name = (arch_result.get("data") or {}).get("archetype")
+
+        if not archetype_name:
+            _emit({})
+            return 0
+
+        # Lint — daemon fast path, in-process fallback (skips scan_secrets)
+        violations: list[dict] = []
+        daemon_responded = False
+
+        try:
+            from chameleon_mcp import daemon_client as _dc
+
+            lint_result = _dc.call("lint_file", {
+                "repo": str(repo_root),
+                "archetype": archetype_name,
+                "content": content,
+            })
+            if lint_result is not None:
+                daemon_responded = True
+                raw = (lint_result.get("data") or {}).get("violations") or []
+                violations = [
+                    v for v in raw
+                    if v.get("rule") != "secret-detected-in-content"
+                ]
+        except Exception:
+            pass
+
+        if not daemon_responded:
+            from chameleon_mcp.lint_engine import (
+                detect_language,
+                extract_dimensions,
+                lint,
+            )
+            from chameleon_mcp.profile.loader import load_profile_dir
+
+            loaded = load_profile_dir(repo_root / ".chameleon")
+            canonicals = (
+                (loaded.canonicals.get("canonicals") or {}).get(archetype_name) or []
+            )
+            ast_query: dict | None = None
+            if canonicals:
+                first = canonicals[0] or {}
+                ast_query = (first.get("normative_shape") or {}).get("ast_query")
+
+            if ast_query:
+                language = detect_language(file_path)
+                snapshot = extract_dimensions(
+                    content, language=language, file_path=file_path
+                )
+                violations = [v.to_dict() for v in lint(snapshot, ast_query)]
+
+        # Metrics
+        elapsed_ms = int((time.time() - _started) * 1000)
+        try:
+            from chameleon_mcp.metrics import emit_hook_metric
+
+            emit_hook_metric(
+                "posttool-verify",
+                elapsed_ms=elapsed_ms,
+                repo_id=repo_id,
+                advisory_emitted=bool(violations),
+                archetype=archetype_name,
+            )
+        except Exception:
+            pass
+
+        # Touch cooldown marker (both clean and violation paths)
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                os.chmod(marker.parent, 0o700)
+            except OSError:
+                pass
+            marker.touch(exist_ok=True)
+            try:
+                os.chmod(marker, 0o600)
+            except OSError:
+                pass
+        except OSError:
+            pass
+
+        if not violations:
+            _emit({})
+            return 0
+
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        safe_path = sanitize_for_chameleon_context(file_path)
+        lines = [
+            "<chameleon-context>",
+            "[chameleon: post-edit verification]",
+            "",
+            f"File: {safe_path}",
+            f"Archetype violations ({len(violations)}):",
+        ]
+        for v in violations:
+            sev = sanitize_for_chameleon_context(v.get("severity", "info"))
+            rule = sanitize_for_chameleon_context(v.get("rule", "unknown"))
+            msg = sanitize_for_chameleon_context(v.get("message", ""))
+            lines.append(f"- [{sev}] {rule}: {msg}")
+        lines.append("")
+        lines.append(
+            "Fix these to match the archetype."
+            " See PreToolUse canonical for the expected pattern."
+        )
+        lines.append("</chameleon-context>")
+
+        block = "\n".join(lines)
+
+        _emit_posttool_context(block)
+        return 0
+
+    except Exception as exc:
+        try:
+            ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            py_ver = ".".join(str(v) for v in sys.version_info[:3])
+            print(
+                f"[{ts}] posttool-verify fail-open "
+                f"(python={sys.executable} {py_ver}): "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+        except Exception:
+            pass
+        _emit({})
+        return 0
 
 
 # Frustration phrases that suggest the user is unhappy with chameleon's
@@ -883,6 +1118,8 @@ def main(argv: list[str] | None = None) -> int:
         return preflight_and_advise()
     if command == "posttool-recorder":
         return posttool_recorder()
+    if command == "posttool-verify":
+        return posttool_verify()
     if command == "callout-detector":
         return callout_detector()
     sys.stderr.write(f"hook_helper.py: unknown command {command!r}\n")

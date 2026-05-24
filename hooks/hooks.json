@@ -34,6 +34,16 @@
             "async": false
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" posttool-verify",
+            "async": false
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

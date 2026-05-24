@@ -1205,15 +1205,7 @@ def get_pattern_context(file_path: str) -> dict:
                             raise OSError(
                                 "witness changed mid-read; failing open"
                             )
-                        # Changing this truncation rule requires bumping
-                        # _excerpt_cache.CONTEXT_TRANSFORM_VERSION.
-                        is_trunc = len(raw) > 3200
-                        body = (
-                            raw[:3200] + "\n... [truncated]"
-                            if is_trunc
-                            else raw
-                        )
-                        return sanitize_for_chameleon_context(body), is_trunc
+                        return sanitize_for_chameleon_context(raw), False
 
                     try:
                         content, truncated = _excerpt_cache.get_or_build(
@@ -1243,10 +1235,6 @@ def get_pattern_context(file_path: str) -> dict:
     if idioms_text:
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
         idioms_text = sanitize_for_chameleon_context(idioms_text)
-        # Cap at 8000 chars (~2000 tokens) to bound prompt size; idioms.md
-        # has its own 50KB cap so this is a defense-in-depth ceiling.
-        if len(idioms_text) > 8000:
-            idioms_text = idioms_text[:8000] + "\n... [truncated]"
 
     return _envelope({
         "repo": {
@@ -1440,14 +1428,11 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             "sha_hint": witness.get("sha_hint"),
         })
 
-    truncated = len(content) > 3200
-    if truncated:
-        content = content[:3200] + "\n... [truncated]"
     content = sanitize_for_chameleon_context(content)
     return _envelope({
         "content": content,
         "witness_path": witness_rel,
-        "truncated": truncated,
+        "truncated": False,
         "sha_hint": witness.get("sha_hint"),
     })
 

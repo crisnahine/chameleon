@@ -666,12 +666,21 @@ PreToolUse (matcher: Edit|Write|NotebookEdit):
  f. Cache_control: hook output is EPHEMERAL (lstat results, MCP-fetched canonicals
  may have run-specific timing data; never in cached prefix)
 
-PostToolUse (matcher: Bash):
- 1. posttool-recorder
+PostToolUse (matcher: Bash|Edit|Write|NotebookEdit):
+ 1. posttool-recorder (all tool types)
  HMAC-signed exit code log
  Per-repo log directory: ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/
  Mode 0700, owner-check on every read
  Key fail-loud (explicit error if /dev/urandom fails)
+
+ 2. posttool-verify (Edit|Write|NotebookEdit only)
+ Archetype conformance lint on written file
+ Default ON; set CHAMELEON_VERIFY=0 to disable
+ Honors all opt-out mechanisms (CHAMELEON_DISABLE, .skip, session, pause)
+ Fast path: daemon lint_file; fallback: in-process extract_dimensions + lint
+ Output: all violations included, no truncation
+ Per-file cooldown: 30s (dampens edit-reverify loops)
+ Skips scan_secrets on in-process path (archetype conformance only)
 
 UserPromptSubmit:
  1. callout-detector
@@ -680,6 +689,8 @@ UserPromptSubmit:
  surface "/chameleon-disable or /chameleon-pause-15m to silence"
 
 TOTAL-HOOKS-PER-TURN CAP: ≤2,000 tokens summed across all hooks (truncated)
+  - PreToolUse advisory: up to ~1,500 tokens (canonical excerpt)
+  - PostToolUse verification: all violations, no truncation
 ```
 
 **Why combined `preflight-and-advise`:** hooks on shared matchers run in **parallel** per Claude Code platform. Combining safety + advisor into one synchronous command hook ensures safety check completes before MCP call.

@@ -35,8 +35,8 @@ because the bytes are identical to the cached value.
 
 CONTEXT_TRANSFORM_VERSION: bump on ANY change to the value-shaping
 transform applied between read and cache store — i.e. any change to
-chameleon_mcp.sanitization.sanitize_for_chameleon_context OR the 3200
-truncation rule in tools.get_pattern_context.
+chameleon_mcp.sanitization.sanitize_for_chameleon_context OR the
+content-shaping rules in tools.get_pattern_context.
 
 CHAMELEON_EXCERPT_CACHE_CAP overrides the 64-entry LRU cap.
 """
@@ -47,7 +47,7 @@ import os
 from collections import OrderedDict
 from collections.abc import Callable
 
-CONTEXT_TRANSFORM_VERSION = 2
+CONTEXT_TRANSFORM_VERSION = 3
 
 
 def _resolve_cap() -> int:
