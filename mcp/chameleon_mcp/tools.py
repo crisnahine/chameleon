@@ -1724,12 +1724,35 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
         ast_query = (first.get("normative_shape") or {}).get("ast_query")
         witness_rel_path = (first.get("witness") or {}).get("path")
 
-    # 4. If the archetype is unknown OR its ast_query is null/empty, run
-    # the engine as a no-op. This is the real-impl envelope (stub: False)
-    # because the engine *did* run — there just wasn't a query to evaluate.
-    # `noop_reason` carries the human explanation so it mirrors
-    # `stub_reason` (used when the engine never ran). Pre-v0.5.13 this was
-    # spelled `reason`; the rename is internal-consistency only.
+    # 3b. Recalibrate ast_query from the canonical witness using the same
+    # regex heuristic that extract_dimensions uses at lint time. The stored
+    # ast_query was derived from the real AST parser (ts_dump.mjs /
+    # prism_dump.rb) at bootstrap, but lint() compares against regex-derived
+    # dimensions. The two extractors disagree on counts (ImportDeclaration,
+    # InterfaceDeclaration, jsx_present) causing false positives: 56% of TS
+    # and 58% of Rails canonicals fail their own lint. Recalibrating to
+    # regex-vs-regex eliminates this gap.
+    if ast_query and witness_rel_path:
+        try:
+            witness_full = repo_root / witness_rel_path
+            if witness_full.is_file():
+                w_raw = witness_full.read_bytes()[:100_000].decode(
+                    "utf-8", errors="replace"
+                )
+                w_lang = _detect_language(witness_rel_path) or loaded.profile.get(
+                    "language"
+                )
+                w_snap = _extract_dimensions(w_raw, language=w_lang)
+                ast_query = {
+                    "default_export_kind": w_snap.default_export_kind,
+                    "jsx_present": w_snap.jsx_present,
+                    "top_level_node_kinds": sorted(set(w_snap.top_level_node_kinds)),
+                    "named_export_count_bucket": w_snap.named_export_count_bucket,
+                    "content_signal": w_snap.content_signal,
+                }
+        except Exception:
+            pass
+
     if not ast_query:
         return _envelope(
             {

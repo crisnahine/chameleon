@@ -955,6 +955,29 @@ def posttool_verify() -> int:
             if canonicals:
                 first = canonicals[0] or {}
                 ast_query = (first.get("normative_shape") or {}).get("ast_query")
+                witness_rel = (first.get("witness") or {}).get("path")
+
+                # Recalibrate ast_query from witness using regex heuristic
+                # (same fix as tools.lint_file step 3b)
+                if ast_query and witness_rel:
+                    w_full = repo_root / witness_rel
+                    if w_full.is_file():
+                        w_raw = w_full.read_bytes()[:100_000].decode(
+                            "utf-8", errors="replace"
+                        )
+                        w_lang = detect_language(witness_rel)
+                        w_snap = extract_dimensions(
+                            w_raw, language=w_lang, file_path=witness_rel
+                        )
+                        ast_query = {
+                            "default_export_kind": w_snap.default_export_kind,
+                            "jsx_present": w_snap.jsx_present,
+                            "top_level_node_kinds": sorted(
+                                set(w_snap.top_level_node_kinds)
+                            ),
+                            "named_export_count_bucket": w_snap.named_export_count_bucket,
+                            "content_signal": w_snap.content_signal,
+                        }
 
             if ast_query:
                 language = detect_language(file_path)
