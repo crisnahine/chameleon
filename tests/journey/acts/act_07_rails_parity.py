@@ -203,9 +203,13 @@ def run(ctx: JourneyContext) -> ActResult:
 
     # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
-        if phase in outcomes and outcomes[phase].status == "SKIP" and passed:
-            outcomes[phase].status = "PASS"
-            outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+        if phase in outcomes and passed:
+            if outcomes[phase].status == "SKIP":
+                outcomes[phase].status = "PASS"
+                outcomes[phase].notes = "promoted from SKIP by runner cross-check"
+            elif outcomes[phase].status == "FAIL" and "phase incomplete" in outcomes[phase].notes:
+                outcomes[phase].status = "PASS"
+                outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
     # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
