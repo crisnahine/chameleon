@@ -28,7 +28,6 @@ concurrent sessions from racing on the same cache dir.
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import os
 import subprocess
 import time
@@ -392,13 +391,3 @@ def gc_stale_caches(repo_id: str, *, keep_n: int = 4) -> int:
     return removed
 
 
-def _content_sha_of_artifact(
-    repo_root: Path, ref: str, artifact: str
-) -> str | None:
-    """Return the content SHA256 of an artifact at a ref, or None."""
-    result = _run_git(
-        ["show", f"{ref}:.chameleon/{artifact}"], cwd=repo_root
-    )
-    if result is None or result.returncode != 0:
-        return None
-    return hashlib.sha256((result.stdout or "").encode("utf-8")).hexdigest()

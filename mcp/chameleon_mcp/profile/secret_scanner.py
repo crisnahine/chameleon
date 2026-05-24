@@ -106,6 +106,3 @@ def scan_for_secrets(content: str) -> list[dict[str, Any]]:
     return hits
 
 
-def is_safe_canonical(content: str) -> bool:
-    """Convenience: True iff scan_for_secrets(content) is empty."""
-    return not scan_for_secrets(content)

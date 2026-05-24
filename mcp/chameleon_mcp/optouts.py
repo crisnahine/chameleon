@@ -194,14 +194,6 @@ def write_session_disable(repo_id: str, session_id: str) -> Path:
     return marker
 
 
-def clear_session_disable(repo_id: str, session_id: str) -> bool:
-    """Remove the marker. Returns True if it existed."""
-    marker = repo_data_dir(repo_id) / f".session_disabled.{_safe_session_marker(session_id)}"
-    if marker.is_file():
-        marker.unlink()
-        return True
-    return False
-
 
 def write_pause(repo_id: str, minutes: int = 15) -> str:
     """Write a .pause_until file with expiry = now + minutes. Returns ISO timestamp."""
@@ -214,10 +206,3 @@ def write_pause(repo_id: str, minutes: int = 15) -> str:
     return expiry_iso
 
 
-def clear_pause(repo_id: str) -> bool:
-    """Remove the .pause_until file. Returns True if it existed."""
-    pause_path = repo_data_dir(repo_id) / ".pause_until"
-    if pause_path.is_file():
-        pause_path.unlink()
-        return True
-    return False

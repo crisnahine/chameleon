@@ -186,29 +186,3 @@ def verify_exec_log_line(line: str) -> bool:
     return hmac.compare_digest(expected, actual)
 
 
-def gc_old_logs(*, max_age_seconds: int = 30 * 86_400) -> int:
-    """Purge log files older than max_age_seconds. Returns count of files removed.
-
-    Per docs/architecture.md GC policy: 30-day record purge, weekly cadence.
-    """
-    tmpdir = Path(os.environ.get("TMPDIR") or "/tmp")
-    base = tmpdir / ".chameleon_exec_log"
-    if not base.is_dir():
-        return 0
-    cutoff = time.time() - max_age_seconds
-    removed = 0
-    for repo_dir in base.iterdir():
-        if not repo_dir.is_dir():
-            continue
-        for log_file in repo_dir.glob("*.jsonl"):
-            try:
-                mtime = log_file.stat().st_mtime
-            except OSError:
-                continue
-            if mtime < cutoff:
-                try:
-                    log_file.unlink()
-                    removed += 1
-                except OSError:
-                    pass
-    return removed

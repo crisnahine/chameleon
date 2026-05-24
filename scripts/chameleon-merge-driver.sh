@@ -30,8 +30,6 @@ fi
 BASE="$1"
 OURS="$2"
 THEIRS="$3"
-TARGET_PATH="${4:-unknown}"
-
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}"
 MCP_DIR="${PLUGIN_ROOT}/mcp"
 

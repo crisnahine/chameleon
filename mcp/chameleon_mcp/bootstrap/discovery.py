@@ -138,22 +138,6 @@ class TooManyFilesError(Exception):
         )
 
 
-def _has_brace_in_basename(glob_pattern: str) -> bool:
-    """True if ``glob_pattern`` has `{...}` brace expansion in the basename.
-
-    pathlib.Path.glob expands braces in directory segments via the walker
-    but NOT in the leaf filename, so patterns like ``src/**/*.{ts,tsx}``
-    silently return zero candidates. This helper lets the bootstrap
-    error-message branch tell the user that's the cause instead of the
-    generic "No source files found".
-    """
-    if "{" not in glob_pattern or "}" not in glob_pattern:
-        return False
-    # Basename = portion after the last "/"; if there's no slash, the
-    # whole pattern is the basename.
-    basename = glob_pattern.rsplit("/", 1)[-1]
-    return "{" in basename and "}" in basename
-
 
 def _matches_any(rel_path: str, patterns: tuple[str, ...]) -> bool:
     """Return True if rel_path matches any fnmatch pattern.

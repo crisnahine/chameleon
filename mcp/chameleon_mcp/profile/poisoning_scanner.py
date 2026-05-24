@@ -75,6 +75,3 @@ def scan_for_dangerous_patterns(content: str) -> list[dict]:
     return hits
 
 
-def is_safe_canonical(content: str) -> bool:
-    """Convenience: True iff scan_for_dangerous_patterns(content) is empty."""
-    return not scan_for_dangerous_patterns(content)

@@ -118,7 +118,3 @@ def call(method: str, payload: dict | None = None, *, timeout: float = DEFAULT_T
                 pass
 
 
-def ping(*, timeout: float = 0.5) -> bool:
-    """Cheap reachability probe. True iff the daemon answered our ping."""
-    result = call("ping", {}, timeout=timeout)
-    return isinstance(result, dict) and bool(result.get("ok"))

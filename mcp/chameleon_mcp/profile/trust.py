@@ -301,14 +301,6 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
     return record
 
 
-def revoke_trust(repo_id: str) -> bool:
-    """Remove the .trust record. Returns True if a record existed and was removed."""
-    trust_path = repo_data_dir(repo_id) / ".trust"
-    if not trust_path.exists():
-        return False
-    trust_path.unlink()
-    return True
-
 
 def is_material_change(repo_id: str, current_profile_dir: Path) -> bool:
     """Return True iff the trusted profile_sha256 no longer matches current.

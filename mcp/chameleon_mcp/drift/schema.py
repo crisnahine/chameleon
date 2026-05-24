@@ -76,19 +76,3 @@ def init_drift_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def gc_old_observations(conn: sqlite3.Connection, *, max_age_seconds: int = 30 * 86_400) -> int:
-    """Delete edit_observations older than `max_age_seconds`. Returns rows deleted.
-
-    Per docs/architecture.md "drift.db" GC policy: 30-day record purge weekly.
-    """
-    import time
-
-    cutoff = int(time.time()) - max_age_seconds
-    cursor = conn.execute(
-        "DELETE FROM edit_observations WHERE observed_at < ?", (cutoff,)
-    )
-    deleted = cursor.rowcount
-
-    # Truncate WAL on GC (PRAGMA wal_checkpoint(TRUNCATE) per architecture)
-    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    return deleted

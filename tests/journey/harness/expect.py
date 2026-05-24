@@ -6,7 +6,6 @@ the phase as FAIL, then continues with the next phase.
 from __future__ import annotations
 
 import json
-import os
 import stat
 from pathlib import Path
 from typing import Any
@@ -75,21 +74,3 @@ def file_mode(phase: int, path: Path, mode: int) -> None:
         )
 
 
-def env_var_set(phase: int, name: str, under: Path) -> None:
-    """Verify an env var is set and its value points under `under`."""
-    value = os.environ.get(name)
-    if value is None:
-        raise PhaseAssertionError(phase, f"env var {name} not set")
-    if not Path(value).resolve().is_relative_to(under.resolve()):
-        raise PhaseAssertionError(
-            phase, f"env var {name}={value!r} is not under {under}"
-        )
-
-
-def no_chameleon_state_in_home(phase: int) -> None:
-    """Isolation guard: developer's home dir must not be touched by the harness.
-
-    This is informational; actual isolation enforcement happens via env overrides
-    set by build_context(). See snapshots.py for active tracking.
-    """
-    return None
