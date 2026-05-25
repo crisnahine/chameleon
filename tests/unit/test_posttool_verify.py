@@ -146,8 +146,13 @@ def test_cooldown_skips_reverification(tmp_path: Path):
     marker_dir = tmp_path / repo_id
     marker_dir.mkdir()
 
+    # Create the file so the new code doesn't bail at is_file() check
+    ts_file = tmp_path / "x.ts"
+    ts_file.write_text("x", encoding="utf-8")
+
     import hashlib
-    file_hash = hashlib.sha256(b"/repo/x.ts").hexdigest()[:16]
+    file_path = str(ts_file)
+    file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
     marker = marker_dir / f".verify_seen.{file_hash}"
     marker.touch()
 
@@ -156,10 +161,13 @@ def test_cooldown_skips_reverification(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch("chameleon_mcp.daemon_client.call", side_effect=[
+            {"data": {"archetype": "component"}},
+        ]),
     ):
         result = _run_verify({
             "tool_name": "Edit",
-            "tool_input": {"file_path": "/repo/x.ts"},
+            "tool_input": {"file_path": file_path},
             "session_id": "s1",
         })
 
@@ -243,8 +251,8 @@ def test_violation_messages_sanitized(tmp_path: Path):
             "session_id": "s1",
         })
 
-    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
-    assert "</chameleon-context>" not in ctx.split("[chameleon: post-edit")[0]
+    # v0.7.0: violations use updatedToolOutput, not additionalContext
+    ctx = result.get("hookSpecificOutput", {}).get("updatedToolOutput", "")
     assert "</system>" not in ctx
 
 
@@ -280,9 +288,10 @@ def test_all_violations_included(tmp_path: Path):
             "session_id": "s1",
         })
 
-    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    # v0.7.0: violations use updatedToolOutput, not additionalContext
+    ctx = result.get("hookSpecificOutput", {}).get("updatedToolOutput", "")
     for i in range(6):
-        assert f"rule-{i}" in ctx
+        assert f"msg {i}" in ctx
 
 
 # ---- 10. Backward compat: Bash tool still works via posttool-recorder ----

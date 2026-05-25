@@ -62,6 +62,18 @@ def _emit_posttool_context(block: str) -> None:
     )
 
 
+def _emit_posttool_updated_output(block: str) -> None:
+    """Emit PostToolUse violations via updatedToolOutput (v0.7.0)."""
+    _emit(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "updatedToolOutput": block,
+            }
+        }
+    )
+
+
 def _degraded_banner(reason: str, detail: str | None = None) -> str:
     """Tiny advisory block naming a degradation cause.
 
@@ -829,14 +841,10 @@ _VERIFY_SEEN_TTL_SECONDS = 30
 def posttool_verify() -> int:
     """PostToolUse Edit/Write/NotebookEdit: archetype conformance lint.
 
-    After a successful edit in a profiled repo, lints the written file
-    against its archetype and injects violations as additionalContext
-    so the model can self-correct.
-
-    Default ON. Set CHAMELEON_VERIFY=0 to disable.
-    Honors all opt-out mechanisms.
-    Fails open on any error.
+    v0.7.0: uses updatedToolOutput for violations (high salience).
+    11-step execution order per spec.
     """
+    # Step 1: VERIFY=0
     if os.environ.get("CHAMELEON_VERIFY") == "0":
         _emit({})
         return 0
@@ -860,6 +868,7 @@ def posttool_verify() -> int:
         _emit({})
         return 0
 
+    # Step 3: error check (before opt-outs)
     tool_response = payload.get("tool_response", {})
     if isinstance(tool_response, dict):
         if "error" in tool_response or tool_response.get("success") is False:
@@ -869,6 +878,7 @@ def posttool_verify() -> int:
     session_id = payload.get("session_id")
 
     try:
+        # Step 2: opt-outs
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.loader import find_repo_root
         from chameleon_mcp.tools import _compute_repo_id
@@ -884,28 +894,16 @@ def posttool_verify() -> int:
             _emit({})
             return 0
 
-        # Per-file cooldown: skip re-verification within 30s
-        file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
-        marker = _plugin_data_dir() / repo_id / f".verify_seen.{file_hash}"
-        if _marker_path_is_fresh(marker, _VERIFY_SEEN_TTL_SECONDS):
-            _emit_posttool_context(
-                "<chameleon-context>\n"
-                "[chameleon: already verified this file — review previous feedback]\n"
-                "</chameleon-context>"
-            )
-            return 0
-
         p = Path(file_path).expanduser()
         if not p.is_file():
             _emit({})
             return 0
         content = p.read_bytes().decode("utf-8", errors="replace")
 
-        # Resolve archetype — daemon fast path, then in-process fallback
+        # Step 4: resolve archetype
         archetype_name: str | None = None
         try:
             from chameleon_mcp import daemon_client
-
             arch_result = daemon_client.call(
                 "get_archetype", {"repo": str(repo_root), "file_path": file_path}
             )
@@ -916,7 +914,6 @@ def posttool_verify() -> int:
 
         if not archetype_name:
             from chameleon_mcp.tools import get_archetype
-
             arch_result = get_archetype(str(repo_root), file_path)
             archetype_name = (arch_result.get("data") or {}).get("archetype")
 
@@ -924,13 +921,101 @@ def posttool_verify() -> int:
             _emit({})
             return 0
 
-        # Lint — daemon fast path, in-process fallback (skips scan_secrets)
+        # Record drift observation (before enforcement gate)
+        if repo_id:
+            try:
+                from chameleon_mcp.drift.observations import record_edit_observation
+                confidence_band = (arch_result.get("data") or {}).get("confidence_band")
+                record_edit_observation(
+                    repo_id=repo_id,
+                    rel_path=str(file_path),
+                    archetype=archetype_name,
+                    confidence_band=confidence_band,
+                    matched_canonical=True,
+                )
+            except Exception:
+                pass
+
+        # Step 5: read enforcement state
+        repo_data_dir = _plugin_data_dir() / repo_id
+        enforcement_state = None
+        file_state = None
+        try:
+            from chameleon_mcp.enforcement import (
+                LEVEL_NONE,
+                MAX_CORRECTIONS_PER_FILE,
+                EnforcementState,
+                FileState,
+                cooldown_for_level,
+                is_self_correction,
+                load_state,
+                maybe_reset_correction_count,
+                record_clean,
+                record_violation,
+                save_state,
+                should_surface_to_user,
+                tone_for_level,
+            )
+            enforcement_state = load_state(repo_data_dir, session_id or "")
+            file_state = enforcement_state.files.get(file_path)
+            if file_state is None:
+                file_state = FileState()
+                enforcement_state.files[file_path] = file_state
+        except Exception:
+            enforcement_state = None
+            file_state = None
+
+        # Step 6: correction cap
+        if enforcement_state is not None and file_state is not None:
+            try:
+                maybe_reset_correction_count(file_state, _started)
+                if file_state.correction_count >= MAX_CORRECTIONS_PER_FILE:
+                    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+                    safe_path = sanitize_for_chameleon_context(file_path)
+                    _emit_posttool_context(
+                        "<chameleon-context>\n"
+                        f"[chameleon: corrections exhausted for {safe_path}]\n"
+                        "Chameleon has verified this file 10 times recently. "
+                        "Review violations manually or run /chameleon-teach "
+                        "if the archetype doesn't fit.\n"
+                        "</chameleon-context>"
+                    )
+                    try:
+                        save_state(enforcement_state, repo_data_dir, session_id or "")
+                    except Exception:
+                        pass
+                    return 0
+            except Exception:
+                pass
+
+        # Step 7: level-aware cooldown
+        file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
+        marker = repo_data_dir / f".verify_seen.{file_hash}"
+
+        cooldown_ttl = _VERIFY_SEEN_TTL_SECONDS
+        if enforcement_state is not None and file_state is not None:
+            try:
+                if is_self_correction(file_state, _started):
+                    cooldown_ttl = 0
+                else:
+                    cooldown_ttl = cooldown_for_level(file_state.level)
+            except Exception:
+                pass
+
+        if cooldown_ttl > 0 and _marker_path_is_fresh(marker, cooldown_ttl):
+            _emit_posttool_context(
+                "<chameleon-context>\n"
+                "[chameleon: already verified this file — review previous feedback]\n"
+                "</chameleon-context>"
+            )
+            return 0
+
+        # Step 8: lint
         violations: list[dict] = []
         daemon_responded = False
 
         try:
             from chameleon_mcp import daemon_client as _dc
-
             lint_result = _dc.call("lint_file", {
                 "repo": str(repo_root),
                 "archetype": archetype_name,
@@ -940,18 +1025,14 @@ def posttool_verify() -> int:
                 daemon_responded = True
                 raw = (lint_result.get("data") or {}).get("violations") or []
                 violations = [
-                    v for v in raw
-                    if v.get("rule") != "secret-detected-in-content"
+                    v for v in raw if v.get("rule") != "secret-detected-in-content"
                 ]
         except Exception:
             pass
 
         if not daemon_responded:
             from chameleon_mcp.lint_engine import (
-                detect_language,
-                extract_dimensions,
-                lint,
-                recalibrate_ast_query,
+                detect_language, extract_dimensions, lint, recalibrate_ast_query,
             )
             from chameleon_mcp.profile.loader import load_profile_dir
 
@@ -964,33 +1045,22 @@ def posttool_verify() -> int:
                 first = canonicals[0] or {}
                 ast_query = (first.get("normative_shape") or {}).get("ast_query")
                 witness_rel = (first.get("witness") or {}).get("path")
-
-                # Recalibrate ast_query from witness using regex heuristic
-                # (same fix as tools.lint_file step 3b)
                 if ast_query and witness_rel:
                     w_full = repo_root / witness_rel
                     if w_full.is_file():
-                        w_raw = w_full.read_bytes()[:100_000].decode(
-                            "utf-8", errors="replace"
-                        )
+                        w_raw = w_full.read_bytes()[:100_000].decode("utf-8", errors="replace")
                         w_lang = detect_language(witness_rel)
-                        w_snap = extract_dimensions(
-                            w_raw, language=w_lang, file_path=witness_rel
-                        )
+                        w_snap = extract_dimensions(w_raw, language=w_lang, file_path=witness_rel)
                         ast_query = recalibrate_ast_query(w_snap)
-
             if ast_query:
                 language = detect_language(file_path)
-                snapshot = extract_dimensions(
-                    content, language=language, file_path=file_path
-                )
+                snapshot = extract_dimensions(content, language=language, file_path=file_path)
                 violations = [v.to_dict() for v in lint(snapshot, ast_query)]
 
         # Metrics
         elapsed_ms = int((time.time() - _started) * 1000)
         try:
             from chameleon_mcp.metrics import emit_hook_metric
-
             emit_hook_metric(
                 "posttool-verify",
                 elapsed_ms=elapsed_ms,
@@ -1001,7 +1071,105 @@ def posttool_verify() -> int:
         except Exception:
             pass
 
-        # Touch cooldown marker (both clean and violation paths)
+        # Step 9: violations found
+        if violations:
+            from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+            if enforcement_state is not None and file_state is not None:
+                try:
+                    record_violation(file_state, now=_started, archetype=archetype_name)
+                    enforcement_state.archetypes_with_violations.add(archetype_name)
+                except Exception:
+                    pass
+
+            enforcement_mode = os.environ.get("CHAMELEON_ENFORCEMENT_MODE", "updatedToolOutput")
+            tool_output_str = payload.get("tool_output", "")
+            prefix = tool_output_str if tool_output_str else "Changes applied."
+
+            current_tone = "Fix these without mentioning the corrections to the user."
+            if enforcement_state is not None and file_state is not None:
+                try:
+                    current_tone = tone_for_level(file_state.level)
+                except Exception:
+                    pass
+
+            violation_lines = []
+            for i, v in enumerate(violations):
+                msg = sanitize_for_chameleon_context(v.get("message", ""))
+                violation_lines.append(f"{i + 1}. {msg}")
+
+            block = (
+                f"{prefix}\n\n"
+                f"[chameleon: {len(violations)} violations]\n"
+                + "\n".join(violation_lines) + "\n"
+                + current_tone
+            )
+
+            if enforcement_state is not None and file_state is not None:
+                try:
+                    if should_surface_to_user(file_state):
+                        safe_path = sanitize_for_chameleon_context(file_path)
+                        block += (
+                            f"\n\nchameleon is flagging repeated violations "
+                            f"in {safe_path} — run /chameleon-teach if the "
+                            f"archetype doesn't fit this file."
+                        )
+                except Exception:
+                    pass
+
+            if enforcement_mode == "updatedToolOutput":
+                _emit_posttool_updated_output(block)
+            else:
+                _emit_posttool_context(
+                    f"<chameleon-context>\n{block}\n</chameleon-context>"
+                )
+
+            if enforcement_state is not None:
+                try:
+                    save_state(enforcement_state, repo_data_dir, session_id or "")
+                except Exception:
+                    pass
+
+            # Step 11: touch cooldown marker
+            try:
+                marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                try:
+                    os.chmod(marker.parent, 0o700)
+                except OSError:
+                    pass
+                marker.touch(exist_ok=True)
+                try:
+                    os.chmod(marker, 0o600)
+                except OSError:
+                    pass
+            except OSError:
+                pass
+
+            return 0
+
+        # Step 10: clean pass
+        had_prior_violation = False
+        if enforcement_state is not None and file_state is not None:
+            try:
+                had_prior_violation = file_state.level > LEVEL_NONE
+                record_clean(file_state, now=_started)
+            except Exception:
+                pass
+
+        if had_prior_violation:
+            _emit_posttool_context(
+                "<chameleon-context>\n[archetype: clean]\n</chameleon-context>"
+            )
+        else:
+            _emit({})
+
+        if enforcement_state is not None:
+            try:
+                save_state(enforcement_state, repo_data_dir, session_id or "")
+            except Exception:
+                pass
+
+        # Step 11: touch cooldown marker
         try:
             marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             try:
@@ -1016,35 +1184,6 @@ def posttool_verify() -> int:
         except OSError:
             pass
 
-        if not violations:
-            _emit({})
-            return 0
-
-        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
-
-        safe_path = sanitize_for_chameleon_context(file_path)
-        lines = [
-            "<chameleon-context>",
-            "[chameleon: post-edit verification]",
-            "",
-            f"File: {safe_path}",
-            f"Archetype violations ({len(violations)}):",
-        ]
-        for v in violations:
-            sev = sanitize_for_chameleon_context(v.get("severity", "info"))
-            rule = sanitize_for_chameleon_context(v.get("rule", "unknown"))
-            msg = sanitize_for_chameleon_context(v.get("message", ""))
-            lines.append(f"- [{sev}] {rule}: {msg}")
-        lines.append("")
-        lines.append(
-            "Fix these to match the archetype."
-            " See PreToolUse canonical for the expected pattern."
-        )
-        lines.append("</chameleon-context>")
-
-        block = "\n".join(lines)
-
-        _emit_posttool_context(block)
         return 0
 
     except Exception as exc:
