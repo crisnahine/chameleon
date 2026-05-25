@@ -108,9 +108,12 @@ Most-permanent → most-temporary:
 ```
 .chameleon/.skip          per-repo, all users (committed)
 CHAMELEON_DISABLE=1       per-user globally (in your shell rc)
+CHAMELEON_VERIFY=0        disable post-edit verification only
 /chameleon-disable        this session only
 /chameleon-pause-15m      next 15 minutes (auto-resume)
 ```
+
+Set `CHAMELEON_ENFORCEMENT_MODE=additionalContext` to revert post-edit violations from `updatedToolOutput` (v0.7.0 default) to the v0.6.x advisory style.
 
 ## Philosophy
 

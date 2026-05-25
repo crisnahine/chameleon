@@ -84,6 +84,7 @@ sqlite> SELECT * FROM edit_observations ORDER BY observed_at DESC LIMIT 10;
 
 - `CHAMELEON_DISABLE=1` — disable plugin globally for this session
 - `CHAMELEON_VERIFY=0` — disable PostToolUse archetype verification (default ON)
+- `CHAMELEON_ENFORCEMENT_MODE=additionalContext` — revert PostToolUse violations to v0.6.x advisory style (default: `updatedToolOutput`)
 - `CHAMELEON_PLUGIN_DATA` — override `~/.local/share/chameleon/` (tests only)
 - `CHAMELEON_HMAC_KEY_PATH` — override the HMAC key location (tests only)
 - `CHAMELEON_HOOK_ERROR_LOG` — override hook error log path

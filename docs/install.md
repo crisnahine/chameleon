@@ -215,11 +215,14 @@ Four layers, most permanent at the top:
 ```
 .chameleon/.skip       per-repo, all users (committed to the repo)
 CHAMELEON_DISABLE=1     per-user, every repo (set in your shell rc)
+CHAMELEON_VERIFY=0      disable post-edit verification only
 /chameleon-disable      this session only
 /chameleon-pause-15m    next 15 minutes, then auto-resumes
 ```
 
 Use `.chameleon/.skip` for repos chameleon should never touch (a docs-only repo, for example). Use the env var to turn it off for yourself everywhere. Use the slash commands for a quick, scoped pause.
+
+Set `CHAMELEON_ENFORCEMENT_MODE=additionalContext` to revert post-edit violations from `updatedToolOutput` (v0.7.0 default) to the v0.6.x advisory style.
 
 ---
 
