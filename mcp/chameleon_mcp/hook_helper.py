@@ -752,6 +752,55 @@ def preflight_and_advise() -> int:
     safe_name = sanitize_for_chameleon_context(archetype_name or "")
     safe_band = sanitize_for_chameleon_context(confidence_band or "unknown")
     safe_match = sanitize_for_chameleon_context(str(match_quality))
+
+    # ---- v0.7.0: tiered injection ----
+    # Read enforcement state to decide between Tier 1 (pointer) and
+    # Tier 2 (full canonical). First edit in an archetype this session,
+    # or an archetype with prior violations, gets the full context.
+    # Subsequent clean edits get a lightweight pointer (~50 tokens).
+    enforcement_state = None
+    try:
+        from chameleon_mcp import enforcement
+        repo_data = _plugin_data_dir() / repo_id if repo_id else None
+        if repo_data and session_id:
+            enforcement_state = enforcement.load_state(repo_data, session_id)
+    except Exception:
+        pass
+
+    first_in_archetype = True
+    has_violations = False
+    if enforcement_state is not None:
+        first_in_archetype = archetype_name not in enforcement_state.archetypes_seen
+        has_violations = archetype_name in enforcement_state.archetypes_with_violations
+        enforcement_state.archetypes_seen.add(archetype_name)
+        try:
+            enforcement.save_state(enforcement_state, repo_data, session_id)
+        except Exception:
+            pass
+
+    summary = archetype_obj.get("summary", "")
+    use_tier2 = first_in_archetype or has_violations or not summary
+
+    # Tier 1: lightweight pointer for seen archetypes with no violations
+    if not use_tier2:
+        block = (
+            "<chameleon-context>\n"
+            f"[chameleon: {safe_name} ({safe_band})]\n"
+        )
+        if summary:
+            block += f"{sanitize_for_chameleon_context(summary)}\n"
+        block += "</chameleon-context>"
+        _metric(
+            advisory_emitted=True,
+            repo_id=repo_id,
+            trust_state=trust_state,
+            archetype=archetype_name,
+            confidence=confidence_band,
+        )
+        _emit_chameleon_context(block)
+        return 0
+
+    # Tier 2: full canonical context (first edit or violations present)
     block = (
         "<chameleon-context>\n"
         f"[chameleon: archetype={safe_name}, "
