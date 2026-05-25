@@ -199,7 +199,10 @@ jobs:
           python-version: '3.12'
 
       - name: pip-audit
-        run: pipx run pip-audit -r mcp/pyproject.toml --desc on --progress-spinner off
+        working-directory: mcp
+        run: |
+          pip install -q -e ".[dev]"
+          pipx run pip-audit --desc on --progress-spinner off
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -233,29 +236,25 @@ jobs:
 
       - name: Validate hooks.json references
         run: |
-          python3 -c "
+          python3 << 'PYEOF'
           import json, sys, os
+          errors = 0
           with open('hooks/hooks.json') as f:
               manifest = json.load(f)
-          errors = 0
           for event, entries in manifest.get('hooks', {}).items():
               for entry in entries:
                   for hook in entry.get('hooks', []):
                       cmd = hook.get('command', '')
-                      script_name = cmd.split()[-1] if cmd else ''
-                      script_path = 'hooks/' + script_name
-                      if script_name and not os.path.isfile(script_path):
-                          print(f'ERROR: {script_path} referenced in hooks.json but missing')
-                  errors += 1
-              elif not os.access(script, os.X_OK):
-                  print(f'ERROR: {script} not executable')
-                  errors += 1
+                      name = cmd.split()[-1] if cmd else ''
+                      path = 'hooks/' + name
+                      if name and not os.path.isfile(path):
+                          print(f'ERROR: {path} missing'); errors += 1
+                      elif name and not os.access(path, os.X_OK):
+                          print(f'ERROR: {path} not executable'); errors += 1
           for d in os.listdir('skills'):
-              skill_dir = os.path.join('skills', d)
-              if os.path.isdir(skill_dir):
-                  skill_md = os.path.join(skill_dir, 'SKILL.md')
-                  if not os.path.isfile(skill_md):
-                      print(f'ERROR: {skill_dir}/ missing SKILL.md')
-                      errors += 1
+              sd = os.path.join('skills', d)
+              if os.path.isdir(sd) and not os.path.isfile(os.path.join(sd, 'SKILL.md')):
+                  print(f'ERROR: {sd}/ missing SKILL.md'); errors += 1
+          print(f'Checked hooks + skills: {errors} error(s)')
           sys.exit(1 if errors else 0)
-          "
+          PYEOF
