@@ -94,11 +94,11 @@ Invalid names get one re-ask with the regex hint
 
 > chameleon will scan your repo's source files, cluster them into archetypes
 > (e.g. "next-server-component", "service", "controller", "rails-controller"),
-> and pick a canonical example for each. After bootstrap I'll ask up to 3
-> short questions if you want to rename anything. It will write a
+> and pick a canonical example for each. After bootstrap, archetype renames are applied automatically (v0.6.0+).
+> It will write a
 > `.chameleon/` directory you should commit. This usually takes under 10
 > seconds for repos under 5,000 files; under 1 minute for repos up to
-> 50,000 files. No LLM cost.
+> 200,000 files. No LLM cost.
 
 If the repo has > 50,000 source files, the tool refuses by default. Ask
 the user for an explicit `paths_glob` (e.g., `src/**/*.ts` or `app/**/*.rb`).
@@ -108,7 +108,7 @@ the user for an explicit `paths_glob` (e.g., `src/**/*.ts` or `app/**/*.rb`).
 | Failure | Action |
 |---|---|
 | `failed_unsupported_language` | No TypeScript or Ruby signals (no tsconfig, no Gemfile). Tell the user chameleon currently supports TS + Rails; other languages are not yet supported. |
-| `failed_too_many_files` | Repo exceeds 50k file ceiling. Ask user for `paths_glob` to scope. |
+| `failed_too_many_files` | Repo exceeds 200k file ceiling. Ask user for `paths_glob` to scope. |
 | Bootstrap completes but `archetypes_detected == 0` | All clusters were sparse (< 5 files). User likely has a tiny project; suggest manual archetype curation via `/chameleon-teach`. Skip the rename interview. |
 | `canonicals_skipped_failed_scans > 0` | Some clusters had every candidate fail secret/injection/poisoning scans. Tell the user to investigate via `/chameleon-status`. |
 | `apply_archetype_renames` returns `failed` | Surface the error verbatim and ask the user to retry with a corrected mapping. Do NOT re-bootstrap. |
@@ -121,7 +121,7 @@ Profile created at .chameleon/
 - Rules extracted: M
 - Files processed: X (Y skipped: generated, Z skipped: parse errors)
 - Duration: Tms
-- Renames applied: K  (from interview)
+- Renames applied: K  (auto-rename)
 
 Next steps:
 1. Run /chameleon-trust to approve this profile for your user.

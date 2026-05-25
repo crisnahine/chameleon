@@ -15,7 +15,7 @@ labels: enhancement
 
 ## Affected surface
 
-- [ ] Skill bodies (one of the 8 SKILL.md files)
+- [ ] Skill bodies (one of the 10 SKILL.md files)
 - [ ] MCP tools (chameleon_mcp/tools.py)
 - [ ] Hooks (hooks/*)
 - [ ] Bootstrap pipeline (extractor / clustering / canonical selection)

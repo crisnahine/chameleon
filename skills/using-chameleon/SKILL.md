@@ -19,7 +19,10 @@ If you were dispatched as a subagent to execute a specific task, skip this skill
 
 **Before any Edit / Write / NotebookEdit in this repo, invoke `chameleon-mcp::get_pattern_context(file_path)`.** Use the returned archetype, canonical excerpt, rules, and idioms to shape your output.
 
-If the file is in an untrusted profile (`trust_state == "untrusted"`), surface the trust prompt to your human partner once, then proceed without injection until they run `/chameleon-trust`.
+Trust state handling:
+- `trust_state == "untrusted"` (no trust record exists): surface the trust prompt to your human partner once, then proceed without injection until they run `/chameleon-trust`.
+- `trust_state == "stale"` (trust record exists but profile changed): inject content with a stale-trust warning. Suggest re-running `/chameleon-trust`.
+- `trust_state == "trusted"`: inject canonical + rules + idioms normally.
 
 If the call fails (timeout, MCP unavailable, parse error): **fail open**. Make the edit using your best inference, but tell your human partner the call failed.
 
@@ -65,8 +68,10 @@ digraph using_chameleon {
     "In a repo (TypeScript or Ruby) with .chameleon/?" -> "Make the edit" [label="no"];
     "In a repo (TypeScript or Ruby) with .chameleon/?" -> "Trust state?" [label="yes"];
     "Trust state?" -> "Trust prompt + proceed without injection" [label="untrusted"];
+    "Trust state?" -> "Call get_pattern_context + stale warning" [label="stale"];
     "Trust state?" -> "Call get_pattern_context" [label="trusted"];
     "Trust prompt + proceed without injection" -> "Make the edit";
+    "Call get_pattern_context + stale warning" -> "Inject canonical + rules + idioms into edit";
     "Call get_pattern_context" -> "Inject canonical + rules + idioms into edit";
     "Inject canonical + rules + idioms into edit" -> "Make the edit";
 }
@@ -83,6 +88,8 @@ digraph using_chameleon {
 | `/chameleon-trust` (`/cham-trust`) | Approve a committed profile for this user |
 | `/chameleon-disable` (`/cham-disable`) | Disable for the rest of this session |
 | `/chameleon-pause-15m` (`/cham-pause-15m`) | Pause for 15 minutes |
+| `/chameleon-doctor` (`/cham-doctor`) | Run health checks on the installation |
+| `/chameleon-journey` (`/cham-journey`) | Run the end-to-end journey test harness |
 
 ## Common rationalizations and counters
 

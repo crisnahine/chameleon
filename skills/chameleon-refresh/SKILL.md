@@ -5,7 +5,7 @@ description: Use when the user explicitly invokes /chameleon-refresh to re-analy
 
 # /chameleon-refresh
 
-Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Uses incremental clustering: cached signatures (in `drift.db`) reused for unchanged files; only changed files re-parsed.
+Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. When <= 10% of files changed, uses partial refresh via cached `file_clusters` in `index.db`; only changed files re-parsed. Falls back to full re-bootstrap when change ratio exceeds 10%.
 
 ## When to use
 
@@ -24,25 +24,27 @@ Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Use
 1. Confirm `.chameleon/profile.json` exists. If missing, suggest `/chameleon-init`.
 2. Call `chameleon-mcp::refresh_repo(repo=<absolute path>)`.
 3. The tool acquires an OS-level flock on `.chameleon/.refresh.lock` (per-PID + start timestamp; concurrent invocations fail with stale-lock detection at 1 hour).
-4. Re-discovers files (with same exclusions as init), re-parses changed files via cached `(path, content_sha256)` lookup in `drift.db`.
+4. Re-discovers files (with same exclusions as init), re-parses changed files via cached `file_clusters` in `index.db`.
 5. Re-clusters from current signatures. New archetypes may appear; old ones may disappear.
 6. Atomic profile commit — old profile remains valid until `COMMITTED` sentinel is rolled in.
 7. Reports diff: archetypes added/removed, canonicals updated, file count delta.
 
 ## Trust + material change
 
-If the new profile's `profile.json` SHA-256 differs from the trusted hash, trust is automatically invalidated. The user must re-run `/chameleon-trust`.
+If the refresh causes a material change to any of the 6 hashed profile artifacts, trust transitions to `"stale"` and the user must re-run `/chameleon-trust`.
 
-This is intentional — you can't safely keep using a stale trust grant after the profile materially changed.
+Exception: structurally-identical refreshes (only the generation counter bumped, no archetype/canonical/rules changes) automatically preserve the existing trust grant.
 
 ## Common failure modes
 
 | Failure | Action |
 |---|---|
 | `lock_held` | Another `/chameleon-refresh` is in progress (PID + timestamp shown). Wait or kill that PID. |
-| `failed_too_many_files` | Repo grew past 50k file ceiling since init. Ask user for `paths_glob`. |
+| `failed_too_many_files` | Repo grew past 200k file ceiling since init. Ask user for `paths_glob`. |
+| `noop` | No files changed since the last refresh. Nothing to do. |
+| `partial_refresh` | <= 10% of files changed; partial refresh was used (faster). |
 | `archetypes_changed` is large (>50%) | Surface as warning: "X archetypes added, Y removed; review profile.summary.md before /chameleon-trust." This is unusual — probably a major refactor or the previous profile was wrong. |
 
-## Phase 2D scope
+## Incremental refresh
 
-Phase 2D simplification: `refresh_repo` currently re-runs the full bootstrap (no real incremental algorithm yet). The `drift.db` cache is populated but not consulted on refresh. Phase 4-end implements true incremental refresh via `(path, content_sha256)` cache hits.
+When <= 10% of files changed since the last run, `refresh_repo` uses partial refresh: only changed files are re-parsed and re-clustered via `index.db`'s `file_clusters` table. Above 10% change ratio (or when `force=True`), a full re-bootstrap runs.

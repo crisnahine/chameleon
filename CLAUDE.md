@@ -16,18 +16,18 @@ chameleon/
 ├── .cursor-plugin/    Cursor harness manifest
 ├── .codex-plugin/     Codex CLI manifest
 ├── hooks/             SessionStart, PreToolUse, PostToolUse, UserPromptSubmit hooks
-├── skills/            using-chameleon (auto) + 7 user-invocable slash commands
+├── skills/            using-chameleon (auto) + 9 user-invocable slash commands
 ├── mcp/               chameleon-mcp Python server (FastMCP, stdio transport)
 ├── scripts/           ts_dump.mjs, prism_dump.rb, bump-version.sh, merge driver
-├── tests/             unit, integration, acceptance, real-Claude-Code tests
+├── tests/             unit tests + journey harness (real-Claude-Code tests)
 └── docs/              architecture.md (design) + install.md
 ```
 
 ## Conventions
 
 - **Language**: all code, comments, docs, error messages, and commit messages MUST be in English.
-- **Versioning**: `bump-version.sh <new-version>` keeps the seven manifest files in sync.
-- **Locks**: `package-lock.json` and `mcp/uv.lock` are committed.
+- **Versioning**: `bump-version.sh <new-version>` keeps nine manifest files in sync (see `.version-bump.json`).
+- **Locks**: `mcp/package-lock.json` and `mcp/uv.lock` are committed.
 - **Atomic transactions**: profile writes use `.chameleon/.tmp/<txn-id>/COMMITTED` sentinel + flock-serialized rename.
 
 ## Working on this codebase
@@ -35,7 +35,7 @@ chameleon/
 ### Run the journey harness
 
 ```bash
-mcp/.venv/bin/python -m tests.journey.runner               # full run (~$25, ~65 min)
+mcp/.venv/bin/python -m tests.journey.runner               # full run (~$33, ~65 min)
 mcp/.venv/bin/python -m tests.journey.runner --list        # list acts
 mcp/.venv/bin/python -m tests.journey.runner --dry-run     # preflight only, no Claude spawn
 mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 20
@@ -83,13 +83,15 @@ sqlite> SELECT * FROM edit_observations ORDER BY observed_at DESC LIMIT 10;
 ## Environment variables
 
 - `CHAMELEON_DISABLE=1` — disable plugin globally for this session
+- `CHAMELEON_VERIFY=0` — disable PostToolUse archetype verification (default ON)
 - `CHAMELEON_PLUGIN_DATA` — override `~/.local/share/chameleon/` (tests only)
 - `CHAMELEON_HMAC_KEY_PATH` — override the HMAC key location (tests only)
+- `CHAMELEON_HOOK_ERROR_LOG` — override hook error log path
 - `CLAUDE_PLUGIN_ROOT` — set by Claude Code; path to installed plugin
 - `TMPDIR` — honored for HMAC exec log location
 
 ## Commit conventions
 
-- Subject line: 50 chars max, imperative mood ("Add X" not "Added X").
+- Subject line: imperative mood ("Add X" not "Added X"), aim for concise.
 - Body: explain *why*, not *what* (the diff shows what).
 - Reference issues / ADRs where relevant.

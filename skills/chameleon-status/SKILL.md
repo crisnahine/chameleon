@@ -15,7 +15,7 @@ What's plumbed today (read straight from `.chameleon/` and `drift.db`):
 2. **Trust state** — `trusted | untrusted | stale | n/a`, with the trusting user and grant timestamp when present.
 3. **Drift** — `days_since_refresh`, `observed_drift_score`, and a `recommended_action` string from `get_drift_status`.
 4. **Language hint** — when a Rails-with-frontend (or TS-with-Ruby-sidecar) was detected, name the secondary tree so the user can bootstrap it separately.
-5. **Version coherence** (v0.5.7) — call `daemon_status` to get `running_version`. Read `~/.claude/plugins/installed_plugins.json` for the installed plugin version. If they disagree, surface "Running v<X>, installed v<Y> — restart Claude Code to pick up the new MCP." This catches BUG-NEW-001 / BUG-018 in the wild.
+5. **Version coherence** (v0.5.7) — call `daemon_status` to get `running_version` (also returns `alive`, `pid`, `socket`, `uptime_s`, `last_request_at`). If the running version differs from the installed plugin version, surface "Running v<X>, installed v<Y> — restart Claude Code to pick up the new MCP."
 6. **v0.6.0 config** — when `.chameleon/config.json` exists, surface the active settings so the user can see at a glance whether their v0.6.0 features are on:
    - `canonical_ref` (and whether materialize is currently working, via `branch_pinning_enabled`)
    - `auto_refresh.enabled` + `drift_threshold` + `max_age_hours`
@@ -27,7 +27,7 @@ What's plumbed today (read straight from `.chameleon/` and `drift.db`):
 
 1. Call `chameleon-mcp::detect_repo(<file-path>)` to get the current repo_id and trust_state.
 2. Read `.chameleon/profile.json` and `archetypes.json` to enumerate archetypes (or call `get_pattern_context` if more convenient).
-3. Call `chameleon-mcp::get_drift_status(repo_id)` for `days_since_refresh` / `observed_drift_score` / `recommended_action`.
+3. Call `chameleon-mcp::get_drift_status(repo)` for `days_since_refresh` / `observed_drift_score` / `recommended_action`.
 4. Format the result for the terminal.
 
 ## Output format
@@ -35,7 +35,7 @@ What's plumbed today (read straight from `.chameleon/` and `drift.db`):
 ```
 chameleon profile: <repo-name>
   Language:        typescript
-  Schema:          7 (engine min: 0.5.6)
+  Schema:          7 (engine min: 0.5.7)
   Last bootstrap:  47 days ago
   Trust state:     trusted (granted 2026-05-10 by <user>)
   Drift score:     0.12 (recommended: refresh)

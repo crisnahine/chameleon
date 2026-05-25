@@ -116,7 +116,7 @@ Each field is one line (or a fenced code block for example/counterexample).
 | `rationale is required` | Ask user for a one-sentence reason |
 | `50KB cap` | Tell user: rationale + example + counterexample together must be < 50KB; trim the longest field |
 | `status must be` | Tell user: status must be `active` or `deprecated` (default: active) |
-| `archetype` regex error | Tell user: archetype names follow the same regex as slugs |
+| `archetype` regex error | Tell user: archetype names must be 1-64 chars, lowercase letters/digits/hyphens, start with a letter (min length differs from slugs) |
 | `no profile in this repo` | Tell user to run `/chameleon-init` first |
 
 ## Idiom format examples

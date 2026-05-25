@@ -29,17 +29,22 @@ Use the most-temporary option that solves the immediate need. Revert by:
 - `CHAMELEON_DISABLE=1` → unset the env var
 - `.chameleon/.skip` → remove the file from the repo
 
+## Prerequisites
+
+`disable_session` requires a trust grant. If the repo has no `.trust` record, the tool returns `status: failed` with a message to run `/chameleon-trust` first.
+
 ## The flow
 
 1. Confirm chameleon is currently active in this session.
 2. Call `chameleon-mcp::disable_session(repo=<repo_root>, session_id=<current session_id>)`.
-3. The PreToolUse hook checks for the resulting `.session_disabled.<session_id>` marker before injecting; if present, skips.
+   - If the tool returns `session_unknown_to_chameleon: true`, it means this session has never invoked another chameleon tool. Retry with `force=True` if the user explicitly asked for disable.
+3. The PreToolUse hook checks for the resulting `.session_disabled.<sha256(session_id)[:16]>` marker before injecting; if present, skips.
 4. Confirm to user: "chameleon disabled for this session. SessionStart primer will re-enable on next session unless you set CHAMELEON_DISABLE=1 globally or `.chameleon/.skip` in this repo."
 
 ## Don't suggest disable for the wrong problem
 
 - Pattern advice is wrong → use `/chameleon-teach` instead
-- Latency is too high → check `/chameleon-status --health` (Phase 4)
+- Latency is too high → run `/chameleon-doctor` to check health
 - One archetype's canonical is bad → edit `.chameleon/canonicals.json` directly OR use `/chameleon-refresh`
 - Profile drift is causing churn → `/chameleon-refresh`
 

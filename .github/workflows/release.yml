@@ -1,7 +1,7 @@
 # Release-tag gate for chameleon.
 #
 # Fires on any tag matching `v*.*.*`. Verifies that:
-#   1. All 7 manifests in .version-bump.json agree on the tagged version.
+#   1. All 9 manifests in .version-bump.json agree on the tagged version.
 #   2. mcp/pyproject.toml's [project] version matches.
 #   3. mcp/chameleon_mcp/__init__.py:__version__ matches.
 #   4. CHANGELOG.md has an entry for the tagged version (heading like
@@ -12,12 +12,9 @@
 # GitHub Release with the CHANGELOG entry as the body.
 #
 # To cut a release:
-#   1. bash scripts/bump-version.sh <new-version>           # 7 manifests
-#   2. Edit mcp/pyproject.toml and mcp/chameleon_mcp/__init__.py manually
-#      (the script doesn't cover Python-side anchors yet — see
-#      CONTRIBUTING.md "Version bumps" / "Known gap").
-#   3. Append the version entry to CHANGELOG.md.
-#   4. git commit + git tag v<new-version> + git push --tags.
+#   1. bash scripts/bump-version.sh <new-version>           # 9 manifests
+#   2. Append the version entry to CHANGELOG.md.
+#   3. git commit + git tag v<new-version> + git push --tags.
 
 name: release
 
@@ -56,14 +53,14 @@ jobs:
           echo "Tag: $TAG -> Version: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Verify all 7 manifests agree (bump-version.sh --check)
+      - name: Verify all 9 manifests agree (bump-version.sh --check)
         run: bash scripts/bump-version.sh --check
 
-      - name: Verify all 7 manifests match the tagged version
+      - name: Verify all 9 manifests match the tagged version
         env:
           VERSION: ${{ steps.extract.outputs.version }}
         run: |
-          # bump-version.sh --check confirms the 7 manifests agree with each
+          # bump-version.sh --check confirms the 9 manifests agree with each
           # OTHER, but not that they agree with the tag. Compare one
           # manifest (canonical: .claude-plugin/plugin.json) against the
           # extracted version.

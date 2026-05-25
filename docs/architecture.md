@@ -137,7 +137,7 @@ Replaces v4's "≥80% pattern conformance" (unverifiable) with measurable, falsi
 
 Concrete, falsifiable, costs you nothing to measure. Source: each PR's review thread; "should have caught" = within Tier 1 or Tier 2 dimensions documented in catalog.
 
-### Secondary metrics (instrumented in `value_attrib.db`, surfaced via `/chameleon-status`)
+### Secondary metrics (planned — `value_attrib.db` not yet implemented)
 
 | Metric | Target | Source |
 |---|---|---|
@@ -194,7 +194,7 @@ If counter-metrics breach, escalate: pause Phase 5 dogfood, investigate, fix bef
 5. **Discovery before action.** Every edit injects archetype context before model writes — via MCP-driven dispatch.
 6. **Inject context, don't deny.** Only safety hard-denies; conformance is advisory.
 7. **Plugin coexistence first-class.** Single-format JSON dispatch, neutral tags, parallel-hook-aware.
-8. **Honest scoping.** v1 = TS only, Claude Code only.
+8. **Honest scoping.** TypeScript + Ruby on Rails. Claude Code primary, with Cursor/Codex/Gemini harnesses.
 9. **Skills as code.** Iron Law honored.
 10. **Distributed-systems thinking.** `.chameleon/` is shared mutable state across processes; treat it as such (atomic commits, OS locks, cache invalidation, merge tools).
 11. **Fail-open advisories, fail-closed safety.** When MCP fails, edit proceeds with warning. When safety check fails, edit blocked.
@@ -386,7 +386,7 @@ Concrete enumeration of dimensions chameleon detects (Tier 1: auto-derivable) or
 │ │ ───── │ │ ────── │ │
 │ │ SessionStart │ │ using-chameleon (foundation) │ │
 │ │ → session-start │ │ │ │
-│ │ → SINGLE-FORMAT dispatch│ │ Slash commands (5 user + 2 admin)│ │
+│ │ → SINGLE-FORMAT dispatch│ │ Slash commands (9 user-invocable)│ │
 │ │ → cache_control: │ │ /chameleon-init │ │
 │ │ pinned static prefix │ │ /chameleon-refresh │ │
 │ │ + ephemeral footer │ │ /chameleon-status │ │
@@ -399,8 +399,9 @@ Concrete enumeration of dimensions chameleon detects (Tier 1: auto-derivable) or
 │ │ 2s timeout, fail-open)│ │ Short aliases: /cham-* │ │
 │ │ → tag-boundary sanitize │ │ │ │
 │ │ → hook-model dedup │ │ │ │
-│ │ PostToolUse Bash │ │ │ │
+│ │ PostToolUse │ │ │ │
 │ │ → posttool-recorder │ │ │ │
+│ │ → posttool-verify │ │ │ │
 │ │ UserPromptSubmit │ │ │ │
 │ │ → callout-detector │ │ │ │
 │ │ (surfaces disable hint)│ │ │ │
@@ -409,10 +410,12 @@ Concrete enumeration of dimensions chameleon detects (Tier 1: auto-derivable) or
 │ ▼ │
 │ ┌─────────────────────────────────────────────────────────────────┐ │
 │ │ MCP Server (chameleon-mcp) │ │
-│ │ detect_repo get_archetype lint_file │ │
-│ │ get_canonical_excerpt get_rules get_drift_status │ │
-│ │ refresh_repo bootstrap_repo list_profiles │ │
-│ │ merge_profiles (NEW) refine_profile trust_profile │ │
+│ │ detect_repo get_archetype get_pattern_context │ │
+│ │ get_canonical_excerpt get_rules lint_file │ │
+│ │ get_drift_status refresh_repo bootstrap_repo │ │
+│ │ list_profiles merge_profiles teach_profile │ │
+│ │ trust_profile disable_session pause_session │ │
+│ │ propose/apply_archetype_renames daemon_status doctor │ │
 │ │ (every file-reading tool: safe_open + lstat first; per-call │ │
 │ │ mtime check; AST node ceiling 50k; SQLite ro+trusted_schema=OFF)│ │
 │ └─────────────┬───────────────────────────────┬───────────────────┘ │
@@ -484,7 +487,6 @@ chameleon/
 ├── CHANGELOG.md
 ├── LICENSE
 ├── package.json # version anchor
-├── package-lock.json # MUST commit
 ├── .github/CONTRIBUTING.md # external contributor onboarding
 ├── hooks/
 │ ├── hooks.json
@@ -517,12 +519,11 @@ chameleon/
 │ │ ├── safe_open.py # NEW: shared safe_open(repo, rel_path) helper
 │ │ │ # realpath + prefix-match + null/NFD/sep checks
 │ │ │ # used by every file-reading tool
-│ │ ├── tools/
-│ │ │ ├── merge_profiles.py # NEW: programmatic profile merge (re-cluster from union)
-│ │ │ └── ...
+│ │ ├── tools.py # all 20 MCP tool implementations
 │ │ ├── extractors/
 │ │ │ ├── _base.py
-│ │ │ └── typescript.py # AST node ceiling 50k
+│ │ │ ├── typescript.py
+│ │ │ └── ruby.py
 │ │ ├── bootstrap/
 │ │ │ ├── transaction.py # NEW: atomic commit pattern (.tmp/<txn-id>/COMMITTED)
 │ │ │ ├── canonical_scanner.py # NEW: instruction-shaped natural language detection
@@ -530,47 +531,32 @@ chameleon/
 │ │ ├── profile/
 │ │ │ ├── schema.py # JSON parser hardened (depth cap 64, dup keys, NFC, ranges)
 │ │ │ ├── migrations/
-│ │ │ │ ├── README.md # migration correctness contract documented
-│ │ │ │ └── v1_to_v2.py # template
+│ │ │ │ └── README.md # migration correctness contract documented
 │ │ │ ├── secret_scanner.py # vendored detect-secrets rules
 │ │ │ └── poisoning_scanner.py # NEW: dangerous-pattern detection on canonicals
-│ │ ├── locks.py # NEW: flock advisory locks for refresh_repo
-│ │ ├── packs/ # REMOVED: companion plugins out of v1
+│ │ ├── locks.py # flock advisory locks for refresh_repo
 │ │ └── drift/
 │ │ └── sqlite_config.py # NEW: WAL + busy_timeout=30000 + retry-jitter
 │ └── node_modules/ # VENDORED + checksum-verified
 │ └── typescript/
 ├── scripts/
-│ ├── ts_dump.mjs # AST node ceiling 50k
+│ ├── ts_dump.mjs
+│ ├── prism_dump.rb
 │ ├── bump-version.sh
-│ ├── secret-scan.sh
+│ ├── chameleon-merge-driver.sh
+│ ├── check-no-personal-paths.sh
+│ ├── generate-typescript-checksums.sh
+│ └── prune-plugin-cache.sh
 ├── tests/
-│ ├── skill-triggering/
-│ │ ├── prompts/
-│ │ ├── run-all.sh # CI: fails if skill lacks tests/baseline.md
-│ │ └── run-test.sh
-│ ├── unit/
-│ ├── integration/
-│ │ ├── session-start-dispatch.bats # regression test: single-format JSON only
-│ │ ├── tag-boundary-sanitize.bats # regression: closing-tag in canonical content
-│ │ ├── transaction-atomicity.bats # regression: COMMITTED sentinel
-│ │ ├── lock-contention.bats # regression: concurrent refresh_repo
-│ │ └── cache-invalidation.bats # regression: mtime check
-│ ├── corpus/ # benchmark TS repos
-│ └── acceptance/
-│ ├── README.md
-│ ├── golden-transcript.md # cooperative case
-│ └── adversarial-transcript.md # NEW: user pressure + both plugins active
+│ ├── unit/ # pytest unit tests
+│ └── journey/ # real-Claude-Code journey harness (18 acts)
+│ ├── runner.py
+│ ├── acts/
+│ ├── harness/
+│ └── results/
 └── docs/
- └── chameleon/
- ├── specs/
- ├── plans/
- ├── reference/
- ├── decisions/ # ADR DIRECTORY
- ├── MAINTAINER.md # KEY ROTATION + DEP CADENCE + MIGRATION RUNBOOK
- │ # + QUARTERLY MODEL RE-BASELINE TASK
- ├── REAL-PROBLEM-EVIDENCE.md # CI-gated transcripts
- └── ROUND-{1,2,3,4}-*.md # review history
+ ├── architecture.md
+ └── install.md
 ```
 
 ---
@@ -706,7 +692,7 @@ TOTAL-HOOKS-PER-TURN CAP: ≤2,000 tokens summed across all hooks (truncated)
 ```yaml
 ---
 name: using-chameleon
-description: Use when starting any conversation in a TypeScript repo with a chameleon profile present, before any Edit, Write, or NotebookEdit operation
+description: Use when starting any conversation in a repo with a chameleon profile present (TypeScript or Ruby on Rails), before any Edit, Write, or NotebookEdit operation
 ---
 ```
 
@@ -723,12 +709,12 @@ description: Use when starting any conversation in a TypeScript repo with a cham
  - "I already saw the canonical for this archetype this session" → STOP, call MCP (canonicals can drift mid-session if `/chameleon-refresh` runs)
  - "The user is in a hurry, skipping the call saves time" → STOP, call MCP (200ms is the cost of correctness)
  - "I know this codebase already" → STOP, call MCP (the profile is the source of truth, not your prior)
-- Available slash commands (5 user + 2 admin + 1 trust + 4 short aliases)
+- Available slash commands (9 user-invocable + short aliases)
 - Profile state interpretation (trusted vs untrusted)
 - Coordination with a complementary skills library: "After `another bootstrap skill` triggers `brainstorming`, but before any Edit/Write" (priority order)
 - Non-blocking trust prompt: "If profile is untrusted, surface in response but proceed with user request"
 
-### User-invokable skills (5 commands + 1 trust + 2 admin)
+### User-invokable skills (9 commands)
 
 | Skill | Slash command | Short alias | Purpose |
 |---|---|---|---|
@@ -812,18 +798,26 @@ FastMCP-based, stdio transport (NEVER exposed over network).
 
 | Tool | Input | Output | Security note |
 |---|---|---|---|
-| `detect_repo` | file_path | repo_id, profile_status, trust_state | repo_id is sha256 of git_remote_url ALONE if set, else canonicalize_path(repo_root) |
+| `detect_repo` | file_path | repo_id, repo_root, profile_status, trust_state | repo_id is sha256 of git_remote_url ALONE if set, else canonicalize_path(repo_root) |
 | `get_archetype` | repo, file_path | archetype + content_signal match, alternatives | safe_open + lstat |
+| `get_pattern_context` | file_path | collapsed: archetype + canonical + rules + idioms | replaces the v3-era 4-call dance |
 | `get_canonical_excerpt` | repo, archetype | annotated excerpt (500-800 tokens) | safe_open + lstat + AST-query lookup with sha hint + tag-boundary sanitize |
-| `get_rules` | repo, archetype? | rules + citations | per-call mtime check on profile.json |
-| `lint_file` | repo, archetype, content | AST violations + canonical confidence score | content size 100KB cap + AST node 50k cap |
+| `get_rules` | repo, source? | rules + citations | per-call mtime check on profile.json |
+| `lint_file` | repo, archetype, content, file_path? | AST violations + canonical confidence score | content size 100KB cap |
 | `get_drift_status` | repo | freshness + days_since_refresh + observed_drift_score | reads from drift.db (WAL + busy_timeout=30000 + retry-jitter) |
-| `refresh_repo` | repo, force | re-analyze | OS-level flock on .chameleon/.refresh.lock |
-| `bootstrap_repo` | path, mode, paths_glob? | first-time analysis | safe_open + atomic transaction + canonical injection scan |
-| `list_profiles` | — | all known repos | reads from index.db (single SQLite, not N filesystem walks) |
-| `merge_profiles` | repo, ours, theirs, base | merged profile (re-clustered from union) | — programmatic git merge driver |
-| `refine_profile` | repo, feedback | apply user-driven correction | feedback sanitization (strip ANSI/zero-width, 50KB cap) |
-| `trust_profile` | repo | mark profile as trusted | requires repo name confirmation |
+| `refresh_repo` | repo, force? | re-analyze | OS-level flock on .chameleon/.refresh.lock |
+| `bootstrap_repo` | path, mode?, paths_glob?, force? | first-time analysis | safe_open + atomic transaction + canonical injection scan |
+| `list_profiles` | cursor?, limit? | all known repos | reads from index.db (single SQLite, not N filesystem walks) |
+| `merge_profiles` | repo, base, ours, theirs | merged profile (re-clustered from union) | programmatic git merge driver |
+| `teach_profile` | repo, feedback | apply user-driven idiom | feedback sanitization (strip ANSI/zero-width, 50KB cap) |
+| `teach_profile_structured` | repo, slug, rationale, example?, counterexample?, archetype?, status? | structured idiom entry | slug + archetype regex validation |
+| `trust_profile` | repo, confirmation_token | mark profile as trusted | requires repo name confirmation |
+| `disable_session` | repo, session_id, force? | suppress injections for session | requires trust grant |
+| `pause_session` | repo, minutes? | suppress injections temporarily | requires trust grant |
+| `propose_archetype_renames` | repo, top_n? | rename suggestions | read-only |
+| `apply_archetype_renames` | repo, renames | apply rename mapping | atomic profile commit |
+| `daemon_status` | — | daemon liveness + version | read-only |
+| `doctor` | — | installation health checks | read-only |
 
 **Cache_control discipline:** lstat output, drift.db queries, HMAC log entries, posttool exit codes, dynamic timestamps, MCP tool results — all flow as ephemeral input. NEVER in cached prefix.
 
@@ -855,16 +849,9 @@ v1 ships TypeScript only via TS Compiler API subprocess.
 - Inode-based file dedup (hardlink defense)
 - Reject files matching generated-code signals
 
-**Language rollout sequence (v1.0 TS → v1.5 Ruby → v2.0+ others):**
+**Supported languages:**
 
-The two primary implementation testing targets are Ruby on Rails repo (Ruby on Rails) and TypeScript repo (TypeScript). Supporting both from v1.0 was considered but explicitly deferred to a phased rollout:
-
-- **v1.0 = TypeScript only.** Dogfood = TypeScript repo. Validates the engine + bootstrap loop on one language.
-- **Validation gate:** 2-4 weeks of TypeScript repo dogfood. Ship v1.0 only after pattern conformance ≥80% and cost ceiling validated.
-- **v1.5 = adds Ruby (Prism).** Dogfood expands to Ruby on Rails repo. Adding a language to a proven engine is integration work, not novel engineering — the predecessor `predecessor projects` already shipped a working Prism approach.
-- **v2.0+ = community-driven additions** (Python, Go, Rust, PHP, Java) only if demand emerges.
-
-This sequence trades 2-3 weeks slower time-to-Ruby for substantially lower risk on the engine's fundamental abstractions. Both stacks are supported by v1.5 (~13 weeks total, vs ~10 weeks for client-only v1.0).
+Both TypeScript and Ruby on Rails are fully supported as of v0.4.0. The engine uses `ts_dump.mjs` (TypeScript Compiler API) for TS repos and `prism_dump.rb` (Prism parser) for Ruby repos. Future language additions (Python, Go, Rust, PHP, Java) are possible if demand emerges.
 
 ---
 
@@ -959,7 +946,7 @@ On /chameleon-refresh:
  ├── idioms.md # human-curated, deprecation-tracked
  └── profile.summary.md # human-readable for PR review (semantic deltas highlighted)
 
-${CLAUDE_PLUGIN_DATA}/ (local-only, NEVER committed)
+${CHAMELEON_PLUGIN_DATA}/ (local-only, NEVER committed)
  ├── index.db # : single SQLite listing all known repos
  └── <repo_id>/
  ├── drift.db # WAL + busy_timeout=30000 + retry-jitter, GC'd weekly
@@ -967,7 +954,7 @@ ${CLAUDE_PLUGIN_DATA}/ (local-only, NEVER committed)
  ├── .trust # per-user profile approval marker
  ├── .first_run_seen # : first-run welcome guard
  ├── .pause_until # : /chameleon-pause-15m timestamp
- └── value_attrib.db # : tracks edits-matched, deviations-flagged, corrections
+ └── index.db # repo discovery registry
 ```
 
 `canonicals.json` schema with **trichotomized canonical**:
@@ -1095,7 +1082,7 @@ CREATE INDEX idx_edit_obs_path ON edit_observations(rel_path, observed_at);
 
 ```sql
 PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=30000;
+PRAGMA busy_timeout=2000;
 PRAGMA synchronous=NORMAL;
 PRAGMA trusted_schema=OFF;
 
@@ -1104,44 +1091,26 @@ INSERT INTO schema_meta (k, v) VALUES ('schema_version', '1');
 
 -- Registry of all known repos this user has touched
 CREATE TABLE repos (
- repo_id TEXT PRIMARY KEY, -- sha256(canonicalized git_remote_url || abs_path)
- abs_path TEXT, -- last-known absolute path
- git_remote_url TEXT, -- canonicalized
- language TEXT, -- 'typescript', 'ruby' (v1.5), etc.
- profile_state TEXT NOT NULL, -- 'no_profile' | 'profile_present' | 'pack_match'
- trusted_at INTEGER, -- unix epoch when /chameleon-trust ran
- last_seen_at INTEGER NOT NULL,
- days_since_refresh INTEGER -- denormalized for fast SessionStart query
+ repo_id         TEXT NOT NULL,
+ repo_root       TEXT NOT NULL,
+ last_seen_at    TEXT NOT NULL,         -- ISO 8601 UTC
+ profile_sha256  TEXT,
+ archetype_count INTEGER,
+ files_indexed   INTEGER,
+ bootstrap_ms    INTEGER,
+ PRIMARY KEY (repo_id, repo_root)
 ) WITHOUT ROWID;
 
-CREATE INDEX idx_repos_last_seen ON repos(last_seen_at);
-CREATE INDEX idx_repos_state ON repos(profile_state);
+CREATE INDEX idx_repos_last_seen ON repos(last_seen_at DESC, repo_id ASC);
+CREATE INDEX idx_repos_repo_root ON repos(repo_root);
+CREATE INDEX idx_repos_repo_id ON repos(repo_id);
 ```
 
-**Migration policy:** index.db is a REGISTRY (not just cache — losing it loses the trust state). Use **additive-only `ALTER TABLE`** for new columns. Breaking changes require explicit migration script in `mcp/chameleon_mcp/profile/migrations/index_db_<from>_to_<to>.py`.
+**Migration policy:** index.db is a REGISTRY (repo discovery cache). Trust state lives separately in `${PLUGIN_DATA}/<repo_id>/.trust` files, not in index.db. Use **additive-only `ALTER TABLE`** for new columns. Note: index.db uses `busy_timeout=2000` (not 30000 like drift.db).
 
-### `value_attrib.db` (per-repo, in `${PLUGIN_DATA}/<repo_id>/`)
+### `value_attrib.db` (planned — not yet implemented)
 
-```sql
-PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=30000;
-
-CREATE TABLE schema_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
-
--- Per-session attribution: did chameleon's advisory help?
-CREATE TABLE sessions (
- session_id TEXT PRIMARY KEY,
- started_at INTEGER NOT NULL,
- edits_total INTEGER DEFAULT 0,
- edits_following_canonical INTEGER DEFAULT 0,
- deviations_flagged INTEGER DEFAULT 0,
- corrections_via_teach INTEGER DEFAULT 0
-) WITHOUT ROWID;
-
-CREATE INDEX idx_sessions_started ON sessions(started_at);
-```
-
-**Migration policy:** drop-and-recreate (cache).
+Per-session attribution tracking (edits matched to canonical, deviations flagged, corrections via teach). Schema and migration policy TBD.
 
 ### Hashing function: xxhash64
 
@@ -1279,10 +1248,10 @@ Bootstrap and refresh write to a transaction directory:
 
 ### SQLite hardening
 
-Every connection to drift.db, index.db, value_attrib.db sets:
+Every connection to drift.db and index.db sets:
 ```sql
 PRAGMA journal_mode=WAL;
-PRAGMA busy_timeout=30000;
+PRAGMA busy_timeout=30000;  -- drift.db; index.db overrides to 2000
 PRAGMA synchronous=NORMAL;
 PRAGMA trusted_schema=OFF;
 ```
@@ -1352,7 +1321,7 @@ MCP server holds profile.json + archetypes.json + rules.json + canonicals.json i
 - Hold profile in memory (per-call mtime check for invalidation)
 - Long-lived `ts_dump.mjs` worker pool
 - Process lock via `flock` on `${PLUGIN_DATA}/<repo_id>/.daemon.lock`
-- Auto-shutdown 5min after last hook activity (no idle resource use)
+- Auto-shutdown 10min after last hook activity (no idle resource use)
 
 ### `ts_dump.mjs` batching
 
@@ -1432,7 +1401,7 @@ Batched invocation: 1× 300ms startup + 5,000 × 50ms parse / N workers
 | 500-2,000 files | 1-3 min | $0.50-1.00 |
 | 2,000-10,000 files | 3-10 min | $1-3 |
 | 10,000-50,000 files | 10-30 min | $3-7 |
-| >50,000 files | refused without explicit globs | — |
+| >200,000 files | refused without explicit globs | — |
 
 ---
 
@@ -1501,8 +1470,8 @@ But that's a v2.0+ decision, contingent on observed need. Not in v1.
  d. AST scan repo (with workspace scoping if applicable):
  - <500 files: full pass
  - 500-50,000: stratified sample
- - >50,000: refuse without explicit globs
- - WITH globs: still enforce 50k post-glob cap
+ - >200,000: refuse without explicit globs
+ - WITH globs: still enforce 200k post-glob cap
  e. Inode-dedup file list
  f. Exclude generated, vendor, dist, __generated__
  AND from canonical pool: __tests__, test, legacy, archive, deprecated, _archive, .archive
@@ -1552,7 +1521,7 @@ But that's a v2.0+ decision, contingent on observed need. Not in v1.
 - `canonicalize_path` uses Unicode NFC normalization
 - Storage:
  - In-repo: `<repo>/.chameleon/...` (preferred; team shares)
- - Per-user: `${CLAUDE_PLUGIN_DATA}/<repo_id>/` (drift.db + cache.json + .trust + .first_run_seen + .pause_until + value_attrib.db)
+ - Per-user: `${CHAMELEON_PLUGIN_DATA}/<repo_id>/` (drift.db + index.db + .trust + .first_run_seen + .pause_until)
 - Detection: file-path walk-up; submodule-aware (innermost `.git` boundary)
 - Drift tracking: per-repo sqlite, GC'd weekly (records older than 30 days purged); directory-level age-out at 60 days no-access
 - **Index db** (`${PLUGIN_DATA}/index.db` — ): single SQLite listing all known repos with `(repo_id, last_seen_mtime, profile_state, days_since_refresh)`. SessionStart `list_profiles` hits this, not N filesystem walks.
@@ -1607,7 +1576,7 @@ The consultant/freelancer tier is **explicitly outside the $50/month ceiling** f
 - Combined token cost: ~1,500 (a complementary skills library) + ~1,500 (chameleon) = ~3,000 prime tokens
 - Acceptance test (adversarial variant) verifies coexistence under user pressure
 
-**Hook coordination signal:** `CHAMELEON_ADVISORY_INFLIGHT=1` (TTL'd file `/tmp/chameleon-inflight-<pid>` with mtime check) lets other plugins skip duplicate work. Best-effort.
+**Hook coordination signal:** (not yet implemented) A future hook coordination signal would let other plugins skip duplicate work.
 
 ---
 
@@ -1717,7 +1686,7 @@ Magic numbers in the architecture, with evaluation protocols for validation:
 - detect-secrets/gitleaks rules: vendored at known version; quarterly bump
 - Python minimum: 3.11 until October 2027
 - Node minimum: documented in `MAINTAINER.md`; LTS rotation policy
-- All locks committed: `package-lock.json`, `uv.lock`, `mcp/uv.lock`
+- All locks committed: `mcp/package-lock.json`, `mcp/uv.lock`
 
 **Quarterly model re-baseline :**
 - New Sonnet/Opus version released → MAINTAINER.md task triggers

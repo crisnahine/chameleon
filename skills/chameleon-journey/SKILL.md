@@ -9,7 +9,7 @@ Run the journey harness at `tests/journey/`. The harness verifies chameleon's fu
 
 ## Defaults
 
-Full run: 12 acts, ~$25 cost, ~65 min runtime, ~$35 hard budget cap.
+Full run: 18 acts, ~$33 cost ceiling, ~65 min runtime, $35 hard budget cap (default `--max-budget-usd`).
 
 ## Run
 
@@ -30,7 +30,7 @@ Variations:
 
 - stderr: per-act `[ACT N] ...` markers + cost + duration.
 - `tests/journey/results/journey_<ts>/run.json` + `run.md`: per-act + per-phase results.
-- `tests/journey/results/journey_<ts>/snapshots/<act>/<phase>/`: captured state per phase for post-mortem.
+- `tests/journey/results/journey_<ts>/checkpoints/<act>.jsonl`: per-act checkpoint data for post-mortem.
 
 ## Notes
 

@@ -27,9 +27,9 @@ The trust prompt is a security gate. **Don't grant trust mechanically.**
 
 ## Material-change re-prompt
 
-If the trusted profile's `profile.json` SHA-256 has changed since trust was granted (anyone ran `/chameleon-refresh` or modified the profile), trust is invalidated and the user must re-confirm.
+If any of the 6 hashed profile artifacts (`archetypes.json`, `canonicals.json`, `idioms.md`, `profile.json`, `rules.json`, `.archetype_renames.json`) have changed since trust was granted, trust becomes stale and the user must re-confirm.
 
-The MCP `detect_repo` tool returns `trust_state: "untrusted"` after a material change. `using-chameleon` surfaces the re-prompt.
+The MCP `detect_repo` tool returns `trust_state: "stale"` after a material change (not `"untrusted"` - that means no trust record exists at all). `using-chameleon` surfaces the re-prompt.
 
 ## What to tell the user before running
 
@@ -43,6 +43,7 @@ The MCP `detect_repo` tool returns `trust_state: "untrusted"` after a material c
 |---|---|
 | `confirmation_token` mismatch | User typed something else. Show the expected token (`<repo_name>` or `yes-trust-<prefix>`) and ask again. |
 | No profile to trust | `.chameleon/profile.json` doesn't exist. Suggest `/chameleon-init`. |
+| Profile not loadable | `profile.json` is corrupted or uses an unsupported schema version. Suggest `/chameleon-refresh`. |
 
 ## When to suggest revoking trust
 

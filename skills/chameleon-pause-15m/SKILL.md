@@ -19,7 +19,11 @@ The underlying `pause_session` MCP tool accepts any integer in `[1, 240]` minute
 ## When NOT to use
 
 - The frustration is about pattern advice quality → `/chameleon-teach` to capture the missed pattern
-- The frustration is about session-long latency → `/chameleon-disable` (session-scope) or check `/chameleon-status --health`
+- The frustration is about session-long latency → `/chameleon-disable` (session-scope) or run `/chameleon-doctor`
+
+## Prerequisites
+
+`pause_session` requires a trust grant. If the repo has no `.trust` record, the tool returns `status: failed` with a message to run `/chameleon-trust` first.
 
 ## The flow
 
@@ -36,7 +40,7 @@ See `chameleon-disable` skill for the full hierarchy. `pause-15m` is the most-te
 
 ## Implementation status
 
-Hook integration is wired: preflight-and-advise calls `is_chameleon_suppressed` before injecting, which honors `.pause_until` (auto-expires), `.session_disabled.<session_id>`, `CHAMELEON_DISABLE=1`, and `.chameleon/.skip`.
+Hook integration is wired: preflight-and-advise calls `is_chameleon_suppressed` before injecting, which honors `.pause_until` (auto-expires), `.session_disabled.<sha256(session_id)[:16]>`, `CHAMELEON_DISABLE=1`, and `.chameleon/.skip`.
 
 ## Future variants
 

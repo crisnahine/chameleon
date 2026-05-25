@@ -82,21 +82,24 @@ The [Quickstart](#quickstart) above has the two commands for Claude Code. For th
 | `/chameleon-trust` | Approve a committed profile for your user |
 | `/chameleon-disable` | Suppress chameleon for the rest of this session |
 | `/chameleon-pause-15m` | Pause for 15 minutes (auto-resume) |
+| `/chameleon-doctor` | Run health checks on the chameleon installation |
+| `/chameleon-journey` | Run the end-to-end journey test harness |
 
-All commands accept `/cham-<name>` short aliases. `using-chameleon` is the eighth skill — it auto-fires on `SessionStart` and orients the model.
+All commands accept `/cham-<name>` short aliases. `using-chameleon` is the tenth skill — it auto-fires on `SessionStart` and orients the model.
 
 ### Hooks
 
-Four hooks drive the runtime:
+Five hooks drive the runtime:
 
 - **SessionStart** — detects the repo, loads the profile, and announces archetype awareness to the model.
 - **PreToolUse** — fires on Edit/Write/NotebookEdit; injects `<chameleon-context>` with the archetype's canonical excerpt, rules, and idioms.
-- **PostToolUse** — fires on Bash; records drift signals for `/chameleon-status`.
-- **UserPromptSubmit** — surfaces profile state and any active opt-out at the start of each turn.
+- **PostToolUse (recorder)** — fires on Bash/Edit/Write/NotebookEdit; records drift signals for `/chameleon-status`.
+- **PostToolUse (verify)** — fires on Edit/Write/NotebookEdit; runs archetype conformance lint on the written file.
+- **UserPromptSubmit** — detects frustration phrases and surfaces disable/pause/teach options.
 
 ### MCP server
 
-`chameleon-mcp` (Python, FastMCP, stdio transport) exposes 15 tools: `detect_repo`, `get_archetype`, `get_pattern_context`, `get_canonical_excerpt`, `get_rules`, `lint_file`, `get_drift_status`, `refresh_repo`, `bootstrap_repo`, `list_profiles`, `merge_profiles`, `teach_profile`, `trust_profile`, `disable_session`, `pause_session`.
+`chameleon-mcp` (Python, FastMCP, stdio transport) exposes 20 tools: `detect_repo`, `get_archetype`, `get_pattern_context`, `get_canonical_excerpt`, `get_rules`, `lint_file`, `get_drift_status`, `refresh_repo`, `bootstrap_repo`, `list_profiles`, `merge_profiles`, `teach_profile`, `teach_profile_structured`, `trust_profile`, `disable_session`, `pause_session`, `propose_archetype_renames`, `apply_archetype_renames`, `daemon_status`, `doctor`.
 
 ### Opt-out hierarchy
 

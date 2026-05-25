@@ -8,7 +8,7 @@ description: Use when the user explicitly invokes /chameleon-doctor to get a tri
 Run the chameleon-mcp `doctor` MCP tool. It returns a structured envelope:
 
 - `overall`: ok | warn | error
-- `checks`: a list of subsystem checks (python version, bash on PATH, timeout(1) on PATH, plugin data writable, hook scripts present and executable, HMAC key sane, daemon liveness, recent hook errors, per-repo profile/trust state)
+- `checks`: a list of subsystem checks (python version, bash on PATH, timeout(1) on PATH, plugin data writable, hook scripts present and executable, HMAC key sane, daemon liveness, recent hook errors, per-repo profile/trust state, config_json validation)
 - `summary`: counts
 
 ## The flow

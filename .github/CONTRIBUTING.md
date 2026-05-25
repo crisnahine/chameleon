@@ -56,26 +56,15 @@ cd mcp
 
 ## Running tests
 
-All test commands run from `mcp/` with `PYTHONPATH=.:../tests`.
-
 | Suite | Command | Notes |
 |---|---|---|
-| Full suite, 4 randomized orderings | `cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/run_all_orders.py` | Order-independence check. Run before every PR. |
-| Comprehensive | `cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/comprehensive_test.py` | Broad coverage; fastest single-file run. |
-| MCP protocol | `cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/mcp_protocol_test.py` | Tool surface contract. |
-| v0.2 regression | `cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/v0_2_regression_test.py` | 25 assertions covering the v0.2.0 audit fixes. Don't regress. |
-| Real Claude Code acceptance | `cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/claude_code_acceptance_test.py` | Spends ~$0.20 per run. Required for PRs that touch hooks or skills. |
-| Bash skill triggering | `bash tests/skill_triggering_test.sh` | Spends ~$0.35 per run. |
+| Unit tests | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ -v` | Fast, no external deps. Run before every PR. |
+| Harness library self-tests | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/journey/harness/tests/ -v` | Verifies the journey harness itself. |
+| Journey harness (full) | `mcp/.venv/bin/python -m tests.journey.runner` | Drives real `claude -p` subprocesses. ~$33, ~65 min. |
+| Journey harness (dry-run) | `mcp/.venv/bin/python -m tests.journey.runner --dry-run` | Preflight only, no Claude spawn. |
+| Journey harness (list acts) | `mcp/.venv/bin/python -m tests.journey.runner --list` | Lists available acts. |
 
-Real-Claude-Code tests need a TypeScript repo and/or a Ruby on Rails repo
-to exercise. Set in `.env` (gitignored):
-
-```
-CHAMELEON_TEST_TS_REPO=/abs/path/to/typescript/repo
-CHAMELEON_TEST_RUBY_REPO=/abs/path/to/rails/repo
-```
-
-Tests skip gracefully when these are unset.
+All commands run from the repo root.
 
 ## How to make a change
 
@@ -88,15 +77,15 @@ issue, not the code, before implementation proceeds.
 
 ### Hook stack changes
 
-Hooks live in `hooks/`. Four hooks: `session-start`, `preflight-and-advise`,
-`posttool-recorder`, `callout-detector`. They are subprocess-per-call today.
+Hooks live in `hooks/`. Five hooks: `session-start`, `preflight-and-advise`,
+`posttool-recorder`, `posttool-verify`, `callout-detector`. They are subprocess-per-call today.
 
 - Preserve the fail-open / fail-closed split: safety hard-denies block;
   advisory MCP calls fail open with a `<chameleon-context>` warning.
 - Preserve the 2-second MCP timeout in `preflight-and-advise`. Increasing
   it slows every edit; decreasing it raises fail-open rate.
-- Run `cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/pretooluse_hook_test.py`
-  and the real-Claude-Code acceptance suite.
+- Run `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ -v`
+  and the journey harness dry-run (`mcp/.venv/bin/python -m tests.journey.runner --dry-run`).
 
 Test a hook locally:
 
@@ -162,8 +151,8 @@ before/after eval evidence will be sent back.
 
 ## Commit conventions
 
-- **Subject line**: 50 chars max, imperative mood ("Add X" not "Added X" or
-  "Adds X").
+- **Subject line**: imperative mood ("Add X" not "Added X" or "Adds X"),
+  aim for concise.
 - **Body**: explain *why*, not *what* (the diff shows what).
 - **Reference issues**: `Closes #42`.
 - **English only**: all code, comments, docs, error messages, commit
@@ -184,38 +173,36 @@ before/after eval evidence will be sent back.
 
 ## Version bumps
 
-`scripts/bump-version.sh <new-version>` keeps seven manifest files in sync:
-`.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`,
-`.cursor-plugin/plugin.json`, `.codex-plugin/plugin.json`,
-`gemini-extension.json`, `package.json`, `mcp/package.json`.
-
-**Known gap:** the Python-side version anchors are NOT in the script's
-declared list — `mcp/pyproject.toml` (`[project] version = ...`) and
-`mcp/chameleon_mcp/__init__.py` (`__version__ = "..."`) drift unless
-updated manually. Bump them in the same commit. Fixing the script to cover
-both is a welcome PR.
+`scripts/bump-version.sh <new-version>` keeps nine manifest files in sync
+(see `.version-bump.json` for the full list): `.claude-plugin/plugin.json`,
+`.claude-plugin/marketplace.json`, `.cursor-plugin/plugin.json`,
+`.codex-plugin/plugin.json`, `gemini-extension.json`, `package.json`,
+`mcp/package.json`, `mcp/pyproject.toml`, `mcp/chameleon_mcp/__init__.py`.
 
 Run `scripts/bump-version.sh --check` before tagging to catch drift.
 
 ## Continuous integration
 
-Three workflows live under [.github/workflows/](.github/workflows/):
+Four workflows live under [.github/workflows/](.github/workflows/):
 
 - **`ci.yml`** — fires on every PR against `main` and every push to `main`.
   Runs the Python test matrix (3.11 + 3.12 on Ubuntu + macOS), ruff lint,
-  `bump-version.sh --check`, and a one-shot `hooks/session-start` smoke
-  test. The real-Claude-Code acceptance suite is intentionally excluded.
+  `bump-version.sh --check`, `check-no-personal-paths.sh`, and a one-shot
+  `hooks/session-start` smoke test.
 - **`release.yml`** — fires on tag pushes matching `v*.*.*`. Verifies all
-  seven manifests + `mcp/pyproject.toml` + `mcp/chameleon_mcp/__init__.py`
-  agree with the tag, that `CHANGELOG.md` has an entry for the version,
-  re-runs the full test matrix, builds a release tarball, and publishes
-  a GitHub Release with the CHANGELOG entry as the body.
+  nine manifests agree with the tag, that `CHANGELOG.md` has an entry for
+  the version, re-runs the full test matrix, builds a release tarball, and
+  publishes a GitHub Release with the CHANGELOG entry as the body.
 - **`real-claude-code-acceptance.yml`** — manual (`workflow_dispatch`)
-  plus a weekly cron. Runs `tests/claude_code_acceptance_test.py`
-  (~$0.20/run). Trigger manually from the Actions tab; requires the
-  maintainer to have configured `CLAUDE_CODE_OAUTH_TOKEN`,
-  `CHAMELEON_TEST_TS_REPO`, and `CHAMELEON_TEST_RUBY_REPO` secrets.
-  Fails soft with a SKIP message when those secrets aren't present.
+  plus a weekly cron. Runs `tests.journey.runner --dry-run` (preflight
+  check). Trigger manually from the Actions tab; requires the maintainer
+  to have configured `CLAUDE_CODE_OAUTH_TOKEN`, `CHAMELEON_TEST_TS_REPO`,
+  and `CHAMELEON_TEST_RUBY_REPO` secrets. Fails soft with a SKIP message
+  when those secrets aren't present.
+- **`calibration.yml`** — manual only (`workflow_dispatch`). Runs the
+  calibration harness against a corpus of repos to measure parameter
+  defaults. Requires `CHAMELEON_CALIBRATION_CORPUS_JSON` secret; without
+  it, emits `no_corpus_configured` and exits cleanly.
 
 Workflow run logs live under the repo's Actions tab on GitHub.
 
@@ -230,7 +217,7 @@ non-trivial change so we can agree on the approach before you invest time.
 - Never commit hardcoded credentials.
 - Profile artifacts in `.chameleon/` may contain code excerpts; treat as
   sensitive even though committed.
-- `drift.db`, `index.db`, `value_attrib.db`, `.trust` files in
+- `drift.db`, `index.db`, `.trust` files in
   `~/.local/share/chameleon/` are local-only. Never committed, never
   exfiltrated.
 

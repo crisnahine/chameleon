@@ -1,10 +1,8 @@
 # Real-Claude-Code acceptance suite for chameleon.
 #
-# This workflow runs tests/claude_code_acceptance_test.py, which spawns
-# `claude --plugin-dir ...` and parses its stream-json output. Each run
-# costs roughly $0.20 in API spend against the maintainer's Claude
-# Code OAuth account — that's why the suite is NOT wired into ci.yml or
-# release.yml. It runs only on:
+# This workflow runs the journey harness in dry-run mode (preflight
+# check), which validates plugin setup without spawning Claude sessions.
+# It runs only on:
 #
 #   - workflow_dispatch (manual trigger, "Run workflow" in the Actions UI)
 #   - weekly cron (Mondays at 12:00 UTC) — a smoke pass against main
@@ -23,19 +21,13 @@
 #   CHAMELEON_TEST_RUBY_REPO
 #       Absolute paths to a TypeScript repo (must contain tsconfig.json /
 #       package.json) and a Ruby on Rails repo (must contain Gemfile /
-#       config/application.rb). chameleon's current test rig reads
-#       these from .env via tests/_test_config.py.
+#       config/application.rb). The journey harness uses these for
+#       fixture setup.
 #
 #       Because GitHub-hosted runners have no checkout of the
-#       maintainer's local test repos, the recommended path is:
-#         a) Commit fixture repos as git submodules under tests/fixtures/
-#            and set the secrets to those relative paths, OR
-#         b) Skip via the fail-soft branch below and run this workflow
-#            only against a self-hosted runner that has the repos
-#            checked out locally.
-#
-#       The workflow as shipped takes path (b) — see the "Detect missing
-#       secrets" step.
+#       maintainer's local test repos, the workflow fails soft when
+#       these secrets are absent — see the "Detect missing secrets"
+#       step.
 
 name: real-claude-code-acceptance
 

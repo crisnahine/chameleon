@@ -5,7 +5,7 @@
 # archetype, and feeds violations back via additionalContext so the model
 # can self-correct.
 #
-# Gated by CHAMELEON_VERIFY=1 env var (opt-in).
+# Default ON. Set CHAMELEON_VERIFY=0 to disable.
 # Fail-open: any failure -> emit empty JSON. Never block tool completion.
 
 set -euo pipefail

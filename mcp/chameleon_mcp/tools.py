@@ -1,7 +1,7 @@
 """MCP tool implementations for chameleon.
 
-All 18 tools are fully implemented (Phase 4 complete). Each tool returns
-the standard API versioning envelope per Round 5 API Designer:
+All 20 tools are fully implemented. Each tool returns the standard API
+versioning envelope:
 { "api_version": "1", "data": {...}, "truncated"?: bool, "next_cursor"?: str }
 """
 
@@ -5366,7 +5366,7 @@ def doctor() -> dict:
     if plugin_root_env:
         plugin_root = Path(plugin_root_env)
         hook_dir = plugin_root / "hooks"
-        for hook_name in ("preflight-and-advise", "posttool-recorder", "session-start", "callout-detector"):
+        for hook_name in ("preflight-and-advise", "posttool-recorder", "posttool-verify", "session-start", "callout-detector"):
             hpath = hook_dir / hook_name
             if hpath.is_file() and os.access(hpath, os.X_OK):
                 checks.append({"name": f"hook_{hook_name}", "status": "ok", "detail": "executable"})

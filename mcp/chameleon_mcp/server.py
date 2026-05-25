@@ -16,10 +16,7 @@ from chameleon_mcp import tools
 mcp = FastMCP("chameleon-mcp")
 
 
-# Register all 18 MCP tools (Phase 1C stubs return hardcoded valid-shape values).
-# Real implementations land in Phase 2 (bootstrap + extractor) and Phase 4 (security).
-# Phase 2D.1 added propose_archetype_renames + apply_archetype_renames.
-# Phase 2D.4 added teach_profile_structured.
+# Register all 20 MCP tools.
 
 
 @mcp.tool()
@@ -34,8 +31,9 @@ def detect_repo(file_path: str) -> dict:
           "api_version": "1",
           "data": {
             "repo_id": str,            # sha256 hex of git_remote_url or canonicalized abs path
-            "profile_status": str,     # "no_profile" | "profile_present" | "pack_match"
-            "trust_state": str,        # "trusted" | "untrusted" | "n/a"
+            "repo_root": str,          # absolute path to repo root
+            "profile_status": str,     # "no_repo" | "no_profile" | "profile_present" | "profile_corrupted" | "profile_unsupported_schema_version"
+            "trust_state": str,        # "trusted" | "untrusted" | "stale" | "n/a"
           }
         }
     """
@@ -72,9 +70,11 @@ def get_pattern_context(file_path: str) -> dict:
           "api_version": "1",
           "data": {
             "repo": {"id": str, "profile_status": str, "trust_state": str},
-            "archetype": {"name": str, "alternatives": [str], "confidence_band": str},
+            "archetype": {"archetype": str, "alternatives": [str], "confidence_band": str,
+                          "content_signal_match": bool, "match_quality": str, "sub_buckets_count": int},
             "canonical_excerpt": {"content": str, "witness_path": str, "truncated": bool, "sha_hint": str},
-            "rules": [(source_key, config_dict), ...],  # list of (str, dict) tuples from rules.json
+            "rules": [(source_key, config_dict), ...],
+            "idioms": str | None,
             "meta": {"mtime_token": str, "computed_at": str}
           }
         }
