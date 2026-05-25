@@ -1,7 +1,7 @@
 """``.chameleon/config.json`` reader for v0.6.0 UX features.
 
 v0.5.x had no per-repo configuration file; behavior was hard-coded.
-v0.6.0 introduces opt-in features (branch pinning, auto-refresh,
+v0.6.0 introduces configurable features (branch pinning, auto-refresh,
 trust-friction reduction, auto-rename) that need a place to be
 configured per repo. This module loads + validates the file.
 
@@ -46,7 +46,7 @@ class ChameleonConfigError(ValueError):
 
 @dataclass(frozen=True)
 class AutoRefreshConfig:
-    enabled: bool = False
+    enabled: bool = True
     drift_threshold: float = 0.2
     max_age_hours: int = 168  # 7 days
 

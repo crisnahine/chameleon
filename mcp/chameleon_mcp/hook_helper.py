@@ -269,7 +269,8 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
     """Fire ``refresh_repo`` in background when v0.6.0 auto-refresh fires.
 
     Gates (ALL must hold):
-      - ``.chameleon/config.json`` has ``auto_refresh.enabled == true``
+      - ``auto_refresh.enabled`` is not explicitly ``false`` in
+        ``.chameleon/config.json`` (default: on)
       - drift stats >= ``drift_threshold`` OR profile mtime older than
         ``max_age_hours``
       - per-repo cooldown marker is stale (don't re-fire every session)
