@@ -9,7 +9,6 @@ import pytest
 
 from chameleon_mcp.safe_open import UnsafeFileError, safe_open, safe_open_fd, safe_read_text
 
-
 # ---- 1. Path traversal ----
 
 

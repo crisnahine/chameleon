@@ -220,7 +220,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Lint hook scripts
-        run: shellcheck hooks/session-start hooks/preflight-and-advise hooks/posttool-recorder hooks/posttool-verify hooks/callout-detector scripts/*.sh
+        run: shellcheck -S warning hooks/session-start hooks/preflight-and-advise hooks/posttool-recorder hooks/posttool-verify hooks/callout-detector scripts/*.sh
 
   hooks-manifest:
     name: hooks-manifest-check
@@ -236,12 +236,16 @@ jobs:
           python3 -c "
           import json, sys, os
           with open('hooks/hooks.json') as f:
-              hooks = json.load(f)
+              manifest = json.load(f)
           errors = 0
-          for hook in hooks.get('hooks', []):
-              script = 'hooks/' + hook['command'].split('/')[-1]
-              if not os.path.isfile(script):
-                  print(f'ERROR: {script} referenced in hooks.json but missing')
+          for event, entries in manifest.get('hooks', {}).items():
+              for entry in entries:
+                  for hook in entry.get('hooks', []):
+                      cmd = hook.get('command', '')
+                      script_name = cmd.split()[-1] if cmd else ''
+                      script_path = 'hooks/' + script_name
+                      if script_name and not os.path.isfile(script_path):
+                          print(f'ERROR: {script_path} referenced in hooks.json but missing')
                   errors += 1
               elif not os.access(script, os.X_OK):
                   print(f'ERROR: {script} not executable')

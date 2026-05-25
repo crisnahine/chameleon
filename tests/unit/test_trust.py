@@ -4,14 +4,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 from chameleon_mcp.profile.trust import (
     TrustRecord,
     grant_trust,
     hash_profile,
     trust_state_for,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

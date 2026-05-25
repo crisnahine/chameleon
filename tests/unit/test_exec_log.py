@@ -7,8 +7,6 @@ import stat
 from pathlib import Path
 from unittest.mock import patch
 
-
-
 # ---------------------------------------------------------------------------
 # 1. HMAC key generation -> mode 0600
 # ---------------------------------------------------------------------------

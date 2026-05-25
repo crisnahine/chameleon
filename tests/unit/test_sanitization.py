@@ -5,7 +5,6 @@ import pytest
 
 from chameleon_mcp.sanitization import _DANGEROUS_TOKENS, sanitize_for_chameleon_context
 
-
 # ---- 1. Each dangerous token produces [chameleon-sanitized: ...] ----
 
 

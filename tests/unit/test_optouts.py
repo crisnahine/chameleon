@@ -4,11 +4,9 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
-
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -87,7 +85,7 @@ def test_session_disable_valid_signature(tmp_path: Path):
         "CHAMELEON_HMAC_KEY_PATH": str(key_file),
         "CHAMELEON_DISABLE": "",
     }):
-        from chameleon_mcp.optouts import write_session_disable, is_chameleon_suppressed
+        from chameleon_mcp.optouts import is_chameleon_suppressed, write_session_disable
 
         write_session_disable(repo_id, session_id)
         result = is_chameleon_suppressed(
@@ -114,9 +112,9 @@ def test_session_disable_invalid_signature(tmp_path: Path):
         "CHAMELEON_DISABLE": "",
     }):
         from chameleon_mcp.optouts import (
-            write_session_disable,
-            is_chameleon_suppressed,
             _safe_session_marker,
+            is_chameleon_suppressed,
+            write_session_disable,
         )
         from chameleon_mcp.profile.trust import repo_data_dir
 
@@ -147,7 +145,7 @@ def test_pause_future_timestamp(tmp_path: Path):
         "CHAMELEON_PLUGIN_DATA": str(data_dir),
         "CHAMELEON_DISABLE": "",
     }):
-        from chameleon_mcp.optouts import write_pause, is_chameleon_suppressed
+        from chameleon_mcp.optouts import is_chameleon_suppressed, write_pause
 
         write_pause(repo_id, minutes=15)
         result = is_chameleon_suppressed(
@@ -173,7 +171,7 @@ def test_pause_expired_cleans_up(tmp_path: Path):
 
         pause_path = repo_data_dir(repo_id) / ".pause_until"
         # Write an already-expired ISO timestamp (1 hour ago)
-        past = datetime.fromtimestamp(time.time() - 3600, tz=timezone.utc)
+        past = datetime.fromtimestamp(time.time() - 3600, tz=UTC)
         pause_path.write_text(past.strftime("%Y-%m-%dT%H:%M:%SZ"), encoding="utf-8")
 
         assert pause_path.is_file()
@@ -266,7 +264,7 @@ def test_write_session_disable_creates_marker(tmp_path: Path):
         "CHAMELEON_PLUGIN_DATA": str(data_dir),
         "CHAMELEON_HMAC_KEY_PATH": str(key_file),
     }):
-        from chameleon_mcp.optouts import write_session_disable, _safe_session_marker
+        from chameleon_mcp.optouts import _safe_session_marker, write_session_disable
 
         marker_path = write_session_disable(repo_id, session_id)
 

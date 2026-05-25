@@ -8,18 +8,16 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-
 from chameleon_mcp.daemon import (
+    _LEN_STRUCT,
     DEFAULT_IDLE_TIMEOUT_S,
     MAX_FRAME_BYTES,
     _DaemonState,
     _idle_timeout_from_env,
-    _LEN_STRUCT,
     daemon_info,
     recv_frame,
     send_frame,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
