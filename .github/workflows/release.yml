@@ -112,7 +112,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ['3.11', '3.12']
+        python-version: ['3.11', '3.12', '3.13']
 
     steps:
       - name: Check out repository
@@ -144,11 +144,11 @@ jobs:
         working-directory: mcp
         run: npm ci
 
-      - name: Run journey harness library tests
+      - name: Run unit + harness tests
         working-directory: mcp
         env:
           PYTHONPATH: '.:..'
-        run: .venv/bin/python -m pytest ../tests/journey/harness/tests/ -v
+        run: .venv/bin/python -m pytest ../tests/unit/ ../tests/journey/harness/tests/ -v
 
   build-tarball:
     name: build-tarball
