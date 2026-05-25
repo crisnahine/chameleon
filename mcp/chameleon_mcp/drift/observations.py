@@ -34,6 +34,15 @@ def _get_drift_conn(repo_id: str) -> sqlite3.Connection:
     went stale), drops the cache entry and opens a fresh one via
     ``init_drift_db``.
 
+    BUG-031: after opening, overrides ``busy_timeout`` to 200ms. The
+    hardened default (30s) is appropriate for long-lived MCP server
+    processes that can afford to wait, but drift writes happen on the
+    hook hot path where the total budget is 3 seconds. A stale MCP
+    server process holding the WAL lock would block the hook for the
+    full 30s, causing a timeout kill. 200ms is enough for brief
+    contention; if the lock is truly stuck, we skip the write (drift
+    is advisory, not load-bearing).
+
     Raises sqlite3.Error or OSError on failure — callers already handle
     those (fail-open).
     """
@@ -52,6 +61,7 @@ def _get_drift_conn(repo_id: str) -> sqlite3.Connection:
                 pass
             _DRIFT_CONN.pop(key, None)
     conn = init_drift_db(db_path)
+    conn.execute("PRAGMA busy_timeout=200")
     _DRIFT_CONN[key] = conn
     return conn
 
