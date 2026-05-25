@@ -475,6 +475,28 @@ def session_start() -> int:
     # returns immediately — the refresh runs detached.
     _maybe_auto_refresh(Path.cwd())
 
+    # v0.7.0: clean up stale enforcement state files (>24h old)
+    try:
+        from chameleon_mcp.plugin_paths import plugin_data_dir
+        from chameleon_mcp.tools import _compute_repo_id
+        from chameleon_mcp.profile.loader import find_repo_root
+
+        repo_root = find_repo_root(Path.cwd())
+        if repo_root:
+            repo_id = _compute_repo_id(repo_root)
+            repo_data = plugin_data_dir() / repo_id
+            if repo_data.is_dir():
+                cutoff = time.time() - 86400
+                for pattern in (".enforcement.*.json", ".enforcement.*.lock"):
+                    for p in repo_data.glob(pattern):
+                        try:
+                            if p.stat().st_mtime < cutoff:
+                                p.unlink()
+                        except OSError:
+                            pass
+    except Exception:
+        pass
+
     wrapped_parts = [
         "<chameleon-context>",
         "You have chameleon, a profile-aware coding assistant.",
