@@ -19,6 +19,52 @@ from pathlib import Path
 from chameleon_mcp.drift.schema import init_drift_db
 from chameleon_mcp.profile.trust import plugin_data_dir
 
+# ── persistent connection cache ──────────────────────────────────────
+# Keyed by str(db_path). Each entry is a long-lived connection reused
+# across calls on the hot path (PreToolUse fires once per edit).
+# Health-checked on retrieval; dropped and rebuilt on any sqlite error.
+_DRIFT_CONN: dict[str, sqlite3.Connection] = {}
+
+
+def _get_drift_conn(repo_id: str) -> sqlite3.Connection:
+    """Return a cached connection to the repo's drift.db, creating if needed.
+
+    Health-checks the cached connection with ``SELECT 1``. If the check
+    fails (e.g. database was deleted and recreated, or the connection
+    went stale), drops the cache entry and opens a fresh one via
+    ``init_drift_db``.
+
+    Raises sqlite3.Error or OSError on failure — callers already handle
+    those (fail-open).
+    """
+    db_path = _drift_db_path(repo_id)
+    key = str(db_path)
+    conn = _DRIFT_CONN.get(key)
+    if conn is not None:
+        try:
+            conn.execute("SELECT 1")
+            return conn
+        except sqlite3.Error:
+            # Stale or broken — drop and rebuild below.
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _DRIFT_CONN.pop(key, None)
+    conn = init_drift_db(db_path)
+    _DRIFT_CONN[key] = conn
+    return conn
+
+
+def close_drift_connections() -> None:
+    """Close all cached drift.db connections. Safe to call at shutdown."""
+    for key in list(_DRIFT_CONN):
+        try:
+            _DRIFT_CONN.pop(key).close()
+        except Exception:
+            pass
+
+
 _CONFIDENCE_BAND_TO_FLOAT = {
     "high": 0.95,
     "medium": 0.7,
@@ -60,7 +106,7 @@ def record_edit_observation(
     ts = observed_at if observed_at is not None else int(time.time())
 
     try:
-        conn = init_drift_db(db_path)
+        conn = _get_drift_conn(repo_id)
     except (sqlite3.Error, OSError):
         return
 
@@ -120,11 +166,6 @@ def record_edit_observation(
                     )
     except sqlite3.Error:
         return
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 
 def record_bootstrap_baseline(
@@ -152,10 +193,9 @@ def record_bootstrap_baseline(
     """
     if not repo_id or not clustered_files:
         return 0
-    db_path = _drift_db_path(repo_id)
     ts = int(time.time())
     try:
-        conn = init_drift_db(db_path)
+        conn = _get_drift_conn(repo_id)
     except (sqlite3.Error, OSError):
         return 0
     written = 0
@@ -182,11 +222,6 @@ def record_bootstrap_baseline(
                     continue
     except sqlite3.Error:
         return written
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
     return written
 
 
@@ -221,7 +256,7 @@ def compute_drift_stats(
         return None
     cutoff = int(time.time()) - window_days * 86_400
     try:
-        conn = init_drift_db(db_path)
+        conn = _get_drift_conn(repo_id)
     except (sqlite3.Error, OSError):
         return None
     try:
@@ -232,11 +267,6 @@ def compute_drift_stats(
         ).fetchone()
     except sqlite3.Error:
         return None
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
     avg_conf, count = row
     if not count:
         return None

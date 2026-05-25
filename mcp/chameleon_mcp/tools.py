@@ -1,10 +1,7 @@
 """MCP tool implementations for chameleon.
 
-Phase 2D: most tools wired to real implementations. Stubs remain for
-get_archetype + get_canonical_excerpt + get_rules + lint_file +
-merge_profiles (these need clustering + lint engine work in Phase 4).
-
-All responses use the API versioning envelope per Round 5 API Designer:
+All 18 tools are fully implemented (Phase 4 complete). Each tool returns
+the standard API versioning envelope per Round 5 API Designer:
 { "api_version": "1", "data": {...}, "truncated"?: bool, "next_cursor"?: str }
 """
 
@@ -26,6 +23,18 @@ if TYPE_CHECKING:
     # `loaded: LoadedProfile` signature annotation resolve under
     # `from __future__ import annotations`.
     from chameleon_mcp.profile.loader import LoadedProfile
+
+
+# Process-global cache for _compute_repo_id: avoids spawning a git
+# subprocess on every get_pattern_context call.  Keyed by resolved repo
+# root string; values are (cached_at_monotonic, repo_id).  5-minute TTL.
+_REPO_ID_CACHE: dict[str, tuple[float, str]] = {}
+_REPO_ID_CACHE_TTL = 300  # seconds
+
+
+def _clear_repo_id_cache() -> None:
+    """Invalidate the repo-id cache (called by bootstrap_repo / refresh_repo)."""
+    _REPO_ID_CACHE.clear()
 
 
 def _envelope(data: dict, truncated: bool = False, next_cursor: str | None = None) -> dict:
@@ -358,12 +367,23 @@ def _compute_repo_id(repo_root: Path) -> str:
     filesystem location. Repos without `origin` (fresh `git init`, vendored
     snapshots, archive extracts) keep the v0.1–v0.3 path-based behavior.
     """
+    key = str(repo_root.resolve())
+    cached = _REPO_ID_CACHE.get(key)
+    if cached is not None:
+        cached_at, repo_id = cached
+        if (time.monotonic() - cached_at) < _REPO_ID_CACHE_TTL:
+            return repo_id
+
     url = _git_remote_url(repo_root)
     if url:
         canonical = _normalize_git_url(url)
         if canonical:
-            return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()
+            repo_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            _REPO_ID_CACHE[key] = (time.monotonic(), repo_id)
+            return repo_id
+    repo_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    _REPO_ID_CACHE[key] = (time.monotonic(), repo_id)
+    return repo_id
 
 
 def _legacy_path_repo_id(repo_root: Path) -> str:
@@ -1562,7 +1582,7 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     return _envelope(env)
 
 
-def lint_file(repo: str, archetype: str, content: str) -> dict:
+def lint_file(repo: str, archetype: str, content: str, file_path: str | None = None) -> dict:
     """Compare `content` against the archetype's canonical AST shape; return
     structural violations.
 
@@ -1611,6 +1631,9 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
     )
     from chameleon_mcp.lint_engine import (
         lint as _lint,
+    )
+    from chameleon_mcp.lint_engine import (
+        recalibrate_ast_query as _recalibrate_ast_query,
     )
     from chameleon_mcp.lint_engine import (
         scan_secrets as _scan_secrets,
@@ -1725,13 +1748,7 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
         witness_rel_path = (first.get("witness") or {}).get("path")
 
     # 3b. Recalibrate ast_query from the canonical witness using the same
-    # regex heuristic that extract_dimensions uses at lint time. The stored
-    # ast_query was derived from the real AST parser (ts_dump.mjs /
-    # prism_dump.rb) at bootstrap, but lint() compares against regex-derived
-    # dimensions. The two extractors disagree on counts (ImportDeclaration,
-    # InterfaceDeclaration, jsx_present) causing false positives: 56% of TS
-    # and 58% of Rails canonicals fail their own lint. Recalibrating to
-    # regex-vs-regex eliminates this gap.
+    # regex heuristic that extract_dimensions uses at lint time.
     if ast_query and witness_rel_path:
         try:
             witness_full = repo_root / witness_rel_path
@@ -1743,13 +1760,7 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
                     "language"
                 )
                 w_snap = _extract_dimensions(w_raw, language=w_lang)
-                ast_query = {
-                    "default_export_kind": None,
-                    "jsx_present": None,
-                    "top_level_node_kinds": sorted(set(w_snap.top_level_node_kinds)),
-                    "named_export_count_bucket": None,
-                    "content_signal": w_snap.content_signal,
-                }
+                ast_query = _recalibrate_ast_query(w_snap)
         except Exception:
             pass
 
@@ -1770,9 +1781,14 @@ def lint_file(repo: str, archetype: str, content: str) -> dict:
             truncated=truncated,
         )
 
-    # 5. Determine language. Prefer the witness extension (the archetype's
-    # actual language); fall back to the profile-level language metadata.
-    language = _detect_language(witness_rel_path) or loaded.profile.get("language")
+    # 5. Determine language. Prefer the caller-supplied file_path extension
+    # (the file being linted), then the witness extension, then the
+    # profile-level language metadata.
+    language = (
+        _detect_language(file_path)
+        or _detect_language(witness_rel_path)
+        or loaded.profile.get("language")
+    )
     if language not in ("typescript", "ruby"):
         language = None
 
@@ -2414,6 +2430,8 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     """
     from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
 
+    _clear_repo_id_cache()
+
     # Defensive slop guard: non-str / empty / null-byte / over-length
     # inputs explode downstream at `Path.resolve()` (ValueError for
     # null-byte, OSError ENAMETOOLONG for over-length). Reject at the
@@ -2988,6 +3006,8 @@ def bootstrap_repo(
     from chameleon_mcp import index_db
     from chameleon_mcp.bootstrap.orchestrator import bootstrap_repo as _bootstrap
     from chameleon_mcp.profile.trust import hash_profile
+
+    _clear_repo_id_cache()
 
     # Defensive slop guard: non-str / empty / null-byte / over-length
     # inputs explode downstream at `Path.resolve()` (ValueError for
@@ -3908,6 +3928,7 @@ def pause_session(repo: str, minutes: int = 15) -> dict:
     repo_ids. `_resolve_repo_arg` performs the shape detection.
     """
     from chameleon_mcp.optouts import write_pause
+    from chameleon_mcp.profile.trust import trust_state_for
 
     if not isinstance(minutes, int) or minutes <= 0 or minutes > 240:
         return _envelope({"status": "failed", "error": "minutes must be 1..240"})
@@ -3917,6 +3938,15 @@ def pause_session(repo: str, minutes: int = 15) -> dict:
         return _envelope({
             "status": "failed",
             "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+
+    if trust_state_for(repo_id) is None:
+        return _envelope({
+            "status": "failed",
+            "error": (
+                "pause_session requires a trust grant for the repo. "
+                "Run /chameleon-trust first."
+            ),
         })
 
     expiry_iso = write_pause(repo_id, minutes)
@@ -4341,143 +4371,17 @@ def _rewrite_summary_md(
 ) -> str:
     """Render the user-facing profile.summary.md after a rename.
 
-    The bootstrap orchestrator owns the canonical builder. We can't import
-    its private helper without coupling, so we re-emit the same shape here.
-    Keep this in sync if the orchestrator's output changes.
-
-    v0.5.4: the Rules section now renders the actual contents of
-    ``rules.json`` instead of the v0.4-era placeholder
-    ``_Phase 2C: tool config rules + AST stats._``. ``rules_data`` is the
-    parsed ``rules.json`` bundle. When omitted (legacy callers), the
-    section explains that rules.json wasn't passed.
+    Delegates to the shared renderer in ``chameleon_mcp.profile.summary``.
     """
-    lines = [
-        "# chameleon profile summary",
-        "",
-        f"Generated: {profile_data.get('created_at', '')}",
-        f"Engine: chameleon v{profile_data.get('engine_min_version', '')}",
-        f"Language: {profile_data.get('language', '')}",
-        f"Source: {profile_data.get('source', 'bootstrap')}",
-        f"Generation: {profile_data.get('generation', '')}",
-        f"Schema version: {profile_data.get('schema_version', '')}",
-        "",
-    ]
-    # v0.5.1 (Bug 2): keep the secondary-language section in lockstep with
-    # the orchestrator's _build_summary_md so a rename doesn't drop the
-    # warning from the trust-gate surface.
-    hint = profile_data.get("language_hint")
-    if isinstance(hint, dict) and hint.get("secondary_detected"):
-        lines.extend([
-            "## Secondary language",
-            "",
-            (
-                f"This bootstrap scanned **{hint.get('primary', '?')}** only. "
-                f"A secondary **{hint['secondary_detected']}** sidecar with "
-                f"~{hint.get('secondary_file_count', 0)} files was detected at "
-                f"`{hint.get('secondary_path', '')}` and **not included** in "
-                "this profile."
-            ),
-            "",
-            f"_{hint.get('note', '')}_",
-            "",
-        ])
-    lines.extend([
-        f"## {profile_data.get('archetype_count', 0)} archetypes detected",
-        "",
-    ])
-    for name, arch in sorted(archetypes_data.get("archetypes", {}).items()):
-        canonical_entries = canonicals_data.get("canonicals", {}).get(name) or []
-        canonical_path = (
-            canonical_entries[0]["witness"]["path"]
-            if canonical_entries and canonical_entries[0].get("witness")
-            else "(none)"
-        )
-        lines.append(
-            f"- **{name}** (cluster_size {arch.get('cluster_size', 0)}, "
-            f"paths {arch.get('paths_pattern', '')}) — canonical: `{canonical_path}`"
-        )
-    lines.extend([
-        "",
-        "## Rules",
-        "",
-    ])
-    # v0.5.4 — mirror the orchestrator's rules rendering. Without
-    # ``rules_data`` we fall back to a "no rules captured" note rather
-    # than the v0.4 placeholder that read as an unfinished feature.
-    rules_block = (rules_data or {}).get("rules") if rules_data else None
-    detected_tools = sorted(rules_block.keys()) if isinstance(rules_block, dict) else []
-    if detected_tools:
-        # Import here to keep this module decoupled from orchestrator at
-        # module-import time (preserves the cold-start budget).
-        from chameleon_mcp.bootstrap.orchestrator import _count_terminal_rules
-        lines.append(
-            f"_Auto-derived from {len(detected_tools)} tool config file(s): "
-            f"{', '.join(f'`{t}`' for t in detected_tools)}._"
-        )
-        lines.append("")
-        for tool in detected_tools:
-            tool_block = rules_block[tool]
-            if not isinstance(tool_block, dict):
-                continue
-            rule_count = _count_terminal_rules(tool_block)
-            lines.append(f"- **{tool}** — {rule_count} rule(s) extracted")
-    else:
-        lines.append(
-            "_No tool-config rules detected._ The bootstrap looked for "
-            "`eslint`, `tsconfig`, `prettier`, `rubocop`, and `.editorconfig` "
-            "and found none of them. Auto-derived rules will appear here "
-            "once those configs exist."
-        )
-    lines.extend([
-        "",
-        "## Idioms",
-        "",
-    ])
+    from chameleon_mcp.profile.summary import render_summary_md
 
-    # Mirror orchestrator's _extract_active_idioms — extract BOTH active and
-    # deprecated sections so the renamed summary doesn't pretend the
-    # deprecated section is always empty (v0.5.4: the "## deprecated\n
-    # _(none)_" rendering was a placeholder that looked like a bug).
-    def _extract_section(text: str, marker: str) -> str:
-        if marker not in text:
-            return ""
-        after = text.split(marker, 1)[1]
-        return after.split("\n## ", 1)[0].strip() if "\n## " in after else after.strip()
-
-    active = _extract_section(idioms_text, "## active")
-    deprecated = _extract_section(idioms_text, "## deprecated")
-
-    if active and "no idioms yet" not in active:
-        lines.append(
-            "_The following idioms ship in this profile and will be injected "
-            "into the model's context before each Edit/Write. Review carefully "
-            "before granting trust._"
-        )
-        lines.append("")
-        lines.append(active)
-        lines.append("")
-    else:
-        lines.append(
-            "_No idioms captured yet. Run /chameleon-teach to record team "
-            "conventions._"
-        )
-        lines.append("")
-
-    if deprecated and deprecated.strip() and "no idioms yet" not in deprecated:
-        # Only render the deprecated section if it actually carries content.
-        # Skipping the "_(none)_" placeholder removes a confusing visual
-        # artifact from clean profiles (cycle-3 dogfood observation).
-        lines.append("## Deprecated idioms")
-        lines.append("")
-        lines.append(
-            "_The following idioms were retired by `/chameleon-teach`. They "
-            "are kept here for audit history and are NOT injected into "
-            "context._"
-        )
-        lines.append("")
-        lines.append(deprecated)
-        lines.append("")
-    return "\n".join(lines)
+    return render_summary_md(
+        archetypes=archetypes_data,
+        canonicals=canonicals_data,
+        profile_meta=profile_data,
+        idioms_text=idioms_text,
+        rules_data=rules_data,
+    )
 
 
 # v0.5.1 (Bug 3): the rename overlay file lives at `.chameleon/renames.json`
@@ -4772,6 +4676,7 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
 
     summary_md = _rewrite_summary_md(
         profile_data, archetypes_data, canonicals_data, idioms_text,
+        rules_data=rules_data,
     )
 
     # v0.5.1 (Bug 3): merge the new renames into `.chameleon/renames.json`

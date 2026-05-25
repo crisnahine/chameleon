@@ -1784,64 +1784,6 @@ _EMPTY_IDIOMS_TEMPLATE = (
 )
 
 
-def _extract_active_idioms(idioms_md: str) -> str:
-    """Return the contents of the `## active` section of an idioms.md doc.
-
-    Used to inline idiom bodies in profile.summary.md so that the trust gate
-    actually shows users what they're approving. Without this, a poisoned
-    profile committed to a branch can ship prompt-injection-shaped idioms
-    that the trust review never displays.
-    """
-    return _extract_idioms_section(idioms_md, "## active")
-
-
-def _extract_idioms_section(idioms_md: str, marker: str) -> str:
-    """Return the contents of the given level-2 section of an idioms.md doc.
-
-    v0.5.4: factored out so ``_build_summary_md`` can render both the
-    active and deprecated sections. Returns an empty string when the
-    marker is absent OR when the section body is just the
-    ``_(none)_`` / "no idioms yet" placeholder.
-    """
-    if marker not in idioms_md:
-        return ""
-    after = idioms_md.split(marker, 1)[1]
-    section = after.split("\n## ", 1)[0] if "\n## " in after else after
-    section = section.strip()
-    # Treat placeholders as empty so profile.summary.md doesn't render
-    # a "Deprecated idioms" heading above "_(none)_" (cycle-3 dogfood
-    # observation).
-    placeholder_markers = ("_(none)_", "no idioms yet")
-    if not section or all(
-        section == m or section.startswith(m) for m in placeholder_markers if section == m
-    ):
-        return section if section and "no idioms yet" not in section and section != "_(none)_" else ""
-    if section in {"_(none)_"} or "no idioms yet" in section:
-        return ""
-    return section
-
-
-def _count_terminal_rules(block: dict, depth: int = 0) -> int:
-    """Return a rough count of terminal rule entries in a nested config block.
-
-    Used by ``_build_summary_md`` to surface a "N rule(s) extracted" line
-    for each tool config without rendering the full JSON tree (which can
-    be hundreds of lines for an eslint config). Caps recursion at depth
-    6 so a pathological config can't cause unbounded recursion.
-    """
-    if depth > 6 or not isinstance(block, dict):
-        return 0
-    count = 0
-    for v in block.values():
-        if isinstance(v, dict):
-            count += _count_terminal_rules(v, depth + 1)
-        elif isinstance(v, list):
-            count += len(v)
-        else:
-            count += 1
-    return count
-
-
 def _build_summary_md(
     archetypes_data: dict,
     canonicals_data: dict,
@@ -1851,130 +1793,18 @@ def _build_summary_md(
 ) -> str:
     """Generate the human-readable profile.summary.md for PR review.
 
-    Per Round 5 DX recommendation: profile.summary.md is what reviewers
-    actually read on profile-change PRs.
-
-    v0.5.4: the rules section used to render a "_Phase 2C: tool config
-    rules + AST stats._" placeholder. Now summarizes the actual contents
-    of rules.json (when ``rules_data`` is provided) or explains that no
-    tool configs were detected.
+    Delegates to the shared renderer in ``chameleon_mcp.profile.summary``.
+    The ``engine_version`` override ensures bootstrap uses the live
+    ENGINE_MIN_VERSION constant rather than reading it back from profile.json
+    (which hasn't been written yet at summary-generation time).
     """
-    lines = [
-        "# chameleon profile summary",
-        "",
-        f"Generated: {profile_data['created_at']}",
-        f"Engine: chameleon v{ENGINE_MIN_VERSION}",
-        f"Language: {profile_data['language']}",
-        f"Source: {profile_data['source']}",
-        f"Generation: {profile_data['generation']}",
-        f"Schema version: {profile_data['schema_version']}",
-        "",
-    ]
+    from chameleon_mcp.profile.summary import render_summary_md
 
-    # v0.5.1 Bug 2: prominent secondary-language warning for Rails+JS
-    # hybrids (and any future hybrid). Reviewers must see this before
-    # the archetype list because a wrong primary-language pick silently
-    # excludes ~half the repo.
-    hint = profile_data.get("language_hint")
-    if hint:
-        lines.extend([
-            "## Secondary language detected",
-            "",
-            (
-                f"This bootstrap scanned **{hint.get('primary')}** only. "
-                f"A sibling **{hint.get('secondary_detected')}** codebase "
-                f"({hint.get('secondary_file_count')} files at "
-                f"`{hint.get('secondary_path')}`) was deliberately excluded."
-            ),
-            "",
-            hint.get("note", ""),
-            "",
-        ])
-
-    lines.extend([
-        f"## {profile_data['archetype_count']} archetypes detected",
-        "",
-    ])
-    for name, arch in sorted(archetypes_data["archetypes"].items()):
-        canonicals = canonicals_data["canonicals"].get(name, [])
-        canonical_path = canonicals[0]["witness"]["path"] if canonicals else "(none)"
-        # v0.5.2 (Bug 3): prefer the witness-honest display string when
-        # signature-v5's bucket collapsed a load-bearing Rails segment.
-        # Falls back to the bucket for older profiles + non-Rails repos.
-        display_paths = arch.get("paths_pattern_display") or arch["paths_pattern"]
-        lines.append(
-            f"- **{name}** (cluster_size {arch['cluster_size']}, "
-            f"paths {display_paths}) — canonical: `{canonical_path}`"
-        )
-    lines.extend([
-        "",
-        "## Rules",
-        "",
-    ])
-    # v0.5.4 — render the actual tool-config rules detected at bootstrap
-    # instead of the v0.4-era "_Phase 2C: tool config rules + AST stats._"
-    # placeholder, which read like an unfinished feature after Phase 2C
-    # actually shipped in v0.5.0. When rules.json is empty we explain
-    # WHY (no eslint/tsconfig/prettier/rubocop/editorconfig found) so
-    # reviewers don't wonder if something broke.
-    rules_block = (rules_data or {}).get("rules") if rules_data else None
-    detected_tools = sorted(rules_block.keys()) if isinstance(rules_block, dict) else []
-    if detected_tools:
-        lines.append(
-            f"_Auto-derived from {len(detected_tools)} tool config file(s): "
-            f"{', '.join(f'`{t}`' for t in detected_tools)}._"
-        )
-        lines.append("")
-        for tool in detected_tools:
-            tool_block = rules_block[tool]
-            if not isinstance(tool_block, dict):
-                continue
-            rule_count = _count_terminal_rules(tool_block)
-            lines.append(f"- **{tool}** — {rule_count} rule(s) extracted")
-    else:
-        lines.append(
-            "_No tool-config rules detected._ The bootstrap looked for "
-            "`eslint`, `tsconfig`, `prettier`, `rubocop`, and `.editorconfig` "
-            "and found none of them. Auto-derived rules will appear here "
-            "once those configs exist."
-        )
-    lines.extend([
-        "",
-        "## Idioms",
-        "",
-    ])
-
-    active_idioms = _extract_active_idioms(idioms_md)
-    if active_idioms:
-        lines.append(
-            "_The following idioms ship in this profile and will be injected "
-            "into the model's context before each Edit/Write. Review carefully "
-            "before granting trust._"
-        )
-        lines.append("")
-        lines.append(active_idioms)
-        lines.append("")
-    else:
-        lines.append(
-            "_No idioms captured yet. Run /chameleon-teach to record team "
-            "conventions._"
-        )
-        lines.append("")
-
-    # v0.5.4 — render the deprecated section only when it carries content.
-    # Pre-v0.5.4 the section always rendered with `_(none)_` for clean
-    # profiles, which read like an unfinished feature.
-    deprecated_idioms = _extract_idioms_section(idioms_md, "## deprecated")
-    if deprecated_idioms:
-        lines.append("## Deprecated idioms")
-        lines.append("")
-        lines.append(
-            "_The following idioms were retired by `/chameleon-teach`. They "
-            "are kept here for audit history and are NOT injected into "
-            "context._"
-        )
-        lines.append("")
-        lines.append(deprecated_idioms)
-        lines.append("")
-
-    return "\n".join(lines)
+    return render_summary_md(
+        archetypes=archetypes_data,
+        canonicals=canonicals_data,
+        profile_meta=profile_data,
+        idioms_text=idioms_md,
+        rules_data=rules_data,
+        engine_version=ENGINE_MIN_VERSION,
+    )

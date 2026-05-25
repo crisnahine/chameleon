@@ -44,14 +44,12 @@ def _read_lock_metadata(lock_path: Path) -> tuple[int | None, float | None]:
 
 
 def _is_pid_alive(pid: int) -> bool:
-    """Check if a PID is still running (POSIX). Returns False on permission error too (conservative)."""
+    """Check if a PID is still running (POSIX). EPERM means alive but different user."""
     try:
         os.kill(pid, 0)  # signal 0 = check existence without sending
         return True
     except OSError as e:
-        if e.errno == errno.ESRCH:
-            return False
-        return False  # conservative: treat permission errors as dead
+        return e.errno != errno.ESRCH
 
 
 @contextmanager
@@ -88,8 +86,14 @@ def acquire_advisory_lock(lock_path: Path, *, stale_after_seconds: int = 3600):
                 and (not _is_pid_alive(pid) or (now - started_at) > stale_after_seconds)
             )
             if stale:
-                # Break the lock: acquire it now (the previous holder is gone)
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                # Break the lock: acquire it now (the previous holder is gone).
+                # Another process may race us here; treat EAGAIN as LockHeldError.
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as e2:
+                    if e2.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                        raise LockHeldError(lock_path, pid, started_at) from e2
+                    raise
             else:
                 raise LockHeldError(lock_path, pid, started_at) from e
 

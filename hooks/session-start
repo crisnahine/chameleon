@@ -43,8 +43,8 @@ fi
 mkdir -p "${LOG_DIR}" 2>/dev/null || true
 "${PYTHON}" -m chameleon_mcp.log_rotation "${LOG_FILE}" 2>/dev/null || true
 
-# Run the helper with the MCP package on PYTHONPATH
+# 3-second hard timeout (session-start does more work than per-edit hooks)
 PYTHONPATH="${MCP_DIR}" \
-    "${PYTHON}" -m chameleon_mcp.hook_helper session-start \
+    timeout 3 "${PYTHON}" -m chameleon_mcp.hook_helper session-start \
     2>>"${LOG_FILE}" \
     || { echo "[$(date -u +%FT%TZ)] session-start failed (python=${PYTHON})" >>"${LOG_FILE}"; printf '{}\n'; }

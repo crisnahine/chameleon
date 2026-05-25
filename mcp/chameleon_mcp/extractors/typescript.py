@@ -121,11 +121,11 @@ class TypeScriptExtractor:
             except (OSError, PermissionError):
                 continue
         # BUG-010 fallback: any .ts/.tsx file within depth 3 of the root.
-        return _has_typescript_source_files(repo_root, max_depth=3, max_found=50)
+        return _has_typescript_source_files(repo_root, max_depth=3)
 
     @staticmethod
     def _shallow_ts_scan(repo_root: Path) -> bool:  # pragma: no cover - thin alias
-        return _has_typescript_source_files(repo_root, max_depth=3, max_found=50)
+        return _has_typescript_source_files(repo_root, max_depth=3)
 
     def parse_repo(
         self,
@@ -270,7 +270,7 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
 
 
 def _has_typescript_source_files(
-    repo_root: Path, *, max_depth: int = 3, max_found: int = 50
+    repo_root: Path, *, max_depth: int = 3
 ) -> bool:
     """Shallow-walk to find any .ts/.tsx file (BUG-010 detection fallback).
 
@@ -294,7 +294,6 @@ def _has_typescript_source_files(
         ".venv",
         "vendor",
     }
-    found = 0
     # Walk breadth-first up to max_depth so shallow .ts files are found
     # before paying for any deep descent.
     frontier: list[tuple[Path, int]] = [(repo_root, 0)]
@@ -320,10 +319,8 @@ def _has_typescript_source_files(
                     if name.endswith(".ts") or name.endswith(".tsx"):
                         # One hit is enough — anything > 0 means TS.
                         return True
-            if found >= max_found:
-                return True
         frontier = next_frontier
-    return found > 0
+    return False
 
 
 # Verify protocol conformance at import time

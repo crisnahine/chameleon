@@ -108,6 +108,24 @@ class DimensionSnapshot:
         return bucket_named_export_count(self.named_export_count)
 
 
+def recalibrate_ast_query(witness_snapshot: DimensionSnapshot) -> dict:
+    """Build a recalibrated ast_query dict from a witness file's regex-derived dimensions.
+
+    The stored ast_query was derived from the real AST parser (ts_dump.mjs /
+    prism_dump.rb) at bootstrap, but lint() compares against regex-derived
+    dimensions. The two extractors disagree on counts (ImportDeclaration,
+    InterfaceDeclaration, jsx_present) causing false positives. Recalibrating
+    to regex-vs-regex eliminates this gap.
+    """
+    return {
+        "default_export_kind": None,
+        "jsx_present": None,
+        "top_level_node_kinds": sorted(set(witness_snapshot.top_level_node_kinds)),
+        "named_export_count_bucket": None,
+        "content_signal": witness_snapshot.content_signal,
+    }
+
+
 # -----------------------------------------------------------------------------
 # Language detection
 # -----------------------------------------------------------------------------

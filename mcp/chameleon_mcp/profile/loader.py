@@ -29,6 +29,39 @@ from chameleon_mcp.safe_open import (
 # (import-cycle avoidance: don't pull orchestrator at module load).
 MAX_SUPPORTED_SCHEMA_VERSION = 7
 
+# Process-global cache: directory (str) -> resolved repo root (Path | None).
+# The directory-to-root mapping is structural (determined by marker files like
+# .chameleon/, .git/, package.json) and only changes on bootstrap/uninstall.
+_REPO_ROOT_CACHE: dict[str, Path | None] = {}
+
+
+def clear_repo_root_cache() -> None:
+    """Drop all cached directory -> repo_root mappings.
+
+    Call on bootstrap_repo entry so a newly created .chameleon/ directory
+    is picked up by subsequent find_repo_root calls.
+    """
+    _REPO_ROOT_CACHE.clear()
+
+
+# Process-global cache: profile_dir (str) -> (mtime_token, LoadedProfile).
+# Profile data only changes on bootstrap/refresh, so we avoid re-reading
+# and re-parsing 4 JSON files + idioms.md on every get_pattern_context call.
+# The mtime_token includes all 4 JSON artifacts + idioms.md so that
+# /chameleon-teach changes (which only touch idioms.md) invalidate the cache.
+_PROFILE_CACHE: dict[str, tuple[str, "LoadedProfile"]] = {}
+
+
+def clear_profile_cache() -> None:
+    """Drop all cached LoadedProfile entries and repo root mappings.
+
+    Call after bootstrap, refresh, or teach — any operation that mutates
+    the on-disk profile artifacts. Also clears the repo root cache since
+    bootstrap creates a new .chameleon/ directory that changes root resolution.
+    """
+    _PROFILE_CACHE.clear()
+    _REPO_ROOT_CACHE.clear()
+
 
 def _version_tuple(v: str) -> tuple[int, ...]:
     """Parse a "X.Y.Z" version string. Trailing junk is dropped."""
@@ -185,6 +218,18 @@ def find_repo_root(file_path: Path) -> Path | None:
     except OSError:
         return None
 
+    # Check process-global cache before walking the filesystem.
+    cache_key = str(current)
+    if cache_key in _REPO_ROOT_CACHE:
+        return _REPO_ROOT_CACHE[cache_key]
+
+    result = _find_repo_root_uncached(current)
+    _REPO_ROOT_CACHE[cache_key] = result
+    return result
+
+
+def _find_repo_root_uncached(current: Path) -> Path | None:
+    """Filesystem walk implementation for find_repo_root (uncached)."""
     # Pass 1: walk up; record the first ancestor with ANY marker.
     first_marker_ancestor: Path | None = None
     first_marker_name: str | None = None
@@ -239,16 +284,58 @@ def find_repo_root(file_path: Path) -> Path | None:
     return first_marker_ancestor
 
 
+def _compute_mtime_token(artifact_paths: list[Path], idioms_path: Path) -> str:
+    """Build an mtime fingerprint from the 4 JSON artifacts + idioms.md.
+
+    Returns a dash-joined string of st_mtime_ns values. idioms.md
+    contributes "0" when absent so the token length is always 5 parts.
+
+    Raises FileNotFoundError / OSError if any JSON artifact is missing
+    (idioms.md absence is not an error).
+    """
+    parts = [str(p.stat().st_mtime_ns) for p in artifact_paths]
+    try:
+        parts.append(str(idioms_path.stat().st_mtime_ns))
+    except FileNotFoundError:
+        parts.append("0")
+    return "-".join(parts)
+
+
 def load_profile_dir(profile_dir: Path) -> LoadedProfile:
     """Load and validate all artifacts from a `.chameleon/` directory.
 
     Implements the double-fstat pattern: capture mtime tuple before reads,
     verify after reads to detect mid-load mutation.
 
+    Results are cached process-globally keyed on (profile_dir, mtime_token).
+    The mtime_token covers all 4 JSON artifacts + idioms.md so that any
+    on-disk change (including /chameleon-teach which only touches idioms.md)
+    triggers a full re-read.
+
     Raises:
         ProfileLoadError: missing sentinel, malformed JSON, generation
                           mismatch across files, or mid-load mutation.
     """
+    cache_key = str(profile_dir)
+
+    # Quick mtime check — 5 stat calls. On hit, skip all reads + parsing.
+    try:
+        quick_artifact_paths = [
+            profile_dir / "profile.json",
+            profile_dir / "archetypes.json",
+            profile_dir / "rules.json",
+            profile_dir / "canonicals.json",
+        ]
+        quick_idioms = profile_dir / "idioms.md"
+        quick_token = _compute_mtime_token(quick_artifact_paths, quick_idioms)
+        cached = _PROFILE_CACHE.get(cache_key)
+        if cached is not None and cached[0] == quick_token:
+            return cached[1]
+    except (FileNotFoundError, OSError):
+        # A JSON artifact is missing or unreadable — fall through to the
+        # full read path which will raise a proper ProfileLoadError.
+        pass
+
     if not is_committed(profile_dir):
         raise ProfileLoadError(
             f"profile at {profile_dir} is missing COMMITTED sentinel "
@@ -318,10 +405,17 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
             f"upgrade chameleon-mcp"
         )
 
-    mtime_token = "-".join(str(m) for m in mtimes_after)
+    # Build mtime_token from all 4 JSON artifacts + idioms.md so that
+    # /chameleon-teach (which only touches idioms.md) also invalidates.
+    idioms_mtime = "0"
+    try:
+        idioms_mtime = str(idioms_path.stat().st_mtime_ns)
+    except FileNotFoundError:
+        pass
+    mtime_token = "-".join(str(m) for m in mtimes_after) + "-" + idioms_mtime
     archetype_names = sorted(archetypes.get("archetypes", {}).keys())
 
-    return LoadedProfile(
+    loaded = LoadedProfile(
         profile=profile,
         archetypes=archetypes,
         canonicals=canonicals,
@@ -332,3 +426,8 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         mtime_token=mtime_token,
         archetype_names=archetype_names,
     )
+
+    # Store in process-global cache.
+    _PROFILE_CACHE[str(profile_dir)] = (mtime_token, loaded)
+
+    return loaded

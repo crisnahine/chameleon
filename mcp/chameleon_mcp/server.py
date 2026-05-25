@@ -74,7 +74,7 @@ def get_pattern_context(file_path: str) -> dict:
             "repo": {"id": str, "profile_status": str, "trust_state": str},
             "archetype": {"name": str, "alternatives": [str], "confidence_band": str},
             "canonical_excerpt": {"content": str, "witness_path": str, "truncated": bool, "sha_hint": str},
-            "rules": [{"rule": str, "citation": str}],
+            "rules": [(source_key, config_dict), ...],  # list of (str, dict) tuples from rules.json
             "meta": {"mtime_token": str, "computed_at": str}
           }
         }
@@ -104,9 +104,13 @@ def get_rules(repo: str, source: str | None = None) -> dict:
 
 
 @mcp.tool()
-def lint_file(repo: str, archetype: str, content: str) -> dict:
-    """Validate file content against archetype's rules. Returns violations + canonical confidence."""
-    return tools.lint_file(repo, archetype, content)
+def lint_file(repo: str, archetype: str, content: str, file_path: str | None = None) -> dict:
+    """Validate file content against archetype's rules. Returns violations + canonical confidence.
+
+    When file_path is provided, its extension is used for language detection
+    instead of falling back to the witness extension.
+    """
+    return tools.lint_file(repo, archetype, content, file_path=file_path)
 
 
 @mcp.tool()

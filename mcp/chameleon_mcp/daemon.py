@@ -50,6 +50,7 @@ the protocol is stateless per connection so the change is local.
 from __future__ import annotations
 
 import errno
+import fcntl
 import json
 import os
 import signal
@@ -526,7 +527,10 @@ def run_daemon() -> int:
 def _write_pidfile(pid: int, sock_path: Path) -> None:
     pf = pid_path()
     tmp = pf.with_suffix(".pid.tmp")
-    tmp.write_text(f"{pid}\n{sock_path}\n", encoding="utf-8")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.write(fd, f"{pid}\n{sock_path}\n".encode("utf-8"))
+    os.fsync(fd)
+    os.close(fd)
     os.replace(tmp, pf)
 
 
@@ -641,13 +645,39 @@ def start_daemon(*, force: bool = False) -> dict:
         except OSError:
             pass
 
-    # Write the pidfile from inside the grandchild — that's the PID the
-    # client will SIGTERM later.
+    # Acquire an exclusive flock on the pidfile to prevent concurrent
+    # start_daemon() calls from racing past is_daemon_alive() and both
+    # forking a daemon. The flock is tied to the fd/process — when the
+    # daemon exits (or the exec replaces the process image), the kernel
+    # releases the lock automatically.
+    pf = pid_path()
     try:
-        _write_pidfile(os.getpid(), sock_path)
+        lock_fd = os.open(str(pf), os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as e:
+        sys.stderr.write(f"[chameleon-daemon] cannot open pidfile for lock: {e}\n")
+        os._exit(1)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        # Another daemon is already starting — we're the loser. Exit
+        # quietly so we don't orphan a process.
+        os.close(lock_fd)
+        os._exit(0)
+
+    # We won the lock. Write our PID, fsync, then proceed.
+    try:
+        os.ftruncate(lock_fd, 0)
+        os.lseek(lock_fd, 0, os.SEEK_SET)
+        os.write(lock_fd, f"{os.getpid()}\n{sock_path}\n".encode("utf-8"))
+        os.fsync(lock_fd)
     except OSError as e:
         sys.stderr.write(f"[chameleon-daemon] cannot write pidfile: {e}\n")
+        os.close(lock_fd)
         os._exit(1)
+    # NOTE: lock_fd is intentionally NOT closed. The flock is held for
+    # the daemon's lifetime and released by the kernel on process exit
+    # (or exec, but exec replaces this process with run_daemon which
+    # holds the socket until shutdown).
 
     # Re-exec into a clean python process. This drops any state the parent
     # may have leaked (open file handles to the user's repo, loaded MCP

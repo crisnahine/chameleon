@@ -794,9 +794,15 @@ def posttool_recorder() -> int:
     session_id = payload.get("session_id", "unknown")
     exit_code = tool_response.get("returnCode") if isinstance(tool_response, dict) else None
 
-    # Compute repo_id from cwd if available; else use session_id as the bucket
+    # Compute repo_id from cwd, using the canonical helper (git-remote-aware)
     cwd = Path(os.environ.get("CLAUDE_CWD") or os.getcwd()).resolve()
-    repo_id = hashlib.sha256(str(cwd).encode("utf-8")).hexdigest()
+    try:
+        from chameleon_mcp.tools import _compute_repo_id
+
+        repo_id = _compute_repo_id(cwd)
+    except Exception:
+        # Fail-open: fall back to path hash if import or git fails
+        repo_id = hashlib.sha256(str(cwd).encode("utf-8")).hexdigest()
 
     try:
         from chameleon_mcp.exec_log import append_exec_log
@@ -944,6 +950,7 @@ def posttool_verify() -> int:
                 detect_language,
                 extract_dimensions,
                 lint,
+                recalibrate_ast_query,
             )
             from chameleon_mcp.profile.loader import load_profile_dir
 
@@ -969,15 +976,7 @@ def posttool_verify() -> int:
                         w_snap = extract_dimensions(
                             w_raw, language=w_lang, file_path=witness_rel
                         )
-                        ast_query = {
-                            "default_export_kind": None,
-                            "jsx_present": None,
-                            "top_level_node_kinds": sorted(
-                                set(w_snap.top_level_node_kinds)
-                            ),
-                            "named_export_count_bucket": None,
-                            "content_signal": w_snap.content_signal,
-                        }
+                        ast_query = recalibrate_ast_query(w_snap)
 
             if ast_query:
                 language = detect_language(file_path)

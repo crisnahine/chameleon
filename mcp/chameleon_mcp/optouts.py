@@ -183,14 +183,13 @@ def write_session_disable(repo_id: str, session_id: str) -> Path:
     disabled_at = time.time()
     sig = _sign_marker(repo_id, session_id, disabled_at)
     sig_line = f"sig={sig}\n" if sig else ""
-    marker.write_text(
-        f"disabled-at={disabled_at}\nsession_id={session_id}\n{sig_line}",
-        encoding="utf-8",
-    )
-    try:
-        os.chmod(marker, 0o600)
-    except OSError:
-        pass
+    content = f"disabled-at={disabled_at}\nsession_id={session_id}\n{sig_line}"
+    tmp = marker.with_suffix('.tmp')
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.write(fd, content.encode("utf-8"))
+    os.fsync(fd)
+    os.close(fd)
+    os.replace(str(tmp), str(marker))
     return marker
 
 
@@ -202,7 +201,12 @@ def write_pause(repo_id: str, minutes: int = 15) -> str:
         "%Y-%m-%dT%H:%M:%SZ"
     )
     pause_path = repo_data_dir(repo_id) / ".pause_until"
-    pause_path.write_text(expiry_iso, encoding="utf-8")
+    tmp = pause_path.with_suffix('.tmp')
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.write(fd, expiry_iso.encode("utf-8"))
+    os.fsync(fd)
+    os.close(fd)
+    os.replace(str(tmp), str(pause_path))
     return expiry_iso
 
 

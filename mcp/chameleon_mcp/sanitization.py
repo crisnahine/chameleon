@@ -99,7 +99,6 @@ def sanitize_for_chameleon_context(content: str) -> str:
 
     for token in _DANGEROUS_TOKENS:
         replacement = f"[chameleon-sanitized: {token.strip('<>')}]"
-        cleaned = cleaned.replace(token, replacement)
-        cleaned = cleaned.replace(token.lower(), replacement)
+        cleaned = re.sub(re.escape(token), replacement, cleaned, flags=re.IGNORECASE)
 
     return cleaned

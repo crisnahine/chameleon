@@ -8,6 +8,7 @@ Trust is per-user, per-repo. Stored at `${PLUGIN_DATA}/<repo_id>/.trust`.
 
 from __future__ import annotations
 
+import fcntl
 import getpass
 import hashlib
 import json
@@ -255,49 +256,60 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
         repo_root_str = str(repo_root)
     new_hash = hash_profile(profile_dir)
 
-    existing = trust_state_for(repo_id)
-    if existing is None:
-        record = TrustRecord(
-            granted_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            granted_by_user=_current_user(),
-            profile_sha256=new_hash,
-            repo_root=repo_root_str,
-            repo_root_specific_hashes={repo_root_str: new_hash},
-        )
-    else:
-        # Mutate the existing record additively. Reuse the original
-        # granted_at + granted_by_user when we're only extending coverage
-        # to a new workspace so the audit trail still points at the first
-        # grant; refresh them on a same-root re-grant.
-        specific = dict(existing.repo_root_specific_hashes)
-        specific[repo_root_str] = new_hash
-        if existing.repo_root == repo_root_str or not existing.repo_root:
-            # Same root → also refresh the top-level fields.
+    trust_path = repo_data_dir(repo_id) / ".trust"
+    lock_path = trust_path.with_suffix(".lock")
+    lock_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        existing = trust_state_for(repo_id)
+        if existing is None:
             record = TrustRecord(
                 granted_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 granted_by_user=_current_user(),
                 profile_sha256=new_hash,
                 repo_root=repo_root_str,
-                repo_root_specific_hashes=specific,
+                repo_root_specific_hashes={repo_root_str: new_hash},
             )
         else:
-            # Different root (workspace-internal grant under same repo_id):
-            # keep the original "root" trust intact and only extend the
-            # per-root map.
-            record = TrustRecord(
-                granted_at=existing.granted_at,
-                granted_by_user=existing.granted_by_user,
-                profile_sha256=existing.profile_sha256,
-                repo_root=existing.repo_root,
-                repo_root_specific_hashes=specific,
-            )
+            # Mutate the existing record additively. Reuse the original
+            # granted_at + granted_by_user when we're only extending coverage
+            # to a new workspace so the audit trail still points at the first
+            # grant; refresh them on a same-root re-grant.
+            specific = dict(existing.repo_root_specific_hashes)
+            specific[repo_root_str] = new_hash
+            if existing.repo_root == repo_root_str or not existing.repo_root:
+                # Same root - also refresh the top-level fields.
+                record = TrustRecord(
+                    granted_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    granted_by_user=_current_user(),
+                    profile_sha256=new_hash,
+                    repo_root=repo_root_str,
+                    repo_root_specific_hashes=specific,
+                )
+            else:
+                # Different root (workspace-internal grant under same repo_id):
+                # keep the original "root" trust intact and only extend the
+                # per-root map.
+                record = TrustRecord(
+                    granted_at=existing.granted_at,
+                    granted_by_user=existing.granted_by_user,
+                    profile_sha256=existing.profile_sha256,
+                    repo_root=existing.repo_root,
+                    repo_root_specific_hashes=specific,
+                )
 
-    trust_path = repo_data_dir(repo_id) / ".trust"
-    tmp_path = trust_path.with_suffix(".trust.tmp")
-    tmp_path.write_text(
-        json.dumps(record.to_dict(), indent=2, sort_keys=True), encoding="utf-8"
-    )
-    os.replace(tmp_path, trust_path)
+        tmp_path = trust_path.with_suffix(".trust.tmp")
+        payload = json.dumps(record.to_dict(), indent=2, sort_keys=True).encode("utf-8")
+        fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, payload)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, trust_path)
+    finally:
+        os.close(lock_fd)
     return record
 
 

@@ -29,6 +29,54 @@ from pathlib import Path
 from chameleon_mcp.drift.sqlite_config import open_hardened
 from chameleon_mcp.profile.trust import plugin_data_dir
 
+# ── persistent connection cache ──────────────────────────────────────
+# Single index.db, so one slot suffices. Health-checked on retrieval;
+# dropped and rebuilt on any sqlite error.
+_INDEX_CONN: sqlite3.Connection | None = None
+
+
+def _get_index_conn(db_path: Path | None = None) -> sqlite3.Connection:
+    """Return a cached connection to index.db, creating if needed.
+
+    Health-checks the cached connection with ``SELECT 1``. If the check
+    fails, drops the cache and opens a fresh one via ``init_index_db``.
+
+    Only caches when ``db_path`` is None (the default production path).
+    Test overrides with explicit ``db_path`` bypass the cache to avoid
+    cross-test contamination.
+
+    Raises sqlite3.Error or OSError on failure.
+    """
+    global _INDEX_CONN
+    if db_path is not None:
+        # Explicit path (tests) — skip cache, open fresh.
+        return init_index_db(db_path)
+    if _INDEX_CONN is not None:
+        try:
+            _INDEX_CONN.execute("SELECT 1")
+            return _INDEX_CONN
+        except sqlite3.Error:
+            try:
+                _INDEX_CONN.close()
+            except Exception:
+                pass
+            _INDEX_CONN = None
+    conn = init_index_db()
+    _INDEX_CONN = conn
+    return conn
+
+
+def close_index_connections() -> None:
+    """Close the cached index.db connection. Safe to call at shutdown."""
+    global _INDEX_CONN
+    if _INDEX_CONN is not None:
+        try:
+            _INDEX_CONN.close()
+        except Exception:
+            pass
+        _INDEX_CONN = None
+
+
 INDEX_DB_SCHEMA_VERSION = "1"
 
 # Re-running the DDL must be a no-op on existing installs. ALTER TABLE
@@ -227,7 +275,7 @@ def upsert_repo(
         return
     ts = last_seen_at or _now_iso()
     try:
-        conn = init_index_db(db_path)
+        conn = _get_index_conn(db_path)
     except (sqlite3.Error, OSError):
         return
     try:
@@ -293,11 +341,6 @@ def upsert_repo(
             )
     except sqlite3.Error:
         return
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 
 def resolve_repo_root(
@@ -342,7 +385,7 @@ def resolve_repo_root(
     if not path.is_file():
         return None
     try:
-        conn = open_hardened(path, read_only=True)
+        conn = _get_index_conn(db_path)
     except (sqlite3.Error, OSError):
         return None
     try:
@@ -369,11 +412,6 @@ def resolve_repo_root(
         ).fetchall()
     except sqlite3.Error:
         return None
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
     if not rows:
         return None
     candidates = [r["repo_root"] for r in rows if r["repo_root"]]

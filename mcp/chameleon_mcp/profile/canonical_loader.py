@@ -125,7 +125,8 @@ def _cache_dir_for_ref(repo_id: str, ref_sha: str) -> Path:
 
 def _is_cache_valid(cache_dir: Path) -> bool:
     """True when ``cache_dir`` has a COMMITTED sentinel + required artifacts."""
-    if not (cache_dir / _COMMITTED_FILENAME).is_file():
+    _sentinel = cache_dir / _COMMITTED_FILENAME
+    if not _sentinel.is_file() or _sentinel.stat().st_size == 0:
         return False
     return all((cache_dir / a).is_file() for a in _REQUIRED_ARTIFACTS)
 
@@ -222,10 +223,17 @@ def materialize_canonical(
         except OSError:
             pass
         # Finally, drop the COMMITTED sentinel — this is what
-        # load_profile_dir gates on.
-        (cache_dir / _COMMITTED_FILENAME).write_text(
-            ref_sha + "\n", encoding="utf-8"
-        )
+        # load_profile_dir gates on.  Use open/write/fsync so a crash
+        # cannot leave a zero-length file that _is_cache_valid treats
+        # as valid.
+        _sentinel = cache_dir / _COMMITTED_FILENAME
+        _fd = _sentinel.open("w", encoding="utf-8")
+        try:
+            _fd.write(ref_sha + "\n")
+            _fd.flush()
+            os.fsync(_fd.fileno())
+        finally:
+            _fd.close()
         # v0.6.1: GC older caches now that a fresh one is committed.
         # gc_stale_caches keeps the N most-recent; older sha dirs are
         # rmtree'd. Was defined in v0.6.0 but never called → caches
