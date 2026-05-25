@@ -26,22 +26,13 @@ from chameleon_mcp.safe_open import (
 def plugin_data_dir() -> Path:
     """Resolve where chameleon stores per-user state (trust DB, drift.db).
 
-    Trust state is per-user, not per-plugin-instance: the same user editing
-    the same repo from a Claude Code plugin invocation, a Cursor plugin
-    invocation, or a direct CLI call must see the SAME trust record.
-    Therefore we deliberately do NOT honor CLAUDE_PLUGIN_DATA — Claude Code
-    sets that to a per-plugin sandbox path, which would partition trust
-    records across launchers and leave Claude Code-spawned MCP calls
-    unable to see trust granted by direct tool calls (real bug observed
-    in production).
-
-    CHAMELEON_PLUGIN_DATA exists for tests that need to isolate state to a
-    tmpdir; it is the only supported override.
+    Delegates to plugin_paths.plugin_data_dir(). Trust state is per-user,
+    not per-plugin-instance. CHAMELEON_PLUGIN_DATA is the only supported
+    override; Claude Code's CLAUDE_PLUGIN_DATA is deliberately NOT honored
+    (would partition trust records across launchers).
     """
-    override = os.environ.get("CHAMELEON_PLUGIN_DATA")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".local" / "share" / "chameleon"
+    from chameleon_mcp.plugin_paths import plugin_data_dir as _pd
+    return _pd()
 
 
 def repo_data_dir(repo_id: str) -> Path:

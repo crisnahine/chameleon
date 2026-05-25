@@ -36,3 +36,15 @@ def plugin_root() -> Path:
 
     here = Path(__file__).resolve()
     return here.parent.parent.parent
+
+
+def plugin_data_dir() -> Path:
+    """Return the per-user chameleon plugin data directory.
+
+    Override with CHAMELEON_PLUGIN_DATA for testing.
+    Default: ~/.local/share/chameleon
+    """
+    override = os.environ.get("CHAMELEON_PLUGIN_DATA")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".local" / "share" / "chameleon"
