@@ -4,6 +4,12 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-05-25
+
+### Fixed
+
+- Daemon stale cache (BUG-029): long-lived daemon could serve `profile_corrupted` for valid profiles after bootstrap/refresh/teach mutations done by the MCP server process. Two-layer fix: hook_helper discards degraded daemon responses and falls through to in-process, and mutation tools now send `invalidate_cache` to the daemon after every profile write.
+
 ## [0.7.0] - 2026-05-25
 
 ### Changed
