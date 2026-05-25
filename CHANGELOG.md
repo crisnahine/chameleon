@@ -4,6 +4,14 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-05-26
+
+### Fixed
+
+- Drift DB lock contention (BUG-031): `record_edit_observation()` used the global 30s `busy_timeout`, causing hooks to block for 30+ seconds when a stale MCP server process held the WAL lock. Overridden to 200ms for hook-context drift writes - if the lock is held, skip the write instead of blocking.
+- Hook timeouts bumped from 2s to 3s for cold-start import budget.
+- SessionStart hook pre-warms the daemon so PreToolUse hooks don't hit a 5s cold start.
+
 ## [0.7.1] - 2026-05-25
 
 ### Fixed
