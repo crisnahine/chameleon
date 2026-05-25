@@ -1074,6 +1074,40 @@ def _amend_root_profile_with_workspaces(
             (txn_dir / "renames.json").write_text(renames_text, encoding="utf-8")
 
 
+def _generate_archetype_summary(
+    entry: dict,
+    canonical_witness_path: Path | None,
+    language: str,
+) -> str:
+    """Heuristic summary for Tier 1 PreToolUse pointers."""
+    parts = []
+    pattern = entry.get("paths_pattern_display", entry.get("paths_pattern", ""))
+    if pattern:
+        parts.append(pattern)
+
+    kinds = entry.get("top_level_node_kinds", [])
+    if kinds:
+        parts.append(", ".join(kinds[:3]))
+
+    signal = entry.get("content_signal", "none")
+    if signal and signal != "none":
+        parts.append(signal)
+
+    if canonical_witness_path and canonical_witness_path.is_file():
+        try:
+            head = canonical_witness_path.read_bytes()[:2000].decode("utf-8", errors="replace")
+            import re
+            m = re.search(r"class\s+\w+\s*<\s*(\w+)", head)
+            if m:
+                parts.append(f"inherits {m.group(1)}")
+            if "'use client'" in head or '"use client"' in head:
+                parts.append("client component")
+        except OSError:
+            pass
+
+    return ". ".join(parts) + "." if parts else ""
+
+
 def _bootstrap_single(
     repo_root: Path,
     *,
@@ -1496,6 +1530,16 @@ def _bootstrap_single(
         # JSON stays uncluttered for simple layouts.
         if cluster.sub_bucket_counts:
             archetype_entry["sub_buckets"] = dict(cluster.sub_bucket_counts)
+        # v0.7.0: generate summary for Tier 1 pointers
+        witness_path = None
+        try:
+            if hasattr(sel, 'witness_path') and sel.witness_path:
+                witness_path = repo_root / sel.witness_path
+        except Exception:
+            pass
+        archetype_entry["summary"] = _generate_archetype_summary(
+            archetype_entry, witness_path, extractor.language,
+        )
         archetypes_data["archetypes"][effective_name] = archetype_entry
         canonicals_data["canonicals"][effective_name] = [{
             "witness": {
