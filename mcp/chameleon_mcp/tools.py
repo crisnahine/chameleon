@@ -1143,6 +1143,14 @@ def get_pattern_context(file_path: str) -> dict:
         arch_data["sub_buckets_count"] = (
             len(sub_buckets) if isinstance(sub_buckets, dict) else 0
         )
+        # v0.7.0: surface the summary field so the hook can use Tier 1
+        # (lightweight pointer) instead of always injecting the full
+        # canonical excerpt. Without this, archetype_obj.get("summary")
+        # in preflight_and_advise always returned "" and use_tier2 was
+        # always True, making Tier 1 dead code.
+        summary = arch_entry.get("summary") or ""
+        if summary:
+            arch_data["summary"] = summary
     else:
         arch_data["sub_buckets_count"] = 0
 

@@ -4,6 +4,28 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-05-25
+
+### Changed
+
+- PostToolUse violations now use `updatedToolOutput` (replaces tool result) instead of `additionalContext` (system reminder). Higher salience for model compliance.
+- PreToolUse injection is now tiered: Tier 1 (~50 tokens, archetype pointer) for seen archetypes, Tier 2 (~300-600 tokens, annotated canonical) on first edit or after violations. Steady-state token cost reduced ~70-85%.
+- `using-chameleon` skill rewritten: awareness-oriented framing instead of obligation-oriented. No more "call MCP yourself" instruction or Red Flags table.
+
+### Added
+
+- Per-file escalation state machine (L0/L1/L2). Violation feedback becomes more directive on repeated violations to the same file. Invisible to the user.
+- Correction loop guard: max 10 rapid corrections per file before chameleon steps back.
+- `CHAMELEON_ENFORCEMENT_MODE` env var: set to `additionalContext` to revert to v0.6.x violation output behavior.
+- Archetype summary field in `archetypes.json` for Tier 1 pointer content.
+- SessionStart cleanup of stale enforcement state files (>24h).
+
+### Removed
+
+- Hook-model deduplication (unnecessary with tiered PreToolUse at ~50 tokens).
+- Red Flags and rationalizations tables from `using-chameleon` skill.
+- "Call MCP before every edit" instruction from skill (hooks handle this automatically).
+
 ## [0.6.3] - 2026-05-25
 
 ### Changed

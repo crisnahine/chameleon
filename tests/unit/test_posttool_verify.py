@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -517,3 +518,173 @@ def test_metrics_emitted_on_violations(tmp_path: Path):
     call_kwargs = mock_metric.call_args
     assert call_kwargs[0][0] == "posttool-verify"
     assert call_kwargs[1]["advisory_emitted"] is True
+
+
+# ---- 17. v0.7.0: updatedToolOutput channel ----
+
+
+def test_violations_use_updated_tool_output(tmp_path: Path):
+    """v0.7.0: violations emit via updatedToolOutput, not additionalContext."""
+    repo_id = "test_repo_id"
+    (tmp_path / repo_id).mkdir()
+
+    ts_file = tmp_path / "test.ts"
+    ts_file.write_text("export default function foo() {}", encoding="utf-8")
+
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch("chameleon_mcp.daemon_client.call", side_effect=[
+            {"data": {"archetype": "component"}},
+            {"data": {"violations": [
+                {"rule": "default-export-kind-mismatch", "severity": "warning",
+                 "message": "expected class, got function", "expected": "class",
+                 "actual": "function"}
+            ]}},
+        ]),
+    ):
+        result = _run_verify({
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(ts_file)},
+            "session_id": "s1",
+        })
+
+    hook_output = result.get("hookSpecificOutput", {})
+    assert "updatedToolOutput" in hook_output
+    assert "additionalContext" not in hook_output
+    assert "[chameleon:" in hook_output["updatedToolOutput"]
+
+
+# ---- 18. v0.7.0: CHAMELEON_ENFORCEMENT_MODE=additionalContext fallback ----
+
+
+def test_enforcement_mode_additionalcontext_fallback(tmp_path: Path):
+    """v0.7.0: CHAMELEON_ENFORCEMENT_MODE=additionalContext falls back to v0.6 behavior."""
+    repo_id = "test_repo_id"
+    (tmp_path / repo_id).mkdir()
+
+    ts_file = tmp_path / "test.ts"
+    ts_file.write_text("export default function foo() {}", encoding="utf-8")
+
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch("chameleon_mcp.daemon_client.call", side_effect=[
+            {"data": {"archetype": "component"}},
+            {"data": {"violations": [
+                {"rule": "default-export-kind-mismatch", "severity": "warning",
+                 "message": "expected class, got function", "expected": "class",
+                 "actual": "function"}
+            ]}},
+        ]),
+        patch.dict(os.environ, {"CHAMELEON_ENFORCEMENT_MODE": "additionalContext"}),
+    ):
+        result = _run_verify({
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(ts_file)},
+            "session_id": "s1",
+        })
+
+    hook_output = result.get("hookSpecificOutput", {})
+    assert "additionalContext" in hook_output
+    assert "updatedToolOutput" not in hook_output
+
+
+# ---- 19. v0.7.0: corrections exhausted ----
+
+
+def test_corrections_exhausted_emits_advisory(tmp_path: Path):
+    """v0.7.0: after 10 corrections, emit corrections-exhausted and stop verifying."""
+    repo_id = "test_repo_id"
+    (tmp_path / repo_id).mkdir()
+
+    ts_file = tmp_path / "test.ts"
+    ts_file.write_text("x", encoding="utf-8")
+
+    # Seed enforcement state with correction_count at the cap
+    from chameleon_mcp.enforcement import (
+        EnforcementState,
+        FileState,
+        MAX_CORRECTIONS_PER_FILE,
+        save_state,
+    )
+
+    state = EnforcementState()
+    fs = FileState(
+        correction_count=MAX_CORRECTIONS_PER_FILE,
+        last_violation_at=time.time(),  # recent, so the count doesn't reset
+    )
+    state.files[str(ts_file)] = fs
+    save_state(state, tmp_path / repo_id, "s1")
+
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch("chameleon_mcp.daemon_client.call", side_effect=[
+            {"data": {"archetype": "component"}},
+        ]),
+        patch("chameleon_mcp.lint_engine.lint") as mock_lint,
+    ):
+        result = _run_verify({
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(ts_file)},
+            "session_id": "s1",
+        })
+
+    hook_output = result.get("hookSpecificOutput", {})
+    # Corrections-exhausted uses additionalContext, NOT updatedToolOutput
+    assert "additionalContext" in hook_output
+    assert "corrections exhausted" in hook_output["additionalContext"]
+    # Lint must NOT have been called (early exit before step 8)
+    mock_lint.assert_not_called()
+
+
+# ---- 20. v0.7.0: clean-after-violation positive reinforcement ----
+
+
+def test_clean_after_violation_emits_archetype_clean(tmp_path: Path):
+    """v0.7.0: first clean pass after violation emits [archetype: clean]."""
+    repo_id = "test_repo_id"
+    (tmp_path / repo_id).mkdir()
+
+    ts_file = tmp_path / "test.ts"
+    ts_file.write_text("x", encoding="utf-8")
+
+    # Seed enforcement state with level > LEVEL_NONE (prior violation)
+    from chameleon_mcp.enforcement import (
+        LEVEL_L0,
+        EnforcementState,
+        FileState,
+        save_state,
+    )
+
+    state = EnforcementState()
+    fs = FileState(level=LEVEL_L0, violation_count=1)
+    state.files[str(ts_file)] = fs
+    save_state(state, tmp_path / repo_id, "s1")
+
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch("chameleon_mcp.daemon_client.call", side_effect=[
+            {"data": {"archetype": "component"}},
+            {"data": {"violations": []}},
+        ]),
+    ):
+        result = _run_verify({
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(ts_file)},
+            "session_id": "s1",
+        })
+
+    hook_output = result.get("hookSpecificOutput", {})
+    assert "additionalContext" in hook_output
+    assert "[archetype: clean]" in hook_output["additionalContext"]

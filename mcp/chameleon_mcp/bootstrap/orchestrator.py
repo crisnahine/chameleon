@@ -1098,6 +1098,8 @@ def _generate_archetype_summary(
             head = canonical_witness_path.read_bytes()[:2000].decode("utf-8", errors="replace")
             import re
             m = re.search(r"class\s+\w+\s*<\s*(\w+)", head)
+            if not m:
+                m = re.search(r"class\s+\w+\s+extends\s+(\w+)", head)
             if m:
                 parts.append(f"inherits {m.group(1)}")
             if "'use client'" in head or '"use client"' in head:

@@ -123,6 +123,10 @@ def save_state(state: EnforcementState, repo_dir: Path, session_id: str) -> None
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(state.to_dict(), separators=(",", ":")), encoding="utf-8")
         tmp.rename(path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
 
 
 def _evict_if_needed(state: EnforcementState) -> None:
