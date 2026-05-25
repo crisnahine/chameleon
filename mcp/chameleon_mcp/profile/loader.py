@@ -49,7 +49,7 @@ def clear_repo_root_cache() -> None:
 # and re-parsing 4 JSON files + idioms.md on every get_pattern_context call.
 # The mtime_token includes all 4 JSON artifacts + idioms.md so that
 # /chameleon-teach changes (which only touch idioms.md) invalidate the cache.
-_PROFILE_CACHE: dict[str, tuple[str, "LoadedProfile"]] = {}
+_PROFILE_CACHE: dict[str, tuple[str, LoadedProfile]] = {}
 
 
 def clear_profile_cache() -> None:

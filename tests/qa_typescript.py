@@ -1,15 +1,16 @@
 """
 QA test battery for chameleon MCP tools against a real TypeScript repo.
 
-Target: /Users/crisn/Documents/Projects/Testing Apps/ef-client
+Set CHAMELEON_TEST_TS_REPO to the absolute path of a TS repo with a
+chameleon profile before running.
+
 Invocation:
-    cd /Users/crisn/Documents/Projects/chameleon
+    CHAMELEON_TEST_TS_REPO=/path/to/ts-repo \
     PYTHONPATH=. mcp/.venv/bin/python tests/qa_typescript.py
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
@@ -20,7 +21,11 @@ from pathlib import Path
 # Setup
 # ---------------------------------------------------------------------------
 
-REPO_PATH = "/Users/crisn/Documents/Projects/Testing Apps/ef-client"
+REPO_PATH = os.environ.get("CHAMELEON_TEST_TS_REPO", "")
+
+if not REPO_PATH:
+    print("SKIP: CHAMELEON_TEST_TS_REPO not set")
+    sys.exit(0)
 
 # Discover real .tsx / .ts files for testing
 _tsx_files: list[str] = []
@@ -53,7 +58,7 @@ TEST_FILES = TEST_TSX_FILES + TEST_TS_FILES
 # Imports from chameleon
 # ---------------------------------------------------------------------------
 
-from chameleon_mcp.tools import (
+from chameleon_mcp.tools import (  # noqa: E402
     detect_repo,
     doctor,
     get_archetype,

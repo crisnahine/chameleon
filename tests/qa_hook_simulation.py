@@ -16,8 +16,8 @@ CHAMELEON_ROOT = Path(__file__).resolve().parent.parent
 HOOK_DIR = CHAMELEON_ROOT / "hooks"
 MCP_DIR = CHAMELEON_ROOT / "mcp"
 PYTHON = str(MCP_DIR / ".venv" / "bin" / "python")
-TS_REPO = "/Users/crisn/Documents/Projects/Testing Apps/ef-client"
-RUBY_REPO = "/Users/crisn/Documents/Projects/Testing Apps/ef-api"
+TS_REPO = os.environ.get("CHAMELEON_TEST_TS_REPO", "")
+RUBY_REPO = os.environ.get("CHAMELEON_TEST_RUBY_REPO", "")
 
 TASKS = [
     {
@@ -337,6 +337,10 @@ def run_hook(hook_name: str, payload: dict, cwd: str) -> dict:
 
 
 def main():
+    if not TS_REPO or not RUBY_REPO:
+        print("SKIP: CHAMELEON_TEST_TS_REPO and CHAMELEON_TEST_RUBY_REPO not set")
+        return
+
     results = []
     print("=" * 80)
     print("CHAMELEON HOOK SIMULATION: 10 JIRA TASKS")

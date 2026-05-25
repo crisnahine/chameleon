@@ -101,7 +101,6 @@ def record_edit_observation(
     """
     if not repo_id:
         return
-    db_path = _drift_db_path(repo_id)
     confidence = _CONFIDENCE_BAND_TO_FLOAT.get(confidence_band, 0.0)
     ts = observed_at if observed_at is not None else int(time.time())
 

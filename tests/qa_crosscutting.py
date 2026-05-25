@@ -3,10 +3,14 @@
 Exercises security boundaries, edge cases, caching correctness, and API
 contract invariants against two real repos (TS + Ruby). Read-only -- does
 not modify either repo.
+
+Set CHAMELEON_TEST_TS_REPO and CHAMELEON_TEST_RUBY_REPO to the absolute
+paths of profiled repos before running.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -14,8 +18,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Paths to the two real repos under test
 # ---------------------------------------------------------------------------
-TS_REPO = Path("/Users/crisn/Documents/Projects/Testing Apps/ef-client")
-RUBY_REPO = Path("/Users/crisn/Documents/Projects/Testing Apps/ef-api")
+TS_REPO = Path(os.environ.get("CHAMELEON_TEST_TS_REPO", ""))
+RUBY_REPO = Path(os.environ.get("CHAMELEON_TEST_RUBY_REPO", ""))
 
 # Representative files inside each repo (must exist on disk)
 TS_FILE = TS_REPO / "src" / "index.tsx"
@@ -56,7 +60,7 @@ def test_01_path_traversal() -> None:
     """get_pattern_context with ../ traversal should fail safely."""
     from chameleon_mcp.tools import get_pattern_context
 
-    malicious = "/Users/crisn/Documents/Projects/Testing Apps/ef-client/../../etc/passwd"
+    malicious = str(TS_REPO / ".." / ".." / "etc" / "passwd")
     result = get_pattern_context(malicious)
     data = result.get("data", {})
     repo_info = data.get("repo", {})
@@ -72,7 +76,7 @@ def test_02_null_byte_in_path() -> None:
     """get_pattern_context with null byte should fail safely."""
     from chameleon_mcp.tools import get_pattern_context
 
-    malicious = "/Users/crisn/Documents/Projects/foo\x00bar.ts"
+    malicious = str(TS_REPO.parent / "foo\x00bar.ts")
     result = get_pattern_context(malicious)
     data = result.get("data", {})
     repo_info = data.get("repo", {})
@@ -339,6 +343,10 @@ def test_15_daemon_status_alive_field() -> None:
 # ===================================================================
 
 def main() -> int:
+    if not os.environ.get("CHAMELEON_TEST_TS_REPO") or not os.environ.get("CHAMELEON_TEST_RUBY_REPO"):
+        print("SKIP: CHAMELEON_TEST_TS_REPO and CHAMELEON_TEST_RUBY_REPO not set")
+        return 0
+
     print("=" * 60)
     print("  chameleon cross-cutting QA battery")
     print("=" * 60)

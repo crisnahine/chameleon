@@ -528,7 +528,7 @@ def _write_pidfile(pid: int, sock_path: Path) -> None:
     pf = pid_path()
     tmp = pf.with_suffix(".pid.tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.write(fd, f"{pid}\n{sock_path}\n".encode("utf-8"))
+    os.write(fd, f"{pid}\n{sock_path}\n".encode())
     os.fsync(fd)
     os.close(fd)
     os.replace(tmp, pf)
@@ -668,7 +668,7 @@ def start_daemon(*, force: bool = False) -> dict:
     try:
         os.ftruncate(lock_fd, 0)
         os.lseek(lock_fd, 0, os.SEEK_SET)
-        os.write(lock_fd, f"{os.getpid()}\n{sock_path}\n".encode("utf-8"))
+        os.write(lock_fd, f"{os.getpid()}\n{sock_path}\n".encode())
         os.fsync(lock_fd)
     except OSError as e:
         sys.stderr.write(f"[chameleon-daemon] cannot write pidfile: {e}\n")

@@ -1,12 +1,16 @@
-"""QA test battery for chameleon against a real Ruby on Rails repo (ef-api).
+"""QA test battery for chameleon against a real Ruby on Rails repo.
 
 Imports chameleon tools directly and calls them, printing PASS/FAIL verdicts.
 Does NOT modify the repo.
+
+Set CHAMELEON_TEST_RUBY_REPO to the absolute path of a Rails repo with a
+chameleon profile before running.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -16,13 +20,17 @@ from pathlib import Path
 # Config
 # ---------------------------------------------------------------------------
 
-REPO_PATH = "/Users/crisn/Documents/Projects/Testing Apps/ef-api"
+REPO_PATH = os.environ.get("CHAMELEON_TEST_RUBY_REPO", "")
 
 # Real files to test against (found via find)
 CONTROLLER_FILE = f"{REPO_PATH}/app/controllers/api/v1/referrals_controller.rb"
 MODEL_FILE = f"{REPO_PATH}/app/models/listing_asset.rb"
 SERVICE_FILE = f"{REPO_PATH}/app/services/slack/channel_message.rb"
 SPEC_FILE = f"{REPO_PATH}/spec/models/ticket_spec.rb"
+
+if not REPO_PATH:
+    print("SKIP: CHAMELEON_TEST_RUBY_REPO not set")
+    sys.exit(0)
 
 # ---------------------------------------------------------------------------
 # Harness
@@ -51,7 +59,7 @@ def section(title: str):
 # Import tools
 # ---------------------------------------------------------------------------
 
-from chameleon_mcp.tools import (
+from chameleon_mcp.tools import (  # noqa: E402
     detect_repo,
     doctor,
     get_archetype,
@@ -616,7 +624,7 @@ print(f"  Passed: {passed}")
 print(f"  Failed: {failed}")
 
 if failed > 0:
-    print(f"\n  FAILED TESTS:")
+    print("\n  FAILED TESTS:")
     for name, ok, detail in results:
         if not ok:
             print(f"    - {name}")

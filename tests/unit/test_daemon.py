@@ -4,11 +4,10 @@ from __future__ import annotations
 import json
 import os
 import socket
-import struct
 import time
+from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from chameleon_mcp.daemon import (
     DEFAULT_IDLE_TIMEOUT_S,
@@ -243,7 +242,6 @@ def test_daemon_state_mark_request_increments():
 
 def test_daemon_info_no_pidfile(tmp_path: Path):
     """When no pidfile exists, daemon_info() returns alive=False."""
-    from pathlib import Path
 
     fake_data = tmp_path / "chameleon-test"
     fake_data.mkdir()
@@ -258,14 +256,12 @@ def test_daemon_info_no_pidfile(tmp_path: Path):
 
 def test_daemon_info_dead_pid(tmp_path: Path):
     """When pidfile points to a dead PID, daemon_info() returns alive=False."""
-    from pathlib import Path
 
     fake_data = tmp_path / "chameleon-test"
     fake_data.mkdir()
 
     # Write a pidfile pointing to a dead PID
     pf = fake_data / ".daemon.pid"
-    sock = fake_data / ".daemon.sock"
     pf.write_text("99999999\n/tmp/fake.sock\n")
 
     with patch("chameleon_mcp.daemon._plugin_data", return_value=fake_data):

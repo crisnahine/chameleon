@@ -1,7 +1,6 @@
 """Unit tests for chameleon_mcp.index_db — init, upsert, resolve, list."""
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 import pytest
