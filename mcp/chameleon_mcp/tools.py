@@ -37,6 +37,25 @@ def _clear_repo_id_cache() -> None:
     _REPO_ID_CACHE.clear()
 
 
+def _notify_daemon_cache_invalidation() -> None:
+    """Tell the long-lived daemon to drop its process-local profile cache.
+
+    BUG-029: profile-mutating operations (bootstrap, refresh, teach) run
+    in the MCP server process, not the daemon. Without this notification
+    the daemon keeps serving stale cached data until the mtime token
+    happens to change enough to trigger a reload.
+
+    Fail-open: if the daemon is unreachable the notification is a no-op;
+    the next hook call will either hit the in-process fallback or the
+    daemon's mtime check will eventually detect the change.
+    """
+    try:
+        from chameleon_mcp import daemon_client
+        daemon_client.call("invalidate_cache", {})
+    except Exception:
+        pass
+
+
 def _envelope(data: dict, truncated: bool = False, next_cursor: str | None = None) -> dict:
     """Standard response envelope for all tools."""
     out: dict = {"api_version": "1", "data": data}
@@ -2482,6 +2501,7 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             # _inject_archetype_diff because the preservation gate
             # reads the diff's added/removed/renamed lists.
             _maybe_preserve_trust_across_refresh(repo_path, pre_state, envelope)
+            _notify_daemon_cache_invalidation()
             return envelope
     except LockHeldError as e:
         return _envelope({
@@ -3175,6 +3195,7 @@ def bootstrap_repo(
                 if ws_rows:
                     index_db.upsert_file_clusters(ws_repo_id, ws_rows)
 
+    _notify_daemon_cache_invalidation()
     return _envelope(report.to_dict())
 
 
@@ -3704,6 +3725,8 @@ def teach_profile(repo: str, feedback: str) -> dict:
                 "retry shortly"
             ),
         })
+
+    _notify_daemon_cache_invalidation()
 
     response: dict = {
         "status": "success",
@@ -5170,6 +5193,7 @@ def _transition_slug_to_deprecated(
             ),
         })
 
+    _notify_daemon_cache_invalidation()
     return _envelope({
         "status": "success",
         "idioms_added": 0,
@@ -5250,6 +5274,7 @@ def _write_new_deprecated_idiom(
             ),
         })
 
+    _notify_daemon_cache_invalidation()
     return _envelope({
         "status": "success",
         "idioms_added": 0,

@@ -617,6 +617,16 @@ def preflight_and_advise() -> int:
     except Exception:
         result = None
 
+    # BUG-029: if the daemon returned a degraded envelope (profile_corrupted,
+    # profile_unsupported_schema_version), discard it and fall through to the
+    # in-process path which re-reads from disk. The daemon's process-local
+    # cache can serve stale data after profile mutations done by a separate
+    # MCP server process.
+    if result is not None:
+        _profile_status = (result.get("data") or {}).get("repo", {}).get("profile_status")
+        if _profile_status in ("profile_corrupted", "profile_unsupported_schema_version", "no_profile"):
+            result = None
+
     if result is None:
         # Kick off the daemon for next time, then run in-process now.
         try:

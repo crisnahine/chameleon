@@ -296,6 +296,15 @@ def _dispatch(method: str, payload: dict) -> dict:
             return {"error": "content must be a string"}
         return _tools.lint_file(repo, archetype, content)
 
+    if method == "invalidate_cache":
+        # BUG-029: profile-mutating MCP tools (bootstrap, refresh, teach)
+        # run in a separate process. After they write new profile artifacts,
+        # they send this message so the daemon drops its stale process-local
+        # cache. Next get_pattern_context call re-reads from disk.
+        from chameleon_mcp.profile.loader import clear_profile_cache
+        clear_profile_cache()
+        return {"ok": True, "cleared": True}
+
     if method == "ping":
         # Lightweight health probe used by tests + daemon_status().
         return {"ok": True, "ts": time.time()}
