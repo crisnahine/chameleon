@@ -4,6 +4,47 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-05-25
+
+Three-round expert code review (20 agents) followed by full fix, performance, and QA cycle.
+
+### Fixed
+
+- SQLite `with conn:` was a no-op under `isolation_level=None` - index migration had a data-loss window on crash between DROP and RENAME. Changed to `isolation_level=""` so context manager issues BEGIN/COMMIT/ROLLBACK.
+- `posttool_recorder` hashed CWD path instead of git remote URL, making exec_log entries invisible to `_session_unseen_for_repo`. Now uses `_compute_repo_id`.
+- `_is_pid_alive` in `locks.py` returned False for EPERM, incorrectly breaking locks on multi-user systems. Now matches daemon.py and transaction.py (`return e.errno != errno.ESRCH`).
+- Stale lock break crash: two processes detecting the same stale lock got an unhandled OSError instead of LockHeldError. Re-acquire flock now wrapped in try/except.
+- `_rewrite_summary_md` missing `paths_pattern_display` fallback - Rails repos lost honest display path after rename. Now uses `arch.get('paths_pattern_display') or arch.get('paths_pattern', '')`.
+- `pause_session` had no trust gate, bypassing `disable_session`'s trust requirement. Now requires a trust grant.
+- Missing fsync before `os.replace` in 5 write sites: trust records, daemon pidfile, session-disable markers, pause markers, canonical COMMITTED sentinel.
+- `grant_trust` read-modify-write race - concurrent calls could lose workspace entries. Added flock serialization.
+- Daemon startup race - concurrent `start_daemon` could orphan processes. Grandchild now flocks pidfile with LOCK_NB before writing PID.
+- `session-start` hook had no timeout wrapper. Added `timeout 3`.
+- `_is_cache_valid` accepted zero-length COMMITTED sentinel from prior crash. Now checks `st_size > 0`.
+- `doctor()` was missing `posttool-verify` from hook check list.
+
+### Added
+
+- `lint_file` accepts optional `file_path` parameter for correct language detection (e.g., `.tsx` file with `.ts` witness).
+- Process-global caches: `_compute_repo_id` (5-min TTL), `LoadedProfile` (mtime-based including idioms.md), `find_repo_root` (cleared on bootstrap), persistent SQLite connections for drift and index DBs.
+- Shared summary renderer extracted to `profile/summary.py` (was duplicated between orchestrator.py and tools.py).
+- `recalibrate_ast_query` extracted to `lint_engine.py` (was duplicated between tools.py and hook_helper.py).
+- Case-insensitive sanitization via `re.IGNORECASE` - uppercase `</CHAMELEON-CONTEXT>` no longer bypasses.
+- 13 new unit test files: safe_open, sanitization, lint_engine, signatures, optouts, exec_log, transaction, daemon, trust, loader, index_db (299 new tests, 351 total).
+- 4 QA scripts for real-repo validation (TypeScript, Ruby, cross-cutting, hook simulation).
+- Hot-path benchmark script (`tests/bench_hot_path.py`).
+
+### Removed
+
+- Dead `execute_with_retry` function in `sqlite_config.py` (38 lines, zero callers).
+- Dead `found` counter in `_has_typescript_source_files` (never incremented).
+- Stale module docstring claiming tools were stubs.
+
+### Performance
+
+- `get_pattern_context` warm latency: 0.38ms (measured on real repos).
+- Caching saves ~123ms per hot-path call (repo_id + profile + repo_root + SQLite connection reuse).
+
 ## [0.6.1] - 2026-05-21
 
 Adversarial review of v0.6.0 by four parallel expert agents (security, architecture, reliability, UX) surfaced three BLOCKER-class regressions and several HIGH-severity gaps. v0.6.1 closes them. A round-3 verification by the security reviewer then found additional follow-ups, all addressed in this same release.
