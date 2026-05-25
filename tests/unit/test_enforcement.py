@@ -1,12 +1,8 @@
 """Unit tests for enforcement state machine."""
 from __future__ import annotations
 
-import json
-import os
 import time
 from pathlib import Path
-
-import pytest
 
 
 def _make_data_dir(tmp_path: Path) -> Path:
@@ -68,7 +64,7 @@ def test_round_trip(tmp_path):
 
 
 def test_load_missing_returns_empty(tmp_path):
-    from chameleon_mcp.enforcement import EnforcementState, load_state
+    from chameleon_mcp.enforcement import load_state
 
     repo_dir = _make_data_dir(tmp_path)
     state = load_state(repo_dir, "nonexistent")
@@ -93,8 +89,8 @@ def test_eviction_at_200_files(tmp_path):
     from chameleon_mcp.enforcement import (
         EnforcementState,
         FileState,
-        save_state,
         load_state,
+        save_state,
     )
 
     repo_dir = _make_data_dir(tmp_path)
@@ -116,7 +112,7 @@ def test_eviction_at_200_files(tmp_path):
 
 
 def test_record_violation_no_state_to_l0():
-    from chameleon_mcp.enforcement import FileState, record_violation, LEVEL_L0
+    from chameleon_mcp.enforcement import LEVEL_L0, FileState, record_violation
 
     fs = FileState()
     now = time.time()
@@ -128,7 +124,7 @@ def test_record_violation_no_state_to_l0():
 
 
 def test_record_violation_l0_to_l1_different_edit():
-    from chameleon_mcp.enforcement import FileState, record_violation, LEVEL_L0, LEVEL_L1
+    from chameleon_mcp.enforcement import LEVEL_L0, LEVEL_L1, FileState, record_violation
 
     fs = FileState(level=LEVEL_L0, last_violation_at=time.time() - 20)
     now = time.time()
@@ -137,7 +133,7 @@ def test_record_violation_l0_to_l1_different_edit():
 
 
 def test_record_violation_self_correction_no_escalation():
-    from chameleon_mcp.enforcement import FileState, record_violation, LEVEL_L0
+    from chameleon_mcp.enforcement import LEVEL_L0, FileState, record_violation
 
     first = time.time()
     fs = FileState(level=LEVEL_L0, last_violation_at=first)
@@ -148,7 +144,7 @@ def test_record_violation_self_correction_no_escalation():
 
 
 def test_record_violation_l1_to_l2():
-    from chameleon_mcp.enforcement import FileState, record_violation, LEVEL_L1, LEVEL_L2
+    from chameleon_mcp.enforcement import LEVEL_L1, LEVEL_L2, FileState, record_violation
 
     fs = FileState(level=LEVEL_L1, last_violation_at=time.time() - 20)
     record_violation(fs, now=time.time(), archetype="component")
@@ -156,7 +152,7 @@ def test_record_violation_l1_to_l2():
 
 
 def test_consecutive_l2_increments():
-    from chameleon_mcp.enforcement import FileState, record_violation, LEVEL_L2
+    from chameleon_mcp.enforcement import LEVEL_L2, FileState, record_violation
 
     fs = FileState(level=LEVEL_L2, last_violation_at=time.time() - 20, consecutive_l2=1)
     record_violation(fs, now=time.time(), archetype="component")
@@ -164,7 +160,7 @@ def test_consecutive_l2_increments():
 
 
 def test_record_clean_de_escalates():
-    from chameleon_mcp.enforcement import FileState, record_clean, LEVEL_L2, LEVEL_L1
+    from chameleon_mcp.enforcement import LEVEL_L1, LEVEL_L2, FileState, record_clean
 
     fs = FileState(level=LEVEL_L2, correction_count=3, consecutive_l2=2)
     record_clean(fs, now=time.time())
@@ -174,7 +170,7 @@ def test_record_clean_de_escalates():
 
 
 def test_record_clean_l0_to_none():
-    from chameleon_mcp.enforcement import FileState, record_clean, LEVEL_L0, LEVEL_NONE
+    from chameleon_mcp.enforcement import LEVEL_L0, LEVEL_NONE, FileState, record_clean
 
     fs = FileState(level=LEVEL_L0)
     record_clean(fs, now=time.time())
@@ -190,7 +186,9 @@ def test_should_surface_to_user_at_3_consecutive_l2():
 
 def test_should_surface_fast_path_no_clean_ever():
     from chameleon_mcp.enforcement import (
-        FileState, should_surface_to_user, LEVEL_L2,
+        LEVEL_L2,
+        FileState,
+        should_surface_to_user,
     )
 
     fs = FileState(level=LEVEL_L2, consecutive_l2=1, last_clean_at=None)
@@ -229,7 +227,10 @@ def test_self_correction_boundary_at_10s():
 
 def test_eviction_with_none_last_verified_at(tmp_path):
     from chameleon_mcp.enforcement import (
-        EnforcementState, FileState, save_state, load_state,
+        EnforcementState,
+        FileState,
+        load_state,
+        save_state,
     )
 
     repo_dir = _make_data_dir(tmp_path)

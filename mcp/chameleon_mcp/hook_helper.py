@@ -478,8 +478,8 @@ def session_start() -> int:
     # v0.7.0: clean up stale enforcement state files (>24h old)
     try:
         from chameleon_mcp.plugin_paths import plugin_data_dir
-        from chameleon_mcp.tools import _compute_repo_id
         from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.tools import _compute_repo_id
 
         repo_root = find_repo_root(Path.cwd())
         if repo_root:
@@ -1015,7 +1015,6 @@ def posttool_verify() -> int:
             from chameleon_mcp.enforcement import (
                 LEVEL_NONE,
                 MAX_CORRECTIONS_PER_FILE,
-                EnforcementState,
                 FileState,
                 cooldown_for_level,
                 is_self_correction,
@@ -1103,7 +1102,10 @@ def posttool_verify() -> int:
 
         if not daemon_responded:
             from chameleon_mcp.lint_engine import (
-                detect_language, extract_dimensions, lint, recalibrate_ast_query,
+                detect_language,
+                extract_dimensions,
+                lint,
+                recalibrate_ast_query,
             )
             from chameleon_mcp.profile.loader import load_profile_dir
 

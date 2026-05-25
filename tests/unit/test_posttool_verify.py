@@ -607,9 +607,9 @@ def test_corrections_exhausted_emits_advisory(tmp_path: Path):
 
     # Seed enforcement state with correction_count at the cap
     from chameleon_mcp.enforcement import (
+        MAX_CORRECTIONS_PER_FILE,
         EnforcementState,
         FileState,
-        MAX_CORRECTIONS_PER_FILE,
         save_state,
     )
 
