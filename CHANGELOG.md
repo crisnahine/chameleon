@@ -4,6 +4,20 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.6] - 2026-05-26
+
+3-round expert review of the visual branding feature (v0.8.0-v0.8.5).
+
+### Fixed
+
+- **Security**: shell injection in statusline python3 fallback - `$cache_file` was interpolated into a python3 `-c` string. Now passed via `CACHE_PATH` env var.
+- **Correctness**: `_trust_for` used `ts.profile_sha256` instead of `ts.hash_for_root(root)` - showed wrong trust state for monorepos with workspace-specific hashes.
+- **Correctness**: `[archetype: clean]` PostToolUse header was missing the 🦎 prefix (the only header that was missed in v0.8.0).
+- **UX**: activity field in status line never cleared - now expires after 30s of no hook writes (checks cache file mtime).
+- **Portability**: `stat -f %m` (macOS-only) in the jq path - now tries GNU `stat -c %Y` first for Linux compat.
+- **Robustness**: `PermissionError` on one unreadable child directory during parent-dir scanning silently skipped ALL profiles. Error handling now per-child.
+- **UX**: "no profile" fallback now silent (no output) instead of showing a permanent badge when chameleon has nothing to say.
+
 ## [0.8.5] - 2026-05-26
 
 ### Fixed

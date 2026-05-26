@@ -1,6 +1,6 @@
 {
   "name": "chameleon",
   "description": "Archetype-aware coding assistant for TypeScript and Ruby on Rails repos.",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "contextFileName": "GEMINI.md"
 }

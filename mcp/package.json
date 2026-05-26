@@ -1,6 +1,6 @@
 {
   "name": "chameleon-mcp-node",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "Node-side tooling for chameleon-mcp (TypeScript Compiler API subprocess for AST extraction).",
   "private": true,
   "license": "MIT",
