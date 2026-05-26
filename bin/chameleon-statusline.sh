@@ -34,7 +34,8 @@ if [[ -f "$cache_file" ]]; then
       done
       activity=$(jq -r '.activity // empty' "$cache_file" 2>/dev/null)
       if [[ -n "$activity" ]]; then
-        cache_age=$(( $(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || echo 0) ))
+        cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)
+        cache_age=$(( $(date +%s) - cache_mtime ))
         if [[ "$cache_age" -lt 30 ]]; then
           parts="$parts │ $activity"
         fi
