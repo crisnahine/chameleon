@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Status line delivery: plugin root `settings.json` cannot deliver `statusLine` to Claude Code (only `agent` and `subagentStatusLine` keys are supported). Replaced with SessionStart auto-config that writes the statusLine to `.claude/settings.local.json` on first session.
 - Status line path survives plugin version upgrades. SessionStart detects when the cached plugin path in `settings.local.json` no longer matches `CLAUDE_PLUGIN_ROOT` and updates it.
 - Status line script now parses `workspace.project_dir` from Claude Code's stdin JSON instead of relying on env vars.
+- Trust state always showed "untrusted" because the shell script computed `repo_id` from the raw git URL, but chameleon normalizes URLs before hashing. SessionStart now writes a `.chameleon-statusline-cache` with the correct trust state (including stale detection).
 - `uv.lock` version synced (was stuck at 0.5.13 since initial lockfile).
 
 ## [0.8.0] - 2026-05-26
