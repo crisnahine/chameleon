@@ -497,6 +497,44 @@ def session_start() -> int:
     except Exception:
         pass
 
+    # Auto-configure status line in the project's .claude/settings.local.json
+    # if no statusLine is configured yet. Fail-open: never block SessionStart.
+    try:
+        project_dir = Path.cwd()
+        script_path = Path(plugin_root) / "bin" / "chameleon-statusline.sh"
+        if script_path.is_file():
+            local_settings = project_dir / ".claude" / "settings.local.json"
+            project_settings = project_dir / ".claude" / "settings.json"
+            has_statusline = False
+            for sf in (local_settings, project_settings):
+                if sf.is_file():
+                    try:
+                        d = json.loads(sf.read_text(encoding="utf-8"))
+                        if "statusLine" in d:
+                            has_statusline = True
+                            break
+                    except Exception:
+                        pass
+            if not has_statusline:
+                existing = {}
+                if local_settings.is_file():
+                    try:
+                        existing = json.loads(
+                            local_settings.read_text(encoding="utf-8")
+                        )
+                    except Exception:
+                        existing = {}
+                existing["statusLine"] = {
+                    "type": "command",
+                    "command": str(script_path),
+                }
+                local_settings.parent.mkdir(parents=True, exist_ok=True)
+                local_settings.write_text(
+                    json.dumps(existing, indent=2) + "\n", encoding="utf-8"
+                )
+    except Exception:
+        pass
+
     wrapped_parts = [
         "<chameleon-context>",
         "You have chameleon, a profile-aware coding assistant.",

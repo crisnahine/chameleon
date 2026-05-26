@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
 # Status line script for the chameleon Claude Code plugin.
 # Prints a one-line summary: profile name + trust state.
-# Must complete in <100ms - no MCP calls, no Python imports.
+# Receives session JSON on stdin from Claude Code.
+# Must complete in <100ms - no MCP calls, no heavy imports.
 set -euo pipefail
 
 # Disabled? Output nothing.
 [[ "${CHAMELEON_DISABLE:-}" == "1" ]] && exit 0
 
+# --- Read project dir from stdin JSON ---
+input=$(cat)
+project_dir=""
+if command -v jq &>/dev/null; then
+  project_dir=$(printf '%s' "$input" | jq -r '.workspace.project_dir // empty' 2>/dev/null)
+fi
+if [[ -z "$project_dir" ]]; then
+  project_dir=$(printf '%s' "$input" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('workspace',{}).get('project_dir',''))" 2>/dev/null || true)
+fi
+[[ -z "$project_dir" ]] && project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
+
 # --- Locate .chameleon/profile.json by walking up from project dir ---
-start_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
 profile_dir=""
-dir="$start_dir"
+dir="$project_dir"
 while true; do
   if [[ -f "$dir/.chameleon/profile.json" ]]; then
     profile_dir="$dir/.chameleon"
