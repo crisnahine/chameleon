@@ -497,25 +497,29 @@ def session_start() -> int:
     except Exception:
         pass
 
-    # Auto-configure status line in the project's .claude/settings.local.json
-    # if no statusLine is configured yet. Fail-open: never block SessionStart.
+    # Auto-configure status line in the project's .claude/settings.local.json.
+    # On every SessionStart, verify the path still resolves (plugin version
+    # upgrades change the cache path). Fail-open: never block SessionStart.
     try:
         project_dir = Path.cwd()
         script_path = Path(plugin_root) / "bin" / "chameleon-statusline.sh"
         if script_path.is_file():
             local_settings = project_dir / ".claude" / "settings.local.json"
             project_settings = project_dir / ".claude" / "settings.json"
-            has_statusline = False
-            for sf in (local_settings, project_settings):
-                if sf.is_file():
-                    try:
-                        d = json.loads(sf.read_text(encoding="utf-8"))
-                        if "statusLine" in d:
-                            has_statusline = True
-                            break
-                    except Exception:
-                        pass
-            if not has_statusline:
+            current_cmd = str(script_path)
+            needs_write = False
+
+            # Check project settings first - if user configured there, don't touch
+            if project_settings.is_file():
+                try:
+                    d = json.loads(project_settings.read_text(encoding="utf-8"))
+                    if "statusLine" in d:
+                        needs_write = False
+                        current_cmd = None
+                except Exception:
+                    pass
+
+            if current_cmd is not None:
                 existing = {}
                 if local_settings.is_file():
                     try:
@@ -524,9 +528,17 @@ def session_start() -> int:
                         )
                     except Exception:
                         existing = {}
+                old_cmd = (existing.get("statusLine") or {}).get("command", "")
+                if "statusLine" not in existing:
+                    needs_write = True
+                elif old_cmd != current_cmd and "chameleon" in old_cmd:
+                    # Path changed (plugin version upgrade) - update it
+                    needs_write = True
+
+            if needs_write:
                 existing["statusLine"] = {
                     "type": "command",
-                    "command": str(script_path),
+                    "command": current_cmd,
                 }
                 local_settings.parent.mkdir(parents=True, exist_ok=True)
                 local_settings.write_text(
