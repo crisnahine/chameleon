@@ -497,6 +497,31 @@ def session_start() -> int:
     except Exception:
         pass
 
+    # Write a statusline cache so the shell script can show trust state
+    # without recomputing repo_id (which requires URL normalization).
+    try:
+        if repo_root:
+            from chameleon_mcp.profile.trust import trust_state_for
+
+            profile_dir = repo_root / ".chameleon"
+            cache_dir = Path.cwd() / ".claude"
+            sl_cache = cache_dir / ".chameleon-statusline-cache"
+            ts = trust_state_for(repo_id)
+            state = "trusted" if ts is not None else "untrusted"
+            if ts is not None and profile_dir.is_dir():
+                from chameleon_mcp.profile.trust import hash_profile
+                current_hash = hash_profile(profile_dir)
+                if current_hash and ts.profile_sha256 != current_hash:
+                    state = "stale"
+            profile_name = repo_root.name
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            sl_cache.write_text(
+                json.dumps({"profile": profile_name, "trust": state}),
+                encoding="utf-8",
+            )
+    except Exception:
+        pass
+
     # Auto-configure status line in the project's .claude/settings.local.json.
     # On every SessionStart, verify the path still resolves (plugin version
     # upgrades change the cache path). Fail-open: never block SessionStart.
