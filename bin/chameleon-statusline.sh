@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Status line script for the chameleon Claude Code plugin.
-# Reads a cache file written by SessionStart for profile name + trust state.
+# Reads a cache file written by SessionStart + hooks for live state.
 # Must complete in <100ms.
 set -euo pipefail
 
@@ -17,7 +17,7 @@ if [[ -z "$project_dir" ]]; then
 fi
 [[ -z "$project_dir" ]] && project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
 
-# --- Read cached state written by SessionStart ---
+# --- Read cached state ---
 cache_file="$project_dir/.claude/.chameleon-statusline-cache"
 if [[ -f "$cache_file" ]]; then
   if command -v jq &>/dev/null; then
@@ -32,6 +32,10 @@ if [[ -f "$cache_file" ]]; then
         fi
         parts="$parts$name ($trust)"
       done
+      activity=$(jq -r '.activity // empty' "$cache_file" 2>/dev/null)
+      if [[ -n "$activity" ]]; then
+        parts="$parts │ $activity"
+      fi
       printf '🦎 chameleon │ %s' "$parts"
       exit 0
     fi
@@ -42,6 +46,9 @@ d=json.load(open('$cache_file'))
 ps=d.get('profiles',[])
 if ps:
     parts=' │ '.join(f\"{p['name']} ({p['trust']})\" for p in ps)
+    act=d.get('activity','')
+    if act:
+        parts+=f' │ {act}'
     print(f'🦎 chameleon │ {parts}')
 " 2>/dev/null || true)
     if [[ -n "$result" ]]; then
