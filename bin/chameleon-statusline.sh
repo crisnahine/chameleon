@@ -21,15 +21,33 @@ fi
 cache_file="$project_dir/.claude/.chameleon-statusline-cache"
 if [[ -f "$cache_file" ]]; then
   if command -v jq &>/dev/null; then
-    profile_name=$(jq -r '.profile // empty' "$cache_file" 2>/dev/null)
-    trust_state=$(jq -r '.trust // "untrusted"' "$cache_file" 2>/dev/null)
+    count=$(jq -r '.profiles | length' "$cache_file" 2>/dev/null || echo 0)
+    if [[ "$count" -gt 0 ]]; then
+      parts=""
+      for i in $(seq 0 $((count - 1))); do
+        name=$(jq -r ".profiles[$i].name" "$cache_file" 2>/dev/null)
+        trust=$(jq -r ".profiles[$i].trust" "$cache_file" 2>/dev/null)
+        if [[ -n "$parts" ]]; then
+          parts="$parts │ "
+        fi
+        parts="$parts$name ($trust)"
+      done
+      printf '🦎 chameleon │ %s' "$parts"
+      exit 0
+    fi
   else
-    profile_name=$(python3 -c "import json; d=json.load(open('$cache_file')); print(d.get('profile',''))" 2>/dev/null || true)
-    trust_state=$(python3 -c "import json; d=json.load(open('$cache_file')); print(d.get('trust','untrusted'))" 2>/dev/null || echo "untrusted")
-  fi
-  if [[ -n "$profile_name" ]]; then
-    printf '🦎 chameleon │ %s │ %s' "$profile_name" "$trust_state"
-    exit 0
+    result=$(python3 -c "
+import json
+d=json.load(open('$cache_file'))
+ps=d.get('profiles',[])
+if ps:
+    parts=' │ '.join(f\"{p['name']} ({p['trust']})\" for p in ps)
+    print(f'🦎 chameleon │ {parts}')
+" 2>/dev/null || true)
+    if [[ -n "$result" ]]; then
+      printf '%s' "$result"
+      exit 0
+    fi
   fi
 fi
 

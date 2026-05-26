@@ -499,25 +499,47 @@ def session_start() -> int:
 
     # Write a statusline cache so the shell script can show trust state
     # without recomputing repo_id (which requires URL normalization).
+    # Handles both direct profiles and parent dirs with child profiles.
     try:
-        if repo_root:
-            from chameleon_mcp.profile.trust import trust_state_for
+        from chameleon_mcp.profile.trust import hash_profile, trust_state_for
 
-            profile_dir = repo_root / ".chameleon"
-            cache_dir = Path.cwd() / ".claude"
-            sl_cache = cache_dir / ".chameleon-statusline-cache"
-            ts = trust_state_for(repo_id)
-            state = "trusted" if ts is not None else "untrusted"
-            if ts is not None and profile_dir.is_dir():
-                from chameleon_mcp.profile.trust import hash_profile
-                current_hash = hash_profile(profile_dir)
-                if current_hash and ts.profile_sha256 != current_hash:
-                    state = "stale"
-            profile_name = repo_root.name
+        cache_dir = Path.cwd() / ".claude"
+        sl_cache = cache_dir / ".chameleon-statusline-cache"
+        profiles: list[dict] = []
+
+        def _trust_for(root: Path) -> str:
+            rid = _compute_repo_id(root)
+            ts = trust_state_for(rid)
+            if ts is None:
+                return "untrusted"
+            pdir = root / ".chameleon"
+            if pdir.is_dir():
+                cur = hash_profile(pdir)
+                if cur and ts.profile_sha256 != cur:
+                    return "stale"
+            return "trusted"
+
+        if repo_root:
+            profiles.append({"name": repo_root.name, "trust": _trust_for(repo_root)})
+        else:
+            # Parent dir: scan immediate children for .chameleon/ profiles
+            cwd = Path.cwd()
+            for child in sorted(cwd.iterdir()):
+                if child.is_dir() and (child / ".chameleon" / "profile.json").is_file():
+                    try:
+                        child_root = find_repo_root(child)
+                        if child_root:
+                            profiles.append({
+                                "name": child_root.name,
+                                "trust": _trust_for(child_root),
+                            })
+                    except Exception:
+                        profiles.append({"name": child.name, "trust": "unknown"})
+
+        if profiles:
             cache_dir.mkdir(parents=True, exist_ok=True)
             sl_cache.write_text(
-                json.dumps({"profile": profile_name, "trust": state}),
-                encoding="utf-8",
+                json.dumps({"profiles": profiles}), encoding="utf-8"
             )
     except Exception:
         pass
