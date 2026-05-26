@@ -730,13 +730,13 @@ Per-edit injection is capped at ~1,500 tokens (char-length limit in `preflight_a
 
 Lints the written file after a successful edit. Violations are emitted as advisory context alongside the original tool output - the tool result is not replaced.
 
-**Cooldown:** flat 30-second per-file cooldown (`_VERIFY_SEEN_TTL_SECONDS = 30`). No per-level differentiation, no self-correction bypass. Within 30s of verifying a file, re-edits get: `[chameleon: already verified this file - review previous feedback]`.
+**Cooldown:** flat 30-second per-file cooldown (`_VERIFY_SEEN_TTL_SECONDS = 30`). No per-level differentiation, no self-correction bypass. Within 30s of verifying a file, re-edits get: `[🦎 chameleon: already verified this file - review previous feedback]`.
 
 **Violation output format:**
 
 ```
 <chameleon-context>
-[chameleon: post-edit verification]
+[🦎 chameleon: post-edit verification]
 
 File: /path/to/file.ts
 Archetype violations (N):
@@ -809,7 +809,7 @@ Replace the current full-canonical-every-time injection (~500-1,500 tokens) with
 
 | Tier | Condition | Size | Content |
 |------|-----------|------|---------|
-| Tier 1 (pointer) | Archetype already seen this session, no recent violations | ~50 tokens | `[chameleon: archetype=<name>]` + 2-3 key constraints |
+| Tier 1 (pointer) | Archetype already seen this session, no recent violations | ~50 tokens | `[🦎 chameleon: archetype=<name>]` + 2-3 key constraints |
 | Tier 2 (canonical) | First edit in this archetype OR previous violations | ~200-400 tokens | Annotated canonical excerpt |
 
 Requires tracking `archetypes_seen` and `archetypes_with_violations` in per-session state (see state management below). Projected steady-state per edit drops from ~1,500 to ~50 tokens.
@@ -840,7 +840,7 @@ Replace the flat 30s cooldown with level-aware cooldowns:
 
 #### Correction loop guard [ASPIRATIONAL]
 
-`MAX_CORRECTIONS_PER_FILE = 10` (defined in `enforcement.py`). After 10 PostToolUse verifications on the same file within `CORRECTION_RESET_SECONDS` (60s), the hook emits a `[chameleon: corrections exhausted]` message and stops verifying that file. This is the hard cap that prevents the tight verify-edit-verify loop described in the cooldown QA risk above.
+`MAX_CORRECTIONS_PER_FILE = 10` (defined in `enforcement.py`). After 10 PostToolUse verifications on the same file within `CORRECTION_RESET_SECONDS` (60s), the hook emits a `[🦎 chameleon: corrections exhausted]` message and stops verifying that file. This is the hard cap that prevents the tight verify-edit-verify loop described in the cooldown QA risk above.
 
 The counter resets after 60 seconds of no verification activity on the file. When the cap fires, the message directs the model to review violations manually or run `/chameleon-teach` if the archetype doesn't fit.
 

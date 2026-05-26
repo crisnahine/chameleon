@@ -554,7 +554,7 @@ def test_violations_use_updated_tool_output(tmp_path: Path):
     hook_output = result.get("hookSpecificOutput", {})
     assert "updatedToolOutput" in hook_output
     assert "additionalContext" not in hook_output
-    assert "[chameleon:" in hook_output["updatedToolOutput"]
+    assert "[🦎 chameleon:" in hook_output["updatedToolOutput"]
 
 
 # ---- 18. v0.7.0: CHAMELEON_ENFORCEMENT_MODE=additionalContext fallback ----

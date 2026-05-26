@@ -13,16 +13,16 @@ Chameleon enforces codebase conventions through hooks. You don't call MCP tools 
 
 ## Hook lifecycle
 
-**SessionStart**: injects this skill + an optional drift banner. If you see `[chameleon: drift]`, the profile may be outdated - suggest `/chameleon-refresh` when appropriate.
+**SessionStart**: injects this skill + an optional drift banner. If you see `[🦎 chameleon: drift]`, the profile may be outdated - suggest `/chameleon-refresh` when appropriate.
 
 **PreToolUse** (Edit/Write/NotebookEdit): tiered injection. Tier 1 (seen archetypes) injects a short pointer with pattern name and summary. Tier 2 (new or previously violated archetypes) injects the full canonical excerpt, confidence band, match quality, and team idioms. The header looks like:
 
-    [chameleon: archetype=<name>, confidence=<band>, match_quality=<exact|ast|fallback|none>, sub_buckets=<N>]
+    [🦎 chameleon: archetype=<name>, confidence=<band>, match_quality=<exact|ast|fallback|none>, sub_buckets=<N>]
 
 - `match_quality`: how the canonical was matched. `exact` = same file pattern, `ast` = structural match, `fallback` = best guess, `none` = no canonical found. Weight the excerpt accordingly.
 - `sub_buckets`: how many sub-clusters the archetype spans. 1 = tight cluster. 2+ = the archetype groups varied concerns - read the canonical more carefully.
 
-**PostToolUse** (Edit/Write/NotebookEdit): lints the written file against its archetype. Violations appear in `updatedToolOutput` by default (inline with the tool result, not as a system reminder). Escalation is per-file: repeated violations for the same file escalate through L0 (silent fix) -> L1 (flagged) -> L2 (stop and fix). Chameleon stops verifying a file after 10 rapid corrections to avoid loops. There is a 30-second per-file cooldown - if you see `[chameleon: already verified this file]`, refer to the previous feedback.
+**PostToolUse** (Edit/Write/NotebookEdit): lints the written file against its archetype. Violations appear in `updatedToolOutput` by default (inline with the tool result, not as a system reminder). Escalation is per-file: repeated violations for the same file escalate through L0 (silent fix) -> L1 (flagged) -> L2 (stop and fix). Chameleon stops verifying a file after 10 rapid corrections to avoid loops. There is a 30-second per-file cooldown - if you see `[🦎 chameleon: already verified this file]`, refer to the previous feedback.
 
 **PostToolUse** (Bash): HMAC exec logging. No context injected, no action needed.
 
@@ -42,7 +42,7 @@ The canonical excerpt is a witness, not a template. Use its normative shape and 
 
 All hooks fail open. If chameleon can't reach the advisor, you'll see:
 
-    [chameleon: degraded - advisor_unavailable]
+    [🦎 chameleon: degraded - advisor_unavailable]
 
 When you see this: make the edit using your best inference from what you know about the codebase, and tell your human partner the advisory was unavailable and suggest `/chameleon-doctor`.
 

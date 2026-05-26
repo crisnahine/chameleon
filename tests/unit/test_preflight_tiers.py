@@ -222,7 +222,7 @@ def test_tier1_pointer_for_seen_archetype(tmp_path):
     hook_output = result.get("hookSpecificOutput", {})
     ctx = hook_output.get("additionalContext", "")
     # Tier 1 includes the archetype header
-    assert "[chameleon:" in ctx
+    assert "[🦎 chameleon:" in ctx
     assert "component" in ctx
     # Tier 1 must NOT include the full canonical witness block
     assert "Canonical witness" not in ctx

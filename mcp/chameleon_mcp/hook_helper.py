@@ -91,7 +91,7 @@ def _degraded_banner(reason: str, detail: str | None = None) -> str:
     safe_reason = sanitize_for_chameleon_context(reason)
     parts = [
         "<chameleon-context>",
-        f"[chameleon: degraded — {safe_reason}]",
+        f"[🦎 chameleon: degraded — {safe_reason}]",
     ]
     if detail:
         parts.append("")
@@ -252,7 +252,7 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
 
         score_str = f"{stats['score']:.2f}"
         return (
-            "[chameleon: drift]\n"
+            "[🦎 chameleon: drift]\n"
             f"Observed drift score is {score_str} over the last 14 days "
             f"(N={stats['count']} edits). The profile may not match how "
             "the team actually writes code today. Suggest "
@@ -728,7 +728,7 @@ def preflight_and_advise() -> int:
         if _should_emit_untrusted_prompt(repo_id, session_id):
             block = (
                 "<chameleon-context>\n"
-                "[chameleon: profile present, untrusted]\n\n"
+                "[🦎 chameleon: profile present, untrusted]\n\n"
                 "A `.chameleon/` profile exists in this repo but the user "
                 "has not granted trust for it yet. Surface this to your "
                 "human partner once and suggest:\n\n"
@@ -817,7 +817,7 @@ def preflight_and_advise() -> int:
     if not use_tier2:
         block = (
             "<chameleon-context>\n"
-            f"[chameleon: {safe_name} ({safe_band})]\n"
+            f"[🦎 chameleon: {safe_name} ({safe_band})]\n"
         )
         if summary:
             block += f"{sanitize_for_chameleon_context(summary)}\n"
@@ -835,7 +835,7 @@ def preflight_and_advise() -> int:
     # Tier 2: full canonical context (first edit or violations present)
     block = (
         "<chameleon-context>\n"
-        f"[chameleon: archetype={safe_name}, "
+        f"[🦎 chameleon: archetype={safe_name}, "
         f"confidence={safe_band}, "
         f"match_quality={safe_match}, "
         f"sub_buckets={int(sub_buckets_count)}]\n\n"
@@ -1054,7 +1054,7 @@ def posttool_verify() -> int:
                     safe_path = sanitize_for_chameleon_context(file_path)
                     _emit_posttool_context(
                         "<chameleon-context>\n"
-                        f"[chameleon: corrections exhausted for {safe_path}]\n"
+                        f"[🦎 chameleon: corrections exhausted for {safe_path}]\n"
                         "Chameleon has verified this file 10 times recently. "
                         "Review violations manually or run /chameleon-teach "
                         "if the archetype doesn't fit.\n"
@@ -1085,7 +1085,7 @@ def posttool_verify() -> int:
         if cooldown_ttl > 0 and _marker_path_is_fresh(marker, cooldown_ttl):
             _emit_posttool_context(
                 "<chameleon-context>\n"
-                "[chameleon: already verified this file — review previous feedback]\n"
+                "[🦎 chameleon: already verified this file — review previous feedback]\n"
                 "</chameleon-context>"
             )
             return 0
@@ -1183,7 +1183,7 @@ def posttool_verify() -> int:
 
             block = (
                 f"{prefix}\n\n"
-                f"[chameleon: {len(violations)} violations]\n"
+                f"[🦎 chameleon: {len(violations)} violations]\n"
                 + "\n".join(violation_lines) + "\n"
                 + current_tone
             )
@@ -1334,7 +1334,7 @@ def callout_detector() -> int:
     # Frustration detected. Emit a brief hint as additionalContext.
     hint = (
         "<chameleon-context>\n"
-        "[chameleon: detected frustration phrase]\n"
+        "[🦎 chameleon: detected frustration phrase]\n"
         "If chameleon is the issue, options:\n"
         "  /chameleon-disable      — suppress for the rest of this session\n"
         "  /chameleon-pause-15m    — pause for 15 minutes (auto-resume)\n"
