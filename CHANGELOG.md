@@ -4,6 +4,12 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5] - 2026-05-26
+
+### Fixed
+
+- Trust state in status line now updates dynamically. Previously only written by SessionStart, so `/chameleon-trust` mid-session didn't reflect until restart. PreToolUse hooks now pass the current trust state to the cache on every edit.
+
 ## [0.8.4] - 2026-05-26
 
 ### Added
