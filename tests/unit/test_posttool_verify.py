@@ -687,4 +687,4 @@ def test_clean_after_violation_emits_archetype_clean(tmp_path: Path):
 
     hook_output = result.get("hookSpecificOutput", {})
     assert "additionalContext" in hook_output
-    assert "[archetype: clean]" in hook_output["additionalContext"]
+    assert "[🦎 archetype: clean]" in hook_output["additionalContext"]

@@ -34,21 +34,28 @@ if [[ -f "$cache_file" ]]; then
       done
       activity=$(jq -r '.activity // empty' "$cache_file" 2>/dev/null)
       if [[ -n "$activity" ]]; then
-        parts="$parts │ $activity"
+        cache_age=$(( $(date +%s) - $(stat -f %m "$cache_file" 2>/dev/null || echo 0) ))
+        if [[ "$cache_age" -lt 30 ]]; then
+          parts="$parts │ $activity"
+        fi
       fi
       printf '🦎 chameleon │ %s' "$parts"
       exit 0
     fi
   else
-    result=$(python3 -c "
-import json
-d=json.load(open('$cache_file'))
+    result=$(CACHE_PATH="$cache_file" python3 -c "
+import json, os
+d=json.load(open(os.environ['CACHE_PATH']))
 ps=d.get('profiles',[])
 if ps:
     parts=' │ '.join(f\"{p['name']} ({p['trust']})\" for p in ps)
     act=d.get('activity','')
     if act:
-        parts+=f' │ {act}'
+        import time
+        try:
+            age=time.time()-os.path.getmtime(os.environ['CACHE_PATH'])
+            if age<30: parts+=f' │ {act}'
+        except: pass
     print(f'🦎 chameleon │ {parts}')
 " 2>/dev/null || true)
     if [[ -n "$result" ]]; then
@@ -70,4 +77,4 @@ while true; do
   dir="$parent"
 done
 
-printf '🦎 chameleon │ no profile'
+exit 0

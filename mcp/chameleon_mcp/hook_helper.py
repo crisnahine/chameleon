@@ -536,7 +536,8 @@ def session_start() -> int:
             pdir = root / ".chameleon"
             if pdir.is_dir():
                 cur = hash_profile(pdir)
-                if cur and ts.profile_sha256 != cur:
+                expected = ts.hash_for_root(root)
+                if cur and expected != cur:
                     return "stale"
             return "trusted"
 
@@ -549,17 +550,21 @@ def session_start() -> int:
         else:
             # No profile at cwd level: scan immediate children
             cwd = Path.cwd()
-            for child in sorted(cwd.iterdir()):
-                if child.is_dir() and (child / ".chameleon" / "profile.json").is_file():
-                    try:
+            try:
+                children = sorted(cwd.iterdir())
+            except OSError:
+                children = []
+            for child in children:
+                try:
+                    if child.is_dir() and (child / ".chameleon" / "profile.json").is_file():
                         child_root = find_repo_root(child)
                         if child_root:
                             profiles.append({
                                 "name": child_root.name,
                                 "trust": _trust_for(child_root),
                             })
-                    except Exception:
-                        profiles.append({"name": child.name, "trust": "unknown"})
+                except Exception:
+                    pass
 
         if profiles:
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1366,7 +1371,7 @@ def posttool_verify() -> int:
 
         if had_prior_violation:
             _emit_posttool_context(
-                "<chameleon-context>\n[archetype: clean]\n</chameleon-context>"
+                "<chameleon-context>\n[🦎 archetype: clean]\n</chameleon-context>"
             )
             _update_statusline("clean")
         else:
