@@ -1,7 +1,7 @@
 {
   "name": "chameleon",
   "description": "Code that blends in. Auto-derives codebase conventions and injects archetype-aware guidance for AI-generated code.",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "author": {
     "name": "Cris Nahine",
     "email": "crisjosephnahine@gmail.com"

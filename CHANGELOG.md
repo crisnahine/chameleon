@@ -4,6 +4,12 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.4] - 2026-05-26
+
+### Added
+
+- Dynamic status line: now shows real-time hook activity alongside profile info. PreToolUse shows archetype + confidence, PostToolUse shows violation count or clean pass. Updates on every edit via lightweight cache writes.
+
 ## [0.8.3] - 2026-05-26
 
 ### Fixed
