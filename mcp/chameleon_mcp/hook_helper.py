@@ -519,10 +519,14 @@ def session_start() -> int:
                     return "stale"
             return "trusted"
 
-        if repo_root:
+        has_own_profile = (
+            repo_root
+            and (repo_root / ".chameleon" / "profile.json").is_file()
+        )
+        if has_own_profile:
             profiles.append({"name": repo_root.name, "trust": _trust_for(repo_root)})
         else:
-            # Parent dir: scan immediate children for .chameleon/ profiles
+            # No profile at cwd level: scan immediate children
             cwd = Path.cwd()
             for child in sorted(cwd.iterdir()):
                 if child.is_dir() and (child / ".chameleon" / "profile.json").is_file():
