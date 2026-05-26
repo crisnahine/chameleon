@@ -100,13 +100,22 @@ def _degraded_banner(reason: str, detail: str | None = None) -> str:
     return "\n".join(parts)
 
 
-def _update_statusline_activity(activity: str) -> None:
-    """Update the statusline cache with live hook activity. Fail-open."""
+def _update_statusline(
+    activity: str,
+    repo_name: str | None = None,
+    trust_state: str | None = None,
+) -> None:
+    """Update the statusline cache with live activity + trust state. Fail-open."""
     try:
         cache = Path.cwd() / ".claude" / ".chameleon-statusline-cache"
         if cache.is_file():
             data = json.loads(cache.read_text(encoding="utf-8"))
             data["activity"] = activity
+            if repo_name and trust_state:
+                for p in data.get("profiles", []):
+                    if p.get("name") == repo_name:
+                        p["trust"] = trust_state
+                        break
             cache.write_text(json.dumps(data), encoding="utf-8")
     except Exception:
         pass
@@ -943,7 +952,7 @@ def preflight_and_advise() -> int:
             confidence=confidence_band,
         )
         _emit_chameleon_context(block)
-        _update_statusline_activity(f"{safe_name} ({safe_band})")
+        _update_statusline(f"{safe_name} ({safe_band})", repo_name=repo_root_path.name if repo_root_path else None, trust_state=trust_state)
         return 0
 
     # Tier 2: full canonical context (first edit or violations present)
@@ -984,7 +993,7 @@ def preflight_and_advise() -> int:
         confidence=confidence_band,
     )
     _emit_chameleon_context(block)
-    _update_statusline_activity(f"{safe_name} ({safe_band})")
+    _update_statusline(f"{safe_name} ({safe_band})", repo_name=repo_root_path.name if repo_root_path else None, trust_state=trust_state)
     return 0
 
 
@@ -1321,7 +1330,7 @@ def posttool_verify() -> int:
                 _emit_posttool_context(
                     f"<chameleon-context>\n{block}\n</chameleon-context>"
                 )
-            _update_statusline_activity(f"{len(violations)} violation{'s' if len(violations) != 1 else ''}")
+            _update_statusline(f"{len(violations)} violation{'s' if len(violations) != 1 else ''}")
 
             if enforcement_state is not None:
                 try:
@@ -1359,10 +1368,10 @@ def posttool_verify() -> int:
             _emit_posttool_context(
                 "<chameleon-context>\n[archetype: clean]\n</chameleon-context>"
             )
-            _update_statusline_activity("clean")
+            _update_statusline("clean")
         else:
             _emit({})
-            _update_statusline_activity("clean")
+            _update_statusline("clean")
 
         if enforcement_state is not None:
             try:
