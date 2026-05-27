@@ -24,6 +24,11 @@ def generate_principles(
 
     principles: list[str] = []
 
+    # #1: Always. Follow what chameleon shows you.
+    principles.append(
+        "Follow the canonical witness and conventions above exactly. They are derived from this codebase - match their patterns, imports, base classes, and style."
+    )
+
     # Always: granularity matching (no convention section covers this)
     principles.append(
         "Match directory granularity; don't extract what siblings inline."
