@@ -366,7 +366,36 @@ def format_conventions_for_session(conventions: dict) -> str:
             else:
                 naming_lines.append(f"- Prefix {type_name}s with {pattern} ({pct})")
 
-    if not import_lines and not naming_lines:
+    # Inheritance conventions
+    inheritance_lines: list[str] = []
+    seen_inheritance: set[str] = set()
+    for _arch, data in conv.get("inheritance", {}).items():
+        base = data.get("dominant_base")
+        if base and base not in seen_inheritance:
+            seen_inheritance.add(base)
+            freq = data.get("frequency", 0)
+            if freq >= _ENFORCE_THRESHOLD:
+                inheritance_lines.append(f"- Inherit {base} ({freq:.0%}, enforced)")
+            elif freq >= _STRONG_THRESHOLD:
+                inheritance_lines.append(f"- Inherit {base} ({freq:.0%})")
+        include = data.get("dominant_include")
+        if include and include not in seen_inheritance:
+            seen_inheritance.add(include)
+            inc_freq = data.get("include_frequency", 0)
+            if inc_freq >= _STRONG_THRESHOLD:
+                inheritance_lines.append(f"- Include {include} ({inc_freq:.0%})")
+
+    # Method call conventions
+    method_lines: list[str] = []
+    seen_methods: set[str] = set()
+    for _arch, data in conv.get("method_calls", {}).items():
+        for call in data.get("common_top5", [])[:3]:
+            if call not in seen_methods:
+                seen_methods.add(call)
+    if seen_methods:
+        method_lines.append(f"- Common DSL: {', '.join(sorted(seen_methods)[:8])}")
+
+    if not import_lines and not naming_lines and not inheritance_lines:
         return ""
 
     lines.append("<chameleon-conventions>")
@@ -379,6 +408,14 @@ def format_conventions_for_session(conventions: dict) -> str:
     if naming_lines:
         lines.append("NAMING:")
         lines.extend(naming_lines)
+        lines.append("")
+    if inheritance_lines:
+        lines.append("INHERITANCE:")
+        lines.extend(inheritance_lines)
+        lines.append("")
+    if method_lines:
+        lines.append("PATTERNS:")
+        lines.extend(method_lines)
         lines.append("")
     lines.append("</chameleon-conventions>")
     return "\n".join(lines)
@@ -411,5 +448,11 @@ def format_conventions_echo(conventions: dict, *, archetype: str) -> str:
         if entry and entry.get("consistency", 0) >= _STRONG_THRESHOLD:
             parts.append(f"Naming: {entry['pattern']}-prefix")
             break
+
+    # Inheritance for this archetype
+    arch_inheritance = conv.get("inheritance", {}).get(archetype, {})
+    base = arch_inheritance.get("dominant_base")
+    if base and arch_inheritance.get("frequency", 0) >= _STRONG_THRESHOLD:
+        parts.append(f"Base: {base}")
 
     return ". ".join(parts)

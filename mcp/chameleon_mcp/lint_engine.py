@@ -1006,6 +1006,7 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
 
 
 _CHAMELEON_IGNORE_RE = re.compile(r"//\s*chameleon-ignore\s+([\w-]+)")
+_CHAMELEON_IGNORE_RUBY_RE = re.compile(r"#\s*chameleon-ignore\s+([\w-]+)")
 _TS_IMPORT_FROM_RE = re.compile(r"import\s+.*?\bfrom\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
 _TS_INTERFACE_DECL_RE = re.compile(r"\binterface\s+([A-Z]\w*)")
 
@@ -1058,5 +1059,27 @@ def lint_conventions(
                         severity="warning",
                         message=f"NAMING: interface {name} should use {expected_prefix}-prefix ({prefix_entry['consistency']:.0%} convention)",
                     ))
+
+    # Inheritance convention (Ruby only)
+    if language == "ruby" and "inheritance-convention" not in ignored_rules:
+        # Also check Ruby-style comments for chameleon-ignore
+        for m in _CHAMELEON_IGNORE_RUBY_RE.finditer(content):
+            ignored_rules.add(m.group(1))
+
+        if "inheritance-convention" not in ignored_rules:
+            inheritance = conventions.get("inheritance") or {}
+            dominant_base = inheritance.get("dominant_base")
+            if dominant_base and inheritance.get("frequency", 0) >= 0.60:
+                for m in re.finditer(r"^\s*class\s+(\w+)(?:\s*<\s*([\w:]+))?", content, re.MULTILINE):
+                    class_name = m.group(1)
+                    superclass = m.group(2)
+                    if superclass != dominant_base:
+                        violations.append(Violation(
+                            rule="inheritance-convention-violation",
+                            expected=dominant_base,
+                            actual=superclass or "none",
+                            severity="warning",
+                            message=f"INHERITANCE: class {class_name} should inherit {dominant_base} ({inheritance['frequency']:.0%} convention)",
+                        ))
 
     return violations

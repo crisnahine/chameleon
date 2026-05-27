@@ -711,3 +711,36 @@ class TestConventionLint:
     def test_none_conventions_no_violations(self):
         violations = lint_conventions("const x = 1;", None, language="typescript")
         assert len(violations) == 0
+
+    def test_inheritance_convention_violation(self):
+        content = "class MyService\n  def execute\n  end\nend\n"
+        conventions = {
+            "inheritance": {"dominant_base": "ActiveInteraction::Base", "frequency": 0.82, "sample_size": 1414},
+        }
+        violations = lint_conventions(content, conventions, language="ruby")
+        assert len(violations) == 1
+        assert violations[0].rule == "inheritance-convention-violation"
+
+    def test_no_inheritance_violation_with_correct_base(self):
+        content = "class MyService < ActiveInteraction::Base\n  def execute\n  end\nend\n"
+        conventions = {
+            "inheritance": {"dominant_base": "ActiveInteraction::Base", "frequency": 0.82, "sample_size": 1414},
+        }
+        violations = lint_conventions(content, conventions, language="ruby")
+        assert len(violations) == 0
+
+    def test_inheritance_chameleon_ignore(self):
+        content = "# chameleon-ignore inheritance-convention\nclass MyService\nend\n"
+        conventions = {
+            "inheritance": {"dominant_base": "ActiveInteraction::Base", "frequency": 0.82, "sample_size": 1414},
+        }
+        violations = lint_conventions(content, conventions, language="ruby")
+        assert len(violations) == 0
+
+    def test_inheritance_not_checked_for_typescript(self):
+        content = "class MyService {\n}\n"
+        conventions = {
+            "inheritance": {"dominant_base": "ApplicationRecord", "frequency": 0.96, "sample_size": 117},
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        assert len(violations) == 0

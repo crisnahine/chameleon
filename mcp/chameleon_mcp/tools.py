@@ -1897,6 +1897,8 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             arch_conv["imports"] = conv_data["imports"][archetype]
         if conv_data.get("naming", {}).get(archetype):
             arch_conv["naming"] = conv_data["naming"][archetype]
+        if conv_data.get("inheritance", {}).get(archetype):
+            arch_conv["inheritance"] = conv_data["inheritance"][archetype]
         if arch_conv:
             convention_violations = [
                 v.to_dict() for v in _lint_conventions(working_content, arch_conv, language=language)

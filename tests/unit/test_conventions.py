@@ -297,3 +297,107 @@ class TestMethodCallExtractor:
         files = [_make_parsed_file("app/m.rb", [], top_level_kinds=("DslCall:validates",))]
         result = extract_method_call_conventions(files)
         assert result == {}
+
+
+class TestFormatSessionInheritance:
+    def test_inheritance_enforced_in_session(self):
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["inheritance"]["model"] = {
+            "dominant_base": "ApplicationRecord",
+            "frequency": 0.96,
+            "sample_size": 117,
+        }
+        text = format_conventions_for_session(conventions)
+        assert "INHERITANCE:" in text
+        assert "ApplicationRecord" in text
+        assert "enforced" in text
+
+    def test_inheritance_strong_in_session(self):
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["inheritance"]["model"] = {
+            "dominant_base": "ApplicationRecord",
+            "frequency": 0.75,
+            "sample_size": 50,
+        }
+        text = format_conventions_for_session(conventions)
+        assert "INHERITANCE:" in text
+        assert "ApplicationRecord" in text
+        assert "enforced" not in text
+
+    def test_include_in_session(self):
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["inheritance"]["worker"] = {
+            "dominant_base": "ApplicationJob",
+            "frequency": 0.80,
+            "sample_size": 20,
+            "dominant_include": "Sidekiq::Worker",
+            "include_frequency": 0.90,
+        }
+        text = format_conventions_for_session(conventions)
+        assert "Sidekiq::Worker" in text
+
+    def test_method_calls_in_session(self):
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["inheritance"]["model"] = {
+            "dominant_base": "ApplicationRecord",
+            "frequency": 0.96,
+            "sample_size": 117,
+        }
+        conventions["conventions"]["method_calls"]["model"] = {
+            "common_top5": ["validates", "belongs_to", "scope", "before_validation", "has_many"],
+            "sample_size": 117,
+        }
+        text = format_conventions_for_session(conventions)
+        assert "PATTERNS:" in text
+        assert "Common DSL:" in text
+        assert "validates" in text
+
+    def test_inheritance_only_returns_nonempty(self):
+        """Inheritance alone (no imports/naming) should produce output."""
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["inheritance"]["model"] = {
+            "dominant_base": "ApplicationRecord",
+            "frequency": 0.96,
+            "sample_size": 117,
+        }
+        text = format_conventions_for_session(conventions)
+        assert text != ""
+        assert "<chameleon-conventions>" in text
+
+
+class TestFormatEchoInheritance:
+    def test_echo_includes_base(self):
+        from chameleon_mcp.conventions import format_conventions_echo
+
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["inheritance"]["model"] = {
+            "dominant_base": "ApplicationRecord",
+            "frequency": 0.96,
+            "sample_size": 117,
+        }
+        text = format_conventions_echo(conventions, archetype="model")
+        assert "Base: ApplicationRecord" in text
+
+    def test_echo_no_base_below_threshold(self):
+        from chameleon_mcp.conventions import format_conventions_echo
+
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["inheritance"]["model"] = {
+            "dominant_base": "ApplicationRecord",
+            "frequency": 0.50,
+            "sample_size": 117,
+        }
+        text = format_conventions_echo(conventions, archetype="model")
+        assert "Base:" not in text
+
+    def test_echo_wrong_archetype_no_base(self):
+        from chameleon_mcp.conventions import format_conventions_echo
+
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["inheritance"]["model"] = {
+            "dominant_base": "ApplicationRecord",
+            "frequency": 0.96,
+            "sample_size": 117,
+        }
+        text = format_conventions_echo(conventions, archetype="controller")
+        assert "Base:" not in text
