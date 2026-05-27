@@ -567,9 +567,29 @@ def session_start() -> int:
                     pass
 
         if profiles:
+            cache_data: dict = {"profiles": profiles}
+
+            # Detect plugin version mismatch: the hook runs from the NEW
+            # CLAUDE_PLUGIN_ROOT but the MCP server (and daemon) are still
+            # running old code from the previous version's path. Surface
+            # an update banner so the user knows to restart.
+            try:
+                from chameleon_mcp import __version__ as running_version
+
+                new_init = Path(plugin_root) / "mcp" / "chameleon_mcp" / "__init__.py"
+                if new_init.is_file():
+                    for line in new_init.read_text(encoding="utf-8").splitlines():
+                        if line.startswith("__version__"):
+                            installed_version = line.split("=", 1)[1].strip().strip("\"'")
+                            if installed_version != running_version:
+                                cache_data["update"] = installed_version
+                            break
+            except Exception:
+                pass
+
             cache_dir.mkdir(parents=True, exist_ok=True)
             sl_cache.write_text(
-                json.dumps({"profiles": profiles}), encoding="utf-8"
+                json.dumps(cache_data), encoding="utf-8"
             )
     except Exception:
         pass

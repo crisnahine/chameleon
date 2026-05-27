@@ -40,6 +40,10 @@ if [[ -f "$cache_file" ]]; then
           parts="$parts │ $activity"
         fi
       fi
+      update=$(jq -r '.update // empty' "$cache_file" 2>/dev/null)
+      if [[ -n "$update" ]]; then
+        parts="$parts │ ⬆ v${update} ready — close & reopen session"
+      fi
       printf '🦎 chameleon │ %s' "$parts"
       exit 0
     fi
@@ -57,6 +61,8 @@ if ps:
             age=time.time()-os.path.getmtime(os.environ['CACHE_PATH'])
             if age<30: parts+=f' │ {act}'
         except: pass
+    upd=d.get('update','')
+    if upd: parts+=f' │ ⬆ v{upd} ready — close & reopen session'
     print(f'🦎 chameleon │ {parts}')
 " 2>/dev/null || true)
     if [[ -n "$result" ]]; then
