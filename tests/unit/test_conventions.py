@@ -10,6 +10,7 @@ from chameleon_mcp.conventions import (
     extract_all_conventions,
     extract_import_conventions,
     extract_inheritance_conventions,
+    extract_key_exports,
     extract_method_call_conventions,
     extract_naming_conventions,
     format_conventions_for_session,
@@ -251,6 +252,106 @@ class TestFormatConventionsEcho:
         }
         text = format_conventions_echo(conventions, archetype="hook")
         assert text == ""
+
+
+def _make_ts_file(tmp_path, name: str, content: str) -> ParsedFile:
+    """Create a real temp file and return a ParsedFile pointing to it."""
+    fp = tmp_path / name
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fp.write_text(content, encoding="utf-8")
+    return ParsedFile(
+        path=fp,
+        content_first_200_bytes=content[:200],
+        top_level_node_kinds=(),
+        default_export_kind=None,
+        named_export_count=0,
+        import_specifiers=(),
+        has_jsx=False,
+    )
+
+
+class TestKeyExportsExtractor:
+    def test_extracts_ts_exports(self, tmp_path):
+        files = []
+        for name, content in [
+            ("useDebounce.ts", "export const useDebounce = () => {};\n"),
+            ("useToggle.ts", "export const useToggle = () => {};\n"),
+            ("formatCurrency.ts", "export function formatCurrency(n: number) { return ''; }\n"),
+            ("slugify.ts", "export function slugify(s: string) { return ''; }\n"),
+            ("api.ts", "export const api = axios.create();\nexport const request = () => {};\n"),
+        ]:
+            files.append(_make_ts_file(tmp_path, name, content))
+        # Need 10+ files for MIN_SAMPLE_SIZE
+        for i in range(8):
+            files.append(_make_ts_file(tmp_path, f"filler{i}.ts", f"export const filler{i} = {i};\n"))
+
+        result = extract_key_exports(files, language="typescript")
+        assert "useDebounce" in result
+        assert "useToggle" in result
+        assert "formatCurrency" in result
+        assert "slugify" in result
+
+    def test_extracts_ruby_exports(self, tmp_path):
+        files = []
+        for name, content in [
+            ("user.rb", "class User < ApplicationRecord\nend\n"),
+            ("listing.rb", "class Listing < ApplicationRecord\nend\n"),
+            ("charts_data.rb", "module Admin\n  class ChartsData\n  end\nend\n"),
+        ]:
+            files.append(_make_ruby_file(tmp_path, name, content))
+        for i in range(10):
+            files.append(_make_ruby_file(tmp_path, f"m{i}.rb", f"class Model{i} < ApplicationRecord\nend\n"))
+
+        result = extract_key_exports(files, language="ruby")
+        assert "User" in result
+        assert "Listing" in result
+
+    def test_skips_below_sample_size(self, tmp_path):
+        files = [_make_ts_file(tmp_path, "one.ts", "export const foo = 1;\n")]
+        result = extract_key_exports(files, language="typescript")
+        assert result == []
+
+    def test_deduplicates_and_limits(self, tmp_path):
+        files = []
+        for i in range(15):
+            exports = "\n".join(f"export const item{j} = {j};" for j in range(30))
+            files.append(_make_ts_file(tmp_path, f"f{i}.ts", exports))
+        result = extract_key_exports(files, language="typescript")
+        assert len(result) <= 20  # capped
+
+
+class TestFormatSessionReuse:
+    def test_reuse_section_in_session(self):
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["key_exports"]["hook"] = [
+            "useDebounce", "useToggle", "formatCurrency",
+        ]
+        text = format_conventions_for_session(conventions)
+        assert "REUSE:" in text
+        assert "Check before creating:" in text
+        assert "useDebounce" in text
+
+    def test_no_reuse_when_empty(self):
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["key_exports"] = {}
+        # Need at least one other section to produce output
+        conventions["conventions"]["inheritance"]["model"] = {
+            "dominant_base": "ApplicationRecord",
+            "frequency": 0.96,
+            "sample_size": 117,
+        }
+        text = format_conventions_for_session(conventions)
+        assert "REUSE:" not in text
+
+    def test_reuse_alone_produces_output(self):
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["key_exports"]["component"] = [
+            "useDebounce", "useToggle",
+        ]
+        text = format_conventions_for_session(conventions)
+        assert text != ""
+        assert "<chameleon-conventions>" in text
+        assert "REUSE:" in text
 
 
 def _make_ruby_file(tmp_path, name: str, content: str) -> ParsedFile:

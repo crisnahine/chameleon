@@ -24,6 +24,7 @@ def empty_conventions(*, generation: int) -> dict:
             "naming": {},
             "inheritance": {},
             "method_calls": {},
+            "key_exports": {},
         },
     }
 
@@ -275,6 +276,58 @@ def extract_inheritance_conventions(files: list[ParsedFile]) -> dict:
 # ---------------------------------------------------------------------------
 
 
+_TS_EXPORT_NAME_RE = re.compile(
+    r"^\s*export\s+(?:const|let|var|function|class|interface|type|enum)\s+(\w+)",
+    re.MULTILINE,
+)
+_RUBY_CLASS_NAME_RE = re.compile(r"^\s*class\s+(\w+)", re.MULTILINE)
+_RUBY_MODULE_NAME_RE = re.compile(r"^\s*module\s+(\w+)", re.MULTILINE)
+
+_MAX_KEY_EXPORTS = 20
+
+
+def extract_key_exports(files: list[ParsedFile], *, language: str) -> list[str]:
+    """Extract the most common exported names across files in an archetype."""
+    if len(files) < MIN_SAMPLE_SIZE:
+        return []
+
+    name_counts: Counter[str] = Counter()
+    for f in files:
+        try:
+            content = f.path.read_bytes()[:50_000].decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        seen: set[str] = set()
+        if language == "typescript":
+            for m in _TS_EXPORT_NAME_RE.finditer(content):
+                name = m.group(1)
+                if name not in seen and len(name) > 1:
+                    name_counts[name] += 1
+                    seen.add(name)
+        elif language == "ruby":
+            for m in _RUBY_CLASS_NAME_RE.finditer(content):
+                name = m.group(1)
+                if name not in seen:
+                    name_counts[name] += 1
+                    seen.add(name)
+            for m in _RUBY_MODULE_NAME_RE.finditer(content):
+                name = m.group(1)
+                if name not in seen:
+                    name_counts[name] += 1
+                    seen.add(name)
+
+    # Return top N by frequency, excluding very common names
+    skip = {"default", "module", "class", "React", "Component", "ApplicationRecord", "Base"}
+    result = []
+    for name, _count in name_counts.most_common(_MAX_KEY_EXPORTS + len(skip)):
+        if name in skip:
+            continue
+        result.append(name)
+        if len(result) >= _MAX_KEY_EXPORTS:
+            break
+    return result
+
+
 def extract_method_call_conventions(files: list[ParsedFile]) -> dict:
     """Extract top DSL/method call patterns by reading file content."""
     if len(files) < MIN_SAMPLE_SIZE:
@@ -336,6 +389,13 @@ def extract_all_conventions(
         method_conv = extract_method_call_conventions(files)
         if method_conv:
             conventions["conventions"].setdefault("method_calls", {})[archetype] = method_conv
+    for archetype, files in files_by_archetype.items():
+        language = "typescript"  # default
+        if any(str(f.path).endswith(".rb") for f in files[:3]):
+            language = "ruby"
+        exports = extract_key_exports(files, language=language)
+        if exports:
+            conventions["conventions"].setdefault("key_exports", {})[archetype] = exports
     return conventions
 
 
@@ -425,7 +485,17 @@ def format_conventions_for_session(conventions: dict) -> str:
     if seen_methods:
         method_lines.append(f"- Common DSL: {', '.join(sorted(seen_methods)[:8])}")
 
-    if not import_lines and not naming_lines and not inheritance_lines:
+    # Key exports (check before creating)
+    export_lines: list[str] = []
+    all_exports: set[str] = set()
+    for _arch, names in conv.get("key_exports", {}).items():
+        for n in names[:5]:
+            all_exports.add(n)
+    if all_exports:
+        sorted_exports = sorted(all_exports)[:15]
+        export_lines.append(f"- Check before creating: {', '.join(sorted_exports)}")
+
+    if not import_lines and not naming_lines and not inheritance_lines and not export_lines:
         return ""
 
     lines.append("<chameleon-conventions>")
@@ -446,6 +516,10 @@ def format_conventions_for_session(conventions: dict) -> str:
     if method_lines:
         lines.append("PATTERNS:")
         lines.extend(method_lines)
+        lines.append("")
+    if export_lines:
+        lines.append("REUSE:")
+        lines.extend(export_lines)
         lines.append("")
     lines.append("</chameleon-conventions>")
     return "\n".join(lines)
