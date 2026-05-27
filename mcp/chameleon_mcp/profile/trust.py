@@ -134,7 +134,7 @@ _HASHED_ARTIFACTS: tuple[str, ...] = (
     "archetypes.json",
     "canonicals.json",
     "conventions.json",
-    "general_idioms.md",
+    "principles.md",
     "idioms.md",
     "profile.json",
     "rules.json",

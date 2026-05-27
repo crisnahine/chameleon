@@ -41,7 +41,7 @@ _PROTOCOL_FILES = frozenset({
     "archetypes.json",
     "canonicals.json",
     "conventions.json",
-    "general_idioms.md",
+    "principles.md",
     "rules.json",
     "idioms.md",
     "profile.summary.md",

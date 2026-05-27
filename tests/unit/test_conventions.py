@@ -204,27 +204,27 @@ class TestFormatConventionsForSession:
         assert "I" in text
         assert "interface" in text.lower()
 
-    def test_empty_conventions_with_general_idioms(self):
+    def test_empty_conventions_with_principles(self):
         conventions = empty_conventions(generation=1)
-        conventions["_general_idioms_text"] = "1. Search the codebase for existing utilities."
+        conventions["_principles_text"] = "1. Search the codebase for existing utilities."
         text = format_conventions_for_session(conventions)
-        assert "GENERAL:" in text
+        assert "PRINCIPLES:" in text
         assert "Search the codebase" in text
 
-    def test_empty_conventions_without_general_idioms(self):
+    def test_empty_conventions_without_principles(self):
         conventions = empty_conventions(generation=1)
         text = format_conventions_for_session(conventions)
         assert text == ""
 
-    def test_skips_below_60_percent_but_keeps_general(self):
+    def test_skips_below_60_percent_but_keeps_principles(self):
         conventions = empty_conventions(generation=1)
         conventions["conventions"]["naming"]["component"] = {
             "enum_prefix": {"pattern": "E", "consistency": 0.55, "sample_size": 8},
         }
-        conventions["_general_idioms_text"] = "1. Match testing granularity of sibling files."
+        conventions["_principles_text"] = "1. Match testing granularity of sibling files."
         text = format_conventions_for_session(conventions)
         assert "NAMING" not in text
-        assert "GENERAL:" in text
+        assert "PRINCIPLES:" in text
 
 
 class TestFormatConventionsEcho:

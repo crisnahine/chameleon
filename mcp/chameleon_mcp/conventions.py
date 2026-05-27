@@ -496,20 +496,20 @@ def format_conventions_for_session(conventions: dict) -> str:
         sorted_exports = sorted(all_exports)[:15]
         export_lines.append(f"- Check before creating: {', '.join(sorted_exports)}")
 
-    # General idioms (from .chameleon/general_idioms.md - per-repo, editable)
-    general_lines: list[str] = []
+    # Principles (from .chameleon/principles.md - auto-generated per repo)
+    principle_lines: list[str] = []
     try:
-        general_text = conventions.get("_general_idioms_text", "")
-        if general_text:
-            general_lines = [
+        principles_text = conventions.get("_principles_text", "")
+        if principles_text:
+            principle_lines = [
                 f"- {line.split('. ', 1)[1] if '. ' in line else line}"
-                for line in general_text.strip().splitlines()
-                if line.strip() and (line[0].isdigit() or line.startswith("- "))
+                for line in principles_text.strip().splitlines()
+                if line.strip() and line[0].isdigit()
             ]
     except Exception:
         pass
 
-    if not import_lines and not naming_lines and not inheritance_lines and not export_lines and not general_lines:
+    if not import_lines and not naming_lines and not inheritance_lines and not export_lines and not principle_lines:
         return ""
 
     lines.append("<chameleon-conventions>")
@@ -535,9 +535,9 @@ def format_conventions_for_session(conventions: dict) -> str:
         lines.append("REUSE:")
         lines.extend(export_lines)
         lines.append("")
-    if general_lines:
-        lines.append("GENERAL:")
-        lines.extend(general_lines)
+    if principle_lines:
+        lines.append("PRINCIPLES:")
+        lines.extend(principle_lines)
         lines.append("")
     lines.append("</chameleon-conventions>")
     return "\n".join(lines)

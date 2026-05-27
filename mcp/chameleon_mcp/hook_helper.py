@@ -656,10 +656,10 @@ def session_start() -> int:
             import json as _conv_json
             conv_text = (repo_root / ".chameleon" / "conventions.json").read_text(encoding="utf-8")
             conv_data = _conv_json.loads(conv_text)
-            # Load general idioms from .chameleon/ (per-repo, editable)
-            gi_path = repo_root / ".chameleon" / "general_idioms.md"
-            if gi_path.is_file():
-                conv_data["_general_idioms_text"] = gi_path.read_text(encoding="utf-8")
+            # Load principles from .chameleon/ (auto-generated per repo)
+            pr_path = repo_root / ".chameleon" / "principles.md"
+            if pr_path.is_file():
+                conv_data["_principles_text"] = pr_path.read_text(encoding="utf-8")
             conventions_block = format_conventions_for_session(conv_data)
     except Exception:
         pass
