@@ -42,7 +42,7 @@ if [[ -f "$cache_file" ]]; then
       fi
       update=$(jq -r '.update // empty' "$cache_file" 2>/dev/null)
       if [[ -n "$update" ]]; then
-        parts="$parts │ ⬆ v${update} ready — close & reopen session"
+        parts="$parts │ ⬆ v${update} ready — run /reload-plugins"
       fi
       printf '🦎 chameleon │ %s' "$parts"
       exit 0
@@ -62,7 +62,7 @@ if ps:
             if age<30: parts+=f' │ {act}'
         except: pass
     upd=d.get('update','')
-    if upd: parts+=f' │ ⬆ v{upd} ready — close & reopen session'
+    if upd: parts+=f' │ ⬆ v{upd} ready — run /reload-plugins'
     print(f'🦎 chameleon │ {parts}')
 " 2>/dev/null || true)
     if [[ -n "$result" ]]; then
