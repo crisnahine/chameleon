@@ -489,13 +489,6 @@ def session_start() -> int:
         session_id = None
     drift_banner = _drift_banner_for_repo(Path.cwd(), session_id=session_id)
 
-    # v0.6.0: opt-in auto-refresh. Reads .chameleon/config.json; if
-    # auto_refresh.enabled AND drift is high enough / profile is stale
-    # enough, fires refresh_repo in the background so the user doesn't
-    # have to manually /chameleon-refresh. The session_start hook
-    # returns immediately — the refresh runs detached.
-    _maybe_auto_refresh(Path.cwd())
-
     # v0.7.0: clean up stale enforcement state files (>24h old)
     try:
         from chameleon_mcp.plugin_paths import plugin_data_dir
@@ -670,6 +663,13 @@ def session_start() -> int:
     wrapped = "\n".join(wrapped_parts)
 
     _emit_session_context(wrapped)
+
+    # Auto-refresh AFTER the statusline cache is written. Spawning it
+    # before caused a TOCTOU race: the background process modifies the
+    # profile (bumps generation counter) while _trust_for reads
+    # hash_profile, producing a stale hash mismatch that persists.
+    _maybe_auto_refresh(Path.cwd())
+
     return 0
 
 

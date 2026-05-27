@@ -4,6 +4,12 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.12] - 2026-05-27
+
+### Fixed
+
+- **Stale trust after auto-refresh**: SessionStart's auto-refresh spawned a background process that modified the profile before the statusline cache was written, causing a TOCTOU race that permanently marked profiles as "stale". Auto-refresh now fires AFTER the trust state is computed and cached.
+
 ## [0.8.11] - 2026-05-27
 
 ### Fixed
