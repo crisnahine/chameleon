@@ -4,6 +4,38 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-05-27
+
+chameleon v1.0.0: auto-derived conventions, principles, and convention-aware lint.
+
+### Added
+
+- **Convention extraction pipeline**: import frequency, naming patterns (I/T/E prefix), inheritance (dominant base class + include mixins), method-call frequency, and key exports. All auto-derived from AST scanning at bootstrap time.
+- **Principles system**: auto-generated coding principles tailored per repo. Gated by repo data (has tests? has controllers? has competing imports?). Language-agnostic. 2-6 principles per repo, under 50 tokens.
+- **SessionStart injection**: conventions block with IMPORTS, NAMING, INHERITANCE, PATTERNS, REUSE, and PRINCIPLES sections. Re-fires on /clear and /compact.
+- **Tier 1 convention echo**: compact convention reminder + rotating principle on every subsequent edit. Counters attention decay in long sessions.
+- **PostToolUse convention lint**: import-preference-violation, naming-convention-violation, inheritance-convention-violation rules. chameleon-ignore comment directive for intentional deviations.
+- **Directory listing**: sibling files shown in PreToolUse Tier 2 with actionable framing.
+- **Key exports**: top exported names per archetype surfaced in REUSE section.
+
+### Fixed
+
+- **Monorepo workspace trust cascade**: trust_profile cascades to all workspace sub-packages.
+- **Lint detection**: coarse normalization, min-2 threshold, multi-sub-bucket matching, neutral DSL categories.
+- **SQLite lock contention**: read-only connections for resolve_repo_root, busy_timeout 5s.
+- **Update detection banner**: path-based comparison, clears after /reload-plugins.
+- **TOCTOU race**: auto-refresh moved after trust computation in SessionStart.
+- **Stale dist-info**: static __version__ preserved when importlib.metadata returns None. Automatic cleanup on version bump.
+- **PostToolUse in-process fallback**: convention lint now runs even when daemon is unavailable.
+- **Workspace-amend**: principles.md preserved during monorepo workspace amendments.
+
+### Tested
+
+- 468 unit + harness tests
+- 9 real codebases (bulletproof-react, ef-api, ef-client, excalidraw, forem, mastodon, maybe, plane, gitlabhq)
+- 10/10 convention coverage against 1 month of real PR review data
+- All hooks verified: PreToolUse Tier 1/2, PostToolUse lint + cooldown, SessionStart, trust gate, opt-outs, statusline
+
 ## [0.9.3] - 2026-05-27
 
 ### Fixed
