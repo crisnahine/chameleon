@@ -4,6 +4,13 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-05-27
+
+### Added
+
+- **Key exports extractor**: scans file content at bootstrap to collect exported function/class/hook/type names per archetype. Top 15 surfaced in SessionStart's new REUSE section: "Check before creating: useDebounce, formatCurrency, slugify..."
+- **Directory listing in PreToolUse Tier 2**: lists 10-15 sibling source files in the same directory with actionable framing ("Nearby: ... - check before creating a new file"). Only fires on first edit per archetype.
+
 ## [0.9.1] - 2026-05-27
 
 ### Added
