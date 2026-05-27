@@ -4,6 +4,12 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-05-27
+
+### Fixed
+
+- **CLAUDE_PLUGIN_ROOT not expanding in MCP env**: Claude Code passes `${VAR}` literally in `.mcp.json` env values (only expands in args). Removed the redundant env override so Claude Code sets it automatically. Added defensive guard in `plugin_paths.py` to skip unexpanded template strings and fall through to file-relative resolution.
+
 ## [1.1.1] - 2026-05-27
 
 ### Added

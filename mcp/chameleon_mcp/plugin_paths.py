@@ -31,7 +31,7 @@ def plugin_root() -> Path:
     """
     for var in ("CLAUDE_PLUGIN_ROOT", "CHAMELEON_PLUGIN_ROOT"):
         value = os.environ.get(var)
-        if value:
+        if value and "${" not in value:
             return Path(value).resolve()
 
     here = Path(__file__).resolve()

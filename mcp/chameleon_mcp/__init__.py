@@ -6,7 +6,7 @@ See docs/architecture.md for the full design.
 # Top-level declaration: column-0 so release.yml's `^__version__ = ` regex
 # can grep it. The static value is the source of truth; the metadata block
 # below only overwrites it when the installed metadata is valid.
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 
 # Read version from installed package metadata when available. Only overwrite
 # the static value if metadata returns a non-None, non-empty string. Stale
