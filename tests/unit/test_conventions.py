@@ -9,6 +9,8 @@ from chameleon_mcp.conventions import (
     empty_conventions,
     extract_all_conventions,
     extract_import_conventions,
+    extract_inheritance_conventions,
+    extract_method_call_conventions,
     extract_naming_conventions,
     format_conventions_for_session,
     serialize_conventions,
@@ -16,11 +18,11 @@ from chameleon_mcp.conventions import (
 from chameleon_mcp.extractors._base import ParsedFile
 
 
-def _make_parsed_file(path: str, imports: list[tuple[str, str]]) -> ParsedFile:
+def _make_parsed_file(path: str, imports: list[tuple[str, str]], *, top_level_kinds: tuple[str, ...] = ()) -> ParsedFile:
     return ParsedFile(
         path=Path(path),
         content_first_200_bytes="",
-        top_level_node_kinds=(),
+        top_level_node_kinds=top_level_kinds,
         default_export_kind=None,
         named_export_count=0,
         import_specifiers=tuple(imports),
@@ -249,3 +251,49 @@ class TestFormatConventionsEcho:
         }
         text = format_conventions_echo(conventions, archetype="hook")
         assert text == ""
+
+
+class TestInheritanceExtractor:
+    def test_detects_dominant_base_class(self):
+        files = []
+        for i in range(15):
+            files.append(_make_parsed_file(f"app/models/m{i}.rb", [], top_level_kinds=("ClassNode:ApplicationRecord", "DslCall:validates")))
+        result = extract_inheritance_conventions(files)
+        assert result["dominant_base"] == "ApplicationRecord"
+        assert result["frequency"] >= 0.9
+
+    def test_detects_include_mixin(self):
+        files = []
+        for i in range(12):
+            files.append(_make_parsed_file(f"app/workers/w{i}.rb", [], top_level_kinds=("ClassNode", "IncludeCall:Sidekiq::Worker")))
+        result = extract_inheritance_conventions(files)
+        assert result["dominant_include"] == "Sidekiq::Worker"
+
+    def test_skips_below_threshold(self):
+        files = []
+        bases = ["ClassNode:ApplicationRecord", "ClassNode:BaseService", "ClassNode:AbstractJob"]
+        for i in range(15):
+            kind = bases[i % 3]
+            files.append(_make_parsed_file(f"app/s{i}.rb", [], top_level_kinds=(kind,)))
+        result = extract_inheritance_conventions(files)
+        assert "dominant_base" not in result
+
+    def test_skips_below_sample_size(self):
+        files = [_make_parsed_file("app/m.rb", [], top_level_kinds=("ClassNode:ApplicationRecord",))]
+        result = extract_inheritance_conventions(files)
+        assert result == {}
+
+
+class TestMethodCallExtractor:
+    def test_detects_common_dsl_calls(self):
+        files = []
+        for i in range(15):
+            files.append(_make_parsed_file(f"app/models/m{i}.rb", [], top_level_kinds=("ClassNode:ApplicationRecord", "DslCall:validates", "DslCall:belongs_to", "DslCall:scope")))
+        result = extract_method_call_conventions(files)
+        assert "validates" in result["common_top5"]
+        assert "belongs_to" in result["common_top5"]
+
+    def test_skips_below_sample_size(self):
+        files = [_make_parsed_file("app/m.rb", [], top_level_kinds=("DslCall:validates",))]
+        result = extract_method_call_conventions(files)
+        assert result == {}

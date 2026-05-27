@@ -22,6 +22,8 @@ def empty_conventions(*, generation: int) -> dict:
         "conventions": {
             "imports": {},
             "naming": {},
+            "inheritance": {},
+            "method_calls": {},
         },
     }
 
@@ -199,6 +201,78 @@ def extract_naming_conventions(*, declarations: dict[str, list[str]]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Inheritance frequency extraction
+# ---------------------------------------------------------------------------
+
+_INHERITANCE_THRESHOLD = 0.60
+
+
+def extract_inheritance_conventions(files: list[ParsedFile]) -> dict:
+    """Detect dominant base class and common include mixins per archetype."""
+    if len(files) < MIN_SAMPLE_SIZE:
+        return {}
+
+    total = len(files)
+    base_counts: Counter[str] = Counter()
+    include_counts: Counter[str] = Counter()
+
+    for f in files:
+        for kind in f.top_level_node_kinds:
+            if kind.startswith("ClassNode:") and ":" in kind:
+                base = kind.split(":", 1)[1]
+                base_counts[base] += 1
+            elif kind.startswith("IncludeCall:"):
+                mixin = kind.split(":", 1)[1]
+                include_counts[mixin] += 1
+
+    result: dict = {}
+
+    if base_counts:
+        top_base, top_count = base_counts.most_common(1)[0]
+        if top_count / total >= _INHERITANCE_THRESHOLD:
+            result["dominant_base"] = top_base
+            result["frequency"] = round(top_count / total, 3)
+            result["sample_size"] = total
+
+    if include_counts:
+        top_include, inc_count = include_counts.most_common(1)[0]
+        if inc_count / total >= _INHERITANCE_THRESHOLD:
+            result["dominant_include"] = top_include
+            result["include_frequency"] = round(inc_count / total, 3)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Method-call frequency extraction
+# ---------------------------------------------------------------------------
+
+
+def extract_method_call_conventions(files: list[ParsedFile]) -> dict:
+    """Extract top DSL/method call patterns from top_level_node_kinds."""
+    if len(files) < MIN_SAMPLE_SIZE:
+        return {}
+
+    total = len(files)
+    call_counts: Counter[str] = Counter()
+
+    for f in files:
+        seen: set[str] = set()
+        for kind in f.top_level_node_kinds:
+            if kind.startswith("DslCall:"):
+                call = kind.split(":", 1)[1]
+                if call not in seen:
+                    call_counts[call] += 1
+                    seen.add(call)
+
+    if not call_counts:
+        return {}
+
+    common_top5 = [name for name, _count in call_counts.most_common(5)]
+    return {"common_top5": common_top5, "sample_size": total}
+
+
+# ---------------------------------------------------------------------------
 # Aggregate extraction (used by bootstrap orchestrator)
 # ---------------------------------------------------------------------------
 
@@ -224,6 +298,14 @@ def extract_all_conventions(
         naming_conv = extract_naming_conventions(declarations=declarations)
         if naming_conv:
             conventions["conventions"]["naming"][archetype] = naming_conv
+    for archetype, files in files_by_archetype.items():
+        inheritance_conv = extract_inheritance_conventions(files)
+        if inheritance_conv:
+            conventions["conventions"].setdefault("inheritance", {})[archetype] = inheritance_conv
+    for archetype, files in files_by_archetype.items():
+        method_conv = extract_method_call_conventions(files)
+        if method_conv:
+            conventions["conventions"].setdefault("method_calls", {})[archetype] = method_conv
     return conventions
 
 
