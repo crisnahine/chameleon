@@ -204,18 +204,20 @@ class TestFormatConventionsForSession:
         assert "I" in text
         assert "interface" in text.lower()
 
-    def test_empty_conventions_returns_empty(self):
+    def test_empty_conventions_still_has_general(self):
         conventions = empty_conventions(generation=1)
         text = format_conventions_for_session(conventions)
-        assert text == ""
+        assert "GENERAL:" in text
+        assert "Search the codebase" in text
 
-    def test_skips_below_60_percent(self):
+    def test_skips_below_60_percent_but_keeps_general(self):
         conventions = empty_conventions(generation=1)
         conventions["conventions"]["naming"]["component"] = {
             "enum_prefix": {"pattern": "E", "consistency": 0.55, "sample_size": 8},
         }
         text = format_conventions_for_session(conventions)
-        assert text == ""
+        assert "NAMING" not in text  # below threshold, skipped
+        assert "GENERAL:" in text  # general idioms always present
 
 
 class TestFormatConventionsEcho:

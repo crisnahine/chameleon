@@ -496,7 +496,20 @@ def format_conventions_for_session(conventions: dict) -> str:
         sorted_exports = sorted(all_exports)[:15]
         export_lines.append(f"- Check before creating: {', '.join(sorted_exports)}")
 
-    if not import_lines and not naming_lines and not inheritance_lines and not export_lines:
+    # General idioms (shipped with chameleon, language-agnostic)
+    general_lines: list[str] = []
+    try:
+        _idioms_path = Path(__file__).parent / "general_idioms.md"
+        if _idioms_path.is_file():
+            general_lines = [
+                f"- {line.split('. ', 1)[1] if '. ' in line else line}"
+                for line in _idioms_path.read_text(encoding="utf-8").strip().splitlines()
+                if line.strip() and line[0].isdigit()
+            ]
+    except Exception:
+        pass
+
+    if not import_lines and not naming_lines and not inheritance_lines and not export_lines and not general_lines:
         return ""
 
     lines.append("<chameleon-conventions>")
@@ -521,6 +534,10 @@ def format_conventions_for_session(conventions: dict) -> str:
     if export_lines:
         lines.append("REUSE:")
         lines.extend(export_lines)
+        lines.append("")
+    if general_lines:
+        lines.append("GENERAL:")
+        lines.extend(general_lines)
         lines.append("")
     lines.append("</chameleon-conventions>")
     return "\n".join(lines)
