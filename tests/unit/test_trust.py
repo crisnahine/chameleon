@@ -8,6 +8,7 @@ from chameleon_mcp.profile.trust import (
     TrustRecord,
     grant_trust,
     hash_profile,
+    is_material_change,
     trust_state_for,
 )
 
@@ -199,3 +200,29 @@ class TestGrantAndQuery:
         ws_key = str(ws.resolve())
         assert ws_key in record.repo_root_specific_hashes
         assert record.repo_root_specific_hashes[ws_key] == hash_profile(ws_profile)
+
+    def test_workspace_trust_not_stale_after_cascade(self, tmp_path: Path, monkeypatch):
+        """BUG-029: after trusting root + workspaces, is_material_change
+        should return False for each workspace profile."""
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+        repo_id = "monorepo-cascade-001"
+
+        root = tmp_path / "monorepo"
+        root_profile = _make_profile_dir(root)
+        grant_trust(repo_id, root_profile)
+
+        ws_a = tmp_path / "monorepo" / "packages" / "a"
+        ws_a_profile = _make_profile_dir(ws_a, extra_files={
+            "profile.json": json.dumps({"generation": 2, "language": "typescript"}),
+        })
+        grant_trust(repo_id, ws_a_profile)
+
+        ws_b = tmp_path / "monorepo" / "packages" / "b"
+        ws_b_profile = _make_profile_dir(ws_b, extra_files={
+            "profile.json": json.dumps({"generation": 3, "language": "ruby"}),
+        })
+        grant_trust(repo_id, ws_b_profile)
+
+        assert is_material_change(repo_id, root_profile) is False
+        assert is_material_change(repo_id, ws_a_profile) is False
+        assert is_material_change(repo_id, ws_b_profile) is False

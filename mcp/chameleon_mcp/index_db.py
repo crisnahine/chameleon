@@ -66,6 +66,33 @@ def _get_index_conn(db_path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def _get_index_conn_readonly(db_path: Path | None = None) -> sqlite3.Connection:
+    """Open a read-only connection to index.db, skipping DDL.
+
+    BUG-032: init_index_db runs CREATE TABLE + INSERT on every connection,
+    which requires a write lock. When the process already holds write locks
+    from prior upserts (connection leak), the DDL deadlocks. Read-only
+    callers (resolve_repo_root, get_repo) don't need DDL — if the table
+    doesn't exist, the SELECT fails with "no such table" which is handled
+    the same as "not found".
+
+    Falls back to the cached read-write connection when available.
+    """
+    global _INDEX_CONN
+    if db_path is None and _INDEX_CONN is not None:
+        try:
+            _INDEX_CONN.execute("SELECT 1")
+            return _INDEX_CONN
+        except sqlite3.Error:
+            pass
+    path = db_path if db_path is not None else _index_db_path()
+    if not path.is_file():
+        raise sqlite3.OperationalError("index.db does not exist")
+    conn = open_hardened(path, read_only=True)
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
 def close_index_connections() -> None:
     """Close the cached index.db connection. Safe to call at shutdown."""
     global _INDEX_CONN
@@ -160,9 +187,11 @@ def init_index_db(db_path: Path | None = None) -> sqlite3.Connection:
     """
     path = db_path if db_path is not None else _index_db_path()
     conn = open_hardened(path)
-    # Override the busy_timeout from drift's 30s default to 2s — index.db
-    # writes are user-driven, not on the PreToolUse hot path.
-    conn.execute("PRAGMA busy_timeout=2000")
+    # Override the busy_timeout from drift's 30s default. index.db writes
+    # are user-driven but concurrent bootstrap/trust calls (e.g. monorepo
+    # workspace cascade) can contend. 5s gives enough headroom without
+    # blocking the PreToolUse hot path (which uses drift.db, not index.db).
+    conn.execute("PRAGMA busy_timeout=5000")
     # Migrate FIRST so the CREATE TABLE IF NOT EXISTS in SCHEMA_DDL does
     # not no-op past an old (repo_id PRIMARY KEY) table shape.
     _migrate_repos_to_composite_pk(conn)
@@ -385,7 +414,7 @@ def resolve_repo_root(
     if not path.is_file():
         return None
     try:
-        conn = _get_index_conn(db_path)
+        conn = _get_index_conn_readonly(db_path)
     except (sqlite3.Error, OSError):
         return None
     try:
@@ -397,11 +426,7 @@ def resolve_repo_root(
             if row is not None:
                 root = row["repo_root"]
                 return root if root else None
-            # Hint missed — fall through to the ancestor/freshest resolution.
 
-        # v0.5.5 Bug H: load all candidate roots once, then pick the
-        # ancestor-most one. Ordered by last_seen_at DESC first so the
-        # ancestor tie-break is deterministic on duplicated paths.
         rows = conn.execute(
             """
             SELECT repo_root FROM repos

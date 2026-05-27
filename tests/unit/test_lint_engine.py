@@ -3,9 +3,11 @@ from __future__ import annotations
 
 from chameleon_mcp.lint_engine import (
     DimensionSnapshot,
+    _coarse_normalize,
     _extract_ruby,
     _extract_typescript,
     _fold_string_concat,
+    _top_level_kinds_match,
     canonical_confidence,
     detect_language,
     lint,
@@ -510,3 +512,122 @@ class TestFoldStringConcat:
 
     def test_whitespace_around_plus(self):
         assert _fold_string_concat('"a"  +  "b"') == '"ab"'
+
+
+# ---------------------------------------------------------------------------
+# _coarse_normalize — BUG-031
+# ---------------------------------------------------------------------------
+
+
+class TestCoarseNormalize:
+    def test_dsl_active_record_collapses(self):
+        assert _coarse_normalize("DslCall:validates") == "DslCall"
+
+    def test_dsl_action_controller_collapses(self):
+        assert _coarse_normalize("DslCall:before_action") == "DslCall"
+
+    def test_dsl_ruby_core_collapses(self):
+        assert _coarse_normalize("DslCall:attr_reader") == "DslCall"
+
+    def test_dsl_generic_stays(self):
+        assert _coarse_normalize("DslCall:unknown_dsl") == "DslCall"
+
+    def test_class_node_strips_superclass(self):
+        assert _coarse_normalize("ClassNode:ApplicationRecord") == "ClassNode"
+
+    def test_include_call_strips_name(self):
+        assert _coarse_normalize("IncludeCall:Concern") == "IncludeCall"
+
+    def test_ts_first_statement_to_code_declaration(self):
+        assert _coarse_normalize("FirstStatement") == "CodeDeclaration"
+
+    def test_ts_function_declaration_to_code_declaration(self):
+        assert _coarse_normalize("FunctionDeclaration") == "CodeDeclaration"
+
+    def test_ts_export_assignment_to_code_declaration(self):
+        assert _coarse_normalize("ExportAssignment") == "CodeDeclaration"
+
+    def test_import_declaration_passthrough(self):
+        assert _coarse_normalize("ImportDeclaration") == "ImportDeclaration"
+
+    def test_class_declaration_passthrough(self):
+        assert _coarse_normalize("ClassDeclaration") == "ClassDeclaration"
+
+
+# ---------------------------------------------------------------------------
+# _top_level_kinds_match — BUG-031 threshold + coarse dedup
+# ---------------------------------------------------------------------------
+
+
+class TestTopLevelKindsMatch:
+    def test_empty_expected_always_matches(self):
+        assert _top_level_kinds_match(["ClassNode"], []) is True
+
+    def test_exact_match(self):
+        assert _top_level_kinds_match(
+            ["ClassNode", "DslCall:validates"],
+            ["ClassNode", "DslCall:validates"],
+        ) is True
+
+    def test_bare_class_fails_two_kind_expected(self):
+        """BUG-031: 1 match of 2 coarse kinds must fail (min-2 threshold)."""
+        assert _top_level_kinds_match(
+            ["ClassNode"],
+            ["ClassNode", "DslCall:scope"],
+        ) is False
+
+    def test_bare_const_fails_two_kind_ts_expected(self):
+        """BUG-031: TS const x=1 (FirstStatement) vs action with imports."""
+        assert _top_level_kinds_match(
+            ["FirstStatement"],
+            ["FirstStatement", "ImportDeclaration"],
+        ) is False
+
+    def test_coarse_dedup_prevents_inflated_match(self):
+        """BUG-031: FirstStatement + ExportAssignment both -> CodeDeclaration.
+        A file with just FirstStatement should NOT count as 2 matches."""
+        assert _top_level_kinds_match(
+            ["FirstStatement"],
+            ["ClassDeclaration", "ExportAssignment", "FirstStatement", "ImportDeclaration"],
+        ) is False
+
+    def test_single_expected_kind_still_requires_match(self):
+        assert _top_level_kinds_match(["ClassNode"], ["ModuleNode"]) is False
+
+    def test_single_expected_kind_matches(self):
+        assert _top_level_kinds_match(["ClassNode"], ["ClassNode"]) is True
+
+    def test_dsl_cross_category_not_conflict(self):
+        """BUG-031: Ruby core DSL (attr_reader) + ActiveRecord DSL (validates)
+        in the same file should NOT trigger DSL conflict."""
+        assert _top_level_kinds_match(
+            ["ClassNode:ApplicationRecord", "DslCall:validates", "DslCall:belongs_to"],
+            ["ClassNode", "DslCall:attr_reader"],
+        ) is True
+
+    def test_dsl_real_conflict_still_fires(self):
+        """ActiveRecord vs ActionController DSLs should still conflict."""
+        assert _top_level_kinds_match(
+            ["ClassNode", "DslCall:before_action"],
+            ["ClassNode", "DslCall:validates", "DslCall:belongs_to"],
+        ) is False
+
+    def test_extras_in_file_ok(self):
+        """File having MORE kinds than expected is fine."""
+        assert _top_level_kinds_match(
+            ["ClassNode:ApplicationRecord", "DslCall:validates", "DslCall:scope", "IncludeCall:AASM"],
+            ["ClassNode", "DslCall:validates"],
+        ) is True
+
+    def test_half_threshold_for_large_expected(self):
+        """For 4+ coarse kinds, 50% threshold applies (at least 2)."""
+        assert _top_level_kinds_match(
+            ["ImportDeclaration", "ClassDeclaration"],
+            ["ImportDeclaration", "ClassDeclaration", "InterfaceDeclaration", "TypeAliasDeclaration"],
+        ) is True
+
+    def test_below_half_threshold_fails(self):
+        assert _top_level_kinds_match(
+            ["ImportDeclaration"],
+            ["ImportDeclaration", "ClassDeclaration", "InterfaceDeclaration", "TypeAliasDeclaration"],
+        ) is False

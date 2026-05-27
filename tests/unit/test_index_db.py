@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from chameleon_mcp.index_db import (
+    _get_index_conn_readonly,
     close_index_connections,
     init_index_db,
     list_repos,
@@ -155,3 +156,42 @@ class TestListRepos:
 
         with pytest.raises(ValueError, match="unknown cursor"):
             list_repos("bogus", 10)
+
+
+# ---------------------------------------------------------------------------
+# _get_index_conn_readonly — BUG-032
+# ---------------------------------------------------------------------------
+
+class TestReadOnlyConnection:
+    def test_readonly_reads_existing_data(self, tmp_path: Path):
+        """Read-only connection can read data written by a prior write conn."""
+        upsert_repo("ro-test", "/ro/path", profile_sha256="sha_ro")
+        close_index_connections()
+
+        conn = _get_index_conn_readonly()
+        row = conn.execute(
+            "SELECT repo_root FROM repos WHERE repo_id = ?",
+            ("ro-test",),
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert row["repo_root"] == "/ro/path"
+
+    def test_readonly_on_missing_db_raises(self, tmp_path: Path, monkeypatch):
+        """When index.db doesn't exist, read-only should raise, not create it."""
+        empty = tmp_path / "empty_data"
+        empty.mkdir()
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(empty))
+        close_index_connections()
+
+        import sqlite3
+        with pytest.raises((sqlite3.OperationalError, sqlite3.Error)):
+            _get_index_conn_readonly()
+
+    def test_resolve_repo_root_uses_readonly(self, tmp_path: Path):
+        """resolve_repo_root should succeed via read-only when data exists."""
+        upsert_repo("resolve-ro", "/resolve/path", profile_sha256="sha")
+        close_index_connections()
+
+        root = resolve_repo_root("resolve-ro")
+        assert root == "/resolve/path"

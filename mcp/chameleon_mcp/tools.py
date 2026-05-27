@@ -1414,16 +1414,36 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     # selection scan (secret / injection / poisoning gates).
     known_archetypes = loaded.archetypes.get("archetypes", {}) or {}
     if archetype not in known_archetypes:
-        return _envelope({
-            "status": "failed",
-            "error": "archetype not found",
-            "archetype_name": archetype,
-            "repo_id": repo_id,
-            "content": None,
-            "witness_path": None,
-            "truncated": False,
-            "sha_hint": None,
-        })
+        # BUG-032: for monorepos, the archetype might exist in a workspace
+        # profile, not the root. Scan workspace .chameleon/ dirs for it.
+        found_in_workspace = False
+        for ws_cham in repo_root.rglob(".chameleon"):
+            if ws_cham == repo_root / ".chameleon" or not ws_cham.is_dir():
+                continue
+            if not (ws_cham / "profile.json").is_file():
+                continue
+            try:
+                ws_loaded = load_profile_dir(ws_cham)
+                ws_archs = ws_loaded.archetypes.get("archetypes", {}) or {}
+                if archetype in ws_archs:
+                    loaded = ws_loaded
+                    repo_root = ws_cham.parent
+                    known_archetypes = ws_archs
+                    found_in_workspace = True
+                    break
+            except Exception:
+                continue
+        if not found_in_workspace:
+            return _envelope({
+                "status": "failed",
+                "error": "archetype not found",
+                "archetype_name": archetype,
+                "repo_id": repo_id,
+                "content": None,
+                "witness_path": None,
+                "truncated": False,
+                "sha_hint": None,
+            })
 
     canonicals = loaded.canonicals.get("canonicals", {}).get(archetype, [])
     if not canonicals:
@@ -1767,6 +1787,26 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
 
     canonicals = loaded.canonicals.get("canonicals", {}) or {}
     entries = canonicals.get(archetype) or []
+
+    # BUG-032: for monorepos, the archetype might live in a workspace profile.
+    if not entries:
+        for ws_cham in repo_root.rglob(".chameleon"):
+            if ws_cham == repo_root / ".chameleon" or not ws_cham.is_dir():
+                continue
+            if not (ws_cham / "profile.json").is_file():
+                continue
+            try:
+                ws_loaded = load_profile_dir(ws_cham)
+                ws_entries = (ws_loaded.canonicals.get("canonicals", {}) or {}).get(archetype) or []
+                if ws_entries:
+                    loaded = ws_loaded
+                    repo_root = ws_cham.parent
+                    canonicals = ws_loaded.canonicals.get("canonicals", {}) or {}
+                    entries = ws_entries
+                    break
+            except Exception:
+                continue
+
     ast_query: dict | None = None
     witness_rel_path: str | None = None
     if entries:
@@ -1774,24 +1814,37 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
         ast_query = (first.get("normative_shape") or {}).get("ast_query")
         witness_rel_path = (first.get("witness") or {}).get("path")
 
-    # 3b. Recalibrate ast_query from the canonical witness using the same
-    # regex heuristic that extract_dimensions uses at lint time.
-    if ast_query and witness_rel_path:
-        try:
-            witness_full = repo_root / witness_rel_path
-            if witness_full.is_file():
-                w_raw = witness_full.read_bytes()[:100_000].decode(
+    # 3b. Recalibrate ast_query from canonical witnesses. BUG-030/BUG-031:
+    # collect recalibrated queries from ALL sub-buckets. The file is then
+    # linted against each and the best-matching result (fewest structural
+    # violations) is returned. This handles archetypes where sub-buckets
+    # represent genuinely different structural variants (e.g., namespaced
+    # admin controllers vs top-level controllers in the same archetype).
+    candidate_queries: list[dict] = []
+    if ast_query and entries:
+        profile_lang = loaded.profile.get("language")
+        for entry in entries:
+            entry = entry or {}
+            e_ast = (entry.get("normative_shape") or {}).get("ast_query")
+            e_witness = (entry.get("witness") or {}).get("path")
+            if not e_ast or not e_witness:
+                continue
+            try:
+                w_full = repo_root / e_witness
+                if not w_full.is_file():
+                    continue
+                w_raw = w_full.read_bytes()[:100_000].decode(
                     "utf-8", errors="replace"
                 )
-                w_lang = _detect_language(witness_rel_path) or loaded.profile.get(
-                    "language"
-                )
+                w_lang = _detect_language(e_witness) or profile_lang
                 w_snap = _extract_dimensions(w_raw, language=w_lang)
-                ast_query = _recalibrate_ast_query(w_snap)
-        except Exception:
-            pass
+                candidate_queries.append(_recalibrate_ast_query(w_snap))
+            except Exception:
+                continue
+    if not candidate_queries and ast_query:
+        candidate_queries = [ast_query]
 
-    if not ast_query:
+    if not candidate_queries:
         return _envelope(
             {
                 "stub": False,
@@ -1808,9 +1861,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             truncated=truncated,
         )
 
-    # 5. Determine language. Prefer the caller-supplied file_path extension
-    # (the file being linted), then the witness extension, then the
-    # profile-level language metadata.
+    # 5. Determine language.
     language = (
         _detect_language(file_path)
         or _detect_language(witness_rel_path)
@@ -1819,22 +1870,32 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     if language not in ("typescript", "ruby"):
         language = None
 
-    # 6. Extract dimensions + run the lint comparison.
+    # 6. Extract dimensions + lint against each candidate query. Keep the
+    # result with the fewest structural violations so a file that matches
+    # ANY sub-bucket passes. Among ties, prefer higher confidence.
     snapshot = _extract_dimensions(working_content, language=language)
-    ast_violations = [v.to_dict() for v in _lint(snapshot, ast_query)]
-    confidence = _canonical_confidence(snapshot, ast_query)
+    best_ast_violations: list = []
+    best_confidence = 0.0
+    best_struct_count = float("inf")
+    for cq in candidate_queries:
+        v_list = _lint(snapshot, cq)
+        c = _canonical_confidence(snapshot, cq)
+        struct_count = sum(1 for v in v_list if v.rule == "top-level-node-kinds-mismatch")
+        if struct_count < best_struct_count or (
+            struct_count == best_struct_count and c > best_confidence
+        ):
+            best_ast_violations = [v.to_dict() for v in v_list]
+            best_confidence = c
+            best_struct_count = struct_count
 
-    # Merge AST violations + secret violations. Secrets first so the model
-    # sees the security-critical ones at the top of the list — they take
-    # priority over style/structural mismatches.
-    violations = secret_violations + ast_violations
+    violations = secret_violations + best_ast_violations
 
     return _envelope(
         {
             "stub": False,
             "stub_reason": None,
             "violations": violations,
-            "canonical_confidence": confidence,
+            "canonical_confidence": best_confidence,
             "unparseable_regions": snapshot.unparseable_regions,
             "content_size": content_size,
             "archetype": archetype,
@@ -4053,11 +4114,33 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
         })
 
     record = grant_trust(repo_id, profile_dir)
-    return _envelope({
+
+    # BUG-029: monorepo workspace sub-packages have their own .chameleon/
+    # profiles but trust was only granted for the root. Cascade the trust
+    # grant to every workspace profile under the root so detect_repo
+    # returns "trusted" (not "stale") for files inside sub-packages.
+    workspace_trust_count = 0
+    for child_chameleon in repo_path.rglob(".chameleon"):
+        if child_chameleon == profile_dir:
+            continue
+        if not child_chameleon.is_dir():
+            continue
+        if not (child_chameleon / "profile.json").is_file():
+            continue
+        try:
+            grant_trust(repo_id, child_chameleon)
+            workspace_trust_count += 1
+        except Exception:
+            pass
+
+    data: dict = {
         "status": "success",
         "trusted_at": record.granted_at,
         "granted_by_user": record.granted_by_user,
-    })
+    }
+    if workspace_trust_count:
+        data["workspace_profiles_trusted"] = workspace_trust_count
+    return _envelope(data)
 
 
 def _sanitize_user_input(text: str) -> str:

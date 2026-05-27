@@ -552,39 +552,64 @@ def _normalize_kind(kind: str) -> str:
     return kind
 
 
+def _coarse_normalize(kind: str) -> str:
+    """Collapse all DslCall categories to generic DslCall for matching.
+
+    _normalize_kind separates DslCall:validates -> DslCall:ActiveRecord and
+    DslCall:attr_reader -> DslCall:Ruby — useful for the conflict check but
+    too strict for presence matching. A model with attr_reader AND validates
+    is still a model; "does the file have any DSL call?" is what matters for
+    the threshold check. The conflict check uses the finer categories.
+    """
+    n = _normalize_kind(kind)
+    if n.startswith("DslCall:"):
+        return "DslCall"
+    return n
+
+
 def _top_level_kinds_match(file_kinds: list[str], expected: list[str]) -> bool:
     """Similarity-based comparison with fuzzy matching for enriched kinds.
 
-    At least half the expected kinds must have a match in the file.
-    Matching uses normalized kinds: ClassNode:ApplicationRecord and
-    ClassNode:ApplicationController both normalize to ClassNode, so
-    any class matches any class regardless of superclass. Same for
-    DslCall:* and IncludeCall:* - any DSL call matches any DSL call.
+    Matching uses coarse-normalized kinds: ClassNode:ApplicationRecord and
+    ClassNode:ApplicationController both collapse to ClassNode; all DslCall
+    variants collapse to DslCall; IncludeCall:* to IncludeCall. This answers
+    "does the file have these structural elements?" without penalizing
+    cross-category DSL presence (e.g. attr_reader + validates in the same
+    model).
+
+    BUG-031: require at least 2 matching kinds when the expected set has 2+
+    unique kinds. The old 50% threshold let 1-of-2 pass, meaning a bare
+    ClassNode matched any archetype that expected ClassNode + anything.
     """
     if not expected:
         return True
 
-    normalized_file = {_normalize_kind(k) for k in file_kinds}
-    file_set = set(file_kinds)
-    expected_deduped = set(expected)
+    # Deduplicate at the coarse level so multiple raw kinds that collapse
+    # to the same category (e.g. FirstStatement + ExportAssignment both →
+    # CodeDeclaration) count as one expected category, not two. Without
+    # this a file with just one TS declaration inflates the match count.
+    coarse_expected = {_coarse_normalize(k) for k in expected}
+    coarse_file = {_coarse_normalize(k) for k in file_kinds}
 
-    matched = 0
-    for kind in expected_deduped:
-        if kind in file_set or _normalize_kind(kind) in normalized_file:
-            matched += 1
-
-    if matched < len(expected_deduped) * 0.5:
+    matched = sum(1 for k in coarse_expected if k in coarse_file)
+    n = len(coarse_expected)
+    min_required = max(n * 0.5, min(2, n))
+    if matched < min_required:
         return False
 
     # DSL conflict check: archetype expects DslCall:ActiveRecord but file
     # has DslCall:ActionController -> wrong framework. Only triggers when
-    # BOTH sides have DSL calls from different categories.
+    # BOTH sides have framework-specific DSL categories. Neutral categories
+    # (generic "DslCall" fallback and "DslCall:Ruby" for core language DSLs
+    # like attr_reader/delegate) are excluded — they coexist with any
+    # framework.
+    _NEUTRAL_DSL = {"DslCall", "DslCall:Ruby"}
     expected_dsl = {
         _normalize_kind(k) for k in expected if k.startswith("DslCall:")
-    }
+    } - _NEUTRAL_DSL
     file_dsl = {
         _normalize_kind(k) for k in file_kinds if k.startswith("DslCall:")
-    }
+    } - _NEUTRAL_DSL
     if expected_dsl and file_dsl and not (expected_dsl & file_dsl):
         return False
 
