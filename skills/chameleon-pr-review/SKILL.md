@@ -209,3 +209,6 @@ Reviewed N files against chameleon conventions + [ticket EF-XXXX / branch diff].
 - Do NOT touch the Jira ticket (no comments, no status changes).
 - When unsure if something is a violation, check the canonical witness. If the witness does the same thing, it's not a violation.
 - Distinguish between violations the PR INTRODUCED vs pre-existing issues the PR didn't cause. Only flag PR-introduced issues.
+- Skip auto-generated files: `db/schema.rb`, `*.lock`, `*.generated.*`, vendored files. These produce false positives.
+- Skip config/data files: `.yml`, `.json`, `.toml` unless the archetype specifically covers them.
+- Large utility controllers (helpers, concerns) often have different shapes than the canonical - use judgment, not blind flagging.
