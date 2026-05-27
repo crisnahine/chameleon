@@ -1,6 +1,7 @@
 """Convention schema, serialization, and extraction for Smart Injection v0.9.0."""
 from __future__ import annotations
 import json
+import re
 from collections import Counter
 from typing import TYPE_CHECKING
 
@@ -108,3 +109,46 @@ def _is_wrapper_pair(a: str, b: str) -> bool:
     base_a = a.rsplit("/", 1)[-1]
     base_b = b.rsplit("/", 1)[-1]
     return len(base_a) > 3 and len(base_b) > 3 and (base_a in base_b or base_b in base_a) and base_a != base_b
+
+
+# ---------------------------------------------------------------------------
+# Naming convention extraction
+# ---------------------------------------------------------------------------
+
+_PREFIX_RE = re.compile(r"^([A-Z])[A-Z]")
+_ENFORCE_THRESHOLD = 0.95
+_STRONG_THRESHOLD = 0.60
+
+
+def extract_naming_conventions(*, declarations: dict[str, list[str]]) -> dict:
+    """Detect prefix conventions (I-prefix, T-prefix, E-prefix) from declaration names.
+
+    ``declarations`` maps a declaration type ("interface", "type", "enum") to a
+    list of identifier names found in the codebase.  Returns a dict keyed by
+    ``<type>_prefix`` with pattern, consistency, and sample_size when a
+    dominant single-letter prefix is detected above ``_STRONG_THRESHOLD``.
+    """
+    result: dict = {}
+    type_to_key = {"interface": "interface_prefix", "type": "type_prefix", "enum": "enum_prefix"}
+    for decl_type, names in declarations.items():
+        if len(names) < MIN_SAMPLE_SIZE_NAMING:
+            continue
+        key = type_to_key.get(decl_type)
+        if not key:
+            continue
+        prefix_counts: Counter[str] = Counter()
+        for name in names:
+            m = _PREFIX_RE.match(name)
+            if m:
+                prefix_counts[m.group(1)] += 1
+        if not prefix_counts:
+            continue
+        most_common_prefix, count = prefix_counts.most_common(1)[0]
+        consistency = count / len(names)
+        if consistency >= _STRONG_THRESHOLD:
+            result[key] = {
+                "pattern": most_common_prefix,
+                "consistency": round(consistency, 3),
+                "sample_size": len(names),
+            }
+    return result

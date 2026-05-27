@@ -6,6 +6,7 @@ from chameleon_mcp.conventions import (
     CONVENTIONS_SCHEMA_VERSION,
     empty_conventions,
     extract_import_conventions,
+    extract_naming_conventions,
     serialize_conventions,
 )
 from chameleon_mcp.extractors._base import ParsedFile
@@ -79,3 +80,35 @@ class TestImportFrequencyExtractor:
         preferred_modules = [p["module"] for p in result.get("preferred", [])]
         assert "react" not in preferred_modules
         assert "@/lib/api" in preferred_modules
+
+
+class TestNamingExtractor:
+    def test_detects_interface_i_prefix(self):
+        declarations = [
+            "IUserProps", "IChartData", "IListingData", "IApiResponse",
+            "ITableRow", "IFormValues", "IModalProps", "ISearchParams",
+            "IFilterState", "IConfig",
+        ]
+        result = extract_naming_conventions(declarations={"interface": declarations})
+        assert result["interface_prefix"]["pattern"] == "I"
+        assert result["interface_prefix"]["consistency"] >= 0.95
+
+    def test_no_prefix_when_inconsistent(self):
+        declarations = ["IFoo", "Bar", "IBaz", "Qux", "Hello"]
+        result = extract_naming_conventions(declarations={"interface": declarations})
+        assert "interface_prefix" not in result or result.get("interface_prefix", {}).get("consistency", 0) < 0.6
+
+    def test_detects_type_t_prefix(self):
+        declarations = ["TTheme", "TRoute", "TConfig", "TState", "TProps", "TData"]
+        result = extract_naming_conventions(declarations={"type": declarations})
+        assert result["type_prefix"]["pattern"] == "T"
+
+    def test_skips_below_min_sample(self):
+        declarations = ["IFoo", "IBar"]
+        result = extract_naming_conventions(declarations={"interface": declarations})
+        assert result == {}
+
+    def test_no_prefix_convention_for_bulletproof_style(self):
+        declarations = ["UserProps", "ChartData", "ListingData", "ApiResponse", "TableRow", "FormValues"]
+        result = extract_naming_conventions(declarations={"interface": declarations})
+        assert "interface_prefix" not in result
