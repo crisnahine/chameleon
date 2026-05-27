@@ -648,6 +648,18 @@ def session_start() -> int:
     except Exception:
         pass
 
+    # Convention injection (v0.9.0)
+    conventions_block = ""
+    try:
+        from chameleon_mcp.conventions import format_conventions_for_session
+        if repo_root and (repo_root / ".chameleon" / "conventions.json").is_file():
+            import json as _conv_json
+            conv_text = (repo_root / ".chameleon" / "conventions.json").read_text(encoding="utf-8")
+            conv_data = _conv_json.loads(conv_text)
+            conventions_block = format_conventions_for_session(conv_data)
+    except Exception:
+        pass
+
     wrapped_parts = [
         "<chameleon-context>",
         "You have chameleon, a profile-aware coding assistant.",
@@ -656,6 +668,9 @@ def session_start() -> int:
         "",
         skill_content,
     ]
+    if conventions_block:
+        wrapped_parts.append("")
+        wrapped_parts.append(conventions_block)
     if drift_banner:
         wrapped_parts.append("")
         wrapped_parts.append(drift_banner)

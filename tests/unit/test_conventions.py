@@ -5,8 +5,10 @@ from pathlib import Path
 from chameleon_mcp.conventions import (
     CONVENTIONS_SCHEMA_VERSION,
     empty_conventions,
+    extract_all_conventions,
     extract_import_conventions,
     extract_naming_conventions,
+    format_conventions_for_session,
     serialize_conventions,
 )
 from chameleon_mcp.extractors._base import ParsedFile
@@ -112,3 +114,100 @@ class TestNamingExtractor:
         declarations = ["UserProps", "ChartData", "ListingData", "ApiResponse", "TableRow", "FormValues"]
         result = extract_naming_conventions(declarations={"interface": declarations})
         assert "interface_prefix" not in result
+
+
+class TestExtractAllConventions:
+    def test_produces_conventions_dict(self):
+        files_by_archetype = {
+            "component": [
+                _make_parsed_file(f"src/c{i}.tsx", [("react", "namespace"), ("@/hooks/useCustomQuery", "named")])
+                for i in range(15)
+            ],
+        }
+        declarations_by_archetype = {
+            "component": {"interface": [f"I{chr(65 + i)}Props" for i in range(10)]},
+        }
+        result = extract_all_conventions(
+            files_by_archetype=files_by_archetype,
+            declarations_by_archetype=declarations_by_archetype,
+            generation=42,
+        )
+        assert result["schema_version"] == CONVENTIONS_SCHEMA_VERSION
+        assert result["generation"] == 42
+        assert "component" in result["conventions"]["imports"]
+        assert "component" in result["conventions"]["naming"]
+
+    def test_empty_when_no_archetypes(self):
+        result = extract_all_conventions(
+            files_by_archetype={},
+            declarations_by_archetype={},
+            generation=1,
+        )
+        assert result["conventions"]["imports"] == {}
+        assert result["conventions"]["naming"] == {}
+        assert result["generation"] == 1
+
+    def test_import_only_when_no_declarations(self):
+        files_by_archetype = {
+            "hook": [
+                _make_parsed_file(f"src/hooks/use{i}.ts", [("@/lib/api", "named")])
+                for i in range(15)
+            ],
+        }
+        result = extract_all_conventions(
+            files_by_archetype=files_by_archetype,
+            declarations_by_archetype={},
+            generation=7,
+        )
+        assert "hook" in result["conventions"]["imports"]
+        assert result["conventions"]["naming"] == {}
+
+    def test_skips_archetype_below_sample_size(self):
+        files_by_archetype = {
+            "tiny": [
+                _make_parsed_file(f"src/t{i}.ts", [("lodash", "named")])
+                for i in range(3)
+            ],
+        }
+        result = extract_all_conventions(
+            files_by_archetype=files_by_archetype,
+            declarations_by_archetype={},
+            generation=1,
+        )
+        # Below MIN_SAMPLE_SIZE, import extraction returns empty lists
+        assert "tiny" not in result["conventions"]["imports"]
+
+
+class TestFormatConventionsForSession:
+    def test_formats_import_competing(self):
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["imports"]["component"] = {
+            "preferred": [],
+            "competing": [{"preferred": "useCustomQuery", "over": "useQuery", "preferred_count": 47, "over_count": 0}],
+        }
+        text = format_conventions_for_session(conventions)
+        assert "useCustomQuery" in text
+        assert "not useQuery" in text
+        assert "Follow these" in text
+
+    def test_formats_naming_enforced(self):
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["naming"]["component"] = {
+            "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 2158},
+        }
+        text = format_conventions_for_session(conventions)
+        assert "I" in text
+        assert "interface" in text.lower()
+
+    def test_empty_conventions_returns_empty(self):
+        conventions = empty_conventions(generation=1)
+        text = format_conventions_for_session(conventions)
+        assert text == ""
+
+    def test_skips_below_60_percent(self):
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["naming"]["component"] = {
+            "enum_prefix": {"pattern": "E", "consistency": 0.55, "sample_size": 8},
+        }
+        text = format_conventions_for_session(conventions)
+        assert text == ""

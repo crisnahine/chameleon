@@ -152,3 +152,92 @@ def extract_naming_conventions(*, declarations: dict[str, list[str]]) -> dict:
                 "sample_size": len(names),
             }
     return result
+
+
+# ---------------------------------------------------------------------------
+# Aggregate extraction (used by bootstrap orchestrator)
+# ---------------------------------------------------------------------------
+
+
+def extract_all_conventions(
+    *,
+    files_by_archetype: dict[str, list[ParsedFile]],
+    declarations_by_archetype: dict[str, dict[str, list[str]]],
+    generation: int,
+) -> dict:
+    """Extract import and naming conventions for each archetype.
+
+    Called by the bootstrap orchestrator after clustering.  Returns a
+    full conventions dict ready for ``serialize_conventions`` and
+    writing to ``conventions.json``.
+    """
+    conventions = empty_conventions(generation=generation)
+    for archetype, files in files_by_archetype.items():
+        import_conv = extract_import_conventions(files)
+        if import_conv["preferred"] or import_conv["competing"]:
+            conventions["conventions"]["imports"][archetype] = import_conv
+    for archetype, declarations in declarations_by_archetype.items():
+        naming_conv = extract_naming_conventions(declarations=declarations)
+        if naming_conv:
+            conventions["conventions"]["naming"][archetype] = naming_conv
+    return conventions
+
+
+# ---------------------------------------------------------------------------
+# SessionStart formatting (v0.9.0)
+# ---------------------------------------------------------------------------
+
+
+def format_conventions_for_session(conventions: dict) -> str:
+    """Format conventions for SessionStart injection.
+
+    Imperative framing for >=95% consistency, context for 60-95%.
+    Skip anything below 60%.
+    """
+    lines: list[str] = []
+    conv = conventions.get("conventions", {})
+
+    import_lines: list[str] = []
+    seen_competing: set[str] = set()
+    for _arch, data in conv.get("imports", {}).items():
+        for c in data.get("competing", []):
+            key = f"{c['preferred']}>{c['over']}"
+            if key not in seen_competing:
+                seen_competing.add(key)
+                import_lines.append(f"- Use {c['preferred']}, not {c['over']}")
+
+    naming_lines: list[str] = []
+    seen_naming: set[str] = set()
+    for _arch, data in conv.get("naming", {}).items():
+        for key in ("interface_prefix", "type_prefix", "enum_prefix"):
+            entry = data.get(key)
+            if not entry or key in seen_naming:
+                continue
+            consistency = entry.get("consistency", 0)
+            if consistency < _STRONG_THRESHOLD:
+                continue
+            seen_naming.add(key)
+            type_name = key.replace("_prefix", "").replace("_", " ")
+            pattern = entry["pattern"]
+            pct = f"{consistency:.0%}"
+            if consistency >= _ENFORCE_THRESHOLD:
+                naming_lines.append(f"- Prefix {type_name}s with {pattern} ({pct}, enforced)")
+            else:
+                naming_lines.append(f"- Prefix {type_name}s with {pattern} ({pct})")
+
+    if not import_lines and not naming_lines:
+        return ""
+
+    lines.append("<chameleon-conventions>")
+    lines.append("Follow these on every edit. Auto-derived from this codebase.")
+    lines.append("")
+    if import_lines:
+        lines.append("IMPORTS (enforce):")
+        lines.extend(import_lines)
+        lines.append("")
+    if naming_lines:
+        lines.append("NAMING:")
+        lines.extend(naming_lines)
+        lines.append("")
+    lines.append("</chameleon-conventions>")
+    return "\n".join(lines)
