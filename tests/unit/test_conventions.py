@@ -253,48 +253,65 @@ class TestFormatConventionsEcho:
         assert text == ""
 
 
+def _make_ruby_file(tmp_path, name: str, content: str) -> ParsedFile:
+    """Create a real temp file and return a ParsedFile pointing to it."""
+    fp = tmp_path / name
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    fp.write_text(content, encoding="utf-8")
+    return ParsedFile(
+        path=fp,
+        content_first_200_bytes=content[:200],
+        top_level_node_kinds=(),
+        default_export_kind=None,
+        named_export_count=0,
+        import_specifiers=(),
+        has_jsx=False,
+    )
+
+
 class TestInheritanceExtractor:
-    def test_detects_dominant_base_class(self):
+    def test_detects_dominant_base_class(self, tmp_path):
         files = []
         for i in range(15):
-            files.append(_make_parsed_file(f"app/models/m{i}.rb", [], top_level_kinds=("ClassNode:ApplicationRecord", "DslCall:validates")))
+            files.append(_make_ruby_file(tmp_path, f"m{i}.rb", f"class Model{i} < ApplicationRecord\n  validates :name\nend\n"))
         result = extract_inheritance_conventions(files)
         assert result["dominant_base"] == "ApplicationRecord"
         assert result["frequency"] >= 0.9
 
-    def test_detects_include_mixin(self):
+    def test_detects_include_mixin(self, tmp_path):
         files = []
         for i in range(12):
-            files.append(_make_parsed_file(f"app/workers/w{i}.rb", [], top_level_kinds=("ClassNode", "IncludeCall:Sidekiq::Worker")))
+            files.append(_make_ruby_file(tmp_path, f"w{i}.rb", f"class Worker{i}\n  include Sidekiq::Worker\nend\n"))
         result = extract_inheritance_conventions(files)
         assert result["dominant_include"] == "Sidekiq::Worker"
 
-    def test_skips_below_threshold(self):
+    def test_skips_below_threshold(self, tmp_path):
         files = []
-        bases = ["ClassNode:ApplicationRecord", "ClassNode:BaseService", "ClassNode:AbstractJob"]
+        bases = ["ApplicationRecord", "BaseService", "AbstractJob"]
         for i in range(15):
-            kind = bases[i % 3]
-            files.append(_make_parsed_file(f"app/s{i}.rb", [], top_level_kinds=(kind,)))
+            base = bases[i % 3]
+            files.append(_make_ruby_file(tmp_path, f"s{i}.rb", f"class S{i} < {base}\nend\n"))
         result = extract_inheritance_conventions(files)
         assert "dominant_base" not in result
 
-    def test_skips_below_sample_size(self):
-        files = [_make_parsed_file("app/m.rb", [], top_level_kinds=("ClassNode:ApplicationRecord",))]
+    def test_skips_below_sample_size(self, tmp_path):
+        files = [_make_ruby_file(tmp_path, "m.rb", "class M < ApplicationRecord\nend\n")]
         result = extract_inheritance_conventions(files)
         assert result == {}
 
 
 class TestMethodCallExtractor:
-    def test_detects_common_dsl_calls(self):
+    def test_detects_common_dsl_calls(self, tmp_path):
         files = []
         for i in range(15):
-            files.append(_make_parsed_file(f"app/models/m{i}.rb", [], top_level_kinds=("ClassNode:ApplicationRecord", "DslCall:validates", "DslCall:belongs_to", "DslCall:scope")))
+            files.append(_make_ruby_file(tmp_path, f"m{i}.rb",
+                f"class M{i} < ApplicationRecord\n  validates :name\n  belongs_to :user\n  scope :active, -> {{}}\nend\n"))
         result = extract_method_call_conventions(files)
         assert "validates" in result["common_top5"]
         assert "belongs_to" in result["common_top5"]
 
-    def test_skips_below_sample_size(self):
-        files = [_make_parsed_file("app/m.rb", [], top_level_kinds=("DslCall:validates",))]
+    def test_skips_below_sample_size(self, tmp_path):
+        files = [_make_ruby_file(tmp_path, "m.rb", "class M\n  validates :name\nend\n")]
         result = extract_method_call_conventions(files)
         assert result == {}
 

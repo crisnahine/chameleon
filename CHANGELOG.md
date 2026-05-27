@@ -4,6 +4,22 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-05-27
+
+### Added
+
+- **Inheritance extractor**: detects dominant base class per archetype (e.g., ApplicationRecord 73%, ActiveInteraction::Base 82%) and dominant include mixins (e.g., Sidekiq::Worker 99%). Reads file content via regex at bootstrap time.
+- **Method-call frequency extractor**: detects top DSL calls per archetype (validates, belongs_to, before_action, etc.) by scanning class body content.
+- **PostToolUse lint**: `inheritance-convention-violation` warns when a Ruby class doesn't inherit the archetype's dominant base class. Supports `# chameleon-ignore inheritance-convention`.
+- **SessionStart**: now includes INHERITANCE and PATTERNS sections showing base classes, include mixins, and common DSL calls.
+- **Tier 1 echo**: now includes dominant base class (e.g., `Base: ApplicationRecord`).
+
+### Fixed
+
+- **Preferred imports in SessionStart**: v0.9.0 SessionStart was empty because it only showed competing pairs (disabled). Now surfaces top-10 high-frequency imports.
+- **Naming conventions from real repos**: declaration names (interface/type/enum identifiers) now extracted from file content via regex during bootstrap. I-prefix, T-prefix, E-prefix conventions now fire on real TypeScript repos.
+- **Inheritance count dedup**: files with multiple class declarations no longer over-count base class frequency.
+
 ## [0.9.0] - 2026-05-27
 
 Smart Injection MVP: auto-derive codebase conventions at bootstrap time.

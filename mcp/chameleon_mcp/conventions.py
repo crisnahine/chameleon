@@ -206,9 +206,27 @@ def extract_naming_conventions(*, declarations: dict[str, list[str]]) -> dict:
 
 _INHERITANCE_THRESHOLD = 0.60
 
+# Regex for Ruby class inheritance and include/extend
+_RUBY_CLASS_RE = re.compile(r"^\s*class\s+\w+\s*<\s*([\w:]+)", re.MULTILINE)
+_RUBY_INCLUDE_RE = re.compile(r"^\s*include\s+([\w:]+)", re.MULTILINE)
+# Regex for Ruby DSL calls at class body level (2-space indent)
+_RUBY_DSL_CALL_RE = re.compile(
+    r"^  (validates|validate|belongs_to|has_many|has_one|has_and_belongs_to_many"
+    r"|scope|enum|before_action|after_action|around_action"
+    r"|before_validation|after_commit|after_save|before_save|after_create"
+    r"|before_create|before_destroy|after_destroy"
+    r"|delegate|attr_accessor|attr_reader"
+    r"|sidekiq_options|sidekiq_throttle"
+    r"|render_data|render_error"
+    r"|has_paper_trail|acts_as_taggable_on"
+    r"|mount_uploader|has_one_attached|has_many_attached"
+    r"|default_scope|counter_culture)\b",
+    re.MULTILINE,
+)
+
 
 def extract_inheritance_conventions(files: list[ParsedFile]) -> dict:
-    """Detect dominant base class and common include mixins per archetype."""
+    """Detect dominant base class and include mixins by reading file content."""
     if len(files) < MIN_SAMPLE_SIZE:
         return {}
 
@@ -217,13 +235,22 @@ def extract_inheritance_conventions(files: list[ParsedFile]) -> dict:
     include_counts: Counter[str] = Counter()
 
     for f in files:
-        for kind in f.top_level_node_kinds:
-            if kind.startswith("ClassNode:") and ":" in kind:
-                base = kind.split(":", 1)[1]
+        try:
+            content = f.path.read_bytes()[:50_000].decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        seen_bases: set[str] = set()
+        for m in _RUBY_CLASS_RE.finditer(content):
+            base = m.group(1)
+            if base not in seen_bases:
                 base_counts[base] += 1
-            elif kind.startswith("IncludeCall:"):
-                mixin = kind.split(":", 1)[1]
-                include_counts[mixin] += 1
+                seen_bases.add(base)
+        seen_includes: set[str] = set()
+        for m in _RUBY_INCLUDE_RE.finditer(content):
+            inc = m.group(1)
+            if inc not in seen_includes:
+                include_counts[inc] += 1
+                seen_includes.add(inc)
 
     result: dict = {}
 
@@ -249,7 +276,7 @@ def extract_inheritance_conventions(files: list[ParsedFile]) -> dict:
 
 
 def extract_method_call_conventions(files: list[ParsedFile]) -> dict:
-    """Extract top DSL/method call patterns from top_level_node_kinds."""
+    """Extract top DSL/method call patterns by reading file content."""
     if len(files) < MIN_SAMPLE_SIZE:
         return {}
 
@@ -257,13 +284,16 @@ def extract_method_call_conventions(files: list[ParsedFile]) -> dict:
     call_counts: Counter[str] = Counter()
 
     for f in files:
+        try:
+            content = f.path.read_bytes()[:50_000].decode("utf-8", errors="replace")
+        except OSError:
+            continue
         seen: set[str] = set()
-        for kind in f.top_level_node_kinds:
-            if kind.startswith("DslCall:"):
-                call = kind.split(":", 1)[1]
-                if call not in seen:
-                    call_counts[call] += 1
-                    seen.add(call)
+        for m in _RUBY_DSL_CALL_RE.finditer(content):
+            call = m.group(1)
+            if call not in seen:
+                call_counts[call] += 1
+                seen.add(call)
 
     if not call_counts:
         return {}
