@@ -577,11 +577,14 @@ def session_start() -> int:
                 from chameleon_mcp import __version__ as running_version
 
                 new_init = Path(plugin_root) / "mcp" / "chameleon_mcp" / "__init__.py"
-                if new_init.is_file():
+                if running_version and new_init.is_file():
                     for line in new_init.read_text(encoding="utf-8").splitlines():
                         if line.startswith("__version__"):
                             installed_version = line.split("=", 1)[1].strip().strip("\"'")
-                            if installed_version != running_version:
+                            if (
+                                installed_version
+                                and installed_version != running_version
+                            ):
                                 cache_data["update"] = installed_version
                             break
             except Exception:
