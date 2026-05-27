@@ -241,3 +241,27 @@ def format_conventions_for_session(conventions: dict) -> str:
         lines.append("")
     lines.append("</chameleon-conventions>")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Tier 1 PreToolUse convention echo (~30 tokens)
+# ---------------------------------------------------------------------------
+
+
+def format_conventions_echo(conventions: dict, *, archetype: str) -> str:
+    """Compact one-line convention echo for Tier 1 PreToolUse pointer. ~30 tokens max."""
+    parts: list[str] = []
+    conv = conventions.get("conventions", {})
+
+    arch_imports = conv.get("imports", {}).get(archetype, {})
+    for c in arch_imports.get("competing", [])[:2]:
+        parts.append(f"Imports: {c['preferred']}")
+
+    arch_naming = conv.get("naming", {}).get(archetype, {})
+    for key in ("interface_prefix", "type_prefix"):
+        entry = arch_naming.get(key)
+        if entry and entry.get("consistency", 0) >= _STRONG_THRESHOLD:
+            parts.append(f"Naming: {entry['pattern']}-prefix")
+            break
+
+    return ". ".join(parts)

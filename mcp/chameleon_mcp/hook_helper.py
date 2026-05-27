@@ -994,6 +994,19 @@ def preflight_and_advise() -> int:
         )
         if summary:
             block += f"{sanitize_for_chameleon_context(summary)}\n"
+        # Convention echo: compact reminder of top conventions (~30 tokens)
+        # to counter attention decay in long sessions.
+        conv_echo = ""
+        try:
+            from chameleon_mcp.conventions import format_conventions_echo
+            conventions_path = repo_root_path / ".chameleon" / "conventions.json" if repo_root_path else None
+            if conventions_path and conventions_path.is_file():
+                conv_data = json.loads(conventions_path.read_text(encoding="utf-8"))
+                conv_echo = format_conventions_echo(conv_data, archetype=archetype_name)
+        except Exception:
+            pass
+        if conv_echo:
+            block += f"{conv_echo}\n"
         block += "</chameleon-context>"
         _metric(
             advisory_emitted=True,

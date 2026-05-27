@@ -211,3 +211,39 @@ class TestFormatConventionsForSession:
         }
         text = format_conventions_for_session(conventions)
         assert text == ""
+
+
+class TestFormatConventionsEcho:
+    def test_compact_echo(self):
+        from chameleon_mcp.conventions import format_conventions_echo
+
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["imports"]["hook"] = {
+            "preferred": [],
+            "competing": [{"preferred": "useCustomQuery", "over": "useQuery", "preferred_count": 47, "over_count": 0}],
+        }
+        conventions["conventions"]["naming"]["hook"] = {
+            "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 100},
+        }
+        text = format_conventions_echo(conventions, archetype="hook")
+        assert "useCustomQuery" in text
+        assert "I-prefix" in text
+        assert len(text) < 200
+
+    def test_empty_returns_empty(self):
+        from chameleon_mcp.conventions import format_conventions_echo
+
+        conventions = empty_conventions(generation=1)
+        text = format_conventions_echo(conventions, archetype="hook")
+        assert text == ""
+
+    def test_archetype_not_in_conventions(self):
+        from chameleon_mcp.conventions import format_conventions_echo
+
+        conventions = empty_conventions(generation=1)
+        conventions["conventions"]["imports"]["other"] = {
+            "preferred": [],
+            "competing": [{"preferred": "X", "over": "Y", "preferred_count": 10, "over_count": 0}],
+        }
+        text = format_conventions_echo(conventions, archetype="hook")
+        assert text == ""
