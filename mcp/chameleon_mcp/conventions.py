@@ -81,17 +81,10 @@ def extract_import_conventions(
                     "preferred": preferred_mod, "over": over_mod,
                     "preferred_count": p_count, "over_count": o_count,
                 })
-    else:
-        sorted_modules = sorted(module_counts.keys())
-        for i, mod_a in enumerate(sorted_modules):
-            for mod_b in sorted_modules[i + 1:]:
-                if _is_wrapper_pair(mod_a, mod_b):
-                    a_count = module_counts[mod_a]
-                    b_count = module_counts[mod_b]
-                    if a_count >= _MIN_COMPETING_COUNT and b_count <= 2:
-                        competing.append({"preferred": mod_a, "over": mod_b, "preferred_count": a_count, "over_count": b_count})
-                    elif b_count >= _MIN_COMPETING_COUNT and a_count <= 2:
-                        competing.append({"preferred": mod_b, "over": mod_a, "preferred_count": b_count, "over_count": a_count})
+    # Auto-detection of competing pairs disabled: substring heuristics
+    # produce too many false positives on real codebases (Button/UnlockButton,
+    # Chart/LineChart). Competing pairs will be detected in v0.9.1 via
+    # source-file import analysis (check if module A's file imports module B).
 
     # --- preferred imports (frequent but not framework-mandatory) ---
     preferred: list[dict] = []
@@ -106,10 +99,60 @@ def extract_import_conventions(
 
 
 def _is_wrapper_pair(a: str, b: str) -> bool:
-    """Heuristic: two modules are a wrapper pair if one base name contains the other."""
+    """Heuristic: two modules are a wrapper pair if one is a prefixed version of the other.
+
+    Matches: useCustomQuery wraps useQuery (useQuery is a suffix of useCustomQuery).
+    Rejects: ~/components/Button vs ../../../../Grid/UnlockButton (different basenames).
+    Rejects: Chart vs LineChart (different components, not a wrapper relationship).
+
+    The key insight: a wrapper re-exports or extends the wrapped module, so the
+    wrapper's basename must END with the wrapped module's basename. Plain substring
+    containment (Button in UnlockButton) produces massive false positives on real
+    codebases.
+    """
     base_a = a.rsplit("/", 1)[-1]
     base_b = b.rsplit("/", 1)[-1]
-    return len(base_a) > 3 and len(base_b) > 3 and (base_a in base_b or base_b in base_a) and base_a != base_b
+    if len(base_a) < 4 or len(base_b) < 4 or base_a == base_b:
+        return False
+    # Wrapper must end with the wrapped name (useCustomQuery ends with Query = useQuery's base)
+    # AND be strictly longer (not equal)
+    if base_a.endswith(base_b) and len(base_a) > len(base_b):
+        return True
+    if base_b.endswith(base_a) and len(base_b) > len(base_a):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Declaration name extraction (for naming conventions)
+# ---------------------------------------------------------------------------
+
+_TS_INTERFACE_NAME_RE = re.compile(r"^\s*(?:export\s+)?interface\s+([A-Z]\w*)", re.MULTILINE)
+_TS_TYPE_NAME_RE = re.compile(r"^\s*(?:export\s+)?type\s+([A-Z]\w*)\s*[=<]", re.MULTILINE)
+_TS_ENUM_NAME_RE = re.compile(r"^\s*(?:export\s+)?(?:const\s+)?enum\s+([A-Z]\w*)", re.MULTILINE)
+
+
+def extract_declarations_from_content(
+    content: str, *, language: str
+) -> dict[str, list[str]]:
+    """Extract interface/type/enum declaration names from file content.
+
+    Returns {"interface": ["IFoo", "IBar"], "type": ["TBaz"], "enum": ["EQux"]}.
+    Only TypeScript is supported; Ruby returns empty dict.
+    """
+    if language != "typescript":
+        return {}
+    result: dict[str, list[str]] = {}
+    interfaces = _TS_INTERFACE_NAME_RE.findall(content)
+    if interfaces:
+        result["interface"] = interfaces
+    types = _TS_TYPE_NAME_RE.findall(content)
+    if types:
+        result["type"] = types
+    enums = _TS_ENUM_NAME_RE.findall(content)
+    if enums:
+        result["enum"] = enums
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +250,21 @@ def format_conventions_for_session(conventions: dict) -> str:
                 seen_competing.add(key)
                 import_lines.append(f"- Use {c['preferred']}, not {c['over']}")
 
+    # Surface top preferred imports (high-frequency, cross-archetype)
+    seen_preferred: set[str] = set()
+    all_preferred: list[tuple[int, str]] = []
+    for _arch, data in conv.get("imports", {}).items():
+        for p in data.get("preferred", []):
+            mod = p["module"]
+            if mod not in seen_preferred:
+                seen_preferred.add(mod)
+                all_preferred.append((p["frequency"], mod))
+    all_preferred.sort(reverse=True)
+    for _freq, mod in all_preferred[:10]:
+        basename = mod.rsplit("/", 1)[-1]
+        if len(basename) > 2 and basename not in ("index", "types", "utils"):
+            import_lines.append(f"- Prefer {mod}")
+
     naming_lines: list[str] = []
     seen_naming: set[str] = set()
     for _arch, data in conv.get("naming", {}).items():
@@ -257,6 +315,13 @@ def format_conventions_echo(conventions: dict, *, archetype: str) -> str:
     arch_imports = conv.get("imports", {}).get(archetype, {})
     for c in arch_imports.get("competing", [])[:2]:
         parts.append(f"Imports: {c['preferred']}")
+    if not parts:
+        top_preferred = arch_imports.get("preferred", [])[:2]
+        for p in top_preferred:
+            basename = p["module"].rsplit("/", 1)[-1]
+            if len(basename) > 2 and basename not in ("index", "types", "utils"):
+                parts.append(f"Imports: {p['module']}")
+                break
 
     arch_naming = conv.get("naming", {}).get(archetype, {})
     for key in ("interface_prefix", "type_prefix"):

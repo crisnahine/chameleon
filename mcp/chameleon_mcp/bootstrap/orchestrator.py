@@ -43,7 +43,11 @@ from chameleon_mcp.bootstrap.naming import propose_archetype_name
 from chameleon_mcp.bootstrap.tool_config import read_tool_configs
 from chameleon_mcp.bootstrap.transaction import atomic_profile_commit
 from chameleon_mcp.bootstrap.workspace import detect_workspace
-from chameleon_mcp.conventions import extract_all_conventions, serialize_conventions
+from chameleon_mcp.conventions import (
+    extract_all_conventions,
+    extract_declarations_from_content,
+    serialize_conventions,
+)
 from chameleon_mcp.extractors._base import Extractor
 from chameleon_mcp.extractors.ruby import RubyExtractor
 from chameleon_mcp.extractors.typescript import TypeScriptExtractor
@@ -1608,9 +1612,26 @@ def _bootstrap_single(
         if arch_name:
             files_by_archetype.setdefault(arch_name, []).extend(cluster.members)
 
+    # Extract declaration names (interface/type/enum identifiers) for naming
+    # convention detection. Reads file content via regex - ~1ms per file.
+    declarations_by_archetype: dict[str, dict[str, list[str]]] = {}
+    if extractor.language == "typescript":
+        for arch_name, pf_list in files_by_archetype.items():
+            merged: dict[str, list[str]] = {}
+            for pf in pf_list:
+                try:
+                    content = pf.path.read_bytes()[:100_000].decode("utf-8", errors="replace")
+                    decls = extract_declarations_from_content(content, language="typescript")
+                    for decl_type, names in decls.items():
+                        merged.setdefault(decl_type, []).extend(names)
+                except (OSError, UnicodeDecodeError):
+                    continue
+            if merged:
+                declarations_by_archetype[arch_name] = merged
+
     conventions_data = extract_all_conventions(
         files_by_archetype=files_by_archetype,
-        declarations_by_archetype={},  # MVP: no declaration names available yet
+        declarations_by_archetype=declarations_by_archetype,
         generation=generation,
     )
 
