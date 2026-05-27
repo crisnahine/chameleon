@@ -4,6 +4,16 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-05-27
+
+### Added
+
+- **`/chameleon-pr-review` skill**: reviews PR diffs (local branch or remote PR URL) against the repo's chameleon conventions, principles, and canonical patterns. Checks convention compliance (archetype match, structural lint, import/naming/inheritance violations, principle adherence, key export duplication) and optionally logic compliance (Jira ticket + Slack context). Reports findings grouped by severity (BLOCK / FIX / NIT). Language-agnostic - works for any language chameleon supports.
+
+### Fixed
+
+- **MCP server CLAUDE_PLUGIN_ROOT**: passed through `.mcp.json` env config so the uvx-spawned server can find `scripts/ts_dump.mjs` and `prism_dump.rb`. Without this, bootstrap via MCP tools silently failed to produce conventions.json and principles.md.
+
 ## [1.0.2] - 2026-05-27
 
 ### Fixed
