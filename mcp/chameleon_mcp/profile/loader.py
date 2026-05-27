@@ -108,6 +108,7 @@ class LoadedProfile:
     archetypes: dict
     canonicals: dict
     rules: dict
+    conventions: dict
     idioms_text: str
     generation: int
     profile_dir: Path
@@ -361,6 +362,12 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
     rules = json.loads(_safe_read_artifact(artifact_paths[2]))
     canonicals = json.loads(_safe_read_artifact(artifact_paths[3]))
 
+    conventions_path = profile_dir / "conventions.json"
+    try:
+        conventions = json.loads(_safe_read_artifact(conventions_path))
+    except FileNotFoundError:
+        conventions = {}
+
     idioms_path = profile_dir / "idioms.md"
     try:
         idioms_text = _safe_read_artifact(idioms_path)
@@ -420,6 +427,7 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         archetypes=archetypes,
         canonicals=canonicals,
         rules=rules,
+        conventions=conventions,
         idioms_text=idioms_text,
         generation=gens[0],
         profile_dir=profile_dir,

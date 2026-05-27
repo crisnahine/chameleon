@@ -68,6 +68,16 @@ class TestHashProfile:
         # no profile.json at all
         assert hash_profile(profile_dir) == ""
 
+    def test_conventions_json_changes_hash(self, tmp_path: Path):
+        repo_root = tmp_path / "repo"
+        profile_dir = _make_profile_dir(repo_root)
+        h1 = hash_profile(profile_dir)
+        (profile_dir / "conventions.json").write_text(
+            '{"schema_version": 1, "conventions": {}}', encoding="utf-8"
+        )
+        h2 = hash_profile(profile_dir)
+        assert h1 != h2
+
     def test_optional_idioms_md_changes_hash(self, tmp_path: Path):
         profile_dir = _make_profile_dir(tmp_path)
         h_without = hash_profile(profile_dir)
