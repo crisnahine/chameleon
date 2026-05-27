@@ -1,59 +1,55 @@
-"""Principle generation for Smart Injection.
+"""Principle generation for chameleon.
 
-Principles are universal coding rules tailored to the repo's language and
-conventions. Generated during bootstrap/refresh, fully regenerated each time.
-Users who want custom per-repo rules use idioms.md via /chameleon-teach.
+Principles are coding rules injected into every SessionStart. They cover
+patterns that AST analysis and frequency counting can't detect: when to
+reuse, when not to test, how to match the codebase's grain.
+
+Three categories:
+  - Universal: apply to any language, any codebase.
+  - Ruby-specific: Rails/Sidekiq/ActiveRecord patterns.
+  - TypeScript-specific: React/hooks/component patterns.
+
+Generated during bootstrap and refresh. Tailored by language.
+Custom per-repo rules go in idioms.md via /chameleon-teach.
 """
 from __future__ import annotations
 
-# Universal principles (apply to any language)
 _UNIVERSAL = [
-    "Search the codebase for an existing utility, helper, or service before creating a new one.",
-    "Match the testing granularity of sibling files - if similar classes have no test file, don't create one.",
-    "Keep each class at the same abstraction level as its neighbors - don't over-extract small operations into separate files when siblings inline them.",
-    "Separate data queries from side-effect operations - don't add file downloads to a JSON endpoint.",
-    "Follow the codebase's existing pattern for resource lookup parameters (query params vs path segments vs body).",
-    "Check if the codebase already wraps a library before importing it directly (custom HTTP client, logger, query hook).",
-    "Inherit the same base class or mixin that sibling files use unless the new file has a fundamentally different responsibility.",
+    "Check what exists before you build. Search for utilities, helpers, and services in the codebase before creating new ones.",
+    "Match how your neighbors test. If sibling files in this directory have no specs, don't add one. If they do, follow the same shape.",
+    "Stay at the same granularity as the directory. Don't extract a 5-line helper into its own file when neighbors inline similar logic.",
+    "One endpoint, one job. Data queries return data. Downloads produce files. Don't combine both in a single action.",
+    "Match the API shape. If existing endpoints use query params for IDs, don't introduce path segments. Consistency beats REST purity.",
+    "Use the wrapper, not the raw library. If the codebase has a custom HTTP client, logger, or query hook, import that instead of the underlying package.",
+    "Inherit what your siblings inherit. Use the same base class or mixin as other files in this directory unless your file does something fundamentally different.",
 ]
 
-# Ruby-specific principles
 _RUBY = [
-    "Use find_or_initialize_by / find_or_create_by for upsert patterns instead of manual check-then-create.",
-    "Use render_data/render_error for responses, not raw render json:.",
-    "Use DSL macros (scopes, validations, callbacks, before_action) instead of plain methods.",
+    "Use find_or_initialize_by for upserts. Don't write manual if-exists-then-update-else-create logic.",
+    "Use render_data and render_error. Don't use raw render json: unless every sibling controller does.",
+    "Use the DSL. Scopes, validations, callbacks, before_action - use the framework's macros, not hand-rolled equivalents.",
 ]
 
-# TypeScript-specific principles
 _TYPESCRIPT = [
-    "Use the project's query/mutation hook wrapper instead of raw useQuery/useMutation.",
-    "Use the centralized error handler, not manual try/catch in components.",
-    "Use the codebase's component declaration style (arrow + FC, observer(function), plain arrow) consistently.",
+    "Use the project's data-fetching wrapper. Don't import useQuery or useMutation directly if the codebase has a custom hook for it.",
+    "Use the project's error handling. Don't add manual try/catch in components if there's a centralized error boundary or handler.",
+    "Match the component style. Arrow with FC, observer(function), plain arrow - use whichever this codebase uses.",
 ]
 
 
 def generate_principles(*, language: str) -> str:
-    """Generate principles.md content tailored to the repo.
-
-    Selects universal + language-specific principles.
-    """
-    lines: list[str] = []
-    lines.append("# principles")
-    lines.append("")
-    lines.append("Auto-generated coding principles for this codebase.")
-    lines.append("Regenerated on /chameleon-init and /chameleon-refresh.")
-    lines.append("For custom per-repo rules, use /chameleon-teach (writes to idioms.md).")
-    lines.append("")
+    """Generate principles.md tailored to the repo's language."""
+    parts: list[str] = []
+    parts.append("# principles\n")
 
     principles: list[str] = list(_UNIVERSAL)
-
     if language == "ruby":
         principles.extend(_RUBY)
     elif language == "typescript":
         principles.extend(_TYPESCRIPT)
 
     for i, p in enumerate(principles, 1):
-        lines.append(f"{i}. {p}")
+        parts.append(f"{i}. {p}")
 
-    lines.append("")
-    return "\n".join(lines)
+    parts.append("")
+    return "\n".join(parts)
