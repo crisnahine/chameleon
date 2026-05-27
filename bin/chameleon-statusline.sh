@@ -42,7 +42,17 @@ if [[ -f "$cache_file" ]]; then
       fi
       update=$(jq -r '.update // empty' "$cache_file" 2>/dev/null)
       if [[ -n "$update" ]]; then
-        parts="$parts │ ⬆ v${update} ready — run /reload-plugins"
+        # Verify the update is still pending by reading the current
+        # plugin's version. CLAUDE_PLUGIN_ROOT updates after /reload-plugins,
+        # so if our version matches the update target, the reload happened.
+        plugin_init="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}/mcp/chameleon_mcp/__init__.py"
+        cur_ver=""
+        if [[ -f "$plugin_init" ]]; then
+          cur_ver=$(grep '^__version__' "$plugin_init" 2>/dev/null | head -1 | sed 's/.*= *"//;s/".*//')
+        fi
+        if [[ -n "$cur_ver" && "$cur_ver" != "$update" ]]; then
+          parts="$parts │ ⬆ v${update} ready — /reload-plugins or reopen session"
+        fi
       fi
       printf '🦎 chameleon │ %s' "$parts"
       exit 0
@@ -62,7 +72,20 @@ if ps:
             if age<30: parts+=f' │ {act}'
         except: pass
     upd=d.get('update','')
-    if upd: parts+=f' │ ⬆ v{upd} ready — run /reload-plugins'
+    if upd:
+        import re as _re
+        _pr=os.environ.get('CLAUDE_PLUGIN_ROOT','')
+        _pi=os.path.join(_pr,'mcp','chameleon_mcp','__init__.py') if _pr else ''
+        _cv=''
+        if _pi:
+            try:
+                for _ln in open(_pi):
+                    if _ln.startswith('__version__'):
+                        _m=_re.search(r'\"([^\"]+)\"',_ln)
+                        if _m: _cv=_m.group(1)
+                        break
+            except: pass
+        if _cv and _cv!=upd: parts+=' │ ⬆ v'+upd+' ready'
     print(f'🦎 chameleon │ {parts}')
 " 2>/dev/null || true)
     if [[ -n "$result" ]]; then
