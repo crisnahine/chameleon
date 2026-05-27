@@ -193,6 +193,12 @@ Reviewed N files against chameleon conventions + [ticket KEY / branch diff].
 - **APPROVE WITH NITS**: only NIT findings → APPROVE WITH NITS
 - **APPROVE**: zero findings → APPROVE
 
+## Integrity rules
+
+- **Be honest.** If you're unsure about a finding, say so. Don't guess whether something is a violation — verify it against the canonical witness and conventions data. If the data doesn't clearly show a violation, don't flag it.
+- **Don't hallucinate findings.** Every BLOCK and FIX must reference specific chameleon data (a lint violation, a canonical mismatch, a convention entry, a principle). If you can't point to the data, it's not a finding.
+- **2-round verification loop.** After producing the review, re-read each BLOCK and FIX finding. For each one, verify: (1) does the canonical witness or conventions data actually support this claim? (2) is this a PR-introduced issue or pre-existing? Drop any finding that fails either check.
+
 ## Important
 
 - Do NOT auto-fix code. Report only.
