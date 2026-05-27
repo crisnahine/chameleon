@@ -569,32 +569,32 @@ def session_start() -> int:
         if profiles:
             cache_data: dict = {"profiles": profiles}
 
-            # Detect plugin version mismatch: the hook runs from the NEW
-            # CLAUDE_PLUGIN_ROOT but the MCP server (and daemon) are still
-            # running old code from the previous version's path. Surface
-            # an update banner so the user knows to restart.
+            # Detect plugin version mismatch: compare the directory the
+            # running Python module was loaded from against CLAUDE_PLUGIN_ROOT.
+            # If they differ, the plugin was updated but the MCP server (and
+            # daemon) are still running old code. Version string comparison
+            # is unreliable because importlib.metadata can lag behind the
+            # file on disk after a version bump without `uv sync`.
             try:
-                from chameleon_mcp import __version__ as running_version
+                import chameleon_mcp as _cm
 
-                new_init = Path(plugin_root) / "mcp" / "chameleon_mcp" / "__init__.py"
-                if running_version and new_init.is_file():
-                    for line in new_init.read_text(encoding="utf-8").splitlines():
-                        if line.startswith("__version__"):
-                            installed_version = line.split("=", 1)[1].strip().strip("\"'")
-                            if (
-                                installed_version
-                                and installed_version != running_version
-                            ):
-                                cache_data["update"] = installed_version
-                                # Stop the stale daemon so next hook
-                                # call spawns a fresh one from the new
-                                # plugin path.
-                                try:
-                                    from chameleon_mcp.daemon import stop_daemon
-                                    stop_daemon(timeout=2.0)
-                                except Exception:
-                                    pass
-                            break
+                running_pkg = Path(_cm.__file__).resolve().parent
+                installed_pkg = (Path(plugin_root) / "mcp" / "chameleon_mcp").resolve()
+                if running_pkg != installed_pkg:
+                    # Read the installed version for the banner text
+                    installed_init = installed_pkg / "__init__.py"
+                    installed_version = ""
+                    if installed_init.is_file():
+                        for line in installed_init.read_text(encoding="utf-8").splitlines():
+                            if line.startswith("__version__"):
+                                installed_version = line.split("=", 1)[1].strip().strip("\"'")
+                                break
+                    cache_data["update"] = installed_version or "new"
+                    try:
+                        from chameleon_mcp.daemon import stop_daemon
+                        stop_daemon(timeout=2.0)
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
