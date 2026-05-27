@@ -4,6 +4,12 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-05-27
+
+### Fixed
+
+- **Refresh skips noop for old profiles**: profiles from pre-v0.9.0 (without conventions.json or principles.md) were hitting the noop path on refresh because no source files changed. Now detects missing artifacts and forces a full re-bootstrap.
+
 ## [1.0.0] - 2026-05-27
 
 chameleon v1.0.0: auto-derived conventions, principles, and convention-aware lint.

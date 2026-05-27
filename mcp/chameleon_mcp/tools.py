@@ -3013,7 +3013,14 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     cardinality_match = cached_files > 0 and len(candidates) == cached_files
     nothing_newer = last_seen_epoch > 0.0 and max_mtime <= last_seen_epoch
 
-    if cardinality_match and nothing_newer:
+    # Force full re-bootstrap if new artifacts are missing (profile from
+    # an older chameleon version that predates conventions/principles).
+    missing_artifacts = (
+        not (profile_dir / "conventions.json").is_file()
+        or not (profile_dir / "principles.md").is_file()
+    )
+
+    if cardinality_match and nothing_newer and not missing_artifacts:
         # Touch the row so the repo bubbles to the top of list_profiles
         # even on a no-op refresh.
         index_db.upsert_repo(
