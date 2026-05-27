@@ -254,6 +254,24 @@ cmd_bump() {
     printf "  %-45s  %s -> %s\n" "$path ($field)" "$old_ver" "$new_version"
   done < <(declared_files)
 
+  # Clean stale dist-info directories from the venv. Each `uv sync` after a
+  # version bump can leave orphaned dist-info dirs (e.g., 0.9.0, 0.9.1) that
+  # cause importlib.metadata to return None for __version__. Remove all
+  # dist-info dirs except the one matching the new version.
+  local venv_site="$REPO_ROOT/mcp/.venv/lib"
+  if [[ -d "$venv_site" ]]; then
+    local cleaned=0
+    while IFS= read -r -d '' stale_dir; do
+      if [[ "$(basename "$stale_dir")" != "chameleon_mcp-${new_version}.dist-info" ]]; then
+        rm -rf "$stale_dir"
+        ((cleaned++)) || true
+      fi
+    done < <(find "$venv_site" -maxdepth 3 -type d -name 'chameleon_mcp-*.dist-info' -print0 2>/dev/null)
+    if [[ $cleaned -gt 0 ]]; then
+      echo "Cleaned $cleaned stale dist-info dir(s) from venv."
+    fi
+  fi
+
   echo ""
   echo "Done. Running audit to check for missed files..."
   echo ""
