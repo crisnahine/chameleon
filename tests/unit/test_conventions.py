@@ -193,7 +193,7 @@ class TestFormatConventionsForSession:
         text = format_conventions_for_session(conventions)
         assert "useCustomQuery" in text
         assert "not useQuery" in text
-        assert "Follow these" in text
+        assert "Follow these on every edit" in text
 
     def test_formats_naming_enforced(self):
         conventions = empty_conventions(generation=1)
@@ -206,8 +206,7 @@ class TestFormatConventionsForSession:
 
     def test_empty_conventions_with_principles(self):
         conventions = empty_conventions(generation=1)
-        conventions["_principles_text"] = "1. Search the codebase for existing utilities."
-        text = format_conventions_for_session(conventions)
+        text = format_conventions_for_session(conventions, principles_text="1. Search the codebase for existing utilities.")
         assert "PRINCIPLES:" in text
         assert "Search the codebase" in text
 
@@ -221,8 +220,7 @@ class TestFormatConventionsForSession:
         conventions["conventions"]["naming"]["component"] = {
             "enum_prefix": {"pattern": "E", "consistency": 0.55, "sample_size": 8},
         }
-        conventions["_principles_text"] = "1. Match testing granularity of sibling files."
-        text = format_conventions_for_session(conventions)
+        text = format_conventions_for_session(conventions, principles_text="1. Match testing granularity of sibling files.")
         assert "NAMING" not in text
         assert "PRINCIPLES:" in text
 

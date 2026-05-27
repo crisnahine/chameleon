@@ -657,10 +657,11 @@ def session_start() -> int:
             conv_text = (repo_root / ".chameleon" / "conventions.json").read_text(encoding="utf-8")
             conv_data = _conv_json.loads(conv_text)
             # Load principles from .chameleon/ (auto-generated per repo)
+            pr_text = ""
             pr_path = repo_root / ".chameleon" / "principles.md"
             if pr_path.is_file():
-                conv_data["_principles_text"] = pr_path.read_text(encoding="utf-8")
-            conventions_block = format_conventions_for_session(conv_data)
+                pr_text = pr_path.read_text(encoding="utf-8")
+            conventions_block = format_conventions_for_session(conv_data, principles_text=pr_text)
     except Exception:
         pass
 
@@ -1006,7 +1007,14 @@ def preflight_and_advise() -> int:
             conventions_path = repo_root_path / ".chameleon" / "conventions.json" if repo_root_path else None
             if conventions_path and conventions_path.is_file():
                 conv_data = json.loads(conventions_path.read_text(encoding="utf-8"))
-                conv_echo = format_conventions_echo(conv_data, archetype=archetype_name)
+                pr_text = ""
+                pr_path = repo_root_path / ".chameleon" / "principles.md"
+                if pr_path.is_file():
+                    try:
+                        pr_text = pr_path.read_text(encoding="utf-8")
+                    except OSError:
+                        pass
+                conv_echo = format_conventions_echo(conv_data, archetype=archetype_name, principles_text=pr_text)
         except Exception:
             pass
         if conv_echo:
@@ -1315,6 +1323,7 @@ def posttool_verify() -> int:
                 detect_language,
                 extract_dimensions,
                 lint,
+                lint_conventions,
                 recalibrate_ast_query,
             )
             from chameleon_mcp.profile.loader import load_profile_dir
@@ -1335,10 +1344,28 @@ def posttool_verify() -> int:
                         w_lang = detect_language(witness_rel)
                         w_snap = extract_dimensions(w_raw, language=w_lang, file_path=witness_rel)
                         ast_query = recalibrate_ast_query(w_snap)
+            language = detect_language(file_path)
             if ast_query:
-                language = detect_language(file_path)
                 snapshot = extract_dimensions(content, language=language, file_path=file_path)
                 violations = [v.to_dict() for v in lint(snapshot, ast_query)]
+
+            # Convention lint (in-process fallback)
+            try:
+                conv_data = loaded.conventions.get("conventions", {}) if hasattr(loaded, "conventions") else {}
+                arch_conv: dict = {}
+                if conv_data.get("imports", {}).get(archetype_name):
+                    arch_conv["imports"] = conv_data["imports"][archetype_name]
+                if conv_data.get("naming", {}).get(archetype_name):
+                    arch_conv["naming"] = conv_data["naming"][archetype_name]
+                if conv_data.get("inheritance", {}).get(archetype_name):
+                    arch_conv["inheritance"] = conv_data["inheritance"][archetype_name]
+                if arch_conv:
+                    conv_violations = lint_conventions(content, arch_conv, language=language)
+                    violations.extend(
+                        v.to_dict() for v in conv_violations if v.rule != "secret-detected-in-content"
+                    )
+            except Exception:
+                pass
 
         # Metrics
         elapsed_ms = int((time.time() - _started) * 1000)

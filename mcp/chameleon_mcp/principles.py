@@ -20,23 +20,22 @@ _UNIVERSAL = [
 # Ruby-specific principles
 _RUBY = [
     "Use find_or_initialize_by / find_or_create_by for upsert patterns instead of manual check-then-create.",
-    "Mirror the error handling pattern of neighboring controllers - if they use render_data/render_error, don't use raw render json:.",
-    "Use the codebase's DSL (scopes, validations, callbacks, before_action) instead of reimplementing in plain methods.",
+    "Use render_data/render_error for responses, not raw render json:.",
+    "Use DSL macros (scopes, validations, callbacks, before_action) instead of plain methods.",
 ]
 
 # TypeScript-specific principles
 _TYPESCRIPT = [
-    "Use the project's query/mutation hook wrapper (useCustomQuery, queryOptions, etc.) instead of raw useQuery/useMutation.",
-    "Mirror the error handling pattern of neighboring files - if they use a centralized error handler, don't add manual try/catch.",
+    "Use the project's query/mutation hook wrapper instead of raw useQuery/useMutation.",
+    "Use the centralized error handler, not manual try/catch in components.",
     "Use the codebase's component declaration style (arrow + FC, observer(function), plain arrow) consistently.",
 ]
 
 
-def generate_principles(*, language: str, conventions: dict) -> str:
+def generate_principles(*, language: str) -> str:
     """Generate principles.md content tailored to the repo.
 
-    Selects universal + language-specific principles and customizes
-    based on what conventions were auto-derived (to avoid duplication).
+    Selects universal + language-specific principles.
     """
     lines: list[str] = []
     lines.append("# principles")
@@ -52,28 +51,6 @@ def generate_principles(*, language: str, conventions: dict) -> str:
         principles.extend(_RUBY)
     elif language == "typescript":
         principles.extend(_TYPESCRIPT)
-
-    # Add convention-aware principles
-    conv = conventions.get("conventions", {})
-
-    # If inheritance conventions exist, reinforce with specifics
-    for _arch, data in conv.get("inheritance", {}).items():
-        base = data.get("dominant_base")
-        if base:
-            principles.append(
-                f"This codebase's dominant base class for {_arch} is {base} - use it for new files in this archetype."
-            )
-            break  # one example is enough
-
-    # If key_exports exist, make the search principle concrete
-    all_exports: list[str] = []
-    for _arch, names in conv.get("key_exports", {}).items():
-        all_exports.extend(names[:3])
-    if all_exports:
-        sample = ", ".join(sorted(set(all_exports))[:8])
-        principles.append(
-            f"Existing utilities in this codebase include: {sample}. Check these before writing new ones."
-        )
 
     for i, p in enumerate(principles, 1):
         lines.append(f"{i}. {p}")

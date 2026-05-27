@@ -102,31 +102,6 @@ def extract_import_conventions(
     return {"preferred": preferred, "competing": competing}
 
 
-def _is_wrapper_pair(a: str, b: str) -> bool:
-    """Heuristic: two modules are a wrapper pair if one is a prefixed version of the other.
-
-    Matches: useCustomQuery wraps useQuery (useQuery is a suffix of useCustomQuery).
-    Rejects: ~/components/Button vs ../../../../Grid/UnlockButton (different basenames).
-    Rejects: Chart vs LineChart (different components, not a wrapper relationship).
-
-    The key insight: a wrapper re-exports or extends the wrapped module, so the
-    wrapper's basename must END with the wrapped module's basename. Plain substring
-    containment (Button in UnlockButton) produces massive false positives on real
-    codebases.
-    """
-    base_a = a.rsplit("/", 1)[-1]
-    base_b = b.rsplit("/", 1)[-1]
-    if len(base_a) < 4 or len(base_b) < 4 or base_a == base_b:
-        return False
-    # Wrapper must end with the wrapped name (useCustomQuery ends with Query = useQuery's base)
-    # AND be strictly longer (not equal)
-    if base_a.endswith(base_b) and len(base_a) > len(base_b):
-        return True
-    if base_b.endswith(base_a) and len(base_b) > len(base_a):
-        return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Declaration name extraction (for naming conventions)
 # ---------------------------------------------------------------------------
@@ -405,7 +380,7 @@ def extract_all_conventions(
 # ---------------------------------------------------------------------------
 
 
-def format_conventions_for_session(conventions: dict) -> str:
+def format_conventions_for_session(conventions: dict, *, principles_text: str = "") -> str:
     """Format conventions for SessionStart injection.
 
     Imperative framing for >=95% consistency, context for 60-95%.
@@ -498,22 +473,21 @@ def format_conventions_for_session(conventions: dict) -> str:
 
     # Principles (from .chameleon/principles.md - auto-generated per repo)
     principle_lines: list[str] = []
-    try:
-        principles_text = conventions.get("_principles_text", "")
-        if principles_text:
+    if principles_text:
+        try:
             principle_lines = [
                 f"- {line.split('. ', 1)[1] if '. ' in line else line}"
                 for line in principles_text.strip().splitlines()
                 if line.strip() and line[0].isdigit()
             ]
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     if not import_lines and not naming_lines and not inheritance_lines and not export_lines and not principle_lines:
         return ""
 
     lines.append("<chameleon-conventions>")
-    lines.append("Follow these on every edit. Auto-derived from this codebase.")
+    lines.append("Follow these on every edit. When a canonical witness diverges from a convention below, follow the convention.")
     lines.append("")
     if import_lines:
         lines.append("IMPORTS (enforce):")
@@ -583,7 +557,7 @@ def format_directory_listing(file_path: str | None, *, max_files: int = 15) -> s
     return f"Nearby: {', '.join(display)} -- check before creating a new file."
 
 
-def format_conventions_echo(conventions: dict, *, archetype: str) -> str:
+def format_conventions_echo(conventions: dict, *, archetype: str, principles_text: str = "") -> str:
     """Compact one-line convention echo for Tier 1 PreToolUse pointer. ~30 tokens max.
 
     Tries the specific archetype first. Falls back to the most common
@@ -625,5 +599,16 @@ def format_conventions_echo(conventions: dict, *, archetype: str) -> str:
     base = arch_inheritance.get("dominant_base")
     if base and arch_inheritance.get("frequency", 0) >= _STRONG_THRESHOLD:
         parts.append(f"Base: {base}")
+
+    # Rotate one principle into the echo to counter attention decay
+    if principles_text:
+        p_lines = [
+            line.split(". ", 1)[1] if ". " in line else line
+            for line in principles_text.strip().splitlines()
+            if line.strip() and line[0].isdigit()
+        ]
+        if p_lines:
+            idx = hash(archetype) % len(p_lines)
+            parts.append(p_lines[idx][:80])
 
     return ". ".join(parts)

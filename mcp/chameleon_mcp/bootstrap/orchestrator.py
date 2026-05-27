@@ -1046,6 +1046,13 @@ def _amend_root_profile_with_workspaces(
             siblings["conventions.json"] = conventions_path.read_text(encoding="utf-8")
         except OSError:
             pass
+    # principles.md is optional (absent on profiles written before v0.9.0).
+    principles_path = profile_dir / "principles.md"
+    if principles_path.is_file():
+        try:
+            siblings["principles.md"] = principles_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
 
     idioms_text: str
     idioms_path = profile_dir / "idioms.md"
@@ -1767,7 +1774,7 @@ def _bootstrap_single(
         try:
             from chameleon_mcp.principles import generate_principles
             (txn_dir / "principles.md").write_text(
-                generate_principles(language=extractor.language, conventions=conventions_data),
+                generate_principles(language=extractor.language),
                 encoding="utf-8",
             )
         except Exception:
