@@ -12,7 +12,7 @@ from __future__ import annotations
 
 def generate_principles(
     *,
-    language: str,
+    language: str = "",  # noqa: ARG001  # reserved for future use
     conventions: dict | None = None,
     archetypes: dict | None = None,
 ) -> str:
@@ -59,11 +59,10 @@ def generate_principles(
             "Use the project's wrapper, not the raw library."
         )
 
-    # Gate: Ruby → built-in upsert idioms
-    if language == "ruby":
-        principles.append(
-            "Prefer built-in idioms (find_or_create_by, find_or_initialize_by) over manual check-then-create."
-        )
+    # Always: use language/framework idioms for common patterns
+    principles.append(
+        "Prefer the language's built-in idiom for upserts, lookups, and defaults over manual check-then-create."
+    )
 
     parts: list[str] = ["# principles\n"]
     for i, p in enumerate(principles, 1):
