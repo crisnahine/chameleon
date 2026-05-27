@@ -58,3 +58,4 @@ tests/journey/results/
 # Pytest cache for harness library tests
 tests/journey/harness/tests/__pycache__/
 tests/journey/harness/tests/.pytest_cache/
+docs/superpowers/
