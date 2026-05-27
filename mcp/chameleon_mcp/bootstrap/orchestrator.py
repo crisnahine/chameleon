@@ -1774,7 +1774,11 @@ def _bootstrap_single(
         try:
             from chameleon_mcp.principles import generate_principles
             (txn_dir / "principles.md").write_text(
-                generate_principles(language=extractor.language),
+                generate_principles(
+                    language=extractor.language,
+                    conventions=conventions_data,
+                    archetypes=archetypes_data,
+                ),
                 encoding="utf-8",
             )
         except Exception:
