@@ -4,6 +4,20 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.7] - 2026-05-27
+
+### Fixed
+
+- **Monorepo trust cascade**: `trust_profile` now grants trust to all workspace sub-package profiles, not just the root. `detect_repo` for files inside sub-packages returns "trusted" instead of "stale".
+- **Lint detection**: `lint_file` tries all sub-bucket witnesses and returns the best-matching result. Fixes false negatives on bad files where `entries[0]` had a minimal witness, and false positives on valid files that matched a different sub-bucket.
+- **Lint matching**: coarse normalization collapses DslCall categories for matching so `attr_reader` + `validates` in the same file don't trigger a DSL conflict. Coarse-level deduplication prevents inflated match counts from TS kinds that normalize to the same category. Min-2 match threshold for 2+ expected kinds catches bare `class Foo; end` or `const x = 1;`.
+- **Index.db lock contention**: `resolve_repo_root` now uses a read-only connection that skips DDL, preventing deadlocks when the write connection is held by a prior bootstrap. `busy_timeout` increased from 2s to 5s.
+- **Monorepo canonical/lint fallback**: `get_canonical_excerpt` and `lint_file` search workspace profiles when the archetype isn't found in the root profile.
+
+### Added
+
+- 27 unit tests for `_coarse_normalize`, `_top_level_kinds_match` threshold/dedup, workspace trust cascade, and read-only index.db connections.
+
 ## [0.8.6] - 2026-05-26
 
 3-round expert review of the visual branding feature (v0.8.0-v0.8.5).
