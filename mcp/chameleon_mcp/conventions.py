@@ -496,15 +496,15 @@ def format_conventions_for_session(conventions: dict) -> str:
         sorted_exports = sorted(all_exports)[:15]
         export_lines.append(f"- Check before creating: {', '.join(sorted_exports)}")
 
-    # General idioms (shipped with chameleon, language-agnostic)
+    # General idioms (from .chameleon/general_idioms.md - per-repo, editable)
     general_lines: list[str] = []
     try:
-        _idioms_path = Path(__file__).parent / "general_idioms.md"
-        if _idioms_path.is_file():
+        general_text = conventions.get("_general_idioms_text", "")
+        if general_text:
             general_lines = [
                 f"- {line.split('. ', 1)[1] if '. ' in line else line}"
-                for line in _idioms_path.read_text(encoding="utf-8").strip().splitlines()
-                if line.strip() and line[0].isdigit()
+                for line in general_text.strip().splitlines()
+                if line.strip() and (line[0].isdigit() or line.startswith("- "))
             ]
     except Exception:
         pass

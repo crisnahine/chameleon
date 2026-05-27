@@ -1761,6 +1761,18 @@ def _bootstrap_single(
         (txn_dir / "conventions.json").write_text(
             serialize_conventions(conventions_data), encoding="utf-8"
         )
+        # general_idioms.md: write from bundled template if absent,
+        # preserve user edits if already exists.
+        gi_existing = profile_dir / "general_idioms.md"
+        gi_bundled = Path(__file__).parent.parent / "general_idioms.md"
+        if gi_existing.is_file():
+            (txn_dir / "general_idioms.md").write_text(
+                gi_existing.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+        elif gi_bundled.is_file():
+            (txn_dir / "general_idioms.md").write_text(
+                gi_bundled.read_text(encoding="utf-8"), encoding="utf-8"
+            )
         (txn_dir / "rules.json").write_text(
             json.dumps(rules_data, indent=2, sort_keys=True), encoding="utf-8"
         )
