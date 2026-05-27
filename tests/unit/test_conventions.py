@@ -242,7 +242,7 @@ class TestFormatConventionsEcho:
         text = format_conventions_echo(conventions, archetype="hook")
         assert text == ""
 
-    def test_archetype_not_in_conventions(self):
+    def test_archetype_not_in_conventions_falls_back(self):
         from chameleon_mcp.conventions import format_conventions_echo
 
         conventions = empty_conventions(generation=1)
@@ -251,7 +251,7 @@ class TestFormatConventionsEcho:
             "competing": [{"preferred": "X", "over": "Y", "preferred_count": 10, "over_count": 0}],
         }
         text = format_conventions_echo(conventions, archetype="hook")
-        assert text == ""
+        assert "X" in text  # falls back to "other" archetype's conventions
 
 
 def _make_ts_file(tmp_path, name: str, content: str) -> ParsedFile:
@@ -508,7 +508,7 @@ class TestFormatEchoInheritance:
         text = format_conventions_echo(conventions, archetype="model")
         assert "Base:" not in text
 
-    def test_echo_wrong_archetype_no_base(self):
+    def test_echo_wrong_archetype_falls_back_to_base(self):
         from chameleon_mcp.conventions import format_conventions_echo
 
         conventions = empty_conventions(generation=1)
@@ -518,7 +518,7 @@ class TestFormatEchoInheritance:
             "sample_size": 117,
         }
         text = format_conventions_echo(conventions, archetype="controller")
-        assert "Base:" not in text
+        assert "Base: ApplicationRecord" in text  # falls back to model's conventions
 
 
 class TestDirectoryListing:

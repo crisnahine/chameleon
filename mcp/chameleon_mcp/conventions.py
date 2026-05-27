@@ -567,11 +567,20 @@ def format_directory_listing(file_path: str | None, *, max_files: int = 15) -> s
 
 
 def format_conventions_echo(conventions: dict, *, archetype: str) -> str:
-    """Compact one-line convention echo for Tier 1 PreToolUse pointer. ~30 tokens max."""
+    """Compact one-line convention echo for Tier 1 PreToolUse pointer. ~30 tokens max.
+
+    Tries the specific archetype first. Falls back to the most common
+    convention across ALL archetypes so the echo is never empty when
+    the repo has conventions (archetype naming can differ between
+    clustering and file matching).
+    """
     parts: list[str] = []
     conv = conventions.get("conventions", {})
 
+    # Imports: try this archetype, then fall back to any archetype
     arch_imports = conv.get("imports", {}).get(archetype, {})
+    if not arch_imports and conv.get("imports"):
+        arch_imports = next(iter(conv["imports"].values()), {})
     for c in arch_imports.get("competing", [])[:2]:
         parts.append(f"Imports: {c['preferred']}")
     if not parts:
@@ -582,15 +591,20 @@ def format_conventions_echo(conventions: dict, *, archetype: str) -> str:
                 parts.append(f"Imports: {p['module']}")
                 break
 
+    # Naming: try this archetype, then fall back
     arch_naming = conv.get("naming", {}).get(archetype, {})
+    if not arch_naming and conv.get("naming"):
+        arch_naming = next(iter(conv["naming"].values()), {})
     for key in ("interface_prefix", "type_prefix"):
         entry = arch_naming.get(key)
         if entry and entry.get("consistency", 0) >= _STRONG_THRESHOLD:
             parts.append(f"Naming: {entry['pattern']}-prefix")
             break
 
-    # Inheritance for this archetype
+    # Inheritance: try this archetype, then fall back
     arch_inheritance = conv.get("inheritance", {}).get(archetype, {})
+    if not arch_inheritance and conv.get("inheritance"):
+        arch_inheritance = next(iter(conv["inheritance"].values()), {})
     base = arch_inheritance.get("dominant_base")
     if base and arch_inheritance.get("frequency", 0) >= _STRONG_THRESHOLD:
         parts.append(f"Base: {base}")
