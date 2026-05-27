@@ -4,6 +4,12 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-05-27
+
+### Fixed
+
+- **MCP server missing CLAUDE_PLUGIN_ROOT**: the uvx-spawned MCP server didn't receive `CLAUDE_PLUGIN_ROOT` env var, so `plugin_root()` resolved to the uvx archive path (missing `scripts/ts_dump.mjs`). Bootstrap via MCP tools silently failed to produce conventions.json and principles.md. Now passes `CLAUDE_PLUGIN_ROOT` through `.mcp.json` env config.
+
 ## [1.0.1] - 2026-05-27
 
 ### Fixed

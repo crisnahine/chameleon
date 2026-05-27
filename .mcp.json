@@ -9,7 +9,9 @@
         "${CLAUDE_PLUGIN_ROOT}/mcp",
         "chameleon-mcp"
       ],
-      "env": {}
+      "env": {
+        "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"
+      }
     }
   }
 }
