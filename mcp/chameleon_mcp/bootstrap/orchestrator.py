@@ -43,6 +43,7 @@ from chameleon_mcp.bootstrap.naming import propose_archetype_name
 from chameleon_mcp.bootstrap.tool_config import read_tool_configs
 from chameleon_mcp.bootstrap.transaction import atomic_profile_commit
 from chameleon_mcp.bootstrap.workspace import detect_workspace
+from chameleon_mcp.conventions import extract_all_conventions, serialize_conventions
 from chameleon_mcp.extractors._base import Extractor
 from chameleon_mcp.extractors.ruby import RubyExtractor
 from chameleon_mcp.extractors.typescript import TypeScriptExtractor
@@ -1034,6 +1035,13 @@ def _amend_root_profile_with_workspaces(
             siblings[name] = path.read_text(encoding="utf-8")
         except OSError:
             return  # Corrupt profile — leave alone.
+    # conventions.json is optional (absent on profiles written before v0.9.0).
+    conventions_path = profile_dir / "conventions.json"
+    if conventions_path.is_file():
+        try:
+            siblings["conventions.json"] = conventions_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
 
     idioms_text: str
     idioms_path = profile_dir / "idioms.md"
@@ -1576,6 +1584,36 @@ def _bootstrap_single(
 
     archetype_count = len(archetypes_data["archetypes"])
 
+    # 6b. Extract import + naming conventions per archetype.
+    # Build files_by_archetype from the dense clusters using the same
+    # cluster_id -> archetype_name mapping the canonical loop produced.
+    # Declaration names (interface/type/enum identifiers) are not yet
+    # available in ParsedFile - the NDJSON extractor emits kind labels,
+    # not identifier names. Pass empty dicts for the MVP; import
+    # conventions are the higher-value feature.
+    _cid_to_archname: dict[str, str] = {}
+    for arch_name, body in archetypes_data["archetypes"].items():
+        cid = body.get("cluster_id")
+        if isinstance(cid, str):
+            _cid_to_archname[cid] = arch_name
+
+    files_by_archetype: dict[str, list] = {}
+    for cluster in clustering.dense_clusters:
+        cluster_id = next(
+            (cid for cid, sel in selection.selections.items()
+             if sel.witness_path in {pf.path for pf in cluster.members}),
+            None,
+        )
+        arch_name = _cid_to_archname.get(cluster_id) if cluster_id else None
+        if arch_name:
+            files_by_archetype.setdefault(arch_name, []).extend(cluster.members)
+
+    conventions_data = extract_all_conventions(
+        files_by_archetype=files_by_archetype,
+        declarations_by_archetype={},  # MVP: no declaration names available yet
+        generation=generation,
+    )
+
     profile_data: dict = {
         "schema_version": PROFILE_SCHEMA_VERSION,
         "engine_min_version": ENGINE_MIN_VERSION,
@@ -1698,6 +1736,9 @@ def _bootstrap_single(
         )
         (txn_dir / "canonicals.json").write_text(
             json.dumps(canonicals_data, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        (txn_dir / "conventions.json").write_text(
+            serialize_conventions(conventions_data), encoding="utf-8"
         )
         (txn_dir / "rules.json").write_text(
             json.dumps(rules_data, indent=2, sort_keys=True), encoding="utf-8"

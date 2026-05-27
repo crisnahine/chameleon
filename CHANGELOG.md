@@ -4,6 +4,19 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-05-27
+
+Smart Injection MVP: auto-derive codebase conventions at bootstrap time.
+
+### Added
+
+- **Convention extraction pipeline**: new `conventions.json` profile artifact produced during bootstrap. Scans each archetype cluster for import frequency patterns and competing import pairs (e.g., useCustomQuery vs useQuery).
+- **Naming pattern extractor**: detects interface prefix conventions (I-prefix), type alias prefixes (T-prefix), and enum prefixes (E-prefix) with consistency percentages.
+- **SessionStart convention injection**: injects an imperative-framed convention block (`<chameleon-conventions>`) into the SessionStart context. Uses "enforce" framing for >95% conventions, context framing for 60-95%, skips <60%.
+- **Tier 1 convention echo**: appends a compact (~30 token) convention reminder to every PreToolUse Tier 1 pointer, countering attention decay in long sessions.
+- **PostToolUse convention lint**: two new violation rules - `import-preference-violation` (warns when non-preferred import is used) and `naming-convention-violation` (warns when interface lacks required prefix). Both support `// chameleon-ignore <rule>` inline suppression.
+- **conventions.json** included in trust hash and atomic transaction. Fail-open loading (empty dict if absent) for backward compatibility with v0.8.x profiles.
+
 ## [0.8.12] - 2026-05-27
 
 ### Fixed
