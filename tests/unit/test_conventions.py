@@ -1,7 +1,9 @@
 """Unit tests for chameleon_mcp.conventions — schema, serialization, extraction."""
 from __future__ import annotations
+
 import json
 from pathlib import Path
+
 from chameleon_mcp.conventions import (
     CONVENTIONS_SCHEMA_VERSION,
     empty_conventions,

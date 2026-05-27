@@ -1,5 +1,6 @@
 """Convention schema, serialization, and extraction for Smart Injection v0.9.0."""
 from __future__ import annotations
+
 import json
 import re
 from collections import Counter
