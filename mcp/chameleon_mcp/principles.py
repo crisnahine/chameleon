@@ -46,7 +46,7 @@ def generate_principles(
     )
     if has_api:
         principles.append(
-            "Match endpoint style and response patterns of sibling controllers."
+            "One action, one job: queries return data, downloads produce files. Match the API shape of sibling endpoints."
         )
 
     # Gate: no competing imports detected → general wrapper principle
