@@ -11,6 +11,7 @@ from chameleon_mcp.lint_engine import (
     canonical_confidence,
     detect_language,
     lint,
+    lint_conventions,
 )
 
 # ---------------------------------------------------------------------------
@@ -631,3 +632,82 @@ class TestTopLevelKindsMatch:
             ["ImportDeclaration"],
             ["ImportDeclaration", "ClassDeclaration", "InterfaceDeclaration", "TypeAliasDeclaration"],
         ) is False
+
+
+# ---------------------------------------------------------------------------
+# lint_conventions — convention-based lint (import preference + naming)
+# ---------------------------------------------------------------------------
+
+
+class TestConventionLint:
+    def test_import_preference_violation(self):
+        content = 'import { useQuery } from "@tanstack/react-query";\n'
+        conventions = {
+            "imports": {
+                "competing": [{"preferred": "useCustomQuery", "over": "useQuery", "preferred_count": 47, "over_count": 0}],
+            },
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        assert len(violations) == 1
+        assert violations[0].rule == "import-preference-violation"
+        assert "useCustomQuery" in violations[0].message
+
+    def test_no_violation_when_correct_import(self):
+        content = 'import { useCustomQuery } from "@/hooks/useCustomQuery";\n'
+        conventions = {
+            "imports": {
+                "competing": [{"preferred": "useCustomQuery", "over": "useQuery", "preferred_count": 47, "over_count": 0}],
+            },
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        assert len(violations) == 0
+
+    def test_naming_convention_violation(self):
+        content = 'interface UserProps {\n  name: string;\n}\n'
+        conventions = {
+            "naming": {
+                "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 2158},
+            },
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        assert len(violations) == 1
+        assert violations[0].rule == "naming-convention-violation"
+
+    def test_no_naming_violation_with_correct_prefix(self):
+        content = 'interface IUserProps {\n  name: string;\n}\n'
+        conventions = {
+            "naming": {
+                "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 2158},
+            },
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        assert len(violations) == 0
+
+    def test_chameleon_ignore_suppresses_rule(self):
+        content = '// chameleon-ignore import-preference\nimport { useQuery } from "@tanstack/react-query";\n'
+        conventions = {
+            "imports": {
+                "competing": [{"preferred": "useCustomQuery", "over": "useQuery", "preferred_count": 47, "over_count": 0}],
+            },
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        assert len(violations) == 0
+
+    def test_ruby_no_ts_naming_violations(self):
+        content = "class User < ApplicationRecord\nend\n"
+        conventions = {
+            "naming": {
+                "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 100},
+            },
+        }
+        violations = lint_conventions(content, conventions, language="ruby")
+        assert len(violations) == 0
+
+    def test_empty_conventions_no_violations(self):
+        content = 'import { useQuery } from "react-query";\n'
+        violations = lint_conventions(content, {}, language="typescript")
+        assert len(violations) == 0
+
+    def test_none_conventions_no_violations(self):
+        violations = lint_conventions("const x = 1;", None, language="typescript")
+        assert len(violations) == 0

@@ -1888,7 +1888,23 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             best_confidence = c
             best_struct_count = struct_count
 
-    violations = secret_violations + best_ast_violations
+    convention_violations: list[dict] = []
+    try:
+        from chameleon_mcp.lint_engine import lint_conventions as _lint_conventions
+        conv_data = loaded.conventions.get("conventions", {})
+        arch_conv: dict = {}
+        if conv_data.get("imports", {}).get(archetype):
+            arch_conv["imports"] = conv_data["imports"][archetype]
+        if conv_data.get("naming", {}).get(archetype):
+            arch_conv["naming"] = conv_data["naming"][archetype]
+        if arch_conv:
+            convention_violations = [
+                v.to_dict() for v in _lint_conventions(working_content, arch_conv, language=language)
+            ]
+    except Exception:
+        pass
+
+    violations = secret_violations + best_ast_violations + convention_violations
 
     return _envelope(
         {

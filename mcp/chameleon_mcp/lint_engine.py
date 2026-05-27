@@ -998,3 +998,65 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
         )
 
     return violations
+
+
+# -----------------------------------------------------------------------------
+# Public API: lint_conventions (v0.9.0)
+# -----------------------------------------------------------------------------
+
+
+_CHAMELEON_IGNORE_RE = re.compile(r"//\s*chameleon-ignore\s+([\w-]+)")
+_TS_IMPORT_FROM_RE = re.compile(r"import\s+.*?\bfrom\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
+_TS_INTERFACE_DECL_RE = re.compile(r"\binterface\s+([A-Z]\w*)")
+
+
+def lint_conventions(
+    content: str,
+    conventions: dict | None,
+    *,
+    language: str | None = None,
+) -> list[Violation]:
+    """Check file content against convention rules."""
+    if not conventions:
+        return []
+
+    ignored_rules: set[str] = set()
+    for m in _CHAMELEON_IGNORE_RE.finditer(content):
+        ignored_rules.add(m.group(1))
+
+    violations: list[Violation] = []
+
+    # Import preference
+    if "import-preference" not in ignored_rules:
+        for competing in (conventions.get("imports") or {}).get("competing", []):
+            over_mod = competing["over"]
+            preferred_mod = competing["preferred"]
+            for m in _TS_IMPORT_FROM_RE.finditer(content):
+                if over_mod in m.group(0) and preferred_mod not in content:
+                    violations.append(Violation(
+                        rule="import-preference-violation",
+                        expected=preferred_mod,
+                        actual=over_mod,
+                        severity="warning",
+                        message=f"IMPORT: {over_mod} imported - replace with {preferred_mod} (all usages)",
+                    ))
+                    break
+
+    # Naming convention (TS only)
+    if language == "typescript" and "naming-convention" not in ignored_rules:
+        naming = conventions.get("naming") or {}
+        prefix_entry = naming.get("interface_prefix")
+        if prefix_entry and prefix_entry.get("consistency", 0) >= 0.60:
+            expected_prefix = prefix_entry["pattern"]
+            for m in _TS_INTERFACE_DECL_RE.finditer(content):
+                name = m.group(1)
+                if not name.startswith(expected_prefix) or (len(name) > 1 and name[1].islower()):
+                    violations.append(Violation(
+                        rule="naming-convention-violation",
+                        expected=f"{expected_prefix}-prefix",
+                        actual=name,
+                        severity="warning",
+                        message=f"NAMING: interface {name} should use {expected_prefix}-prefix ({prefix_entry['consistency']:.0%} convention)",
+                    ))
+
+    return violations
