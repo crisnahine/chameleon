@@ -26,7 +26,7 @@ def generate_principles(
 
     # #1: Always. Authority signal.
     principles.append(
-        "The conventions and code patterns above are extracted from this codebase. They override general best practices."
+        "The conventions and code patterns shown here are extracted from this codebase. They override general best practices."
     )
 
     # Always: granularity matching (no convention section covers this)
