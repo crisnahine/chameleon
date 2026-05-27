@@ -586,6 +586,14 @@ def session_start() -> int:
                                 and installed_version != running_version
                             ):
                                 cache_data["update"] = installed_version
+                                # Stop the stale daemon so next hook
+                                # call spawns a fresh one from the new
+                                # plugin path.
+                                try:
+                                    from chameleon_mcp.daemon import stop_daemon
+                                    stop_daemon(timeout=2.0)
+                                except Exception:
+                                    pass
                             break
             except Exception:
                 pass

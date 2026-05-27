@@ -4,6 +4,13 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.8] - 2026-05-27
+
+### Added
+
+- **Update detection**: SessionStart detects when the plugin was updated but the MCP server is still running old code. Shows a persistent statusline banner (`⬆ v0.9.0 ready — close & reopen session`) until the user restarts the session. Clears automatically on fresh session start.
+- **Stale daemon cleanup**: when a version mismatch is detected, SessionStart stops the running daemon so the next hook call spawns a fresh one from the new plugin path.
+
 ## [0.8.7] - 2026-05-27
 
 ### Fixed
