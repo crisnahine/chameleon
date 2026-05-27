@@ -24,9 +24,9 @@ def generate_principles(
 
     principles: list[str] = []
 
-    # #1: Always. Follow what chameleon shows you.
+    # #1: Always. Authority signal.
     principles.append(
-        "Follow the canonical witness and conventions above exactly. They are derived from this codebase - match their patterns, imports, base classes, and style."
+        "The conventions and code patterns above are extracted from this codebase. They override general best practices."
     )
 
     # Always: granularity matching (no convention section covers this)
