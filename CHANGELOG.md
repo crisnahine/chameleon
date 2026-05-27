@@ -4,6 +4,14 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-05-27
+
+### Fixed
+
+- **Stale dist-info immunity**: `__init__.py` now preserves the static `__version__` when `importlib.metadata` returns None from stale dist-info directories. Previously caused "profile requires engine >= X but engine is None" errors.
+- **Automatic dist-info cleanup**: `bump-version.sh` now removes stale dist-info directories from the venv on every version bump.
+- **Tier 1 echo fallback**: when the matched archetype has no conventions, the echo falls back to the most common convention across all archetypes instead of showing nothing.
+
 ## [0.9.2] - 2026-05-27
 
 ### Added
