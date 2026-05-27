@@ -519,3 +519,65 @@ class TestFormatEchoInheritance:
         }
         text = format_conventions_echo(conventions, archetype="controller")
         assert "Base:" not in text
+
+
+class TestDirectoryListing:
+    def test_lists_sibling_files(self, tmp_path):
+        from chameleon_mcp.conventions import format_directory_listing
+
+        (tmp_path / "useDebounce.ts").write_text("export const useDebounce = () => {};")
+        (tmp_path / "useToggle.ts").write_text("export const useToggle = () => {};")
+        (tmp_path / "useConfig.ts").write_text("export const useConfig = () => {};")
+        target = str(tmp_path / "useNew.ts")
+        result = format_directory_listing(target)
+        assert "useDebounce.ts" in result
+        assert "useToggle.ts" in result
+        assert "useConfig.ts" in result
+        assert "check before creating" in result.lower() or "nearby" in result.lower()
+
+    def test_excludes_self(self, tmp_path):
+        from chameleon_mcp.conventions import format_directory_listing
+
+        (tmp_path / "useDebounce.ts").write_text("x")
+        (tmp_path / "target.ts").write_text("x")
+        result = format_directory_listing(str(tmp_path / "target.ts"))
+        assert "target.ts" not in result
+        assert "useDebounce.ts" in result
+
+    def test_empty_for_nonexistent_dir(self):
+        from chameleon_mcp.conventions import format_directory_listing
+
+        result = format_directory_listing("/nonexistent/path/file.ts")
+        assert result == ""
+
+    def test_empty_for_no_siblings(self, tmp_path):
+        from chameleon_mcp.conventions import format_directory_listing
+
+        (tmp_path / "only.ts").write_text("x")
+        result = format_directory_listing(str(tmp_path / "only.ts"))
+        assert result == ""
+
+    def test_caps_at_max(self, tmp_path):
+        from chameleon_mcp.conventions import format_directory_listing
+
+        for i in range(25):
+            (tmp_path / f"file{i:02d}.ts").write_text("x")
+        result = format_directory_listing(str(tmp_path / "target.ts"), max_files=10)
+        # Should have at most 10 filenames
+        assert result.count(".ts") <= 10
+
+    def test_filters_non_source_files(self, tmp_path):
+        from chameleon_mcp.conventions import format_directory_listing
+
+        (tmp_path / "component.tsx").write_text("x")
+        (tmp_path / "readme.md").write_text("x")
+        (tmp_path / "package.json").write_text("x")
+        result = format_directory_listing(str(tmp_path / "new.tsx"))
+        assert "component.tsx" in result
+        assert "readme.md" not in result
+        assert "package.json" not in result
+
+    def test_none_file_path(self):
+        from chameleon_mcp.conventions import format_directory_listing
+
+        assert format_directory_listing(None) == ""

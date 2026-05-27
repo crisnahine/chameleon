@@ -1047,6 +1047,14 @@ def preflight_and_advise() -> int:
         block += f"Rules: {rules_count} entries available via get_rules({archetype_name!r}).\n"
     if has_idioms:
         block += "Team idioms captured via /chameleon-teach are available via get_pattern_context.\n"
+    # Directory listing: show sibling files so the model checks before creating new ones
+    try:
+        from chameleon_mcp.conventions import format_directory_listing
+        dir_listing = format_directory_listing(file_path)
+        if dir_listing:
+            block += f"\n{dir_listing}\n"
+    except Exception:
+        pass
     block += "</chameleon-context>"
 
     _metric(

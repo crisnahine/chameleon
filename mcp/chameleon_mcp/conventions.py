@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -528,6 +529,41 @@ def format_conventions_for_session(conventions: dict) -> str:
 # ---------------------------------------------------------------------------
 # Tier 1 PreToolUse convention echo (~30 tokens)
 # ---------------------------------------------------------------------------
+
+
+_SOURCE_EXTENSIONS = frozenset({
+    ".ts", ".tsx", ".js", ".jsx", ".rb", ".py",
+})
+
+
+def format_directory_listing(file_path: str | None, *, max_files: int = 15) -> str:
+    """List sibling files in the same directory, framed as actionable context.
+
+    Returns something like:
+    "Nearby: useDebounce.ts, useToggle.ts, useConfig.ts -- check before creating a new file."
+
+    Returns empty string if directory doesn't exist, has 0 siblings, or file_path is None.
+    """
+    if not file_path:
+        return ""
+    try:
+        parent = Path(file_path).parent
+        if not parent.is_dir():
+            return ""
+        target_name = Path(file_path).name
+        siblings = sorted(
+            entry.name
+            for entry in parent.iterdir()
+            if entry.is_file()
+            and entry.suffix in _SOURCE_EXTENSIONS
+            and entry.name != target_name
+        )
+    except OSError:
+        return ""
+    if not siblings:
+        return ""
+    display = siblings[:max_files]
+    return f"Nearby: {', '.join(display)} -- check before creating a new file."
 
 
 def format_conventions_echo(conventions: dict, *, archetype: str) -> str:
