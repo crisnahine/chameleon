@@ -70,6 +70,14 @@ _LEN_BYTES = _LEN_STRUCT.size
 
 DEFAULT_IDLE_TIMEOUT_S = 600.0
 
+# A single accepted connection that goes silent (buggy client, paused debugger,
+# `nc -U`) must not wedge the single-threaded accept loop. Accepted sockets do
+# NOT inherit the listening socket's timeout, so set one explicitly; recv/send
+# then raise (a subclass of OSError) and the connection is dropped. The client's
+# own deadline (~1.5s in daemon_client) is shorter, so this only bounds the
+# server side.
+CONN_RECV_TIMEOUT_S = 5.0
+
 _SPAWN_WAIT_SECONDS = 3.0
 
 _LISTEN_BACKLOG = 128
@@ -372,6 +380,16 @@ def serve_forever(
             if e.errno in (errno.EBADF, errno.EINVAL):
                 return
             sys.stderr.write(f"[chameleon-daemon] accept error: {e}\n")
+            continue
+        # Accepted sockets are blocking by default; bound recv/send so one
+        # stalled client can't wedge the loop for the rest of the session.
+        try:
+            conn.settimeout(CONN_RECV_TIMEOUT_S)
+        except OSError:
+            try:
+                conn.close()
+            except OSError:
+                pass
             continue
         _handle_connection(conn, state, dispatcher)
 
