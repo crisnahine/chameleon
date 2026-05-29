@@ -45,10 +45,8 @@ def setup_fixture(name: str, seed: Path, working_root: Path) -> tuple[Path, Path
     work_dir = working_root / name
     origin_dir = working_root / f"origin_{name}.git"
 
-    # Copy seed to work_dir
     shutil.copytree(seed, work_dir)
 
-    # Initialize git with explicit main branch
     cmds = [
         "git init --initial-branch=main -q",
         "git config user.name 'journey harness'",
@@ -61,12 +59,10 @@ def setup_fixture(name: str, seed: Path, working_root: Path) -> tuple[Path, Path
         if r.returncode != 0:
             raise RuntimeError(f"fixture setup failed at {cmd!r}: {r.stderr}")
 
-    # Create bare loopback origin
     r = run_bash(f"git clone --bare . {origin_dir}", cwd=work_dir)
     if r.returncode != 0:
         raise RuntimeError(f"bare clone failed: {r.stderr}")
 
-    # Wire origin
     r = run_bash(f"git remote add origin {origin_dir}", cwd=work_dir)
     if r.returncode != 0:
         raise RuntimeError(f"remote add failed: {r.stderr}")

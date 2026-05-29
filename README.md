@@ -82,8 +82,9 @@ The [Quickstart](#quickstart) above has the two commands for Claude Code. For th
 | `/chameleon-pause-15m` | Pause for 15 minutes (auto-resume) |
 | `/chameleon-doctor` | Run health checks on the chameleon installation |
 | `/chameleon-journey` | Run the end-to-end journey test harness |
+| `/chameleon-pr-review` | Review a branch/PR against the repo's conventions and task intent |
 
-All commands accept `/cham-<name>` short aliases. `using-chameleon` is the tenth skill — it auto-fires on `SessionStart` and orients the model.
+`using-chameleon` is the eleventh skill — it auto-fires on `SessionStart` and orients the model.
 
 ### Hooks
 
@@ -111,14 +112,12 @@ CHAMELEON_VERIFY=0        disable post-edit verification only
 /chameleon-pause-15m      next 15 minutes (auto-resume)
 ```
 
-Set `CHAMELEON_ENFORCEMENT_MODE=additionalContext` to revert post-edit violations from `updatedToolOutput` (v0.7.0 default) to the v0.6.x advisory style.
-
 ## Philosophy
 
 - **Evidence over assumption** — cluster what the repo actually does; don't assume a framework's defaults match this team's style.
 - **Atomic and reviewable** — profile writes use a flock-serialized `COMMITTED` sentinel; the trust gate surfaces idioms verbatim so reviewers see what they're approving.
 - **Fail closed** — the canonical-selection pipeline rejects candidates that fail secret, injection, or poisoning scans; the profile is shipped with no example before it is shipped with a poisoned one.
-- **Opt-out at every layer** — four ways to silence the plugin, from committed repo flag to a 15-minute pause.
+- **Opt-out at every layer** — five ways to silence the plugin, from committed repo flag to a 15-minute pause.
 
 See [docs/architecture.md](docs/architecture.md) for the full design: bootstrap pipeline, cluster signature function, atomic profile commit, drift model, and security mitigations.
 

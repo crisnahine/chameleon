@@ -9,7 +9,7 @@ Disable chameleon's advisory injections for the current session. Hook stack stil
 
 ## When to use
 
-- User runs `/chameleon-disable` (or `/cham-disable`) explicitly
+- User runs `/chameleon-disable` explicitly
 - User expresses frustration with chameleon's latency or pattern advice (the `callout-detector` hook surfaces this command on detected frustration)
 - User is doing experimental / one-off work where conformance pressure is unwelcome
 

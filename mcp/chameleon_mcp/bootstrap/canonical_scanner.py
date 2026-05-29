@@ -35,8 +35,6 @@ import re
 
 from chameleon_mcp.profile.secret_scanner import scan_for_secrets
 
-# Patterns suggestive of instruction-shaped content directed at an AI.
-# Phase 4 will tune these against real false-positive rates on the test repo dogfood corpus.
 INSTRUCTION_PATTERNS = (
     re.compile(r"\b(you|the\s+ai|claude|gpt|the\s+model|the\s+assistant)\s+(must|should|will|always|never)\b", re.IGNORECASE),
     re.compile(r"\b(ignore|disregard|forget)\s+(prior|previous|all\s+previous|all)\b", re.IGNORECASE),

@@ -19,25 +19,21 @@ import os
 import time
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 
 ITERATIONS = 100
 
-# Prefer a real TS-profiled repo for the fullest hot-path exercise.
-# Fall back through several candidates.
 _CANDIDATE_REPOS = [
-    Path(os.path.expanduser("~/Documents/Projects/Testing Apps/excalidraw")),
-    Path(os.path.expanduser("~/Documents/Projects/Testing Apps/plane")),
-    Path(os.path.expanduser("~/Documents/Projects/Testing Apps/bulletproof-react")),
-    Path(os.path.expanduser("~/Documents/Projects/empire-flippers/client")),
-    Path(os.path.expanduser("~/Documents/Projects/Testing Apps/ef-client")),
-    # Ruby fallback
-    Path(os.path.expanduser("~/Documents/Projects/action_mcp")),
+    Path(p)
+    for p in (
+        os.environ.get("CHAMELEON_TEST_TS_REPO", ""),
+        os.environ.get("CHAMELEON_TEST_RUBY_REPO", ""),
+    )
+    if p
+] + [
+    Path(os.path.expanduser(f"~/Documents/Projects/Testing Apps/{name}"))
+    for name in ("excalidraw", "plane", "bulletproof-react", "maybe", "forem")
 ]
 
-# The chameleon repo itself (no profile - used for find_repo_root / _compute_repo_id)
 _CHAMELEON_REPO = Path(__file__).resolve().parent.parent
 
 
@@ -47,10 +43,6 @@ def _find_profiled_repo() -> Path | None:
             return p
     return None
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def percentile(data: list[float], pct: int) -> float:
     """Return the pct-th percentile of data (0-100)."""
@@ -76,7 +68,6 @@ def run_bench(name: str, fn, iterations: int = ITERATIONS, clear_fn=None):
     cold_times: single-element list from the first call after clear_fn().
     warm_times: remaining iterations (caches populated).
     """
-    # Cold run
     if clear_fn:
         clear_fn()
     t0 = time.perf_counter()
@@ -84,7 +75,6 @@ def run_bench(name: str, fn, iterations: int = ITERATIONS, clear_fn=None):
     t1 = time.perf_counter()
     cold_times = [t1 - t0]
 
-    # Warm runs
     warm_times = []
     for _ in range(iterations - 1):
         t0 = time.perf_counter()
@@ -108,12 +98,7 @@ def print_row(name: str, cold_times: list[float], warm_times: list[float]):
     print(f"  {name:<40s}  {cold_p50:>10s}  {cold_p99:>10s}  {warm_p50:>10s}  {warm_p99:>10s}")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main():
-    # Imports (deferred to match the real hot-path import structure)
     from chameleon_mcp.profile.loader import (
         _PROFILE_CACHE,
         _REPO_ROOT_CACHE,
@@ -150,19 +135,15 @@ def main():
     print(f"  Iterations:                    {ITERATIONS}")
     print()
 
-    # Pick a real file inside the profiled repo for get_pattern_context
     target_file: str | None = None
     if profiled_repo:
-        # Find a .tsx or .ts or .rb file
         for ext in ("tsx", "ts", "rb"):
             candidates = list(profiled_repo.glob(f"**/*.{ext}"))
-            # Skip node_modules
             candidates = [c for c in candidates if "node_modules" not in str(c)]
             if candidates:
                 target_file = str(candidates[0])
                 break
         if not target_file:
-            # Any file
             for f in profiled_repo.rglob("*"):
                 if f.is_file() and "node_modules" not in str(f) and ".chameleon" not in str(f):
                     target_file = str(f)
@@ -172,26 +153,18 @@ def main():
         print(f"  Target file:                   {target_file}")
     print()
 
-    # Also pick a file inside the chameleon repo (no profile)
     chameleon_file = str(chameleon_repo / "mcp" / "chameleon_mcp" / "tools.py")
 
     def clear_all_caches():
         _REPO_ROOT_CACHE.clear()
         _REPO_ID_CACHE.clear()
         _PROFILE_CACHE.clear()
-        # Also clear the excerpt cache
         from chameleon_mcp import _excerpt_cache
         _excerpt_cache.clear()
 
-    # -----------------------------------------------------------------------
-    # Header
-    # -----------------------------------------------------------------------
     print(f"  {'Component':<40s}  {'Cold p50':>10s}  {'Cold p99':>10s}  {'Warm p50':>10s}  {'Warm p99':>10s}")
     print(f"  {'-' * 40}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 10}")
 
-    # -----------------------------------------------------------------------
-    # 1. find_repo_root (chameleon repo - has .git but no .chameleon)
-    # -----------------------------------------------------------------------
     def clear_repo_root():
         _REPO_ROOT_CACHE.clear()
 
@@ -202,9 +175,6 @@ def main():
     )
     print_row("find_repo_root (no profile)", cold, warm)
 
-    # -----------------------------------------------------------------------
-    # 2. find_repo_root (profiled repo)
-    # -----------------------------------------------------------------------
     if target_file:
         cold, warm = run_bench(
             "find_repo_root (profiled)",
@@ -213,9 +183,6 @@ def main():
         )
         print_row("find_repo_root (profiled)", cold, warm)
 
-    # -----------------------------------------------------------------------
-    # 3. _compute_repo_id (chameleon repo)
-    # -----------------------------------------------------------------------
     def clear_repo_id():
         _REPO_ID_CACHE.clear()
 
@@ -226,9 +193,6 @@ def main():
     )
     print_row("_compute_repo_id (chameleon)", cold, warm)
 
-    # -----------------------------------------------------------------------
-    # 4. _compute_repo_id (profiled repo)
-    # -----------------------------------------------------------------------
     if profiled_repo:
         cold, warm = run_bench(
             "_compute_repo_id (profiled)",
@@ -237,11 +201,7 @@ def main():
         )
         print_row("_compute_repo_id (profiled)", cold, warm)
 
-    # -----------------------------------------------------------------------
-    # 5. _effective_profile_dir
-    # -----------------------------------------------------------------------
     if profiled_repo:
-        # Need repo_id cache populated for this
         _REPO_ID_CACHE.clear()
         cold, warm = run_bench(
             "_effective_profile_dir",
@@ -250,9 +210,6 @@ def main():
         )
         print_row("_effective_profile_dir", cold, warm)
 
-    # -----------------------------------------------------------------------
-    # 6. load_profile_dir (cold = full read+parse; warm = mtime cache hit)
-    # -----------------------------------------------------------------------
     if profiled_repo:
         profile_dir = profiled_repo / ".chameleon"
 
@@ -266,9 +223,6 @@ def main():
         )
         print_row("load_profile_dir", cold, warm)
 
-    # -----------------------------------------------------------------------
-    # 7. get_pattern_context - full hot path (profiled repo)
-    # -----------------------------------------------------------------------
     if target_file:
         cold, warm = run_bench(
             "get_pattern_context (profiled)",
@@ -277,9 +231,6 @@ def main():
         )
         print_row("get_pattern_context (profiled)", cold, warm)
 
-    # -----------------------------------------------------------------------
-    # 8. get_pattern_context - no-profile path (chameleon repo)
-    # -----------------------------------------------------------------------
     cold, warm = run_bench(
         "get_pattern_context (no profile)",
         lambda: get_pattern_context(chameleon_file),
@@ -287,10 +238,6 @@ def main():
     )
     print_row("get_pattern_context (no profile)", cold, warm)
 
-    # -----------------------------------------------------------------------
-    # 9. Multiple cold runs for get_pattern_context (profiled)
-    #    to get a real p50/p99 on cold starts
-    # -----------------------------------------------------------------------
     if target_file:
         print()
         print(f"  {'--- Multi-cold (30 runs, cache cleared each time) ---':<40s}")
@@ -311,7 +258,6 @@ def main():
         mx = fmt_ms(max(cold_times))
         print(f"  {'get_pattern_context (cold x30)':<40s}  {p50:>10s}  {p99:>10s}  {mn:>10s}  {mx:>10s}")
 
-        # Also multi-cold for the no-profile case
         cold_times_noprof = []
         for _ in range(30):
             clear_all_caches()

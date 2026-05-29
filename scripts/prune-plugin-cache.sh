@@ -1,19 +1,4 @@
 #!/usr/bin/env bash
-# Prune stale chameleon plugin cache directories.
-#
-# Claude Code keeps a versioned cache at
-#   ~/.claude/plugins/cache/chameleon/chameleon/<version>/
-# Each upgrade leaves the previous version behind. After upgrading and
-# restarting Claude Code, the older directories are dead weight and can
-# confuse a debugger trying to map a `ps`-listed MCP process to a
-# specific version.
-#
-# This script removes every cached version EXCEPT the one named in
-# ~/.claude/plugins/installed_plugins.json (the live install).
-#
-# Usage:
-#   scripts/prune-plugin-cache.sh           # dry run by default
-#   scripts/prune-plugin-cache.sh --apply   # actually delete
 
 set -euo pipefail
 
@@ -34,7 +19,6 @@ current_version=$(
 import json, sys
 with open('${INSTALLED_JSON}') as fh:
     data = json.load(fh)
-# installed_plugins.json shape (v2): {'version': 2, 'plugins': {'chameleon@chameleon': [{version: ...}]}}
 plugins = data.get('plugins', data)
 entry = plugins.get('chameleon@chameleon')
 if isinstance(entry, list) and entry:

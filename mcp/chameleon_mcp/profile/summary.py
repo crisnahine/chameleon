@@ -87,7 +87,6 @@ def render_summary_md(
         "",
     ]
 
-    # Secondary-language warning for Rails+JS hybrids.
     hint = profile_meta.get("language_hint")
     if isinstance(hint, dict) and hint.get("secondary_detected"):
         lines.extend([
@@ -110,10 +109,11 @@ def render_summary_md(
     ])
     for name, arch in sorted((archetypes.get("archetypes") or {}).items()):
         canonical_entries = (canonicals.get("canonicals") or {}).get(name) or []
+        first = canonical_entries[0] if canonical_entries else None
+        witness = first.get("witness") if isinstance(first, dict) else None
         canonical_path = (
-            canonical_entries[0]["witness"]["path"]
-            if canonical_entries
-            and canonical_entries[0].get("witness")
+            witness.get("path")
+            if isinstance(witness, dict) and witness.get("path")
             else "(none)"
         )
         display_paths = arch.get("paths_pattern_display") or arch.get("paths_pattern", "")
@@ -122,7 +122,6 @@ def render_summary_md(
             f"paths {display_paths}) — canonical: `{canonical_path}`"
         )
 
-    # Rules section
     lines.extend(["", "## Rules", ""])
     rules_block = (rules_data or {}).get("rules") if rules_data else None
     detected_tools = sorted(rules_block.keys()) if isinstance(rules_block, dict) else []
@@ -146,7 +145,6 @@ def render_summary_md(
             "once those configs exist."
         )
 
-    # Idioms section
     lines.extend(["", "## Idioms", ""])
     active_idioms = extract_idioms_section(idioms_text, "## active")
     if active_idioms:
@@ -165,7 +163,6 @@ def render_summary_md(
         )
         lines.append("")
 
-    # Deprecated idioms - only when non-empty.
     deprecated_idioms = extract_idioms_section(idioms_text, "## deprecated")
     if deprecated_idioms:
         lines.append("## Deprecated idioms")

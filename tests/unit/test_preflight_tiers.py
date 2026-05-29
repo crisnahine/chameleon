@@ -14,10 +14,6 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_pattern_context_result(
     archetype: str,
@@ -207,11 +203,6 @@ def _run_preflight_with_violations(tmp_path: Path, archetype: str) -> dict:
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 def test_tier1_pointer_for_seen_archetype(tmp_path):
     """Second edit in same archetype gets Tier 1 (~50 token pointer).
 
@@ -221,10 +212,8 @@ def test_tier1_pointer_for_seen_archetype(tmp_path):
     result = _run_preflight_second_edit(tmp_path, archetype="component")
     hook_output = result.get("hookSpecificOutput", {})
     ctx = hook_output.get("additionalContext", "")
-    # Tier 1 includes the archetype header
     assert "[🦎 chameleon:" in ctx
     assert "component" in ctx
-    # Tier 1 must NOT include the full canonical witness block
     assert "Canonical witness" not in ctx
 
 
@@ -237,7 +226,6 @@ def test_tier2_canonical_for_new_archetype(tmp_path):
     result = _run_preflight_first_edit(tmp_path, archetype="component")
     hook_output = result.get("hookSpecificOutput", {})
     ctx = hook_output.get("additionalContext", "")
-    # Tier 2 includes either the canonical witness or REQUIRED annotations
     assert "REQUIRED:" in ctx or "Canonical witness" in ctx
 
 
@@ -250,5 +238,4 @@ def test_tier2_for_archetype_with_violations(tmp_path):
     result = _run_preflight_with_violations(tmp_path, archetype="component")
     hook_output = result.get("hookSpecificOutput", {})
     ctx = hook_output.get("additionalContext", "")
-    # Same assertion as Tier 2 - full canonical context is present
     assert "REQUIRED:" in ctx or "Canonical witness" in ctx

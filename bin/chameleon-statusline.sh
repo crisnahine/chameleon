@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# Status line script for the chameleon Claude Code plugin.
-# Reads a cache file written by SessionStart + hooks for live state.
-# Must complete in <100ms.
 set -euo pipefail
 
 [[ "${CHAMELEON_DISABLE:-}" == "1" ]] && exit 0
 
-# --- Read project dir from stdin JSON ---
 input=$(cat)
 project_dir=""
 if command -v jq &>/dev/null; then
@@ -17,7 +13,6 @@ if [[ -z "$project_dir" ]]; then
 fi
 [[ -z "$project_dir" ]] && project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
 
-# --- Read cached state ---
 cache_file="$project_dir/.claude/.chameleon-statusline-cache"
 if [[ -f "$cache_file" ]]; then
   if command -v jq &>/dev/null; then
@@ -42,9 +37,6 @@ if [[ -f "$cache_file" ]]; then
       fi
       update=$(jq -r '.update // empty' "$cache_file" 2>/dev/null)
       if [[ -n "$update" ]]; then
-        # Verify the update is still pending by reading the current
-        # plugin's version. CLAUDE_PLUGIN_ROOT updates after /reload-plugins,
-        # so if our version matches the update target, the reload happened.
         plugin_init="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}/mcp/chameleon_mcp/__init__.py"
         cur_ver=""
         if [[ -f "$plugin_init" ]]; then
@@ -95,7 +87,6 @@ if ps:
   fi
 fi
 
-# --- Fallback: check for .chameleon/ profile without trust info ---
 dir="$project_dir"
 while true; do
   if [[ -f "$dir/.chameleon/profile.json" ]]; then

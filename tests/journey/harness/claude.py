@@ -108,8 +108,6 @@ def spawn_claude(
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
-        # Persist whatever we have. exc.stdout may be bytes even with text=True
-        # if the process was killed mid-stream.
         raw = exc.stdout or b""
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", errors="replace")

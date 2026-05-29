@@ -18,18 +18,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    # Type-only: keeps the MCP cold-start budget intact (the real import
-    # stays function-local in get_archetype) while letting the bare
-    # `loaded: LoadedProfile` signature annotation resolve under
-    # `from __future__ import annotations`.
     from chameleon_mcp.profile.loader import LoadedProfile
 
 
-# Process-global cache for _compute_repo_id: avoids spawning a git
-# subprocess on every get_pattern_context call.  Keyed by resolved repo
-# root string; values are (cached_at_monotonic, repo_id).  5-minute TTL.
 _REPO_ID_CACHE: dict[str, tuple[float, str]] = {}
-_REPO_ID_CACHE_TTL = 300  # seconds
+_REPO_ID_CACHE_TTL = 300
 
 
 def _clear_repo_id_cache() -> None:
@@ -66,27 +59,42 @@ def _envelope(data: dict, truncated: bool = False, next_cursor: str | None = Non
     return out
 
 
-# v0.5.2 Bug 1: Unify the `repo` argument across every MCP tool.
-#
-# Pre-v0.5.2 history left tools in an inconsistent state:
-#   - get_canonical_excerpt, get_rules, lint_file, get_archetype accepted
-#     a 64-char repo_id hex digest.
-#   - pause_session, disable_session, teach_profile, teach_profile_structured,
-#     refresh_repo, propose_archetype_renames, apply_archetype_renames,
-#     bootstrap_repo expected an absolute repo path.
-# The asymmetry forced the using-chameleon skill to track two parallel
-# vocabularies, which led to four separate dogfood reports of "I passed
-# the repo_id and got `expected absolute repo path`."
-#
-# `_resolve_repo_arg` accepts BOTH forms and returns `(repo_path, repo_id)`.
-# Callers MAY rely on either component being None when only the other
-# can be derived (e.g., a fresh repo_id that has never been bootstrapped
-# resolves to (None, repo_id); a path that lives outside any known repo
-# resolves to (path, repo_id) with the id always computable from the
-# path's resolved location).
-
-# A repo_id is a SHA-256 hex digest: exactly 64 characters, all hex.
 _REPO_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+
+_WS_PRUNE_DIRS = frozenset({
+    "node_modules", ".git", "dist", "build", ".next", "out",
+    "vendor", "tmp", ".venv", "venv", "__pycache__", ".cache", "coverage",
+})
+_WS_MAX_DEPTH = 4
+
+
+def _iter_workspace_chameleon_dirs(root: Path):
+    """Yield child ``.chameleon`` dirs under ``root`` (excluding the root's own).
+
+    Bounded-depth, heavy-dir-pruned walk so a workspace lookup on a large
+    monorepo doesn't rglob through node_modules / .git / build output.
+    """
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        current, depth = stack.pop()
+        try:
+            children = list(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            try:
+                if not child.is_dir():
+                    continue
+            except OSError:
+                continue
+            if child.name == ".chameleon":
+                if child != root / ".chameleon":
+                    yield child
+                continue
+            if child.name in _WS_PRUNE_DIRS or child.name.startswith("."):
+                continue
+            if depth + 1 <= _WS_MAX_DEPTH:
+                stack.append((child, depth + 1))
 
 
 def _resolve_repo_arg(repo: str) -> tuple[Path | None, str | None]:
@@ -117,29 +125,21 @@ def _resolve_repo_arg(repo: str) -> tuple[Path | None, str | None]:
     if not isinstance(repo, str) or not repo:
         return None, None
 
-    # Path-shape check: explicit prefixes win. A 64-char hex repo_id
-    # cannot start with `/`, `~`, or `.`, so this check is unambiguous.
     looks_pathy = repo[0] in ("/", "~") or repo.startswith("./") or repo.startswith("../")
     if not looks_pathy:
-        # Hex-shape check: exactly 64 lowercase hex chars.
         if _REPO_ID_RE.match(repo):
             resolved = _resolve_repo_root_by_id(repo)
             return (resolved, repo)
-        # Fall-through: maybe the caller passed an unusual path shape
-        # (e.g., a Windows-style "C:\foo" or relative "src/foo.ts"). Try
-        # expanduser + is_absolute as a last resort.
         try:
             candidate = Path(repo).expanduser()
         except (OSError, ValueError):
             return None, None
         if not candidate.is_absolute():
             return None, None
-        # Treated as a path from here on.
         repo_path_str: str = repo
     else:
         repo_path_str = repo
 
-    # Path branch: resolve + compute repo_id when the directory exists.
     try:
         path = Path(repo_path_str).expanduser()
     except (OSError, ValueError):
@@ -155,17 +155,9 @@ def _resolve_repo_arg(repo: str) -> tuple[Path | None, str | None]:
             return resolved_path, _compute_repo_id(resolved_path)
         except Exception:
             return resolved_path, None
-    # Path string supplied but the directory doesn't exist on disk.
-    # Return the (path, None) tuple so callers can surface a precise
-    # "path is not a directory" error.
     return path, None
 
 
-# Maximum path length we'll accept on any MCP tool boundary. Real
-# filesystems cap at ~4096 (Linux PATH_MAX) or 1024 (macOS) for the
-# total path; rejecting over that bound preserves the fail-open
-# envelope contract instead of letting Path.resolve() hit a kernel
-# ENAMETOOLONG.
 _MAX_PATH_LEN = 4096
 
 
@@ -190,12 +182,10 @@ def _validate_file_path_arg(file_path: object) -> bool:
     return True
 
 
-# Hosts whose URLs are case-insensitive — folded to lowercase before hashing.
 _CASE_INSENSITIVE_HOSTS: frozenset[str] = frozenset(
     {"github.com", "gitlab.com", "bitbucket.org", "dev.azure.com", "ssh.dev.azure.com"}
 )
 
-# SSH-style URL: git@host:owner/repo[.git]
 _SSH_URL_RE = re.compile(r"^(?:[\w-]+@)?([^:]+):(.+?)(?:\.git)?/?$")
 
 
@@ -225,32 +215,25 @@ def _normalize_git_url(url: str) -> str:
     if not s:
         return s
 
-    # SSH/scp shorthand → ssh://… so the rest of the pipeline has a uniform
-    # `scheme://host/path` shape to work with.
     m = _SSH_URL_RE.match(s)
     if m and "://" not in s:
         host, path = m.group(1), m.group(2)
         s = f"ssh://git@{host}/{path}"
 
-    # Drop trailing `.git` / trailing slash on the path.
     s = re.sub(r"\.git/?$", "", s)
     s = s.rstrip("/")
 
-    # Split scheme/host/path so we can lowercase the host independently.
     proto_match = re.match(r"^([a-zA-Z][a-zA-Z0-9+\-.]*)://([^/]+)(/.*)?$", s)
     if not proto_match:
         return s
     scheme, host, path = proto_match.group(1), proto_match.group(2), proto_match.group(3) or ""
 
-    # Drop user@ prefix on the host (ssh URLs).
     if "@" in host:
         host = host.split("@", 1)[1]
 
     host_l = host.lower()
     if host_l in _CASE_INSENSITIVE_HOSTS:
         host = host_l
-        # Collapse https/http/ssh/git to https for well-known hosts — same
-        # repo, same id, regardless of clone protocol.
         scheme = "https"
 
     return f"{scheme}://{host}{path}"
@@ -312,11 +295,6 @@ def _effective_profile_dir(repo_root: Path) -> Path:
         try:
             cfg = load_config(working)
         except ChameleonConfigError as cfg_exc:
-            # v0.6.1: a malformed config used to be swallowed silently,
-            # leaving the user with no idea their pin was inactive.
-            # Surface to stderr so the bash wrapper's `2>>` captures
-            # it in .hook_errors.log AND so /chameleon-doctor's recent
-            # hook errors check picks it up.
             _log_effective_profile_dir_fallback(
                 repo_root,
                 "config_invalid",
@@ -361,10 +339,6 @@ def _log_effective_profile_dir_fallback(
         import time as _time
 
         ts = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
-        # v0.6.1: repr() the path + reason + detail so a malicious
-        # repo dir containing newlines / ANSI escapes (legal on POSIX)
-        # can't inject log lines or terminal control sequences into
-        # .hook_errors.log.
         print(
             f"[{ts}] chameleon: branch-pinning fallback "
             f"(repo={str(repo_root)!r}, reason={reason!r}): {detail!r}",
@@ -451,10 +425,6 @@ def detect_repo(file_path: str) -> dict:
     from chameleon_mcp.profile.loader import find_repo_root
     from chameleon_mcp.profile.trust import is_material_change, trust_state_for
 
-    # Defensive slop guard: non-str, empty, null-byte, or over-length
-    # inputs cannot reach `find_repo_root` safely. An empty string would
-    # otherwise fall through `Path("").expanduser()` → `Path(".")` and
-    # walk up from the SERVER's CWD, leaking the server's working dir.
     if not _validate_file_path_arg(file_path):
         return _envelope({
             "repo_id": None,
@@ -473,15 +443,6 @@ def detect_repo(file_path: str) -> dict:
             "trust_state": "n/a",
         })
 
-    # v0.5.2 (Bug 6): path-traversal canonicalization defense. A request
-    # like `/home/user/proj/../../../etc/passwd` walks up via `find_repo_root`
-    # and lands on `$HOME` itself (or any ancestor of it), which is never
-    # a "repo" in the chameleon sense. Pre-v0.5.2 we returned `repo_root:
-    # "/Users/<user>"` and `profile_status: "no_profile"` which leaks the
-    # username on the response surface — minor info-disclosure. We now
-    # detect that case and report `no_repo` exactly as the missing-marker
-    # path does. The check covers both `Path.home()` itself and any
-    # strict ancestor (e.g., `/Users` on macOS, `/home` on Linux).
     try:
         home = Path.home().resolve()
         resolved = Path(repo_root).resolve()
@@ -506,10 +467,6 @@ def detect_repo(file_path: str) -> dict:
     profile_present = profile_file.exists()
     trust = trust_state_for(repo_id)
 
-    # BUG-021: detect a corrupted profile.json (unreadable as JSON) and
-    # surface a distinct status. Pre-v0.5.6 detect_repo only checked file
-    # existence; consumers had no way to know the profile was unreadable
-    # until a later get_pattern_context call returned silently-empty data.
     profile_corrupted = False
     profile_unsupported_schema = False
     if profile_present:
@@ -518,12 +475,6 @@ def detect_repo(file_path: str) -> dict:
 
             with profile_file.open("r", encoding="utf-8") as fh:
                 _peek = _json.load(fh)
-            # BUG-023 (v0.5.7): the profile-loader already refuses to load
-            # schema_version > MAX_SUPPORTED, but detect_repo only opened
-            # profile.json to test parseability. A v99 profile reported
-            # profile_present and would later fail at load time. Surface
-            # the mismatch as its own profile_status so consumers know
-            # to upgrade chameleon-mcp rather than re-bootstrap.
             from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
 
             _sv = _peek.get("schema_version") if isinstance(_peek, dict) else None
@@ -532,9 +483,6 @@ def detect_repo(file_path: str) -> dict:
         except (OSError, ValueError):
             profile_corrupted = True
 
-    # BUG-005: when no profile exists, "untrusted" is misleading — the schema
-    # reserves "n/a" for the "no profile" case. Only consider the trust grant
-    # when a profile is actually present and parseable.
     if not profile_present or profile_corrupted or profile_unsupported_schema:
         trust_state = "n/a"
     elif trust is None:
@@ -544,11 +492,6 @@ def detect_repo(file_path: str) -> dict:
     else:
         trust_state = "trusted"
 
-    # Schema v6 migration helper: when the canonical (git-remote-derived) id
-    # has no trust grant but a legacy path-derived id DOES, surface a hint
-    # so the model can prompt the user to re-trust under the new id. Skip
-    # the check when the two ids happen to be equal (no git remote — the
-    # function already returned the legacy id and there's nothing to migrate).
     legacy_id = _legacy_path_repo_id(repo_root)
     legacy_trust_hint_value: str | dict | None = None
     legacy_repo_id_value: str | None = None
@@ -560,13 +503,6 @@ def detect_repo(file_path: str) -> dict:
         )
         legacy_repo_id_value = legacy_id
 
-    # v0.5.1 Bug H2: stale trust against a different recorded repo_root
-    # ⇒ this checkout inherited an older clone's trust grant via the
-    # shared git-remote repo_id. Surface the recorded vs current paths so
-    # the user can distinguish "fresh clone reuse" from "real material
-    # change". Pre-condition: trust is not None AND it's stale, so the
-    # v0.4 path above could not have fired (that one requires trust is
-    # None).
     current_repo_root_str = str(repo_root)
     if (
         trust is not None
@@ -574,9 +510,6 @@ def detect_repo(file_path: str) -> dict:
         and trust.repo_root
         and trust.repo_root != current_repo_root_str
     ):
-        # Suppress the dict hint when the workspace HAS its own per-root
-        # trust grant in the new map — in that case the stale flag is
-        # about the workspace itself, not the legacy clone path.
         try:
             resolved_current = str(Path(repo_root).resolve())
         except OSError:
@@ -625,13 +558,11 @@ def _prefix_overlap_fallback(
     file_dir = rel_str.rsplit("/", 1)[0] if "/" in rel_str else ""
     file_segments = [s for s in file_dir.split("/") if s]
     file_ext = rel_str.rsplit(".", 1)[-1] if "." in rel_str.rsplit("/", 1)[-1] else ""
-    scored: list[tuple[int, int, str]] = []  # (-overlap, -cluster_size, name)
+    scored: list[tuple[int, int, str]] = []
     for name, arch in archetypes.items():
         pattern = arch.get("paths_pattern", "")
         if not pattern:
             continue
-        # paths_pattern may carry a trailing ``:ext`` suffix (v0.5.2+); strip
-        # for the prefix comparison and use it as the extension filter.
         if ":" in pattern:
             arch_dir, _, arch_ext = pattern.rpartition(":")
         else:
@@ -647,7 +578,6 @@ def _prefix_overlap_fallback(
                 break
         if overlap == 0:
             continue
-        # If the archetype declares an extension, prefer matches.
         if arch_ext and file_ext and arch_ext != file_ext:
             continue
         cluster_size = int(arch.get("cluster_size") or 0)
@@ -744,10 +674,6 @@ def get_archetype(repo: str, file_path: str) -> dict:
     """
     from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir
 
-    # Defensive slop guard: reject non-str / empty / null-byte / over-
-    # length file_path before any path operations. The early-return
-    # envelope matches the existing "low-confidence, archetype: null"
-    # shape used by the resolver-failure branch below.
     if not _validate_file_path_arg(file_path):
         return _envelope({
             "archetype": None,
@@ -771,15 +697,8 @@ def get_archetype(repo: str, file_path: str) -> dict:
             "match_quality": "none",
         })
 
-    # v0.5.10 (Bug 4): accept either a 64-char hex repo_id OR an
-    # absolute repo path for the `repo` argument, matching every other
-    # MCP tool that takes a repo arg. Pre-fix the strict equality
-    # `_compute_repo_id(repo_root) != repo` silently returned
-    # archetype: null for path-form callers. Behavior for hex repo_id
-    # is BYTE-IDENTICAL to pre-fix; the change is ADDITIVE.
     expected_repo_id = _compute_repo_id(repo_root)
     if _REPO_ID_RE.match(repo) if isinstance(repo, str) else False:
-        # Hex form: keep strict identity check (pre-fix contract).
         if expected_repo_id != repo:
             return _envelope({
                 "archetype": None,
@@ -789,9 +708,6 @@ def get_archetype(repo: str, file_path: str) -> dict:
                 "match_quality": "none",
             })
     else:
-        # Path form (or anything else): route through `_resolve_repo_arg`
-        # and check the resolved id matches the file's repo. Anything
-        # neither shape resolves to (None, None) → mismatch → low-conf.
         _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
         if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
             return _envelope({
@@ -802,7 +718,6 @@ def get_archetype(repo: str, file_path: str) -> dict:
                 "match_quality": "none",
             })
 
-    # v0.6.0: follow canonical_ref pin on reads.
     profile_dir = _effective_profile_dir(repo_root)
     try:
         loaded: LoadedProfile = load_profile_dir(profile_dir)
@@ -835,22 +750,6 @@ def _get_archetype_with_loaded(
     )
     from chameleon_mcp.signatures import path_pattern_bucket_for
 
-    # Compute the file's bucket via the same function clustering used.
-    # Match archetypes by EXACT bucket equality (not substring).
-    #
-    # v0.5.2: keep the v0.5.x extension-blind bucket as the primary key
-    # (so old profiles still match) AND check the extension-aware bucket
-    # as a secondary match against v0.5.2+ profiles. Either form is a
-    # legitimate exact match — we don't prefer one over the other;
-    # AST-scoring downstream picks the winner.
-    #
-    # Path-resolve both sides so /var <-> /private/var symlink shenanigans
-    # on macOS don't push `relative_to` into the ValueError branch. The
-    # pre-v0.5.2 code path tolerated this only because the substring-
-    # fallback check happened to fire on the absolute path; with the
-    # extension suffix added by v0.5.2 (Bug 1) that substring no longer
-    # matches, so callers on macOS would silently lose all archetype
-    # mappings on test-temp-dir paths.
     try:
         p_resolved = p.resolve()
     except OSError:
@@ -870,7 +769,7 @@ def _get_archetype_with_loaded(
     file_bucket_ext, _sub_ext = path_pattern_bucket_for(rel_str, include_extension=True)
 
     exact_matches: list[str] = []
-    fallback_matches: list[str] = []  # substring fallback if no exact match
+    fallback_matches: list[str] = []
 
     archetypes = loaded.archetypes.get("archetypes", {})
     for name, arch in archetypes.items():
@@ -882,32 +781,16 @@ def _get_archetype_with_loaded(
         elif pattern in rel_str:
             fallback_matches.append(name)
 
-    # If the path bucket gave us no exact matches, fall back to substring
-    # behavior (v0.3) and don't bother extracting dimensions.
     if not exact_matches:
         if fallback_matches:
             primary = fallback_matches[0]
             alternatives = fallback_matches[1:]
             confidence = "low"
         else:
-            # BUG-015: last-resort fallback by longest shared directory
-            # prefix. A file at app/controllers/application_controller.rb
-            # has no exact-bucket match for the ``controller`` cluster
-            # (paths_pattern app/controllers/v1) but a user looking at
-            # ApplicationController would expect chameleon to suggest the
-            # controller archetype as guidance. We pick the archetype
-            # whose paths_pattern shares the longest leading directory
-            # prefix with the file (>= 1 segment, same extension when
-            # the archetype carries one).
             primary, alternatives = _prefix_overlap_fallback(
                 rel_str, archetypes
             )
             confidence = "low"
-        # v0.5.13: surface match_quality="fallback" so callers can
-        # distinguish "AST-weak match" (real archetype with thin AST
-        # signal) from "we picked something arbitrary because no bucket
-        # matched." Sparse-cluster files that got dropped at bootstrap
-        # land here.
         return _envelope({
             "archetype": primary,
             "alternatives": alternatives,
@@ -916,11 +799,6 @@ def _get_archetype_with_loaded(
             "match_quality": "fallback" if primary is not None else "none",
         })
 
-    # Path-bucket gave us one or more candidates; try AST shape verification.
-    # The cluster-size ordering becomes our stable tiebreak when AST signals
-    # are absent or tied. Path-locality (witness-vs-query subdir overlap)
-    # sits between AST score and cluster_size so a deeper-subdir archetype
-    # beats a higher-cluster sibling when the query lives in that subdir.
     canonicals_for_locality = loaded.canonicals.get("canonicals", {}) or {}
     exact_matches.sort(
         key=lambda n: (
@@ -929,24 +807,15 @@ def _get_archetype_with_loaded(
         )
     )
 
-    # Read the file's content if it exists. If it doesn't, fall back to
-    # path-bucket-only matching (v0.3 behavior) so the function stays
-    # callable on hypothetical paths.
     content: str | None = None
     if p.is_file():
         try:
-            # Cap at 100KB — same ceiling as lint_file. Files larger than
-            # this are unlikely to be useful canonical examples anyway.
             raw = p.read_bytes()[:100_000]
             content = raw.decode("utf-8", errors="replace")
         except OSError:
             content = None
 
     if content is None:
-        # No content available — v0.3 cluster-size ordering wins.
-        # v0.5.2 (Bug 3): even when we can't run AST scoring, the
-        # 200-byte file head was read at the top of the function, so we
-        # still surface its directive-match here.
         return _envelope({
             "archetype": exact_matches[0],
             "alternatives": exact_matches[1:],
@@ -955,14 +824,13 @@ def _get_archetype_with_loaded(
             "match_quality": "exact",
         })
 
-    # Extract dimensions and score each candidate against its ast_query.
     language = detect_language(str(p)) or loaded.profile.get("language")
     if language not in ("typescript", "ruby"):
         language = None
     snapshot = extract_dimensions(content, language=language)
 
     canonicals = loaded.canonicals.get("canonicals", {}) or {}
-    scored: list[tuple[str, float, int]] = []  # (name, score, ast_query_field_count)
+    scored: list[tuple[str, float, int]] = []
     for name in exact_matches:
         entries = canonicals.get(name) or []
         ast_query: dict | None = None
@@ -970,12 +838,8 @@ def _get_archetype_with_loaded(
             first = entries[0] or {}
             ast_query = (first.get("normative_shape") or {}).get("ast_query")
         if not ast_query:
-            # No AST signal available — confidence stays low for this candidate.
             scored.append((name, -1.0, 0))
             continue
-        # Count non-null fields the archetype constrains. canonical_confidence
-        # returns a 0..1 ratio; we want the absolute count of matched fields
-        # so we can apply the architecture's "score >= 4 of 5" rule directly.
         constrained = sum(1 for k in (
             "default_export_kind",
             "top_level_node_kinds",
@@ -987,14 +851,12 @@ def _get_archetype_with_loaded(
         absolute_matches = ratio * constrained
         scored.append((name, absolute_matches, constrained))
 
-    # If at least one candidate has an AST signal, rank by score; otherwise
-    # keep the cluster-size ordering.
     if any(s > -1.0 for _, s, _ in scored):
         scored.sort(
             key=lambda item: (
-                -item[1],  # highest AST score first
-                -_witness_path_overlap(rel_str, canonicals, item[0]),  # then prefer deeper subdir overlap
-                -archetypes.get(item[0], {}).get("cluster_size", 0),   # then cluster size
+                -item[1],
+                -_witness_path_overlap(rel_str, canonicals, item[0]),
+                -archetypes.get(item[0], {}).get("cluster_size", 0),
             )
         )
         primary = scored[0][0]
@@ -1006,28 +868,13 @@ def _get_archetype_with_loaded(
             confidence = "medium"
         else:
             confidence = "low"
-        # AST verification happened (at least one candidate carried an
-        # ast_query and we scored against it). Even if confidence ended
-        # at "low", that's an AST-grade low — meaningfully different from
-        # the path-only "low" the fallback branch produces.
         match_quality = "ast"
     else:
         primary = exact_matches[0]
         alternatives = exact_matches[1:]
         confidence = "high" if len(exact_matches) == 1 else "low"
-        # Bucket matched, but no candidate carried an ast_query, so the
-        # archetype was picked by cluster-size only. Distinguishable from
-        # "ast" because no structural verification ran.
         match_quality = "exact"
 
-    # v0.5.2 (Bug 3): prefer the head-only signal computed up-front so
-    # all return branches agree on the {"none", "use_client",
-    # "use_server", "shebang", "ts_pragma"} alphabet. The lint engine's
-    # snapshot stores ``None`` for "no directive", a different alphabet
-    # than `content_signal_match_for` (returns the string "none"). Fall
-    # back to `snapshot.content_signal` only if the head read failed
-    # despite full-content read succeeding (a contradiction in practice
-    # but defensive against future refactors of the read path).
     final_signal = content_signal_value if content_signal_value is not None else (
         snapshot.content_signal if snapshot.content_signal is not None else "none"
     )
@@ -1087,10 +934,6 @@ def get_pattern_context(file_path: str) -> dict:
     from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir
     from chameleon_mcp.profile.trust import trust_state_for
 
-    # Defensive slop guard (Round-1 real-test finding): non-str, empty,
-    # null-byte, or over-length inputs cannot reach repo resolution
-    # safely. Fail open with a no_repo envelope, matching the contract
-    # used for paths outside any repo.
     if not _validate_file_path_arg(file_path):
         return _envelope(
             _empty_pattern_envelope(None, "no_repo", "n/a")
@@ -1104,10 +947,6 @@ def get_pattern_context(file_path: str) -> dict:
         )
 
     repo_id = _compute_repo_id(repo_root)
-    # v0.6.0: when canonical_ref is set in .chameleon/config.json,
-    # _effective_profile_dir materializes the ref's profile into a
-    # cache and returns that. Reads of pattern context follow the
-    # pin so a developer on a feature branch sees main's conventions.
     profile_dir = _effective_profile_dir(repo_root)
     profile_file = profile_dir / "profile.json"
     if not profile_file.exists():
@@ -1117,13 +956,6 @@ def get_pattern_context(file_path: str) -> dict:
 
     from chameleon_mcp.profile.trust import is_material_change
     trust = trust_state_for(repo_id)
-    # v0.6.1: trust state is meaningful only against the WORKING TREE.
-    # When canonical_ref is pinned, reads come from the canonical
-    # cache (profile_dir != repo_root / ".chameleon") but trust grants
-    # are bound to the working-tree hash via trust_profile. Comparing
-    # the trust record against the canonical-cache hash would always
-    # report "stale" once the local branch diverges from main, which
-    # defeats the entire branch-pinning feature.
     trust_check_dir = repo_root / ".chameleon"
     if trust is None:
         trust_state_str = "untrusted"
@@ -1139,20 +971,12 @@ def get_pattern_context(file_path: str) -> dict:
             _empty_pattern_envelope(repo_id, "profile_corrupted", "n/a")
         )
 
-    # Reuse get_archetype logic
     content_signal_value = _content_signal_for_path(p)
     arch_response = _get_archetype_with_loaded(
         p, repo_root, loaded, content_signal_value
     )
     arch_data = arch_response["data"]
 
-    # Rec 1: surface sub_buckets_count alongside the archetype so the hook
-    # can tell the model "this archetype has N sub-buckets" — a single
-    # cheap integer that signals when an archetype is heterogenous (e.g.,
-    # a controller cluster that absorbed 36 concerns lives at a different
-    # sub_buckets_count than a pure-controllers cluster). The full
-    # sub_buckets map is in archetypes.json; here we surface only the
-    # count to keep the per-edit advisory budget tight.
     if arch_data.get("archetype"):
         arch_entry = (
             loaded.archetypes.get("archetypes", {}).get(arch_data["archetype"], {})
@@ -1162,11 +986,6 @@ def get_pattern_context(file_path: str) -> dict:
         arch_data["sub_buckets_count"] = (
             len(sub_buckets) if isinstance(sub_buckets, dict) else 0
         )
-        # v0.7.0: surface the summary field so the hook can use Tier 1
-        # (lightweight pointer) instead of always injecting the full
-        # canonical excerpt. Without this, archetype_obj.get("summary")
-        # in preflight_and_advise always returned "" and use_tier2 was
-        # always True, making Tier 1 dead code.
         summary = arch_entry.get("summary") or ""
         if summary:
             arch_data["summary"] = summary
@@ -1195,15 +1014,6 @@ def get_pattern_context(file_path: str) -> dict:
                     fd, st, safe_path = safe_open_fd(
                         repo_root, witness_rel, max_size_bytes=200_000
                     )
-                    # The 7-tuple key. Including st_dev + st_ino pins
-                    # the inode (a dirent swap to a different file
-                    # produces a different ino). st_size and st_ctime_ns
-                    # close the mtime-preservation residual: an
-                    # adversary that preserves st_mtime_ns must also
-                    # preserve size and ctime, which content
-                    # modification advances. The fd-based read below
-                    # reads from the same inode the fstat saw, so a
-                    # mid-read dirent swap is irrelevant.
                     key = (
                         str(safe_path),
                         st.st_dev,
@@ -1215,9 +1025,6 @@ def get_pattern_context(file_path: str) -> dict:
                     )
 
                     def _build() -> tuple[str, bool]:
-                        # Read all bytes from the fd (NOT a path-based
-                        # read), so a mid-read dirent swap reads from
-                        # the original inode.
                         chunks = []
                         try:
                             while True:
@@ -1231,13 +1038,6 @@ def get_pattern_context(file_path: str) -> dict:
                         raw = raw_bytes.decode(
                             "utf-8", errors="replace"
                         )
-                        # Post-read re-fstat to catch any inode-level
-                        # change while we read (rare; defense in
-                        # depth). The fd still points at the same
-                        # inode by definition, but its size or mtime
-                        # could have changed if a writer truncated or
-                        # extended the file. If any of our key fields
-                        # changed, fail open.
                         try:
                             st2 = _os.fstat(fd)
                         except OSError as e:
@@ -1259,7 +1059,6 @@ def get_pattern_context(file_path: str) -> dict:
                             key, _build
                         )
                     finally:
-                        # Always close the fd, hit or miss.
                         try:
                             _os.close(fd)
                         except OSError:
@@ -1274,10 +1073,6 @@ def get_pattern_context(file_path: str) -> dict:
                 except (UnsafeFileError, FileNotFoundError, OSError):
                     pass
 
-    # Surface team idioms (captured via /chameleon-teach) — sanitized + capped.
-    # The using-chameleon skill says "shape your output using archetype,
-    # canonical, rules, AND idioms"; without this field, captured idioms
-    # never reach the model.
     idioms_text = loaded.idioms_text or ""
     if idioms_text:
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
@@ -1322,18 +1117,12 @@ def _resolve_repo_root_by_id(
     from chameleon_mcp import index_db
     from chameleon_mcp.profile.trust import trust_state_for
 
-    # Primary: index.db (with optional repo_root pinning for monorepos).
     indexed = index_db.resolve_repo_root(repo_id, repo_root_hint=repo_root_hint)
     if indexed:
         p = Path(indexed)
         if p.is_dir():
             return p.resolve()
-        # Stale index row (the user moved or deleted the repo). Fall
-        # through to the trust record rather than returning None outright
-        # — the trust record may have been updated by a more recent
-        # grant_trust call that has not yet been mirrored into index.db.
 
-    # Fallback: trust record
     record = trust_state_for(repo_id)
     if record is None or not record.repo_root:
         return None
@@ -1407,19 +1196,10 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             "sha_hint": None,
         })
 
-    # v0.5.3 Bug A: distinguish "archetype name unknown" from "archetype
-    # known but witness was dropped at bootstrap". `archetypes.json` is
-    # the source of truth for whether the name exists; `canonicals.json`
-    # only carries entries for archetypes that survived the witness
-    # selection scan (secret / injection / poisoning gates).
     known_archetypes = loaded.archetypes.get("archetypes", {}) or {}
     if archetype not in known_archetypes:
-        # BUG-032: for monorepos, the archetype might exist in a workspace
-        # profile, not the root. Scan workspace .chameleon/ dirs for it.
         found_in_workspace = False
-        for ws_cham in repo_root.rglob(".chameleon"):
-            if ws_cham == repo_root / ".chameleon" or not ws_cham.is_dir():
-                continue
+        for ws_cham in _iter_workspace_chameleon_dirs(repo_root):
             if not (ws_cham / "profile.json").is_file():
                 continue
             try:
@@ -1465,10 +1245,6 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     witness = first.get("witness", {}) or {}
     witness_rel = witness.get("path")
     if not witness_rel:
-        # Canonicals row exists but lacks a usable witness path. Same
-        # observable state as a dropped-at-bootstrap entry — surface the
-        # typed `no_witness` envelope so the caller doesn't have to
-        # reason about partially-populated rows.
         return _envelope({
             "status": "no_witness",
             "reason": (
@@ -1494,6 +1270,30 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             "truncated": False,
             "sha_hint": witness.get("sha_hint"),
         })
+
+    # The witness passed the secret/injection scan at bootstrap time, but the
+    # working-tree file may have been edited since. Re-scan the freshly-read
+    # content before it reaches model context; drop it on a hit. Fail-open if
+    # the scanner can't be imported (matches the canonical-ref materialize path).
+    try:
+        from chameleon_mcp.bootstrap.canonical_scanner import is_safe_canonical
+
+        if not is_safe_canonical(content):
+            return _envelope({
+                "status": "no_witness",
+                "reason": (
+                    "live canonical witness now contains a secret or "
+                    "injection pattern; run /chameleon-refresh"
+                ),
+                "archetype_name": archetype,
+                "repo_id": repo_id,
+                "content": None,
+                "witness_path": witness_rel,
+                "truncated": False,
+                "sha_hint": witness.get("sha_hint"),
+            })
+    except Exception:
+        pass
 
     content = sanitize_for_chameleon_context(content)
     return _envelope({
@@ -1533,11 +1333,6 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     """
     from chameleon_mcp.profile.loader import load_profile_dir
 
-    # Deprecation: if the legacy `archetype=` kwarg appears, redirect
-    # it to `source` and emit a deprecation envelope. v0.5.16 kept
-    # this as a schema-visible alias; v0.5.17 removes it from the
-    # schema but still accepts it via **kwargs so existing client
-    # code doesn't break with TypeError.
     deprecation_note = None
     legacy_archetype = kwargs.pop("archetype", None)
     if kwargs:
@@ -1586,23 +1381,12 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
             env["deprecation"] = deprecation_note
         return _envelope(env)
 
-    # Exact-match against rules_dict keys wins first. This preserves the
-    # natural "give me rules whose key is exactly X" semantic and lets
-    # profiles that happen to scope a rule block under an archetype name
-    # (rare today, but valid given the rules.json schema) still resolve
-    # without tripping the footgun guard below.
     if source in rules_dict:
         env = {"rules": [(source, rules_dict[source])]}
         if deprecation_note:
             env["deprecation"] = deprecation_note
         return _envelope(env)
 
-    # Footgun guard: if the caller passed an archetype name (matches an
-    # entry in archetypes.json) AND that name is NOT a rules_dict key,
-    # surface an explicit error rather than the pre-v0.5.13 silent `[]`.
-    # The substring fallback below would either return empty or
-    # accidentally match (e.g. `source="lint"` would match `eslint`
-    # even when the caller meant "give me rules for the lint archetype").
     if source in loaded.archetype_names:
         sources = sorted(rules_dict.keys())
         env = {
@@ -1620,8 +1404,6 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
             env["deprecation"] = deprecation_note
         return _envelope(env)
 
-    # Substring match against source keys. Kept for callers that pass
-    # partial source names like 'lint' to match 'eslint'.
     filtered = [(k, v) for k, v in rules_dict.items() if source in str(k)]
     env = {"rules": filtered}
     if deprecation_note:
@@ -1687,11 +1469,6 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     )
     from chameleon_mcp.profile.loader import load_profile_dir
 
-    # 0. Defensive type guard: `content` must be a str (architecture
-    # contract). Passing a non-str silently exploded at `len(content)`
-    # / `content[:...]` with a confusing TypeError far from the call
-    # site. Same for `archetype`. Return the function's stub envelope
-    # so callers get a graceful no-op instead of a wire-level crash.
     if not isinstance(content, str):
         return _envelope(
             {
@@ -1721,23 +1498,12 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             },
         )
 
-    # 1. Cap content (architecture's lint_file size contract).
     content_size = len(content)
     truncated = content_size > 100_000
     working_content = content[:100_000] if truncated else content
 
-    # v0.4 (4.8) — secret-detection runs FIRST and independently of the
-    # archetype lookup. Even a stub-envelope response (unresolvable repo,
-    # missing profile) should still surface secret violations because the
-    # security risk is identical whether or not the file has a known
-    # archetype.
     secret_violations = [v.to_dict() for v in _scan_secrets(working_content)]
 
-    # 2. Resolve the repo. Try the standard repo_id → repo_root mapping
-    # first (the documented contract). If `repo` isn't a recognized repo_id,
-    # fall back to treating it as a path (defensive: some tests + older
-    # callers pass paths, and the architecture's contract for `repo` is a
-    # repo_id but we want to be liberal in what we accept).
     repo_root = _resolve_repo_root_by_id(repo)
     if repo_root is None:
         candidate = Path(repo) if isinstance(repo, str) and repo else None
@@ -1750,10 +1516,6 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             repo_root = candidate
 
     if repo_root is None:
-        # Cannot run the real engine — preserve the legacy stub envelope so
-        # callers that depended on v0.2 behavior (no profile / unresolvable
-        # repo) keep working. Secret-scan results are still surfaced (this
-        # is a security check that must NOT be gated on having a profile).
         return _envelope(
             {
                 "stub": True,
@@ -1769,7 +1531,6 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             truncated=truncated,
         )
 
-    # 3. Load the profile + look up the archetype's ast_query.
     try:
         loaded = load_profile_dir(_effective_profile_dir(repo_root))
     except Exception:
@@ -1788,11 +1549,8 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     canonicals = loaded.canonicals.get("canonicals", {}) or {}
     entries = canonicals.get(archetype) or []
 
-    # BUG-032: for monorepos, the archetype might live in a workspace profile.
     if not entries:
-        for ws_cham in repo_root.rglob(".chameleon"):
-            if ws_cham == repo_root / ".chameleon" or not ws_cham.is_dir():
-                continue
+        for ws_cham in _iter_workspace_chameleon_dirs(repo_root):
             if not (ws_cham / "profile.json").is_file():
                 continue
             try:
@@ -1814,12 +1572,6 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
         ast_query = (first.get("normative_shape") or {}).get("ast_query")
         witness_rel_path = (first.get("witness") or {}).get("path")
 
-    # 3b. Recalibrate ast_query from canonical witnesses. BUG-030/BUG-031:
-    # collect recalibrated queries from ALL sub-buckets. The file is then
-    # linted against each and the best-matching result (fewest structural
-    # violations) is returned. This handles archetypes where sub-buckets
-    # represent genuinely different structural variants (e.g., namespaced
-    # admin controllers vs top-level controllers in the same archetype).
     candidate_queries: list[dict] = []
     if ast_query and entries:
         profile_lang = loaded.profile.get("language")
@@ -1861,7 +1613,6 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             truncated=truncated,
         )
 
-    # 5. Determine language.
     language = (
         _detect_language(file_path)
         or _detect_language(witness_rel_path)
@@ -1870,9 +1621,6 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     if language not in ("typescript", "ruby"):
         language = None
 
-    # 6. Extract dimensions + lint against each candidate query. Keep the
-    # result with the fewest structural violations so a file that matches
-    # ANY sub-bucket passes. Among ties, prefer higher confidence.
     snapshot = _extract_dimensions(working_content, language=language)
     best_ast_violations: list = []
     best_confidence = 0.0
@@ -1959,22 +1707,11 @@ def get_drift_status(repo: str) -> dict:
 
     resolved_path, repo_id = _resolve_repo_arg(repo)
     if repo_id is None and resolved_path is not None:
-        # Path-shaped input that didn't resolve (directory doesn't
-        # exist). Without my v0.5.2 fix this would silently echo the
-        # bogus path back as repo_id; emit a typed error instead.
         return _envelope({
             "status": "failed",
             "error": "expected repo path or repo_id hex digest",
         })
     if repo_id is None:
-        # Neither a path nor a 64-char hex digest. The legacy code
-        # treated arbitrary strings as opaque keys into plugin_data_dir;
-        # drift-recording callers (record_edit_observation) rely on
-        # this. We keep that behavior — the path-shape gate above is
-        # what closes the Bug 4 misrouting class without breaking the
-        # opaque-id consumers. Reject path-traversal payloads explicitly
-        # so an attacker-controlled opaque key cannot escape the
-        # plugin-data-dir sandbox via `..` segments.
         if "/" in repo or ".." in repo or "\\" in repo:
             return _envelope({
                 "status": "failed",
@@ -1988,11 +1725,6 @@ def get_drift_status(repo: str) -> dict:
     days_since_refresh: int | None = None
     if trust is not None and trust.granted_at:
         try:
-            # BUG-NEW-023 (v0.5.7): use calendar.timegm to interpret the
-            # ISO timestamp as UTC. trust.granted_at is written with
-            # time.gmtime() upstream, so reading it with time.mktime
-            # (local TZ) produced a tz_offset drift in days_since_refresh.
-            # Confirmed 8h offset on PST in the v0.5.7 audit tests.
             import calendar as _calendar
 
             granted_epoch = _calendar.timegm(
@@ -2025,10 +1757,6 @@ def get_drift_status(repo: str) -> dict:
     })
 
 
-# Phase 4.3-extended: change_ratio above this threshold falls through to a
-# full re-bootstrap. The constraint is fixed in the design doc; expose it
-# as a module-level constant so tests can verify the boundary without
-# duplicating the literal.
 PARTIAL_REFRESH_CHANGE_RATIO_CEILING = 0.10
 
 
@@ -2207,7 +1935,6 @@ def _attempt_partial_refresh(
     from chameleon_mcp.bootstrap.transaction import atomic_profile_commit
     from chameleon_mcp.profile.trust import hash_profile
 
-    # Step 1: compute current sha + index by rel_path.
     current_by_rel: dict[str, dict] = {}
     for p in candidates:
         try:
@@ -2219,7 +1946,6 @@ def _attempt_partial_refresh(
             "sha_hint": _content_sha_hint(p),
         }
 
-    # Step 2: diff against prev_state.
     unchanged: list[str] = []
     modified: list[str] = []
     added: list[str] = []
@@ -2233,23 +1959,14 @@ def _attempt_partial_refresh(
             modified.append(rel)
     removed = [rel for rel in prev_state if rel not in current_by_rel]
 
-    # Step 3: change ratio. Use len(prev_state) as the denominator so a
-    # repo with 100 files where 9 are modified registers 9% (under the
-    # 10% ceiling) rather than 9/109 = 8.3% (which would also pass but
-    # for a noisier reason). The design doc fixes the formula:
-    # `(modified + added + removed) / max(1, len(prev_state))`.
     change_count = len(modified) + len(added) + len(removed)
     denom = max(1, len(prev_state))
     change_ratio = change_count / denom
     if change_ratio > PARTIAL_REFRESH_CHANGE_RATIO_CEILING:
         return None
     if change_count == 0:
-        # No change at all — but we got here because the no-op
-        # short-circuit failed (idioms.md mtime newer, etc.). Fall
-        # through so the full bootstrap re-renders summary.md.
         return None
 
-    # Step 4: load existing archetypes + canonicals to plan the amend.
     try:
         from chameleon_mcp.safe_open import (
             UnsafeFileError,
@@ -2271,7 +1988,6 @@ def _attempt_partial_refresh(
     except (OSError, json.JSONDecodeError, UnsafeFileError):
         return None
 
-    # Build a cluster_id → archetype_name map for fast lookup.
     archetypes = archetypes_data.get("archetypes", {}) or {}
     cluster_id_to_archetype: dict[str, str] = {}
     for name, arch in archetypes.items():
@@ -2279,7 +1995,6 @@ def _attempt_partial_refresh(
         if cid:
             cluster_id_to_archetype[cid] = name
 
-    # Step 5: re-parse modified+added.
     reparse_paths = [
         current_by_rel[rel]["path"] for rel in (modified + added)
     ]
@@ -2287,29 +2002,17 @@ def _attempt_partial_refresh(
     if reparsed is None:
         return None
 
-    # If any modified+added file lacks a re-parse entry (e.g. ts_dump
-    # skipped it for syntax errors), we can't safely place it — bail.
     for rel in modified + added:
         if rel not in reparsed:
             return None
 
-    # Step 6: every re-parsed file must land in a known cluster. A new
-    # cluster_id means we'd need to run canonical selection on a fresh
-    # cluster, which requires the full corpus.
     for rel in modified + added:
         new_cid, _ = reparsed[rel]
         if new_cid not in cluster_id_to_archetype:
             return None
 
-    # Step 7: check canonical-witness integrity. A modified file that
-    # IS the current canonical witness for its archetype forces a
-    # canonical re-selection — but the partial path only has the changed
-    # subset, not the full cluster. Bail unless the witness happens to
-    # be unchanged among modified files (the modified file could be
-    # someone else in the same cluster).
     canonicals = canonicals_data.get("canonicals", {}) or {}
     for rel in modified + removed:
-        # Determine which archetype name this rel was a member of.
         prev = prev_state.get(rel)
         if prev is None:
             continue
@@ -2321,18 +2024,8 @@ def _attempt_partial_refresh(
             continue
         witness_rel = (entries[0].get("witness") or {}).get("path")
         if witness_rel == rel:
-            # The canonical witness itself moved/changed — full re-bootstrap
-            # is the only way to re-select a clean canonical for the cluster.
             return None
 
-    # Step 8: amend archetypes.json. For each archetype, compute net
-    # delta = (new members added in this cluster) - (members removed +
-    # members that moved out via modification). A member that moves
-    # FROM cluster A TO cluster B contributes -1 to A and +1 to B.
-    #
-    # Build {cluster_id: net_delta}. For each *prev_state* file, record
-    # its prev cluster contribution. For each *current* file (unchanged
-    # + reparsed), record its current contribution. Difference = delta.
 
     prev_membership: dict[str, int] = {}
     for _rel, prev in prev_state.items():
@@ -2350,7 +2043,6 @@ def _attempt_partial_refresh(
         new_cid, _ = reparsed[rel]
         current_membership[new_cid] = current_membership.get(new_cid, 0) + 1
 
-    # Per-archetype size update.
     new_archetypes = dict(archetypes)
     for cid, archetype_name in cluster_id_to_archetype.items():
         new_size = current_membership.get(cid, 0)
@@ -2365,9 +2057,6 @@ def _attempt_partial_refresh(
     )
     archetypes_unchanged = len(cluster_id_to_archetype) - archetypes_amended
 
-    # Step 9: bump generation. The loader requires all four artifacts
-    # to share the same generation counter. Reuse the existing
-    # transaction module's pattern.
     new_generation = int(started_at)
     archetypes_data["archetypes"] = new_archetypes
     archetypes_data["generation"] = new_generation
@@ -2375,16 +2064,8 @@ def _attempt_partial_refresh(
     profile_data["generation"] = new_generation
     rules_data["generation"] = new_generation
 
-    # Recompute archetype_count from the live archetypes dict (a member
-    # could have moved a sparse cluster into an empty state, but we
-    # don't drop the archetype — that would invalidate the cluster_id
-    # reverse-lookup. cluster_size = 0 archetypes simply mean "all
-    # members moved elsewhere," which the next full bootstrap cleans up).
     profile_data["archetype_count"] = len(new_archetypes)
 
-    # Read idioms.md + summary.md so we re-emit them inside the same
-    # transaction (the loader's double-fstat check requires the same
-    # generation across all artifacts and idioms.md influences summary).
     idioms_text = ""
     idioms_path = profile_dir / "idioms.md"
     if idioms_path.is_file():
@@ -2401,14 +2082,6 @@ def _attempt_partial_refresh(
         except OSError:
             summary_text = ""
 
-    # v0.5.1 (Bug 3): preserve `.chameleon/renames.json` across the
-    # atomic_profile_commit's dir-replacement so the user's rename
-    # mapping survives a partial refresh.
-    #
-    # The preservation read goes through the same safe helper as the rest
-    # of the renames-loading code (rec 12) — O_NOFOLLOW so a symlink swap
-    # cannot trick the partial-refresh into copying an attacker-controlled
-    # file into the new transaction directory, plus the 5 MB cap.
     renames_text: str | None = None
     renames_path_partial = profile_dir / "renames.json"
     if renames_path_partial.is_file():
@@ -2424,8 +2097,6 @@ def _attempt_partial_refresh(
         except (OSError, FileNotFoundError, _UnsafeFileError):
             renames_text = None
 
-    # Step 10: atomic commit. Any exception here leaves the existing
-    # profile untouched.
     try:
         with atomic_profile_commit(profile_dir) as txn_dir:
             (txn_dir / "profile.json").write_text(
@@ -2453,14 +2124,8 @@ def _attempt_partial_refresh(
                     renames_text, encoding="utf-8"
                 )
     except Exception:
-        # atomic_profile_commit guarantees on-disk state is unchanged
-        # on exception. Bail to full bootstrap.
         return None
 
-    # Step 11: update file_clusters. Insert/update added+modified rows
-    # with their new cluster_id + sha; delete removed rows; touch
-    # unchanged rows so last_seen_at moves forward (helps drift
-    # diagnostics).
     upsert_rows: list[tuple[str, str, str | None]] = []
     for rel in modified + added:
         new_cid, new_sha = reparsed[rel]
@@ -2477,7 +2142,6 @@ def _attempt_partial_refresh(
     if removed:
         index_db.delete_file_clusters_for_paths(repo_id, removed)
 
-    # Step 12: refresh index.db row metadata.
     duration_ms = int((time.time() - started_at) * 1000)
     files_processed = len(unchanged) + len(modified) + len(added)
     index_db.upsert_repo(
@@ -2538,10 +2202,6 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
 
     _clear_repo_id_cache()
 
-    # Defensive slop guard: non-str / empty / null-byte / over-length
-    # inputs explode downstream at `Path.resolve()` (ValueError for
-    # null-byte, OSError ENAMETOOLONG for over-length). Reject at the
-    # boundary so callers get a graceful failure envelope.
     if not _validate_file_path_arg(repo):
         return _envelope({
             "status": "failed",
@@ -2562,23 +2222,11 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
         })
 
     refresh_lock_path = repo_path / ".chameleon" / ".refresh.lock"
-    # Rec 6: capture pre-refresh archetype names so we can report a
-    # rename-aware diff in the response (what changed, not just how
-    # many archetypes the final profile has). The capture has to
-    # happen UNDER the lock — between the lock acquisition and the
-    # _refresh_repo_locked call — so a concurrent /chameleon-rename
-    # can't mutate the profile mid-capture. Reading is cheap; on any
-    # error we fall back to "no diff available" rather than crashing.
     try:
         with acquire_advisory_lock(refresh_lock_path):
             pre_state = _capture_pre_refresh_state(repo_path)
             envelope = _refresh_repo_locked(repo_path, force=force)
             _inject_archetype_diff(envelope, repo_path, pre_state)
-            # v0.5.14 bug 2 / rec-2 follow-up: preserve trust when the
-            # refresh produced a materially-identical profile (only
-            # the generation counter bumped). Must run AFTER
-            # _inject_archetype_diff because the preservation gate
-            # reads the diff's added/removed/renamed lists.
             _maybe_preserve_trust_across_refresh(repo_path, pre_state, envelope)
             _notify_daemon_cache_invalidation()
             return envelope
@@ -2639,11 +2287,6 @@ def _structural_hashes(profile_dir: Path) -> dict[str, str]:
         safe_read_profile_artifact_bytes,
     )
 
-    # Fields to strip recursively before hashing (vary on every refresh
-    # even when the substantive content is unchanged).
-    #   - generation / created_at / updated_at / computed_at: top-level
-    #   - scanned_at: per-canonical-entry timestamp inside
-    #     canonicals.json["canonicals"][archetype][i]["scanned_at"]
     _STRIP_KEYS = frozenset({
         "generation",
         "created_at",
@@ -2743,7 +2386,6 @@ def _maybe_preserve_trust_across_refresh(
     if structurally_identical:
         preserve_reason = "structural_equality"
     else:
-        # v0.6.0: try the pulled-from-remote path.
         try:
             from chameleon_mcp.profile.config import load_config
 
@@ -2764,7 +2406,6 @@ def _maybe_preserve_trust_across_refresh(
         data["trust_preserved"] = True
         data["trust_preserve_reason"] = preserve_reason
     except Exception:
-        # Best-effort; if regrant fails, fall back to stale (status quo).
         pass
 
 
@@ -2786,7 +2427,6 @@ def _profile_change_came_from_remote_pull(repo_path: Path) -> bool:
     import subprocess as _sp
 
     try:
-        # Current user's email (from `git config`)
         current = _sp.run(
             ["git", "-C", str(repo_path), "config", "user.email"],
             capture_output=True,
@@ -2800,7 +2440,6 @@ def _profile_change_came_from_remote_pull(repo_path: Path) -> bool:
         if not current_email:
             return False
 
-        # Author of the latest commit that touched .chameleon/profile.json
         commit_author = _sp.run(
             [
                 "git",
@@ -2852,7 +2491,7 @@ def _inject_archetype_diff(
     from chameleon_mcp.profile.schema import ARCHETYPE_NAME_RE
 
     if pre_state is None:
-        return  # no baseline available; silently skip
+        return
     data = envelope.get("data")
     if not isinstance(data, dict):
         return
@@ -2866,12 +2505,6 @@ def _inject_archetype_diff(
     pre_names = pre_state.get("names") or set()
 
     renames_after = _read_renames_overlay(profile_dir)
-    # The overlay is keyed auto-name -> user-name; for the diff we want
-    # to know "this old archetype became this new archetype". A rename
-    # is when (a) old name appears in pre_names, (b) the new name (the
-    # value) appears in post_names, AND (c) the old name does NOT appear
-    # in post_names. That filter keeps us from confusing self-renames
-    # or no-op overlay entries with real renames.
     renamed_pairs: list[tuple[str, str]] = []
     rename_old: set[str] = set()
     rename_new: set[str] = set()
@@ -2962,18 +2595,10 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     persisted_pg = _persisted_paths_glob(profile_dir)
 
     if force:
-        # BUG-026: refresh_repo's internal bootstrap calls always overwrite
-        # the existing profile (that's the whole point of refresh); skip the
-        # already_bootstrapped guard meant for accidental re-invocation.
-        # v0.5.14 bug 1: re-apply the persisted paths_glob so a scoped
-        # bootstrap stays scoped across refresh.
         return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
-    # Phase 4.3 no-op optimization.
     repo_root = repo_path.resolve()
     repo_id = _compute_repo_id(repo_root)
-    # v0.5.1 (Bug 1): pin the lookup to this repo_root so a monorepo
-    # sub-workspace doesn't surface a sibling workspace's cached row.
     cached = index_db.get_repo(repo_id, repo_root_hint=str(repo_root))
     profile_path = profile_dir / "profile.json"
 
@@ -2988,10 +2613,6 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
         return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
     try:
-        # Honor the persisted paths_glob during the freshness/cardinality
-        # check too — otherwise the candidate set would balloon vs what
-        # the cached profile was built from, and the no-op short-circuit
-        # would never fire.
         discovery_glob = persisted_pg or _glob_for_extractor(extractor)
         candidates = discover_files(
             repo_root, glob=discovery_glob, paths_glob=persisted_pg
@@ -3002,27 +2623,18 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     cached_files = cached.get("files_indexed") or 0
     last_seen_iso = cached.get("last_seen_at") or ""
     last_seen_epoch = _iso_to_epoch(last_seen_iso)
-    # Include idioms.md in the freshness check: a fresh /chameleon-teach
-    # must invalidate the no-op so the transaction re-renders
-    # profile.summary.md with the new idiom body (the trust-review
-    # surface). idioms.md is the only file outside the discovery glob
-    # whose content affects committed profile artifacts.
     idioms_path = profile_dir / "idioms.md"
     refresh_inputs = list(candidates) + [idioms_path]
     max_mtime = index_db.max_mtime_over(refresh_inputs)
     cardinality_match = cached_files > 0 and len(candidates) == cached_files
     nothing_newer = last_seen_epoch > 0.0 and max_mtime <= last_seen_epoch
 
-    # Force full re-bootstrap if new artifacts are missing (profile from
-    # an older chameleon version that predates conventions/principles).
     missing_artifacts = (
         not (profile_dir / "conventions.json").is_file()
         or not (profile_dir / "principles.md").is_file()
     )
 
     if cardinality_match and nothing_newer and not missing_artifacts:
-        # Touch the row so the repo bubbles to the top of list_profiles
-        # even on a no-op refresh.
         index_db.upsert_repo(
             repo_id,
             str(repo_root),
@@ -3040,10 +2652,6 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
             "profile_path": str(profile_dir),
         })
 
-    # Phase 4.3-extended: try partial refresh before falling back to
-    # full re-bootstrap. Requires (a) file_clusters rows for this repo,
-    # and (b) a change_ratio in (0, 0.10]. Repos without rows or above
-    # the ceiling go straight to bootstrap_repo (the legacy path).
     prev_state = index_db.get_file_clusters(repo_id)
     if prev_state:
         partial_envelope = _attempt_partial_refresh(
@@ -3057,9 +2665,6 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
         if partial_envelope is not None:
             return partial_envelope
 
-    # BUG-026: full re-bootstrap from inside refresh — always overwrite.
-    # v0.5.14 bug 1: pass the persisted paths_glob so the rebuild stays
-    # scoped to what the user originally specified.
     return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
 
@@ -3078,9 +2683,6 @@ def _iso_to_epoch(ts: str) -> float:
         return 0.0
     import calendar
 
-    # Microsecond-precision path: time.strptime parses '%f' but struct_time
-    # drops the fractional component, so calendar.timegm returns whole
-    # seconds. Reconstruct the float ourselves.
     if "." in ts and ts.endswith("Z"):
         try:
             whole, frac = ts[:-1].split(".", 1)
@@ -3088,7 +2690,6 @@ def _iso_to_epoch(ts: str) -> float:
             return base + float(f"0.{frac}")
         except (ValueError, TypeError):
             return 0.0
-    # Second-precision fallback (v0.1/v0.2 ISO strings).
     try:
         return float(calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")))
     except (ValueError, TypeError):
@@ -3123,10 +2724,6 @@ def bootstrap_repo(
 
     _clear_repo_id_cache()
 
-    # Defensive slop guard: non-str / empty / null-byte / over-length
-    # inputs explode downstream at `Path.resolve()` (ValueError for
-    # null-byte, OSError ENAMETOOLONG for over-length). Reject at the
-    # boundary so callers get a graceful failure envelope.
     if not _validate_file_path_arg(path):
         return _envelope({
             "status": "failed",
@@ -3149,9 +2746,6 @@ def bootstrap_repo(
             "error": f"path is not a directory: {path}",
         })
 
-    # Validate the `now` parameter: reject NaN, +/-inf, negative values, and
-    # non-numeric types. Otherwise NaN/inf raise OverflowError/ValueError deep
-    # in clustering; negative values produce nonsense recency weights silently.
     if now is not None:
         if not isinstance(now, int | float) or isinstance(now, bool):
             return _envelope({
@@ -3165,25 +2759,16 @@ def bootstrap_repo(
                 "error": f"now must be a finite non-negative float; got {now_f!r}",
             })
 
-    # Clean up any orphaned .tmp/<txn-id>/ dirs from dead writer processes.
-    # Must run BEFORE the already_bootstrapped short-circuit so existing-profile
-    # bootstrap calls still recover orphans.
     try:
         from chameleon_mcp.bootstrap.transaction import cleanup_orphan_tmp_dirs
         cleanup_orphan_tmp_dirs(repo_root)
     except Exception:
-        pass  # best-effort; cleanup failures shouldn't block bootstrap
+        pass
 
-    # BUG-026: guard against accidental overwrite. A committed profile is
-    # marked by the COMMITTED sentinel inside .chameleon/ (atomic write).
     if not force:
         committed_marker = repo_root / ".chameleon" / "COMMITTED"
         if committed_marker.is_file():
             profile_path = str(repo_root / ".chameleon")
-            # Register the repo in index.db so list_profiles and other
-            # index-backed tools see it. New team members who clone a repo
-            # with a checked-in .chameleon/ hit this path and would otherwise
-            # be invisible to the index until they ran a full bootstrap.
             try:
                 repo_id = _compute_repo_id(repo_root)
                 profile_dir = repo_root / ".chameleon"
@@ -3216,12 +2801,9 @@ def bootstrap_repo(
                 ),
             })
 
-    del mode  # forward-compat for Phase 2D interview mode
+    del mode
     report = _bootstrap(repo_root, paths_glob=paths_glob, now=now)
 
-    # Phase 4.4: mirror the run into the repo index. Only on success — a
-    # failed_too_many_files / failed_unsupported_language run should not
-    # leave a stale entry for /chameleon-list-profiles to surface.
     if report.status == "success":
         repo_id = _compute_repo_id(repo_root)
         index_db.upsert_repo(
@@ -3232,13 +2814,6 @@ def bootstrap_repo(
             files_indexed=report.files_processed,
             bootstrap_ms=report.duration_ms,
         )
-        # Phase 4.3-extended: populate file_clusters so a subsequent
-        # /chameleon-refresh can take the partial path. We replace the
-        # whole repo's rows so a re-bootstrap after a major refactor
-        # doesn't leave stale (cluster_id, rel_path) entries pointing at
-        # clusters that no longer exist in the new profile. Errors here
-        # are non-fatal — the worst case is that the next refresh falls
-        # through to full bootstrap.
         try:
             file_cluster_rows = _compute_file_cluster_map(
                 repo_root, paths_glob=paths_glob
@@ -3249,9 +2824,6 @@ def bootstrap_repo(
             index_db.delete_all_file_clusters(repo_id)
             if file_cluster_rows:
                 index_db.upsert_file_clusters(repo_id, file_cluster_rows)
-        # v0.4 2D.3: register each successfully bootstrapped workspace too
-        # so `/chameleon-list-profiles` and the trust-resolution layer can
-        # find them by repo_id without re-walking the workspace tree.
         for ws in report.workspace_reports or []:
             if ws.get("status") != "success":
                 continue
@@ -3268,8 +2840,6 @@ def bootstrap_repo(
                 files_indexed=ws.get("files_processed"),
                 bootstrap_ms=ws.get("duration_ms"),
             )
-            # Mirror file_clusters at the workspace level too so per-
-            # workspace refresh can take the partial path.
             try:
                 ws_rows = _compute_file_cluster_map(
                     ws_root, paths_glob=paths_glob
@@ -3311,12 +2881,6 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
             "error": "limit must be an integer in 1..1000",
         })
 
-    # v0.2 contract: an unknown/malformed cursor MUST return an explicit
-    # failure envelope even on a fresh install where no index.db exists.
-    # index_db.list_repos short-circuits to [] when the db file is
-    # absent, which means the ValueError it would otherwise raise on a
-    # bad cursor doesn't fire. Validate the cursor SHAPE here so the
-    # tool-level contract holds regardless of db state.
     if cursor is not None:
         if not isinstance(cursor, str) or not cursor:
             return _envelope({
@@ -3325,8 +2889,6 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
                     f"unknown cursor {cursor!r}; pass the next_cursor value from a prior page"
                 ),
             })
-        # Format: "<last_seen_at>|<repo_id>" or
-        # "<last_seen_at>|<repo_id>|<repo_root>".
         if cursor.count("|") not in (1, 2):
             return _envelope({
                 "status": "failed",
@@ -3335,17 +2897,8 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
                 ),
             })
 
-    # Backfill from legacy directory layout BEFORE serving the query so
-    # existing v0.1/v0.2 installs keep working. This is a no-op once the
-    # index has caught up with the on-disk state.
     _backfill_index_from_legacy_dirs()
 
-    # v0.5.14 bug 7: prune entries whose repo_root is a temp-dir path
-    # that no longer exists on disk. The reporter's `list_profiles`
-    # returned 533 total_known with the first ~85 all
-    # /private/var/folders/.../tmp.../... paths from prior dogfood runs.
-    # Conservative: only prune temp paths so a user who moved a real
-    # repo doesn't lose its trust/archetype_count cache.
     _prune_dead_temp_repos()
 
     try:
@@ -3362,15 +2915,7 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
     profiles = []
     for row in page_rows:
         repo_id = row["repo_id"]
-        # Per-repo trust state is sourced from the trust record so that
-        # `granted_at` / `granted_by_user` always reflect the latest grant,
-        # not whatever was snapshotted into index.db at bootstrap time.
         trust = trust_state_for(repo_id) if (base / repo_id).is_dir() else None
-        # v0.5.2 (Bug 3): JOIN against index.db fields so the user can
-        # tell repos apart in /chameleon-list-profiles output. Three
-        # dogfood passes flagged "repo_id hash alone isn't enough info
-        # to know which is which". The legacy four fields stay verbatim
-        # for backward compat; the new fields are additive.
         profiles.append({
             "repo_id": repo_id,
             "trust_state": "trusted" if trust else "untrusted",
@@ -3410,8 +2955,6 @@ def _is_dead_temp_repo_root(repo_root: str | None) -> bool:
     if not repo_root or not isinstance(repo_root, str):
         return False
     if not any(repo_root.startswith(p) for p in _TEMP_PATH_PREFIXES):
-        # Honor TMPDIR too — macOS sets it to /var/folders/... but other
-        # platforms (or CI runners) can point it elsewhere.
         tmp_env = _os.environ.get("TMPDIR", "").rstrip("/")
         if not tmp_env or not repo_root.startswith(tmp_env + "/"):
             return False
@@ -3433,9 +2976,6 @@ def _is_dead_chameleon_profile(repo_root: str | None) -> bool:
         return False
     root = Path(repo_root)
     if not root.is_dir():
-        # Root itself gone is handled by `_is_dead_temp_repo_root`
-        # within its conservative temp scope; this helper covers the
-        # broader case (any repo root that still exists on disk).
         return False
     return not (root / ".chameleon" / "profile.json").is_file()
 
@@ -3498,14 +3038,11 @@ def _backfill_index_from_legacy_dirs() -> None:
         return
 
     for repo_id in candidate_ids:
-        # Cheap skip: row already present.
         if index_db.resolve_repo_root(repo_id):
             continue
         trust = trust_state_for(repo_id)
         if trust is None or not trust.repo_root:
             continue
-        # Use the trust record's granted_at as last_seen_at so the
-        # backfilled rows order naturally with newly inserted rows.
         index_db.upsert_repo(
             repo_id,
             trust.repo_root,
@@ -3513,21 +3050,11 @@ def _backfill_index_from_legacy_dirs() -> None:
             last_seen_at=trust.granted_at or None,
         )
 
-# Known-safe top-level keys for profile.json. Used by merge_profiles to
-# strip unknown keys from the unioned result so a forged trust-state or
-# bypass-style field on either branch cannot survive the merge.
-# `_`-prefixed keys are test markers (user-explicit overrides, not bypasses)
-# and are also preserved.
 _SAFE_TOP_LEVEL_KEYS = {
-    # Schema / engine
     "schema_version", "engine_min_version",
-    # Identity / language
     "repo_id", "language", "language_hint", "source",
-    # Bootstrap workspace metadata
     "workspace", "workspaces", "platforms",
-    # Bootstrap-emitted archetype + tool data
     "archetypes", "archetypes_detected", "archetype_count", "tool_configs",
-    # Generation / clustering / discovery state
     "generation", "created_at", "updated_at",
     "clustering_algorithm_version", "discovery",
 }
@@ -3549,7 +3076,7 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     repo state, which the user can trigger with /chameleon-refresh after
     accepting the merge.
     """
-    del base  # unused — see docstring
+    del base
 
     ours_path = Path(ours)
     theirs_path = Path(theirs)
@@ -3578,7 +3105,6 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
         if name not in merged:
             merged[name] = arch
             continue
-        # Conflict: prefer higher cluster_size; ties → alphabetic witness path.
         ours_size = (merged[name] or {}).get("cluster_size", 0)
         theirs_size = (arch or {}).get("cluster_size", 0)
         if theirs_size > ours_size:
@@ -3589,13 +3115,6 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
             if theirs_witness < ours_witness:
                 merged[name] = arch
 
-    # v0.6.x: merge_profiles produces an APPROXIMATE merged profile. The
-    # canonical-correct merge requires re-clustering from the union of files,
-    # which we cannot do without the working tree. So we union the static
-    # JSON. Custom fields on either branch are preserved (e.g., test markers
-    # starting with `_`), but unknown top-level keys are dropped to defeat
-    # injection of forged trust-state or bypass-style fields. Users MUST run
-    # /chameleon-refresh after the merge to re-validate.
     unioned = {**ours_data, **theirs_data}
     merged_data = {
         k: v for k, v in unioned.items()
@@ -3603,7 +3122,6 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     }
     merged_data["archetypes"] = merged
 
-    # Write merge result to `ours` (git merge driver convention).
     ours_path.write_text(
         json.dumps(merged_data, indent=2, sort_keys=True), encoding="utf-8"
     )
@@ -3621,12 +3139,6 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     })
 
 
-# Cumulative cap on idioms.md size. The per-call cap (50KB) bounds a single
-# feedback string but doesn't stop sustained drift: hundreds of small teaches
-# can push the file far past anything the model actually consumes (envelope is
-# capped at 8000 chars in get_pattern_context). Beyond ~200KB the file becomes
-# unreadable, parse cost grows linearly on every load, and the user signal is
-# "this profile needs refresh or trim" anyway.
 _IDIOMS_FILE_CAP = 200_000
 
 
@@ -3680,9 +3192,6 @@ def teach_profile(repo: str, feedback: str) -> dict:
     if not idioms_path.parent.exists():
         return _envelope({"status": "failed", "error": "no profile in this repo (run /chameleon-init)"})
 
-    # v0.5.2 Bug 7: check the RAW feedback for suspicious patterns before
-    # sanitization. Sanitization strips ANSI/zero-width/etc.; the
-    # heuristic operates on the natural-language form which survives.
     suspicious, suspicious_pattern = _looks_suspicious(feedback)
 
     sanitized = _sanitize_user_input(feedback)
@@ -3695,43 +3204,29 @@ def teach_profile(repo: str, feedback: str) -> dict:
 
     timestamp = time.strftime("%Y-%m-%d", time.gmtime())
     if body.lstrip().startswith("### "):
-        # User supplied a slug — use as-is.
         addition = f"\n{body.rstrip()}\n"
     else:
-        # v0.5.2 Bug 2: append a 4-hex random suffix to defeat same-
-        # epoch-second collisions. Read idioms.md once to detect a
-        # collision; if present, retry once with a fresh suffix. The
-        # second collision probability is ~4096^-2 per second so a
-        # single retry is more than enough.
         existing_text = (
             idioms_path.read_text(encoding="utf-8")
             if idioms_path.exists()
             else ""
         )
 
-        # BUG-NEW-006 (v0.5.7): derive a human slug from the rationale's
-        # first non-empty line. Strips markdown formatting, takes the
-        # first ~5 words, kebab-cases them. Pre-fix the slug was always
-        # idiom-<date>-<epoch>-<rand>, giving idioms.md entries no
-        # visible meaning until the reader opened the body.
         def _slug_from_rationale(text: str) -> str:
             import re as _re
 
             first_line = ""
             for line in text.splitlines():
                 stripped = line.strip()
-                # Skip markdown headers, empty lines, code-fence markers.
                 if not stripped or stripped.startswith(("#", "```", ">", "*", "-")):
                     continue
                 first_line = stripped
                 break
             if not first_line:
                 return ""
-            # Lower-case, replace non-alphanumeric with hyphens, collapse, trim.
             slugged = _re.sub(r"[^a-z0-9]+", "-", first_line.lower()).strip("-")
             words = slugged.split("-")[:5]
             candidate = "-".join(w for w in words if w)
-            # Bound length and reject too-short or non-alpha slugs.
             if len(candidate) < 4 or candidate.isdigit():
                 return ""
             return candidate[:40]
@@ -3742,8 +3237,6 @@ def teach_profile(repo: str, feedback: str) -> dict:
                 f"{secrets.token_hex(2)}"
             )
 
-        # Prefer rationale-derived slug; fall back to timestamp slug on
-        # collision or unsuitable input.
         rationale_slug = _slug_from_rationale(body)
         if rationale_slug and (
             f"### {rationale_slug}\n" not in existing_text
@@ -3754,7 +3247,6 @@ def teach_profile(repo: str, feedback: str) -> dict:
             slug = _new_slug()
             if f"### {slug}\n" in existing_text or f"### {slug} " in existing_text:
                 slug = _new_slug()
-        # Read language from profile.json so each idiom is language-scoped (v0.5.2 contract)
         try:
             from chameleon_mcp.safe_open import safe_read_profile_artifact
 
@@ -3763,7 +3255,6 @@ def teach_profile(repo: str, feedback: str) -> dict:
             )
             language = profile_data.get("language", "any")
         except Exception as exc:
-            # Log so profile.json corruption is discoverable rather than silently masked.
             import sys
             print(
                 f"[chameleon] WARNING: profile.json read failed in teach_profile;"
@@ -3781,7 +3272,6 @@ def teach_profile(repo: str, feedback: str) -> dict:
                 if idioms_path.exists()
                 else "# idioms\n\n## active\n\n## deprecated\n"
             )
-            # Drop the "(no idioms yet …)" placeholder on first add.
             current = current.replace(
                 "_(no idioms yet — run /chameleon-teach to capture team conventions)_\n\n",
                 "",
@@ -3845,9 +3335,6 @@ def _escape_markdown_section_headings(text: str) -> str:
     out: list[str] = []
     in_fence = False
     for line in lines:
-        # Toggle on/off when we see a fence marker (```), with or without
-        # an info string. Treat the line as fence-boundary regardless of
-        # leading whitespace.
         if line.lstrip().startswith("```"):
             in_fence = not in_fence
             out.append(line)
@@ -3925,10 +3412,6 @@ def disable_session(repo: str, session_id: str, force: bool = False) -> dict:
             "error": "expected absolute repo path or 64-char repo_id hex digest",
         })
 
-    # v0.5.16: require an existing trust grant. A caller who has not
-    # been through /chameleon-trust cannot disable. Closes the
-    # cheap "any-MCP-client can suppress chameleon" attack vector for
-    # untrusted repos.
     if trust_state_for(repo_id) is None:
         return _envelope({
             "status": "failed",
@@ -3938,17 +3421,8 @@ def disable_session(repo: str, session_id: str, force: bool = False) -> dict:
             ),
         })
 
-    # v0.5.16: warn when the session_id has never appeared in any
-    # other chameleon tool call for this repo. A legitimate session
-    # almost always touches get_pattern_context (via the PreToolUse
-    # hook) before calling disable_session.
     session_unknown = _session_unseen_for_repo(repo_id, session_id)
 
-    # v0.5.17 (Bug 2 follow-up): refuse the marker write for unseen
-    # sessions unless the caller explicitly forces. The legitimate
-    # user is normally on a session that has touched chameleon many
-    # times by the time they /chameleon-disable; an unseen session
-    # is the attacker shape we want to block.
     if session_unknown and not force:
         return _envelope({
             "status": "failed",
@@ -3997,8 +3471,7 @@ def _session_unseen_for_repo(repo_id: str, session_id: str) -> bool:
     except Exception:
         return False
     if not exec_dir.is_dir():
-        return True  # no exec_log entries at all → session is unseen
-    # exec_log files are JSONL with session_id field; scan recent ones.
+        return True
     import json as _json
 
     needle = f'"session_id":"{session_id}"'
@@ -4016,8 +3489,6 @@ def _session_unseen_for_repo(repo_id: str, session_id: str) -> bool:
                 for line in f:
                     if needle in line:
                         return False
-                    # Parse to be precise (avoid substring matching false
-                    # positives on similar IDs).
                     try:
                         rec = _json.loads(line)
                         if rec.get("session_id") == session_id:
@@ -4089,8 +3560,6 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     """
     from chameleon_mcp.profile.trust import grant_trust
 
-    # BUG-004: shape-detect via _resolve_repo_arg so a repo_id resolves
-    # back to its absolute path via index.db / trust records.
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
     if resolved_path is None:
         return _envelope({
@@ -4109,10 +3578,6 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     if not (profile_dir / "profile.json").is_file():
         return _envelope({"status": "failed", "error": "no profile.json in .chameleon/ (run /chameleon-init first)"})
 
-    # BUG-NEW-020 (v0.5.7): trust validates that the profile is actually
-    # loadable. Pre-fix trust succeeded on corrupted profile.json or on
-    # an unsupported schema version, leaving the user with a "trusted"
-    # state for something the engine can't read.
     from chameleon_mcp.profile.loader import ProfileLoadError, load_profile_dir
 
     try:
@@ -4140,15 +3605,9 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
 
     record = grant_trust(repo_id, profile_dir)
 
-    # BUG-029: monorepo workspace sub-packages have their own .chameleon/
-    # profiles but trust was only granted for the root. Cascade the trust
-    # grant to every workspace profile under the root so detect_repo
-    # returns "trusted" (not "stale") for files inside sub-packages.
     workspace_trust_count = 0
-    for child_chameleon in repo_path.rglob(".chameleon"):
+    for child_chameleon in _iter_workspace_chameleon_dirs(repo_path):
         if child_chameleon == profile_dir:
-            continue
-        if not child_chameleon.is_dir():
             continue
         if not (child_chameleon / "profile.json").is_file():
             continue
@@ -4183,24 +3642,6 @@ def _sanitize_user_input(text: str) -> str:
     return sanitize_for_chameleon_context(text)
 
 
-# v0.5.2 Bug 7 — prompt-injection signal detection.
-#
-# The patterns below detect natural-language preambles that survive the
-# token-level sanitizer (ANSI/zero-width/tag-boundary). Hits never reject
-# the idiom: the trust gate is the defensive boundary. Instead we surface
-# `suspicious_input: True` in the response envelope so the UI / consumer
-# skill can warn the user. Each pattern is documented to make audits easy:
-#
-#   - "ignore (all )?previous instructions" — canonical jailbreak preamble.
-#   - "disregard (the )?(above|prior)" — variant phrasing.
-#   - "you are now (in )?\w* mode" — DAN / jailbreak persona triggers.
-#   - "system:" / "<system>" / "</system>" — fake system-role prefix.
-#   - "eval(", "exec(", "rm -rf" — explicit dangerous code/shell.
-#   - "reveal (the )?(secret|api key|prompt|system prompt)" — exfil ask.
-#
-# Patterns are intentionally permissive: false positives are cheap (the
-# user just sees a "are you sure?" UI hint); false negatives waste the
-# warning. Each pattern is case-insensitive.
 _SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("ignore previous instructions",
      re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE)),
@@ -4239,25 +3680,6 @@ def _looks_suspicious(text: str) -> tuple[bool, str | None]:
         if regex.search(text):
             return True, label
     return False, None
-
-
-# ---------------------------------------------------------------------------
-# Phase 2D.1 — Interactive ≤3-prompt rename interview
-#
-# The interview is driven by the chameleon-init skill (prose protocol);
-# the MCP exposes two small stateless tools that the skill calls:
-#
-#   1. propose_archetype_renames(repo, top_n) — read the committed profile,
-#      surface the top-N largest archetypes plus 3-5 better-name candidates
-#      derived from canonical filename, paths_pattern tail, and top-level
-#      node kinds.
-#   2. apply_archetype_renames(repo, renames) — atomically rewrite
-#      archetypes.json + canonicals.json + profile.summary.md keys.
-#
-# Both tools use the standard _envelope() shape. apply_archetype_renames
-# wraps its writes in atomic_profile_commit to guarantee no half-written
-# state, and re-runs hash_profile() so trust is correctly flipped to stale.
-# ---------------------------------------------------------------------------
 
 
 _NODE_KIND_TO_NAME = {
@@ -4311,44 +3733,30 @@ def _propose_alternatives_for(
         s = _slugify(c) if c else None
         if not s or s in candidates:
             return
-        # BUG-006: never propose the current name back at the user, and
-        # never propose a derivative that just decorates the current name
-        # (e.g. ``cluster-a2cfb565-comments`` when the current name is
-        # already ``cluster-a2cfb565``). The "keep current name" affordance
-        # lives in the slash-command UI, not in the candidate list.
         if current_slug and (s == current_slug or s.startswith(current_slug + "-")):
             return
         candidates.append(s)
 
-    # 1. Canonical filename stem (e.g., users_controller.rb → users-controller).
     witness_rel = ""
     if canonical:
         witness_rel = (canonical.get("witness") or {}).get("path", "")
     if witness_rel:
         stem = witness_rel.rsplit("/", 1)[-1]
-        # strip extension(s) — handle .test.ts, .spec.tsx, etc.
         stem = _re.sub(r"\.[^.]+$", "", stem)
-        stem = _re.sub(r"\.[^.]+$", "", stem)  # one more level for .test.ts
+        stem = _re.sub(r"\.[^.]+$", "", stem)
         _push(stem)
 
-    # 3. Paths_pattern tail segment (e.g., "app/api/v1" → "v1" is junk,
-    #    but "app/services" → "services" is meaningful).
     paths_pattern = archetype.get("paths_pattern", "")
     if paths_pattern:
         segments = [s for s in paths_pattern.split("/") if s]
         for seg in reversed(segments):
-            # Skip version-style ids
             if _re.fullmatch(r"v\d+(?:\.\d+)*", seg):
                 continue
             _push(seg)
             break
 
-    # 4. Witness-path-tail directory (e.g., "app/controllers/admin/foo.rb"
-    #    → "admin"). Distinct from paths_pattern when v5 collapses the
-    #    bucket.
     if witness_rel:
         dirs = witness_rel.rsplit("/", 1)[0].split("/")
-        # Skip the first segment (typically app/src/lib — too generic)
         if len(dirs) > 1:
             for seg in reversed(dirs[1:]):
                 if _re.fullmatch(r"v\d+(?:\.\d+)*", seg):
@@ -4356,20 +3764,15 @@ def _propose_alternatives_for(
                 _push(seg)
                 break
 
-    # 5. Top-level node kind → friendly noun (e.g., ClassNode → class).
-    #    Only push the friendly mapping — raw kind names like
-    #    "FirstStatement" are noise that confuse users.
     kinds = archetype.get("top_level_node_kinds") or []
     if kinds:
         friendly = _NODE_KIND_TO_NAME.get(kinds[0])
         if friendly:
             _push(friendly)
 
-    # 6. JSX hint: a JSX-present cluster is likely a "component".
     if archetype.get("jsx_present"):
         _push("react-component")
 
-    # 7. Combined "current-tail" so collisions still propose a useful split.
     if witness_rel and paths_pattern:
         stem = witness_rel.rsplit("/", 1)[-1]
         stem_clean = _re.sub(r"\.[^.]+$", "", _re.sub(r"\.[^.]+$", "", stem))
@@ -4488,12 +3891,10 @@ def _validate_renames(
                 f"target name {new!r} must match {ARCHETYPE_NAME_RE.pattern}"
             )
         if old == new:
-            continue  # no-op
+            continue
         if new in seen_targets:
             return {}, f"two renames collide on target {new!r}"
         seen_targets.add(new)
-        # Reject targets that collide with an existing name that itself
-        # isn't being renamed out — would clobber an unrelated archetype.
         if new in existing_names and new not in renames:
             return {}, f"target {new!r} already exists and is not being renamed away"
         effective[old] = new
@@ -4521,14 +3922,6 @@ def _rewrite_summary_md(
         idioms_text=idioms_text,
         rules_data=rules_data,
     )
-
-
-# v0.5.1 (Bug 3): the rename overlay file lives at `.chameleon/renames.json`
-# and is meant to be committed to the repo so the team shares the mapping.
-# Format:
-#   { "schema_version": 1,
-#     "renames": {<auto_name_from_naming_py>: <user_chosen_name>, ...},
-#     "updated_at": "<ISO 8601 Z>" }
 
 
 class _RenamesOverlayOverCap(Exception):
@@ -4679,7 +4072,7 @@ def _append_rename_ledger_entries(
 
     cap = threshold_int("RENAMES_OVERLAY_CAP")
     if len(history) > cap:
-        history = history[-cap:]  # keep most-recent
+        history = history[-cap:]
 
     return {
         "schema_version": 1,
@@ -4782,8 +4175,7 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
             "note": "no effective renames (all no-ops or empty mapping)",
         })
 
-    # Build the renamed artifacts. Preserve all other fields verbatim.
-    archetypes_data = json.loads(json.dumps(loaded.archetypes))  # deep copy
+    archetypes_data = json.loads(json.dumps(loaded.archetypes))
     canonicals_data = json.loads(json.dumps(loaded.canonicals))
     rules_data = json.loads(json.dumps(loaded.rules))
     profile_data = json.loads(json.dumps(loaded.profile))
@@ -4802,9 +4194,6 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         new_canonical_map[effective.get(k, k)] = v
     canonicals_data["canonicals"] = new_canonical_map
 
-    # rules.json keys are mostly category names ("formatting", "typescript")
-    # but a future build may key them by archetype. Rename when the key
-    # exactly matches a renamed archetype.
     new_rules_map: dict = {}
     for k, v in rules_map.items():
         new_rules_map[effective.get(k, k)] = v
@@ -4818,14 +4207,6 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         rules_data=rules_data,
     )
 
-    # v0.5.1 (Bug 3): merge the new renames into `.chameleon/renames.json`
-    # so the next bootstrap re-applies them. Existing renames.json keys
-    # are AUTO-derived names (what naming.py would produce on a fresh
-    # bootstrap). When the incoming rename's source matches a key, we
-    # update the value. When it matches a value (i.e., the user is
-    # renaming an already-renamed archetype), we walk back to the
-    # original auto-name and update that entry. Otherwise the incoming
-    # source is itself an auto-name and gets a brand-new entry.
     try:
         existing_renames = _read_renames_overlay_strict(profile_dir)
     except _RenamesOverlayOverCap as exc:
@@ -4844,12 +4225,6 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         "renames": merged_renames,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    # Rec 11b: append each effective rename to the historical ledger
-    # `.archetype_renames.json`. The ledger is the audit trail (who
-    # renamed what, when) — distinct from `renames.json` which is the
-    # current auto-name → user-name overlay applied at bootstrap. The
-    # ledger is FIFO-pruned at 256 entries so a runaway loop of
-    # automated renames can't balloon the trust-hashed surface.
     ledger_payload = _append_rename_ledger_entries(profile_dir, effective)
 
     try:
@@ -4880,13 +4255,9 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     except Exception as e:
         return _envelope({"status": "failed", "error": f"atomic commit failed: {e}"})
 
-    # Mirror the new profile hash into index.db so list_profiles + trust
-    # material-change detection both see the change.
     repo_id = _compute_repo_id(repo_root)
     new_hash = hash_profile(profile_dir)
     try:
-        # v0.5.1 (Bug 1): pin to this repo_root so a monorepo sibling
-        # workspace's cached row doesn't leak its archetype_count here.
         cached = index_db.get_repo(repo_id, repo_root_hint=str(repo_root)) or {}
         index_db.upsert_repo(
             repo_id,
@@ -4906,17 +4277,6 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         "renames": effective,
     })
 
-
-# ---------------------------------------------------------------------------
-# Phase 2D.4 — Structured idiom comments
-#
-# teach_profile_structured accepts the four canonical fields a well-formed
-# idiom should always carry (slug, rationale, example, counterexample) plus
-# optional archetype + status. It renders to the same idioms.md format that
-# the free-form teach_profile uses, then delegates to teach_profile so the
-# downstream protections (advisory lock, sanitization, 50KB cap, placeholder
-# strip) all apply uniformly.
-# ---------------------------------------------------------------------------
 
 _SLUG_RE = __import__("re").compile(r"^[a-z][a-z0-9-]{2,63}$")
 _STRUCTURED_TOTAL_CAP = 50_000
@@ -5002,21 +4362,6 @@ def teach_profile_structured(
         lines.append("```")
     rendered = "\n".join(lines)
 
-    # v0.5.13: slug-collision + status routing. Pre-v0.5.13 the function
-    # delegated straight to `teach_profile` which appends to `## active`
-    # regardless of whether `### slug` already exists AND regardless of
-    # the caller's status argument, producing two bugs at once: (a)
-    # duplicates on repeat-capture, (b) the documented "capture as
-    # deprecated" path silently landed in `## active` with a `Status:
-    # deprecated` body line the section split never honored.
-    #
-    # The five cases the wrapper now handles:
-    #   - new slug + status=active     -> delegate to teach_profile.
-    #   - new slug + status=deprecated -> direct-deprecated writer.
-    #   - in active + status=active     -> reject (collision).
-    #   - in active + status=deprecated -> transition to deprecated.
-    #   - in deprecated + any status    -> reject (already deprecated;
-    #     callers must pick a new slug or edit the file directly).
     repo_path, _repo_id = _resolve_repo_arg(repo)
     if repo_path is None:
         return _envelope({
@@ -5029,7 +4374,6 @@ def teach_profile_structured(
     if not idioms_path.parent.exists():
         return _envelope({"status": "failed", "error": "no profile in this repo (run /chameleon-init)"})
 
-    # Language scoping per v0.5.2: inject Language: line after ### slug heading.
     try:
         from chameleon_mcp.safe_open import safe_read_profile_artifact
 
@@ -5038,7 +4382,6 @@ def teach_profile_structured(
         )
         language = profile_data.get("language", "any")
     except Exception as exc:
-        # Log so profile.json corruption is discoverable rather than silently masked.
         import sys
         print(
             f"[chameleon] WARNING: profile.json read failed in teach_profile_structured;"
@@ -5046,7 +4389,6 @@ def teach_profile_structured(
             file=sys.stderr,
         )
         language = "any"
-    # rendered starts with "### {slug}\n"; insert Language: on the second line.
     rendered = rendered.replace(f"### {slug}\n", f"### {slug}\nLanguage: {language}\n", 1)
 
     sections = _find_all_slug_sections(idioms_path, slug)
@@ -5077,13 +4419,8 @@ def teach_profile_structured(
             example=example, counterexample=counterexample,
         )
 
-    # No collision in either section.
     if status == "active":
-        # Delegate to teach_profile for sanitization + lock + 200KB cap.
         return teach_profile(repo, rendered)
-    # status == "deprecated" + brand-new slug: write directly into the
-    # deprecated section. Goes through the same sanitization + cap +
-    # advisory-lock helpers teach_profile uses.
     return _write_new_deprecated_idiom(
         idioms_path, slug, archetype=archetype,
         rationale=rationale.strip(), timestamp=timestamp,
@@ -5218,15 +4555,11 @@ def _transition_slug_to_deprecated(
         with acquire_advisory_lock(lock_path):
             text = idioms_path.read_text(encoding="utf-8")
             header = f"### {slug}"
-            # Split into active / deprecated bodies. We deliberately use
-            # the simplest split that respects the section ordering
-            # described by `_write_profiled_repo` so callers reading the
-            # rewritten file see the expected layout.
             lines = text.splitlines(keepends=True)
             active_body: list[str] = []
             deprecated_body: list[str] = []
             preamble: list[str] = []
-            phase = "preamble"  # preamble -> active -> deprecated
+            phase = "preamble"
             i = 0
             removed = False
             while i < len(lines):
@@ -5244,8 +4577,6 @@ def _transition_slug_to_deprecated(
                     preamble.append(line)
                     i += 1
                     continue
-                # Inside active or deprecated section. Look for the slug
-                # header; if it matches, skip until the next header.
                 if phase == "active" and stripped == header and not removed:
                     removed = True
                     i += 1
@@ -5262,9 +4593,6 @@ def _transition_slug_to_deprecated(
                 i += 1
 
             if not removed:
-                # Race: another writer mutated the file between our pre-
-                # check and now. Bail without writing rather than appending
-                # a duplicate block in `## active`.
                 return _envelope({
                     "status": "failed",
                     "error": (
@@ -5357,8 +4685,6 @@ def _write_new_deprecated_idiom(
                     1,
                 )
             else:
-                # Profile somehow lacks the section header. Append both
-                # the heading and the block so the file stays parseable.
                 if not current.endswith("\n"):
                     current += "\n"
                 new_content = current + "\n## deprecated\n" + new_block
@@ -5416,20 +4742,17 @@ def daemon_status() -> dict:
     info = _daemon.daemon_info()
     last_request_at = None
     if info.get("alive"):
-        # Probe with a 0.5s timeout — non-blocking enough that an idle
-        # daemon doesn't slow down /chameleon-status.
         pong = _daemon_client.call("ping", {}, timeout=0.5)
-        if isinstance(pong, dict) and "ts" in pong:
-            try:
-                last_request_at = time.strftime(
-                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(pong["ts"]))
-                )
-            except (TypeError, ValueError):
-                last_request_at = None
+        if isinstance(pong, dict):
+            raw = pong.get("last_request_at", pong.get("ts"))
+            if raw is not None:
+                try:
+                    last_request_at = time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(raw))
+                    )
+                except (TypeError, ValueError):
+                    last_request_at = None
 
-    # BUG-NEW-001 (v0.5.7): surface the running MCP version so
-    # /chameleon-status can detect "installed v0.5.7 but session bound
-    # to v0.5.6 cache" and tell the user to restart Claude Code.
     try:
         from importlib.metadata import version as _pkg_version
 
@@ -5452,6 +4775,11 @@ def _chameleon_version_or_unknown() -> str:
         from importlib.metadata import version
         return version("chameleon-mcp")
     except Exception:
+        pass
+    try:
+        from chameleon_mcp import __version__
+        return __version__
+    except Exception:
         return "unknown"
 
 
@@ -5469,28 +4797,24 @@ def doctor() -> dict:
 
     checks: list[dict] = []
 
-    # 1. Python version
     py = sys.version_info
     if py >= (3, 11):
         checks.append({"name": "python_version", "status": "ok", "detail": f"{py.major}.{py.minor}.{py.micro}"})
     else:
         checks.append({"name": "python_version", "status": "error", "detail": f"{py.major}.{py.minor}.{py.micro} (need >= 3.11)"})
 
-    # 2. bash on PATH (hooks need it)
     bash_path = shutil.which("bash")
     if bash_path:
         checks.append({"name": "bash_on_path", "status": "ok", "detail": bash_path})
     else:
         checks.append({"name": "bash_on_path", "status": "error", "detail": "bash not on PATH; hooks will not run"})
 
-    # 3. timeout(1) on PATH (hooks use it)
     timeout_path = shutil.which("timeout")
     if timeout_path:
         checks.append({"name": "timeout_on_path", "status": "ok", "detail": timeout_path})
     else:
         checks.append({"name": "timeout_on_path", "status": "warn", "detail": "timeout(1) not on PATH; hook may hang Claude on stuck python"})
 
-    # 4. Plugin data dir writable
     try:
         from chameleon_mcp.profile.trust import plugin_data_dir
         data_dir = plugin_data_dir()
@@ -5502,7 +4826,6 @@ def doctor() -> dict:
     except Exception as exc:
         checks.append({"name": "plugin_data_writable", "status": "error", "detail": f"{type(exc).__name__}: {exc}"})
 
-    # 5. Hook scripts exist + executable
     plugin_root_env = os.environ.get("CLAUDE_PLUGIN_ROOT")
     if plugin_root_env:
         plugin_root = Path(plugin_root_env)
@@ -5518,7 +4841,6 @@ def doctor() -> dict:
     else:
         checks.append({"name": "hooks", "status": "warn", "detail": "CLAUDE_PLUGIN_ROOT not set; cannot locate hook scripts"})
 
-    # 6. HMAC key sane (no exception means file present and ownership ok)
     try:
         from chameleon_mcp.exec_log import _ensure_hmac_key
         _ensure_hmac_key()
@@ -5526,13 +4848,6 @@ def doctor() -> dict:
     except Exception as exc:
         checks.append({"name": "hmac_key", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
 
-    # 7. Daemon liveness (re-uses existing daemon_status).
-    # v0.5.17 (Bug 3 follow-up): the daemon is intentionally lazy —
-    # it spawns on the first hook call, not on doctor probes. Treating
-    # "not running" as warn made every fresh session report degraded
-    # health even though the system was working as designed. Now we
-    # report "ok" with a "(lazy)" detail in that case; only an actual
-    # daemon_status exception remains warn.
     try:
         ds = daemon_status()
         if ds.get("data", {}).get("alive"):
@@ -5542,13 +4857,6 @@ def doctor() -> dict:
     except Exception as exc:
         checks.append({"name": "daemon", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
 
-    # 8. Recent hook errors (last 5 from .hook_errors.log within 72h).
-    # v0.5.13: honor CHAMELEON_HOOK_ERROR_LOG to match the hooks' own
-    # resolution (preflight-and-advise / session-start / posttool-recorder
-    # / callout-detector all read this env var first). Pre-v0.5.13 doctor
-    # always hit the default home path, which surfaced stale errors from
-    # dev worktrees forever. Also drop entries older than 72h so an old
-    # one-time traceback stops warning indefinitely.
     log_env = os.environ.get("CHAMELEON_HOOK_ERROR_LOG")
     if log_env:
         log = Path(log_env)
@@ -5572,10 +4880,6 @@ def doctor() -> dict:
             for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
                 m = ts_re.match(line)
                 if not m:
-                    # Non-timestamped lines (e.g. python traceback rows
-                    # written via `2>>"${LOG_FILE}"`) attach to the most
-                    # recent kept timestamped line so context survives the
-                    # age filter.
                     if recent:
                         recent.append(line)
                     continue
@@ -5597,11 +4901,6 @@ def doctor() -> dict:
     else:
         checks.append({"name": "recent_hook_errors", "status": "ok", "detail": "no errors logged"})
 
-    # v0.6.1: Check the CWD's .chameleon/config.json (if present) so
-    # users can see at a glance whether their v0.6.0 features are
-    # active AND whether the file is valid. A malformed config used
-    # to be invisible — chameleon silently degraded to v0.5.x
-    # behavior. Now doctor surfaces it.
     cwd_config = Path.cwd() / ".chameleon" / "config.json"
     if cwd_config.is_file():
         try:
@@ -5649,23 +4948,29 @@ def doctor() -> dict:
             ),
         })
 
-    # 9. Per-known-repo profile_status + trust_state (from list_profiles)
     try:
+        from chameleon_mcp.bootstrap.transaction import is_committed
+
         lp = list_profiles(limit=20)
         profiles = lp.get("data", {}).get("profiles", [])
-        repo_states = [
-            {
-                "repo_root": r.get("repo_root"),
-                "profile_status": r.get("profile_status"),
+        repo_states = []
+        for r in profiles:
+            root = r.get("repo_root")
+            if root and is_committed(Path(root) / ".chameleon"):
+                status = "profile_present"
+            elif root:
+                status = "no_profile"
+            else:
+                status = "unknown"
+            repo_states.append({
+                "repo_root": root,
+                "profile_status": status,
                 "trust_state": r.get("trust_state"),
-            }
-            for r in profiles
-        ]
+            })
         checks.append({"name": "known_repos", "status": "ok", "detail": repo_states})
     except Exception as exc:
         checks.append({"name": "known_repos", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
 
-    # Roll up
     error_count = sum(1 for c in checks if c["status"] == "error")
     warn_count = sum(1 for c in checks if c["status"] == "warn")
     if error_count:

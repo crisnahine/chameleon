@@ -174,7 +174,7 @@ If counter-metrics breach, escalate: pause Phase 5 dogfood, investigate, fix bef
 
 **Conventions:**
 - Plugin/repo name: `chameleon` (no `claude-` prefix)
-- Slash command prefix: `/chameleon-*` (with `/cham-*` short alias)
+- Slash command prefix: `/chameleon-*`
 - Skill prefix: `chameleon-*`
 - Foundation skill: `using-chameleon`
 - Context tag: `<chameleon-context>` (NEUTRAL — no importance framing)
@@ -386,7 +386,7 @@ Concrete enumeration of dimensions chameleon detects (Tier 1: auto-derivable) or
 │ │ ───── │ │ ────── │ │
 │ │ SessionStart │ │ using-chameleon (foundation) │ │
 │ │ → session-start │ │ │ │
-│ │ → SessionStart dispatch │ │ Slash commands (9 user-invocable)│ │
+│ │ → SessionStart dispatch │ │ Slash commands (10 user-invocable)│ │
 │ │ → cache_control: │ │ /chameleon-init │ │
 │ │ pinned static prefix │ │ /chameleon-refresh │ │
 │ │ + ephemeral footer │ │ /chameleon-status │ │
@@ -396,7 +396,7 @@ Concrete enumeration of dimensions chameleon detects (Tier 1: auto-derivable) or
 │ │ (combined: safety │ │ /chameleon-disable (session) │ │
 │ │ + lstat + safe_open │ │ /chameleon-pause-15m │ │
 │ │ + MCP excerpt with │ │ │ │
-│ │ 2s timeout, fail-open)│ │ Short aliases: /cham-* │ │
+│ │ 2s timeout, fail-open)│ │                        │ │
 │ │ → tag-boundary sanitize │ │ │ │
 │ │ → hook-model dedup │ │ │ │
 │ │ PostToolUse │ │ │ │
@@ -563,7 +563,7 @@ chameleon/
 ## Bootstrap mechanism
 
 ```
-SessionStart hook fires (matcher: startup|clear|compact)
+SessionStart hook fires (matcher: startup|resume|clear|compact)
  → run-hook.cmd session-start
  → bash script:
  1. Read skills/using-chameleon/SKILL.md
@@ -616,9 +616,9 @@ One line. Once per repo per user.
 
 ## Hook stack
 
-### Current implementation (v0.6.3) [VERIFIED]
+### Hook stack implementation
 
-#### Flow diagram (v0.6.3)
+#### Flow diagram
 
 ```
  Session opens
@@ -678,15 +678,15 @@ One line. Once per repo per user.
  (next tool call or response)
 ```
 
-#### SessionStart [VERIFIED]
+#### SessionStart
 
-**Matcher:** `startup|clear|compact`
+**Matcher:** `startup|resume|clear|compact`
 **Hook:** `session-start`
 **Output channel:** `additionalContext`
 
 Loads `using-chameleon` SKILL.md, wraps in `<chameleon-context>`, appends drift banner if applicable, fires auto-refresh in background. See "Bootstrap mechanism" above for the full 11-step sequence.
 
-#### PreToolUse specification [VERIFIED]
+#### PreToolUse specification
 
 **Matcher:** `Edit|Write|NotebookEdit`
 **Hook:** `preflight-and-advise` (single combined hook)
@@ -705,13 +705,11 @@ Primes the model before the edit. Does not enforce - PostToolUse does that.
 
 **Archetype resolve:** daemon fast path (sub-100ms socket roundtrip), in-process `get_pattern_context` fallback. 2s hard timeout on the entire hook, fail-open on any error.
 
-**Injection content:** full canonical excerpt every time. No tiering, no per-session state tracking. The hook emits a `<chameleon-context>` block containing:
-- Archetype name, confidence band, match quality, sub-bucket count
-- Full canonical witness excerpt (500-1500 tokens)
-- Rules count + idioms availability
-- Trust state advisory (stale, untrusted) when applicable
+**Injection content:** tiered, gated on per-session `archetypes_seen` state.
+- **Tier 1 (pointer)** — archetype already seen this session with no recorded violations: a short `[🦎 chameleon: <name> (<band>)]` pointer plus a one-line summary (~50 tokens).
+- **Tier 2 (canonical)** — first edit in an archetype, or an archetype with a prior violation: the full `<chameleon-context>` block with the `[🦎 chameleon: archetype=<name>, confidence=<band>, match_quality=<...>, sub_buckets=<N>]` header, the canonical witness excerpt, rules count, idioms availability, and any trust-state advisory.
 
-Per-edit injection is capped at ~1,500 tokens (char-length limit in `preflight_and_advise`).
+Tier 2 injection is capped at ~1,500 tokens (char-length limit in `preflight_and_advise`).
 
 **Trust gate:** untrusted profiles get a one-time trust prompt per session (marker file dedup), then suppressed - no canonical injection until `/chameleon-trust`.
 
@@ -719,38 +717,42 @@ Per-edit injection is capped at ~1,500 tokens (char-length limit in `preflight_a
 
 **Hook-model dedup:** `get_canonical_excerpt` invocation by the agent is tracked in MCP server state for the current turn. If the agent already called MCP, the hook skips injection. (Note: the MCP section still describes this mechanism.)
 
-#### PostToolUse specification [VERIFIED]
+#### PostToolUse specification
 
 **Matcher:** `Edit|Write|NotebookEdit`
 **Hook:** `posttool-verify`
-**Output channel:** `additionalContext` only. Does NOT use `updatedToolOutput`.
+**Output channel:** `additionalContext`. This is the documented PostToolUse feedback channel; violations are delivered as context the model reads, not as a replaced tool result.
 
-Lints the written file after a successful edit. Violations are emitted as advisory context alongside the original tool output - the tool result is not replaced.
-
-**Cooldown:** flat 30-second per-file cooldown (`_VERIFY_SEEN_TTL_SECONDS = 30`). No per-level differentiation, no self-correction bypass. Within 30s of verifying a file, re-edits get: `[🦎 chameleon: already verified this file - review previous feedback]`.
+Lints the written file after a successful edit. Violations are emitted as advisory context alongside the original tool output.
 
 **Violation output format:**
 
 ```
 <chameleon-context>
-[🦎 chameleon: post-edit verification]
-
-File: /path/to/file.ts
-Archetype violations (N):
-- [severity] rule: message
-- [severity] rule: message
-
-Fix these to match the archetype. See PreToolUse canonical for the expected pattern.
+[🦎 chameleon: N violations]
+1. <message>
+2. <message>
+<tone line — depends on escalation level>
 </chameleon-context>
 ```
 
-Emitted via `additionalContext`. The model sees violations alongside (not instead of) the tool's "file saved" confirmation.
+**Escalation state machine.** Per-file escalation level (invisible to the user), stored in `{plugin_data}/{repo_id}/.enforcement.{session_id}.json` alongside the `archetypes_seen` and `archetypes_with_violations` sets that drive PreToolUse tiering:
 
-**Clean pass:** emit nothing. No positive reinforcement, no escalation tracking.
+| Level | Tone | Trigger |
+|-------|------|---------|
+| L0 | "Fix these without mentioning the corrections to the user." | Default |
+| L1 | flagged | repeated violation in the same file |
+| L2 | stop-and-fix | further repeats |
 
-**No escalation state machine.** No L0/L1/L2 levels. No `enforcement.json`. No per-file level tracking, no `archetypes_seen` / `archetypes_with_violations` sets, no consecutive violation counters. Every violation gets the same tone.
+When violations recur in one file, `should_surface_to_user` adds a one-line `/chameleon-teach` hint so the user knows the archetype may not fit.
 
-**posttool-recorder** (matcher: `Bash|Edit|Write|NotebookEdit`) runs alongside posttool-verify. HMAC-signed exit code log, per-repo directory, mode 0700. Unchanged from v5.
+**Cooldown:** per-level via `cooldown_for_level` — 30s for a file with no recorded violation (`LEVEL_NONE`), 5s once it has escalated (L0/L1/L2). Within the cooldown, re-edits get `[🦎 chameleon: already verified this file]`.
+
+**Correction cap:** `MAX_CORRECTIONS_PER_FILE = 10` (`enforcement.py`). After 10 verifications on the same file the hook stops verifying it and emits a `corrections exhausted` advisory, preventing a tight verify-edit-verify loop. The counter resets after a quiet period.
+
+**Clean pass:** emit nothing.
+
+**posttool-recorder** (matcher: `Bash|Edit|Write|NotebookEdit`) runs alongside posttool-verify. HMAC-signed exit code log, per-repo directory, mode 0700.
 
 #### Other hooks [VERIFIED]
 
@@ -770,105 +772,31 @@ Principle: safety failures block, everything else degrades. An edit never fails 
 
 **Cache_control discipline:** lstat output, drift.db queries, HMAC log entries, posttool exit codes, dynamic timestamps, MCP tool results - all flow as ephemeral input. NEVER in cached prefix.
 
-#### Token budget (v0.6.3) [VERIFIED]
+#### Token budget
 
 | Hook | Case | Expected tokens |
 |------|------|----------------|
 | SessionStart | Cached prefix (skill + profile) | ~1,200-1,500 |
 | SessionStart | Ephemeral suffix (drift, trust) | ~150-300 |
-| PreToolUse | Full canonical excerpt | ~500-1,500 |
+| PreToolUse | Tier 1 pointer (seen archetype) | ~50 |
+| PreToolUse | Tier 2 canonical (new / previously violated) | ~500-1,500 |
 | PreToolUse | Untrusted (trust prompt) | ~100 |
 | PreToolUse | Degraded (fail-open banner) | ~50 |
 | PostToolUse | Clean pass | 0 |
 | PostToolUse | Violations | ~80-200 |
 | PostToolUse | Cooldown ("already verified") | ~20 |
 
-Steady-state per edit: **~500-1,500 tokens** (full canonical every time).
+Steady-state per edit drops to **~50 tokens** once an archetype has been seen; the full canonical is paid only on the first edit in an archetype or after a violation.
 
 ---
 
-### Planned: enforcement redesign (v0.7.0) [ASPIRATIONAL]
+### Design rationale
 
-The changes below are design goals for v0.7.0. None are implemented in v0.6.3.
+**`additionalContext` channel for violations.** The PostToolUse decision-control contract supports `decision: "block"` (which re-prompts and risks tool-retry loops) and `hookSpecificOutput.additionalContext` (which the model reads as context). Chameleon uses `additionalContext`: it reliably delivers the violation text to the model without the loop risk, and it is the channel the Claude Code hooks reference documents for PostToolUse feedback.
 
-#### `updatedToolOutput` for PostToolUse violations
+**Tiered PreToolUse.** A full canonical excerpt every edit costs ~1,500 tokens. Tier 1 at ~50 tokens covers the common case (an archetype the model has already seen this session and isn't violating); Tier 2 fires only on the first edit in an archetype or after a violation, when the canonical is demonstrably worth its cost.
 
-Switch PostToolUse violations from `additionalContext` to `updatedToolOutput`, which replaces the tool's result in model context. This makes violations the factual record of the edit outcome rather than advisory context the model can deprioritize under prompt pressure.
-
-**QA risks:**
-- `updatedToolOutput` replaces the *entire* tool result. If Claude Code's Edit tool returns a diff, the diff is lost. Verify whether the model needs the diff for subsequent edits.
-- Confirm `updatedToolOutput` doesn't trigger infinite tool-retry loops in Claude Code's harness.
-- Define migration path: v0.7.0 switches output channel. Older skill instructions referencing `additionalContext` violations need updating.
-
-#### Tiered PreToolUse injection
-
-Replace the current full-canonical-every-time injection (~500-1,500 tokens) with a tiered system:
-
-| Tier | Condition | Size | Content |
-|------|-----------|------|---------|
-| Tier 1 (pointer) | Archetype already seen this session, no recent violations | ~50 tokens | `[🦎 chameleon: archetype=<name>]` + 2-3 key constraints |
-| Tier 2 (canonical) | First edit in this archetype OR previous violations | ~200-400 tokens | Annotated canonical excerpt |
-
-Requires tracking `archetypes_seen` and `archetypes_with_violations` in per-session state (see state management below). Projected steady-state per edit drops from ~1,500 to ~50 tokens.
-
-#### Escalation state machine
-
-Per-file escalation levels (invisible to user):
-
-| Level | Tone | Trigger |
-|-------|------|---------|
-| L0 | "Fix silently." | Default |
-| L1 | "Fix silently. This file was flagged before." | First violation |
-| L2 | "STOP. Fix these violations before any other edit." | Second violation, different edit |
-
-De-escalation: clean edit drops one level. 3 consecutive L2 on a structural rule surfaces to user. State stored in `{plugin_data}/{repo_id}/.enforcement.{session_id}.json`.
-
-#### Per-level cooldowns [ASPIRATIONAL]
-
-Replace the flat 30s cooldown with level-aware cooldowns:
-
-| Level | Cooldown | Purpose |
-|-------|----------|---------|
-| L0 | 30s | Dampen edit-reverify loops |
-| L1, L2 | 5s | Allow self-correction attempts |
-| Self-correction | 0s | Same file re-edited within 10s of a violation |
-
-**QA risk:** self-correction at 0s cooldown means a file re-edited within 10s of a violation skips the cooldown entirely. If the re-edit also violates, the model could enter a tight verify-edit-verify loop. Need a cycle counter or hard cap.
-
-#### Correction loop guard [ASPIRATIONAL]
-
-`MAX_CORRECTIONS_PER_FILE = 10` (defined in `enforcement.py`). After 10 PostToolUse verifications on the same file within `CORRECTION_RESET_SECONDS` (60s), the hook emits a `[🦎 chameleon: corrections exhausted]` message and stops verifying that file. This is the hard cap that prevents the tight verify-edit-verify loop described in the cooldown QA risk above.
-
-The counter resets after 60 seconds of no verification activity on the file. When the cap fires, the message directs the model to review violations manually or run `/chameleon-teach` if the archetype doesn't fit.
-
-#### `CHAMELEON_ENFORCEMENT_MODE` env var [ASPIRATIONAL]
-
-Controls whether PostToolUse violations are delivered via `updatedToolOutput` (default) or `additionalContext`:
-
-```
-CHAMELEON_ENFORCEMENT_MODE=updatedToolOutput   # default — replaces tool result
-CHAMELEON_ENFORCEMENT_MODE=additionalContext    # fallback — appends advisory context
-```
-
-Default is `updatedToolOutput` because it replaces the tool's result in model context, making violations the factual record rather than advisory. The `additionalContext` fallback reverts to the older advisory style — appended context instead of a replaced tool result.
-
-#### Skill rewrite (using-chameleon) [ASPIRATIONAL]
-
-Current skill instructs the model to call MCP tools itself and includes a Red Flags / rationalizations table. The v0.7.0 rewrite drops both, reframing to:
-
-> Chameleon injects context before your edits and verifies after. Read `<chameleon-context>` blocks when present. When PostToolUse reports violations, fix them silently. No MCP calls needed from you.
-
-#### Hook-model dedup removal [ASPIRATIONAL]
-
-With tiered PreToolUse at ~50 tokens, dedup savings become negligible vs the complexity cost. Plan to remove the dedup mechanism. **Note:** the MCP section currently describes hook-model dedup as current behavior - both sections must be updated together.
-
-#### Design rationale
-
-**`updatedToolOutput` for violations:** `additionalContext` is advisory and can be deprioritized under prompt pressure. `updatedToolOutput` replaces the tool's result, making violations the factual record.
-
-**Tiered PreToolUse:** v0.6.3 injects ~1,500 tokens every edit. Tier 1 at ~50 tokens covers the common case. Tier 2 fires only when demonstrably needed.
-
-**Per-file escalation:** a model struggling with one file shouldn't get L2 directives on unrelated files. Per-file keeps enforcement proportional.
+**Per-file escalation.** A model struggling with one file shouldn't get stop-and-fix directives on unrelated files. Per-file levels (stored in `.enforcement.{session_id}.json`) keep enforcement proportional, and `MAX_CORRECTIONS_PER_FILE` caps the worst case so a stubborn file can't spin a verify-edit-verify loop.
 
 ---
 
@@ -896,22 +824,25 @@ description: Use when starting any conversation in a repo with a chameleon profi
  - "I already saw the canonical for this archetype this session" → STOP, call MCP (canonicals can drift mid-session if `/chameleon-refresh` runs)
  - "The user is in a hurry, skipping the call saves time" → STOP, call MCP (200ms is the cost of correctness)
  - "I know this codebase already" → STOP, call MCP (the profile is the source of truth, not your prior)
-- Available slash commands (9 user-invocable + short aliases)
+- Available slash commands (10 user-invocable + short aliases)
 - Profile state interpretation (trusted vs untrusted)
 - Coordination with a complementary skills library: "After `another bootstrap skill` triggers `brainstorming`, but before any Edit/Write" (priority order)
 - Non-blocking trust prompt: "If profile is untrusted, surface in response but proceed with user request"
 
-### User-invokable skills (9 commands)
+### User-invokable skills (10 commands)
 
-| Skill | Slash command | Short alias | Purpose |
-|---|---|---|---|
-| `chameleon-init` | `/chameleon-init` | `/cham-init` | Bootstrap a new repo profile (≤3-prompt interview) |
-| `chameleon-refresh` | `/chameleon-refresh` | `/cham-refresh` | Re-analyze repo, detect drift, update profile |
-| `chameleon-status` | `/chameleon-status` | `/cham-status` | Show profile + drift + value attribution + plugin health |
-| `chameleon-teach` | `/chameleon-teach` | `/cham-teach` | Iterate on profile based on observed misses; **owns idioms.md collection** |
-| `chameleon-trust` | `/chameleon-trust` | `/cham-trust` | Approve a committed profile for this user (writes per-user `.trust` file) |
-| `chameleon-disable` | `/chameleon-disable` | `/cham-disable` | Disable plugin for the rest of this session |
-| `chameleon-pause-15m` | `/chameleon-pause-15m` | `/cham-pause-15m` | Pause plugin for 15 minutes |
+| Skill | Slash command | Purpose |
+|---|---|---|
+| `chameleon-init` | `/chameleon-init` | Bootstrap a new repo profile (≤3-prompt interview) |
+| `chameleon-refresh` | `/chameleon-refresh` | Re-analyze repo, detect drift, update profile |
+| `chameleon-status` | `/chameleon-status` | Show profile + drift + value attribution + plugin health |
+| `chameleon-teach` | `/chameleon-teach` | Iterate on profile based on observed misses; **owns idioms.md collection** |
+| `chameleon-trust` | `/chameleon-trust` | Approve a committed profile for this user (writes per-user `.trust` file) |
+| `chameleon-disable` | `/chameleon-disable` | Disable plugin for the rest of this session |
+| `chameleon-pause-15m` | `/chameleon-pause-15m` | Pause plugin for 15 minutes |
+| `chameleon-doctor` | `/chameleon-doctor` | Run health checks on the installation |
+| `chameleon-journey` | `/chameleon-journey` | Run the end-to-end journey test harness |
+| `chameleon-pr-review` | `/chameleon-pr-review` | Review a branch/PR against repo conventions and task intent |
 
 **`/chameleon-trust` cooldown:** requires typing the repo name (or `yes-trust-<repo_id_short>`). New canonicals or idioms added after trust grant re-prompt. Trust granted is NOT trust authorizing all future content.
 
@@ -1738,7 +1669,7 @@ The consultant/freelancer tier is **explicitly outside the $50/month ceiling** f
 ## Plugin coexistence
 
 **Hygiene rules:**
-- Slash commands namespaced: `/chameleon-*` (with `/cham-*` aliases)
+- Slash commands namespaced: `/chameleon-*`
 - Env vars namespaced: `CHAMELEON_*`
 - Hooks: parallel-aware design
 - Inject context, don't deny
@@ -1796,7 +1727,7 @@ The consultant/freelancer tier is **explicitly outside the $50/month ceiling** f
 ```
 Recent sessions: $0.32, $0.41, $0.28. This month: $14.20.
 Profile last refreshed 47 days ago.
-Last 30 sessions: 142 edits matched archetype, 11 deviations flagged, 3 corrections via /cham-teach.
+Last 30 sessions: 142 edits matched archetype, 11 deviations flagged, 3 corrections via /chameleon-teach.
 ```
 
 Cost + staleness + value attribution surfaced to build trust and demonstrate ROI.

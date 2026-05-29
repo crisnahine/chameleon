@@ -16,7 +16,6 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-# Ensure repo root on sys.path
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -73,7 +72,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         return cmd_list()
 
-    # Pre-flight check: estimated cost vs budget
     total_estimated = sum(a[2] for a in _ACTS)
     if total_estimated > args.max_budget_usd:
         print(
@@ -82,13 +80,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    # Build context (creates run_dir + subdirs + sets env keys, doesn't apply them yet)
     results_root = Path(args.results_dir).resolve()
     results_root.mkdir(parents=True, exist_ok=True)
     ctx = build_context(plugin_root=_REPO_ROOT, results_root=results_root)
     print(f"run_dir: {ctx.run_dir}", file=sys.stderr)
 
-    # Preflight: claude, git, fixtures, python, lockfile
     try:
         pf = preflight.run_all(plugin_root=_REPO_ROOT, run_dir=ctx.run_dir)
     except preflight.PreflightError as e:
@@ -97,7 +93,6 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"preflight ok: claude={pf['claude']}, git={pf['git_version']}", file=sys.stderr)
 
-    # Copy fixtures to <run_dir>/working/
     for name, seed_path in pf["fixtures"].items():
         try:
             work_dir, origin_dir = setup_fixture(name, seed_path, ctx.run_dir / "working")
@@ -112,7 +107,6 @@ def main(argv: list[str] | None = None) -> int:
         print("DRY RUN complete (no acts executed)", file=sys.stderr)
         return 0
 
-    # Run acts in order with mid-run abort
     return _run_acts(ctx, args)
 
 
@@ -122,7 +116,6 @@ def _run_acts(ctx: JourneyContext, args: argparse.Namespace) -> int:
     any_failed = False
 
     for idx, (act_id, name, ceiling, phases) in enumerate(_ACTS):
-        # Mid-run abort: cost_so_far + remaining_act_ceilings > budget?
         remaining_ceilings = [a[2] for a in _ACTS[idx:]]
         projected = ctx.cost_so_far_usd + sum(remaining_ceilings)
         if projected > args.max_budget_usd:
@@ -142,14 +135,12 @@ def _run_acts(ctx: JourneyContext, args: argparse.Namespace) -> int:
                     })
             break
 
-        # Set up the per-act checkpoint file
         ctx.current_checkpoint_file = ctx.run_dir / "checkpoints" / f"{act_id}.jsonl"
         ctx.current_checkpoint_file.touch()
         ctx.env["CHAMELEON_JOURNEY_CHECKPOINT"] = str(ctx.current_checkpoint_file)
 
         print(f"[ACT {act_id}] {name} - starting (estimate ${ceiling:.2f})", file=sys.stderr)
 
-        # Dynamic import + run
         mod = importlib.import_module(f"tests.journey.acts.act_{act_id}")
         t0 = time.monotonic()
         try:

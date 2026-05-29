@@ -54,9 +54,6 @@ from chameleon_mcp.signatures import bucket_named_export_count, content_signal_m
 
 Severity = Literal["info", "warning", "error"]
 
-# Languages the engine knows how to extract dimensions for. Extensions that
-# don't match a supported language fall through to a "language_unsupported"
-# diagnostic rather than producing false-positive violations.
 _TS_EXTENSIONS: frozenset[str] = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"})
 _RUBY_EXTENSIONS: frozenset[str] = frozenset({".rb"})
 
@@ -126,11 +123,6 @@ def recalibrate_ast_query(witness_snapshot: DimensionSnapshot) -> dict:
     }
 
 
-# -----------------------------------------------------------------------------
-# Language detection
-# -----------------------------------------------------------------------------
-
-
 def detect_language(file_path: str | None) -> str | None:
     """Map a file extension to a supported lint language, or None.
 
@@ -149,15 +141,8 @@ def detect_language(file_path: str | None) -> str | None:
     return None
 
 
-# -----------------------------------------------------------------------------
-# String / comment stripping (TypeScript)
-# -----------------------------------------------------------------------------
-
-
 _TS_LINE_COMMENT = re.compile(r"//[^\n]*")
 _TS_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
-# Match plain quoted strings (best-effort; we don't try to be perfect about
-# escapes since we're just stripping for JSX detection).
 _TS_STRING = re.compile(
     r"""(?<!\\)(?:
         "(?:\\.|[^"\\])*" |
@@ -183,13 +168,6 @@ def _strip_ts_strings_and_comments(content: str) -> str:
     return out
 
 
-# -----------------------------------------------------------------------------
-# TypeScript dimension extraction
-# -----------------------------------------------------------------------------
-
-
-# `export default ...` patterns. Order matters: try class / function before
-# falling back to ExportAssignment-like default (object literal / identifier).
 _TS_DEFAULT_FUNCTION = re.compile(r"^\s*export\s+default\s+(?:async\s+)?function\b", re.MULTILINE)
 _TS_DEFAULT_CLASS = re.compile(r"^\s*export\s+default\s+class\b", re.MULTILINE)
 _TS_DEFAULT_ARROW = re.compile(
@@ -199,7 +177,6 @@ _TS_DEFAULT_OBJECT = re.compile(r"^\s*export\s+default\s*\{", re.MULTILINE)
 _TS_DEFAULT_ARRAY = re.compile(r"^\s*export\s+default\s*\[", re.MULTILINE)
 _TS_DEFAULT_IDENT = re.compile(r"^\s*export\s+default\s+\w", re.MULTILINE)
 
-# Named exports: top-level lines beginning with `export <kind>`.
 _TS_NAMED_EXPORTS = [
     re.compile(r"^\s*export\s+(?:const|let|var)\s+(\w+)\s*[=:]", re.MULTILINE),
     re.compile(r"^\s*export\s+(?:async\s+)?function\s+(\w+)", re.MULTILINE),
@@ -208,30 +185,12 @@ _TS_NAMED_EXPORTS = [
     re.compile(r"^\s*export\s+type\s+(\w+)", re.MULTILINE),
     re.compile(r"^\s*export\s+enum\s+(\w+)", re.MULTILINE),
 ]
-# `export { a, b, c };` — explicit re-export list.
 _TS_EXPORT_LIST = re.compile(r"^\s*export\s*\{\s*([^}]*)\s*\}\s*;?\s*$", re.MULTILINE)
 
-# Top-level node kinds we try to detect heuristically. Each rule maps a
-# regex over the (string-stripped) content to a top-level node kind name
-# (matching the ts_dump.mjs SyntaxKind strings). Order matters: the first
-# rule that matches wins, so put more-specific rules above more-general
-# ones.
-#
-# Semantics note: in TS Compiler API land, `export default function Page() {}`
-# is a `FunctionDeclaration` with a Default modifier (NOT an
-# `ExportAssignment`). `ExportAssignment` only covers `export default
-# <expression>` like `export default foo;` or `export default {}`. We
-# preserve that distinction so the lint engine's top_level_node_kinds
-# observations align with what ts_dump.mjs produces.
 _TS_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^\s*import\s", re.MULTILINE), "ImportDeclaration"),
-    # `export default function ...` / `export default class ...` keep the
-    # underlying declaration kind in the TS AST. Match these FIRST so the
-    # more-general `^\s*export\s+default\s` rule below doesn't claim them.
     (re.compile(r"^\s*export\s+default\s+(?:async\s+)?function\b", re.MULTILINE), "FunctionDeclaration"),
     (re.compile(r"^\s*export\s+default\s+class\b", re.MULTILINE), "ClassDeclaration"),
-    # `export default <expression>` (object literal, array literal, identifier,
-    # arrow function) is an ExportAssignment node in the TS AST.
     (re.compile(r"^\s*export\s+default\s", re.MULTILINE), "ExportAssignment"),
     (
         re.compile(r"^\s*export\s*\{[^}]*\}\s*(?:from\s+[\"'][^\"']*[\"'])?\s*;?\s*$", re.MULTILINE),
@@ -251,14 +210,6 @@ _TS_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^\s*(?:const|let|var)\s+\w", re.MULTILINE), "FirstStatement"),
 )
 
-# Approximate JSX detection. Three forms count:
-#   `</Name>`          — closing tag
-#   `<Name ... />`     — self-closing element (HTML or component)
-#   `<>` / `</>`       — fragment
-# To avoid TypeScript generic false positives like `Array<string>`, we
-# require self-closing forms to terminate with `/>` and demand the
-# preceding character not be alphanumeric (so `x<T/>` won't match — and
-# `Array<string>` has no `/>` ender so it can't match here anyway).
 _JSX_CLOSING = re.compile(r"</[A-Za-z][\w.-]*\s*>")
 _JSX_SELF_CLOSING = re.compile(
     r"(?<![A-Za-z0-9_])<[A-Za-z][\w.]*(?:\s[^<>]*?)?/>", re.DOTALL
@@ -276,7 +227,6 @@ def _extract_typescript(content: str) -> DimensionSnapshot:
     """
     stripped = _strip_ts_strings_and_comments(content)
 
-    # default_export_kind: first matching pattern wins
     default_export_kind: str | None = None
     if _TS_DEFAULT_CLASS.search(content):
         default_export_kind = "ClassDeclaration"
@@ -291,7 +241,6 @@ def _extract_typescript(content: str) -> DimensionSnapshot:
     elif _TS_DEFAULT_IDENT.search(content):
         default_export_kind = "Identifier"
 
-    # named_export_count: sum of unique top-level named declarations + export-list members
     named_names: set[str] = set()
     for pat in _TS_NAMED_EXPORTS:
         for m in pat.finditer(content):
@@ -302,21 +251,16 @@ def _extract_typescript(content: str) -> DimensionSnapshot:
             name = piece.strip()
             if not name:
                 continue
-            # Strip `as Alias` if present; we only care about export count.
             head = name.split(" as ")[-1].strip()
             if head:
                 named_names.add(head)
     named_export_count = len(named_names)
 
-    # top_level_node_kinds: walk lines and tag each via the first matching rule.
-    # We tag a line only once (the first regex that matches "wins").
     top_level: list[str] = []
     for line_no, line in enumerate(content.splitlines()):
         stripped_line = line.lstrip()
         if not stripped_line:
             continue
-        # Match only on top-level (no indentation). This is a heuristic and
-        # will miss top-level statements inside namespaces — acceptable for v0.3.
         indent = len(line) - len(stripped_line)
         if indent != 0:
             continue
@@ -324,16 +268,14 @@ def _extract_typescript(content: str) -> DimensionSnapshot:
             if pat.match(line):
                 top_level.append(kind)
                 break
-        del line_no  # reserved for future unparseable-region tracking
+        del line_no
 
-    # jsx_present: scan stripped content for any closing/self-closing/fragment tag.
     jsx_present = (
         _JSX_CLOSING.search(stripped) is not None
         or _JSX_SELF_CLOSING.search(stripped) is not None
         or _JSX_FRAGMENT.search(stripped) is not None
     )
 
-    # content_signal: reuse the shared sig function on the first 200 bytes.
     head = content[:200]
     cs = content_signal_match_for(head)
     content_signal = cs if cs != "none" else None
@@ -346,11 +288,6 @@ def _extract_typescript(content: str) -> DimensionSnapshot:
         content_signal=content_signal,
         unparseable_regions=[],
     )
-
-
-# -----------------------------------------------------------------------------
-# Ruby dimension extraction (v0.3: minimal — bucket of top-level nodes only)
-# -----------------------------------------------------------------------------
 
 
 _RUBY_LINE_COMMENT = re.compile(r"#[^\n]*")
@@ -370,8 +307,6 @@ def _strip_ruby_strings_and_comments(content: str) -> str:
     return out
 
 
-# Ruby top-level constructs we recognize. Class / module / def → "exports"
-# in our normalized signature (mirrors prism_dump.rb's is_top_level_export?).
 _RUBY_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^class\s+\w", re.MULTILINE), "ClassNode"),
     (re.compile(r"^module\s+\w", re.MULTILINE), "ModuleNode"),
@@ -408,11 +343,6 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
     top_level_class_or_module: list[str] = []
     named_export_count = 0
 
-    superclass: str | None = None
-    sc_match = _RUBY_SUPERCLASS_RE.search(stripped)
-    if sc_match:
-        superclass = sc_match.group(1)
-
     _NESTED_CLASS_RE = re.compile(
         r"^\s{2,}class\s+(\w[\w:]*)\s*(?:<\s*([\w:\[\]]+))?", re.MULTILINE
     )
@@ -422,8 +352,12 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
             continue
         for pat, kind in _RUBY_TOP_LEVEL_RULES:
             if pat.match(line):
-                if kind == "ClassNode" and superclass:
-                    top_level.append(f"ClassNode:{superclass}")
+                if kind == "ClassNode":
+                    sc_match = _RUBY_SUPERCLASS_RE.match(line)
+                    if sc_match:
+                        top_level.append(f"ClassNode:{sc_match.group(1)}")
+                    else:
+                        top_level.append("ClassNode")
                     top_level_class_or_module.append("ClassNode")
                 else:
                     top_level.append(kind)
@@ -433,9 +367,6 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
                     named_export_count += 1
                 break
 
-    # Detect classes nested inside modules (2-space indent).
-    # module Api; class FooController < ApplicationController; end; end
-    # The column-0 scan sees ModuleNode but misses the class inside.
     has_module = any(
         k == "ModuleNode" or k.startswith("ModuleNode:") for k in top_level
     )
@@ -478,11 +409,6 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
     )
 
 
-# -----------------------------------------------------------------------------
-# Public API: extract_dimensions
-# -----------------------------------------------------------------------------
-
-
 def extract_dimensions(
     content: str,
     *,
@@ -508,11 +434,6 @@ def extract_dimensions(
     if language == "ruby":
         return _extract_ruby(content)
     return DimensionSnapshot()
-
-
-# -----------------------------------------------------------------------------
-# Public API: lint
-# -----------------------------------------------------------------------------
 
 
 _TS_CODE_KINDS = frozenset({
@@ -584,10 +505,6 @@ def _top_level_kinds_match(file_kinds: list[str], expected: list[str]) -> bool:
     if not expected:
         return True
 
-    # Deduplicate at the coarse level so multiple raw kinds that collapse
-    # to the same category (e.g. FirstStatement + ExportAssignment both →
-    # CodeDeclaration) count as one expected category, not two. Without
-    # this a file with just one TS declaration inflates the match count.
     coarse_expected = {_coarse_normalize(k) for k in expected}
     coarse_file = {_coarse_normalize(k) for k in file_kinds}
 
@@ -597,12 +514,6 @@ def _top_level_kinds_match(file_kinds: list[str], expected: list[str]) -> bool:
     if matched < min_required:
         return False
 
-    # DSL conflict check: archetype expects DslCall:ActiveRecord but file
-    # has DslCall:ActionController -> wrong framework. Only triggers when
-    # BOTH sides have framework-specific DSL categories. Neutral categories
-    # (generic "DslCall" fallback and "DslCall:Ruby" for core language DSLs
-    # like attr_reader/delegate) are excluded — they coexist with any
-    # framework.
     _NEUTRAL_DSL = {"DslCall", "DslCall:Ruby"}
     expected_dsl = {
         _normalize_kind(k) for k in expected if k.startswith("DslCall:")
@@ -647,7 +558,6 @@ def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]
 
     violations: list[Violation] = []
 
-    # default_export_kind
     expected_default = ast_query.get("default_export_kind")
     actual_default = snapshot.default_export_kind
     if expected_default is not None and expected_default != actual_default:
@@ -664,7 +574,6 @@ def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]
             )
         )
 
-    # top_level_node_kinds (multiset comparison; see _top_level_kinds_match)
     expected_kinds = ast_query.get("top_level_node_kinds")
     if expected_kinds:
         if not _top_level_kinds_match(snapshot.top_level_node_kinds, list(expected_kinds)):
@@ -682,7 +591,6 @@ def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]
                 )
             )
 
-    # named_export_count_bucket
     expected_bucket = ast_query.get("named_export_count_bucket")
     if expected_bucket is not None:
         actual_bucket = snapshot.named_export_count_bucket
@@ -700,7 +608,6 @@ def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]
                 )
             )
 
-    # jsx_present
     expected_jsx = ast_query.get("jsx_present")
     if expected_jsx is not None:
         actual_jsx = bool(snapshot.jsx_present)
@@ -732,7 +639,6 @@ def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]
                 )
             )
 
-    # content_signal (null in ast_query → no expectation)
     expected_signal = ast_query.get("content_signal")
     if expected_signal is not None:
         actual_signal = snapshot.content_signal
@@ -788,46 +694,10 @@ def canonical_confidence(snapshot: DimensionSnapshot, ast_query: dict | None) ->
     return sum(1 for c in checks if c) / len(checks)
 
 
-# -----------------------------------------------------------------------------
-# Public API: scan_secrets (v0.4 — 4.8)
-# -----------------------------------------------------------------------------
-
-
-# Hard cap on the number of secret violations a single lint_file call
-# returns. A real key dump or a giant accidental commit could trip dozens
-# of patterns per line — we want the model to see "this file has secrets"
-# without exhausting the response token budget.
 MAX_SECRETS_PER_FILE = 50
 
-# v0.5.2 (Bug — GitHub PAT bypassed by string-concat): the fallback regex in
-# `profile/secret_scanner._FALLBACK_PATTERNS` and detect-secrets's per-line
-# scanners require the secret prefix (e.g., `ghp_`) and the rest of the token
-# to live in the *same* string literal. A trivially-obfuscated payload like
-# `"ghp_" + "abcdef…"` (TS/JS) or `"ghp_" + "abcdef…"` (Python) defeats both.
-#
-# We fold consecutive same-quote-style string literals joined by `+` into a
-# single literal *before* invoking the underlying scanners. Two safety rails:
-#
-# 1. We only fold literal-to-literal concat. `"ghp_" + foo()` is out of scope
-#    (we'd need real dataflow to know what `foo()` returns) and stays
-#    un-folded so detect-secrets sees the original text.
-# 2. We bound the number of substitutions per call. A pathological generated
-#    file with thousands of `+`-joined string fragments could otherwise burn
-#    CPU before the existing 100KB content cap took effect.
 _MAX_CONCAT_FOLDS_PER_FILE = 1000
 
-# Quote-style-aware joined-string folder. Matches `"a" + "b"` with arbitrary
-# whitespace (including newlines) around the `+`, regardless of escapes in
-# the literal bodies. Three patterns — one per quote style — so we don't
-# accidentally fold across mismatched delimiters (`"a" + 'b'` is left alone:
-# the source language might treat that as an error and silently joining
-# could produce a literal that doesn't exist in any source).
-#
-# We do NOT attempt to handle JS template literals (backticks) here: those
-# can contain `${…}` interpolations whose contents are not known statically,
-# so folding two backtick strings would produce a literal that does not
-# represent the runtime value. Most real-world obfuscation attempts use
-# plain quotes anyway.
 _CONCAT_DQ = re.compile(
     r'"((?:\\.|[^"\\])*)"\s*\+\s*"((?:\\.|[^"\\])*)"',
     re.DOTALL,
@@ -874,14 +744,12 @@ def _fold_string_concat(
         def _join_sq(m: re.Match) -> str:
             return "'" + m.group(1) + m.group(2) + "'"
 
-        # subn returns (new_string, n) so we can decrement the budget.
         out, n_dq = _CONCAT_DQ.subn(_join_dq, out, count=remaining)
         remaining -= n_dq
         if remaining <= 0:
             break
         out, n_sq = _CONCAT_SQ.subn(_join_sq, out, count=remaining)
         remaining -= n_sq
-        # Idempotent fixpoint: if neither regex fired, we're done.
         if out == before:
             break
     return out
@@ -917,17 +785,8 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
 
     hits = scan_for_secrets(content)
 
-    # Fold concat-obfuscated literals and re-scan. New hits (those that
-    # didn't appear in the unfolded content) are appended with a clear
-    # location marker so the operator knows we caught a deobfuscated form.
     folded = _fold_string_concat(content)
     if folded != content:
-        # Build a quick dedup set keyed by (type, secret-shaped substring) on
-        # the original. We can't trust (type, line_number) alone because the
-        # fold changes the byte offsets within a line — but if the underlying
-        # secret VALUE is already flagged in the original, we don't need to
-        # re-flag it. detect-secrets redacts the value, so as a second-best
-        # we dedup on (type, line_number) for line-bearing hits.
         seen_types_lines = {
             (h.get("type"), h.get("line_number"))
             for h in hits
@@ -939,13 +798,7 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
             if fh.get("line_number") is not None and key_line in seen_types_lines:
                 continue
             if fh.get("type") in seen_types and fh.get("line_number") is None:
-                # Position-keyed hits collide if the same type already showed
-                # up in the original; the folded text's positions are not
-                # comparable. Drop to avoid double-reporting.
                 continue
-            # Tag the hit so the reported message makes the deobfuscation
-            # explicit; the user shouldn't have to guess why a `ghp_…`
-            # warning fired on a line that doesn't visually contain one.
             fh = dict(fh)
             fh["concat_folded"] = True
             hits.append(fh)
@@ -964,8 +817,6 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
         else:
             location = "unknown location"
         kind = str(hit.get("type") or "unknown")
-        # v0.5.2: surface deobfuscation-via-fold so the operator sees why a
-        # ghp_… flag fired on a line whose visible text is two short literals.
         fold_suffix = " [after string-concat fold]" if hit.get("concat_folded") else ""
         violations.append(
             Violation(
@@ -1000,11 +851,6 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
     return violations
 
 
-# -----------------------------------------------------------------------------
-# Public API: lint_conventions (v0.9.0)
-# -----------------------------------------------------------------------------
-
-
 _CHAMELEON_IGNORE_RE = re.compile(r"//\s*chameleon-ignore\s+([\w-]+)")
 _CHAMELEON_IGNORE_RUBY_RE = re.compile(r"#\s*chameleon-ignore\s+([\w-]+)")
 _TS_IMPORT_FROM_RE = re.compile(r"import\s+.*?\bfrom\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
@@ -1027,13 +873,21 @@ def lint_conventions(
 
     violations: list[Violation] = []
 
-    # Import preference
     if "import-preference" not in ignored_rules:
         for competing in (conventions.get("imports") or {}).get("competing", []):
-            over_mod = competing["over"]
-            preferred_mod = competing["preferred"]
+            over_mod = competing.get("over")
+            preferred_mod = competing.get("preferred")
+            if not over_mod or not preferred_mod:
+                continue
+            # Match the over/preferred token on word boundaries so `useQuery`
+            # doesn't match `useQueryClient` and `useCustomQuery` in a comment
+            # doesn't falsely suppress the violation.
+            over_re = re.compile(r"\b" + re.escape(over_mod) + r"\b")
+            preferred_re = re.compile(r"\b" + re.escape(preferred_mod) + r"\b")
+            if preferred_re.search(content):
+                continue
             for m in _TS_IMPORT_FROM_RE.finditer(content):
-                if over_mod in m.group(0) and preferred_mod not in content:
+                if over_re.search(m.group(0)):
                     violations.append(Violation(
                         rule="import-preference-violation",
                         expected=preferred_mod,
@@ -1043,7 +897,6 @@ def lint_conventions(
                     ))
                     break
 
-    # Naming convention (TS only)
     if language == "typescript" and "naming-convention" not in ignored_rules:
         naming = conventions.get("naming") or {}
         prefix_entry = naming.get("interface_prefix")
@@ -1060,9 +913,7 @@ def lint_conventions(
                         message=f"NAMING: interface {name} should use {expected_prefix}-prefix ({prefix_entry['consistency']:.0%} convention)",
                     ))
 
-    # Inheritance convention (Ruby only)
     if language == "ruby" and "inheritance-convention" not in ignored_rules:
-        # Also check Ruby-style comments for chameleon-ignore
         for m in _CHAMELEON_IGNORE_RUBY_RE.finditer(content):
             ignored_rules.add(m.group(1))
 

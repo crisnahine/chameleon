@@ -90,9 +90,7 @@ def _compute_fixture_repo_id(repo_path: Path) -> str:
         url = ""
 
     if url:
-        # Apply the same normalization as _normalize_git_url in tools.py.
         s = url.strip()
-        # SCP shorthand -> ssh://
         scp_re = re.compile(r"^([a-zA-Z0-9._-]+):([^/].*)$")
         m = scp_re.match(s)
         if m and "://" not in s:
@@ -158,11 +156,9 @@ def run(ctx: JourneyContext) -> ActResult:
         ctx.current_checkpoint_file, expected_phases=[5, 6, 7, 15]
     )
 
-    # Runner-side cross-checks
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 5: profile.json schema_version == 7 in ts_basic/.chameleon/
     ts_basic_chameleon = ctx.fixture("ts_basic") / ".chameleon"
     profile_json = ts_basic_chameleon / "profile.json"
     try:
@@ -178,7 +174,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[5] = str(e)
         cross_check_passed[5] = False
 
-    # Phase 6: ts_monorepo/.chameleon/profile.json exists after auto_rename init
     ts_monorepo_chameleon = ctx.fixture("ts_monorepo") / ".chameleon"
     try:
         expect.path_exists(6, ts_monorepo_chameleon / "profile.json")
@@ -187,17 +182,10 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[6] = str(e)
         cross_check_passed[6] = False
 
-    # Phase 7: .trust file written to chameleon_data AND profile files still present
-    # after force=True overwrite. The .trust file lives at:
-    #   <plugin_data_dir>/<repo_id>/.trust
-    # where repo_id is derived from the git remote URL (or path fallback) the same
-    # way _compute_repo_id does in tools.py.
     try:
         expect.path_exists(7, ts_basic_chameleon / "COMMITTED")
         expect.path_exists(7, profile_json)
 
-        # Compute the repo_id the MCP engine uses for ts_basic so we can
-        # verify the .trust file was actually written to disk.
         ts_basic_path = ctx.fixture("ts_basic")
         repo_id = _compute_fixture_repo_id(ts_basic_path)
         trust_path = ctx.plugin_data_dir / repo_id / ".trust"
@@ -207,7 +195,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[7] = str(e)
         cross_check_passed[7] = False
 
-    # Phase 15: archetype_renames.json in ts_monorepo has <= 256 entries
     renames_json = ts_monorepo_chameleon / "archetype_renames.json"
     if renames_json.exists():
         try:
@@ -222,10 +209,8 @@ def run(ctx: JourneyContext) -> ActResult:
             notes_extra[15] = f"archetype_renames.json parse error: {e}"
             cross_check_passed[15] = False
     else:
-        # File absent is acceptable for small fixtures; treat as passed
         cross_check_passed[15] = True
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -235,8 +220,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
-    # Claude's checkpoint is the primary signal.
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

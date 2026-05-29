@@ -31,24 +31,10 @@ from chameleon_mcp.signatures import (
     path_pattern_bucket_for,
 )
 
-# Files in clusters smaller than this aren't proposed as their own archetype
-# without explicit user confirmation.
 SPARSE_CLUSTER_THRESHOLD = 5
 
-# A cluster is "bimodal" if, on at least one observable dimension, the
-# most-common value holds STRICTLY LESS than this fraction of its members.
-# i.e. a 60/40 split crosses the threshold (40% on the minority = 60% on the
-# majority, and 60% < 60% is false, so 60/40 exact is the boundary — see
-# `is_bimodal` docstring for the precise definition).
 BIMODAL_DOMINANT_SHARE_THRESHOLD = 0.6
 
-# Dimensions inspected for bimodality. These are signals the ClusterKey
-# already encodes (or bucketizes) but where the raw per-file value can still
-# vary inside a single cluster — e.g. two files in the same path bucket
-# may have different default_export_kind values yet land in the same cluster
-# because of identical top_level_node_kinds + identical import hash, with
-# default_export_kind being the discriminator buried in the tuple. Only
-# dimensions where intra-cluster variance is actually possible go here.
 BIMODAL_INSPECTED_DIMENSIONS: tuple[str, ...] = (
     "default_export_kind",
     "named_export_count_bucket",
@@ -63,22 +49,8 @@ class Cluster:
 
     key: ClusterKey
     members: list[ParsedFile] = field(default_factory=list)
-    # v0.5.2 (Bug 4): per-cluster sparse threshold so the adaptive
-    # heuristic in `cluster_files` can be reflected in `.is_sparse`
-    # without changing the module-level default. Callers that build
-    # Cluster instances directly (older tests) inherit the v0.5.1
-    # threshold-5 behavior unchanged.
     sparse_threshold: int = SPARSE_CLUSTER_THRESHOLD
-    # BUG-002 (v0.5.6): loose-merge clustering tier. Clusters created by
-    # the tight (exact-signature) pass have tier "tight"; clusters formed
-    # by the second-pass loose merge — same paths_pattern + AST shape
-    # Jaccard >= 0.5 — get tier "loose" so consumers can distinguish.
     cluster_tier: str = "tight"
-    # v0.5.9 (Option 4): sub_bucket distribution for this cluster.
-    # Maps sub_bucket string → member count. Empty string key means
-    # "file sits directly under the depth-2 bucket with no further
-    # subdirectory". Empty dict for shallow repos where no member has
-    # a sub_bucket.
     sub_bucket_counts: dict[str, int] = field(default_factory=dict)
 
     @property
@@ -110,8 +82,6 @@ class Cluster:
         if dimension == "jsx_present":
             return member.has_jsx
         if dimension == "content_signal_match":
-            # Inspect the first 200 bytes via the same matcher used for
-            # signature derivation so this stays in lockstep with the key.
             from chameleon_mcp.signatures import content_signal_match_for
             return content_signal_match_for(member.content_first_200_bytes)
         return None
@@ -253,15 +223,10 @@ def cluster_files(
     from chameleon_mcp.bootstrap.discovery import is_likely_generated
 
     by_key: dict[ClusterKey, list[ParsedFile]] = defaultdict(list)
-    # v0.5.9 (Option 4): accumulate sub_bucket counts per cluster key so
-    # we can attach them to each Cluster after bucketing. Using a Counter
-    # per key would be expensive; we accumulate a flat Counter[sub_bucket]
-    # per ClusterKey instead.
     sub_bucket_counter: dict[ClusterKey, Counter[str]] = defaultdict(Counter)
     skipped_generated: list[ParsedFile] = []
 
     for pf in parsed_files:
-        # Generated-code heuristic on file content head
         if is_likely_generated(pf.content_first_200_bytes):
             skipped_generated.append(pf)
             continue
@@ -274,11 +239,6 @@ def cluster_files(
         else:
             file_path_for_signature = str(pf.path)
 
-        # v0.5.2 (Bug 1): clustering keys bucket on extension so .tsx
-        # and .ts files in the same dir cluster separately. The runtime
-        # archetype lookup keeps the extension-blind bucket so old
-        # v0.5.x profiles remain matchable.
-        # v0.5.9 (Option 4): also capture sub_bucket for cluster metadata.
         _, sub_bucket = path_pattern_bucket_for(
             file_path_for_signature, include_extension=True
         )
@@ -295,9 +255,6 @@ def cluster_files(
         by_key[key].append(pf)
         sub_bucket_counter[key][sub_bucket] += 1
 
-    # v0.5.2 (Bug 4): adaptive sparse threshold. Resolved AFTER bucketing
-    # so the threshold reflects the actual clustered file count, not the
-    # candidate-before-generated-filter count.
     total_clustered = sum(len(members) for members in by_key.values())
     if min_cluster_size is None:
         resolved_threshold = _adaptive_sparse_threshold(total_clustered)
@@ -314,36 +271,11 @@ def cluster_files(
         for k, members in by_key.items()
     ]
 
-    # BUG-002 (v0.5.6): loose-merge second pass. Pre-v0.5.6 the strict
-    # signature clustering left 90%+ of files in singleton clusters
-    # because the seven-tuple key keys on AST top-level-node-kinds —
-    # minor shape differences (one file has an extra TypeAlias) split
-    # the cluster. The vast majority of files in a real codebase then
-    # return archetype=null from get_pattern_context.
-    #
-    # The loose-merge tier groups sparse clusters sharing the same
-    # paths_pattern + extension + JSX flag and folds them into a single
-    # cluster when pairwise top-level-node-kinds Jaccard >= 0.5. The
-    # merged cluster is marked tier="loose" so consumers can apply
-    # lower confidence to it.
     clusters = _loose_merge_sparse_clusters(clusters, resolved_threshold)
 
-    # Option 1: shape-fuzzy merge. After the sparse-cluster loose merge,
-    # any remaining clusters that share (path_pattern_bucket,
-    # default_export_kind, jsx_present) and whose UNION of member
-    # top_level_node_kinds has Jaccard >= CLUSTER_SHAPE_JACCARD_THRESHOLD
-    # get folded together. This fixes the "service-v1-rb" mislabel where
-    # files differing by a single CallNode landed in different tight
-    # clusters and never merged because neither was sparse enough for the
-    # loose-merge pass.
     clusters = _shape_fuzzy_merge(clusters)
 
-    # Rec 2: split mixed clusters that carry a semantic sub-bucket suffix
-    # (concerns/, base/, __tests__/, spec/) so a Rails ``model`` cluster
-    # that absorbed 36 concerns yields a clean ``model`` plus a
-    # ``model-concern`` cluster instead of one heterogenous bucket. Runs
-    # AFTER the merge passes so it operates on the final cluster shape.
-    clusters = _split_by_sub_bucket(clusters, resolved_threshold)
+    clusters = _split_by_sub_bucket(clusters, resolved_threshold, repo_root)
 
     clusters.sort(key=lambda c: c.size, reverse=True)
 
@@ -389,10 +321,8 @@ def _loose_merge_sparse_clusters(
     merged: list[Cluster] = []
     for group in sparse_by_bucket.values():
         if len(group) < 2:
-            # Single sparse cluster — nothing to merge with; keep as-is.
             merged.extend(group)
             continue
-        # Greedy union-find on Jaccard >= 0.5.
         parent: list[int] = list(range(len(group)))
 
         def _find(i: int, _p: list[int] = parent) -> int:
@@ -406,8 +336,6 @@ def _loose_merge_sparse_clusters(
             if ri != rj:
                 _p[ri] = rj
 
-        # Compute representative node-kinds-set per cluster (use the
-        # first member's set as the cluster's shape signature).
         shapes = [_node_kinds_set(c.members[0]) for c in group]
         n = len(group)
         for i in range(n):
@@ -415,7 +343,6 @@ def _loose_merge_sparse_clusters(
                 if _jaccard(shapes[i], shapes[j]) >= 0.5:
                     _union(i, j)
 
-        # Build merged clusters from union-find buckets.
         by_root: dict[int, list[int]] = defaultdict(list)
         for i in range(n):
             by_root[_find(i)].append(i)
@@ -423,7 +350,6 @@ def _loose_merge_sparse_clusters(
             if len(indices) == 1:
                 merged.append(group[indices[0]])
                 continue
-            # Combine members from all indices, retain first cluster's key.
             combined_members: list[ParsedFile] = []
             for idx in indices:
                 combined_members.extend(group[idx].members)
@@ -449,16 +375,6 @@ def _merge_sub_bucket_counts(clusters: list[Cluster]) -> dict[str, int]:
     return dict(merged)
 
 
-# Rec 2: sub-bucket suffixes that carry semantic weight strong enough to
-# warrant splitting a cluster. A Rails ``app/models`` cluster that absorbed
-# 36 concerns under ``app/models/concerns/`` produces a heterogenous
-# canonical witness; splitting yields a clean ``model`` archetype plus a
-# distinct ``model-concern`` archetype that the existing _RAILS_PRIORS
-# table at naming.py:318 can pick up.
-#
-# The check is "first path segment of sub_bucket matches one of these"
-# rather than substring so ``base/`` doesn't accidentally trip on
-# legitimate path components.
 _SPLIT_BY_SUB_BUCKET_SUFFIXES: frozenset[str] = frozenset({
     "concerns",
     "base",
@@ -469,7 +385,7 @@ _SPLIT_BY_SUB_BUCKET_SUFFIXES: frozenset[str] = frozenset({
 })
 
 
-def _member_sub_bucket(member: ParsedFile) -> str:
+def _member_sub_bucket(member: ParsedFile, repo_root: Path | None = None) -> str:
     """Recompute a member's sub_bucket so the split pass can re-partition.
 
     sub_bucket_counts on the cluster is aggregate; we need per-member
@@ -481,7 +397,13 @@ def _member_sub_bucket(member: ParsedFile) -> str:
 
     if member.path is None:
         return ""
-    rel = str(member.path)
+    if repo_root is not None:
+        try:
+            rel = str(member.path.relative_to(repo_root))
+        except ValueError:
+            rel = str(member.path)
+    else:
+        rel = str(member.path)
     _, sub = path_pattern_bucket_for(rel)
     return sub or ""
 
@@ -489,6 +411,7 @@ def _member_sub_bucket(member: ParsedFile) -> str:
 def _split_by_sub_bucket(
     clusters: list[Cluster],
     sparse_threshold: int,
+    repo_root: Path | None = None,
 ) -> list[Cluster]:
     """Split clusters whose sub_bucket distribution carries a semantic suffix.
 
@@ -514,12 +437,8 @@ def _split_by_sub_bucket(
             result.append(cluster)
             continue
 
-        # Partition members by "starts with a known semantic suffix?".
-        # Recompute per-member sub_bucket rather than trusting the
-        # aggregate sub_bucket_counts on the cluster, because some merge
-        # passes upstream may not have refreshed the counter.
         member_buckets = [
-            (m, _member_sub_bucket(m)) for m in cluster.members
+            (m, _member_sub_bucket(m, repo_root)) for m in cluster.members
         ]
 
         def _split_key(sb: str) -> str | None:
@@ -543,8 +462,6 @@ def _split_by_sub_bucket(
             result.append(cluster)
             continue
 
-        # The "with suffix" partition must clear the sparse threshold;
-        # below it, the suffix is just noise.
         keep_split = False
         for _tag, members in with_suffix.items():
             if len(members) < sparse_threshold:
@@ -556,9 +473,6 @@ def _split_by_sub_bucket(
             result.append(cluster)
             continue
 
-        # The "without suffix" partition's dominant sub_bucket must
-        # carry the bulk of the non-suffix members; if it's also
-        # heterogenous, splitting on just the suffix is not a win.
         no_suffix_subs = Counter(sb for _m, sb in without_suffix)
         if not no_suffix_subs:
             result.append(cluster)
@@ -568,13 +482,8 @@ def _split_by_sub_bucket(
             result.append(cluster)
             continue
 
-        # Commit the split: parent vanishes, two (or more) children
-        # take its place.
         for _tag, suffix_members in with_suffix.items():
             if len(suffix_members) < sparse_threshold:
-                # Below-threshold suffix partitions stay with the
-                # non-suffix bucket so they don't become orphan sparse
-                # clusters of their own.
                 without_suffix.extend(suffix_members)
                 continue
             sub_counts = Counter(sb for _m, sb in suffix_members)
@@ -638,10 +547,7 @@ def _shape_fuzzy_merge(clusters: list[Cluster]) -> list[Cluster]:
     """
     jaccard_threshold = threshold_float("CLUSTER_SHAPE_JACCARD_THRESHOLD")
 
-    # Group by the three dimensions that must match for a shape merge to
-    # be valid. Merging clusters from different path buckets or with
-    # different default_export_kind would destroy the archetype semantics.
-    GroupKey = tuple  # (path_pattern_bucket, default_export_kind, jsx_present)
+    GroupKey = tuple
     by_group: dict[GroupKey, list[Cluster]] = defaultdict(list)
     for c in clusters:
         gk: GroupKey = (
@@ -657,11 +563,9 @@ def _shape_fuzzy_merge(clusters: list[Cluster]) -> list[Cluster]:
             result.extend(group)
             continue
 
-        # Precompute each cluster's union shape once.
         shapes = [_union_shape(c) for c in group]
         n = len(group)
 
-        # Union-find on Jaccard >= threshold.
         parent: list[int] = list(range(n))
 
         def _find(i: int, _p: list[int] = parent) -> int:
@@ -680,7 +584,6 @@ def _shape_fuzzy_merge(clusters: list[Cluster]) -> list[Cluster]:
                 if _jaccard(shapes[i], shapes[j]) >= jaccard_threshold:
                     _union(i, j)
 
-        # Collect merged groups.
         by_root: dict[int, list[int]] = defaultdict(list)
         for i in range(n):
             by_root[_find(i)].append(i)
@@ -689,11 +592,9 @@ def _shape_fuzzy_merge(clusters: list[Cluster]) -> list[Cluster]:
             if len(indices) == 1:
                 result.append(group[indices[0]])
                 continue
-            # Combine all members; pick the smallest key for determinism.
             combined_members: list[ParsedFile] = []
             for idx in indices:
                 combined_members.extend(group[idx].members)
-            # Sort cluster keys as plain tuples for a stable total order.
             representative_cluster = min(
                 (group[idx] for idx in indices),
                 key=lambda c: (

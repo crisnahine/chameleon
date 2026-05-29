@@ -63,42 +63,16 @@ import traceback
 from collections.abc import Callable
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
+MAX_FRAME_BYTES = 1024 * 1024
 
-# Hard cap on a single frame. Keeps the daemon honest about its memory
-# bounds — a misbehaving caller can't make us allocate gigabytes.
-MAX_FRAME_BYTES = 1024 * 1024  # 1 MB
-
-# Length-prefix struct (network byte order, unsigned 32-bit). 4 bytes.
 _LEN_STRUCT = struct.Struct("!I")
 _LEN_BYTES = _LEN_STRUCT.size
 
-# Default idle-shutdown window. The daemon exits cleanly when no request
-# arrives for this long. Tests override via env var to ~1s.
-DEFAULT_IDLE_TIMEOUT_S = 600.0  # 10 minutes
+DEFAULT_IDLE_TIMEOUT_S = 600.0
 
-# How long start_daemon() waits for the socket to become connectable.
 _SPAWN_WAIT_SECONDS = 3.0
 
-# Backlog for socket.listen(). Per-session hooks fire sequentially, but
-# parallel-agent flows (dispatching-parallel-agents, multi-worktree sessions
-# sharing one per-user daemon) can stampede with N parallel connects at the
-# same instant. Backlog must outrun the single-threaded accept loop's per-
-# request latency (~1ms warm) for the slowest realistic burst. 128 absorbs
-# 100+ concurrent connects with margin; cost is a few KB of kernel-side
-# queue space.
 _LISTEN_BACKLOG = 128
-
-# Logging: stderr only (no file journal in this MVP). Daemons launched via
-# start_daemon() redirect stderr to a per-run log under PLUGIN_DATA so the
-# user can `tail -f` if they need to debug.
-
-
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
 
 
 def _plugin_data() -> Path:
@@ -130,11 +104,6 @@ def log_path() -> Path:
     d = _plugin_data()
     d.mkdir(parents=True, exist_ok=True)
     return d / ".daemon.log"
-
-
-# ---------------------------------------------------------------------------
-# Liveness helpers (mirrors bootstrap/transaction.py:_pid_alive)
-# ---------------------------------------------------------------------------
 
 
 def _pid_alive(pid: int) -> bool:
@@ -185,7 +154,7 @@ def _cleanup_stale() -> None:
     """
     pid, sock = _read_pidfile()
     if pid is not None and _pid_alive(pid):
-        return  # not stale; leave it alone
+        return
     for p in (pid_path(), socket_path()):
         try:
             p.unlink()
@@ -198,11 +167,6 @@ def _cleanup_stale() -> None:
             Path(sock).unlink()
         except (FileNotFoundError, OSError):
             pass
-
-
-# ---------------------------------------------------------------------------
-# Wire protocol
-# ---------------------------------------------------------------------------
 
 
 def _recv_exact(conn: socket.socket, n: int) -> bytes | None:
@@ -231,7 +195,6 @@ def recv_frame(conn: socket.socket) -> bytes | None:
     if length == 0:
         return b""
     if length > MAX_FRAME_BYTES:
-        # Drain and reject. We can't trust the rest of the stream.
         return None
     return _recv_exact(conn, length)
 
@@ -248,11 +211,6 @@ def send_frame(conn: socket.socket, payload: bytes) -> bool:
         return True
     except OSError:
         return False
-
-
-# ---------------------------------------------------------------------------
-# Request dispatch
-# ---------------------------------------------------------------------------
 
 
 def _dispatch(method: str, payload: dict) -> dict:
@@ -297,24 +255,14 @@ def _dispatch(method: str, payload: dict) -> dict:
         return _tools.lint_file(repo, archetype, content)
 
     if method == "invalidate_cache":
-        # BUG-029: profile-mutating MCP tools (bootstrap, refresh, teach)
-        # run in a separate process. After they write new profile artifacts,
-        # they send this message so the daemon drops its stale process-local
-        # cache. Next get_pattern_context call re-reads from disk.
         from chameleon_mcp.profile.loader import clear_profile_cache
         clear_profile_cache()
         return {"ok": True, "cleared": True}
 
     if method == "ping":
-        # Lightweight health probe used by tests + daemon_status().
         return {"ok": True, "ts": time.time()}
 
     return {"error": f"unknown method {method!r}"}
-
-
-# ---------------------------------------------------------------------------
-# Daemon state (process-local)
-# ---------------------------------------------------------------------------
 
 
 class _DaemonState:
@@ -337,11 +285,6 @@ class _DaemonState:
         self.request_count += 1
 
 
-# ---------------------------------------------------------------------------
-# Daemon main loop
-# ---------------------------------------------------------------------------
-
-
 def _handle_connection(
     conn: socket.socket, state: _DaemonState, dispatcher: Callable[[str, dict], dict]
 ) -> None:
@@ -354,10 +297,6 @@ def _handle_connection(
     try:
         frame = recv_frame(conn)
         if frame is None:
-            # Client closed early, oversize frame, or socket error.
-            # Try to surface an "oversize" envelope when possible so the
-            # client can distinguish a transient hangup from a protocol
-            # violation; on socket error, send_frame will just fail.
             send_frame(conn, json.dumps({"error": "oversize_or_disconnect"}).encode("utf-8"))
             return
         try:
@@ -371,11 +310,21 @@ def _handle_connection(
             send_frame(conn, json.dumps({"error": "missing method or payload"}).encode("utf-8"))
             return
 
+        # ping is a pure status query: report the real last-request time and
+        # do NOT mark_request (so /chameleon-status doesn't reset the idle timer).
+        if method == "ping":
+            send_frame(conn, json.dumps({
+                "ok": True,
+                "ts": time.time(),
+                "last_request_at": state.last_request_at,
+                "request_count": state.request_count,
+            }).encode("utf-8"))
+            return
+
         state.mark_request()
         try:
             result = dispatcher(method, payload)
         except Exception as exc:  # noqa: BLE001 — daemon must not die on tool errors
-            # Surface the error to the client without crashing the loop.
             sys.stderr.write(
                 f"[chameleon-daemon] dispatch error in {method!r}: "
                 f"{exc.__class__.__name__}: {exc}\n"
@@ -410,10 +359,6 @@ def serve_forever(
     """
     sock.settimeout(1.0)
     while not state.shutdown_requested:
-        # Idle-shutdown gate. We compare against the LAST request time so
-        # a busy daemon stays up even when the loop iterates without an
-        # accept(). request_count == 0 + idle window elapsed still triggers
-        # shutdown — a daemon that nobody ever connected to is a leak.
         if (time.time() - state.last_request_at) > state.idle_timeout_s:
             sys.stderr.write(
                 f"[chameleon-daemon] idle for {state.idle_timeout_s}s, shutting down\n"
@@ -425,17 +370,10 @@ def serve_forever(
             continue
         except OSError as e:
             if e.errno in (errno.EBADF, errno.EINVAL):
-                # Socket was closed underneath us (signal handler did the
-                # right thing). Exit cleanly.
                 return
             sys.stderr.write(f"[chameleon-daemon] accept error: {e}\n")
             continue
         _handle_connection(conn, state, dispatcher)
-
-
-# ---------------------------------------------------------------------------
-# In-process entry point (run inside the forked child)
-# ---------------------------------------------------------------------------
 
 
 def _install_signal_handlers(state: _DaemonState) -> None:
@@ -454,9 +392,6 @@ def _install_signal_handlers(state: _DaemonState) -> None:
         try:
             signal.signal(sig, _handler)
         except (OSError, ValueError):
-            # Threads can't install signal handlers — that's fine; the
-            # test harness drives shutdown via `state.shutdown_requested`
-            # directly.
             pass
 
 
@@ -478,7 +413,12 @@ def run_daemon() -> int:
     role is to write the pidfile + verify the socket comes up.
     """
     sock_path = socket_path()
-    # Defensive: a previous unclean exit may have left the socket file behind.
+    try:
+        from chameleon_mcp.plugin_paths import ensure_plugin_data_dir
+
+        ensure_plugin_data_dir()
+    except Exception:
+        pass
     try:
         sock_path.unlink()
     except FileNotFoundError:
@@ -489,9 +429,6 @@ def run_daemon() -> int:
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.bind(str(sock_path))
-    # Owner-only access — the daemon is per-user, and the socket lives
-    # under ~/.local/share which is already 0700 on most systems, but
-    # belt-and-suspenders never hurt.
     try:
         os.chmod(sock_path, 0o600)
     except OSError:
@@ -528,18 +465,15 @@ def run_daemon() -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Out-of-process daemon spawn
-# ---------------------------------------------------------------------------
-
-
 def _write_pidfile(pid: int, sock_path: Path) -> None:
     pf = pid_path()
     tmp = pf.with_suffix(".pid.tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.write(fd, f"{pid}\n{sock_path}\n".encode())
-    os.fsync(fd)
-    os.close(fd)
+    try:
+        os.write(fd, f"{pid}\n{sock_path}\n".encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     os.replace(tmp, pf)
 
 
@@ -584,18 +518,13 @@ def start_daemon(*, force: bool = False) -> dict:
 
     _cleanup_stale()
 
-    # Locate a Python interpreter. Prefer the same one the caller is using
-    # so we don't accidentally exec into a sibling venv that doesn't have
-    # chameleon_mcp installed.
     python = sys.executable or "python3"
 
-    # Open the log file BEFORE forking so the child can inherit the fd.
     try:
         log_fd = os.open(str(log_path()), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     except OSError:
         log_fd = None
 
-    # First fork: detaches from the parent's process group.
     try:
         first_pid = os.fork()
     except OSError as e:
@@ -604,8 +533,6 @@ def start_daemon(*, force: bool = False) -> dict:
         return {"status": "failed", "pid": None, "socket": str(sock_path), "error": str(e)}
 
     if first_pid > 0:
-        # Original caller. Reap the intermediate child immediately and
-        # wait for the grandchild's socket.
         try:
             os.waitpid(first_pid, 0)
         except OSError:
@@ -623,7 +550,6 @@ def start_daemon(*, force: bool = False) -> dict:
         pid, _ = _read_pidfile()
         return {"status": "started", "pid": pid, "socket": str(sock_path)}
 
-    # ---- intermediate child ----
     try:
         os.setsid()
     except OSError:
@@ -634,12 +560,8 @@ def start_daemon(*, force: bool = False) -> dict:
         os._exit(1)
 
     if second_pid > 0:
-        # Intermediate child: exit immediately so the grandchild is
-        # reparented to init / launchd.
         os._exit(0)
 
-    # ---- grandchild (the daemon) ----
-    # Redirect stdio so we don't keep the calling terminal busy.
     try:
         null_fd = os.open(os.devnull, os.O_RDONLY)
         os.dup2(null_fd, 0)
@@ -654,11 +576,6 @@ def start_daemon(*, force: bool = False) -> dict:
         except OSError:
             pass
 
-    # Acquire an exclusive flock on the pidfile to prevent concurrent
-    # start_daemon() calls from racing past is_daemon_alive() and both
-    # forking a daemon. The flock is tied to the fd/process — when the
-    # daemon exits (or the exec replaces the process image), the kernel
-    # releases the lock automatically.
     pf = pid_path()
     try:
         lock_fd = os.open(str(pf), os.O_RDWR | os.O_CREAT, 0o600)
@@ -668,12 +585,9 @@ def start_daemon(*, force: bool = False) -> dict:
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        # Another daemon is already starting — we're the loser. Exit
-        # quietly so we don't orphan a process.
         os.close(lock_fd)
         os._exit(0)
 
-    # We won the lock. Write our PID, fsync, then proceed.
     try:
         os.ftruncate(lock_fd, 0)
         os.lseek(lock_fd, 0, os.SEEK_SET)
@@ -683,21 +597,18 @@ def start_daemon(*, force: bool = False) -> dict:
         sys.stderr.write(f"[chameleon-daemon] cannot write pidfile: {e}\n")
         os.close(lock_fd)
         os._exit(1)
-    # NOTE: lock_fd is intentionally NOT closed. The flock is held for
-    # the daemon's lifetime and released by the kernel on process exit
-    # (or exec, but exec replaces this process with run_daemon which
-    # holds the socket until shutdown).
+    try:
+        flags = fcntl.fcntl(lock_fd, fcntl.F_GETFD)
+        fcntl.fcntl(lock_fd, fcntl.F_SETFD, flags & ~fcntl.FD_CLOEXEC)
+    except OSError:
+        pass
 
-    # Re-exec into a clean python process. This drops any state the parent
-    # may have leaked (open file handles to the user's repo, loaded MCP
-    # modules tied to the parent's working directory, etc.) and gives us
-    # a deterministic startup that's easy to test.
     try:
         os.execlp(python, python, "-m", "chameleon_mcp.daemon")
     except OSError as e:
         sys.stderr.write(f"[chameleon-daemon] exec failed: {e}\n")
         os._exit(1)
-    os._exit(0)  # unreachable
+    os._exit(0)
 
 
 def stop_daemon(*, timeout: float = 5.0) -> dict:
@@ -713,7 +624,6 @@ def stop_daemon(*, timeout: float = 5.0) -> dict:
     """
     pid, sock = _read_pidfile()
     if pid is None or not _pid_alive(pid):
-        # Best-effort cleanup of leftover artifacts.
         for p in (pid_path(), socket_path()):
             try:
                 p.unlink()
@@ -732,14 +642,11 @@ def stop_daemon(*, timeout: float = 5.0) -> dict:
             break
         time.sleep(0.05)
     else:
-        # Graceful path didn't work; escalate.
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:
             pass
-        # Brief grace period for the kernel to reap.
         time.sleep(0.1)
-        # Clean up artifacts ourselves since the daemon couldn't.
         for p in (pid_path(), socket_path()):
             try:
                 p.unlink()
@@ -747,9 +654,6 @@ def stop_daemon(*, timeout: float = 5.0) -> dict:
                 pass
         return {"status": "timeout", "pid": pid}
 
-    # SIGTERM path successful. The daemon's finally block should have
-    # removed the pidfile + socket, but defend against an exit before
-    # those cleanups.
     for p in (pid_path(), socket_path()):
         try:
             p.unlink()
@@ -774,9 +678,6 @@ def daemon_info() -> dict:
             "socket": str(socket_path()),
             "uptime_s": None,
         }
-    # Process start time → uptime. /proc isn't available on macOS, so we
-    # fall back to mtime of the pidfile (close enough; pidfile is written
-    # once at daemon birth).
     pf = pid_path()
     try:
         started_at = pf.stat().st_mtime
@@ -789,11 +690,6 @@ def daemon_info() -> dict:
         "socket": sock or str(socket_path()),
         "uptime_s": uptime_s,
     }
-
-
-# ---------------------------------------------------------------------------
-# Hook-side helper for spawning the daemon out-of-process
-# ---------------------------------------------------------------------------
 
 
 def ensure_daemon_async() -> None:
@@ -832,11 +728,6 @@ def ensure_daemon_async() -> None:
         )
     except Exception:  # noqa: BLE001 — never raise from the spawn helper
         pass
-
-
-# ---------------------------------------------------------------------------
-# Module entry point: `python -m chameleon_mcp.daemon`
-# ---------------------------------------------------------------------------
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -38,6 +38,6 @@ profile.json has `schema_version == <from>` and produces a profile with
 
 ## v1 status
 
-No migrations exist yet — the engine is at schema_version 4 (per v5
-architecture). The first migration will be authored when v5 schema
-changes land.
+No migrations exist yet — the engine is at schema_version 7. A profile
+written by a newer schema is refused at load time; the first migration
+will be authored when the next schema bump lands.

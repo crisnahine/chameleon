@@ -22,7 +22,7 @@ Chameleon enforces codebase conventions through hooks. You don't call MCP tools 
 - `match_quality`: how the canonical was matched. `exact` = same file pattern, `ast` = structural match, `fallback` = best guess, `none` = no canonical found. Weight the excerpt accordingly.
 - `sub_buckets`: how many sub-clusters the archetype spans. 1 = tight cluster. 2+ = the archetype groups varied concerns - read the canonical more carefully.
 
-**PostToolUse** (Edit/Write/NotebookEdit): lints the written file against its archetype. Violations appear in `updatedToolOutput` by default (inline with the tool result, not as a system reminder). Escalation is per-file: repeated violations for the same file escalate through L0 (silent fix) -> L1 (flagged) -> L2 (stop and fix). Chameleon stops verifying a file after 10 rapid corrections to avoid loops. There is a 30-second per-file cooldown - if you see `[🦎 chameleon: already verified this file]`, refer to the previous feedback.
+**PostToolUse** (Edit/Write/NotebookEdit): lints the written file against its archetype. Violations are surfaced through the PostToolUse `additionalContext` channel. Escalation is per-file: repeated violations for the same file escalate through L0 (silent fix) -> L1 (flagged) -> L2 (stop and fix). Chameleon stops verifying a file after 10 rapid corrections to avoid loops. There is a 30-second per-file cooldown - if you see `[🦎 chameleon: already verified this file]`, refer to the previous feedback.
 
 **PostToolUse** (Bash): HMAC exec logging. No context injected, no action needed.
 
@@ -70,12 +70,13 @@ Chameleon is an output-layer advisory: archetype + canonical + rules shape the c
 
 | Command | Purpose |
 |---------|---------|
-| `/chameleon-init` (`/cham-init`) | Bootstrap a new profile |
-| `/chameleon-refresh` (`/cham-refresh`) | Re-analyze repo, update profile after drift |
-| `/chameleon-status` (`/cham-status`) | View profile state, drift, value attribution |
-| `/chameleon-teach` (`/cham-teach`) | Capture a missed pattern as an idiom |
-| `/chameleon-trust` (`/cham-trust`) | Approve a committed profile for this user |
-| `/chameleon-disable` (`/cham-disable`) | Disable for the rest of this session |
-| `/chameleon-pause-15m` (`/cham-pause-15m`) | Pause for 15 minutes |
-| `/chameleon-doctor` (`/cham-doctor`) | Run health checks on the installation |
-| `/chameleon-journey` (`/cham-journey`) | Run the end-to-end journey test harness |
+| `/chameleon-init` | Bootstrap a new profile |
+| `/chameleon-refresh` | Re-analyze repo, update profile after drift |
+| `/chameleon-status` | View profile state, drift, value attribution |
+| `/chameleon-teach` | Capture a missed pattern as an idiom |
+| `/chameleon-trust` | Approve a committed profile for this user |
+| `/chameleon-disable` | Disable for the rest of this session |
+| `/chameleon-pause-15m` | Pause for 15 minutes |
+| `/chameleon-doctor` | Run health checks on the installation |
+| `/chameleon-journey` | Run the end-to-end journey test harness |
+| `/chameleon-pr-review` | Review a branch/PR against repo conventions and task intent |

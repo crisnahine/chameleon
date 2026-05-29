@@ -11,9 +11,9 @@ Review code changes against this codebase's actual conventions, principles, and 
 
 ```
 /chameleon-pr-review                      → convention-only review of current branch vs main
-/chameleon-pr-review EF-1234              → full review (conventions + Jira logic check)
+/chameleon-pr-review PROJ-1234            → full review (conventions + Jira logic check)
 /chameleon-pr-review <PR-URL>             → full review (conventions + linked Jira)
-/chameleon-pr-review <PR-URL> EF-1234     → full review (explicit PR + ticket)
+/chameleon-pr-review <PR-URL> PROJ-1234   → full review (explicit PR + ticket)
 ```
 
 ## Execution

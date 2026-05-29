@@ -19,7 +19,6 @@ from chameleon_mcp.drift.sqlite_config import open_hardened
 
 DRIFT_DB_SCHEMA_VERSION = "1"
 
-# DDL applied on `init_drift_db()`. Idempotent — safe to run repeatedly.
 SCHEMA_DDL = """
 -- Schema metadata
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -67,7 +66,6 @@ def init_drift_db(db_path: Path) -> sqlite3.Connection:
     conn = open_hardened(db_path)
     conn.executescript(SCHEMA_DDL)
 
-    # Set schema version (insert if missing; do not overwrite if present)
     conn.execute(
         "INSERT OR IGNORE INTO schema_meta (k, v) VALUES ('schema_version', ?)",
         (DRIFT_DB_SCHEMA_VERSION,),

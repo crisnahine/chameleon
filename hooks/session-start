@@ -1,16 +1,7 @@
 #!/usr/bin/env bash
-# SessionStart hook for chameleon plugin.
-#
-# Phase 4 implementation: delegates to chameleon_mcp.hook_helper which:
-#   1. Reads using-chameleon/SKILL.md from ${CLAUDE_PLUGIN_ROOT}/skills/
-#   2. Wraps in <chameleon-context> tags
-#   3. Emits the Claude Code SessionStart JSON dispatch shape
-#
-# See docs/architecture.md "Bootstrap mechanism" for the full design.
 
 set -euo pipefail
 
-# Resolve Python interpreter (prefer chameleon_mcp's pinned uv-managed env)
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}"
 MCP_DIR="${PLUGIN_ROOT}/mcp"
 
@@ -27,12 +18,10 @@ elif command -v python3 >/dev/null 2>&1; then
 elif command -v python >/dev/null 2>&1; then
     PYTHON="$(command -v python)"
 else
-    # No Python available: emit empty JSON to satisfy Claude Code hook contract
     printf '{}\n'
     exit 0
 fi
 
-# BUG-NEW-010 (v0.5.7): rotating error log so silent failures are diagnosable.
 if [ -n "${CHAMELEON_HOOK_ERROR_LOG:-}" ]; then
     LOG_FILE="${CHAMELEON_HOOK_ERROR_LOG}"
     LOG_DIR="$(dirname "${LOG_FILE}")"
@@ -43,15 +32,11 @@ fi
 mkdir -p "${LOG_DIR}" 2>/dev/null || true
 "${PYTHON}" -m chameleon_mcp.log_rotation "${LOG_FILE}" 2>/dev/null || true
 
-# 3-second hard timeout (session-start does more work than per-edit hooks)
 PYTHONPATH="${MCP_DIR}" \
     timeout 3 "${PYTHON}" -m chameleon_mcp.hook_helper session-start \
     2>>"${LOG_FILE}" \
-    || { echo "[$(date -u +%FT%TZ)] session-start failed (python=${PYTHON})" >>"${LOG_FILE}"; printf '{}\n'; }
+    || { printf '{}\n'; echo "[$(date -u +%FT%TZ)] session-start failed (python=${PYTHON})" >>"${LOG_FILE}" 2>/dev/null || true; }
 
-# BUG-030: pre-warm the daemon so PreToolUse hooks don't hit a 5s cold start.
-# session-start is fast (~60ms, just reads SKILL.md) so we have time budget.
-# The daemon start is detached (won't block this hook's return).
 PYTHONPATH="${MCP_DIR}" \
     "${PYTHON}" -c "from chameleon_mcp.daemon import ensure_daemon_async; ensure_daemon_async()" \
     2>>"${LOG_FILE}" &

@@ -48,16 +48,11 @@ class ChameleonConfigError(ValueError):
 class AutoRefreshConfig:
     enabled: bool = True
     drift_threshold: float = 0.2
-    max_age_hours: int = 168  # 7 days
+    max_age_hours: int = 168
 
 
 @dataclass(frozen=True)
 class TrustConfig:
-    # null | "pulled_from_remote"
-    # When set, refresh_repo auto-preserves trust if the profile change
-    # came from a clean git pull (HEAD blob matches a known-remote ref's
-    # blob for `.chameleon/profile.json`). Defaults to None (current
-    # v0.5.x behavior: re-trust required on every real change).
     auto_preserve_when: str | None = None
 
 
@@ -91,18 +86,20 @@ def _coerce_auto_refresh(raw: Any) -> AutoRefreshConfig:
             f"unknown key(s) under auto_refresh: {sorted(unknown)!r}; "
             f"allowed: {sorted(allowed)!r}"
         )
-    enabled = raw.get("enabled", False)
+    enabled = raw.get("enabled", True)
     if not isinstance(enabled, bool):
         raise ChameleonConfigError(
             f"`auto_refresh.enabled` must be bool, got {type(enabled).__name__}"
         )
     threshold = raw.get("drift_threshold", 0.2)
-    if not isinstance(threshold, int | float) or not (0.0 <= float(threshold) <= 1.0):
+    if isinstance(threshold, bool) or not isinstance(threshold, int | float) or not (
+        0.0 <= float(threshold) <= 1.0
+    ):
         raise ChameleonConfigError(
             f"`auto_refresh.drift_threshold` must be a number in [0, 1], got {threshold!r}"
         )
     max_age = raw.get("max_age_hours", 168)
-    if not isinstance(max_age, int) or max_age <= 0:
+    if isinstance(max_age, bool) or not isinstance(max_age, int) or max_age <= 0:
         raise ChameleonConfigError(
             f"`auto_refresh.max_age_hours` must be a positive int, got {max_age!r}"
         )
@@ -145,14 +142,22 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
     path = profile_dir / CONFIG_FILENAME
     if not path.is_file():
         return ChameleonConfig()
+    # config.json is a trust-hashed artifact, so give it the same read-path
+    # hardening as the others: O_NOFOLLOW + size cap + duplicate-key/depth.
+    from chameleon_mcp.profile.schema import SchemaError, _check_depth, _no_duplicate_keys
+    from chameleon_mcp.safe_open import UnsafeFileError, safe_read_profile_artifact
+
     try:
-        raw_bytes = path.read_bytes()
-    except OSError as exc:
+        text = safe_read_profile_artifact(path)
+    except FileNotFoundError:
+        return ChameleonConfig()
+    except (UnsafeFileError, OSError) as exc:
         raise ChameleonConfigError(f"cannot read {path}: {exc}") from exc
     try:
-        raw = json.loads(raw_bytes)
-    except json.JSONDecodeError as exc:
-        raise ChameleonConfigError(f"{path} is not valid JSON: {exc}") from exc
+        raw = json.loads(text, object_pairs_hook=_no_duplicate_keys)
+        _check_depth(raw)
+    except (json.JSONDecodeError, SchemaError) as exc:
+        raise ChameleonConfigError(f"{path} is not valid/safe JSON: {exc}") from exc
     if not isinstance(raw, dict):
         raise ChameleonConfigError(
             f"{path}: top-level must be an object, got {type(raw).__name__}"

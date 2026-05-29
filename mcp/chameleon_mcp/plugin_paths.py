@@ -48,3 +48,20 @@ def plugin_data_dir() -> Path:
     if override:
         return Path(override).expanduser()
     return Path.home() / ".local" / "share" / "chameleon"
+
+
+def ensure_plugin_data_dir() -> Path:
+    """Return the per-user data dir, created and locked to mode 0700.
+
+    The dir holds per-user secrets (HMAC key, trust records, drift/index DBs).
+    0700 on the root blocks other local users from traversing into any child,
+    regardless of each child's own mode. The chmod is idempotent so an upgrade
+    tightens a previously world-readable dir.
+    """
+    d = plugin_data_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(d, 0o700)
+    except OSError:
+        pass
+    return d

@@ -26,7 +26,6 @@ class ShimHandle:
         """Restore PATH to its pre-shim value. Idempotent."""
         if os.environ.get("PATH") != self.original_path:
             os.environ["PATH"] = self.original_path
-        # shim_dir cleanup deferred to caller (often the run_dir cleanup)
 
 
 def setup_git_shim(delay_seconds: float, shim_dir_parent: Path) -> ShimHandle:
@@ -41,7 +40,6 @@ def setup_git_shim(delay_seconds: float, shim_dir_parent: Path) -> ShimHandle:
     shim_dir.mkdir(parents=True, exist_ok=True)
     shim_path = shim_dir / "git"
 
-    # Find real git
     original_path = os.environ.get("PATH", "")
     real_git = None
     for d in original_path.split(":"):

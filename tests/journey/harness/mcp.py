@@ -66,7 +66,6 @@ def call_mcp_tool(
         check=False,
     )
 
-    # Parse last JSON-RPC response (id=2)
     for line in reversed(proc.stdout.splitlines()):
         line = line.strip()
         if not line.startswith("{"):

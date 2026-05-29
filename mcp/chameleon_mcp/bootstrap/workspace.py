@@ -18,7 +18,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-try:  # PyYAML ships transitively (detect-secrets) and is declared as a direct dep.
+try:
     import yaml as _yaml  # type: ignore[import-untyped]
 except ImportError:  # pragma: no cover — defensive; PyYAML is a hard dep.
     _yaml = None  # type: ignore[assignment]
@@ -29,7 +29,7 @@ class WorkspaceInfo:
     """Detected workspace structure (or single-package if no workspace markers)."""
 
     is_workspace: bool
-    manager: str | None  # "pnpm" | "yarn" | "lerna" | "turbo" | "nx" | None
+    manager: str | None
     workspace_paths: list[Path] = field(default_factory=list)
     """Sub-package roots (e.g., apps/web, packages/ui). Each is a candidate for
     its own per-workspace .chameleon/ profile."""
@@ -51,7 +51,6 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
 
     Returns WorkspaceInfo with is_workspace=False if none detected.
     """
-    # 1. pnpm
     pnpm_workspace = repo_root / "pnpm-workspace.yaml"
     if pnpm_workspace.exists():
         return WorkspaceInfo(
@@ -60,7 +59,6 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
             workspace_paths=_expand_workspace_globs(repo_root, _read_pnpm_globs(pnpm_workspace)),
         )
 
-    # 2. yarn workspaces
     package_json = repo_root / "package.json"
     if package_json.exists():
         try:
@@ -83,7 +81,6 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
                     workspace_paths=_expand_workspace_globs(repo_root, globs),
                 )
 
-    # 3. lerna
     lerna_json = repo_root / "lerna.json"
     if lerna_json.exists():
         try:
@@ -98,7 +95,6 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
                 workspace_paths=_expand_workspace_globs(repo_root, [str(p) for p in packages]),
             )
 
-    # 4. turbo (only if pipeline/tasks exists; turbo can also be added to single-package repos)
     turbo_json = repo_root / "turbo.json"
     if turbo_json.exists():
         try:
@@ -106,18 +102,11 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
         except json.JSONDecodeError:
             turbo = {}
         if "pipeline" in turbo or "tasks" in turbo:
-            # Turbo monorepo. Modern turbo (>=1.10) lets you declare workspace
-            # roots directly in turbo.json via `workspaces` / `packages`. Older
-            # versions assume `package.json` workspaces exist. We try the
-            # turbo.json field first, then fall back to package.json.
             turbo_globs = _read_turbo_globs(turbo)
             ws_paths: list[Path] = []
             if turbo_globs:
                 ws_paths = _expand_workspace_globs(repo_root, turbo_globs)
             elif package_json.exists():
-                # Re-read package.json defensively even if the yarn branch
-                # above didn't see workspaces (the field could exist alongside
-                # turbo without yarn's hoisting flag).
                 try:
                     pkg = json.loads(package_json.read_text(errors="replace"))
                 except json.JSONDecodeError:
@@ -139,10 +128,8 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
                 workspace_paths=ws_paths,
             )
 
-    # 5. nx
     nx_json = repo_root / "nx.json"
     if nx_json.exists():
-        # Nx workspaces declared in `workspace.json` or `apps/`+`libs/` convention
         ws_json = repo_root / "workspace.json"
         ws_paths: list[Path] = []
         if ws_json.exists():
@@ -156,7 +143,6 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
                     p = repo_root / project_path
                     if p.is_dir():
                         ws_paths.append(p)
-        # Fallback to apps/+libs/ if workspace.json absent or empty
         if not ws_paths:
             for sub in ("apps", "libs", "packages"):
                 base = repo_root / sub
@@ -168,7 +154,6 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
             workspace_paths=ws_paths,
         )
 
-    # No workspace markers detected
     return WorkspaceInfo(is_workspace=False, manager=None, workspace_paths=[])
 
 
@@ -193,8 +178,6 @@ def _read_pnpm_globs(pnpm_workspace_yaml: Path) -> list[str]:
             packages = loaded.get("packages")
             if isinstance(packages, list):
                 return [str(p) for p in packages if isinstance(p, str | int)]
-        # Fall through to the legacy parser if PyYAML gave us something
-        # unexpected (e.g. a top-level scalar).
 
     globs: list[str] = []
     in_packages = False
@@ -211,7 +194,6 @@ def _read_pnpm_globs(pnpm_workspace_yaml: Path) -> list[str]:
                 if value:
                     globs.append(value)
             elif raw_line and not raw_line.startswith((" ", "\t", "-")):
-                # Top-level key after packages — exit list
                 in_packages = False
     return globs
 
@@ -242,29 +224,17 @@ def _expand_workspace_globs(repo_root: Path, globs: list[str]) -> list[Path]:
     paths: list[Path] = []
     seen: set[Path] = set()
     for glob in globs:
-        # Strip negation patterns (yarn's "!packages/excluded")
         if glob.startswith("!"):
             continue
-        # Trailing slash normalization
         glob = glob.rstrip("/")
-        # Reject empty / pure-"." / pure-".." entries before passing them
-        # to Path.glob. Python 3.11's pathlib raises IndexError("tuple
-        # index out of range") inside `_make_selector` on an empty pattern
-        # tuple, and "." / ".." are degenerate-but-legal workspace entries
-        # in some real-world manifests (e.g., mastodon's
-        # `"workspaces": [".", "streaming"]` declares the repo root as a
-        # workspace). Treat "." as "the repo root is itself a workspace"
-        # — already handled by the orchestrator's root pass, so skip here.
         if not glob or glob in (".", ".."):
             continue
         try:
             matches = list(repo_root.glob(glob))
         except (ValueError, IndexError):
-            # Defensive: malformed glob shouldn't crash bootstrap.
             continue
         for p in matches:
             if p.is_dir() and p not in seen:
-                # Workspace must contain a package.json to be a real package
                 if (p / "package.json").exists():
                     seen.add(p)
                     paths.append(p)

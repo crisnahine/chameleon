@@ -107,33 +107,21 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 19: verify .pause_until was written, and session_disabled marker exists.
     ts_basic_chameleon = ctx.fixture("ts_basic") / ".chameleon"
 
-    # Fast-forward the pause marker so it expires (simulating post-phase cleanup).
-    # The runner does this to unblock later acts; the prompt already exercised the
-    # live pause-suppression path before this runs.
     pause_until_path = ts_basic_chameleon / ".pause_until"
     if pause_until_path.exists():
         ctx.fast_forward_marker(pause_until_path, age_seconds=16 * 60)
 
-    # Phase 19 cross-check: pause + disable evidence.
-    # Strong check: prefer marker files (direct evidence the tools ran). Fall back
-    # to transcript evidence that Claude invoked BOTH commands. Never pass on
-    # "transcript is large" — that tests nothing about suppression.
     try:
         transcript_text = transcript.read_text(encoding="utf-8", errors="replace") if transcript.exists() else ""
 
-        # Tier 1: marker files written by the actual suppression tools.
         has_pause_file = any(ctx.plugin_data_dir.rglob(".pause_until"))
         has_disable_marker = bool(
             list(ctx.plugin_data_dir.rglob(".session_disabled.*"))
             or list(ts_basic_chameleon.glob(".session_disabled.*"))
         )
 
-        # Tier 2: transcript shows Claude attempted both commands (tool-call names
-        # or slash-command names appear together — weaker, but acceptable fallback).
-        # We require BOTH to appear to avoid a one-sided transcript passing.
         t_lower = transcript_text.lower()
         attempted_pause = (
             "chameleon-pause" in t_lower
@@ -159,7 +147,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[19] = f"error scanning for session_disabled markers: {exc}"
         cross_check_passed[19] = False
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -169,7 +156,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

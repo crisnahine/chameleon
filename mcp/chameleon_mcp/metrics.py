@@ -59,5 +59,4 @@ def emit_hook_metric(
             f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
             f.write("\n")
     except Exception:
-        # Metrics emission must never break a hook. Swallow everything.
         return

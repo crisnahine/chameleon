@@ -31,11 +31,6 @@ from chameleon_mcp.profile.poisoning_scanner import scan_for_dangerous_patterns
 from chameleon_mcp.profile.secret_scanner import scan_for_secrets
 from chameleon_mcp.signatures import ClusterKey
 
-# Calibration constants.
-# Files modified within RECENCY_WINDOW_DAYS get RECENCY_WEIGHT_MULTIPLIER×
-# the selection weight of older files. Calibration target: increase the
-# probability that the canonical reflects current team practice rather than
-# the first file that survives the deterministic tiebreak.
 RECENCY_WEIGHT_MULTIPLIER = 2.0
 RECENCY_WINDOW_DAYS = 90
 _RECENCY_WINDOW_SECONDS = RECENCY_WINDOW_DAYS * 86400
@@ -45,7 +40,7 @@ _RECENCY_WINDOW_SECONDS = RECENCY_WINDOW_DAYS * 86400
 class CanonicalSelection:
     """The chosen canonical witness for a cluster, plus scanner verdicts."""
 
-    cluster_key_hash: str  # serialized cluster key, used for stable cross-cluster references
+    cluster_key_hash: str
     witness_path: Path
     sha_hint: str | None
     secret_scan_passed: bool
@@ -69,7 +64,7 @@ class CanonicalSelection:
 class CanonicalSelectionResult:
     """Aggregate result of canonical selection across all clusters."""
 
-    selections: dict[str, CanonicalSelection]  # cluster_key_hash → selection
+    selections: dict[str, CanonicalSelection]
     clusters_without_eligible_canonical: list[Cluster]
     clusters_with_only_failing_canonicals: list[Cluster]
 
@@ -103,10 +98,6 @@ def _file_recency_weight(path: Path, *, now: float | None = None) -> float:
     age_seconds = reference - mtime
     if 0 <= age_seconds <= _RECENCY_WINDOW_SECONDS:
         return RECENCY_WEIGHT_MULTIPLIER
-    # mtime in the future (clock skew / cross-mount weirdness) also counts
-    # as "recent enough" — better to occasionally over-weight than to
-    # silently penalize a freshly-checked-out repo whose mtime was
-    # advanced by the VCS.
     if age_seconds < 0:
         return RECENCY_WEIGHT_MULTIPLIER
     return 1.0
@@ -183,7 +174,6 @@ def select_canonicals(
     for cluster in clusters:
         cluster_id = _hash_cluster_key(cluster)
 
-        # Filter to canonical-eligible files (exclude tests/legacy/etc.)
         eligible = [
             pf for pf in cluster.members
             if is_eligible_as_canonical(str(pf.path.relative_to(repo_root)))
@@ -192,11 +182,6 @@ def select_canonicals(
             no_eligible.append(cluster)
             continue
 
-        # Compute structural typicality: for each candidate, extract regex
-        # dimensions and count how many siblings share the same normalized
-        # kind signature. The candidate with the most matches represents
-        # the dominant pattern. This avoids base classes (unique structure)
-        # and outliers (unusual combinations).
         from collections import Counter
 
         from chameleon_mcp.lint_engine import (
@@ -218,7 +203,6 @@ def select_canonicals(
             signatures[i] = sig
 
         sig_counts = Counter(signatures.values())
-        # Typicality = how common this file's signature is (higher = more typical)
         typicality = {i: sig_counts[sig] for i, sig in signatures.items()}
 
         scored = [
@@ -231,8 +215,6 @@ def select_canonicals(
             str(item[0].path),
         ))
 
-        # Try each candidate in order; pick the first that passes all scanners.
-        # Track failing candidates for diagnostic reporting.
         chosen: CanonicalSelection | None = None
         for candidate, weight, _typ in scored:
             try:
@@ -259,8 +241,6 @@ def select_canonicals(
             if passed:
                 chosen = sel
                 break
-            # Else continue trying next candidate; keep the last failing
-            # one for diagnostic reporting if no candidate passes.
             chosen = sel
 
         if chosen is None:
@@ -268,13 +248,6 @@ def select_canonicals(
             continue
 
         if not chosen.all_scans_passed:
-            # Fail-closed: a failed-scan canonical must NOT reach
-            # get_canonical_excerpt / get_pattern_context, because the model
-            # will trust whatever ends up in <chameleon-context>. Surface the
-            # cluster in `clusters_with_only_failing_canonicals` for
-            # /chameleon-status diagnostics, but DO NOT add to active
-            # selections. Downstream: orchestrator skips clusters without an
-            # entry in selections, so this archetype simply has no canonical.
             only_failing.append(cluster)
             continue
 

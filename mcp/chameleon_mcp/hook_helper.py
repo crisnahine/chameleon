@@ -62,18 +62,6 @@ def _emit_posttool_context(block: str) -> None:
     )
 
 
-def _emit_posttool_updated_output(block: str) -> None:
-    """Emit PostToolUse violations via updatedToolOutput (v0.7.0)."""
-    _emit(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "updatedToolOutput": block,
-            }
-        }
-    )
-
-
 def _degraded_banner(reason: str, detail: str | None = None) -> str:
     """Tiny advisory block naming a degradation cause.
 
@@ -100,6 +88,13 @@ def _degraded_banner(reason: str, detail: str | None = None) -> str:
     return "\n".join(parts)
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text via a tmp file + os.replace so a reader never sees torn JSON."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _update_statusline(
     activity: str,
     repo_name: str | None = None,
@@ -116,7 +111,7 @@ def _update_statusline(
                     if p.get("name") == repo_name:
                         p["trust"] = trust_state
                         break
-            cache.write_text(json.dumps(data), encoding="utf-8")
+            _atomic_write_text(cache, json.dumps(data))
     except Exception:
         pass
 
@@ -134,7 +129,7 @@ def _plugin_data_dir() -> Path:
 
 
 _TRUST_PROMPT_FILENAME = ".trust_prompted.{session}"
-_TRUST_MARKER_TTL_SECONDS = 24 * 3600  # re-prompt after 24h even on resumed session
+_TRUST_MARKER_TTL_SECONDS = 24 * 3600
 
 
 def _marker_is_fresh(marker_path: Path) -> bool:
@@ -220,15 +215,9 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
         from chameleon_mcp.profile.loader import find_repo_root
         from chameleon_mcp.tools import _compute_repo_id
 
-        # Walk up to the actual repo root; for non-git repos this is what
-        # bootstrap keyed drift.db under.
         resolved_root = find_repo_root(repo_root) or repo_root
         repo_id = _compute_repo_id(resolved_root)
 
-        # Honor opt-outs BEFORE touching the cooldown marker so a user
-        # who later re-enables sees the banner on the next eligible
-        # session instead of having the cooldown silently consumed
-        # during the disabled period.
         if is_chameleon_suppressed(resolved_root, repo_id, session_id) is not None:
             return None
 
@@ -245,10 +234,6 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
         if _marker_path_is_fresh(marker, ttl):
             return None
 
-        # Touch the marker so the banner stays quiet for the cooldown
-        # window. mkdir(mode=0o700) is silently ignored when the dir
-        # already exists (e.g. the trust-prompt path created it earlier),
-        # so chmod explicitly afterwards.
         marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             os.chmod(marker.parent, 0o700)
@@ -269,11 +254,6 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
             "**/chameleon-refresh** when you have a moment."
         )
     except Exception as exc:
-        # Fail-open: drift telemetry is observability, never blocks
-        # the SessionStart hook. But surface to stderr so the bash
-        # wrapper's .hook_errors.log captures real bugs in the path
-        # (silent fail-opens earlier in chameleon's life produced 70+
-        # unattributed events on a single workstation, see rec 3).
         try:
             print(
                 f"chameleon: drift banner failed: {type(exc).__name__}: {exc}",
@@ -316,9 +296,6 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
 
         repo_id = _compute_repo_id(resolved_root)
 
-        # Cooldown: don't re-fire within (max_age_hours / 4) hours so a
-        # repo with frequent SessionStart hits doesn't auto-refresh
-        # back-to-back.
         cooldown_seconds = max(60, (cfg.auto_refresh.max_age_hours * 3600) // 4)
         cooldown_marker = (
             _plugin_data_dir() / repo_id / _AUTO_REFRESH_COOLDOWN_FILENAME
@@ -326,7 +303,6 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
         if _marker_path_is_fresh(cooldown_marker, cooldown_seconds):
             return
 
-        # Trigger condition: drift is high OR profile is old.
         should_fire = False
         try:
             stats = compute_drift_stats(repo_id)
@@ -343,11 +319,6 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
         if not should_fire:
             return
 
-        # v0.6.1: redirect detached refresh stderr to a per-repo log so
-        # post-spawn failures (parse exceptions, OOM, schema rejection)
-        # are queryable. v0.6.0 used DEVNULL → silent failures + 42h
-        # cooldown burn per crash. The bash hook wrapper can't capture
-        # detached subprocess stderr because Popen replaces the fd.
         repo_log_dir = _plugin_data_dir() / _compute_repo_id(resolved_root)
         repo_log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
@@ -355,8 +326,6 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
         except OSError:
             pass
         log_path = repo_log_dir / "auto_refresh.log"
-        # Bound the log to ~64 KB by truncating before each spawn (cheap
-        # rotation — append-mode within a single refresh is fine).
         try:
             if log_path.exists() and log_path.stat().st_size > 65536:
                 log_path.write_text("", encoding="utf-8")
@@ -372,8 +341,6 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
         except OSError:
             log_fd = None
 
-        # Fire detached: refresh_repo can take seconds; we don't block
-        # the SessionStart hook on it.
         import subprocess as _sp
 
         try:
@@ -398,10 +365,6 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
                 except OSError:
                     pass
 
-        # v0.6.1: touch cooldown AFTER Popen returns successfully so a
-        # transient spawn failure (OSError / ENOMEM) doesn't burn the
-        # 42h cooldown window. Inner refresh_repo flock will catch any
-        # racing concurrent SessionStart that slipped past this point.
         cooldown_marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
             os.chmod(cooldown_marker.parent, 0o700)
@@ -442,7 +405,6 @@ def session_start() -> int:
     """SessionStart: inject using-chameleon SKILL.md + profile primer."""
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
     if not plugin_root:
-        # Without plugin root we can't locate the skill file. Emit empty context.
         _emit({})
         return 0
 
@@ -453,20 +415,8 @@ def session_start() -> int:
 
     skill_content = skill_path.read_text(encoding="utf-8", errors="replace")
 
-    # Rec 4: append a drift banner when the repo's profile is drifting
-    # (high observed_drift_score). Honors opt-outs (CHAMELEON_DISABLE,
-    # .skip, /chameleon-disable, /chameleon-pause-15m); requires a min
-    # observation count plus a 7-day cooldown so it doesn't fire on
-    # every SessionStart in an active repo. Banner sits AFTER the skill
-    # body so it's the freshest signal at the end of the inject,
-    # immediately before whatever comes next in the model's context
-    # (recency dominates retrieval; the always-on skill rules stay at
-    # the top where the model expects them).
     session_id: str | None = None
     try:
-        # Best-effort read of the hook payload. Claude Code passes
-        # SessionStart payload on stdin; session_id is one of the
-        # fields. Do not block on a missing stdin (test harnesses).
         if not sys.stdin.isatty():
             raw = sys.stdin.read()
             if raw.strip():
@@ -478,7 +428,7 @@ def session_start() -> int:
         session_id = None
     drift_banner = _drift_banner_for_repo(Path.cwd(), session_id=session_id)
 
-    # v0.7.0: clean up stale enforcement state files (>24h old)
+    repo_root = None
     try:
         from chameleon_mcp.plugin_paths import plugin_data_dir
         from chameleon_mcp.profile.loader import find_repo_root
@@ -500,9 +450,6 @@ def session_start() -> int:
     except Exception:
         pass
 
-    # Write a statusline cache so the shell script can show trust state
-    # without recomputing repo_id (which requires URL normalization).
-    # Handles both direct profiles and parent dirs with child profiles.
     try:
         from chameleon_mcp.profile.trust import hash_profile, trust_state_for
 
@@ -530,7 +477,6 @@ def session_start() -> int:
         if has_own_profile:
             profiles.append({"name": repo_root.name, "trust": _trust_for(repo_root)})
         else:
-            # No profile at cwd level: scan immediate children
             cwd = Path.cwd()
             try:
                 children = sorted(cwd.iterdir())
@@ -551,19 +497,12 @@ def session_start() -> int:
         if profiles:
             cache_data: dict = {"profiles": profiles}
 
-            # Detect plugin version mismatch: compare the directory the
-            # running Python module was loaded from against CLAUDE_PLUGIN_ROOT.
-            # If they differ, the plugin was updated but the MCP server (and
-            # daemon) are still running old code. Version string comparison
-            # is unreliable because importlib.metadata can lag behind the
-            # file on disk after a version bump without `uv sync`.
             try:
                 import chameleon_mcp as _cm
 
                 running_pkg = Path(_cm.__file__).resolve().parent
                 installed_pkg = (Path(plugin_root) / "mcp" / "chameleon_mcp").resolve()
                 if running_pkg != installed_pkg:
-                    # Read the installed version for the banner text
                     installed_init = installed_pkg / "__init__.py"
                     installed_version = ""
                     if installed_init.is_file():
@@ -581,15 +520,10 @@ def session_start() -> int:
                 pass
 
             cache_dir.mkdir(parents=True, exist_ok=True)
-            sl_cache.write_text(
-                json.dumps(cache_data), encoding="utf-8"
-            )
+            _atomic_write_text(sl_cache, json.dumps(cache_data))
     except Exception:
         pass
 
-    # Auto-configure status line in the project's .claude/settings.local.json.
-    # On every SessionStart, verify the path still resolves (plugin version
-    # upgrades change the cache path). Fail-open: never block SessionStart.
     try:
         project_dir = Path.cwd()
         script_path = Path(plugin_root) / "bin" / "chameleon-statusline.sh"
@@ -599,7 +533,6 @@ def session_start() -> int:
             current_cmd = str(script_path)
             needs_write = False
 
-            # Check project settings first - if user configured there, don't touch
             if project_settings.is_file():
                 try:
                     d = json.loads(project_settings.read_text(encoding="utf-8"))
@@ -622,7 +555,6 @@ def session_start() -> int:
                 if "statusLine" not in existing:
                     needs_write = True
                 elif old_cmd != current_cmd and "chameleon" in old_cmd:
-                    # Path changed (plugin version upgrade) - update it
                     needs_write = True
 
             if needs_write:
@@ -637,7 +569,6 @@ def session_start() -> int:
     except Exception:
         pass
 
-    # Convention injection (v0.9.0)
     conventions_block = ""
     try:
         from chameleon_mcp.conventions import format_conventions_for_session
@@ -645,7 +576,6 @@ def session_start() -> int:
             import json as _conv_json
             conv_text = (repo_root / ".chameleon" / "conventions.json").read_text(encoding="utf-8")
             conv_data = _conv_json.loads(conv_text)
-            # Load principles from .chameleon/ (auto-generated per repo)
             pr_text = ""
             pr_path = repo_root / ".chameleon" / "principles.md"
             if pr_path.is_file():
@@ -673,10 +603,6 @@ def session_start() -> int:
 
     _emit_session_context(wrapped)
 
-    # Auto-refresh AFTER the statusline cache is written. Spawning it
-    # before caused a TOCTOU race: the background process modifies the
-    # profile (bumps generation counter) while _trust_for reads
-    # hash_profile, producing a stale hash mismatch that persists.
     _maybe_auto_refresh(Path.cwd())
 
     return 0
@@ -745,10 +671,6 @@ def preflight_and_advise() -> int:
         _emit({})
         return 0
 
-    # Opt-out check BEFORE any expensive work. If suppressed, emit empty
-    # context so the edit proceeds without injection. Mirrors the docs'
-    # "hook stack still fires (safety hard-deny preserved) but no
-    # <chameleon-context> content is injected" promise.
     repo_id_hint: str | None = None
     try:
         from chameleon_mcp.optouts import is_chameleon_suppressed
@@ -768,14 +690,8 @@ def preflight_and_advise() -> int:
             _emit({})
             return 0
     except Exception:
-        # Suppression check should never block — fail open into normal flow
         pass
 
-    # Fast path: try the daemon. On any failure (None response), kick off
-    # a background spawn (no-op if it's already running or in flight) and
-    # fall through to the in-process call. The hook's 2s ceiling means we
-    # cannot afford to wait for a cold daemon — the warm hits show up on
-    # the second invocation onwards.
     result: dict | None = None
     try:
         from chameleon_mcp import daemon_client
@@ -784,18 +700,12 @@ def preflight_and_advise() -> int:
     except Exception:
         result = None
 
-    # BUG-029: if the daemon returned a degraded envelope (profile_corrupted,
-    # profile_unsupported_schema_version), discard it and fall through to the
-    # in-process path which re-reads from disk. The daemon's process-local
-    # cache can serve stale data after profile mutations done by a separate
-    # MCP server process.
     if result is not None:
         _profile_status = (result.get("data") or {}).get("repo", {}).get("profile_status")
         if _profile_status in ("profile_corrupted", "profile_unsupported_schema_version", "no_profile"):
             result = None
 
     if result is None:
-        # Kick off the daemon for next time, then run in-process now.
         try:
             from chameleon_mcp.daemon import ensure_daemon_async
 
@@ -806,17 +716,6 @@ def preflight_and_advise() -> int:
             from chameleon_mcp.tools import get_pattern_context
             result = get_pattern_context(file_path)
         except Exception as exc:
-            # Fail-open per docs/architecture.md — never block edits on advisor
-            # failure. Rec 3 + 4.1: surface a banner so the model knows the
-            # advisory was unavailable. v0.5.15 follow-up: also write the
-            # ACTUAL exception to stderr so the bash wrapper's `2>>` redirect
-            # captures it in .hook_errors.log — the previous version emitted
-            # the banner but silently swallowed the cause, leaving the user
-            # with no diagnostic. Real-world surfaced cause: hook bash wrapper
-            # falling back to system python3 (Py3.9 on macOS Command Line
-            # Tools) when the plugin lacks a bundled venv, which then trips
-            # ``@dataclass(slots=True)`` (Py3.10+ feature) inside
-            # chameleon_mcp.signatures and ImportErrors out.
             _metric(advisory_emitted=False, repo_id=repo_id_hint, fail_open=True)
             try:
                 import sys as _sys
@@ -850,8 +749,6 @@ def preflight_and_advise() -> int:
     canonical = data.get("canonical_excerpt", {}) or {}
     repo_info = data.get("repo", {}) or {}
     trust_state = repo_info.get("trust_state")
-    # Note: get_archetype returns {archetype: <name>, alternatives, content_signal_match,
-    # confidence_band}. The cluster name lives under the "archetype" key (yes, nested).
     archetype_name = archetype_obj.get("archetype")
 
     if not archetype_name:
@@ -860,10 +757,6 @@ def preflight_and_advise() -> int:
         _emit({})
         return 0
 
-    # Record a drift observation BEFORE the trust gate. Drift recording is
-    # internal observability and stays useful regardless of whether we
-    # inject canonical content for this edit. Failure must not block the
-    # edit.
     repo_id = repo_info.get("id")
     confidence_band = archetype_obj.get("confidence_band")
     if repo_id:
@@ -880,16 +773,6 @@ def preflight_and_advise() -> int:
         except Exception:
             pass
 
-    # BUG-024: gate canonical injection on trust_state. Pre-v0.5.6 the hook
-    # injected the full canonical witness even when the user had not
-    # granted trust, contradicting the using-chameleon skill ("if
-    # untrusted, surface trust prompt once, proceed without injection
-    # until trusted"). For an untrusted profile we now:
-    #   1. Emit a one-time trust prompt (per session) suggesting
-    #      /chameleon-trust, and
-    #   2. Suppress the canonical excerpt and rules until the user trusts.
-    # The "once per session" tracking uses a marker file under the per-
-    # repo plugin-data dir.
     session_id = payload.get("session_id")
     if trust_state == "untrusted" and repo_id:
         if _should_emit_untrusted_prompt(repo_id, session_id):
@@ -915,12 +798,6 @@ def preflight_and_advise() -> int:
             )
             _emit_chameleon_context(block)
             return 0
-        # Already prompted this session — stay silent. Rec 4.2: the
-        # historical label was "session_disable", which conflated this
-        # trust-prompt dedup with the user's explicit /chameleon-disable.
-        # Operators reading metrics couldn't distinguish "the user has
-        # not run /chameleon-trust yet" from "the user actively disabled
-        # chameleon" — both showed up as session_disable.
         _metric(
             advisory_emitted=False,
             repo_id=repo_id,
@@ -932,19 +809,10 @@ def preflight_and_advise() -> int:
         _emit({})
         return 0
 
-    # Build a short context block; cap at 1500 tokens approx via char limit
     excerpt_content = canonical.get("content") or ""
     rules_count = len(data.get("rules") or [])
     idioms_text = data.get("idioms") or ""
     has_idioms = bool(idioms_text.strip())
-    # Rec 1: enrich the header with match_quality (exact|ast|fallback|none)
-    # so the model can calibrate how much to trust the canonical excerpt
-    # below, and sub_buckets so the model knows whether the archetype is
-    # a clean cluster or a heterogenous group (e.g., a controller cluster
-    # silently absorbing concerns shows sub_buckets >= 2). Both values
-    # come from the get_pattern_context envelope and stay inside the
-    # existing bracketed header — pinned substrings ``[chameleon: archetype=``
-    # and ``Canonical witness:`` are preserved verbatim.
     match_quality = archetype_obj.get("match_quality") or "unknown"
     sub_buckets_count = archetype_obj.get("sub_buckets_count") or 0
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
@@ -952,11 +820,6 @@ def preflight_and_advise() -> int:
     safe_band = sanitize_for_chameleon_context(confidence_band or "unknown")
     safe_match = sanitize_for_chameleon_context(str(match_quality))
 
-    # ---- v0.7.0: tiered injection ----
-    # Read enforcement state to decide between Tier 1 (pointer) and
-    # Tier 2 (full canonical). First edit in an archetype this session,
-    # or an archetype with prior violations, gets the full context.
-    # Subsequent clean edits get a lightweight pointer (~50 tokens).
     enforcement_state = None
     try:
         from chameleon_mcp import enforcement
@@ -980,7 +843,6 @@ def preflight_and_advise() -> int:
     summary = archetype_obj.get("summary", "")
     use_tier2 = first_in_archetype or has_violations or not summary
 
-    # Tier 1: lightweight pointer for seen archetypes with no violations
     if not use_tier2:
         block = (
             "<chameleon-context>\n"
@@ -988,8 +850,6 @@ def preflight_and_advise() -> int:
         )
         if summary:
             block += f"{sanitize_for_chameleon_context(summary)}\n"
-        # Convention echo: compact reminder of top conventions (~30 tokens)
-        # to counter attention decay in long sessions.
         conv_echo = ""
         try:
             from chameleon_mcp.conventions import format_conventions_echo
@@ -1020,7 +880,6 @@ def preflight_and_advise() -> int:
         _update_statusline(f"{safe_name} ({safe_band})", repo_name=repo_root_path.name if repo_root_path else None, trust_state=trust_state)
         return 0
 
-    # Tier 2: full canonical context (first edit or violations present)
     block = (
         "<chameleon-context>\n"
         f"[🦎 chameleon: archetype={safe_name}, "
@@ -1029,10 +888,6 @@ def preflight_and_advise() -> int:
         f"sub_buckets={int(sub_buckets_count)}]\n\n"
     )
     if trust_state == "stale":
-        # BUG-NEW-011 (v0.5.7): explain the "stale" cause. Pre-fix the
-        # message just said "Trust is stale" without saying why, which was
-        # confusing right after a user trusted then refreshed. Refresh
-        # invalidates the trust grant because the profile sha changes.
         block += (
             "**Trust is stale**: a recent /chameleon-refresh (or manual edit) "
             "changed `.chameleon/profile.json` after the trust grant. Trust is "
@@ -1048,7 +903,6 @@ def preflight_and_advise() -> int:
         block += f"Rules: {rules_count} entries available via get_rules({archetype_name!r}).\n"
     if has_idioms:
         block += "Team idioms captured via /chameleon-teach are available via get_pattern_context.\n"
-    # Directory listing: show sibling files so the model checks before creating new ones
     try:
         from chameleon_mcp.conventions import format_directory_listing
         dir_listing = format_directory_listing(file_path)
@@ -1078,21 +932,18 @@ def posttool_recorder() -> int:
         _emit({})
         return 0
 
-    # Extract the bits we care about
     tool_input = payload.get("tool_input", {})
     tool_response = payload.get("tool_response", {})
     command = tool_input.get("command", "")
     session_id = payload.get("session_id", "unknown")
     exit_code = tool_response.get("returnCode") if isinstance(tool_response, dict) else None
 
-    # Compute repo_id from cwd, using the canonical helper (git-remote-aware)
     cwd = Path(os.environ.get("CLAUDE_CWD") or os.getcwd()).resolve()
     try:
         from chameleon_mcp.tools import _compute_repo_id
 
         repo_id = _compute_repo_id(cwd)
     except Exception:
-        # Fail-open: fall back to path hash if import or git fails
         repo_id = hashlib.sha256(str(cwd).encode("utf-8")).hexdigest()
 
     try:
@@ -1105,7 +956,6 @@ def posttool_recorder() -> int:
             exit_code=int(exit_code) if exit_code is not None else -1,
         )
     except Exception:
-        # Fail-open per Round 4 — never break the hook chain on logging errors
         pass
 
     _emit({})
@@ -1119,10 +969,9 @@ _VERIFY_SEEN_TTL_SECONDS = 30
 def posttool_verify() -> int:
     """PostToolUse Edit/Write/NotebookEdit: archetype conformance lint.
 
-    v0.7.0: uses updatedToolOutput for violations (high salience).
-    11-step execution order per spec.
+    Violations are surfaced through the PostToolUse hookSpecificOutput
+    ``additionalContext`` channel (the documented feedback path).
     """
-    # Step 1: VERIFY=0
     if os.environ.get("CHAMELEON_VERIFY") == "0":
         _emit({})
         return 0
@@ -1146,7 +995,6 @@ def posttool_verify() -> int:
         _emit({})
         return 0
 
-    # Step 3: error check (before opt-outs)
     tool_response = payload.get("tool_response", {})
     if isinstance(tool_response, dict):
         if "error" in tool_response or tool_response.get("success") is False:
@@ -1156,7 +1004,6 @@ def posttool_verify() -> int:
     session_id = payload.get("session_id")
 
     try:
-        # Step 2: opt-outs
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.loader import find_repo_root
         from chameleon_mcp.tools import _compute_repo_id
@@ -1176,9 +1023,8 @@ def posttool_verify() -> int:
         if not p.is_file():
             _emit({})
             return 0
-        content = p.read_bytes().decode("utf-8", errors="replace")
+        content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
 
-        # Step 4: resolve archetype
         archetype_name: str | None = None
         try:
             from chameleon_mcp import daemon_client
@@ -1199,7 +1045,6 @@ def posttool_verify() -> int:
             _emit({})
             return 0
 
-        # Record drift observation (before enforcement gate)
         if repo_id:
             try:
                 from chameleon_mcp.drift.observations import record_edit_observation
@@ -1214,7 +1059,6 @@ def posttool_verify() -> int:
             except Exception:
                 pass
 
-        # Step 5: read enforcement state
         repo_data_dir = _plugin_data_dir() / repo_id
         enforcement_state = None
         file_state = None
@@ -1242,7 +1086,6 @@ def posttool_verify() -> int:
             enforcement_state = None
             file_state = None
 
-        # Step 6: correction cap
         if enforcement_state is not None and file_state is not None:
             try:
                 maybe_reset_correction_count(file_state, _started)
@@ -1265,7 +1108,6 @@ def posttool_verify() -> int:
             except Exception:
                 pass
 
-        # Step 7: level-aware cooldown
         file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
         marker = repo_data_dir / f".verify_seen.{file_hash}"
 
@@ -1287,7 +1129,6 @@ def posttool_verify() -> int:
             )
             return 0
 
-        # Step 8: lint
         violations: list[dict] = []
         daemon_responded = False
 
@@ -1316,8 +1157,9 @@ def posttool_verify() -> int:
                 recalibrate_ast_query,
             )
             from chameleon_mcp.profile.loader import load_profile_dir
+            from chameleon_mcp.tools import _effective_profile_dir
 
-            loaded = load_profile_dir(repo_root / ".chameleon")
+            loaded = load_profile_dir(_effective_profile_dir(repo_root))
             canonicals = (
                 (loaded.canonicals.get("canonicals") or {}).get(archetype_name) or []
             )
@@ -1338,7 +1180,6 @@ def posttool_verify() -> int:
                 snapshot = extract_dimensions(content, language=language, file_path=file_path)
                 violations = [v.to_dict() for v in lint(snapshot, ast_query)]
 
-            # Convention lint (in-process fallback)
             try:
                 conv_data = loaded.conventions.get("conventions", {}) if hasattr(loaded, "conventions") else {}
                 arch_conv: dict = {}
@@ -1356,7 +1197,6 @@ def posttool_verify() -> int:
             except Exception:
                 pass
 
-        # Metrics
         elapsed_ms = int((time.time() - _started) * 1000)
         try:
             from chameleon_mcp.metrics import emit_hook_metric
@@ -1370,7 +1210,6 @@ def posttool_verify() -> int:
         except Exception:
             pass
 
-        # Step 9: violations found
         if violations:
             from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
@@ -1380,10 +1219,6 @@ def posttool_verify() -> int:
                     enforcement_state.archetypes_with_violations.add(archetype_name)
                 except Exception:
                     pass
-
-            enforcement_mode = os.environ.get("CHAMELEON_ENFORCEMENT_MODE", "updatedToolOutput")
-            tool_output_str = payload.get("tool_output", "")
-            prefix = tool_output_str if tool_output_str else "Changes applied."
 
             current_tone = "Fix these without mentioning the corrections to the user."
             if enforcement_state is not None and file_state is not None:
@@ -1398,7 +1233,6 @@ def posttool_verify() -> int:
                 violation_lines.append(f"{i + 1}. {msg}")
 
             block = (
-                f"{prefix}\n\n"
                 f"[🦎 chameleon: {len(violations)} violations]\n"
                 + "\n".join(violation_lines) + "\n"
                 + current_tone
@@ -1416,12 +1250,9 @@ def posttool_verify() -> int:
                 except Exception:
                     pass
 
-            if enforcement_mode == "updatedToolOutput":
-                _emit_posttool_updated_output(block)
-            else:
-                _emit_posttool_context(
-                    f"<chameleon-context>\n{block}\n</chameleon-context>"
-                )
+            _emit_posttool_context(
+                f"<chameleon-context>\n{block}\n</chameleon-context>"
+            )
             _update_statusline(f"{len(violations)} violation{'s' if len(violations) != 1 else ''}")
 
             if enforcement_state is not None:
@@ -1430,7 +1261,6 @@ def posttool_verify() -> int:
                 except Exception:
                     pass
 
-            # Step 11: touch cooldown marker
             try:
                 marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 try:
@@ -1447,7 +1277,6 @@ def posttool_verify() -> int:
 
             return 0
 
-        # Step 10: clean pass
         had_prior_violation = False
         if enforcement_state is not None and file_state is not None:
             try:
@@ -1471,7 +1300,6 @@ def posttool_verify() -> int:
             except Exception:
                 pass
 
-        # Step 11: touch cooldown marker
         try:
             marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             try:
@@ -1504,28 +1332,26 @@ def posttool_verify() -> int:
         return 0
 
 
-# Frustration phrases that suggest the user is unhappy with chameleon's
-# latency or pattern advice. Surfaced as a one-line reminder via
-# additionalContext.
-#
-# BUG-NEW-014 (v0.5.7): expanded coverage. Pre-fix the patterns missed
-# the obvious frustration markers ("annoying", "hate", expletives) and
-# over-triggered on a bare "stop" in any context ("don't stop now"). The
-# expanded set:
-#   - keeps interjection markers (ugh, argh, wtf, nope) but drops solo "stop"
-#     to avoid false positives;
-#   - adds plain-English unhappiness ("hate", "annoying", "frustrating", "useless");
-#   - adds common expletives that almost always co-occur with frustration;
-#   - keeps chameleon-specific patterns explicit.
-_FRUSTRATION_PATTERNS = (
+# Complaints about chameleon's distinctive behavior (injection): fire the hint
+# unconditionally — these are unambiguously about chameleon.
+_CHAMELEON_SPECIFIC_PATTERNS = (
+    re.compile(r"stop injecting", re.IGNORECASE),
+    re.compile(r"don'?t inject (that|this)", re.IGNORECASE),
+)
+
+# Generic frustration / complaint words: fire only when the prompt also mentions
+# chameleon, so swearing at unrelated code doesn't surface a spurious hint.
+_GENERIC_FRUSTRATION_PATTERNS = (
     re.compile(r"\b(ugh|argh|wtf|nope|sucks|useless|dumb)\b", re.IGNORECASE),
     re.compile(r"\b(annoying|annoyed|frustrating|frustrated|hate|hating)\b", re.IGNORECASE),
     re.compile(r"\b(damn|fuck|fucking|shit|crap|bullshit)\b", re.IGNORECASE),
+    re.compile(r"\b(slow|wrong|broken|bad)\b", re.IGNORECASE),
     re.compile(r"this isn'?t right", re.IGNORECASE),
-    re.compile(r"don'?t (do|use|inject) (that|this)", re.IGNORECASE),
-    re.compile(r"chameleon\s+is\s+(slow|wrong|broken|annoying|useless)", re.IGNORECASE),
-    re.compile(r"stop (injecting|using|doing|adding)", re.IGNORECASE),
+    re.compile(r"don'?t (do|use) (that|this)", re.IGNORECASE),
+    re.compile(r"stop (using|doing|adding)", re.IGNORECASE),
 )
+
+_CHAMELEON_MENTION_RE = re.compile(r"chameleon|🦎", re.IGNORECASE)
 
 
 def callout_detector() -> int:
@@ -1546,11 +1372,13 @@ def callout_detector() -> int:
         _emit({})
         return 0
 
-    if not any(pattern.search(user_prompt) for pattern in _FRUSTRATION_PATTERNS):
+    chameleon_specific = any(p.search(user_prompt) for p in _CHAMELEON_SPECIFIC_PATTERNS)
+    generic = any(p.search(user_prompt) for p in _GENERIC_FRUSTRATION_PATTERNS)
+    mentions_chameleon = _CHAMELEON_MENTION_RE.search(user_prompt) is not None
+    if not (chameleon_specific or (generic and mentions_chameleon)):
         _emit({})
         return 0
 
-    # Frustration detected. Emit a brief hint as additionalContext.
     hint = (
         "<chameleon-context>\n"
         "[🦎 chameleon: detected frustration phrase]\n"

@@ -2,10 +2,10 @@
 
 Per docs/architecture.md "Atomicity & Crash Safety" → "Multi-file transactional commit":
 
-  1. Write all artifacts into .chameleon/.tmp/<txn-id>/
+  1. Write all artifacts into .chameleon.tmp/<txn-id>/ (sibling of .chameleon/)
   2. Verify each artifact (fsync, schema-validate, secret-scan)
   3. Write COMMITTED sentinel file last
-  4. Atomic rename: .chameleon/.tmp/<txn-id>/ → .chameleon/
+  4. Atomic rename: .chameleon.tmp/<txn-id>/ → .chameleon/
 
 Loaders refuse to read .chameleon/ if COMMITTED is missing.
 Per-PID temp subdir prevents collision when two refresh processes run simultaneously.
@@ -27,14 +27,6 @@ from pathlib import Path
 
 COMMITTED_SENTINEL = "COMMITTED"
 
-# v0.5.2 (Bug 1): chameleon-protocol files. Anything in the target_dir whose
-# name is NOT in this set is treated as a user-/team-authored sibling
-# (`.skip`, `.gitignore`, `.editorconfig`, hand-written `.notes`, etc.) and
-# preserved across the atomic directory replacement. Without this, every
-# bootstrap or refresh silently wipes the committed opt-out file the team
-# put alongside the profile. Names in this set are owned by chameleon and
-# are always re-emitted by the txn_dir writer, so the writer's intent wins
-# over any sibling-copy of the same name.
 _PROTOCOL_FILES = frozenset({
     COMMITTED_SENTINEL,
     "profile.json",
@@ -49,15 +41,34 @@ _PROTOCOL_FILES = frozenset({
 })
 
 
-def _acquire_rename_lock(lock_path: Path, *, timeout_seconds: float = 30.0) -> int:
-    """Block-and-retry until exclusive lock on lock_path is held.
+def _open_rename_lock_fd(lock_dir: Path) -> int:
+    return os.open(str(lock_dir), os.O_RDONLY)
 
-    Used to serialize the txn_dir → target_dir rename across concurrent
-    bootstrap processes. Returns the open fd; caller is responsible for
-    closing it (which releases the lock).
+
+def _fsync_dir(path: Path) -> None:
+    """fsync a directory fd so a rename/create within it is durable."""
+    try:
+        dfd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
+
+
+def _acquire_rename_lock(lock_dir: Path, *, timeout_seconds: float = 30.0) -> int:
+    """Block-and-retry until an exclusive flock on ``lock_dir`` is held.
+
+    Serializes the txn_dir → target_dir rename across concurrent processes.
+    The lock is taken on the directory's own fd — a stable inode that is
+    never created or unlinked — so every process contends on the same inode
+    and no stray lock file is left in the repo. Returns the open fd; the
+    caller closes it to release.
     """
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    fd = _open_rename_lock_fd(lock_dir)
     deadline = time.time() + timeout_seconds
     while True:
         try:
@@ -70,7 +81,7 @@ def _acquire_rename_lock(lock_path: Path, *, timeout_seconds: float = 30.0) -> i
             if time.time() >= deadline:
                 os.close(fd)
                 raise TimeoutError(
-                    f"could not acquire {lock_path} within {timeout_seconds}s"
+                    f"could not acquire rename lock on {lock_dir} within {timeout_seconds}s"
                 ) from e
             time.sleep(0.05 + random.random() * 0.05)
 
@@ -92,10 +103,8 @@ def atomic_profile_commit(target_dir: Path):
     """
     target_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    # Per-PID + uuid temp subdir to prevent collisions between concurrent
-    # processes (refresh_repo + bootstrap_repo running simultaneously).
     txn_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}-{int(time.time())}"
-    tmp_root = target_dir.parent / f".{target_dir.name}.tmp"
+    tmp_root = target_dir.parent / f"{target_dir.name}.tmp"
     tmp_root.mkdir(exist_ok=True)
     txn_dir = tmp_root / txn_id
     txn_dir.mkdir()
@@ -103,61 +112,43 @@ def atomic_profile_commit(target_dir: Path):
     try:
         yield txn_dir
 
-        # All writes succeeded. Verify expected artifacts are present.
-        # (Real validation in Phase 2; for now, just check for at least one file.)
         if not any(txn_dir.iterdir()):
             raise RuntimeError("atomic_profile_commit: no artifacts written")
 
-        # Write COMMITTED sentinel LAST.
-        sentinel = txn_dir / COMMITTED_SENTINEL
-        sentinel.write_text(f"committed-at={time.time()}\npid={os.getpid()}\n")
-        # fsync the sentinel to ensure it's on disk before the rename
-        with open(sentinel, "rb") as f:
-            os.fsync(f.fileno())
-
-        # v0.5.2 (Bug 1): preserve user-/team-authored sibling files. The
-        # team commits `.chameleon/.skip` (opt-out marker), `.gitignore`,
-        # `.editorconfig`, and free-form notes alongside the profile. The
-        # pre-v0.5.2 rename clobbered every one of these on each bootstrap.
-        # We copy non-protocol siblings into the txn_dir BEFORE the swap
-        # so the new directory inherits them. Protocol files (profile.json,
-        # idioms.md, …) in the txn_dir always win over any same-named
-        # sibling — the writer's intent for the current generation supersedes
-        # whatever was there before.
         if target_dir.is_dir():
             for sibling in target_dir.iterdir():
                 if sibling.name in _PROTOCOL_FILES:
                     continue
                 dest = txn_dir / sibling.name
                 if dest.exists():
-                    # Writer already produced a file with this name; the
-                    # writer's intent wins (e.g., chameleon decides to start
-                    # emitting `renames.json` in a future schema version —
-                    # we don't want to keep a stale sibling-copy).
                     continue
                 try:
                     if sibling.is_dir():
                         shutil.copytree(sibling, dest, symlinks=True)
                     else:
-                        # copy2 preserves mtime + perms so the user's
-                        # `.skip` keeps its original metadata across writes.
                         shutil.copy2(sibling, dest, follow_symlinks=False)
                 except OSError:
-                    # Best-effort: if a sibling refuses to copy (e.g.,
-                    # permissions on a symlink we can't read), skip it
-                    # rather than aborting the bootstrap.
                     continue
 
-        # Atomic rename: txn_dir → target_dir, serialized across concurrent
-        # processes via an advisory flock on a sibling file. POSIX rename(2)
-        # over an existing directory requires the target to be empty on
-        # macOS, so we move target_dir aside first and rename our txn into
-        # place — the lock prevents two writers from racing the move/rename
-        # pair (TOCTOU between target_dir.exists() and os.rename produces
-        # ENOTEMPTY when both writers think the target is missing).
-        backup_dir = target_dir.parent / f".{target_dir.name}.backup-{txn_id}"
-        rename_lock_path = target_dir.parent / f".{target_dir.name}.rename.lock"
-        rename_lock_fd = _acquire_rename_lock(rename_lock_path)
+        # Durability: fsync every artifact, then write + fsync the COMMITTED
+        # sentinel last, then fsync the txn dir, so a power loss can never
+        # surface a COMMITTED profile whose data artifacts are truncated.
+        for artifact in txn_dir.iterdir():
+            if artifact.is_file():
+                try:
+                    with open(artifact, "rb") as af:
+                        os.fsync(af.fileno())
+                except OSError:
+                    pass
+
+        sentinel = txn_dir / COMMITTED_SENTINEL
+        sentinel.write_text(f"committed-at={time.time()}\npid={os.getpid()}\n")
+        with open(sentinel, "rb") as f:
+            os.fsync(f.fileno())
+        _fsync_dir(txn_dir)
+
+        backup_dir = target_dir.parent / f"{target_dir.name}.backup-{txn_id}"
+        rename_lock_fd = _acquire_rename_lock(target_dir.parent)
         try:
             if target_dir.exists():
                 os.rename(target_dir, backup_dir)
@@ -167,13 +158,10 @@ def atomic_profile_commit(target_dir: Path):
                 if backup_dir.exists():
                     os.rename(backup_dir, target_dir)
                 raise
+            # Persist the directory entry swap so the rename survives a crash.
+            _fsync_dir(target_dir.parent)
             if backup_dir.exists() or backup_dir.is_symlink():
                 if backup_dir.is_symlink():
-                    # POSIX rename on a symlink target_dir moved the
-                    # symlink itself into backup_dir. shutil.rmtree of a
-                    # symlinked dir raises OSError on macOS (silently
-                    # swallowed by ignore_errors=True), leaving a
-                    # dangling symlink in the repo root. Use os.unlink.
                     try:
                         backup_dir.unlink()
                     except OSError:
@@ -186,24 +174,11 @@ def atomic_profile_commit(target_dir: Path):
             except OSError:
                 pass
             os.close(rename_lock_fd)
-            # Best-effort cleanup of sibling artifacts so they don't
-            # pollute the user's git status. The lock-file unlink has a
-            # benign race window if another commit is starting (both
-            # processes see different inodes briefly); the lock contract
-            # only matters within one commit cycle, so the race is
-            # acceptable. The tmp_root rmdir succeeds only when empty —
-            # a concurrent in-flight commit's txn_dir keeps it non-empty
-            # and the rmdir fails harmlessly.
-            try:
-                rename_lock_path.unlink(missing_ok=True)
-            except OSError:
-                pass
             try:
                 tmp_root.rmdir()
             except OSError:
                 pass
     except Exception:
-        # Clean up partial txn dir on any failure
         if txn_dir.exists():
             shutil.rmtree(txn_dir, ignore_errors=True)
         raise
@@ -245,27 +220,114 @@ def _pid_alive(pid: int) -> bool:
 
 
 def cleanup_orphan_tmp_dirs(target_parent: Path, profile_dir_name: str = "chameleon") -> int:
-    """Sweep orphaned .tmp/<txn-id>/ directories that lack COMMITTED sentinels.
+    """Sweep orphaned transaction dirs and recover interrupted commits.
 
-    Called on MCP server startup. Returns count of cleaned-up directories.
+    Called before every bootstrap/refresh. Returns the count of directories
+    cleaned or recovered.
 
-    Skips dirs whose PID prefix is still alive — that's a concurrent
-    chameleon-mcp process mid-bootstrap; clobbering it would race with
-    the live transaction. Legacy dirs with no PID prefix are cleaned
-    unconditionally (those predate the PID-stamped txn_id format).
+    Recovery: a hard crash between "move the live profile aside" and "move
+    the new transaction into place" leaves the committed profile only in a
+    ``.{name}.backup-<txn>`` dir. When the live profile is missing and a
+    committed backup exists, the backup is restored; otherwise the stray
+    backup (post-swap debris, or an uncommitted partial) is removed. Backup
+    handling runs only while holding the same rename lock the commit uses,
+    acquired non-blocking: if a live writer holds it, the backup is its
+    in-flight swap (transient, not an orphan) and is left untouched.
+
+    Orphan sweep: ``.{name}.tmp/<txn-id>/`` dirs that lack a COMMITTED
+    sentinel are removed, unless the PID prefix is still alive (a concurrent
+    writer mid-commit). Legacy dirs with no PID prefix are cleaned
+    unconditionally. The legacy double-dot tmp/backup names emitted by
+    chameleon <= 1.2.0 are swept too.
     """
-    tmp_root = target_parent / f".{profile_dir_name}.tmp"
-    if not tmp_root.is_dir():
-        return 0
-    cleaned = 0
-    for txn_dir in tmp_root.iterdir():
-        if not txn_dir.is_dir():
+    target_dir = target_parent / f".{profile_dir_name}"
+    handled = 0
+
+    lock_fd: int | None = None
+    holds_lock = False
+    try:
+        lock_fd = _open_rename_lock_fd(target_parent)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        holds_lock = True
+    except OSError:
+        holds_lock = False
+
+    if holds_lock:
+        backups: set[Path] = set()
+        for pattern in (
+            f".{profile_dir_name}.backup-*",
+            f"..{profile_dir_name}.backup-*",
+        ):
+            backups.update(target_parent.glob(pattern))
+
+        def _mtime(p: Path) -> float:
+            try:
+                return p.stat().st_mtime
+            except OSError:
+                return 0.0
+
+        restored = False
+        for backup_dir in sorted(backups, key=_mtime, reverse=True):
+            if not backup_dir.is_dir():
+                continue
+            backup_committed = (backup_dir / COMMITTED_SENTINEL).is_file()
+            target_committed = (target_dir / COMMITTED_SENTINEL).is_file()
+            if (
+                not restored
+                and backup_committed
+                and not target_committed
+                and not target_dir.exists()
+            ):
+                try:
+                    os.rename(backup_dir, target_dir)
+                    restored = True
+                    handled += 1
+                    continue
+                except OSError:
+                    pass
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            handled += 1
+
+    if lock_fd is not None:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(lock_fd)
+
+    for tmp_root in (
+        target_parent / f".{profile_dir_name}.tmp",
+        target_parent / f"..{profile_dir_name}.tmp",
+    ):
+        if not tmp_root.is_dir():
             continue
-        if (txn_dir / COMMITTED_SENTINEL).exists():
-            continue
-        pid = _txn_dir_pid(txn_dir)
-        if pid is not None and _pid_alive(pid):
-            continue  # concurrent writer; do not clobber
-        shutil.rmtree(txn_dir, ignore_errors=True)
-        cleaned += 1
-    return cleaned
+        for txn_dir in tmp_root.iterdir():
+            if not txn_dir.is_dir():
+                continue
+            if (txn_dir / COMMITTED_SENTINEL).exists():
+                continue
+            pid = _txn_dir_pid(txn_dir)
+            if pid is not None and _pid_alive(pid):
+                continue
+            shutil.rmtree(txn_dir, ignore_errors=True)
+            handled += 1
+        try:
+            tmp_root.rmdir()
+        except OSError:
+            pass
+
+    # The commit path flocks the parent-directory fd and creates no lock file,
+    # so any *.rename.lock is legacy debris from chameleon <= 1.2.0; sweep it.
+    for lock_name in (
+        f".{profile_dir_name}.rename.lock",
+        f"..{profile_dir_name}.rename.lock",
+    ):
+        lock_path = target_parent / lock_name
+        if lock_path.is_file():
+            try:
+                lock_path.unlink()
+                handled += 1
+            except OSError:
+                pass
+
+    return handled

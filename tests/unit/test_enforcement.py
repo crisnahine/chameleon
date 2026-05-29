@@ -11,9 +11,6 @@ def _make_data_dir(tmp_path: Path) -> Path:
     return d
 
 
-# ---- 1. Data model ----
-
-
 def test_empty_state():
     from chameleon_mcp.enforcement import EnforcementState
 
@@ -27,16 +24,13 @@ def test_file_state_defaults():
     from chameleon_mcp.enforcement import FileState
 
     fs = FileState()
-    assert fs.level == -1  # no state
+    assert fs.level == -1
     assert fs.violation_count == 0
     assert fs.correction_count == 0
     assert fs.last_violation_at is None
     assert fs.last_verified_at is None
     assert fs.last_clean_at is None
     assert fs.consecutive_l2 == 0
-
-
-# ---- 2. Serialization ----
 
 
 def test_round_trip(tmp_path):
@@ -63,6 +57,38 @@ def test_round_trip(tmp_path):
     assert loaded.files["/foo.ts"].violation_count == 3
 
 
+def test_save_merges_concurrent_on_disk_state(tmp_path):
+    """A stale in-memory save must not clobber a concurrent writer's updates."""
+    from chameleon_mcp.enforcement import (
+        EnforcementState,
+        FileState,
+        load_state,
+        save_state,
+    )
+
+    repo_dir = _make_data_dir(tmp_path)
+
+    # Agent A persists its view.
+    state_a = EnforcementState(
+        archetypes_seen={"alpha"},
+        files={"/a.ts": FileState(level=1, last_verified_at=100.0)},
+    )
+    save_state(state_a, repo_dir, "shared-session")
+
+    # Agent B loaded before A's save (so it doesn't know about alpha/a.ts) and
+    # now persists its own view.
+    state_b = EnforcementState(
+        archetypes_seen={"beta"},
+        files={"/b.ts": FileState(level=2, last_verified_at=200.0)},
+    )
+    save_state(state_b, repo_dir, "shared-session")
+
+    merged = load_state(repo_dir, "shared-session")
+    assert merged.archetypes_seen == {"alpha", "beta"}
+    assert set(merged.files) == {"/a.ts", "/b.ts"}
+    assert merged.files["/b.ts"].level == 2
+
+
 def test_load_missing_returns_empty(tmp_path):
     from chameleon_mcp.enforcement import load_state
 
@@ -80,9 +106,6 @@ def test_load_corrupt_returns_empty(tmp_path):
     state_path.write_text("{invalid json", encoding="utf-8")
     state = load_state(repo_dir, "session-bad")
     assert state.archetypes_seen == set()
-
-
-# ---- 3. Eviction ----
 
 
 def test_eviction_at_200_files(tmp_path):
@@ -103,12 +126,8 @@ def test_eviction_at_200_files(tmp_path):
     save_state(state, repo_dir, "session-evict")
     loaded = load_state(repo_dir, "session-evict")
     assert len(loaded.files) == 200
-    # oldest files evicted
     assert "/file_0000.ts" not in loaded.files
     assert "/file_0209.ts" in loaded.files
-
-
-# ---- 4. State transitions ----
 
 
 def test_record_violation_no_state_to_l0():
@@ -137,10 +156,10 @@ def test_record_violation_self_correction_no_escalation():
 
     first = time.time()
     fs = FileState(level=LEVEL_L0, last_violation_at=first)
-    now = first + 5  # within 10s
+    now = first + 5
     record_violation(fs, now=now, archetype="component")
-    assert fs.level == LEVEL_L0  # no escalation
-    assert fs.correction_count == 1  # but count incremented
+    assert fs.level == LEVEL_L0
+    assert fs.correction_count == 1
 
 
 def test_record_violation_l1_to_l2():
@@ -195,9 +214,6 @@ def test_should_surface_fast_path_no_clean_ever():
     assert should_surface_to_user(fs) is True
 
 
-# ---- 5. Correction count reset ----
-
-
 def test_correction_count_resets_after_60s():
     from chameleon_mcp.enforcement import FileState, maybe_reset_correction_count
 
@@ -219,10 +235,10 @@ def test_self_correction_boundary_at_10s():
 
     now = time.time()
     fs = FileState(last_violation_at=now - 10.0)
-    assert is_self_correction(fs, now) is True  # exactly 10s = self-correction
+    assert is_self_correction(fs, now) is True
 
     fs2 = FileState(last_violation_at=now - 10.001)
-    assert is_self_correction(fs2, now) is False  # just past 10s = different edit
+    assert is_self_correction(fs2, now) is False
 
 
 def test_eviction_with_none_last_verified_at(tmp_path):
@@ -242,4 +258,4 @@ def test_eviction_with_none_last_verified_at(tmp_path):
     save_state(state, repo_dir, "session-evict-none")
     loaded = load_state(repo_dir, "session-evict-none")
     assert len(loaded.files) == 200
-    assert "/none_file.ts" not in loaded.files  # None sorts first, evicted
+    assert "/none_file.ts" not in loaded.files

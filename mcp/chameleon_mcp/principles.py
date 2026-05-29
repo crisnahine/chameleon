@@ -24,17 +24,14 @@ def generate_principles(
 
     principles: list[str] = []
 
-    # #1: Always. Authority signal.
     principles.append(
         "The conventions and code patterns shown here are extracted from this codebase. They override general best practices."
     )
 
-    # Always: granularity matching (no convention section covers this)
     principles.append(
         "Match directory granularity; don't extract what siblings inline."
     )
 
-    # Gate: test archetypes exist → tell Claude when NOT to test
     has_test_archs = any(
         name.startswith("test") for name in arch_data
     )
@@ -43,7 +40,6 @@ def generate_principles(
             "Match sibling test shape; skip tests where siblings have none."
         )
 
-    # Gate: controller/API archetypes → endpoint discipline
     has_api = any(
         "controller" in (body.get("paths_pattern") or "")
         or "routes" in (body.get("paths_pattern") or "")
@@ -54,7 +50,6 @@ def generate_principles(
             "One action, one job: queries return data, downloads produce files. Match the API shape of sibling endpoints."
         )
 
-    # Gate: no competing imports detected → general wrapper principle
     has_competing = any(
         data.get("competing")
         for data in conv.get("imports", {}).values()
@@ -64,7 +59,6 @@ def generate_principles(
             "Use the project's wrapper, not the raw library."
         )
 
-    # Always: use language/framework idioms for common patterns
     principles.append(
         "Prefer the language's built-in idiom for upserts, lookups, and defaults over manual check-then-create."
     )

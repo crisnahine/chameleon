@@ -4,6 +4,48 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-05-29
+
+A production-readiness pass driven by an exhaustive multi-lens audit: security, crash-safety, concurrency, dead-code, and doc fixes, plus a source-comment cleanup.
+
+### Security
+
+- **Bootstrap no longer executes a cloned repo's JS ESLint config by default.** Reading `.eslintrc.js` via Node `require()`/`import()` ran the repo's own module code, so `/chameleon-init` on an untrusted clone could run arbitrary code. The default is now a static parser; set `CHAMELEON_ALLOW_ESLINT_EVAL=1` to opt back in for trusted repos.
+- **Secret scanner was a no-op for detect-secrets.** `scan_line` ran without registered plugins. It now runs under `default_settings()` with the high-entropy detectors filtered out so ordinary code isn't flagged. Added `ENCRYPTED PRIVATE KEY` to the fallback regex.
+- **Live canonical witnesses are re-scanned before injection.** `get_canonical_excerpt` re-reads the working-tree witness; a file edited to contain a secret or injection pattern after bootstrap is now dropped instead of reaching model context.
+- **Archetype-name keys are validated on the default load path.** A poisoned `archetypes.json` key with an embedded newline + prose can no longer reach `<chameleon-context>`; non-`ARCHETYPE_NAME_RE` keys are dropped at load.
+- **`config.json` is now part of the trust hash** and read with the same `O_NOFOLLOW` + duplicate-key/depth hardening as the other artifacts. A committed change to `canonical_ref` or `trust.auto_preserve_when` now flips trust to stale.
+- **Per-user state is locked down to mode 0700** (the data dir, per-repo dirs, and HMAC key dir), blocking other local users from trust, drift, index, and HMAC state.
+- **Committed profile artifacts are parsed with duplicate-key rejection and a nesting-depth cap** on the real load path.
+
+### Fixed
+
+- **PostToolUse violation feedback was silently dropped by default.** Violations were emitted via `updatedToolOutput`, which the PostToolUse hook contract doesn't define. They now use the documented `additionalContext` channel; the `CHAMELEON_ENFORCEMENT_MODE` env var is removed.
+- **The atomic profile commit could lose a committed profile.** A doubled-dot tmp name (`..chameleon.tmp`) made the orphan sweep miss real dirs, the rename lock used a create-then-unlink file (a flock-on-unlinked-inode race that let two commits run at once), and only the sentinel was fsynced. The lock now flocks the parent-directory fd, every artifact + the directory entries are fsynced, and crash recovery (lock-guarded, restores the newest committed backup) runs on the next bootstrap.
+- **Hook fail-open net broke when the error log was unwritable.** Under `set -e` the log write aborted the script before the `{}` was emitted; all five hooks now emit `{}` first and log best-effort.
+- **Enforcement state lost updates across parallel agents** sharing a session id. `save_state` now re-reads and merges under the lock.
+- **Model/concern clustering split never fired** (absolute vs repo-relative sub-bucket path); now matches initial clustering.
+- **Ruby lint applied one file-global superclass to every class**; resolved per class. **Import-preference** matching now uses word boundaries (no `useQuery`/`useQueryClient` false positives).
+- **Branch-pinned (`canonical_ref`) profiles dropped `conventions.json` + `principles.md`**; now materialized (and `principles.md` is injection-scanned).
+- **`daemon_status` reported ~now instead of the real last request**, and `/chameleon-status` reset the daemon's idle timer; `ping` is now a side-effect-free status query. **`doctor`** reports the real version and per-repo `profile_status`.
+- **`resolve_repo_root` and several writers leaked SQLite connections / file descriptors** (cold-cache reads, test-path upserts, optout markers, the daemon pidfile); all now close on every path.
+- **PostToolUse read the whole edited file uncapped**; capped at 100 KB like the witness/lint path. Statusline cache writes are now atomic (no torn JSON).
+- **`auto_refresh.enabled` defaulted to `false`** for a present-but-partial section (docs say `true`); booleans are rejected for the numeric fields.
+- **SessionStart now fires on `resume`**; `session_start` no longer risks an unbound `repo_root`. **Daemon double-spawn guard**: the pidfile flock survives the re-exec (was dropped by `O_CLOEXEC`).
+- **Branch-pinning works on SHA-256 (`--object-format=sha256`) repos** (40- and 64-char git object hashes). Missing `node`/`ruby` produce a clear install message. The frustration detector no longer fires on profanity unrelated to chameleon.
+
+### Changed
+
+- **Docs corrected to match shipped behavior**: tiered PreToolUse injection, L0/L1/L2 PostToolUse escalation, the `additionalContext` channel, 10 user-invocable slash commands, the 9 hashed trust artifacts, and the cooldown/matcher details. Removed the `/cham-*` short-alias claims (Claude Code has no alias mechanism). Uninstall docs now stop the background daemon before clearing the data dir.
+- **New env var `CHAMELEON_ALLOW_ESLINT_EVAL`** (default off) to opt into JS ESLint-config evaluation for trusted repos.
+- **Source comments removed** across Python, shell, and helper scripts; docstrings and functional directives (shebangs, `# noqa`, `# frozen_string_literal`) are kept.
+- **QA batteries** (`qa_ruby.py`, `qa_hook_simulation.py`) are repo-agnostic: they discover representative files and archetypes from the target repo.
+- **Workspace `.chameleon` lookups are bounded** (depth-capped, `node_modules`/`.git` pruned) instead of an unbounded `rglob` on large monorepos.
+
+### Removed
+
+- Dead code: `index_db.list_repo_roots` / `_ensure_file_clusters_schema`, `drift.observations.close_drift_connections`, `naming._disambiguation_suffix`, `schema.load_profile_json` / `validate_archetype_name` / `SUPPORTED_SCHEMA_RANGE`, `exec_log.HMAC_KEY_PATH`, `loader._MAX_ARTIFACT_BYTES`, `typescript._shallow_ts_scan`, the `typescript`/`ruby` `_extractor` singletons, and `_thresholds.DOCS`.
+
 ## [1.2.0] - 2026-05-29
 
 chameleon is now Claude Code only (TypeScript + Ruby on Rails). All non-Claude harness support has been removed.

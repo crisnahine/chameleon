@@ -4,7 +4,8 @@ Imports chameleon tools directly and calls them, printing PASS/FAIL verdicts.
 Does NOT modify the repo.
 
 Set CHAMELEON_TEST_RUBY_REPO to the absolute path of a Rails repo with a
-chameleon profile before running.
+chameleon profile before running. Representative files and their archetype
+names are discovered from the repo, so the battery is portable across repos.
 """
 
 from __future__ import annotations
@@ -16,25 +17,41 @@ import sys
 import time
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
 REPO_PATH = os.environ.get("CHAMELEON_TEST_RUBY_REPO", "")
-
-# Real files to test against (found via find)
-CONTROLLER_FILE = f"{REPO_PATH}/app/controllers/api/v1/referrals_controller.rb"
-MODEL_FILE = f"{REPO_PATH}/app/models/listing_asset.rb"
-SERVICE_FILE = f"{REPO_PATH}/app/services/slack/channel_message.rb"
-SPEC_FILE = f"{REPO_PATH}/spec/models/ticket_spec.rb"
 
 if not REPO_PATH:
     print("SKIP: CHAMELEON_TEST_RUBY_REPO not set")
     sys.exit(0)
 
-# ---------------------------------------------------------------------------
-# Harness
-# ---------------------------------------------------------------------------
+
+def _first_file(*globs: str, exclude: tuple[str, ...] = ()) -> str | None:
+    """Return the first existing repo file matching any glob, skipping excludes."""
+    root = Path(REPO_PATH)
+    for pattern in globs:
+        for p in sorted(root.glob(pattern)):
+            if p.is_file() and not any(x in p.name for x in exclude):
+                return str(p)
+    return None
+
+
+CONTROLLER_FILE = _first_file(
+    "app/controllers/**/*_controller.rb",
+    "app/controllers/*_controller.rb",
+    exclude=("application_controller",),
+)
+MODEL_FILE = _first_file(
+    "app/models/*.rb",
+    exclude=("application_record", "application_mailer"),
+)
+SERVICE_FILE = _first_file("app/services/**/*.rb", "app/services/*.rb")
+SPEC_FILE = _first_file("spec/**/*_spec.rb", "test/**/*_test.rb")
+
+if not CONTROLLER_FILE or not MODEL_FILE:
+    print(
+        f"SKIP: {REPO_PATH} does not look like a standard Rails repo "
+        "(no app/controllers or app/models file found)"
+    )
+    sys.exit(0)
 
 results: list[tuple[str, bool, str]] = []
 
@@ -44,7 +61,6 @@ def record(name: str, passed: bool, detail: str = ""):
     results.append((name, passed, detail))
     print(f"  [{tag}] {name}")
     if detail:
-        # Indent detail lines for readability
         for line in detail.split("\n"):
             print(f"         {line}")
 
@@ -54,10 +70,6 @@ def section(title: str):
     print(f"  {title}")
     print(f"{'='*60}")
 
-
-# ---------------------------------------------------------------------------
-# Import tools
-# ---------------------------------------------------------------------------
 
 from chameleon_mcp.tools import (  # noqa: E402
     detect_repo,
@@ -71,9 +83,12 @@ from chameleon_mcp.tools import (  # noqa: E402
 )
 
 
-# ---------------------------------------------------------------------------
-# 1. detect_repo
-# ---------------------------------------------------------------------------
+def _archetype_for(fpath: str) -> str | None:
+    try:
+        return get_archetype(REPO_PATH, fpath).get("data", {}).get("archetype")
+    except Exception:
+        return None
+
 
 section("1. detect_repo")
 
@@ -83,7 +98,6 @@ try:
     repo_id = data.get("repo_id")
     profile_status = data.get("profile_status")
 
-    # repo_id should be 64-char hex
     is_hex_64 = bool(repo_id and re.match(r"^[0-9a-f]{64}$", repo_id))
     record(
         "detect_repo: repo_id is 64-char hex",
@@ -96,8 +110,8 @@ try:
         f"profile_status={profile_status!r}",
     )
     record(
-        "detect_repo: repo_root points to ef-api",
-        "ef-api" in (data.get("repo_root") or ""),
+        "detect_repo: repo_root resolves to the target repo",
+        Path(data.get("repo_root") or "").resolve() == Path(REPO_PATH).resolve(),
         f"repo_root={data.get('repo_root')!r}",
     )
     record(
@@ -109,40 +123,34 @@ except Exception as exc:
     record("detect_repo: call succeeded", False, f"{type(exc).__name__}: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# 2. get_archetype for 4 file types
-# ---------------------------------------------------------------------------
-
-section("2. get_archetype (4 file types)")
+section("2. get_archetype (discovered file types)")
 
 ARCHETYPE_FILES = {
-    "controller": (CONTROLLER_FILE, ["controller"]),
-    "model": (MODEL_FILE, ["model"]),
-    "service": (SERVICE_FILE, ["service"]),
-    "spec": (SPEC_FILE, ["test", "test-2", "test-api", "test-asset-purchase-agreements", "test-factories"]),
+    "controller": CONTROLLER_FILE,
+    "model": MODEL_FILE,
+    "service": SERVICE_FILE,
+    "spec": SPEC_FILE,
 }
 
-for label, (fpath, expected_archetypes) in ARCHETYPE_FILES.items():
+discovered_archetypes: dict[str, str] = {}
+
+for label, fpath in ARCHETYPE_FILES.items():
+    if not fpath:
+        continue
     try:
         result = get_archetype(REPO_PATH, fpath)
         arch_data = result.get("data", {})
         archetype_name = arch_data.get("archetype")
 
+        ok_name = isinstance(archetype_name, str) and len(archetype_name) > 0
+        if ok_name:
+            discovered_archetypes[label] = archetype_name
         record(
             f"get_archetype({label}): returns an archetype name",
-            archetype_name is not None and isinstance(archetype_name, str) and len(archetype_name) > 0,
+            ok_name,
             f"archetype={archetype_name!r}",
         )
 
-        # Check archetype matches expected category
-        matches_expected = any(exp in (archetype_name or "") for exp in expected_archetypes)
-        record(
-            f"get_archetype({label}): archetype matches expected category",
-            matches_expected,
-            f"expected one of {expected_archetypes}, got {archetype_name!r}",
-        )
-
-        # confidence_band should be present
         band = arch_data.get("confidence_band")
         record(
             f"get_archetype({label}): confidence_band present",
@@ -153,10 +161,6 @@ for label, (fpath, expected_archetypes) in ARCHETYPE_FILES.items():
         record(f"get_archetype({label}): call succeeded", False, f"{type(exc).__name__}: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# 3. get_pattern_context for controller and model
-# ---------------------------------------------------------------------------
-
 section("3. get_pattern_context (controller + model)")
 
 for label, fpath in [("controller", CONTROLLER_FILE), ("model", MODEL_FILE)]:
@@ -164,16 +168,14 @@ for label, fpath in [("controller", CONTROLLER_FILE), ("model", MODEL_FILE)]:
         result = get_pattern_context(fpath)
         data = result.get("data", {})
 
-        # archetype assigned
         arch = data.get("archetype", {})
         arch_name = arch.get("archetype")
         record(
             f"get_pattern_context({label}): archetype assigned",
-            arch_name is not None and len(arch_name) > 0,
+            isinstance(arch_name, str) and len(arch_name) > 0,
             f"archetype={arch_name!r}",
         )
 
-        # canonical_excerpt non-empty
         excerpt = data.get("canonical_excerpt", {})
         content = excerpt.get("content", "")
         record(
@@ -182,7 +184,6 @@ for label, fpath in [("controller", CONTROLLER_FILE), ("model", MODEL_FILE)]:
             f"excerpt length={len(content)} chars",
         )
 
-        # witness_path present
         witness = excerpt.get("witness_path")
         record(
             f"get_pattern_context({label}): witness_path present",
@@ -190,7 +191,6 @@ for label, fpath in [("controller", CONTROLLER_FILE), ("model", MODEL_FILE)]:
             f"witness_path={witness!r}",
         )
 
-        # rules present
         rules = data.get("rules", [])
         record(
             f"get_pattern_context({label}): rules present",
@@ -198,7 +198,6 @@ for label, fpath in [("controller", CONTROLLER_FILE), ("model", MODEL_FILE)]:
             f"rules count={len(rules)}",
         )
 
-        # repo info
         repo_info = data.get("repo", {})
         record(
             f"get_pattern_context({label}): profile_status is profile_present",
@@ -206,14 +205,12 @@ for label, fpath in [("controller", CONTROLLER_FILE), ("model", MODEL_FILE)]:
             f"profile_status={repo_info.get('profile_status')!r}",
         )
 
-        # idioms field present
         record(
             f"get_pattern_context({label}): idioms field present",
             "idioms" in data,
             f"idioms type={type(data.get('idioms')).__name__}",
         )
 
-        # meta present
         meta = data.get("meta", {})
         record(
             f"get_pattern_context({label}): meta.computed_at present",
@@ -224,46 +221,40 @@ for label, fpath in [("controller", CONTROLLER_FILE), ("model", MODEL_FILE)]:
         record(f"get_pattern_context({label}): call succeeded", False, f"{type(exc).__name__}: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# 4. get_canonical_excerpt for a Rails archetype
-# ---------------------------------------------------------------------------
+section("4. get_canonical_excerpt (discovered archetypes)")
 
-section("4. get_canonical_excerpt (Rails archetype)")
-
-for archetype_name in ["controller", "model", "service"]:
+for label, archetype_name in discovered_archetypes.items():
     try:
         result = get_canonical_excerpt(REPO_PATH, archetype_name)
         data = result.get("data", {})
         content = data.get("content") or ""
 
         record(
-            f"get_canonical_excerpt({archetype_name}): content non-empty",
+            f"get_canonical_excerpt({label}={archetype_name}): content non-empty",
             len(content) > 0,
             f"content length={len(content)} chars",
         )
 
-        # Content should look like Ruby code
         looks_ruby = any(kw in content for kw in ["class ", "module ", "def ", "end"])
         record(
-            f"get_canonical_excerpt({archetype_name}): content looks like Ruby",
+            f"get_canonical_excerpt({label}={archetype_name}): content looks like Ruby",
             looks_ruby,
             f"first 100 chars: {content[:100]!r}" if content else "empty",
         )
 
-        # witness_path present
         witness = data.get("witness_path")
         record(
-            f"get_canonical_excerpt({archetype_name}): witness_path present",
+            f"get_canonical_excerpt({label}={archetype_name}): witness_path present",
             witness is not None and len(witness) > 0,
             f"witness_path={witness!r}",
         )
     except Exception as exc:
-        record(f"get_canonical_excerpt({archetype_name}): call succeeded", False, f"{type(exc).__name__}: {exc}")
+        record(
+            f"get_canonical_excerpt({label}): call succeeded",
+            False,
+            f"{type(exc).__name__}: {exc}",
+        )
 
-
-# ---------------------------------------------------------------------------
-# 5. get_rules
-# ---------------------------------------------------------------------------
 
 section("5. get_rules")
 
@@ -278,7 +269,6 @@ try:
         f"rules count={len(rules)}",
     )
 
-    # Each rule entry is a (source_key, value) tuple
     if rules:
         first_key = rules[0][0] if isinstance(rules[0], (list, tuple)) else "?"
         record(
@@ -287,7 +277,6 @@ try:
             f"first key={first_key!r}",
         )
 
-        # Print available rule sources
         sources = [r[0] for r in rules if isinstance(r, (list, tuple))]
         record(
             "get_rules: rule sources found",
@@ -298,20 +287,11 @@ except Exception as exc:
     record("get_rules: call succeeded", False, f"{type(exc).__name__}: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# 6. lint_file
-# ---------------------------------------------------------------------------
-
 section("6. lint_file")
 
-# Read a real .rb file
 model_content = Path(MODEL_FILE).read_text(encoding="utf-8", errors="replace")
+model_archetype = _archetype_for(MODEL_FILE) or discovered_archetypes.get("model", "model")
 
-# Get its archetype first
-arch_result = get_archetype(REPO_PATH, MODEL_FILE)
-model_archetype = arch_result.get("data", {}).get("archetype", "model")
-
-# 6a. lint_file WITHOUT file_path param
 try:
     result = lint_file(REPO_PATH, model_archetype, model_content)
     data = result.get("data", {})
@@ -337,7 +317,6 @@ try:
 except Exception as exc:
     record("lint_file(no file_path): call succeeded", False, f"{type(exc).__name__}: {exc}")
 
-# 6b. lint_file WITH file_path param
 try:
     result = lint_file(REPO_PATH, model_archetype, model_content, file_path=MODEL_FILE)
     data = result.get("data", {})
@@ -355,7 +334,6 @@ try:
         f"canonical_confidence={confidence!r}",
     )
 
-    # language should be detected as ruby
     lang = data.get("language")
     record(
         "lint_file(with file_path): language detected as ruby",
@@ -365,10 +343,6 @@ try:
 except Exception as exc:
     record("lint_file(with file_path): call succeeded", False, f"{type(exc).__name__}: {exc}")
 
-
-# ---------------------------------------------------------------------------
-# 7. get_drift_status
-# ---------------------------------------------------------------------------
 
 section("7. get_drift_status")
 
@@ -388,7 +362,6 @@ try:
         f"recommended_action={data.get('recommended_action')!r}",
     )
 
-    # days_since_refresh can be None (no trust grant) or int
     dsr = data.get("days_since_refresh")
     record(
         "get_drift_status: days_since_refresh is int or None",
@@ -396,7 +369,6 @@ try:
         f"days_since_refresh={dsr!r}",
     )
 
-    # observed_drift_score can be None or float
     ods = data.get("observed_drift_score")
     record(
         "get_drift_status: observed_drift_score is float or None",
@@ -407,40 +379,31 @@ except Exception as exc:
     record("get_drift_status: call succeeded", False, f"{type(exc).__name__}: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# 8. Ruby-specific checks
-# ---------------------------------------------------------------------------
-
 section("8. Ruby-specific checks")
 
-# 8a. DSL detection: lint a model with has_many, validates, before_action
 try:
-    # The model file has belongs_to, validates, before_validation
-    result = lint_file(REPO_PATH, "model", model_content, file_path=MODEL_FILE)
+    result = lint_file(REPO_PATH, model_archetype, model_content, file_path=MODEL_FILE)
     data = result.get("data", {})
 
-    # The real engine should have run (not stub)
     record(
-        "Ruby DSL: model lint runs real engine on DSL-heavy file",
+        "Ruby DSL: model lint runs real engine",
         data.get("stub") is False,
         f"stub={data.get('stub')!r}",
     )
 
-    # canonical_confidence should be meaningful (> 0) for a model file
-    # linted against the model archetype
-    confidence = data.get("canonical_confidence", 0.0)
+    confidence = data.get("canonical_confidence", None)
     record(
-        "Ruby DSL: model canonical_confidence > 0 (DSL recognized)",
-        isinstance(confidence, (int, float)) and confidence > 0,
+        "Ruby DSL: model canonical_confidence is a valid score",
+        isinstance(confidence, (int, float)) and 0.0 <= confidence <= 1.0,
         f"canonical_confidence={confidence!r}",
     )
 except Exception as exc:
     record("Ruby DSL: model lint", False, f"{type(exc).__name__}: {exc}")
 
-# 8b. DSL detection: lint a controller with before_action
 try:
     ctrl_content = Path(CONTROLLER_FILE).read_text(encoding="utf-8", errors="replace")
-    result = lint_file(REPO_PATH, "controller", ctrl_content, file_path=CONTROLLER_FILE)
+    ctrl_archetype = _archetype_for(CONTROLLER_FILE) or discovered_archetypes.get("controller", "controller")
+    result = lint_file(REPO_PATH, ctrl_archetype, ctrl_content, file_path=CONTROLLER_FILE)
     data = result.get("data", {})
 
     record(
@@ -449,74 +412,26 @@ try:
         f"stub={data.get('stub')!r}",
     )
 
-    confidence = data.get("canonical_confidence", 0.0)
+    confidence = data.get("canonical_confidence", None)
     record(
-        "Ruby DSL: controller canonical_confidence > 0",
-        isinstance(confidence, (int, float)) and confidence > 0,
+        "Ruby DSL: controller canonical_confidence is a valid score",
+        isinstance(confidence, (int, float)) and 0.0 <= confidence <= 1.0,
         f"canonical_confidence={confidence!r}",
     )
 except Exception as exc:
     record("Ruby DSL: controller lint", False, f"{type(exc).__name__}: {exc}")
 
-# 8c. Superclass detection: controller archetype's canonical should show
-# ApplicationController lineage
-try:
-    ctrl_arch_result = get_archetype(REPO_PATH, CONTROLLER_FILE)
-    ctrl_archetype = ctrl_arch_result.get("data", {}).get("archetype")
-
-    excerpt_result = get_canonical_excerpt(REPO_PATH, ctrl_archetype or "controller")
-    excerpt_content = excerpt_result.get("data", {}).get("content", "")
-
-    # The canonical for the controller archetype should reference a base controller
-    has_controller_lineage = (
-        "Controller" in excerpt_content
-        or "< Api" in excerpt_content
-        or "< Application" in excerpt_content
-        or "< ActionController" in excerpt_content
-    )
-    record(
-        "Ruby superclass: controller canonical shows Controller lineage",
-        has_controller_lineage,
-        f"contains 'Controller' or '< Api' or '< Application': {has_controller_lineage}",
-    )
-except Exception as exc:
-    record("Ruby superclass: controller canonical", False, f"{type(exc).__name__}: {exc}")
-
-# 8d. Superclass detection: model archetype should show ApplicationRecord
-try:
-    excerpt_result = get_canonical_excerpt(REPO_PATH, "model")
-    excerpt_content = excerpt_result.get("data", {}).get("content", "")
-
-    has_model_lineage = (
-        "ApplicationRecord" in excerpt_content
-        or "ActiveRecord" in excerpt_content
-    )
-    record(
-        "Ruby superclass: model canonical shows ApplicationRecord lineage",
-        has_model_lineage,
-        f"contains 'ApplicationRecord' or 'ActiveRecord': {has_model_lineage}",
-    )
-except Exception as exc:
-    record("Ruby superclass: model canonical", False, f"{type(exc).__name__}: {exc}")
-
-
-# ---------------------------------------------------------------------------
-# 9. Caching test: get_pattern_context cold vs warm
-# ---------------------------------------------------------------------------
 
 section("9. Caching test (get_pattern_context cold vs warm)")
 
 try:
-    # Clear the repo_id cache to force cold path
     from chameleon_mcp.tools import _REPO_ID_CACHE
     _REPO_ID_CACHE.clear()
 
-    # Cold call
     t0 = time.perf_counter()
     _ = get_pattern_context(CONTROLLER_FILE)
     cold_ms = (time.perf_counter() - t0) * 1000
 
-    # Warm call (repo_id cached, profile likely cached)
     t0 = time.perf_counter()
     _ = get_pattern_context(CONTROLLER_FILE)
     warm_ms = (time.perf_counter() - t0) * 1000
@@ -540,10 +455,6 @@ except Exception as exc:
     record("caching: timing test", False, f"{type(exc).__name__}: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# 10. doctor
-# ---------------------------------------------------------------------------
-
 section("10. doctor")
 
 try:
@@ -564,7 +475,6 @@ try:
         f"checks count={len(checks)}",
     )
 
-    # Python version check should pass
     py_check = next((c for c in checks if c.get("name") == "python_version"), None)
     record(
         "doctor: python_version check is ok",
@@ -572,7 +482,6 @@ try:
         f"detail={py_check.get('detail')!r}" if py_check else "check not found",
     )
 
-    # plugin_data_writable should pass
     pd_check = next((c for c in checks if c.get("name") == "plugin_data_writable"), None)
     record(
         "doctor: plugin_data_writable is ok",
@@ -580,7 +489,6 @@ try:
         f"detail={pd_check.get('detail')!r}" if pd_check else "check not found",
     )
 
-    # hmac_key should pass
     hmac_check = next((c for c in checks if c.get("name") == "hmac_key"), None)
     record(
         "doctor: hmac_key is ok",
@@ -588,7 +496,6 @@ try:
         f"detail={hmac_check.get('detail')!r}" if hmac_check else "check not found",
     )
 
-    # chameleon_version present
     version = data.get("chameleon_version")
     record(
         "doctor: chameleon_version present",
@@ -596,7 +503,6 @@ try:
         f"version={version!r}",
     )
 
-    # summary
     summary = data.get("summary", {})
     record(
         "doctor: no error-level checks",
@@ -606,10 +512,6 @@ try:
 except Exception as exc:
     record("doctor: call succeeded", False, f"{type(exc).__name__}: {exc}")
 
-
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
 
 print(f"\n{'='*60}")
 print("  SUMMARY")

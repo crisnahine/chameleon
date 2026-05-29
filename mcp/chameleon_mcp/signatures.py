@@ -20,10 +20,10 @@ Properties (per architecture):
   ``tools._refresh_repo_locked`` max-mtime short-circuit).
 
 The live cache-invalidation lever for the whole profile is
-``chameleon_mcp.profile.schema.CURRENT_SCHEMA_VERSION``. Bumping it past
-``SUPPORTED_SCHEMA_RANGE``'s floor (CURRENT_SCHEMA_VERSION - 2) causes
-``load_profile_dir`` to reject the now-out-of-range on-disk profile,
-which the orchestrator handles by re-bootstrapping. A previous draft kept
+``chameleon_mcp.profile.schema.CURRENT_SCHEMA_VERSION``. A profile whose
+``schema_version`` exceeds ``load_profile_dir``'s ``MAX_SUPPORTED_SCHEMA_VERSION``
+is refused on load, which the orchestrator handles by re-bootstrapping.
+A previous draft kept
 a SIGNATURE_FUNCTION_VERSION constant here as a finer-grained lever for
 signature-only invalidation, but it was never wired into any cache key
 and was therefore documentation theatre; the constant has been removed
@@ -98,14 +98,6 @@ def hash_import_set(import_specifiers: Sequence[tuple[str, str]]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-# v0.5.2 (Bug 2): top-level segments that announce "this is a monorepo
-# workspace dir, the package name follows" — when one of these is at
-# parts[0] AND parts[1] looks like a workspace name, keep parts[1] in
-# the bucket so files from sibling workspaces (e.g.
-# packages/excalidraw/components/X.tsx vs packages/element/components/X.tsx)
-# don't collide. Schema-v6 bucketing was monorepo-blind: any path of the
-# form `packages/<ws>/components/Group/X.tsx` collapsed to
-# "packages/components/Group" regardless of the workspace name.
 _MONOREPO_WORKSPACE_ROOTS: frozenset[str] = frozenset({
     "packages",
     "apps",
@@ -165,59 +157,30 @@ def path_pattern_bucket_for(
     information is returned as ``sub_bucket`` so cluster metadata still
     records which subdirectories contributed.
     """
-    del archetype_paths  # reserved for forward-compat; not used today
+    del archetype_paths
 
     parts = [p for p in file_path.split("/") if p and p not in (".", "..")]
     if len(parts) < 2:
         return ("(root)", "")
-    # Examples with default depth=2:
-    #   app/controllers/api/v1/users.rb       → ("app/controllers", "api/v1")
-    #   spec/controllers/api/v1/users_spec.rb → ("spec/controllers", "api/v1")
-    #   app/models/listing.rb                 → ("app/models", "")
-    #   src/components/base/Button.tsx        → ("src/components", "base")
-    #   src/components/Button.tsx             → ("src/components", "")
-    #   Gemfile (1 part)                      → ("(root)", "")
-    #   packages/excalidraw/components/Foo.tsx → ("packages/excalidraw/components", "")
-    #   apps/web/routes/(marketing)/page.tsx  → ("apps/web/routes", "")
     sub_bucket = ""
     if (
         len(parts) >= 4
         and parts[0] in _MONOREPO_WORKSPACE_ROOTS
     ):
-        # Monorepo: anchor on the workspace name (parts[1]) plus the
-        # workspace-internal top-level segment (parts[2]). This keeps
-        # sibling workspaces (packages/excalidraw/... vs
-        # packages/element/...) discriminated AND keeps every file inside
-        # a workspace's top-level directory in the same cluster — which
-        # is the same coarseness as `src/components` for a non-monorepo
-        # repo, just one segment deeper. Monorepo paths are always depth-3
-        # regardless of CLUSTER_PATH_BUCKET_DEPTH.
         bucket = f"{parts[0]}/{parts[1]}/{parts[2]}"
     elif len(parts) >= 4:
         depth = threshold_int("CLUSTER_PATH_BUCKET_DEPTH")
         if depth >= 3:
-            # Restore pre-v0.5.9 depth-3 formula.
             bucket = f"{parts[0]}/{parts[-3]}/{parts[-2]}"
         else:
-            # Default depth=2: top-level + first subdirectory.
             bucket = f"{parts[0]}/{parts[1]}"
-            # Sub-bucket: the remaining inner directories before the file.
-            # For parts = ['app', 'services', 'zoom', 'recordings.rb'],
-            # sub_bucket = 'zoom'. For depth >= 6-part paths like
-            # ['app', 'controllers', 'api', 'v1', 'users_controller.rb'],
-            # sub_bucket = 'api/v1'.
             if len(parts) >= 4:
-                inner = parts[2:-1]  # directory segments between depth-2 and filename
+                inner = parts[2:-1]
                 sub_bucket = "/".join(inner) if inner else ""
     else:
         bucket = f"{parts[0]}/{parts[-2]}"
 
     if include_extension:
-        # Suffix the file's extension so ``.tsx`` and ``.ts`` (or ``.js``
-        # and ``.jsx``) in the same dir cluster separately. JSX-vs-non-JSX
-        # re-discrimination happens downstream, but by then the cluster's
-        # already been forced — keying the bucket on extension prevents
-        # that.
         ext = _extension_of(parts[-1])
         if ext:
             bucket = f"{bucket}:{ext}"
@@ -236,7 +199,6 @@ def _extension_of(filename: str) -> str:
     """
     dot = filename.rfind(".")
     if dot <= 0:
-        # No dot, or leading dot (".gitignore" → no extension to bucket on).
         return ""
     return filename[dot + 1:]
 
@@ -257,7 +219,6 @@ def content_signal_match_for(
     active profile's archetypes.json content_signal definitions.
     """
     head = content_first_200_bytes
-    # Common TS/JS file-level directives
     if '"use client"' in head or "'use client'" in head:
         return "use_client"
     if '"use server"' in head or "'use server'" in head:
@@ -266,13 +227,6 @@ def content_signal_match_for(
         return "shebang"
     if head.lstrip().startswith("// @ts-"):
         return "ts_pragma"
-    # The `archetype_signals` parameter is a forward-compat hook: future
-    # archetypes may declare their own first-200-byte directives beyond the
-    # universal set above (e.g., a team's `# typed: strict` Sorbet pragma).
-    # Wire-through would compare `head` against the archetype's stored
-    # signal table here. Today's set covers every signal the bootstrap
-    # pipeline actually clusters on; per-archetype signals add no value
-    # until calibration evidence shows a real per-team divergence.
     del archetype_signals
     return "none"
 

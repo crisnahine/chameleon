@@ -12,7 +12,7 @@ the commit-marker pattern.
 
 ## When to use
 
-User runs `/chameleon-init` (or `/cham-init`) in a TypeScript or Ruby on Rails
+User runs `/chameleon-init` in a TypeScript or Ruby on Rails
 repo that does not yet have a `.chameleon/` directory.
 
 If `.chameleon/profile.json` already exists, suggest `/chameleon-refresh` instead —

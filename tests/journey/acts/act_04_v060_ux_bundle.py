@@ -70,14 +70,10 @@ def run(ctx: JourneyContext) -> ActResult:
         ctx.current_checkpoint_file, expected_phases=[12]
     )
 
-    # Runner-side cross-checks (defense in depth)
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 12: assert auto_refresh.log exists under plugin_data_dir/<repo_id>/
-    # and check file mode 0o600 and size <= 64KB
     try:
-        # Find auto_refresh.log files anywhere under plugin_data_dir
         auto_refresh_logs = list(ctx.plugin_data_dir.rglob("auto_refresh.log"))
         if not auto_refresh_logs:
             notes_extra[12] = "auto_refresh.log not found under plugin_data_dir"
@@ -100,7 +96,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[12] = str(e)
         cross_check_passed[12] = False
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -110,7 +105,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""
