@@ -32,8 +32,12 @@ fi
 mkdir -p "${LOG_DIR}" 2>/dev/null || true
 "${PYTHON}" -m chameleon_mcp.log_rotation "${LOG_FILE}" 2>/dev/null || true
 
+# timeout(1) caps a stuck python; degrade to uncapped if neither timeout nor
+# gtimeout (Homebrew coreutils on macOS) is present, rather than failing the
+# whole hook on exit 127. In-process code self-limits (git 2s, busy_timeout).
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
 PYTHONPATH="${MCP_DIR}" \
-    timeout 3 "${PYTHON}" -m chameleon_mcp.hook_helper session-start \
+    ${TIMEOUT_BIN:+"${TIMEOUT_BIN}" 3} "${PYTHON}" -m chameleon_mcp.hook_helper session-start \
     2>>"${LOG_FILE}" \
     || { printf '{}\n'; echo "[$(date -u +%FT%TZ)] session-start failed (python=${PYTHON})" >>"${LOG_FILE}" 2>/dev/null || true; }
 

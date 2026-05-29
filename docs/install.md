@@ -57,6 +57,14 @@ brew install uv node
 
 `brew install node` gives you the current Node, which is well past 20.
 
+chameleon wraps each hook in `timeout` so a stuck process cannot stall Claude. macOS does not ship `timeout`. Install coreutils, which provides `gtimeout` (chameleon detects either):
+
+```bash
+brew install coreutils
+```
+
+Optional but recommended. Without it the hooks still run, they just lose the external wall-clock cap (chameleon's own internal timeouts still apply).
+
 Ruby (only if you edit Rails repos):
 
 ```bash
@@ -299,6 +307,16 @@ If the state is `stale`, the committed profile changed after you trusted it. Run
 ### Edits feel slow
 
 Before each edit chameleon runs a short check (200 to 500 ms warm). If you are in a fast editing burst and do not need it, run `/chameleon-pause-15m` or `/chameleon-disable`.
+
+### `/chameleon-doctor` warns "neither timeout(1) nor gtimeout on PATH"
+
+chameleon wraps each hook in `timeout` to cap a stuck Python process. macOS does not ship it. Install coreutils, which provides `gtimeout`:
+
+```bash
+brew install coreutils
+```
+
+The plugin still works without it; the hooks just run without the external wall-clock cap and rely on chameleon's internal timeouts.
 
 ### Windows: hooks open in an editor, or `bash` is not recognized
 

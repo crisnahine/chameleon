@@ -4809,11 +4809,23 @@ def doctor() -> dict:
     else:
         checks.append({"name": "bash_on_path", "status": "error", "detail": "bash not on PATH; hooks will not run"})
 
-    timeout_path = shutil.which("timeout")
+    # The hooks resolve `timeout || gtimeout` and degrade to uncapped python
+    # when neither exists, so a missing binary is no longer fatal — but it does
+    # remove the external wall-clock cap, so report it (matching the wrapper's
+    # resolution order). gtimeout ships with Homebrew coreutils on macOS.
+    timeout_path = shutil.which("timeout") or shutil.which("gtimeout")
     if timeout_path:
         checks.append({"name": "timeout_on_path", "status": "ok", "detail": timeout_path})
     else:
-        checks.append({"name": "timeout_on_path", "status": "warn", "detail": "timeout(1) not on PATH; hook may hang Claude on stuck python"})
+        checks.append({
+            "name": "timeout_on_path",
+            "status": "warn",
+            "detail": (
+                "neither timeout(1) nor gtimeout on PATH; hooks still run but "
+                "without an external wall-clock cap (in-process timeouts apply). "
+                "macOS: brew install coreutils"
+            ),
+        })
 
     try:
         from chameleon_mcp.profile.trust import plugin_data_dir
