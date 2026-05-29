@@ -177,26 +177,15 @@ def _should_emit_untrusted_prompt(repo_id: str, session_id: str | None) -> bool:
 
 
 def _emit_session_context(content: str) -> None:
-    """Emit SessionStart context per platform's expected JSON shape.
-
-    Cursor: `{ "additional_context": ... }`
-    Claude Code: `{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": ... } }`
-    SDK / Copilot CLI: `{ "additionalContext": ... }`
-
-    Single-format-per-platform: never emit both formats — Claude Code reads
-    both `additional_context` and `hookSpecificOutput` without dedup.
+    """Emit SessionStart context in Claude Code's expected JSON shape:
+    `{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": ... } }`
     """
-    if os.environ.get("CURSOR_PLUGIN_ROOT"):
-        _emit({"additional_context": content})
-    elif os.environ.get("CLAUDE_PLUGIN_ROOT") and not os.environ.get("COPILOT_CLI"):
-        _emit({
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": content,
-            }
-        })
-    else:
-        _emit({"additionalContext": content})
+    _emit({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": content,
+        }
+    })
 
 
 _DRIFT_BANNER_FILENAME = ".drift_banner.last"

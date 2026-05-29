@@ -5503,7 +5503,7 @@ def doctor() -> dict:
         checks.append({"name": "plugin_data_writable", "status": "error", "detail": f"{type(exc).__name__}: {exc}"})
 
     # 5. Hook scripts exist + executable
-    plugin_root_env = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.environ.get("CURSOR_PLUGIN_ROOT")
+    plugin_root_env = os.environ.get("CLAUDE_PLUGIN_ROOT")
     if plugin_root_env:
         plugin_root = Path(plugin_root_env)
         hook_dir = plugin_root / "hooks"

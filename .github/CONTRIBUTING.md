@@ -173,10 +173,9 @@ before/after eval evidence will be sent back.
 
 ## Version bumps
 
-`scripts/bump-version.sh <new-version>` keeps nine manifest files in sync
+`scripts/bump-version.sh <new-version>` keeps six manifest files in sync
 (see `.version-bump.json` for the full list): `.claude-plugin/plugin.json`,
-`.claude-plugin/marketplace.json`, `.cursor-plugin/plugin.json`,
-`.codex-plugin/plugin.json`, `gemini-extension.json`, `package.json`,
+`.claude-plugin/marketplace.json`, `package.json`,
 `mcp/package.json`, `mcp/pyproject.toml`, `mcp/chameleon_mcp/__init__.py`.
 
 Run `scripts/bump-version.sh --check` before tagging to catch drift.
@@ -190,7 +189,7 @@ Four workflows live under [.github/workflows/](.github/workflows/):
   `bump-version.sh --check`, `check-no-personal-paths.sh`, and a one-shot
   `hooks/session-start` smoke test.
 - **`release.yml`** — fires on tag pushes matching `v*.*.*`. Verifies all
-  nine manifests agree with the tag, that `CHANGELOG.md` has an entry for
+  six manifests agree with the tag, that `CHANGELOG.md` has an entry for
   the version, re-runs the full test matrix, builds a release tarball, and
   publishes a GitHub Release with the CHANGELOG entry as the body.
 - **`real-claude-code-acceptance.yml`** — manual (`workflow_dispatch`)

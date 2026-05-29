@@ -129,10 +129,6 @@ Important: run these in the **same kind of shell you start Claude Code from**. A
 
 ## Install the plugin
 
-Settings do not cross between harnesses. Install in whichever one you use.
-
-### Claude Code
-
 Inside any Claude Code session:
 
 ```
@@ -141,32 +137,6 @@ Inside any Claude Code session:
 ```
 
 Restart Claude Code. That is the whole install. The plugin lands at `~/.claude/plugins/cache/chameleon/chameleon/<version>/`.
-
-### Cursor
-
-```
-/add-plugin chameleon
-```
-
-> Pending Cursor marketplace listing. Until it is listed, install from a local clone: see [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
-
-### Codex CLI
-
-```
-/plugins
-```
-
-Search `chameleon`, then select **Install Plugin**.
-
-> Pending Codex marketplace listing. Until it is listed, install from a local clone: see [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
-
-### Gemini CLI
-
-```bash
-gemini extensions install https://github.com/crisnahine/chameleon
-```
-
-Update later with `gemini extensions update chameleon`.
 
 ---
 

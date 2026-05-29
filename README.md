@@ -29,8 +29,6 @@ Restart Claude Code. Confirm it loaded by asking *"What chameleon tools do you h
 
 After that, every Edit/Write in that repo gets archetype-aware context automatically.
 
-Using Cursor, Codex CLI, or Gemini CLI instead? Install steps for each are in [docs/install.md](docs/install.md).
-
 ## Why
 
 AI-generated code in established codebases routinely violates local conventions: wrong file location, off-pattern naming, missed team idioms, divergent error handling. Reviewer time gets spent on style and shape instead of logic and security.
@@ -53,7 +51,7 @@ Because the skills trigger automatically, you don't need to do anything special 
 
 ## Install
 
-The [Quickstart](#quickstart) above has the two commands for Claude Code. For the full guide - per-OS prerequisite setup (macOS, Linux, Windows), the other harnesses (Cursor, Codex, Gemini), verification, updating, uninstall, and troubleshooting - see **[docs/install.md](docs/install.md)**.
+The [Quickstart](#quickstart) above has the two commands for Claude Code. For the full guide - per-OS prerequisite setup (macOS, Linux, Windows), verification, updating, uninstall, and troubleshooting - see **[docs/install.md](docs/install.md)**.
 
 ## Workflow
 

@@ -20,9 +20,6 @@ IMPORTANT SCOPE CLARIFICATION:
   Do NOT touch the chameleon source repository files:
     - .claude-plugin/plugin.json
     - .claude-plugin/marketplace.json
-    - .cursor-plugin/ (any files)
-    - .codex-plugin/ (any files)
-    - gemini-extension.json
     - hooks/hooks.json
   These are the developer's actual manifest files in the chameleon repo. They
   MUST NOT be removed or modified. They are not part of the "install" being
@@ -90,7 +87,7 @@ PHASE 37 - uninstall + cleanup + isolation verify:
       PLUGIN_ROOT="PLUGIN_ROOT_PATH"
       for f in \
         "$PLUGIN_ROOT/.claude-plugin/plugin.json" \
-        "$PLUGIN_ROOT/.cursor-plugin/plugin.json" \
+        "$PLUGIN_ROOT/.claude-plugin/marketplace.json" \
         "$PLUGIN_ROOT/hooks/hooks.json"; do
         if [ -f "$f" ]; then
           echo "OK: $f exists"

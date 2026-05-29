@@ -13,8 +13,6 @@ See [docs/architecture.md](./docs/architecture.md) for the full design.
 ```
 chameleon/
 ├── .claude-plugin/    plugin.json + marketplace.json (Claude Code plugin manifest)
-├── .cursor-plugin/    Cursor harness manifest
-├── .codex-plugin/     Codex CLI manifest
 ├── hooks/             SessionStart, PreToolUse, PostToolUse, UserPromptSubmit hooks
 ├── skills/            using-chameleon (auto) + 9 user-invocable slash commands
 ├── mcp/               chameleon-mcp Python server (FastMCP, stdio transport)
@@ -26,7 +24,7 @@ chameleon/
 ## Conventions
 
 - **Language**: all code, comments, docs, error messages, and commit messages MUST be in English.
-- **Versioning**: `bump-version.sh <new-version>` keeps nine manifest files in sync (see `.version-bump.json`).
+- **Versioning**: `bump-version.sh <new-version>` keeps six manifest files in sync (see `.version-bump.json`).
 - **Locks**: `mcp/package-lock.json` and `mcp/uv.lock` are committed.
 - **Atomic transactions**: profile writes use `.chameleon/.tmp/<txn-id>/COMMITTED` sentinel + flock-serialized rename.
 

@@ -15,9 +15,6 @@ PHASE 1, manifests:
   Use the Bash tool to `ls` and parse each of:
     .claude-plugin/plugin.json
     .claude-plugin/marketplace.json
-    .cursor-plugin/plugin.json
-    .codex-plugin/plugin.json
-    gemini-extension.json
     hooks/hooks.json
   Verify each is valid JSON. Verify the chameleon plugin name is present.
   emit checkpoint completed phase 1

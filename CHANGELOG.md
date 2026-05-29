@@ -4,6 +4,21 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-05-29
+
+chameleon is now Claude Code only (TypeScript + Ruby on Rails). All non-Claude harness support has been removed.
+
+### Removed
+
+- **Non-Claude harness scaffolding**: deleted `.cursor-plugin/`, `.codex-plugin/`, `gemini-extension.json`, `GEMINI.md`, and `AGENTS.md`. chameleon no longer ships manifests or guidance for Cursor, Codex, or Gemini.
+- **`CURSOR_PLUGIN_ROOT` fallback**: dropped from doctor and plugin-root resolution. `CLAUDE_PLUGIN_ROOT` is the only honored env override.
+
+### Changed
+
+- **SessionStart emit**: collapsed to the Claude Code hook output shape only. The multi-harness branching in `hooks/session-start` and `hook_helper.py` is gone.
+- **`.version-bump.json`**: now tracks 6 manifest files (was 9), reflecting the removed harness manifests.
+- **Docs**: README, `docs/install.md`, `CLAUDE.md`, `.github/CONTRIBUTING.md`, and `docs/architecture.md` updated to describe a Claude Code only plugin.
+
 ## [1.1.2] - 2026-05-27
 
 ### Fixed
@@ -1350,7 +1365,7 @@ Initial release.
 
 #### Tooling
 
-- `scripts/bump-version.sh` — atomic version bump across 7 manifest files (claude-plugin, cursor-plugin, codex-plugin, gemini-extension, root and mcp package.json) with drift detection + audit modes.
+- `scripts/bump-version.sh` — atomic version bump across all declared manifest files with drift detection + audit modes.
 - `tests/run_all_orders.py` — runs the 5 core test suites in 4 randomized orderings to verify order-independence.
 - 18 test files totaling 391+ test points across unit, integration, MCP-protocol, hook, and real-Claude-Code acceptance levels.
 

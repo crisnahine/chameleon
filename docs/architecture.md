@@ -193,8 +193,8 @@ If counter-metrics breach, escalate: pause Phase 5 dogfood, investigate, fix bef
 4. **Two-tier dimensions.** Auto-derivable (AST + statistical + recency-weighted) vs hand-curated (`idioms.md`).
 5. **Discovery before action.** Every edit injects archetype context before model writes — via MCP-driven dispatch.
 6. **Inject context, don't deny.** Only safety hard-denies; conformance is advisory.
-7. **Plugin coexistence first-class.** Single-format JSON dispatch, neutral tags, parallel-hook-aware.
-8. **Honest scoping.** TypeScript + Ruby on Rails. Claude Code primary, with Cursor/Codex/Gemini harnesses.
+7. **Plugin coexistence first-class.** JSON dispatch, neutral tags, parallel-hook-aware.
+8. **Honest scoping.** TypeScript + Ruby on Rails. Claude Code only.
 9. **Skills as code.** Iron Law honored.
 10. **Distributed-systems thinking.** `.chameleon/` is shared mutable state across processes; treat it as such (atomic commits, OS locks, cache invalidation, merge tools).
 11. **Fail-open advisories, fail-closed safety.** When MCP fails, edit proceeds with warning. When safety check fails, edit blocked.
@@ -386,7 +386,7 @@ Concrete enumeration of dimensions chameleon detects (Tier 1: auto-derivable) or
 │ │ ───── │ │ ────── │ │
 │ │ SessionStart │ │ using-chameleon (foundation) │ │
 │ │ → session-start │ │ │ │
-│ │ → SINGLE-FORMAT dispatch│ │ Slash commands (9 user-invocable)│ │
+│ │ → SessionStart dispatch │ │ Slash commands (9 user-invocable)│ │
 │ │ → cache_control: │ │ /chameleon-init │ │
 │ │ pinned static prefix │ │ /chameleon-refresh │ │
 │ │ + ephemeral footer │ │ /chameleon-status │ │
@@ -481,7 +481,6 @@ chameleon/
 ├── .gitattributes-template # NEW: ships for users to copy into their repos
 │ # registers chameleon-mcp::merge_profiles as merge driver
 ├── CLAUDE.md
-├── AGENTS.md (symlink → CLAUDE.md)
 ├── README.md # vocabulary firewall: 5 user-facing terms
 │ # competitive analysis section (v3 → v4 add)
 ├── CHANGELOG.md
@@ -491,7 +490,7 @@ chameleon/
 ├── hooks/
 │ ├── hooks.json
 │ ├── run-hook.cmd # cross-platform polyglot wrapper
-│ ├── session-start # SessionStart: SINGLE-FORMAT dispatch + first-run welcome
+│ ├── session-start # SessionStart: JSON dispatch + first-run welcome
 │ │ # cache_control two-chunk split
 │ ├── preflight-and-advise # PreToolUse: safety + safe_open + lstat
 │ │ # 2s MCP timeout, fail-open contract
@@ -595,11 +594,9 @@ SessionStart hook fires (matcher: startup|clear|compact)
  staleness footer ("Profile last refreshed 47 days ago")
  trust state ("Profile UNTRUSTED — run /chameleon-trust")
  value attribution ("Last 30 sessions: 142 edits matched, 11 deviations flagged")
- 9. SINGLE-FORMAT JSON DISPATCH (per platform):
- - if CURSOR_PLUGIN_ROOT → emit { "additional_context": ... }
- - elif CLAUDE_PLUGIN_ROOT && !COPILOT_CLI → emit { "hookSpecificOutput": ... }
- - else → emit { "additionalContext": ... }
- NEVER emit both. (Mirrors a complementary skills library/hooks/session-start lines 41-55 verbatim.)
+ 9. JSON DISPATCH (Claude Code SessionStart shape):
+ - emit { "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": ... } }
+ (Mirrors a complementary skills library/hooks/session-start verbatim.)
  10. Wrap content in <chameleon-context> tags (NEUTRAL)
  11. Tag-boundary sanitize: escape any </chameleon-context>, </chameleon, <chameleon-context>
  literals in the injected content
@@ -685,7 +682,7 @@ One line. Once per repo per user.
 
 **Matcher:** `startup|clear|compact`
 **Hook:** `session-start`
-**Output channel:** `additionalContext` (platform-aware single-format dispatch)
+**Output channel:** `additionalContext`
 
 Loads `using-chameleon` SKILL.md, wraps in `<chameleon-context>`, appends drift banner if applicable, fires auto-refresh in background. See "Bootstrap mechanism" above for the full 11-step sequence.
 
@@ -853,11 +850,7 @@ CHAMELEON_ENFORCEMENT_MODE=updatedToolOutput   # default — replaces tool resul
 CHAMELEON_ENFORCEMENT_MODE=additionalContext    # fallback — appends advisory context
 ```
 
-Default is `updatedToolOutput` because it replaces the tool's result in model context, making violations the factual record rather than advisory. The `additionalContext` fallback exists for harnesses that don't support `updatedToolOutput`.
-
-#### Cross-platform behavior [ASPIRATIONAL]
-
-`updatedToolOutput` is a Claude Code PostToolUse feature. Cursor and Codex harnesses use the same hook entry point but may not honor `updatedToolOutput` in their hook response schema. The `CHAMELEON_ENFORCEMENT_MODE` env var lets operators fall back to `additionalContext` on those platforms. Per-harness auto-detection (checking which harness invoked the hook) is deferred to v2.0.
+Default is `updatedToolOutput` because it replaces the tool's result in model context, making violations the factual record rather than advisory. The `additionalContext` fallback reverts to the older advisory style — appended context instead of a replaced tool result.
 
 #### Skill rewrite (using-chameleon) [ASPIRATIONAL]
 
@@ -1759,7 +1752,7 @@ The consultant/freelancer tier is **explicitly outside the $50/month ceiling** f
 
 **Context tag:** `<chameleon-context>` (NEUTRAL — no importance framing). Tag-boundary sanitization escapes literals in injected content.
 
-**SessionStart JSON dispatch:** mirrors `a complementary skills library/hooks/session-start` lines 41-55 verbatim. Single format per platform. **Regression test in `tests/bootstrap_mechanism_test.py`.**
+**SessionStart JSON dispatch:** mirrors `a complementary skills library/hooks/session-start` verbatim. Emits the Claude Code SessionStart shape. **Regression test in `tests/bootstrap_mechanism_test.py`.**
 
 **Cache_control two-chunk emission :**
 - Cached chunk (with breakpoint): static using-chameleon SKILL.md + static profile primer
@@ -1960,7 +1953,6 @@ Magic numbers in the architecture, with evaluation protocols for validation:
 ## Out of scope for v1
 
 - Multi-language extractors (Ruby/Python deferred to v1.5)
-- Multi-harness support beyond Claude Code (deferred to v2.0)
 - Companion plugin / profile pack distribution (deferred to v2.0+)
 - Cross-repo pattern transfer
 - Auto-PR opening for profile updates
@@ -2005,12 +1997,10 @@ What's redesigned:
 
 What's discarded:
 - Framework-aware claim (best-effort instead)
-- Multi-harness v1 directories
 - Companion plugin pattern in v1
 - Pack signing infrastructure
 - Dynamic archetype skills
 - `<EXTREMELY_IMPORTANT>` and `<CHAMELEON_IMPORTANT>` framing (neutral `<chameleon-context>` only)
-- Dual-format JSON dispatch
 - Strict sha matching for canonicals
 - "Verbatim inheritance" claim for preflight
 - Statistical-mode-wins clustering (recency-weighted now)

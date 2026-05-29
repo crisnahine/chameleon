@@ -4,7 +4,7 @@
 # Phase 4 implementation: delegates to chameleon_mcp.hook_helper which:
 #   1. Reads using-chameleon/SKILL.md from ${CLAUDE_PLUGIN_ROOT}/skills/
 #   2. Wraps in <chameleon-context> tags
-#   3. Emits per-platform JSON dispatch (Cursor / Claude Code / SDK)
+#   3. Emits the Claude Code SessionStart JSON dispatch shape
 #
 # See docs/architecture.md "Bootstrap mechanism" for the full design.
 
