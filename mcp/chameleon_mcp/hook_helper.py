@@ -33,6 +33,34 @@ def _emit(output: dict) -> None:
     sys.stdout.write("\n")
 
 
+def _read_payload_dict() -> dict | None:
+    """Read+parse hook stdin JSON, returning a dict or None on malformed input.
+
+    json.loads succeeds on valid-but-non-object JSON (``[1,2,3]``, ``null``,
+    ``42``, ``"x"``), which would then crash ``payload.get(...)`` with an
+    AttributeError that the (JSONDecodeError, ValueError) guard does NOT catch.
+    Returning None lets every entry point fail open with ``_emit({})`` instead
+    of depending on the bash wrapper's ``|| printf '{}'`` to mask the traceback.
+    """
+    try:
+        payload = json.loads(sys.stdin.read())
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _as_dict(value: object) -> dict:
+    """Coerce a payload sub-field to a dict; non-dict (str/list/None) -> {}.
+
+    Hook inputs like ``tool_input`` / ``tool_response`` are dicts in the
+    contract, but a malformed payload can carry a string or list there, which
+    would crash the subsequent ``.get(...)``.
+    """
+    return value if isinstance(value, dict) else {}
+
+
 def _emit_chameleon_context(block: str) -> None:
     """Wrap a ``<chameleon-context>`` block in the PreToolUse hook envelope.
 
@@ -659,13 +687,12 @@ def preflight_and_advise() -> int:
         except Exception:
             pass
 
-    try:
-        payload = json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, ValueError):
+    payload = _read_payload_dict()
+    if payload is None:
         _emit({})
         return 0
 
-    tool_input = payload.get("tool_input", {})
+    tool_input = _as_dict(payload.get("tool_input"))
     file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not file_path:
         _emit({})
@@ -926,14 +953,13 @@ def preflight_and_advise() -> int:
 
 def posttool_recorder() -> int:
     """PostToolUse Bash: HMAC-signed exec log."""
-    try:
-        payload = json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, ValueError):
+    payload = _read_payload_dict()
+    if payload is None:
         _emit({})
         return 0
 
-    tool_input = payload.get("tool_input", {})
-    tool_response = payload.get("tool_response", {})
+    tool_input = _as_dict(payload.get("tool_input"))
+    tool_response = _as_dict(payload.get("tool_response"))
     command = tool_input.get("command", "")
     session_id = payload.get("session_id", "unknown")
     exit_code = tool_response.get("returnCode") if isinstance(tool_response, dict) else None
@@ -978,9 +1004,8 @@ def posttool_verify() -> int:
 
     _started = time.time()
 
-    try:
-        payload = json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, ValueError):
+    payload = _read_payload_dict()
+    if payload is None:
         _emit({})
         return 0
 
@@ -989,13 +1014,13 @@ def posttool_verify() -> int:
         _emit({})
         return 0
 
-    tool_input = payload.get("tool_input", {})
+    tool_input = _as_dict(payload.get("tool_input"))
     file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not file_path:
         _emit({})
         return 0
 
-    tool_response = payload.get("tool_response", {})
+    tool_response = _as_dict(payload.get("tool_response"))
     if isinstance(tool_response, dict):
         if "error" in tool_response or tool_response.get("success") is False:
             _emit({})
@@ -1361,13 +1386,17 @@ def callout_detector() -> int:
     one-line hint about /chameleon-disable, /chameleon-pause-15m, and
     /chameleon-teach as actionable next steps.
     """
-    try:
-        payload = json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, ValueError):
+    payload = _read_payload_dict()
+    if payload is None:
         _emit({})
         return 0
 
-    user_prompt = payload.get("user_prompt", "") or payload.get("prompt", "")
+    user_prompt = payload.get("user_prompt") or payload.get("prompt") or ""
+    if not isinstance(user_prompt, str):
+        # A dict payload can still carry a non-string user_prompt (list/int);
+        # re.search would raise TypeError. Fail open at the Python layer.
+        _emit({})
+        return 0
     if not user_prompt:
         _emit({})
         return 0
