@@ -13,13 +13,17 @@ See [docs/architecture.md](./docs/architecture.md) for the full design.
 ```
 chameleon/
 ├── .claude-plugin/    plugin.json + marketplace.json (Claude Code plugin manifest)
-├── hooks/             SessionStart, PreToolUse, PostToolUse, UserPromptSubmit hooks
-├── skills/            using-chameleon (auto) + 9 user-invocable slash commands
+├── hooks/             session-start, preflight-and-advise, posttool-recorder,
+│                      posttool-verify, callout-detector (+ run-hook.cmd, hooks.json)
+├── skills/            using-chameleon (auto) + 10 user-invocable slash commands
 ├── mcp/               chameleon-mcp Python server (FastMCP, stdio transport)
 ├── scripts/           ts_dump.mjs, prism_dump.rb, bump-version.sh, merge driver
-├── tests/             unit tests + journey harness (real-Claude-Code tests)
+├── bin/               chameleon-statusline.sh (status line, <100ms budget)
+├── tests/             unit/ + journey/ harness + qa_*.py real-repo batteries
 └── docs/              architecture.md (design) + install.md
 ```
+
+The user-invocable commands: `init`, `refresh`, `status`, `teach`, `trust`, `disable`, `pause-15m`, `doctor`, `journey`, `pr-review` (all `/chameleon-*` with `/cham-*` aliases).
 
 ## Conventions
 
@@ -29,6 +33,15 @@ chameleon/
 - **Atomic transactions**: profile writes use `.chameleon/.tmp/<txn-id>/COMMITTED` sentinel + flock-serialized rename.
 
 ## Working on this codebase
+
+### Lint and format
+
+Python is linted with ruff (line-length 100, config in `mcp/pyproject.toml`; `E402` and `E501` are intentionally ignored — see the comments there):
+
+```bash
+mcp/.venv/bin/ruff check .          # lint
+mcp/.venv/bin/ruff format .         # format
+```
 
 ### Run the journey harness
 
@@ -56,6 +69,36 @@ PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/journey/harness/tests/ -v
 ```
 
 These verify the harness library itself (context, checkpoints, expect, fixtures setup). They do NOT test chameleon; that's the journey runner's job.
+
+### QA batteries against a real profiled repo
+
+Faster and free vs the journey harness. These import the MCP tools and call them directly against an already-bootstrapped repo (read-only, never modifies it). Point the env vars at a repo that already has a `.chameleon/` profile:
+
+```bash
+# TypeScript repo battery
+CHAMELEON_TEST_TS_REPO=/abs/path/to/ts-repo \
+  PYTHONPATH=. mcp/.venv/bin/python tests/qa_typescript.py
+
+# Ruby on Rails repo battery
+CHAMELEON_TEST_RUBY_REPO=/abs/path/to/rails-repo \
+  PYTHONPATH=. mcp/.venv/bin/python tests/qa_ruby.py
+
+# Cross-cutting (security, caching, contract invariants) — needs BOTH repos
+CHAMELEON_TEST_TS_REPO=... CHAMELEON_TEST_RUBY_REPO=... \
+  PYTHONPATH=. mcp/.venv/bin/python tests/qa_crosscutting.py
+
+# Drive 10 simulated tasks through the real PreToolUse + PostToolUse hooks
+CHAMELEON_TEST_TS_REPO=... CHAMELEON_TEST_RUBY_REPO=... \
+  PYTHONPATH=. mcp/.venv/bin/python tests/qa_hook_simulation.py
+```
+
+### Benchmark the hot path
+
+```bash
+PYTHONPATH=. mcp/.venv/bin/python tests/bench_hot_path.py
+```
+
+Reports cold/warm p50 and p99 for `get_pattern_context` and its sub-steps (repo detection, profile load, archetype resolve).
 
 ### Test a hook locally
 
