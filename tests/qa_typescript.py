@@ -17,9 +17,6 @@ import sys
 import time
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Setup
-# ---------------------------------------------------------------------------
 
 REPO_PATH = os.environ.get("CHAMELEON_TEST_TS_REPO", "")
 
@@ -27,7 +24,6 @@ if not REPO_PATH:
     print("SKIP: CHAMELEON_TEST_TS_REPO not set")
     sys.exit(0)
 
-# Discover real .tsx / .ts files for testing
 _tsx_files: list[str] = []
 _ts_files: list[str] = []
 for root, _dirs, files in os.walk(REPO_PATH):
@@ -37,9 +33,6 @@ for root, _dirs, files in os.walk(REPO_PATH):
         full = os.path.join(root, f)
         if f.endswith(".tsx") and len(_tsx_files) < 4:
             _tsx_files.append(full)
-        # Pick .ts files from inside src/ (not root-level configs like
-        # vitest-setup.ts or cypress.config.ts which legitimately have
-        # no archetype cluster).
         elif (
             f.endswith(".ts")
             and not f.endswith(".d.ts")
@@ -54,9 +47,6 @@ TEST_TSX_FILES = _tsx_files[:4]
 TEST_TS_FILES = _ts_files[:2]
 TEST_FILES = TEST_TSX_FILES + TEST_TS_FILES
 
-# ---------------------------------------------------------------------------
-# Imports from chameleon
-# ---------------------------------------------------------------------------
 
 from chameleon_mcp.tools import (  # noqa: E402
     detect_repo,
@@ -70,11 +60,8 @@ from chameleon_mcp.tools import (  # noqa: E402
     list_profiles,
 )
 
-# ---------------------------------------------------------------------------
-# Harness
-# ---------------------------------------------------------------------------
 
-results: list[tuple[str, bool, str]] = []  # (name, passed, detail)
+results: list[tuple[str, bool, str]] = []
 
 
 def record(name: str, passed: bool, detail: str = ""):
@@ -82,18 +69,12 @@ def record(name: str, passed: bool, detail: str = ""):
     results.append((name, passed, detail))
     print(f"  [{tag}] {name}")
     if detail:
-        # Truncate long detail for readability
         d = detail if len(detail) < 300 else detail[:300] + "..."
         print(f"         {d}")
 
 
-# ---------------------------------------------------------------------------
-# Test 1: detect_repo
-# ---------------------------------------------------------------------------
-
 print("\n=== Test 1: detect_repo ===")
 try:
-    # detect_repo takes a file_path (any file inside the repo)
     dr = detect_repo(os.path.join(REPO_PATH, "src/index.tsx"))
     data = dr.get("data", {})
     repo_id = data.get("repo_id")
@@ -121,16 +102,11 @@ try:
         f"trust_state={trust_state!r}",
     )
 
-    # Save for later tests
     REPO_ID = repo_id
 except Exception as exc:
     record("detect_repo", False, f"EXCEPTION: {exc}")
     REPO_ID = None
 
-
-# ---------------------------------------------------------------------------
-# Test 2: get_archetype for real files
-# ---------------------------------------------------------------------------
 
 print("\n=== Test 2: get_archetype ===")
 archetype_names: list[str] = []
@@ -165,10 +141,6 @@ for fpath in TEST_FILES:
         record(f"get_archetype({rel})", False, f"EXCEPTION: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# Test 3: get_pattern_context
-# ---------------------------------------------------------------------------
-
 print("\n=== Test 3: get_pattern_context ===")
 for fpath in TEST_FILES[:3]:
     rel = os.path.relpath(fpath, REPO_PATH)
@@ -176,7 +148,6 @@ for fpath in TEST_FILES[:3]:
         pc = get_pattern_context(fpath)
         pd = pc.get("data", {})
 
-        # repo.id
         rid = (pd.get("repo") or {}).get("id")
         record(
             f"get_pattern_context({rel}).repo.id",
@@ -184,7 +155,6 @@ for fpath in TEST_FILES[:3]:
             f"repo.id={rid!r}" if rid else "repo.id=None",
         )
 
-        # archetype.name (field is "archetype" inside archetype block)
         arch_block = pd.get("archetype") or {}
         aname = arch_block.get("archetype")
         record(
@@ -193,7 +163,6 @@ for fpath in TEST_FILES[:3]:
             f"archetype={aname!r}",
         )
 
-        # canonical_excerpt.content
         ce = pd.get("canonical_excerpt") or {}
         content = ce.get("content")
         record(
@@ -202,7 +171,6 @@ for fpath in TEST_FILES[:3]:
             f"len={len(content) if content else 0}",
         )
 
-        # rules
         rules = pd.get("rules")
         record(
             f"get_pattern_context({rel}).rules",
@@ -210,7 +178,6 @@ for fpath in TEST_FILES[:3]:
             f"count={len(rules) if rules else 0}",
         )
 
-        # meta.mtime_token
         meta = pd.get("meta") or {}
         mt = meta.get("mtime_token")
         record(
@@ -222,10 +189,6 @@ for fpath in TEST_FILES[:3]:
     except Exception as exc:
         record(f"get_pattern_context({rel})", False, f"EXCEPTION: {exc}")
 
-
-# ---------------------------------------------------------------------------
-# Test 4: get_canonical_excerpt
-# ---------------------------------------------------------------------------
 
 print("\n=== Test 4: get_canonical_excerpt ===")
 if archetype_names:
@@ -252,23 +215,22 @@ else:
     record("get_canonical_excerpt", False, "SKIP: no archetype names found in test 2")
 
 
-# ---------------------------------------------------------------------------
-# Test 5: get_rules
-# ---------------------------------------------------------------------------
-
 print("\n=== Test 5: get_rules ===")
 try:
     rr = get_rules(REPO_PATH)
     rd = rr.get("data", {})
     rules = rd.get("rules")
 
+    # rules is repo-global (from root tool configs). A monorepo coordinator
+    # whose tsconfig/eslintrc live in packages/* legitimately has no root
+    # rules, so assert a well-formed list, not non-empty.
     record(
-        "get_rules.non_empty",
-        isinstance(rules, list) and len(rules) > 0,
-        f"count={len(rules) if rules else 0}",
+        "get_rules.well_formed",
+        isinstance(rules, list),
+        f"count={len(rules) if isinstance(rules, list) else 'n/a'}"
+        + ("" if (isinstance(rules, list) and rules) else " (no root-level tool configs)"),
     )
     if rules:
-        # Each rule should be a (key, value) tuple/list
         first = rules[0]
         record(
             "get_rules.shape",
@@ -279,10 +241,6 @@ except Exception as exc:
     record("get_rules", False, f"EXCEPTION: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# Test 6: lint_file
-# ---------------------------------------------------------------------------
-
 print("\n=== Test 6: lint_file ===")
 if archetype_names and TEST_FILES:
     test_file = TEST_FILES[0]
@@ -291,7 +249,6 @@ if archetype_names and TEST_FILES:
         file_content = Path(test_file).read_text(encoding="utf-8", errors="replace")[:50_000]
         rel = os.path.relpath(test_file, REPO_PATH)
 
-        # 6a: lint without file_path
         lr = lint_file(REPO_PATH, test_arch, file_content)
         ld = lr.get("data", {})
 
@@ -311,7 +268,6 @@ if archetype_names and TEST_FILES:
             f"content_size={ld.get('content_size')}",
         )
 
-        # 6b: lint WITH file_path parameter
         lr2 = lint_file(REPO_PATH, test_arch, file_content, file_path=test_file)
         ld2 = lr2.get("data", {})
         record(
@@ -325,10 +281,6 @@ if archetype_names and TEST_FILES:
 else:
     record("lint_file", False, "SKIP: no archetypes or test files")
 
-
-# ---------------------------------------------------------------------------
-# Test 7: get_drift_status
-# ---------------------------------------------------------------------------
 
 print("\n=== Test 7: get_drift_status ===")
 try:
@@ -349,10 +301,6 @@ except Exception as exc:
     record("get_drift_status", False, f"EXCEPTION: {exc}")
 
 
-# ---------------------------------------------------------------------------
-# Test 8: list_profiles
-# ---------------------------------------------------------------------------
-
 print("\n=== Test 8: list_profiles ===")
 try:
     lp = list_profiles()
@@ -366,36 +314,30 @@ try:
         f"total_known={total}, page_size={len(profiles)}",
     )
 
-    # Check ef-client repo appears (match by repo_root containing "ef-client")
-    ef_found = any(
-        "ef-client" in (p.get("repo_root") or "")
+    repo_name = os.path.basename(os.path.normpath(REPO_PATH))
+    self_found = any(
+        repo_name in (p.get("repo_root") or "")
         for p in profiles
     )
     record(
-        "list_profiles.ef_client_present",
-        ef_found,
-        f"searched {len(profiles)} profiles for 'ef-client' in repo_root",
+        "list_profiles.repo_under_test_present",
+        self_found,
+        f"searched {len(profiles)} profiles for {repo_name!r} in repo_root",
     )
 except Exception as exc:
     record("list_profiles", False, f"EXCEPTION: {exc}")
 
-
-# ---------------------------------------------------------------------------
-# Test 9: Caching - get_pattern_context twice, second should be faster
-# ---------------------------------------------------------------------------
 
 print("\n=== Test 9: caching ===")
 if TEST_FILES:
     cache_file = TEST_FILES[0]
     rel = os.path.relpath(cache_file, REPO_PATH)
     try:
-        # First call (cold)
         t0 = time.perf_counter()
         _ = get_pattern_context(cache_file)
         t1 = time.perf_counter()
         cold_ms = (t1 - t0) * 1000
 
-        # Second call (warm)
         t2 = time.perf_counter()
         _ = get_pattern_context(cache_file)
         t3 = time.perf_counter()
@@ -421,10 +363,6 @@ if TEST_FILES:
 else:
     record("caching", False, "SKIP: no test files")
 
-
-# ---------------------------------------------------------------------------
-# Test 10: doctor
-# ---------------------------------------------------------------------------
 
 print("\n=== Test 10: doctor ===")
 try:
@@ -461,10 +399,6 @@ try:
 except Exception as exc:
     record("doctor", False, f"EXCEPTION: {exc}")
 
-
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
 
 print("\n" + "=" * 60)
 passed = sum(1 for _, p, _ in results if p)

@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 import xxhash
 
-from chameleon_mcp.extractors._base import Extractor, ParsedFile, ParseResult
+from chameleon_mcp.extractors._base import ParsedFile, ParseResult
 from chameleon_mcp.plugin_paths import plugin_root
 
 
@@ -66,12 +67,15 @@ class RubyExtractor:
                 "Phase 8 (v1.5) Ruby support requires the script."
             )
 
-        # Build NDJSON-ish stdin: one path per line
+        if not shutil.which("ruby"):
+            raise RuntimeError(
+                "chameleon: `ruby` not found on PATH. Install Ruby >= 3.3 "
+                "(ships Prism) to use the Ruby extractor."
+            )
+
         input_data = "".join(f"{fp.resolve()}\n" for fp in files)
 
         env = os.environ.copy()
-        # Use system Ruby (3.3+ ships Prism as a default gem; rubies older than
-        # that need `gem install prism`)
         proc = subprocess.Popen(
             ["ruby", str(self._prism_dump_script)],
             stdin=subprocess.PIPE,
@@ -81,8 +85,6 @@ class RubyExtractor:
             env=env,
         )
 
-        # communicate() handles pipe-deadlock via background threads. 600s
-        # timeout matches typescript.py for consistency.
         try:
             stdout_data, _stderr = proc.communicate(input=input_data, timeout=600)
         except subprocess.TimeoutExpired:
@@ -127,7 +129,3 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
         parse_diagnostics_count=int(record.get("parse_diagnostics_count", 0)),
         sha_hint=sha_hint,
     )
-
-
-# Verify protocol conformance at import time
-_extractor: Extractor = RubyExtractor()

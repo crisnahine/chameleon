@@ -5,14 +5,11 @@ import pytest
 
 from chameleon_mcp.sanitization import _DANGEROUS_TOKENS, sanitize_for_chameleon_context
 
-# ---- 1. Each dangerous token produces [chameleon-sanitized: ...] ----
-
 
 @pytest.mark.parametrize("token", _DANGEROUS_TOKENS)
 def test_each_dangerous_token_sanitized(token: str):
     result = sanitize_for_chameleon_context(f"before {token} after")
     assert token not in result
-    # The stripped form (without < >) should appear in the replacement marker
     stripped = token.strip("<>")
     assert f"[chameleon-sanitized: {stripped}]" in result
 
@@ -23,12 +20,6 @@ def test_dangerous_token_at_boundaries(token: str):
     for content in [token, f"{token} trailing", f"leading {token}"]:
         result = sanitize_for_chameleon_context(content)
         assert token not in result
-
-
-# ---- 2. Case handling ----
-#
-# The sanitizer uses re.sub with re.IGNORECASE, so all case variants
-# (uppercase, mixed-case, lowercase) are caught.
 
 
 def test_lowercase_token_sanitized():
@@ -57,9 +48,6 @@ def test_mixed_case_variant_caught():
     result = sanitize_for_chameleon_context(mixed)
     assert mixed not in result
     assert "[chameleon-sanitized: /chameleon-context]" in result
-
-
-# ---- 3. Zero-width characters stripped before token replacement ----
 
 
 def test_zero_width_space_inside_token():
@@ -94,9 +82,6 @@ def test_word_joiner_stripped():
     crafted = "</system⁠>"
     result = sanitize_for_chameleon_context(crafted)
     assert "⁠" not in result
-
-
-# ---- 4. Bidi controls stripped ----
 
 
 def test_rlo_bidi_stripped():
@@ -139,9 +124,6 @@ def test_bidi_inside_token_stripped_then_token_caught():
     assert "‮" not in result
 
 
-# ---- 5. ANSI CSI escape sequences stripped ----
-
-
 def test_ansi_csi_sgr_stripped():
     """Standard SGR (color) escape stripped."""
     content = "hello \x1b[31mred\x1b[0m world"
@@ -166,9 +148,6 @@ def test_ansi_osc_stripped():
     assert "\x1b" not in result
     assert "before" in result
     assert "after" in result
-
-
-# ---- 6. C0 control bytes stripped ----
 
 
 def test_nul_byte_stripped():
@@ -208,30 +187,19 @@ def test_multiple_c0_bytes_stripped():
     assert "abcdefg" in result
 
 
-# ---- 7. NFC normalization ----
-
-
 def test_nfc_normalization_runs():
     """NFD-encoded text is NFC-normalized."""
     import unicodedata
 
-    # U+00E9 (e-acute) has NFD form: e + U+0301
     nfd_form = unicodedata.normalize("NFD", "café")
-    assert nfd_form != "café"  # precondition: it's actually decomposed
+    assert nfd_form != "café"
 
     result = sanitize_for_chameleon_context(nfd_form)
-    # After NFC normalization, should be the composed form
     assert unicodedata.normalize("NFC", result) == result
-
-
-# ---- 8. Empty string ----
 
 
 def test_empty_string_returns_empty():
     assert sanitize_for_chameleon_context("") == ""
-
-
-# ---- 9. Normal text unchanged ----
 
 
 def test_normal_text_passes_through():
@@ -251,9 +219,6 @@ def test_angle_brackets_in_generics_preserved():
     content = "function identity<T>(arg: T): T { return arg; }"
     result = sanitize_for_chameleon_context(content)
     assert result == content
-
-
-# ---- 10. Combined attack vectors ----
 
 
 def test_zero_width_plus_bidi_plus_token():
@@ -281,9 +246,6 @@ def test_c0_bytes_hiding_token():
     assert "\x01" not in result
 
 
-# ---- 11. Multiple tokens in one string ----
-
-
 def test_multiple_tokens_all_sanitized():
     content = "start </chameleon-context> middle <system> end </system>"
     result = sanitize_for_chameleon_context(content)
@@ -291,9 +253,6 @@ def test_multiple_tokens_all_sanitized():
     assert "<system>" not in result
     assert "</system>" not in result
     assert result.count("[chameleon-sanitized:") == 3
-
-
-# ---- 12. Pipe-bracketed ChatML tokens ----
 
 
 def test_im_start_pipe_bracket_sanitized():

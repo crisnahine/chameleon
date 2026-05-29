@@ -33,12 +33,6 @@ import subprocess
 import time
 from pathlib import Path
 
-# Artifacts we materialize. These mirror what load_profile_dir reads
-# (excluding optional files like profile.summary.md / idioms.md /
-# .archetype_renames.json which are loaded best-effort by the existing
-# loader). The COMMITTED sentinel is created by this loader itself
-# after a successful materialization so the existing loader's
-# is_committed() check passes.
 _REQUIRED_ARTIFACTS: tuple[str, ...] = (
     "profile.json",
     "archetypes.json",
@@ -47,6 +41,8 @@ _REQUIRED_ARTIFACTS: tuple[str, ...] = (
 )
 _OPTIONAL_ARTIFACTS: tuple[str, ...] = (
     "idioms.md",
+    "conventions.json",
+    "principles.md",
     "profile.summary.md",
     ".archetype_renames.json",
 )
@@ -81,7 +77,7 @@ def _resolve_ref(repo_root: Path, ref: str) -> str | None:
     if result is None or result.returncode != 0:
         return None
     sha = (result.stdout or "").strip()
-    return sha if len(sha) == 40 else None
+    return sha if len(sha) in (40, 64) else None
 
 
 def _materialize_artifact(
@@ -153,11 +149,6 @@ def materialize_canonical(
     if _is_cache_valid(cache_dir):
         return cache_dir
 
-    # v0.6.1: 0o700 on the canonical cache root + per-ref cache dir
-    # so a co-tenant on a shared filesystem can't read team source
-    # excerpts cached in canonicals.json / idioms.md. Explicit chmod
-    # after mkdir because mkdir(mode=...) is ignored if the dir
-    # already exists.
     cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         os.chmod(cache_dir, 0o700)
@@ -165,10 +156,6 @@ def materialize_canonical(
     except OSError:
         pass
     lock_path = cache_dir / _LOCK_FILENAME
-    # Open with O_RDWR | O_NOFOLLOW so a pre-planted symlink on the
-    # lock path can't redirect our flock-and-write at, say, the user's
-    # authorized_keys. Pre-v0.6.1 used plain O_RDWR which followed
-    # symlinks.
     try:
         lock_fd = os.open(
             str(lock_path),
@@ -180,41 +167,23 @@ def materialize_canonical(
 
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        # Re-check under lock: another caller may have materialized
-        # while we were waiting.
         if _is_cache_valid(cache_dir):
             return cache_dir
 
-        # Materialize every required artifact. Any failure aborts and
-        # leaves the cache dir invalid (no COMMITTED sentinel).
         for artifact in _REQUIRED_ARTIFACTS:
             if not _materialize_artifact(
                 repo_root, ref_sha, artifact, cache_dir / artifact
             ):
                 return None
-        # Best-effort optional artifacts. Failure here is fine.
         for artifact in _OPTIONAL_ARTIFACTS:
             _materialize_artifact(
                 repo_root, ref_sha, artifact, cache_dir / artifact
             )
 
-        # v0.6.1: scan the materialized artifacts for prompt-injection
-        # signals + hardcoded secrets BEFORE marking the cache valid.
-        # Bootstrap runs these scanners during canonical selection
-        # (`bootstrap/canonical.py`), but materialize_canonical was
-        # bypassing them — an attacker who pushed a malicious
-        # idioms.md / canonicals.json to the pinned ref could inject
-        # prompt-poisoning text on every victim's next read with no
-        # re-trust prompt. Abort the materialize (no COMMITTED) when a
-        # scan trips so the loader falls back to the working tree.
         if not _canonical_artifacts_pass_scans(cache_dir):
-            # Best-effort cleanup of the half-materialized dir so
-            # gc_stale_caches doesn't preserve empty/poisoned dirs.
             import shutil as _shutil
             _shutil.rmtree(cache_dir, ignore_errors=True)
             return None
-        # Write metadata so we can tell from disk which ref a cache
-        # was built from.
         try:
             (cache_dir / _REF_METADATA_FILENAME).write_text(
                 f"{canonical_ref}\n{ref_sha}\n{int(time.time())}\n",
@@ -222,10 +191,6 @@ def materialize_canonical(
             )
         except OSError:
             pass
-        # Finally, drop the COMMITTED sentinel — this is what
-        # load_profile_dir gates on.  Use open/write/fsync so a crash
-        # cannot leave a zero-length file that _is_cache_valid treats
-        # as valid.
         _sentinel = cache_dir / _COMMITTED_FILENAME
         _fd = _sentinel.open("w", encoding="utf-8")
         try:
@@ -234,10 +199,6 @@ def materialize_canonical(
             os.fsync(_fd.fileno())
         finally:
             _fd.close()
-        # v0.6.1: GC older caches now that a fresh one is committed.
-        # gc_stale_caches keeps the N most-recent; older sha dirs are
-        # rmtree'd. Was defined in v0.6.0 but never called → caches
-        # grew unbounded.
         try:
             gc_stale_caches(repo_id, keep_n=4)
         except Exception:  # noqa: BLE001
@@ -251,11 +212,7 @@ def materialize_canonical(
         os.close(lock_fd)
 
 
-# Artifacts whose content is HUMAN PROSE or SOURCE CODE — the
-# attacker-controlled prompt-injection surface. We scan these via the
-# bootstrap canonical_scanner. Pure schema artifacts (profile.json,
-# rules.json) are validated structurally below instead.
-_PROSE_SCAN_ARTIFACTS = ("canonicals.json", "idioms.md")
+_PROSE_SCAN_ARTIFACTS = ("canonicals.json", "idioms.md", "principles.md")
 
 
 def _canonical_artifacts_pass_scans(cache_dir: Path) -> bool:
@@ -313,9 +270,6 @@ def _canonical_artifacts_pass_scans(cache_dir: Path) -> bool:
             )
             return False
 
-    # Validate archetype NAMES — they get rendered into the advisory
-    # header and are an injection surface even though the file itself
-    # is schema, not prose.
     archetypes_path = cache_dir / "archetypes.json"
     if archetypes_path.is_file():
         try:
@@ -343,9 +297,6 @@ def _canonical_artifacts_pass_scans(cache_dir: Path) -> bool:
                         )
                         return False
         except Exception:  # noqa: BLE001
-            # Don't block on a parse error here — the scan above
-            # already vetted prose artifacts; structural parse failure
-            # gets caught downstream by load_profile_dir.
             pass
 
     return True
@@ -370,14 +321,11 @@ def gc_stale_caches(repo_id: str, *, keep_n: int = 4) -> int:
         return 0
     try:
         entries = [
-            p for p in root.iterdir() if p.is_dir() and len(p.name) == 40
+            p for p in root.iterdir() if p.is_dir() and len(p.name) in (40, 64)
         ]
     except OSError:
         return 0
     removed = 0
-    # First pass: evict ANY uncommitted dir regardless of age. These
-    # are debris from a crashed materialize or a scan-rejected ref —
-    # never useful and they'd compete with valid caches for keep_n.
     valid: list[Path] = []
     for p in entries:
         if (p / _COMMITTED_FILENAME).is_file():
@@ -388,7 +336,6 @@ def gc_stale_caches(repo_id: str, *, keep_n: int = 4) -> int:
             removed += 1
         except OSError:
             continue
-    # Second pass: keep the N most-recent valid caches.
     valid.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     for stale in valid[keep_n:]:
         try:

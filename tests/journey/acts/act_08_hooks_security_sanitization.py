@@ -202,14 +202,11 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 22: verify HMAC sig field present in exec log; verify key file mode 0o600
     try:
-        # Find exec log files under tmpdir
         exec_log_root = ctx.tmpdir / ".chameleon_exec_log"
         if exec_log_root.exists():
             jsonl_files = list(exec_log_root.rglob("*.jsonl"))
             if jsonl_files:
-                # Read first log file and check for hmac field
                 sample_log = jsonl_files[0]
                 lines = sample_log.read_text(encoding="utf-8").splitlines()
                 found_hmac = False
@@ -229,7 +226,6 @@ def run(ctx: JourneyContext) -> ActResult:
                         f"exec log {sample_log} has {len(lines)} entries but no "
                         "'hmac'/'sig'/'signature' field found in any entry"
                     )
-                # Age one log file past 30 days for GC verification (defense in depth)
                 ctx.fast_forward_marker(sample_log, age_seconds=31 * 24 * 3600)
             else:
                 notes_extra[22] = (
@@ -244,7 +240,6 @@ def run(ctx: JourneyContext) -> ActResult:
     except Exception as exc:
         notes_extra[22] = f"exec log scan error: {exc}"
 
-    # Phase 22: key file mode check via expect helper
     hmac_key = ctx.hmac_key_path
     if 22 not in notes_extra and hmac_key.exists():
         try:
@@ -253,22 +248,15 @@ def run(ctx: JourneyContext) -> ActResult:
             notes_extra[22] = str(e)
     cross_check_passed[22] = 22 not in notes_extra
 
-    # Phase 24 cross-check: sanitization evidence.
-    # Strong check: look for the actual [chameleon-sanitized: ...] marker that the
-    # sanitizer writes when it strips dangerous tokens. Check hook event stdout first
-    # (most direct), then transcript (Claude may quote it). Generic "sanitiz" keyword
-    # and "transcript is large" are NOT accepted — they test nothing about the sanitizer.
     try:
         transcript_text = transcript.read_text(encoding="utf-8", errors="replace") if transcript.exists() else ""
 
-        # Tier 1: the sanitizer marker appears in a PreToolUse hook event's stdout.
         hook_event_marker = any(
             "[chameleon-sanitized:" in he.stdout
             for he in session.hook_events
             if "PreToolUse" in he.hook_name
         )
 
-        # Tier 2: the marker appears anywhere in the transcript (Claude reporting it).
         transcript_marker = "[chameleon-sanitized:" in transcript_text
 
         if hook_event_marker or transcript_marker:
@@ -284,9 +272,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[24] = f"transcript scan error for phase 24: {exc}"
         cross_check_passed[24] = False
 
-    # Phase 25: verify symlink content did NOT leak into hook advisory output.
-    # Check only PreToolUse hook events - 'passwd' in the transcript prose is expected
-    # because the prompt itself instructs Claude to plant a symlink to /etc/passwd.
     try:
         symlink_leaked = False
         for he in session.hook_events:
@@ -300,35 +285,25 @@ def run(ctx: JourneyContext) -> ActResult:
                 "REAL CONCERN: symlink content (passwd) leaked into PreToolUse advisory"
             )
         else:
-            # No leak in advisory. Symlink was refused or advisory was empty (both OK).
             cross_check_passed[25] = True
     except Exception as exc:
         notes_extra[25] = f"hook event scan error for phase 25: {exc}"
         cross_check_passed[25] = False
 
-    # Phase 26: verify 5MB cap rejection occurred.
-    # Strong check: require chameleon-specific rejection language ("too large",
-    # "exceeds", "size limit", "cap exceeded", "maximum size", or the exact byte
-    # count 5242880) near the canonicals context. Also accept evidence that the
-    # 4.99MB file was accepted (positive confirmation the boundary test ran).
-    # Generic "rejected"/"oversized" without size context, and "5MB" from the
-    # prompt text itself, are NOT accepted as sufficient evidence.
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
         t_lower = transcript_text.lower()
 
-        # Chameleon-specific rejection phrases (safe_open / size cap path).
         size_cap_phrases = [
             "too large",
             "exceeds",
             "size limit",
             "cap exceeded",
             "maximum size",
-            "5242880",  # exact byte count for 5MB
+            "5242880",
         ]
         size_cap_evidence = any(phrase in t_lower for phrase in size_cap_phrases)
 
-        # Positive confirmation: 4.99MB accepted (the boundary test ran both sides).
         accepted_evidence = "4.99" in transcript_text or "4mb99" in t_lower
 
         if size_cap_evidence or accepted_evidence:
@@ -344,7 +319,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[26] = f"transcript scan error for phase 26: {exc}"
     cross_check_passed[26] = 26 not in notes_extra
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -354,7 +328,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

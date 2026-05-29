@@ -18,24 +18,12 @@ from __future__ import annotations
 
 import re
 
-# Dangerous patterns in TS/JS/Ruby/Python.
-# Each entry is (regex, kind, requires_security_context).
-# When requires_security_context=True, a hit only counts if a security-related
-# keyword (password, token, secret, signature, auth, hmac, hash_password,
-# csrf, session) appears within ±200 chars of the match. This prevents false
-# positives like md5() being used to generate stable React keys from labels.
 DANGEROUS_PATTERNS: tuple[tuple[re.Pattern[str], str, bool], ...] = (
-    # SQL injection — always dangerous; no security keyword required.
     (re.compile(r"`[^`]*\$\{[^}]+\}[^`]*\b(SELECT|INSERT|UPDATE|DELETE|DROP)\b", re.IGNORECASE), "raw_sql_concat", False),
-    # Code execution — always dangerous.
     (re.compile(r"\beval\s*\(", re.IGNORECASE), "eval_call", False),
     (re.compile(r"\bexec\s*\(", re.IGNORECASE), "exec_call", False),
     (re.compile(r"shell\s*=\s*True", re.IGNORECASE), "subprocess_shell_true", False),
-    # Crypto anti-patterns — only flag when used in a security context.
-    # MD5/SHA1 have legitimate non-security uses (cache keys, dedup, ETags,
-    # stable React keys); only flag when nearby code mentions security.
     (re.compile(r"\b(MD5|SHA1)\b", re.IGNORECASE), "weak_hash", True),
-    # Math.random for security purposes — flagged only when security keyword nearby.
     (re.compile(r"Math\.random\s*\(", re.IGNORECASE), "math_random_for_security", True),
 )
 

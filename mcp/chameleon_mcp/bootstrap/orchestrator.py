@@ -83,7 +83,6 @@ def _is_rails_with_frontend(repo_root: Path) -> bool:
         return False
     if not (repo_root / "config" / "application.rb").is_file():
         return False
-    # v0.5.3 (Bug E): accept legacy / modern / new Rails JS layouts.
     js_dir_candidates = (
         repo_root / "app" / "javascript",
         repo_root / "app" / "assets" / "javascripts",
@@ -215,16 +214,8 @@ def _select_extractor(repo_root: Path) -> Extractor | None:
     return None
 
 
-# v0.5.3 (Bug B): first-level workspace fanout cap. Bounded so a
-# misconfigured tree with hundreds of empty apps/* dirs can't walk
-# forever. 50 is generous: real Turborepo / pnpm / Nx repos almost never
-# exceed ~30 first-level workspaces (excalidraw: 9; mastodon: 1; the
-# largest real-world Turborepo we know of, Vercel internal, ships ~40).
 _WORKSPACE_FANOUT_CAP = 50
 
-# v0.5.3 (Bug B): conventional monorepo first-level directories. We drill
-# one layer deep into each of these when the root carries package.json
-# but no TS deps and no tsconfig.json.
 _WORKSPACE_PARENT_DIRS = ("apps", "packages", "services", "workspaces")
 
 
@@ -266,8 +257,6 @@ def _detect_workspace_ts_monorepo(
     package_json = repo_root / "package.json"
     if not package_json.is_file():
         return ([], False)
-    # If the root itself has a tsconfig.json or TS deps in package.json,
-    # the regular single-root path handles this — don't drill.
     if (repo_root / "tsconfig.json").exists():
         return ([], False)
     try:
@@ -277,7 +266,6 @@ def _detect_workspace_ts_monorepo(
     if any(token in content for token in ("typescript", '"ts-node"', '"vite"')):
         return ([], False)
 
-    # Walk each conventional parent dir one level deep.
     workspace_roots: list[str] = []
     fanout_capped = False
     for parent_name in _WORKSPACE_PARENT_DIRS:
@@ -324,9 +312,6 @@ def _glob_for_extractor(extractor: Extractor) -> str:
 
 PROFILE_SCHEMA_VERSION = 7
 
-# BUG-007: read engine version from installed package metadata instead of
-# hardcoding it. Pre-v0.5.6 the constant stayed at "0.4.0" through several
-# releases and leaked into profile.json and profile.summary.md.
 try:
     from importlib.metadata import PackageNotFoundError as _PkgNotFound
     from importlib.metadata import version as _pkg_version
@@ -337,24 +322,13 @@ try:
         ENGINE_MIN_VERSION = "0.5.7"
 except Exception:  # pragma: no cover - defensive fallback
     ENGINE_MIN_VERSION = "0.5.7"
-# v0.5.2 schema-v7 bump rationale:
-#   - paths_pattern strings now carry the file extension suffix
-#     (e.g. "src/components:tsx") to fix the .tsx vs .ts collision.
-#   - paths_pattern preserves the workspace name on monorepo paths
-#     (e.g. "packages/excalidraw/components" instead of
-#     "packages/components/Group").
-# Old profiles still load because the loader doesn't gate on schema_version
-# value; only `engine_min_version` is checked. Tools that EXPECT v6
-# extension-blind buckets (notably tools.get_archetype) fall back to the
-# extension-blind bucket explicitly so v0.5.x archetypes.json files keep
-# matching post-upgrade.
 
 
 @dataclass
 class BootstrapReport:
     """Summary of a bootstrap run, returned to the MCP caller."""
 
-    status: str  # "success" | "failed_too_many_files" | "failed_no_typescript" | "failed"
+    status: str
     archetypes_detected: int
     rules_extracted: int
     idioms_collected: int
@@ -458,11 +432,6 @@ class BootstrapReport:
     """
 
     def to_dict(self) -> dict:
-        # BUG-011: archetypes_detected should be the SUM across workspaces,
-        # not just the root's count. Pre-v0.5.6 a workspace bootstrap that
-        # produced N archetypes per sub-workspace reported the root's local
-        # count (often 0) and hid the per-workspace breakdown deep in the
-        # ``workspaces`` array.
         per_workspace: dict[str, int] = {}
         ws_total = 0
         for w in self.workspace_reports:
@@ -490,15 +459,9 @@ class BootstrapReport:
             "nested_profile_warnings": list(self.nested_profile_warnings),
             "workspaces": list(self.workspace_reports),
         }
-        # Always include language_hint in the envelope (None when no hybrid
-        # detected) so downstream consumers can rely on a stable key.
         out["language_hint"] = self.language_hint
-        # v0.5.3 (Bug B): always surface workspace_roots / fanout_capped so
-        # callers can rely on stable keys.
         out["workspace_roots"] = list(self.workspace_roots)
         out["fanout_capped"] = bool(self.fanout_capped)
-        # v0.5.3 (Bug D): instrumentation counters. clustered_files is an
-        # alias for files_processed kept around for clarity.
         out["discovered_files_pre_exclusion"] = int(self.discovered_files_pre_exclusion)
         out["discovered_files_post_exclusion"] = int(self.discovered_files_post_exclusion)
         out["discovery_hints"] = list(self.discovery_hints)
@@ -522,10 +485,6 @@ def _compute_repo_id(repo_root: Path) -> str:
     return _tools_compute_repo_id(repo_root)
 
 
-# v0.5.1 (Bug 3): schema for the user-rename overlay file. Bumped if and
-# only if the on-disk shape changes incompatibly. v1 layout:
-#   { "schema_version": 1, "renames": {auto_name: user_name, ...},
-#     "updated_at": "<ISO 8601 Z>" }
 RENAMES_SCHEMA_VERSION = 1
 
 
@@ -596,17 +555,6 @@ def _generation_counter(now: float | None = None) -> int:
     return int(now if now is not None else time.time())
 
 
-# v0.5.2 (Bug 3): Rails top-level dirs whose second segment is load-bearing
-# and must NOT be dropped from the displayed paths_pattern. The signature
-# v5 bucket formula (``parts[0]/parts[-3]/parts[-2]`` for ≥4 segments)
-# collapses ``app/models/rule/action_executor/auto_categorize.rb`` into
-# the bucket ``app/rule/action_executor`` — silently losing the
-# load-bearing ``models/`` segment.
-#
-# Touching the bucket key itself is out of scope here (see signatures.py;
-# the clustering agent owns that). Instead we re-derive the paths_pattern
-# WRITTEN INTO archetypes.json from the canonical witness path so what
-# the team reviewer sees on a profile-change PR matches the actual file.
 _RAILS_LOAD_BEARING_SECOND_SEGS = frozenset({
     "models",
     "controllers",
@@ -656,25 +604,16 @@ def _displayed_paths_pattern(
         return bucket
     witness_parts = [p for p in witness_relpath.split("/") if p]
     if len(witness_parts) < 4:
-        # Bucket formula only collapses on ≥4-segment paths; shorter
-        # witness paths agree with the bucket by construction.
         return bucket
     if witness_parts[0] != "app":
         return bucket
     if witness_parts[1] not in _RAILS_LOAD_BEARING_SECOND_SEGS:
         return bucket
-    # Already-honest bucket: the bucket *contains* the load-bearing
-    # segment. Keep it; rewriting would be a no-op or worse.
     if witness_parts[1] in bucket.split("/"):
         return bucket
-    # Construct the corrected bucket: app/<load-bearing>/<dir-of-witness>.
-    # witness_parts[-2] is the directory immediately containing the file.
     return f"{witness_parts[0]}/{witness_parts[1]}/{witness_parts[-2]}"
 
 
-# Phase 2C.3: how many sample paths to include per warning. Just enough for
-# the future interview UI to give the user a hint without dumping the full
-# cluster membership.
 _WARNING_SAMPLE_PATHS = 3
 
 
@@ -725,7 +664,6 @@ def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
     Each warning entry includes the path bucket, size, and a handful of
     sample paths so the future interview UI can ask "merge with X?".
     """
-    # First pass: aggregate by paths_pattern.
     grouped: dict[str, dict] = {}
     insertion_order: list[str] = []
     for cluster in sparse_clusters:
@@ -753,7 +691,6 @@ def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
             g["min_size"] = min(g["min_size"], int(cluster.size))
             g["max_size"] = max(g["max_size"], int(cluster.size))
             g["thresholds"].append(int(cluster.sparse_threshold))
-            # Keep up to _WARNING_SAMPLE_PATHS paths total across the group.
             remaining = _WARNING_SAMPLE_PATHS - len(g["sample_paths"])
             if remaining > 0 and sample_paths:
                 g["sample_paths"].extend(sample_paths[:remaining])
@@ -784,8 +721,6 @@ def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
             )
         warnings.append(g)
 
-    # Second pass: enforce the cap. The full count is surfaced separately
-    # so consumers know how many were elided.
     total_groups = len(warnings)
     truncated = total_groups > _SPARSE_WARNING_LIMIT
     if truncated:
@@ -854,7 +789,6 @@ def _collapse_same_pattern_archetypes(
     archetypes, eliminating the resolver's cluster_size-tiebreak
     unreachability for same-directory-witness siblings.
     """
-    # Group archetype names by paths_pattern.
     by_pattern: dict[str, list[str]] = {}
     for name, meta in archetypes.items():
         pat = meta.get("paths_pattern", "")
@@ -868,7 +802,6 @@ def _collapse_same_pattern_archetypes(
     for _pat, names in by_pattern.items():
         if len(names) <= 1:
             continue
-        # Sort by cluster_size desc; ties broken by name for determinism.
         names_sorted = sorted(
             names,
             key=lambda n: (
@@ -878,14 +811,11 @@ def _collapse_same_pattern_archetypes(
         )
         keeper = names_sorted[0]
         losers = names_sorted[1:]
-        # Accumulate cluster_size.
         kept_meta = dict(new_archetypes[keeper])
         kept_meta["cluster_size"] = sum(
             archetypes[n].get("cluster_size", 0) for n in names_sorted
         )
         new_archetypes[keeper] = kept_meta
-        # Append losers' canonicals to keeper's list (preserve order:
-        # losers ordered by descending cluster_size, then name).
         merged_canonicals = list(new_canonicals.get(keeper, []))
         for loser in losers:
             for entry in new_canonicals.get(loser, []):
@@ -902,8 +832,6 @@ def bootstrap_repo(
     *,
     paths_glob: str | None = None,
     profile_dir_name: str = ".chameleon",
-    # Pinned by scripts/refresh_eval_fixtures.sh for deterministic
-    # witness selection. Do not remove without coordinating that script.
     now: float | None = None,
 ) -> BootstrapReport:
     """Run the full bootstrap pipeline on a repo.
@@ -938,12 +866,6 @@ def bootstrap_repo(
     if report.status != "success":
         return report
 
-    # v0.4 2D.3: per-workspace bootstrap. We re-detect the workspace from
-    # the freshly committed root profile rather than re-walking the
-    # filesystem so the catalog and the per-workspace runs see consistent
-    # state. The workspace paths are an architecture-defined input to the
-    # bootstrap pipeline, so cycling them here is safe even when the root
-    # discovery glob didn't include them.
     workspace = detect_workspace(repo_root)
     if not workspace.has_workspaces:
         return report
@@ -951,17 +873,11 @@ def bootstrap_repo(
     workspace_reports: list[dict] = []
     for ws_path in workspace.workspace_paths:
         ws_root = ws_path.resolve()
-        # Skip a workspace that happens to ALIAS the repo root (defensive —
-        # `apps/.` style paths would otherwise re-bootstrap the root and
-        # clobber the just-written profile).
         try:
             if ws_root == repo_root.resolve():
                 continue
         except OSError:
             continue
-        # Per-workspace bootstrap. Use a workspace-local glob so the
-        # extractor only walks files inside the workspace; pass paths_glob
-        # through so the user-supplied scope override still applies if set.
         ws_report = _bootstrap_single(
             ws_root,
             paths_glob=paths_glob,
@@ -984,10 +900,6 @@ def bootstrap_repo(
             "error": ws_report.error,
         })
 
-    # Mutate the report to attach the per-workspace summaries AND amend
-    # profile.json to advertise the workspaces. The amendment goes through
-    # a second atomic_profile_commit so the loader's double-fstat check
-    # never sees a half-written profile.
     if workspace_reports:
         report.workspace_reports = workspace_reports
         _amend_root_profile_with_workspaces(
@@ -1029,8 +941,6 @@ def _amend_root_profile_with_workspaces(
         for w in workspace_reports
     ]
 
-    # Read sibling artifacts so we can re-emit them inside the new txn
-    # with the SAME generation counter (the loader verifies all four match).
     artifact_names = ("archetypes.json", "canonicals.json", "rules.json")
     siblings: dict[str, str] = {}
     for name in artifact_names:
@@ -1038,15 +948,13 @@ def _amend_root_profile_with_workspaces(
         try:
             siblings[name] = path.read_text(encoding="utf-8")
         except OSError:
-            return  # Corrupt profile — leave alone.
-    # conventions.json is optional (absent on profiles written before v0.9.0).
+            return
     conventions_path = profile_dir / "conventions.json"
     if conventions_path.is_file():
         try:
             siblings["conventions.json"] = conventions_path.read_text(encoding="utf-8")
         except OSError:
             pass
-    # principles.md is optional (absent on profiles written before v0.9.0).
     principles_path = profile_dir / "principles.md"
     if principles_path.is_file():
         try:
@@ -1071,8 +979,6 @@ def _amend_root_profile_with_workspaces(
     except OSError:
         summary_text = ""
 
-    # v0.5.1 (Bug 3): re-emit renames.json inside the workspace-amendment
-    # txn so the user's rename overlay survives the dir replacement.
     renames_path = profile_dir / "renames.json"
     renames_text: str | None = None
     if renames_path.is_file():
@@ -1134,8 +1040,6 @@ def _bootstrap_single(
     *,
     paths_glob: str | None = None,
     profile_dir_name: str = ".chameleon",
-    # Pinned by scripts/refresh_eval_fixtures.sh for deterministic
-    # witness selection. Do not remove without coordinating that script.
     now: float | None = None,
 ) -> BootstrapReport:
     """The original (v0.3) single-target bootstrap pipeline.
@@ -1148,33 +1052,14 @@ def _bootstrap_single(
     started_at = time.time()
     profile_dir = repo_root / profile_dir_name
 
-    # 1a. Detect workspace structure (pnpm/yarn/lerna/turbo/nx)
     workspace = detect_workspace(repo_root)
-    # Phase 2C: workspace info is recorded in profile.json for visibility,
-    # but Phase 2D will use it to drive per-workspace bootstrapping. For now,
-    # we always bootstrap at repo_root.
 
-    # 1b. Read tool configs as ground truth for rules.
-    # BUG-019 (v0.5.6): when bootstrap_repo is invoked on a sidecar like
-    # ``<rails-root>/app/javascript`` that carries no own package.json /
-    # tsconfig.json but has a parent that does, read tool configs from
-    # the parent. The language_hint envelope (Bug 2) suggested running
-    # ``bootstrap_repo(<repo>/app/javascript)`` for the TS half, but that
-    # call returned ``rules: {}`` because the sidecar dir lacked its own
-    # tooling configuration.
     inherited_signals_from: Path | None = None
-    # BUG-014 (v0.5.7): the sidecar walk-up fires only when the repo has
-    # NEITHER its own JS signals (package.json / tsconfig.json) NOR its
-    # own Ruby signals (Gemfile / *.gemspec). Pre-fix the check looked
-    # only at JS signals, which fired on pure-Ruby repos and walked up
-    # past their Gemfile into HOME, then ran read_tool_configs on
-    # /Users/<name> with no rubocop config to find. ef-api's rubocop
-    # silently disappeared.
     own_js = (repo_root / "package.json").is_file() or (repo_root / "tsconfig.json").is_file()
     own_ruby = (repo_root / "Gemfile").is_file() or any(repo_root.glob("*.gemspec"))
     if not own_js and not own_ruby:
         ancestor = repo_root.parent
-        for _ in range(4):  # walk up at most 4 dirs to find the parent root
+        for _ in range(4):
             if (ancestor / "package.json").is_file() or (ancestor / "Gemfile").is_file():
                 inherited_signals_from = ancestor
                 break
@@ -1186,26 +1071,8 @@ def _bootstrap_single(
     else:
         tool_configs = read_tool_configs(repo_root)
 
-    # 1c. Detect language (TS or Ruby in v1.5; ADR-0003)
-    # v0.5.3 (Bug B): when the root doesn't carry TS signals directly,
-    # try first-level workspace drill-down (Turborepo / pnpm-workspaces
-    # / Nx pattern). If a qualifying workspace is found, treat the repo
-    # as TypeScript and scan only inside the workspace dirs.
-    # BUG-019: a sidecar with inherited signals from a parent root that
-    # has package.json should still try TS detection — _select_extractor
-    # at the sidecar would otherwise return None.
     extractor = _select_extractor(repo_root)
     if extractor is None and inherited_signals_from is not None:
-        # BUG-019 (v0.5.7): sidecar bootstraps should pick the extractor by
-        # what's IN the sidecar, not by what the parent's primary language
-        # was. forem is a Rails-with-frontend repo; _select_extractor at
-        # the forem root returns Ruby (correctly), but the user asked us
-        # to bootstrap forem/app/javascript — the JS half. Inheriting
-        # Ruby extractor → glob "**/*.rb" → zero files in the sidecar.
-        #
-        # Heuristic: count source files of each language inside the
-        # sidecar (depth-limited to avoid scanning node_modules etc.) and
-        # pick the dominant one. Uses the module-level imports.
         ts_count = ruby_count = 0
         for ext_token in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
             ts_count += sum(1 for _ in repo_root.rglob(f"*{ext_token}"))
@@ -1221,7 +1088,6 @@ def _bootstrap_single(
         elif ruby_count > 0:
             extractor = RubyExtractor()
         else:
-            # Truly empty — fall back to parent for the error trail.
             extractor = _select_extractor(inherited_signals_from)
     workspace_roots: list[str] = []
     fanout_capped = False
@@ -1229,13 +1095,6 @@ def _bootstrap_single(
         workspace_roots, fanout_capped = _detect_workspace_ts_monorepo(repo_root)
         if workspace_roots:
             extractor = TypeScriptExtractor()
-            # BUG-003 (v0.5.7): for ad-hoc monorepos that have per-workspace
-            # tool configs (apps/<x>/.eslintrc.cjs, apps/<x>/.prettierrc, ...)
-            # but no root-level ones, fall back to the first workspace's
-            # config. Otherwise rules.json is empty even though every
-            # workspace has perfectly readable lint rules. Single-config
-            # representative isn't perfect (each workspace may differ
-            # slightly) but is strictly better than reporting zero rules.
             if (
                 not tool_configs.eslint
                 and not tool_configs.prettier
@@ -1252,19 +1111,12 @@ def _bootstrap_single(
                         or ws_configs.tsconfig
                         or ws_configs.rubocop
                     ):
-                        # Adopt the workspace's configs as repo-wide. Tag
-                        # the source so the user knows it came from a
-                        # sub-workspace.
                         tool_configs = ws_configs
                         tool_configs.sources = {
                             k: f"{ws_rel}/{v}" for k, v in ws_configs.sources.items()
                         }
                         break
     if extractor is None:
-        # BUG-001: surface discoverable sub-projects so the slash-command
-        # UI can prompt the user. We walk apps/* and packages/* one level
-        # deep (cheap), looking for children that have their own
-        # package.json or Gemfile.
         hints = _ad_hoc_discovery_hints(repo_root)
         return BootstrapReport(
             status="failed_unsupported_language",
@@ -1285,15 +1137,6 @@ def _bootstrap_single(
             discovery_hints=hints,
         )
 
-    # v0.5.1 (Bug 2): Rails-with-frontend repos pick Ruby; emit a
-    # language_hint so the caller knows the JS sidecar (modern
-    # app/javascript, legacy app/assets/javascripts, or Rails 7
-    # app/frontend) was deliberately excluded from the Ruby scan.
-    # v0.5.3 (Bug E): the dir is resolved via _rails_frontend_dir so the
-    # hint points at whichever convention the repo actually uses.
-    # BUG-017 (v0.5.6): when TS wins but the repo also carries a Gemfile
-    # plus a meaningful Ruby sidecar, emit the reciprocal hint so the
-    # user sees "we picked TS, but there's a Ruby half here too".
     language_hint: dict | None = None
     if extractor.language == "ruby" and _is_rails_with_frontend(repo_root):
         js_dir = _rails_frontend_dir(repo_root)
@@ -1316,13 +1159,8 @@ def _bootstrap_single(
                     ),
                 }
     elif extractor.language == "typescript" and (repo_root / "Gemfile").is_file():
-        # BUG-017: TS won, but the Gemfile suggests this is a Rails repo
-        # whose Rails-with-frontend signal didn't fire (legacy layout,
-        # non-standard JS dir, no app/javascript or app/assets/javascripts
-        # or app/frontend marker). The reciprocal hint warns the user that
-        # the Ruby half exists and was deliberately not scanned.
         ruby_count = _count_ruby_files_under(repo_root)
-        if ruby_count >= 50:  # threshold: substantive Ruby presence
+        if ruby_count >= 50:
             language_hint = {
                 "primary": "typescript",
                 "secondary_detected": "ruby",
@@ -1337,13 +1175,6 @@ def _bootstrap_single(
                 ),
             }
 
-    # 2. Discover candidate files (use language-appropriate glob if no override).
-    # v0.5.3 (Bug B): when workspace_roots is non-empty, the discovery walker
-    # scans only inside those dirs (apps/web, packages/foo, …) instead of
-    # the whole repo. This keeps a monorepo's empty root + sibling
-    # config dirs from blowing past the size guard.
-    # v0.5.3 (Bug D): compute pre/post counters off the same walker so the
-    # numbers always agree.
     discovery_glob = paths_glob or _glob_for_extractor(extractor)
     ws_arg = workspace_roots or None
     stats = discovery_stats(
@@ -1381,18 +1212,6 @@ def _bootstrap_single(
         )
 
     if not candidates:
-        # BUG-012: "no source files" was emitting status="failed" while the
-        # "no language signals" branch above emitted "failed_unsupported_language".
-        # Both are semantically the same case (nothing for chameleon to do).
-        # Unify on failed_unsupported_language with the original detail
-        # appended so callers don't need to track two distinct statuses.
-        #
-        # v0.5.14 bug 6: when paths_glob was supplied and matched nothing,
-        # echo the glob back so the user can tell whether they mistyped
-        # the pattern or chose extensions the repo doesn't have. Brace
-        # expansion (both dir AND basename) is now handled by
-        # discovery._expand_brace_groups so a leftover-brace bug isn't
-        # the cause — a literally-empty match is.
         if paths_glob:
             err_msg = (
                 f"No source files found matching paths_glob {paths_glob!r}. "
@@ -1420,33 +1239,19 @@ def _bootstrap_single(
             discovered_files_post_exclusion=post_exclusion_count,
         )
 
-    # 3. Parse via ts_dump.mjs subprocess
-    # Pass the discovered file list so bootstrap/discovery.py exclusions are
-    # honored (don't re-glob inside the extractor).
     parse_result = extractor.parse_repo(repo_root, paths=candidates)
     files_skipped_parse = len(parse_result.skipped)
 
-    # 4. Cluster by signature
     clustering = cluster_files(parse_result.files, repo_root=repo_root)
     files_skipped_generated = len(clustering.skipped_generated)
-    # v0.5.3 (Bug D): count files that ended up in a sparse cluster —
-    # they were parsed and clustered but never made it to archetype/canonical
-    # selection. Useful for explaining gaps between files_processed and
-    # archetypes_detected.
     sparse_dropped_files = sum(c.size for c in clustering.sparse_clusters)
 
-    # 4b. Phase 2C.3: collect sparse + bimodal warnings. These are surfaced
-    # in BootstrapReport so the future interview UI (v0.4) can prompt the
-    # user; today they are pure diagnostics and do not block the bootstrap.
     sparse_warnings = _build_sparse_warnings(clustering.sparse_clusters, repo_root)
     bimodal_warnings = _build_bimodal_warnings(clustering.bimodal_clusters, repo_root)
 
-    # 5. Pick canonicals (only from dense clusters; sparse get user
-    # confirmation in Phase 2C/D interview)
     selection = select_canonicals(clustering.dense_clusters, repo_root, now=now)
     canonicals_skipped_failed_scans = len(selection.clusters_with_only_failing_canonicals)
 
-    # 6. Build profile artifacts (Phase 2B: minimal viable shape)
     generation = _generation_counter(now=started_at)
     repo_id = _compute_repo_id(repo_root)
 
@@ -1471,27 +1276,9 @@ def _bootstrap_single(
         "rules": {},
     }
 
-    # v0.5.1 (Bug 3): load any user-curated renames so they survive
-    # /chameleon-refresh's full-bootstrap fallthrough. The file lives at
-    # `.chameleon/renames.json` and is meant to be committed to git so
-    # the team shares it. The orchestrator applies the rename overlay
-    # AFTER `propose_archetype_name` runs, so the auto-derived name still
-    # determines collision detection — and the overlay simply re-keys the
-    # archetypes_data / canonicals_data dicts before they're written.
     rename_map = _load_user_renames(profile_dir)
 
-    # Build archetypes from dense clusters. Phase 2D.2 derives meaningful
-    # names (controller, service, react-component, ...) from cluster
-    # signals instead of the opaque ``cluster-<16hex>`` placeholder used
-    # in Phase 2B. Iteration order is largest-cluster-first (see
-    # ClusteringResult.dense_clusters), so the most common archetype gets
-    # the unsuffixed base name and smaller clusters take the suffix.
     assigned_names: set[str] = set()
-    # v0.5.1 (Bug 3): every user-mapped target is reserved up-front so
-    # auto-naming never produces a candidate that collides with one. When
-    # a collision would have occurred, the auto-derivation gets a numeric
-    # suffix (handled inside `propose_archetype_name` via its existing
-    # assigned_names set). This is the "user's mapping wins" rule.
     for target in rename_map.values():
         assigned_names.add(target)
 
@@ -1502,36 +1289,19 @@ def _bootstrap_single(
             None,
         )
         if not cluster_id:
-            # No canonical selected (no eligible candidates passed scanners)
             continue
         auto_name = propose_archetype_name(
             cluster, assigned_names, workspace_roots=workspace_roots or None,
             repo_root=str(repo_root),
         )
-        # v0.5.1 (Bug 3): overlay the user's rename if one applies.
         effective_name = rename_map.get(auto_name, auto_name)
         assigned_names.add(auto_name)
         assigned_names.add(effective_name)
-        # Canonical entry — selected up-front because v0.5.2 (Bug 3) uses
-        # the witness path to surface a Rails-honest display string.
         sel = selection.selections[cluster_id]
         try:
             witness_relpath = str(sel.witness_path.relative_to(repo_root))
         except ValueError:
-            # Witness somehow lives outside repo_root — defensive: skip
-            # the paths_pattern repair and keep whatever the bucket says.
             witness_relpath = ""
-        # v0.5.2 (Bug 3): the signature-v5 bucket formula drops the
-        # ``models/`` segment for paths like
-        # ``app/models/rule/action_executor/auto_categorize.rb`` →
-        # ``app/rule/action_executor``. That bucket is still what runtime
-        # archetype lookup keys on (path_pattern_bucket_for produces the
-        # same string), so we keep ``paths_pattern`` byte-equal to the
-        # bucket. We add ``paths_pattern_display`` carrying the Rails-honest
-        # form (``app/models/action_executor`` here) so reviewers reading
-        # archetypes.json / profile.summary.md aren't misled about where
-        # the cluster actually lives. The display form falls back to the
-        # bucket when the witness path doesn't trigger the repair.
         bucket = cluster.key.path_pattern_bucket
         display_pattern = _displayed_paths_pattern(bucket, witness_relpath)
         archetype_entry: dict = {
@@ -1545,13 +1315,8 @@ def _bootstrap_single(
             "default_export_kind": cluster.key.default_export_kind,
             "named_export_count_bucket": cluster.key.named_export_count_bucket,
         }
-        # v0.5.9 (Option 4): surface sub_bucket distribution so callers can
-        # see which subdirectories contributed to the shallow-bucket cluster.
-        # Omit the key entirely for shallow repos with no sub_buckets so the
-        # JSON stays uncluttered for simple layouts.
         if cluster.sub_bucket_counts:
             archetype_entry["sub_buckets"] = dict(cluster.sub_bucket_counts)
-        # v0.7.0: generate summary for Tier 1 pointers
         witness_path = None
         try:
             if hasattr(sel, 'witness_path') and sel.witness_path:
@@ -1568,14 +1333,10 @@ def _bootstrap_single(
                 "sha_hint": sel.sha_hint,
             },
             "normative_shape": {
-                # Phase 2C.1: derive the normative AST shape from the
-                # cluster signature. A file conforms when every non-null
-                # field matches the file's parsed shape. See
-                # canonical.derive_ast_query for the field contract.
                 "ast_query": derive_ast_query(cluster.key),
             },
             "normative_idioms": {
-                "comments": [],  # Phase 2D: collect via interview / chameleon-teach
+                "comments": [],
             },
             "secret_scan_passed": sel.secret_scan_passed,
             "injection_scan_passed": sel.injection_scan_passed,
@@ -1583,9 +1344,6 @@ def _bootstrap_single(
             "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }]
 
-    # Collapse archetypes that share a paths_pattern so the resolver's
-    # path-bucket lookup is unambiguous. Losers' canonicals are kept as
-    # alternates on the winner so AST scoring still sees them.
     archetypes_data["archetypes"], canonicals_data["canonicals"] = (
         _collapse_same_pattern_archetypes(
             archetypes_data["archetypes"],
@@ -1595,13 +1353,6 @@ def _bootstrap_single(
 
     archetype_count = len(archetypes_data["archetypes"])
 
-    # 6b. Extract import + naming conventions per archetype.
-    # Build files_by_archetype from the dense clusters using the same
-    # cluster_id -> archetype_name mapping the canonical loop produced.
-    # Declaration names (interface/type/enum identifiers) are not yet
-    # available in ParsedFile - the NDJSON extractor emits kind labels,
-    # not identifier names. Pass empty dicts for the MVP; import
-    # conventions are the higher-value feature.
     _cid_to_archname: dict[str, str] = {}
     for arch_name, body in archetypes_data["archetypes"].items():
         cid = body.get("cluster_id")
@@ -1619,8 +1370,6 @@ def _bootstrap_single(
         if arch_name:
             files_by_archetype.setdefault(arch_name, []).extend(cluster.members)
 
-    # Extract declaration names (interface/type/enum identifiers) for naming
-    # convention detection. Reads file content via regex - ~1ms per file.
     declarations_by_archetype: dict[str, dict[str, list[str]]] = {}
     if extractor.language == "typescript":
         for arch_name, pf_list in files_by_archetype.items():
@@ -1664,28 +1413,14 @@ def _bootstrap_single(
             },
         },
     }
-    # v0.5.1 Bug 2: only emit language_hint when a sibling language was
-    # actually detected. Including `null` in the envelope would mask
-    # legitimately-single-language repos with the same shape as hybrids.
     if language_hint is not None:
         profile_data["language_hint"] = language_hint
 
-    # v0.5.9: soft marker so consumers can detect post-clustering-fix profiles
-    # without a PROFILE_SCHEMA_VERSION bump. Absent or < 2 means the profile
-    # predates Option 1 (fuzzy top_level_node_kinds) and Option 4 (path bucket
-    # depth=2 with sub_bucket metadata).
     profile_data["clustering_algorithm_version"] = 2
 
-    # v0.5.14 bug 1 / rec-1 follow-up: persist the user-supplied
-    # paths_glob in profile.json so /chameleon-refresh can re-apply
-    # the same scope on a full re-bootstrap. Without this, a refresh
-    # of a profile that was scoped to e.g. "{app,db,lib}/**/*.rb"
-    # silently walked the whole tree and inflated the cluster set
-    # (including .claude/worktrees/ and other excluded-by-scope dirs).
     if paths_glob is not None:
         profile_data["discovery"] = {"paths_glob": paths_glob}
 
-    # Build initial rules from tool configs (Phase 2C — basic; Phase 4 expands)
     if tool_configs.prettier:
         rules_data["rules"]["formatting"] = {
             "source": tool_configs.sources.get("prettier", ".prettierrc"),
@@ -1701,16 +1436,11 @@ def _bootstrap_single(
             "target": co.get("target"),
             "paths": co.get("paths"),
         }
-        # Phase 4.7: surface the resolved extends chain so /chameleon-status
-        # can show e.g. "tsconfig.json → @tsconfig/strictest → ./base.json".
         if tool_configs.tsconfig_extends_chain:
             ts_rule["extends_chain"] = tool_configs.tsconfig_extends_chain
         if "tsconfig" in tool_configs.parse_warnings:
             ts_rule["parse_warning"] = tool_configs.parse_warnings["tsconfig"]
         rules_data["rules"]["typescript"] = ts_rule
-    # Phase 2C.4: surface ESLint rules whenever we have them (JSON, YAML, or
-    # best-effort JS extraction). If parsing failed, record only the warning
-    # so /chameleon-status can flag the gap.
     if tool_configs.eslint:
         eslint_rule: dict = {
             "source": tool_configs.sources.get("eslint", ".eslintrc"),
@@ -1724,8 +1454,6 @@ def _bootstrap_single(
             "source": tool_configs.sources.get("eslint", ""),
             "parse_warning": tool_configs.parse_warnings["eslint"],
         }
-    # BUG-014 (v0.5.6): surface rubocop config so Ruby files get linting
-    # guidance equivalent to what TS files have via ESLint.
     if tool_configs.rubocop:
         rubocop_rule: dict = {
             "source": tool_configs.sources.get("rubocop", ".rubocop.yml"),
@@ -1740,11 +1468,6 @@ def _bootstrap_single(
             "parse_warning": tool_configs.parse_warnings["rubocop"],
         }
 
-    # Preserve any user-curated idioms across a refresh: read the existing
-    # idioms.md (if present) and re-emit it inside the transaction. Bootstrap
-    # used to overwrite this file with an empty template every time, which
-    # silently destroyed the human-curated layer the architecture is supposed
-    # to protect.
     existing_idioms_path = profile_dir / "idioms.md"
     if existing_idioms_path.is_file():
         try:
@@ -1754,7 +1477,6 @@ def _bootstrap_single(
     else:
         idioms_content = _EMPTY_IDIOMS_TEMPLATE
 
-    # 7. Write atomically (Phase 1C transaction.py)
     with atomic_profile_commit(profile_dir) as txn_dir:
         (txn_dir / "profile.json").write_text(
             json.dumps(profile_data, indent=2, sort_keys=True), encoding="utf-8"
@@ -1768,9 +1490,6 @@ def _bootstrap_single(
         (txn_dir / "conventions.json").write_text(
             serialize_conventions(conventions_data), encoding="utf-8"
         )
-        # principles.md: auto-generated coding principles tailored to repo.
-        # Fully regenerated on every init/refresh (not user-editable;
-        # custom rules go in idioms.md via /chameleon-teach).
         try:
             from chameleon_mcp.principles import generate_principles
             (txn_dir / "principles.md").write_text(
@@ -1797,10 +1516,6 @@ def _bootstrap_single(
             ),
             encoding="utf-8",
         )
-        # v0.5.1 (Bug 3): re-emit `renames.json` inside the txn so the
-        # user's rename overlay file survives the directory replacement.
-        # Without this, atomic_profile_commit's rename clobbers the file
-        # even though the in-memory dicts were already renamed in-place.
         if rename_map:
             renames_payload = {
                 "schema_version": 1,
@@ -1812,15 +1527,9 @@ def _bootstrap_single(
                 encoding="utf-8",
             )
 
-    # BUG-NEW-021 (v0.5.7): populate drift.db's files table with one row
-    # per clustered file. Without this baseline, refresh's incremental
-    # detection treats every file as new and refresh degrades to full
-    # rebootstrap; /chameleon-status also can't aggregate "files indexed"
-    # accurately. Fail-open: any sqlite error is swallowed (advisory).
     try:
         from chameleon_mcp.drift.observations import record_bootstrap_baseline
 
-        # Map cluster_id (selection key) → archetype name once.
         cluster_id_to_name: dict[str, str] = {}
         for arch_name, body in archetypes_data["archetypes"].items():
             cid = body.get("cluster_id")
@@ -1829,8 +1538,6 @@ def _bootstrap_single(
 
         baseline_rows: list[tuple[str, str | None, str | None]] = []
         for cluster in clustering.dense_clusters:
-            # Recover the selection key for this cluster (same lookup the
-            # naming pass above uses).
             cluster_id = next(
                 (cid for cid, sel in selection.selections.items()
                  if sel.witness_path in {pf.path for pf in cluster.members}),
@@ -1857,13 +1564,6 @@ def _bootstrap_single(
 
     duration_ms = int((time.time() - started_at) * 1000)
 
-    # BUG-NEW-005 (v0.5.7): scan for nested `.chameleon/` profiles in
-    # workspace subdirs. These typically come from prior dogfood runs
-    # that bootstrapped sub-workspaces directly; they persist and shadow
-    # the freshly-written root profile during detection. Surface the
-    # paths (relative to repo_root) so the user can decide whether to
-    # prune. The scan is depth-limited via a glob of common workspace
-    # parents to avoid trawling node_modules / vendor / etc.
     nested_warnings: list[str] = []
     for pat in (
         "apps/*/.chameleon",
@@ -1883,7 +1583,7 @@ def _bootstrap_single(
         status="success",
         archetypes_detected=archetype_count,
         rules_extracted=len(rules_data["rules"]),
-        idioms_collected=0,  # Phase 2D: interview-driven via /chameleon-teach
+        idioms_collected=0,
         canonicals_skipped_failed_scans=canonicals_skipped_failed_scans,
         files_processed=len(parse_result.files),
         files_skipped_generated=files_skipped_generated,
@@ -1894,11 +1594,8 @@ def _bootstrap_single(
         bimodal_cluster_warnings=bimodal_warnings,
         nested_profile_warnings=nested_warnings,
         language_hint=language_hint,
-        # v0.5.3 (Bug B): workspace drill-down envelope fields. Empty for
-        # single-root repos so the keys stay stable.
         workspace_roots=list(workspace_roots),
         fanout_capped=fanout_capped,
-        # v0.5.3 (Bug D): instrumentation counters.
         discovered_files_pre_exclusion=pre_exclusion_count,
         discovered_files_post_exclusion=post_exclusion_count,
         sparse_dropped_files=sparse_dropped_files,

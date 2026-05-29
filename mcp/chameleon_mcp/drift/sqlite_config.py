@@ -14,7 +14,6 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-# Pragmas applied to every connection
 HARDENING_PRAGMAS = (
     "PRAGMA journal_mode=WAL",
     "PRAGMA busy_timeout=30000",
@@ -37,11 +36,10 @@ def open_hardened(db_path: Path, *, read_only: bool = False) -> sqlite3.Connecti
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     if read_only:
-        # URI-based read-only mode + immutable hint where appropriate
         conn = sqlite3.connect(
             f"file:{db_path}?mode=ro",
             uri=True,
-            isolation_level="",  # deferred transactions; with conn: issues BEGIN/COMMIT
+            isolation_level="",
         )
     else:
         conn = sqlite3.connect(
@@ -49,11 +47,9 @@ def open_hardened(db_path: Path, *, read_only: bool = False) -> sqlite3.Connecti
             isolation_level="",
         )
 
-    # Apply hardening pragmas
     for pragma in HARDENING_PRAGMAS:
         conn.execute(pragma)
 
-    # Use Row factory for ergonomic column access
     conn.row_factory = sqlite3.Row
 
     return conn

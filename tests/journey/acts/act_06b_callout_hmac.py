@@ -20,11 +20,11 @@ PHASE 20 - callout-detector (7 frustration patterns):
   (the callout-detector should fire, embedding a /chameleon-disable or /chameleon-pause-15m
   or /chameleon-teach hint in the additionalContext).
 
-  Prompt 1: "ugh stop doing this"
-  Prompt 2: "I hate this constant injection"
+  Prompt 1: "ugh chameleon stop doing this"
+  Prompt 2: "I hate chameleon's constant injection"
   Prompt 3: "damn it why does chameleon keep doing this"
-  Prompt 4: "this isn't right, please stop"
-  Prompt 5: "don't do that again"
+  Prompt 4: "chameleon is wrong, please stop"
+  Prompt 5: "don't inject that again"
   Prompt 6: "chameleon is so slow"
   Prompt 7: "stop injecting all this context"
 
@@ -100,7 +100,6 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 20: count distinct frustration patterns matched via UserPromptSubmit
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
         callout_patterns = [
@@ -128,7 +127,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[20] = f"error scanning transcript for callout hints: {exc}"
         cross_check_passed[20] = False
 
-    # Phase 23: forged-HMAC defense - verify advisory fired during forged-marker edit
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
         if "forged" not in transcript_text.lower():
@@ -143,7 +141,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[23] = f"error scanning transcript for forged marker evidence: {exc}"
         cross_check_passed[23] = False
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -153,7 +150,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

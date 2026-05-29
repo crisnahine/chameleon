@@ -9,7 +9,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ROTATE_THRESHOLD_BYTES = 10 * 1024 * 1024  # 10 MB
+ROTATE_THRESHOLD_BYTES = 10 * 1024 * 1024
 MAX_ROTATIONS = 5
 
 
@@ -29,7 +29,6 @@ def rotate_if_needed(log_path: Path) -> None:
         return
     if size < ROTATE_THRESHOLD_BYTES:
         return
-    # Drop the oldest backup, then cascade
     try:
         _backup_path(log_path, MAX_ROTATIONS).unlink(missing_ok=True)
     except OSError:
@@ -41,7 +40,6 @@ def rotate_if_needed(log_path: Path) -> None:
             src.rename(dst)
         except (FileNotFoundError, OSError):
             continue
-    # Move the current file to .1
     try:
         log_path.rename(_backup_path(log_path, 1))
     except OSError:

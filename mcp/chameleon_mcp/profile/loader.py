@@ -16,22 +16,19 @@ from pathlib import Path
 
 from chameleon_mcp import __version__ as ENGINE_VERSION
 from chameleon_mcp.bootstrap.transaction import is_committed
+from chameleon_mcp.profile.schema import (
+    ARCHETYPE_NAME_RE,
+    SchemaError,
+    _check_depth,
+    _no_duplicate_keys,
+)
 from chameleon_mcp.safe_open import (
-    _DEFAULT_PROFILE_ARTIFACT_MAX_BYTES,
     UnsafeFileError,
     safe_read_profile_artifact,
 )
 
-# BUG-023: schema_version is monotonic. A profile written by a future
-# chameleon with a higher schema_version may contain fields this engine
-# doesn't know about; reading it silently risks emitting wrong guidance.
-# Keep this constant in sync with bootstrap.orchestrator.PROFILE_SCHEMA_VERSION
-# (import-cycle avoidance: don't pull orchestrator at module load).
 MAX_SUPPORTED_SCHEMA_VERSION = 7
 
-# Process-global cache: directory (str) -> resolved repo root (Path | None).
-# The directory-to-root mapping is structural (determined by marker files like
-# .chameleon/, .git/, package.json) and only changes on bootstrap/uninstall.
 _REPO_ROOT_CACHE: dict[str, Path | None] = {}
 
 
@@ -44,11 +41,6 @@ def clear_repo_root_cache() -> None:
     _REPO_ROOT_CACHE.clear()
 
 
-# Process-global cache: profile_dir (str) -> (mtime_token, LoadedProfile).
-# Profile data only changes on bootstrap/refresh, so we avoid re-reading
-# and re-parsing 4 JSON files + idioms.md on every get_pattern_context call.
-# The mtime_token includes all 4 JSON artifacts + idioms.md so that
-# /chameleon-teach changes (which only touch idioms.md) invalidate the cache.
 _PROFILE_CACHE: dict[str, tuple[str, LoadedProfile]] = {}
 
 
@@ -78,11 +70,6 @@ class ProfileLoadError(Exception):
     """Raised when a profile fails to load (missing sentinel, schema, generation)."""
 
 
-# Back-compat re-export so existing readers that imported the loader cap
-# (e.g. older tests) keep finding the constant at the same name.
-_MAX_ARTIFACT_BYTES = _DEFAULT_PROFILE_ARTIFACT_MAX_BYTES
-
-
 def _safe_read_artifact(path: Path) -> str:
     """Read a chameleon profile artifact via the shared safe helper.
 
@@ -98,6 +85,22 @@ def _safe_read_artifact(path: Path) -> str:
         raise
     except UnsafeFileError as exc:
         raise ProfileLoadError(str(exc)) from exc
+
+
+def _loads_hardened(content: str) -> dict:
+    """Parse a committed JSON artifact, rejecting duplicate keys and deep nesting.
+
+    A committed profile is trust-gated, but the trust hash covers the bytes,
+    not their semantics: a teammate could push a profile.json with duplicate
+    keys (last-wins ambiguity) or pathological nesting. These checks bound
+    both before the artifact reaches model context.
+    """
+    try:
+        obj = json.loads(content, object_pairs_hook=_no_duplicate_keys)
+        _check_depth(obj)
+    except (SchemaError, json.JSONDecodeError) as exc:
+        raise ProfileLoadError(f"profile artifact rejected: {exc}") from exc
+    return obj
 
 
 @dataclass
@@ -131,8 +134,7 @@ def _is_unsafe_repo_root(root: Path) -> str | None:
     try:
         resolved = root.resolve(strict=False)
     except OSError:
-        return None  # let downstream handle missing dirs
-    # Anchor against /tmp and $TMPDIR. Both can be the same; that's fine.
+        return None
     forbidden_anchors = []
     try:
         forbidden_anchors.append(Path("/tmp").resolve(strict=False))
@@ -144,7 +146,6 @@ def _is_unsafe_repo_root(root: Path) -> str | None:
             forbidden_anchors.append(Path(tmp_env).resolve(strict=False))
         except OSError:
             pass
-    # tempfile.gettempdir() may return something else again (e.g. /var/folders/... on macOS).
     try:
         forbidden_anchors.append(Path(tempfile.gettempdir()).resolve(strict=False))
     except OSError:
@@ -155,7 +156,6 @@ def _is_unsafe_repo_root(root: Path) -> str | None:
                 return f"refusing repo_root inside temp dir {anchor}"
         except OSError:
             continue
-    # World-writable check (mode bit 0o002). Symlinks are followed by stat.
     try:
         st = os.stat(resolved)
     except OSError:
@@ -166,14 +166,14 @@ def _is_unsafe_repo_root(root: Path) -> str | None:
 
 
 REPO_ROOT_MARKERS: tuple[str, ...] = (
-    ".chameleon",  # already-bootstrapped chameleon repo (highest priority)
-    ".git",        # standard git repository
-    "package.json",  # Node / TypeScript project
-    "tsconfig.json",  # TypeScript project (no package.json)
-    "Gemfile",       # Ruby / Rails project
-    "pyproject.toml",  # Python project
-    "go.mod",        # Go module
-    "Cargo.toml",    # Rust crate
+    ".chameleon",
+    ".git",
+    "package.json",
+    "tsconfig.json",
+    "Gemfile",
+    "pyproject.toml",
+    "go.mod",
+    "Cargo.toml",
 )
 
 
@@ -219,7 +219,6 @@ def find_repo_root(file_path: Path) -> Path | None:
     except OSError:
         return None
 
-    # Check process-global cache before walking the filesystem.
     cache_key = str(current)
     if cache_key in _REPO_ROOT_CACHE:
         return _REPO_ROOT_CACHE[cache_key]
@@ -231,7 +230,6 @@ def find_repo_root(file_path: Path) -> Path | None:
 
 def _find_repo_root_uncached(current: Path) -> Path | None:
     """Filesystem walk implementation for find_repo_root (uncached)."""
-    # Pass 1: walk up; record the first ancestor with ANY marker.
     first_marker_ancestor: Path | None = None
     first_marker_name: str | None = None
     walker = current
@@ -252,17 +250,11 @@ def _find_repo_root_uncached(current: Path) -> Path | None:
         return None
 
     if first_marker_name == ".chameleon":
-        # Closest marker is already a chameleon profile - done.
         reason = _is_unsafe_repo_root(first_marker_ancestor)
         if reason is not None:
             return None
         return first_marker_ancestor
 
-    # Pass 2: closest marker is a language manifest (package.json, etc).
-    # Continue walking up to see if an enclosing .chameleon profile exists.
-    # If yes, prefer it (BUG-NEW-002 monorepo case). If no, return the
-    # closer language-manifest ancestor (pre-fix behavior, preserves
-    # test isolation).
     walker = first_marker_ancestor.parent
     if walker == first_marker_ancestor:
         reason = _is_unsafe_repo_root(first_marker_ancestor)
@@ -319,7 +311,6 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
     """
     cache_key = str(profile_dir)
 
-    # Quick mtime check — 5 stat calls. On hit, skip all reads + parsing.
     try:
         quick_artifact_paths = [
             profile_dir / "profile.json",
@@ -333,8 +324,6 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         if cached is not None and cached[0] == quick_token:
             return cached[1]
     except (FileNotFoundError, OSError):
-        # A JSON artifact is missing or unreadable — fall through to the
-        # full read path which will raise a proper ProfileLoadError.
         pass
 
     if not is_committed(profile_dir):
@@ -353,18 +342,16 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         if not p.is_file():
             raise ProfileLoadError(f"missing required artifact: {p}")
 
-    # Capture mtime tuple BEFORE reads
     mtimes_before = tuple(p.stat().st_mtime_ns for p in artifact_paths)
 
-    # Read all artifacts
-    profile = json.loads(_safe_read_artifact(artifact_paths[0]))
-    archetypes = json.loads(_safe_read_artifact(artifact_paths[1]))
-    rules = json.loads(_safe_read_artifact(artifact_paths[2]))
-    canonicals = json.loads(_safe_read_artifact(artifact_paths[3]))
+    profile = _loads_hardened(_safe_read_artifact(artifact_paths[0]))
+    archetypes = _loads_hardened(_safe_read_artifact(artifact_paths[1]))
+    rules = _loads_hardened(_safe_read_artifact(artifact_paths[2]))
+    canonicals = _loads_hardened(_safe_read_artifact(artifact_paths[3]))
 
     conventions_path = profile_dir / "conventions.json"
     try:
-        conventions = json.loads(_safe_read_artifact(conventions_path))
+        conventions = _loads_hardened(_safe_read_artifact(conventions_path))
     except FileNotFoundError:
         conventions = {}
 
@@ -374,14 +361,12 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
     except FileNotFoundError:
         idioms_text = ""
 
-    # Capture mtime tuple AFTER reads — must match
     mtimes_after = tuple(p.stat().st_mtime_ns for p in artifact_paths)
     if mtimes_before != mtimes_after:
         raise ProfileLoadError(
             "profile changed during load (mid-load mutation detected); retry"
         )
 
-    # Verify generation counter consistency across all 4 JSON files
     gens = (
         profile.get("generation"),
         archetypes.get("generation"),
@@ -401,9 +386,6 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
             f"{ENGINE_VERSION}; upgrade chameleon-mcp"
         )
 
-    # BUG-023: refuse to load a profile written by a newer schema. This
-    # engine doesn't know what new fields mean and may return incorrect
-    # data if it silently accepts the read.
     declared_schema = profile.get("schema_version")
     if isinstance(declared_schema, int) and declared_schema > MAX_SUPPORTED_SCHEMA_VERSION:
         raise ProfileLoadError(
@@ -412,15 +394,24 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
             f"upgrade chameleon-mcp"
         )
 
-    # Build mtime_token from all 4 JSON artifacts + idioms.md so that
-    # /chameleon-teach (which only touches idioms.md) also invalidates.
     idioms_mtime = "0"
     try:
         idioms_mtime = str(idioms_path.stat().st_mtime_ns)
     except FileNotFoundError:
         pass
     mtime_token = "-".join(str(m) for m in mtimes_after) + "-" + idioms_mtime
-    archetype_names = sorted(archetypes.get("archetypes", {}).keys())
+
+    # Drop archetype-name keys that don't match ARCHETYPE_NAME_RE so a poisoned
+    # or hand-edited archetypes.json can't push a name with an embedded newline
+    # + prose into <chameleon-context>. Legitimately-generated names always
+    # match (bootstrap naming enforces the same pattern).
+    _arch_map = archetypes.get("archetypes")
+    if isinstance(_arch_map, dict):
+        archetypes["archetypes"] = {
+            k: v for k, v in _arch_map.items()
+            if isinstance(k, str) and ARCHETYPE_NAME_RE.match(k)
+        }
+    archetype_names = sorted((archetypes.get("archetypes") or {}).keys())
 
     loaded = LoadedProfile(
         profile=profile,
@@ -435,7 +426,6 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         archetype_names=archetype_names,
     )
 
-    # Store in process-global cache.
     _PROFILE_CACHE[str(profile_dir)] = (mtime_token, loaded)
 
     return loaded

@@ -34,16 +34,10 @@ def serialize_conventions(conventions: dict) -> str:
     return json.dumps(conventions, indent=2, sort_keys=False, ensure_ascii=False)
 
 
-# ---------------------------------------------------------------------------
-# Import frequency extraction
-# ---------------------------------------------------------------------------
-
 _FRAMEWORK_THRESHOLD = 0.80
 _MIN_PREFERRED_COUNT = 10
 _MIN_COMPETING_COUNT = 5
 
-# Modules that are framework-mandatory when ubiquitous (above _FRAMEWORK_THRESHOLD).
-# Non-framework modules above the threshold are strong team conventions and stay.
 _FRAMEWORK_MODULES = frozenset({
     "react", "react-dom", "vue", "svelte", "next", "nuxt",
     "@angular/core", "@angular/common",
@@ -74,7 +68,6 @@ def extract_import_conventions(
                 module_counts[module] += 1
                 seen_in_file.add(module)
 
-    # --- competing pairs ---
     competing: list[dict] = []
     if competing_pairs:
         for preferred_mod, over_mod in competing_pairs:
@@ -85,12 +78,7 @@ def extract_import_conventions(
                     "preferred": preferred_mod, "over": over_mod,
                     "preferred_count": p_count, "over_count": o_count,
                 })
-    # Auto-detection of competing pairs disabled: substring heuristics
-    # produce too many false positives on real codebases (Button/UnlockButton,
-    # Chart/LineChart). Competing pairs will be detected in v0.9.1 via
-    # source-file import analysis (check if module A's file imports module B).
 
-    # --- preferred imports (frequent but not framework-mandatory) ---
     preferred: list[dict] = []
     for module, count in module_counts.most_common():
         if count / total > _FRAMEWORK_THRESHOLD and module in _FRAMEWORK_MODULES:
@@ -101,10 +89,6 @@ def extract_import_conventions(
 
     return {"preferred": preferred, "competing": competing}
 
-
-# ---------------------------------------------------------------------------
-# Declaration name extraction (for naming conventions)
-# ---------------------------------------------------------------------------
 
 _TS_INTERFACE_NAME_RE = re.compile(r"^\s*(?:export\s+)?interface\s+([A-Z]\w*)", re.MULTILINE)
 _TS_TYPE_NAME_RE = re.compile(r"^\s*(?:export\s+)?type\s+([A-Z]\w*)\s*[=<]", re.MULTILINE)
@@ -133,10 +117,6 @@ def extract_declarations_from_content(
         result["enum"] = enums
     return result
 
-
-# ---------------------------------------------------------------------------
-# Naming convention extraction
-# ---------------------------------------------------------------------------
 
 _PREFIX_RE = re.compile(r"^([A-Z])[A-Z]")
 _ENFORCE_THRESHOLD = 0.95
@@ -177,16 +157,10 @@ def extract_naming_conventions(*, declarations: dict[str, list[str]]) -> dict:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Inheritance frequency extraction
-# ---------------------------------------------------------------------------
-
 _INHERITANCE_THRESHOLD = 0.60
 
-# Regex for Ruby class inheritance and include/extend
 _RUBY_CLASS_RE = re.compile(r"^\s*class\s+\w+\s*<\s*([\w:]+)", re.MULTILINE)
 _RUBY_INCLUDE_RE = re.compile(r"^\s*include\s+([\w:]+)", re.MULTILINE)
-# Regex for Ruby DSL calls at class body level (2-space indent)
 _RUBY_DSL_CALL_RE = re.compile(
     r"^  (validates|validate|belongs_to|has_many|has_one|has_and_belongs_to_many"
     r"|scope|enum|before_action|after_action|around_action"
@@ -247,11 +221,6 @@ def extract_inheritance_conventions(files: list[ParsedFile]) -> dict:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Method-call frequency extraction
-# ---------------------------------------------------------------------------
-
-
 _TS_EXPORT_NAME_RE = re.compile(
     r"^\s*export\s+(?:const|let|var|function|class|interface|type|enum)\s+(\w+)",
     re.MULTILINE,
@@ -292,7 +261,6 @@ def extract_key_exports(files: list[ParsedFile], *, language: str) -> list[str]:
                     name_counts[name] += 1
                     seen.add(name)
 
-    # Return top N by frequency, excluding very common names
     skip = {"default", "module", "class", "React", "Component", "ApplicationRecord", "Base"}
     result = []
     for name, _count in name_counts.most_common(_MAX_KEY_EXPORTS + len(skip)):
@@ -331,11 +299,6 @@ def extract_method_call_conventions(files: list[ParsedFile]) -> dict:
     return {"common_top5": common_top5, "sample_size": total}
 
 
-# ---------------------------------------------------------------------------
-# Aggregate extraction (used by bootstrap orchestrator)
-# ---------------------------------------------------------------------------
-
-
 def extract_all_conventions(
     *,
     files_by_archetype: dict[str, list[ParsedFile]],
@@ -366,18 +329,13 @@ def extract_all_conventions(
         if method_conv:
             conventions["conventions"].setdefault("method_calls", {})[archetype] = method_conv
     for archetype, files in files_by_archetype.items():
-        language = "typescript"  # default
+        language = "typescript"
         if any(str(f.path).endswith(".rb") for f in files[:3]):
             language = "ruby"
         exports = extract_key_exports(files, language=language)
         if exports:
             conventions["conventions"].setdefault("key_exports", {})[archetype] = exports
     return conventions
-
-
-# ---------------------------------------------------------------------------
-# SessionStart formatting (v0.9.0)
-# ---------------------------------------------------------------------------
 
 
 def format_conventions_for_session(conventions: dict, *, principles_text: str = "") -> str:
@@ -398,7 +356,6 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
                 seen_competing.add(key)
                 import_lines.append(f"- Use {c['preferred']}, not {c['over']}")
 
-    # Surface top preferred imports (high-frequency, cross-archetype)
     seen_preferred: set[str] = set()
     all_preferred: list[tuple[int, str]] = []
     for _arch, data in conv.get("imports", {}).items():
@@ -432,7 +389,6 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
             else:
                 naming_lines.append(f"- Prefix {type_name}s with {pattern} ({pct})")
 
-    # Inheritance conventions
     inheritance_lines: list[str] = []
     seen_inheritance: set[str] = set()
     for _arch, data in conv.get("inheritance", {}).items():
@@ -451,7 +407,6 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
             if inc_freq >= _STRONG_THRESHOLD:
                 inheritance_lines.append(f"- Include {include} ({inc_freq:.0%})")
 
-    # Method call conventions
     method_lines: list[str] = []
     seen_methods: set[str] = set()
     for _arch, data in conv.get("method_calls", {}).items():
@@ -461,7 +416,6 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     if seen_methods:
         method_lines.append(f"- Common DSL: {', '.join(sorted(seen_methods)[:8])}")
 
-    # Key exports (check before creating)
     export_lines: list[str] = []
     all_exports: set[str] = set()
     for _arch, names in conv.get("key_exports", {}).items():
@@ -471,7 +425,6 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
         sorted_exports = sorted(all_exports)[:15]
         export_lines.append(f"- Check before creating: {', '.join(sorted_exports)}")
 
-    # Principles (from .chameleon/principles.md - auto-generated per repo)
     principle_lines: list[str] = []
     if principles_text:
         try:
@@ -515,11 +468,6 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
         lines.append("")
     lines.append("</chameleon-conventions>")
     return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Tier 1 PreToolUse convention echo (~30 tokens)
-# ---------------------------------------------------------------------------
 
 
 _SOURCE_EXTENSIONS = frozenset({
@@ -568,7 +516,6 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
     parts: list[str] = []
     conv = conventions.get("conventions", {})
 
-    # Imports: try this archetype, then fall back to any archetype
     arch_imports = conv.get("imports", {}).get(archetype, {})
     if not arch_imports and conv.get("imports"):
         arch_imports = next(iter(conv["imports"].values()), {})
@@ -582,7 +529,6 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
                 parts.append(f"Imports: {p['module']}")
                 break
 
-    # Naming: try this archetype, then fall back
     arch_naming = conv.get("naming", {}).get(archetype, {})
     if not arch_naming and conv.get("naming"):
         arch_naming = next(iter(conv["naming"].values()), {})
@@ -592,7 +538,6 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
             parts.append(f"Naming: {entry['pattern']}-prefix")
             break
 
-    # Inheritance: try this archetype, then fall back
     arch_inheritance = conv.get("inheritance", {}).get(archetype, {})
     if not arch_inheritance and conv.get("inheritance"):
         arch_inheritance = next(iter(conv["inheritance"].values()), {})
@@ -600,7 +545,6 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
     if base and arch_inheritance.get("frequency", 0) >= _STRONG_THRESHOLD:
         parts.append(f"Base: {base}")
 
-    # Rotate one principle into the echo to counter attention decay
     if principles_text:
         p_lines = [
             line.split(". ", 1)[1] if ". " in line else line

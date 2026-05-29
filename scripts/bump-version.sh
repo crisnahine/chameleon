@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-#
-# bump-version.sh — bump version numbers across all declared files,
-# with drift detection and repo-wide audit for missed files.
-#
-# Usage:
-#   bump-version.sh <new-version>   Bump all declared files to new version
-#   bump-version.sh --check         Report current versions (detect drift)
-#   bump-version.sh --audit         Check + grep repo for old version strings
-#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -50,9 +41,6 @@ write_json_field() {
   jq "$jq_path = \"$value\"" "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
-# Minimal Python support for module-level scalar assignments like
-# `__version__ = "0.5.13"`. Field is the bare attribute name; only the
-# first matching assignment is read/written.
 _read_py_field() {
   local file="$1" field="$2"
   awk -v k="$field" '
@@ -75,10 +63,6 @@ _write_py_field() {
   ' "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
-# Minimal TOML support for `project.version` / `tool.<name>.version`
-# style scalar fields. Operates on the first `key = "..."` under the
-# matching section header, which covers pyproject.toml's needs without
-# pulling in a real TOML parser.
 _read_toml_field() {
   local file="$1" field="$2"
   local section key
@@ -254,10 +238,6 @@ cmd_bump() {
     printf "  %-45s  %s -> %s\n" "$path ($field)" "$old_ver" "$new_version"
   done < <(declared_files)
 
-  # Clean stale dist-info directories from the venv. Each `uv sync` after a
-  # version bump can leave orphaned dist-info dirs (e.g., 0.9.0, 0.9.1) that
-  # cause importlib.metadata to return None for __version__. Remove all
-  # dist-info dirs except the one matching the new version.
   local venv_site="$REPO_ROOT/mcp/.venv/lib"
   if [[ -d "$venv_site" ]]; then
     local cleaned=0

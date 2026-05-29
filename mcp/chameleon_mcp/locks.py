@@ -46,7 +46,7 @@ def _read_lock_metadata(lock_path: Path) -> tuple[int | None, float | None]:
 def _is_pid_alive(pid: int) -> bool:
     """Check if a PID is still running (POSIX). EPERM means alive but different user."""
     try:
-        os.kill(pid, 0)  # signal 0 = check existence without sending
+        os.kill(pid, 0)
         return True
     except OSError as e:
         return e.errno != errno.ESRCH
@@ -69,7 +69,6 @@ def acquire_advisory_lock(lock_path: Path, *, stale_after_seconds: int = 3600):
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Open lock file (create if missing). Keep fd alive for duration of context.
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         try:
@@ -77,7 +76,6 @@ def acquire_advisory_lock(lock_path: Path, *, stale_after_seconds: int = 3600):
         except OSError as e:
             if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
                 raise
-            # Lock held by someone else. Check if stale.
             pid, started_at = _read_lock_metadata(lock_path)
             now = time.time()
             stale = (
@@ -86,8 +84,6 @@ def acquire_advisory_lock(lock_path: Path, *, stale_after_seconds: int = 3600):
                 and (not _is_pid_alive(pid) or (now - started_at) > stale_after_seconds)
             )
             if stale:
-                # Break the lock: acquire it now (the previous holder is gone).
-                # Another process may race us here; treat EAGAIN as LockHeldError.
                 try:
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except OSError as e2:
@@ -97,7 +93,6 @@ def acquire_advisory_lock(lock_path: Path, *, stale_after_seconds: int = 3600):
             else:
                 raise LockHeldError(lock_path, pid, started_at) from e
 
-        # We have the lock. Write our PID + start time.
         os.ftruncate(fd, 0)
         os.write(fd, f"{os.getpid()} {time.time()}\n".encode())
         os.fsync(fd)
@@ -105,8 +100,6 @@ def acquire_advisory_lock(lock_path: Path, *, stale_after_seconds: int = 3600):
         try:
             yield
         finally:
-            # Lock auto-releases on close, but write empty content first to
-            # signal "clean shutdown" (helps stale-lock detection).
             try:
                 os.ftruncate(fd, 0)
             except OSError:

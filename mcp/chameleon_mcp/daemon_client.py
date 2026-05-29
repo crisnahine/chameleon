@@ -26,9 +26,6 @@ from chameleon_mcp.daemon import (
     socket_path,
 )
 
-# Default per-call timeout. Generous enough for the cold-AST-parse case but
-# well under the 2s hook ceiling so the hook still has time to fall back
-# to the in-process path if the daemon hangs.
 DEFAULT_TIMEOUT_S = 1.5
 
 
@@ -72,8 +69,6 @@ def call(method: str, payload: dict | None = None, *, timeout: float = DEFAULT_T
         except (ConnectionRefusedError, FileNotFoundError, OSError):
             return None
 
-        # Apply remaining budget to the send + recv. Slightly underbudget
-        # (multiply by 0.95) so we don't hit settimeout(0) on a near-deadline.
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return None
@@ -96,9 +91,6 @@ def call(method: str, payload: dict | None = None, *, timeout: float = DEFAULT_T
             return None
         if not isinstance(response, dict):
             return None
-        # An error envelope from the daemon is treated the same as a
-        # transport failure — the hook falls back to the in-process path
-        # and tries again next time.
         if "error" in response:
             return None
         return response

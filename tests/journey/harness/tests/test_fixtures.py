@@ -29,12 +29,9 @@ def test_setup_fixture_copies_and_inits(tmp_path: Path) -> None:
 
     work_dir, origin_dir = setup_fixture("myfix", seed, working_root)
 
-    # Working copy has the seed content
     assert (work_dir / "hello.txt").read_text() == "hi\n"
-    # Working copy is a git repo on branch 'main'
     result = run_bash("git branch --show-current", cwd=work_dir)
     assert result.stdout.strip() == "main"
-    # origin/main is reachable
     result = run_bash("git show origin/main:hello.txt", cwd=work_dir)
     assert result.stdout == "hi\n"
 
@@ -48,7 +45,5 @@ def test_setup_fixture_origin_is_bare(tmp_path: Path) -> None:
     work_dir, origin_dir = setup_fixture("myfix", seed, tmp_path / "working")
 
     assert origin_dir.name.endswith(".git")
-    # Bare repos have no working tree
     assert not (origin_dir / "file.txt").exists()
-    # But have HEAD
     assert (origin_dir / "HEAD").exists()

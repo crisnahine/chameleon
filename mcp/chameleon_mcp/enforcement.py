@@ -99,8 +99,28 @@ def load_state(repo_dir: Path, session_id: str) -> EnforcementState:
         return EnforcementState()
 
 
+def _merge_states(disk: EnforcementState, mem: EnforcementState) -> EnforcementState:
+    """Merge an in-memory state with whatever a concurrent writer left on disk.
+
+    The archetype sets are monotonic within a session, so union them. For per
+    file entries, keep the most-recently-verified one. This prevents parallel
+    agents that share a session_id from clobbering each other's updates.
+    """
+    merged = EnforcementState(
+        archetypes_seen=disk.archetypes_seen | mem.archetypes_seen,
+        archetypes_with_violations=(
+            disk.archetypes_with_violations | mem.archetypes_with_violations
+        ),
+        files=dict(disk.files),
+    )
+    for key, mfs in mem.files.items():
+        dfs = merged.files.get(key)
+        if dfs is None or (mfs.last_verified_at or 0) >= (dfs.last_verified_at or 0):
+            merged.files[key] = mfs
+    return merged
+
+
 def save_state(state: EnforcementState, repo_dir: Path, session_id: str) -> None:
-    _evict_if_needed(state)
     path = _state_path(repo_dir, session_id)
     lock = _lock_path(repo_dir, session_id)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -108,24 +128,24 @@ def save_state(state: EnforcementState, repo_dir: Path, session_id: str) -> None
         os.chmod(path.parent, 0o700)
     except OSError:
         pass
-    from chameleon_mcp.locks import acquire_advisory_lock
-    try:
-        with acquire_advisory_lock(lock, stale_after_seconds=60):
-            tmp = path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(state.to_dict(), separators=(",", ":")), encoding="utf-8")
-            tmp.rename(path)
-            try:
-                os.chmod(path, 0o600)
-            except OSError:
-                pass
-    except Exception:
+
+    def _merge_and_write() -> None:
+        merged = _merge_states(load_state(repo_dir, session_id), state)
+        _evict_if_needed(merged)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state.to_dict(), separators=(",", ":")), encoding="utf-8")
+        tmp.write_text(json.dumps(merged.to_dict(), separators=(",", ":")), encoding="utf-8")
         tmp.rename(path)
         try:
             os.chmod(path, 0o600)
         except OSError:
             pass
+
+    from chameleon_mcp.locks import acquire_advisory_lock
+    try:
+        with acquire_advisory_lock(lock, stale_after_seconds=60):
+            _merge_and_write()
+    except Exception:
+        _merge_and_write()
 
 
 def _evict_if_needed(state: EnforcementState) -> None:

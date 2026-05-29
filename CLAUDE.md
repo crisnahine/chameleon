@@ -23,7 +23,7 @@ chameleon/
 └── docs/              architecture.md (design) + install.md
 ```
 
-The user-invocable commands: `init`, `refresh`, `status`, `teach`, `trust`, `disable`, `pause-15m`, `doctor`, `journey`, `pr-review` (all `/chameleon-*` with `/cham-*` aliases).
+The user-invocable commands: `init`, `refresh`, `status`, `teach`, `trust`, `disable`, `pause-15m`, `doctor`, `journey`, `pr-review` (all invoked as `/chameleon-*`).
 
 ## Conventions
 
@@ -125,7 +125,7 @@ sqlite> SELECT * FROM edit_observations ORDER BY observed_at DESC LIMIT 10;
 
 - `CHAMELEON_DISABLE=1` — disable plugin globally for this session
 - `CHAMELEON_VERIFY=0` — disable PostToolUse archetype verification (default ON)
-- `CHAMELEON_ENFORCEMENT_MODE=additionalContext` — revert PostToolUse violations to v0.6.x advisory style (default: `updatedToolOutput`)
+- `CHAMELEON_ALLOW_ESLINT_EVAL=1` — opt into loading JS ESLint configs via Node `require()`/`import()` during bootstrap (default OFF; off uses a static parser that never executes repo code). Enable only for repos you trust.
 - `CHAMELEON_PLUGIN_DATA` — override `~/.local/share/chameleon/` (tests only)
 - `CHAMELEON_HMAC_KEY_PATH` — override the HMAC key location (tests only)
 - `CHAMELEON_HOOK_ERROR_LOG` — override hook error log path

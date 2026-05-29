@@ -9,7 +9,7 @@ Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Whe
 
 ## When to use
 
-- The user explicitly invokes `/chameleon-refresh` (or `/cham-refresh`)
+- The user explicitly invokes `/chameleon-refresh`
 - `using-chameleon` primer surfaces `days_since_refresh > 90` and the user asks for a refresh
 - Reviewer feedback indicates the profile is stale (suggesting many recent edits diverge from the canonical)
 - Material changes to the codebase: significant refactors, framework upgrades, archetype boundaries shifted
@@ -31,7 +31,7 @@ Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Whe
 
 ## Trust + material change
 
-If the refresh causes a material change to any of the 6 hashed profile artifacts, trust transitions to `"stale"` and the user must re-run `/chameleon-trust`.
+If the refresh causes a material change to any of the 9 hashed profile artifacts, trust transitions to `"stale"` and the user must re-run `/chameleon-trust`.
 
 Exception: structurally-identical refreshes (only the generation counter bumped, no archetype/canonical/rules changes) automatically preserve the existing trust grant.
 

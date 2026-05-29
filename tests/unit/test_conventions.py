@@ -179,7 +179,6 @@ class TestExtractAllConventions:
             declarations_by_archetype={},
             generation=1,
         )
-        # Below MIN_SAMPLE_SIZE, import extraction returns empty lists
         assert "tiny" not in result["conventions"]["imports"]
 
 
@@ -258,7 +257,7 @@ class TestFormatConventionsEcho:
             "competing": [{"preferred": "X", "over": "Y", "preferred_count": 10, "over_count": 0}],
         }
         text = format_conventions_echo(conventions, archetype="hook")
-        assert "X" in text  # falls back to "other" archetype's conventions
+        assert "X" in text
 
 
 def _make_ts_file(tmp_path, name: str, content: str) -> ParsedFile:
@@ -288,7 +287,6 @@ class TestKeyExportsExtractor:
             ("api.ts", "export const api = axios.create();\nexport const request = () => {};\n"),
         ]:
             files.append(_make_ts_file(tmp_path, name, content))
-        # Need 10+ files for MIN_SAMPLE_SIZE
         for i in range(8):
             files.append(_make_ts_file(tmp_path, f"filler{i}.ts", f"export const filler{i} = {i};\n"))
 
@@ -324,7 +322,7 @@ class TestKeyExportsExtractor:
             exports = "\n".join(f"export const item{j} = {j};" for j in range(30))
             files.append(_make_ts_file(tmp_path, f"f{i}.ts", exports))
         result = extract_key_exports(files, language="typescript")
-        assert len(result) <= 20  # capped
+        assert len(result) <= 20
 
 
 class TestFormatSessionReuse:
@@ -341,7 +339,6 @@ class TestFormatSessionReuse:
     def test_no_reuse_when_empty(self):
         conventions = empty_conventions(generation=1)
         conventions["conventions"]["key_exports"] = {}
-        # Need at least one other section to produce output
         conventions["conventions"]["inheritance"]["model"] = {
             "dominant_base": "ApplicationRecord",
             "frequency": 0.96,
@@ -525,7 +522,7 @@ class TestFormatEchoInheritance:
             "sample_size": 117,
         }
         text = format_conventions_echo(conventions, archetype="controller")
-        assert "Base: ApplicationRecord" in text  # falls back to model's conventions
+        assert "Base: ApplicationRecord" in text
 
 
 class TestDirectoryListing:
@@ -570,7 +567,6 @@ class TestDirectoryListing:
         for i in range(25):
             (tmp_path / f"file{i:02d}.ts").write_text("x")
         result = format_directory_listing(str(tmp_path / "target.ts"), max_files=10)
-        # Should have at most 10 filenames
         assert result.count(".ts") <= 10
 
     def test_filters_non_source_files(self, tmp_path):

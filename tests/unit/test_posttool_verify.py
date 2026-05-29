@@ -35,9 +35,6 @@ def _run_verify(payload: dict, *, env: dict | None = None) -> dict:
     return json.loads(output) if output else {}
 
 
-# ---- 1. Env var gate ----
-
-
 def test_env_gate_disabled():
     result = _run_verify(
         {"tool_name": "Edit", "tool_input": {"file_path": "/x.ts"}},
@@ -53,9 +50,6 @@ def test_env_gate_default_on():
         env={},
     )
     assert result == {}
-
-
-# ---- 2. Tool name filtering ----
 
 
 def test_bash_tool_skipped():
@@ -77,9 +71,6 @@ def test_missing_tool_name_skipped():
     assert result == {}
 
 
-# ---- 3. File path extraction ----
-
-
 def test_notebook_path_fallback():
     with patch(
         "chameleon_mcp.hook_helper.posttool_verify.__module__", "chameleon_mcp.hook_helper"
@@ -97,9 +88,6 @@ def test_missing_file_path_skipped():
         {"tool_name": "Edit", "tool_input": {}, "session_id": "s1"}
     )
     assert result == {}
-
-
-# ---- 4. Failed edit skip ----
 
 
 def test_failed_edit_with_error_key():
@@ -122,9 +110,6 @@ def test_failed_edit_success_false():
     assert result == {}
 
 
-# ---- 5. Opt-out mechanisms ----
-
-
 def test_suppressed_session_skipped():
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
@@ -139,15 +124,11 @@ def test_suppressed_session_skipped():
     assert result == {}
 
 
-# ---- 6. Cooldown dampening ----
-
-
 def test_cooldown_skips_reverification(tmp_path: Path):
     repo_id = "test_repo_id"
     marker_dir = tmp_path / repo_id
     marker_dir.mkdir()
 
-    # Create the file so the new code doesn't bail at is_file() check
     ts_file = tmp_path / "x.ts"
     ts_file.write_text("x", encoding="utf-8")
 
@@ -174,9 +155,6 @@ def test_cooldown_skips_reverification(tmp_path: Path):
 
     ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
     assert "already verified" in ctx
-
-
-# ---- 7. hookEventName correctness ----
 
 
 def test_hook_event_name_is_posttool(tmp_path: Path):
@@ -223,9 +201,6 @@ def test_hook_event_name_is_posttool(tmp_path: Path):
     assert result.get("hookSpecificOutput", {}).get("hookEventName") == "PostToolUse"
 
 
-# ---- 8. Sanitization ----
-
-
 def test_violation_messages_sanitized(tmp_path: Path):
     repo_id = "test_repo_id"
     (tmp_path / repo_id).mkdir()
@@ -252,12 +227,8 @@ def test_violation_messages_sanitized(tmp_path: Path):
             "session_id": "s1",
         })
 
-    # v0.7.0: violations use updatedToolOutput, not additionalContext
-    ctx = result.get("hookSpecificOutput", {}).get("updatedToolOutput", "")
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
     assert "</system>" not in ctx
-
-
-# ---- 9. Output budget ----
 
 
 def test_all_violations_included(tmp_path: Path):
@@ -289,13 +260,9 @@ def test_all_violations_included(tmp_path: Path):
             "session_id": "s1",
         })
 
-    # v0.7.0: violations use updatedToolOutput, not additionalContext
-    ctx = result.get("hookSpecificOutput", {}).get("updatedToolOutput", "")
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
     for i in range(6):
         assert f"msg {i}" in ctx
-
-
-# ---- 10. Backward compat: Bash tool still works via posttool-recorder ----
 
 
 def test_posttool_recorder_still_works():
@@ -326,9 +293,6 @@ def test_posttool_recorder_still_works():
     assert output == {}
 
 
-# ---- 11. No-archetype files ----
-
-
 def test_no_archetype_emits_empty(tmp_path: Path):
     repo_id = "test_repo_id"
     (tmp_path / repo_id).mkdir()
@@ -351,9 +315,6 @@ def test_no_archetype_emits_empty(tmp_path: Path):
         })
 
     assert result == {}
-
-
-# ---- 12. Fail-open ----
 
 
 def test_fail_open_on_find_repo_root_crash():
@@ -383,9 +344,6 @@ def test_fail_open_on_file_read_error(tmp_path: Path):
         })
 
     assert result == {}
-
-
-# ---- 13. Double emit prevention ----
 
 
 def test_exactly_one_emit_on_violation(tmp_path: Path):
@@ -426,9 +384,6 @@ def test_exactly_one_emit_on_violation(tmp_path: Path):
     assert len(emit_calls) == 1
 
 
-# ---- 14. Clean files ----
-
-
 def test_clean_file_emits_empty(tmp_path: Path):
     repo_id = "test_repo_id"
     (tmp_path / repo_id).mkdir()
@@ -455,9 +410,6 @@ def test_clean_file_emits_empty(tmp_path: Path):
     assert result == {}
 
 
-# ---- 15. File size cap ----
-
-
 def test_large_file_still_processed(tmp_path: Path):
     repo_id = "test_repo_id"
     (tmp_path / repo_id).mkdir()
@@ -482,9 +434,6 @@ def test_large_file_still_processed(tmp_path: Path):
         })
 
     assert result == {}
-
-
-# ---- 16. Metrics emission ----
 
 
 def test_metrics_emitted_on_violations(tmp_path: Path):
@@ -520,11 +469,8 @@ def test_metrics_emitted_on_violations(tmp_path: Path):
     assert call_kwargs[1]["advisory_emitted"] is True
 
 
-# ---- 17. v0.7.0: updatedToolOutput channel ----
-
-
-def test_violations_use_updated_tool_output(tmp_path: Path):
-    """v0.7.0: violations emit via updatedToolOutput, not additionalContext."""
+def test_violations_use_additional_context(tmp_path: Path):
+    """Violations emit via the documented PostToolUse additionalContext channel."""
     repo_id = "test_repo_id"
     (tmp_path / repo_id).mkdir()
 
@@ -544,44 +490,6 @@ def test_violations_use_updated_tool_output(tmp_path: Path):
                  "actual": "function"}
             ]}},
         ]),
-    ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(ts_file)},
-            "session_id": "s1",
-        })
-
-    hook_output = result.get("hookSpecificOutput", {})
-    assert "updatedToolOutput" in hook_output
-    assert "additionalContext" not in hook_output
-    assert "[🦎 chameleon:" in hook_output["updatedToolOutput"]
-
-
-# ---- 18. v0.7.0: CHAMELEON_ENFORCEMENT_MODE=additionalContext fallback ----
-
-
-def test_enforcement_mode_additionalcontext_fallback(tmp_path: Path):
-    """v0.7.0: CHAMELEON_ENFORCEMENT_MODE=additionalContext falls back to v0.6 behavior."""
-    repo_id = "test_repo_id"
-    (tmp_path / repo_id).mkdir()
-
-    ts_file = tmp_path / "test.ts"
-    ts_file.write_text("export default function foo() {}", encoding="utf-8")
-
-    with (
-        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
-        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
-        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
-        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-            {"data": {"violations": [
-                {"rule": "default-export-kind-mismatch", "severity": "warning",
-                 "message": "expected class, got function", "expected": "class",
-                 "actual": "function"}
-            ]}},
-        ]),
-        patch.dict(os.environ, {"CHAMELEON_ENFORCEMENT_MODE": "additionalContext"}),
     ):
         result = _run_verify({
             "tool_name": "Edit",
@@ -592,9 +500,7 @@ def test_enforcement_mode_additionalcontext_fallback(tmp_path: Path):
     hook_output = result.get("hookSpecificOutput", {})
     assert "additionalContext" in hook_output
     assert "updatedToolOutput" not in hook_output
-
-
-# ---- 19. v0.7.0: corrections exhausted ----
+    assert "[🦎 chameleon:" in hook_output["additionalContext"]
 
 
 def test_corrections_exhausted_emits_advisory(tmp_path: Path):
@@ -605,7 +511,6 @@ def test_corrections_exhausted_emits_advisory(tmp_path: Path):
     ts_file = tmp_path / "test.ts"
     ts_file.write_text("x", encoding="utf-8")
 
-    # Seed enforcement state with correction_count at the cap
     from chameleon_mcp.enforcement import (
         MAX_CORRECTIONS_PER_FILE,
         EnforcementState,
@@ -616,7 +521,7 @@ def test_corrections_exhausted_emits_advisory(tmp_path: Path):
     state = EnforcementState()
     fs = FileState(
         correction_count=MAX_CORRECTIONS_PER_FILE,
-        last_violation_at=time.time(),  # recent, so the count doesn't reset
+        last_violation_at=time.time(),
     )
     state.files[str(ts_file)] = fs
     save_state(state, tmp_path / repo_id, "s1")
@@ -638,14 +543,9 @@ def test_corrections_exhausted_emits_advisory(tmp_path: Path):
         })
 
     hook_output = result.get("hookSpecificOutput", {})
-    # Corrections-exhausted uses additionalContext, NOT updatedToolOutput
     assert "additionalContext" in hook_output
     assert "corrections exhausted" in hook_output["additionalContext"]
-    # Lint must NOT have been called (early exit before step 8)
     mock_lint.assert_not_called()
-
-
-# ---- 20. v0.7.0: clean-after-violation positive reinforcement ----
 
 
 def test_clean_after_violation_emits_archetype_clean(tmp_path: Path):
@@ -656,7 +556,6 @@ def test_clean_after_violation_emits_archetype_clean(tmp_path: Path):
     ts_file = tmp_path / "test.ts"
     ts_file.write_text("x", encoding="utf-8")
 
-    # Seed enforcement state with level > LEVEL_NONE (prior violation)
     from chameleon_mcp.enforcement import (
         LEVEL_L0,
         EnforcementState,

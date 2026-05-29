@@ -38,36 +38,26 @@ def safe_open(repo_root: Path, rel_path: str, *, max_size_bytes: int = 1_000_000
     Raises:
         UnsafeFileError: if any security check fails. Caller should fail-closed.
     """
-    # 1. Reject null bytes — any path component containing \x00 is suspicious
     if "\x00" in rel_path:
         raise UnsafeFileError("path contains null byte")
 
-    # 2. Reject Windows-style ADS (alternate data streams)
     if ":" in rel_path and not rel_path.startswith(("./", "../")):
-        # On POSIX, : in paths is unusual; on NTFS, file.ext:$DATA is an ADS stream
         if "$DATA" in rel_path or "$SECURITY" in rel_path:
             raise UnsafeFileError("path contains Windows alternate data stream")
 
-    # 3. Normalize unicode (defeat NFD-encoded ..  sequences)
     normalized = unicodedata.normalize("NFC", rel_path)
     if normalized != rel_path:
-        # Accept the NFC form, but flag if the un-normalized form was different
-        # (catches NFD attacks where decomposed combining marks form .. when collapsed)
         if ".." in normalized:
             raise UnsafeFileError("path contains .. after NFC normalization")
 
-    # 4. Reject obviously suspicious patterns
     suspicious_segments = {"..", ".git", ".ssh", ".aws", ".gnupg"}
     parts = Path(rel_path).parts
     for part in parts:
         if part in suspicious_segments:
             raise UnsafeFileError(f"path contains forbidden segment: {part}")
 
-    # 5. Build the unresolved candidate path. We lstat THIS (not the resolved
-    #    form) so a leaf-symlink is detected before any resolution happens.
     unresolved = repo_root / rel_path
 
-    # 6. lstat the unresolved path FIRST — catches symlinks at the leaf.
     try:
         st = os.lstat(unresolved)
     except FileNotFoundError as e:
@@ -75,12 +65,9 @@ def safe_open(repo_root: Path, rel_path: str, *, max_size_bytes: int = 1_000_000
     except OSError as e:
         raise UnsafeFileError(f"lstat failed: {e}") from e
 
-    # 7. Refuse symlinks (TOCTOU mitigation; matches Round 4/5 AppSec recs)
     if stat.S_ISLNK(st.st_mode):
         raise UnsafeFileError(f"path is a symlink (refused): {unresolved}")
 
-    # 8. Now resolve to canonical form for boundary check (no symlinks to follow
-    #    since we already refused above; resolve still normalizes ../ traversal)
     candidate = unresolved.resolve(strict=False)
     repo_resolved = repo_root.resolve(strict=False)
     try:
@@ -88,11 +75,9 @@ def safe_open(repo_root: Path, rel_path: str, *, max_size_bytes: int = 1_000_000
     except ValueError as e:
         raise UnsafeFileError(f"path escapes repo boundary: {candidate} not under {repo_resolved}") from e
 
-    # 9. Refuse non-regular files (devices, fifos, sockets)
     if not stat.S_ISREG(st.st_mode):
         raise UnsafeFileError(f"path is not a regular file: {unresolved}")
 
-    # 10. File size ceiling (DoS mitigation)
     if st.st_size > max_size_bytes:
         raise UnsafeFileError(f"file too large: {st.st_size} bytes > {max_size_bytes} cap")
 
@@ -111,7 +96,7 @@ def safe_read_text(
     return safe_path.read_text(encoding=encoding, errors="replace")
 
 
-_DEFAULT_PROFILE_ARTIFACT_MAX_BYTES = 5 * 1024 * 1024  # 5 MB; matches loader._safe_read_artifact
+_DEFAULT_PROFILE_ARTIFACT_MAX_BYTES = 5 * 1024 * 1024
 
 
 def _open_profile_artifact_fd(path: Path, max_bytes: int) -> tuple[int, os.stat_result]:
@@ -132,7 +117,6 @@ def _open_profile_artifact_fd(path: Path, max_bytes: int) -> tuple[int, os.stat_
     except FileNotFoundError:
         raise
     except OSError as e:
-        # ELOOP from O_NOFOLLOW or any other open failure
         raise UnsafeFileError(f"open failed for {path}: {e}") from e
     try:
         st = os.fstat(fd)
@@ -211,7 +195,6 @@ def safe_open_fd(
     Used by the excerpt cache builder; other callers should keep using
     safe_open or safe_read_text.
     """
-    # Apply the same input-validation gauntlet as safe_open.
     if "\x00" in rel_path:
         raise UnsafeFileError("path contains null byte")
     if ":" in rel_path and not rel_path.startswith(("./", "../")):
@@ -228,8 +211,6 @@ def safe_open_fd(
             raise UnsafeFileError(f"path contains forbidden segment: {part}")
 
     unresolved = repo_root / rel_path
-    # Resolve up-front for the repo-boundary check (no symlinks to
-    # follow since we'll O_NOFOLLOW the open below).
     candidate = unresolved.resolve(strict=False)
     repo_resolved = repo_root.resolve(strict=False)
     try:
@@ -239,8 +220,6 @@ def safe_open_fd(
             f"path escapes repo boundary: {candidate} not under {repo_resolved}"
         ) from e
 
-    # Open via os.open with O_NOFOLLOW. O_CLOEXEC is POSIX-standard but
-    # we guard against absence so non-POSIX runtimes don't error.
     flags = os.O_RDONLY | os.O_NOFOLLOW
     cloexec = getattr(os, "O_CLOEXEC", 0)
     flags |= cloexec
@@ -249,7 +228,6 @@ def safe_open_fd(
     except FileNotFoundError as e:
         raise UnsafeFileError(f"path does not exist: {candidate}") from e
     except OSError as e:
-        # ELOOP on symlinks; other failures get mapped to UnsafeFileError.
         raise UnsafeFileError(f"open failed: {e}") from e
 
     try:
@@ -259,8 +237,6 @@ def safe_open_fd(
                 f"path is not a regular file: {candidate}"
             )
         if stat.S_ISLNK(st.st_mode):
-            # O_NOFOLLOW should have refused this at open already;
-            # belt-and-suspenders.
             raise UnsafeFileError(f"path is a symlink (refused): {candidate}")
         if st.st_size > max_size_bytes:
             raise UnsafeFileError(

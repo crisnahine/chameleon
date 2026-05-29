@@ -119,16 +119,13 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 21 runner-side cross-checks
     rails_chameleon = ctx.fixture("rails_basic") / ".chameleon"
 
-    # Check COMMITTED sentinel
     try:
         expect.path_exists(21, rails_chameleon / "COMMITTED")
     except expect.PhaseAssertionError as e:
         notes_extra[21] = str(e)
 
-    # Check profile.json has language: ruby
     profile_json = rails_chameleon / "profile.json"
     if 21 not in notes_extra:
         try:
@@ -144,7 +141,6 @@ def run(ctx: JourneyContext) -> ActResult:
         except (json.JSONDecodeError, OSError) as e:
             notes_extra[21] = f"profile.json read/parse error: {e}"
 
-    # Check rules.json has rubocop key
     rules_json = rails_chameleon / "rules.json"
     if 21 not in notes_extra:
         try:
@@ -159,13 +155,11 @@ def run(ctx: JourneyContext) -> ActResult:
         except (json.JSONDecodeError, OSError) as e:
             notes_extra[21] = f"rules.json read/parse error: {e}"
 
-    # Check archetypes.json has at least 3 Rails-shaped names
     archetypes_json = rails_chameleon / "archetypes.json"
     if 21 not in notes_extra:
         try:
             expect.path_exists(21, archetypes_json)
             archetypes_data = json.loads(archetypes_json.read_text(encoding="utf-8"))
-            # archetypes.json may be a list or dict; extract names either way
             if isinstance(archetypes_data, list):
                 names = [
                     a.get("name", "") if isinstance(a, dict) else str(a)
@@ -187,7 +181,6 @@ def run(ctx: JourneyContext) -> ActResult:
         except (json.JSONDecodeError, OSError) as e:
             notes_extra[21] = f"archetypes.json read/parse error: {e}"
 
-    # Check idioms.md has Language: ruby frontmatter
     idioms_md = rails_chameleon / "idioms.md"
     if 21 not in notes_extra:
         if idioms_md.exists():
@@ -199,7 +192,6 @@ def run(ctx: JourneyContext) -> ActResult:
 
     cross_check_passed[21] = 21 not in notes_extra
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -209,7 +201,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

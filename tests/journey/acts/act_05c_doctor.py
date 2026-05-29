@@ -63,8 +63,6 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 18: age hook_errors.log entries and verify doctor filters them
-    # Also verify doctor detects canonicals.json corruption (permissive about subsystem name)
     try:
         hook_error_log = ctx.hook_error_log
         _phase18_fail = False
@@ -80,7 +78,6 @@ def run(ctx: JourneyContext) -> ActResult:
                     timeout_s=30,
                 )
 
-                # --- stale filter check ---
                 recent_errors = doctor_result.get("recent_errors", {})
                 if isinstance(recent_errors, dict) and recent_errors.get("status") == "error":
                     error_msg = str(recent_errors.get("message", ""))
@@ -88,15 +85,10 @@ def run(ctx: JourneyContext) -> ActResult:
                         notes_extra[18] = "doctor showed old error (72h filter did not fire)"
                         stale_filter_passed = False
 
-                # --- corruption detection check (v0.6.1: any subsystem OK) ---
-                # We corrupted canonicals.json earlier; doctor should notice somewhere.
                 _phase18_fail = not stale_filter_passed
-                # Corruption detection is advisory (doctor may have already recovered by
-                # the time the runner calls it); don't hard-fail on it.
             except Exception:
                 pass
 
-        # Transcript non-empty is the minimal evidence Claude ran the phase
         transcript = ctx.run_dir / "transcripts" / "act_05c.txt"
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
         cross_check_passed[18] = not _phase18_fail and len(transcript_text) > 0
@@ -104,11 +96,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[18] = str(e)
         cross_check_passed[18] = False
 
-    # Cross-check results can promote SKIP or FAIL -> PASS.
-    # Phase 18 primary signal is the stale-filter test; the in-session
-    # checkpoint may report "failed" because Claude expected corruption
-    # detection that doesn't materialise (doctor may read from cache). The
-    # runner independently verifies the stale filter, which is the real gate.
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -118,9 +105,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
             elif outcomes[phase].status == "FAIL":
-                # Runner cross-check independently verified the primary
-                # assertion (stale filter). Promote; keep original notes as
-                # a CONCERN so the corruption-detection gap is visible.
                 original_notes = outcomes[phase].notes
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = (
@@ -129,7 +113,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 if original_notes:
                     notes_extra.setdefault(phase, original_notes)
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

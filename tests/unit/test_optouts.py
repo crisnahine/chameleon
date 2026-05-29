@@ -8,9 +8,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _setup_hmac_key(tmp_path: Path) -> Path:
     """Write a deterministic HMAC key and return the key file path."""
@@ -19,10 +16,6 @@ def _setup_hmac_key(tmp_path: Path) -> Path:
     key_file.chmod(0o600)
     return key_file
 
-
-# ---------------------------------------------------------------------------
-# 1. .skip file -> "repo_skip"
-# ---------------------------------------------------------------------------
 
 def test_skip_file_triggers_repo_skip(tmp_path: Path):
     repo_root = tmp_path / "repo"
@@ -48,10 +41,6 @@ def test_no_skip_file_does_not_trigger(tmp_path: Path):
     assert result is None
 
 
-# ---------------------------------------------------------------------------
-# 2. CHAMELEON_DISABLE=1 -> "user_disable"
-# ---------------------------------------------------------------------------
-
 def test_env_disable_triggers_user_disable(tmp_path: Path):
     from chameleon_mcp.optouts import is_chameleon_suppressed
 
@@ -67,10 +56,6 @@ def test_env_disable_other_value_ignored():
         result = is_chameleon_suppressed(repo_root=None, repo_id=None)
     assert result is None
 
-
-# ---------------------------------------------------------------------------
-# 3. Session-disable marker with valid HMAC -> "session_disable"
-# ---------------------------------------------------------------------------
 
 def test_session_disable_valid_signature(tmp_path: Path):
     key_file = _setup_hmac_key(tmp_path)
@@ -94,10 +79,6 @@ def test_session_disable_valid_signature(tmp_path: Path):
     assert result == "session_disable"
 
 
-# ---------------------------------------------------------------------------
-# 4. Session-disable marker with invalid signature -> rejected
-# ---------------------------------------------------------------------------
-
 def test_session_disable_invalid_signature(tmp_path: Path):
     key_file = _setup_hmac_key(tmp_path)
     data_dir = tmp_path / "data"
@@ -120,7 +101,6 @@ def test_session_disable_invalid_signature(tmp_path: Path):
 
         write_session_disable(repo_id, session_id)
 
-        # Tamper with the signature in the marker file
         marker = repo_data_dir(repo_id) / f".session_disabled.{_safe_session_marker(session_id)}"
         text = marker.read_text(encoding="utf-8")
         tampered = text.replace("sig=", "sig=deadbeef")
@@ -131,10 +111,6 @@ def test_session_disable_invalid_signature(tmp_path: Path):
         )
     assert result is None
 
-
-# ---------------------------------------------------------------------------
-# 5. Pause file with future timestamp -> "pause"
-# ---------------------------------------------------------------------------
 
 def test_pause_future_timestamp(tmp_path: Path):
     data_dir = tmp_path / "data"
@@ -154,10 +130,6 @@ def test_pause_future_timestamp(tmp_path: Path):
     assert result == "pause"
 
 
-# ---------------------------------------------------------------------------
-# 6. Pause file with expired timestamp -> None + file cleaned up
-# ---------------------------------------------------------------------------
-
 def test_pause_expired_cleans_up(tmp_path: Path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -170,7 +142,6 @@ def test_pause_expired_cleans_up(tmp_path: Path):
         from chameleon_mcp.profile.trust import repo_data_dir
 
         pause_path = repo_data_dir(repo_id) / ".pause_until"
-        # Write an already-expired ISO timestamp (1 hour ago)
         past = datetime.fromtimestamp(time.time() - 3600, tz=UTC)
         pause_path.write_text(past.strftime("%Y-%m-%dT%H:%M:%SZ"), encoding="utf-8")
 
@@ -185,10 +156,6 @@ def test_pause_expired_cleans_up(tmp_path: Path):
     assert result is None
     assert not pause_path.is_file(), "expired pause file should be deleted"
 
-
-# ---------------------------------------------------------------------------
-# 7. Malformed pause file -> treated as not paused
-# ---------------------------------------------------------------------------
 
 def test_pause_malformed_timestamp(tmp_path: Path):
     data_dir = tmp_path / "data"
@@ -212,10 +179,6 @@ def test_pause_malformed_timestamp(tmp_path: Path):
     assert result is None
 
 
-# ---------------------------------------------------------------------------
-# 8. _safe_session_marker -> filesystem-safe hash
-# ---------------------------------------------------------------------------
-
 def test_safe_session_marker_deterministic():
     from chameleon_mcp.optouts import _safe_session_marker
 
@@ -230,7 +193,7 @@ def test_safe_session_marker_is_hex():
 
     marker = _safe_session_marker("test-session")
     assert len(marker) == 16
-    int(marker, 16)  # raises ValueError if not valid hex
+    int(marker, 16)
 
 
 def test_safe_session_marker_matches_sha256():
@@ -247,10 +210,6 @@ def test_safe_session_marker_none_returns_unknown():
     assert _safe_session_marker(None) == "unknown"
     assert _safe_session_marker("") == "unknown"
 
-
-# ---------------------------------------------------------------------------
-# 9. write_session_disable -> atomic write (tmp + replace)
-# ---------------------------------------------------------------------------
 
 def test_write_session_disable_creates_marker(tmp_path: Path):
     key_file = _setup_hmac_key(tmp_path)
@@ -276,13 +235,8 @@ def test_write_session_disable_creates_marker(tmp_path: Path):
     assert f"session_id={session_id}" in text
     assert "sig=" in text
 
-    # No leftover .tmp file
-    assert not marker_path.with_suffix(".tmp").exists()
+    assert not (marker_path.parent / (marker_path.name + ".tmp")).exists()
 
-
-# ---------------------------------------------------------------------------
-# 10. write_pause -> atomic write
-# ---------------------------------------------------------------------------
 
 def test_write_pause_creates_file(tmp_path: Path):
     data_dir = tmp_path / "data"
@@ -300,9 +254,7 @@ def test_write_pause_creates_file(tmp_path: Path):
     content = pause_path.read_text(encoding="utf-8")
     assert content == expiry_iso
 
-    # Verify the timestamp is in the future
     parsed = datetime.fromisoformat(expiry_iso.replace("Z", "+00:00"))
     assert parsed.timestamp() > time.time()
 
-    # No leftover .tmp file
     assert not pause_path.with_suffix(".tmp").exists()

@@ -19,10 +19,6 @@ from pathlib import Path
 from chameleon_mcp.drift.schema import init_drift_db
 from chameleon_mcp.profile.trust import plugin_data_dir
 
-# ── persistent connection cache ──────────────────────────────────────
-# Keyed by str(db_path). Each entry is a long-lived connection reused
-# across calls on the hot path (PreToolUse fires once per edit).
-# Health-checked on retrieval; dropped and rebuilt on any sqlite error.
 _DRIFT_CONN: dict[str, sqlite3.Connection] = {}
 
 
@@ -54,7 +50,6 @@ def _get_drift_conn(repo_id: str) -> sqlite3.Connection:
             conn.execute("SELECT 1")
             return conn
         except sqlite3.Error:
-            # Stale or broken — drop and rebuild below.
             try:
                 conn.close()
             except Exception:
@@ -66,15 +61,6 @@ def _get_drift_conn(repo_id: str) -> sqlite3.Connection:
     return conn
 
 
-def close_drift_connections() -> None:
-    """Close all cached drift.db connections. Safe to call at shutdown."""
-    for key in list(_DRIFT_CONN):
-        try:
-            _DRIFT_CONN.pop(key).close()
-        except Exception:
-            pass
-
-
 _CONFIDENCE_BAND_TO_FLOAT = {
     "high": 0.95,
     "medium": 0.7,
@@ -82,10 +68,6 @@ _CONFIDENCE_BAND_TO_FLOAT = {
     None: 0.0,
 }
 
-# BUG-NEW-022 (v0.5.7): retention caps for edit_observations. The HARD
-# cap triggers a cleanup pass; the SOFT cap is the post-cleanup ceiling.
-# 90-day age cutoff fires first; if that didn't trim enough, keep the
-# newest SOFT-cap rows.
 _EDIT_OBS_HARD_CAP = 50_000
 _EDIT_OBS_SOFT_CAP = 10_000
 
@@ -142,12 +124,6 @@ def record_edit_observation(
                 """,
                 (rel_path, 0, None, None, archetype, None, confidence, ts),
             )
-            # BUG-NEW-022 (v0.5.7): keep edit_observations bounded. Without
-            # retention, drift.db grows monotonically: each PreToolUse on
-            # the same file appends a new row. Heavy editing leaves
-            # millions of rows in months. We trim opportunistically (only
-            # when the insert raises the count past the threshold) so the
-            # cost amortizes to ~one DELETE per few thousand inserts.
             (count,) = conn.execute(
                 "SELECT COUNT(*) FROM edit_observations"
             ).fetchone()
@@ -157,8 +133,6 @@ def record_edit_observation(
                     "DELETE FROM edit_observations WHERE observed_at < ?",
                     (ninety_days_ago,),
                 )
-                # If 90-day age cap didn't drop us below the soft cap,
-                # truncate by row id keeping only the newest soft-cap rows.
                 (count_after,) = conn.execute(
                     "SELECT COUNT(*) FROM edit_observations"
                 ).fetchone()

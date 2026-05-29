@@ -109,7 +109,6 @@ def run(ctx: JourneyContext) -> ActResult:
     transcript = ctx.run_dir / "transcripts" / "act_11.txt"
     transcript.parent.mkdir(exist_ok=True)
 
-    # Replace placeholder with actual plugin_root path
     prompt_body = _PROMPT_BODY.replace("PLUGIN_ROOT_PATH", str(ctx.plugin_root))
 
     session = spawn_claude(
@@ -136,15 +135,10 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 37 runner-side cross-checks
 
-    # 1. plugin_data_dir should be wiped (absent or contains only a lockfile leftover)
     plugin_data = ctx.plugin_data_dir
     if plugin_data.exists():
         contents = list(plugin_data.iterdir())
-        # Allow stale lock files (.lock, *.lock) and socket/gitkeep files left
-        # by the harness - the flock-based .lock is acquired by preflight and
-        # never released within the session, so it legitimately persists after wipe.
         non_lock = [
             p for p in contents
             if p.name not in (".lock", ".daemon.sock", ".gitkeep")
@@ -156,15 +150,12 @@ def run(ctx: JourneyContext) -> ActResult:
                 f"remaining entries: {[p.name for p in non_lock[:5]]}"
             )
 
-    # 2. Developer's ~/.local/share/chameleon/ must NOT contain paths under run_dir
     real_chameleon = Path.home() / ".local" / "share" / "chameleon"
     if real_chameleon.exists() and 37 not in notes_extra:
         try:
-            # Check that none of the real chameleon entries are actually inside run_dir
             for entry in real_chameleon.iterdir():
                 try:
                     entry.resolve().relative_to(ctx.run_dir.resolve())
-                    # If we get here, this entry is inside run_dir - that's a problem
                     existing = notes_extra.get(37, "")
                     notes_extra[37] = (
                         (existing + "; " if existing else "") +
@@ -173,17 +164,14 @@ def run(ctx: JourneyContext) -> ActResult:
                     ).strip("; ")
                     break
                 except ValueError:
-                    # Not under run_dir - that's what we want
                     pass
         except Exception as exc:
-            # Non-fatal: just note the scan failed
             existing = notes_extra.get(37, "")
             notes_extra[37] = (
                 (existing + "; " if existing else "") +
                 f"home dir isolation scan error: {exc}"
             ).strip("; ")
 
-    # 3. Chameleon repo manifest files must still be present
     plugin_json = ctx.plugin_root / ".claude-plugin" / "plugin.json"
     try:
         expect.path_exists(37, plugin_json)
@@ -193,7 +181,6 @@ def run(ctx: JourneyContext) -> ActResult:
             (existing + "; " if existing else "") + str(e)
         ).strip("; ")
 
-    # 4. No chameleon daemon process running
     try:
         result = subprocess.run(
             ["ps", "aux"],
@@ -212,7 +199,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 f"chameleon daemon process still running after uninstall: {daemon_lines[0][:120]}"
             ).strip("; ")
     except Exception as exc:
-        # Non-fatal: ps command failure shouldn't block the rest
         existing = notes_extra.get(37, "")
         notes_extra[37] = (
             (existing + "; " if existing else "") +
@@ -221,7 +207,6 @@ def run(ctx: JourneyContext) -> ActResult:
 
     cross_check_passed[37] = 37 not in notes_extra
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -231,7 +216,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

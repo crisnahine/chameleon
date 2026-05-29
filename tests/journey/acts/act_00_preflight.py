@@ -19,27 +19,23 @@ def run(ctx: JourneyContext) -> ActResult:
     notes: list[str] = []
 
     try:
-        # Env vars point under run_dir
         for var in ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_HMAC_KEY_PATH", "TMPDIR", "CHAMELEON_HOOK_ERROR_LOG"):
             value = ctx.env.get(var)
             assert value, f"{var} not set in ctx.env"
             assert str(ctx.run_dir) in value, f"{var}={value!r} is not under {ctx.run_dir}"
 
-        # Per-run dirs exist + are empty (or only contain harness scaffolding)
         expect.path_exists(phase, ctx.plugin_data_dir)
         expect.path_exists(phase, ctx.tmpdir)
         expect.path_exists(phase, ctx.run_dir / "working")
         expect.path_exists(phase, ctx.run_dir / "checkpoints")
 
-        # Home dir guard: developer's own chameleon data must NOT be inside run_dir
         home_data = Path.home() / ".local" / "share" / "chameleon"
         if home_data.exists():
-            # If dev has chameleon data, ensure run_dir is NOT a parent of it (silly check, but enforces isolation intent)
             try:
                 home_data.resolve().relative_to(ctx.run_dir.resolve())
                 raise AssertionError("home dir is inside run_dir, isolation broken")
             except ValueError:
-                pass  # expected: home_data is outside run_dir
+                pass
 
         outcome = PhaseOutcome(phase=phase, status="PASS", notes="; ".join(notes) or "isolation verified")
     except (expect.PhaseAssertionError, AssertionError) as e:

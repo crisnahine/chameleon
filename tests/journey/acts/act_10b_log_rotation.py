@@ -139,16 +139,13 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 36: rotation backup files (.hook_errors.log.1) or transcript signal + hook log present
     hook_error_log = ctx.hook_error_log
     log_backup = Path(str(hook_error_log) + ".1")
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
         if log_backup.exists():
-            # Backup file found - strong evidence rotation ran
             cross_check_passed[36] = True
         else:
-            # Fall back to transcript signal + hook_error_log existence
             rotation_signals = [
                 r"rotation",
                 r"\.log\.1",
@@ -174,7 +171,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[36] = f"phase 36 check error: {exc}"
         cross_check_passed[36] = False
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -184,7 +180,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

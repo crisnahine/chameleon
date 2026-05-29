@@ -29,9 +29,6 @@ from pathlib import Path
 from chameleon_mcp.drift.sqlite_config import open_hardened
 from chameleon_mcp.profile.trust import plugin_data_dir
 
-# ── persistent connection cache ──────────────────────────────────────
-# Single index.db, so one slot suffices. Health-checked on retrieval;
-# dropped and rebuilt on any sqlite error.
 _INDEX_CONN: sqlite3.Connection | None = None
 
 
@@ -49,7 +46,6 @@ def _get_index_conn(db_path: Path | None = None) -> sqlite3.Connection:
     """
     global _INDEX_CONN
     if db_path is not None:
-        # Explicit path (tests) — skip cache, open fresh.
         return init_index_db(db_path)
     if _INDEX_CONN is not None:
         try:
@@ -66,7 +62,7 @@ def _get_index_conn(db_path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def _get_index_conn_readonly(db_path: Path | None = None) -> sqlite3.Connection:
+def _get_index_conn_readonly(db_path: Path | None = None) -> tuple[sqlite3.Connection, bool]:
     """Open a read-only connection to index.db, skipping DDL.
 
     BUG-032: init_index_db runs CREATE TABLE + INSERT on every connection,
@@ -76,13 +72,15 @@ def _get_index_conn_readonly(db_path: Path | None = None) -> sqlite3.Connection:
     doesn't exist, the SELECT fails with "no such table" which is handled
     the same as "not found".
 
-    Falls back to the cached read-write connection when available.
+    Returns ``(conn, owned)``. When ``owned`` is True the caller opened a
+    fresh connection and must close it; when False the connection is the
+    cached read-write handle and must be left open.
     """
     global _INDEX_CONN
     if db_path is None and _INDEX_CONN is not None:
         try:
             _INDEX_CONN.execute("SELECT 1")
-            return _INDEX_CONN
+            return _INDEX_CONN, False
         except sqlite3.Error:
             pass
     path = db_path if db_path is not None else _index_db_path()
@@ -90,7 +88,7 @@ def _get_index_conn_readonly(db_path: Path | None = None) -> sqlite3.Connection:
         raise sqlite3.OperationalError("index.db does not exist")
     conn = open_hardened(path, read_only=True)
     conn.execute("PRAGMA busy_timeout=5000")
-    return conn
+    return conn, True
 
 
 def close_index_connections() -> None:
@@ -106,18 +104,6 @@ def close_index_connections() -> None:
 
 INDEX_DB_SCHEMA_VERSION = "1"
 
-# Re-running the DDL must be a no-op on existing installs. ALTER TABLE
-# adds are guarded by a column-presence check inside `init_index_db()`.
-#
-# v0.5.1 (Bug 1): the `repos` PK is now `(repo_id, repo_root)` so monorepo
-# sub-workspaces — which share a git-remote-derived `repo_id` with the
-# root — can each persist their own row instead of clobbering one
-# another on upsert. Existing single-PK databases are migrated in
-# `init_index_db()` via a CREATE/COPY/DROP/RENAME pass that runs once.
-# We DELIBERATELY keep `schema_version` at "1" because the change is
-# strictly additive on the consumer side: reading a (repo_id) lookup
-# still works, writes are forwards-compatible, and detection is via
-# `PRAGMA table_info` rather than the version row.
 SCHEMA_DDL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
   k TEXT PRIMARY KEY,
@@ -185,15 +171,16 @@ def init_index_db(db_path: Path | None = None) -> sqlite3.Connection:
     crash mid-migration leaves the old table intact. The schema_version
     row stays at "1" because the change is consumer-additive.
     """
-    path = db_path if db_path is not None else _index_db_path()
+    if db_path is None:
+        from chameleon_mcp.plugin_paths import ensure_plugin_data_dir
+
+        ensure_plugin_data_dir()
+        path = _index_db_path()
+    else:
+        path = db_path
+        path.parent.mkdir(parents=True, exist_ok=True)
     conn = open_hardened(path)
-    # Override the busy_timeout from drift's 30s default. index.db writes
-    # are user-driven but concurrent bootstrap/trust calls (e.g. monorepo
-    # workspace cascade) can contend. 5s gives enough headroom without
-    # blocking the PreToolUse hot path (which uses drift.db, not index.db).
     conn.execute("PRAGMA busy_timeout=5000")
-    # Migrate FIRST so the CREATE TABLE IF NOT EXISTS in SCHEMA_DDL does
-    # not no-op past an old (repo_id PRIMARY KEY) table shape.
     _migrate_repos_to_composite_pk(conn)
     conn.executescript(SCHEMA_DDL)
     conn.execute(
@@ -222,7 +209,7 @@ def _migrate_repos_to_composite_pk(conn: sqlite3.Connection) -> None:
     except sqlite3.Error:
         return
     if row is None:
-        return  # fresh install — SCHEMA_DDL will create the right shape
+        return
 
     try:
         info = conn.execute("PRAGMA table_info(repos)").fetchall()
@@ -230,8 +217,7 @@ def _migrate_repos_to_composite_pk(conn: sqlite3.Connection) -> None:
         return
     pk_columns = [r["name"] for r in info if (r["pk"] or 0) > 0]
     if pk_columns == ["repo_id", "repo_root"] or pk_columns == ["repo_root", "repo_id"]:
-        return  # already on composite PK
-    # Any other PK shape (typically just ["repo_id"]) → migrate.
+        return
 
     try:
         with conn:
@@ -262,16 +248,10 @@ def _migrate_repos_to_composite_pk(conn: sqlite3.Connection) -> None:
             conn.execute("DROP TABLE repos")
             conn.execute("ALTER TABLE repos_v2 RENAME TO repos")
     except sqlite3.Error:
-        # Leave the old table untouched — `init_index_db` will continue
-        # with the legacy shape; callers degrade to one-row-per-repo_id
-        # behavior rather than crashing.
         return
 
 
 def _now_iso() -> str:
-    # Microsecond precision so refresh_repo's no-op check can compare
-    # against fractional file mtimes without false invalidations from
-    # ISO-second truncation.
     now = time.time()
     base = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(now))
     micros = int((now - int(now)) * 1_000_000)
@@ -307,18 +287,11 @@ def upsert_repo(
         conn = _get_index_conn(db_path)
     except (sqlite3.Error, OSError):
         return
+    # A caller-supplied db_path bypasses the cache and returns a fresh owned
+    # connection; close it here. The default cached connection stays open.
+    owns_conn = db_path is not None
     try:
         with conn:
-            # v0.5.1: when inserting a brand-new (repo_id, repo_root) pair
-            # while another row with the same repo_id already exists, we
-            # inherit the COALESCE-eligible fields from the most recent
-            # prior row. This preserves the v0.5.0 "moved checkout"
-            # semantics (where path-based upserts effectively migrated
-            # the row in place) without requiring callers to discover and
-            # re-supply the prior profile_sha256 / counts. Per-workspace
-            # bootstraps overwrite these fields immediately with their
-            # real values, so the inheritance is observably a no-op in
-            # the monorepo path.
             inherit = conn.execute(
                 """
                 SELECT profile_sha256, archetype_count, files_indexed, bootstrap_ms
@@ -370,6 +343,12 @@ def upsert_repo(
             )
     except sqlite3.Error:
         return
+    finally:
+        if owns_conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def resolve_repo_root(
@@ -414,7 +393,7 @@ def resolve_repo_root(
     if not path.is_file():
         return None
     try:
-        conn = _get_index_conn_readonly(db_path)
+        conn, owns_conn = _get_index_conn_readonly(db_path)
     except (sqlite3.Error, OSError):
         return None
     try:
@@ -437,6 +416,9 @@ def resolve_repo_root(
         ).fetchall()
     except sqlite3.Error:
         return None
+    finally:
+        if owns_conn:
+            conn.close()
     if not rows:
         return None
     candidates = [r["repo_root"] for r in rows if r["repo_root"]]
@@ -485,7 +467,6 @@ def _pick_ancestor_or_freshest(candidates: list[str]) -> str:
         for j, (_, p_j) in enumerate(pairs):
             if i == j or p_j is None:
                 continue
-            # Strict descendant: p_j is under p_i (and they're not equal).
             try:
                 if p_j != p_i and p_i in p_j.parents:
                     descendants += 1
@@ -499,42 +480,6 @@ def _pick_ancestor_or_freshest(candidates: list[str]) -> str:
             best_descendants = descendants
             best_path_len = path_len
     return pairs[best_idx][0]
-
-
-def list_repo_roots(repo_id: str, *, db_path: Path | None = None) -> list[str]:
-    """Return every repo_root recorded for `repo_id`, freshest first.
-
-    Used by monorepo-aware consumers (e.g., the trust resolution layer)
-    that need to enumerate the sub-workspaces that share a repo_id with
-    the root. The order matches `resolve_repo_root`'s default selection
-    so the freshest row appears first.
-    """
-    if not repo_id:
-        return []
-    path = db_path if db_path is not None else _index_db_path()
-    if not path.is_file():
-        return []
-    try:
-        conn = open_hardened(path, read_only=True)
-    except (sqlite3.Error, OSError):
-        return []
-    try:
-        rows = conn.execute(
-            """
-            SELECT repo_root FROM repos
-            WHERE repo_id = ?
-            ORDER BY last_seen_at DESC, repo_id ASC
-            """,
-            (repo_id,),
-        ).fetchall()
-    except sqlite3.Error:
-        return []
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    return [r["repo_root"] for r in rows if r["repo_root"]]
 
 
 def get_repo(
@@ -572,7 +517,6 @@ def get_repo(
             ).fetchone()
             if row is not None:
                 return dict(row)
-            # Hint missed — fall through to the freshest row.
         row = conn.execute(
             """
             SELECT repo_id, repo_root, last_seen_at, profile_sha256,
@@ -631,13 +575,6 @@ def list_repos(
         if total == 0:
             return [], None, 0
 
-        # Cursor format evolution:
-        #   v0.5.0: "<last_seen_at>|<repo_id>"
-        #   v0.5.1: "<last_seen_at>|<repo_id>|<repo_root>"
-        # With the composite (repo_id, repo_root) PK, a v0.5.0 cursor
-        # is ambiguous when the same repo_id appears across multiple
-        # rows. We accept both shapes for backward compat and order by
-        # (last_seen_at DESC, repo_id ASC, repo_root ASC).
         if cursor:
             parts = cursor.split("|", 2)
             if len(parts) == 2:
@@ -647,8 +584,6 @@ def list_repos(
                 cursor_ts, cursor_id, cursor_root = parts
             else:
                 raise ValueError(f"unknown cursor {cursor!r}")
-            # Confirm the cursor points at a real row — protects against
-            # corrupted cursors and keeps the v0.2 error envelope honest.
             if cursor_root is not None:
                 check = conn.execute(
                     """
@@ -664,10 +599,6 @@ def list_repos(
                 ).fetchone()
             if check is None:
                 raise ValueError(f"unknown cursor {cursor!r}")
-            # Three-key tuple comparison: strict "(ts, id, root) lex after"
-            # semantics matching the ORDER BY. When the legacy two-key
-            # cursor is supplied, treat repo_root as the high bound
-            # (empty string ⇒ first repo_root for that (ts, id) pair).
             sql = """
                 SELECT repo_id, repo_root, last_seen_at, profile_sha256,
                        archetype_count, files_indexed, bootstrap_ms
@@ -704,8 +635,6 @@ def list_repos(
         except Exception:
             pass
 
-    # We fetched limit+1 to detect whether a next page exists without a
-    # second query.
     has_more = len(rows) > limit
     page_rows = rows[:limit]
     page = [dict(r) for r in page_rows]
@@ -767,27 +696,6 @@ def forget_repo(
             conn.close()
         except Exception:
             pass
-
-
-def _ensure_file_clusters_schema(db_path: Path | None = None) -> None:
-    """Ensure the file_clusters table + index exist.
-
-    Phase 4.3-extended: callable independently of init_index_db for older
-    databases that were created before the table was added. SCHEMA_DDL
-    already declares the table via CREATE TABLE IF NOT EXISTS, so init
-    is idempotent; this helper is a thin alias for callers that want to
-    state the intent explicitly. Fail-open on sqlite errors — the index
-    is a cache, not the source of truth, and the partial-refresh path
-    transparently falls back to full bootstrap when the table is unusable.
-    """
-    try:
-        conn = init_index_db(db_path)
-    except (sqlite3.Error, OSError):
-        return
-    try:
-        conn.close()
-    except Exception:
-        pass
 
 
 def upsert_file_clusters(
@@ -919,9 +827,6 @@ def delete_file_clusters_for_paths(
                 "DELETE FROM file_clusters WHERE repo_id = ? AND rel_path = ?",
                 [(repo_id, rel_path) for rel_path in materialized],
             )
-            # executemany sets rowcount to the sum across statements on
-            # sqlite3 ≥ 3.39 (Python 3.12+); older Pythons return -1.
-            # Caller treats negative as "unknown, but the call did not error".
             return cur.rowcount if cur.rowcount >= 0 else len(materialized)
     except sqlite3.Error:
         return 0

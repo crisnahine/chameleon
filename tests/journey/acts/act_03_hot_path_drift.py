@@ -81,11 +81,9 @@ def run(ctx: JourneyContext) -> ActResult:
         ctx.current_checkpoint_file, expected_phases=[8, 9]
     )
 
-    # Runner-side cross-checks (defense in depth)
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 8: verify get_pattern_context match_quality field appeared in hook events
     try:
         hook_events_with_context = [
             e for e in session.hook_events
@@ -100,15 +98,11 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[8] = str(e)
         cross_check_passed[8] = False
 
-    # Phase 9: heuristic check - count get_canonical_excerpt mentions in transcript
-    # A cache hit on 2nd same-archetype edit means fewer MCP calls in transcript
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
         excerpt_call_count = transcript_text.count("get_canonical_excerpt")
-        # Record count in notes; the checkpoint result is the primary signal
         if excerpt_call_count == 0:
             notes_extra[9] = "no get_canonical_excerpt calls visible in transcript (may be normal if cache hit)"
-            # Cache hit is acceptable; transcript being non-empty is the minimal check
             cross_check_passed[9] = len(transcript_text) > 0
         else:
             cross_check_passed[9] = True
@@ -116,7 +110,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[9] = str(e)
         cross_check_passed[9] = False
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -126,7 +119,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

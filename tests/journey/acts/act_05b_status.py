@@ -54,7 +54,6 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 17: parse transcript for /chameleon-status output, look for key fields
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
         required_status_keys = ["canonical_ref", "auto_refresh", "auto_rename", "trust"]
@@ -71,7 +70,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[17] = str(e)
         cross_check_passed[17] = False
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -81,7 +79,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

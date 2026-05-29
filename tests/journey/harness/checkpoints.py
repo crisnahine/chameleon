@@ -74,11 +74,9 @@ def parse_checkpoint_file(
             outcomes[phase] = PhaseOutcome(phase=phase, status="SKIP", notes=note)
             continue
 
-        # New single-event schema: "passed" or "failed"
         passed_event = next((e for e in phase_events if e.get("status") == "passed"), None)
         failed_event = next((e for e in phase_events if e.get("status") == "failed"), None)
 
-        # Legacy schema events
         started = next((e for e in phase_events if e.get("status") == "started"), None)
         completed = next((e for e in phase_events if e.get("status") == "completed"), None)
 
@@ -97,7 +95,6 @@ def parse_checkpoint_file(
                 completed_ts=failed_event.get("ts"),
             )
         elif started and completed:
-            # Legacy: started + completed pair -> PASS
             outcomes[phase] = PhaseOutcome(
                 phase=phase,
                 status="PASS",
@@ -106,7 +103,6 @@ def parse_checkpoint_file(
                 completed_ts=completed.get("ts"),
             )
         elif started and not completed:
-            # Legacy: started only -> FAIL
             outcomes[phase] = PhaseOutcome(
                 phase=phase,
                 status="FAIL",

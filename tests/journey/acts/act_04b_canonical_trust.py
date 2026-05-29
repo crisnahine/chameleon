@@ -103,7 +103,6 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 13: canonical cache dir exists under plugin_data_dir/<repo_id>/canonical/<sha>/
     try:
         canonical_dirs = list(ctx.plugin_data_dir.rglob("canonical"))
         _phase13_fail = False
@@ -121,13 +120,8 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[13] = str(e)
         cross_check_passed[13] = False
 
-    # Phase 14: use git_shim to verify the 2-second timeout on git-log calls
-    # Minimal cross-check: transcript is non-empty (evidence Claude attempted the work)
     try:
         with setup_git_shim(5.0, ctx.run_dir / "shim") as _shim:
-            # The shim plants a slow git on PATH for the duration of this block.
-            # The actual timeout behavior is tested inside the Claude session prompt.
-            # Here we just verify the shim wires correctly (it doesn't raise).
             pass
         transcript = ctx.run_dir / "transcripts" / "act_04b.txt"
         if transcript.exists() and transcript.stat().st_size > 0:
@@ -139,7 +133,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[14] = f"git_shim setup failed: {e}"
         cross_check_passed[14] = False
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -149,7 +142,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

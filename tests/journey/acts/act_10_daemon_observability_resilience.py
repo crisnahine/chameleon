@@ -208,7 +208,6 @@ def run(ctx: JourneyContext) -> ActResult:
     transcript = ctx.run_dir / "transcripts" / "act_10.txt"
     transcript.parent.mkdir(exist_ok=True)
 
-    # Inject plugin_root into the prompt so Claude can reference it
     prompt_body = _PROMPT_BODY.replace("PLUGIN_ROOT", str(ctx.plugin_root))
 
     session = spawn_claude(
@@ -243,26 +242,18 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 33: daemon lifecycle verified by daemon_status response fields.
-    # The spec says daemon_status should return {alive, pid, uptime_s, socket_path}.
-    # Check that the transcript shows daemon_status was called AND the response
-    # contains the expected field names. Generic "daemon started" text from the
-    # prompt instruction itself is not sufficient.
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
 
         daemon_status_called = "daemon_status" in transcript_text
 
-        # Look for the response fields that daemon_status should return.
         has_alive_field = bool(re.search(r'"alive"\s*:\s*(?:true|false)', transcript_text))
         has_pid_field = bool(re.search(r'"pid"\s*:\s*\d+', transcript_text))
         has_uptime_field = bool(re.search(r'"uptime_s"\s*:\s*[\d.]+', transcript_text))
         has_socket_path_field = bool(re.search(r'"socket_path"\s*:', transcript_text))
 
-        # At least alive + pid must be present (core lifecycle fields).
         response_fields_present = has_alive_field and has_pid_field
 
-        # Also accept idle-shutdown confirmation as strong lifecycle evidence.
         idle_shutdown_confirmed = bool(
             re.search(r"PASS.*daemon.*exited|daemon.*exited.*idle|exited after idle", transcript_text, re.IGNORECASE)
             or re.search(r"pidfile\s+removed|pidfile.*PASS", transcript_text, re.IGNORECASE)
@@ -286,7 +277,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[33] = f"transcript scan error for phase 33: {exc}"
         cross_check_passed[33] = False
 
-    # Phase 34: hook_error_log was written to during the fail-open test
     hook_error_log = ctx.hook_error_log
     if not hook_error_log.exists() or hook_error_log.stat().st_size == 0:
         notes_extra[34] = (
@@ -295,7 +285,6 @@ def run(ctx: JourneyContext) -> ActResult:
         )
     cross_check_passed[34] = 34 not in notes_extra
 
-    # Phase 35: metrics.jsonl exists and has at least one entry
     metrics_found = list(ctx.plugin_data_dir.rglob("metrics.jsonl"))
     if not metrics_found:
         notes_extra[35] = (
@@ -311,7 +300,6 @@ def run(ctx: JourneyContext) -> ActResult:
             )
     cross_check_passed[35] = 35 not in notes_extra
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -321,7 +309,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

@@ -67,19 +67,13 @@ def run(ctx: JourneyContext) -> ActResult:
         ctx.current_checkpoint_file, expected_phases=[1, 2, 3, 4]
     )
 
-    # Runner-side additional assertions
     notes_extra: dict[int, str] = {}
-    # notes_concern: appended to phase notes but does NOT demote PASS -> FAIL
     notes_concern: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
     try:
-        # Phase 2 cross-check: MCP doctor roundtrip probe.
-        # Only demote if the call returned nothing or an explicit error envelope.
-        # Tolerate status=None as long as the call returned something (doctor envelope
-        # may not always set an explicit status field in all chameleon versions).
         tools_result = mcp.call_mcp_tool(
-            tool_name="doctor",  # use doctor as a roundtrip probe
+            tool_name="doctor",
             plugin_root=ctx.plugin_root,
             env=ctx.env,
         )
@@ -94,7 +88,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[2] = f"MCP direct probe failed: {e}"
         cross_check_passed[2] = False
 
-    # Phase 4 cross-check: chameleon-context marker in transcript
     transcript_text = transcript.read_text(encoding="utf-8")
     if "<chameleon-context>" not in transcript_text:
         notes_extra[4] = "no <chameleon-context> in transcript (using-chameleon not injected?)"
@@ -102,12 +95,10 @@ def run(ctx: JourneyContext) -> ActResult:
     else:
         cross_check_passed[4] = True
 
-    # Phase 4 soft check: typescript-checksums.json existence (concern only, not a FAIL)
     checksums_file = ctx.plugin_root / "mcp" / "typescript-checksums.json"
     if not checksums_file.exists():
         notes_concern[4] = "mcp/typescript-checksums.json does not exist (concern only, not required)"
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -117,7 +108,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""
@@ -125,7 +115,6 @@ def run(ctx: JourneyContext) -> ActResult:
 
     for phase, concern in notes_concern.items():
         if phase in outcomes:
-            # Append concern to notes without changing status
             outcomes[phase].notes = (outcomes[phase].notes + "; CONCERN: " + concern).strip("; ")
 
     return ActResult(

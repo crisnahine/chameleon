@@ -391,17 +391,9 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 27: detect_repo was actually called and returned a response for the
-    # test profiles. Look for the MCP tool-call name and a response that carries
-    # either a graceful-handling envelope (error/status fields) or migration data.
-    # Generic "migration" keyword alone is not enough — the prompt uses that word
-    # too, so it will always appear.
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
 
-        # Require evidence that detect_repo was called AND chameleon responded with
-        # a structured outcome. Look for the specific error token for v99 refusal
-        # or graceful migration wording in a response context.
         detect_repo_called = "detect_repo" in transcript_text
         has_refusal_response = bool(
             re.search(r"unsupported_schema_version", transcript_text, re.IGNORECASE)
@@ -432,17 +424,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[27] = f"transcript scan error for phase 27: {exc}"
         cross_check_passed[27] = False
 
-    # Phase 28: orphan txn abc123 should be GONE after bootstrap.
-    # cleanup_orphan_tmp_dirs scans <repo_root>/.chameleon.tmp/ (sibling of
-    # .chameleon/, not inside it). The test plants abc123 there.
-    #
-    # Step 1 (legacy orphan abc123) is the primary check. Step 2 (alive-PID)
-    # is a known harness limitation: the PID used in the dir name is the
-    # python3 subprocess or shell that ran the planting command; by the time
-    # bootstrap_repo is invoked in the next Bash call, that process is gone,
-    # so chameleon correctly cleans the dir. The alive-PID contract cannot be
-    # reliably exercised in a CLI harness where each Bash call is a fresh
-    # subshell. Accept Step 1 pass as sufficient for Phase 28.
     tmp_abc123 = cwd / ".chameleon.tmp" / "abc123"
     _abc123_gone = not tmp_abc123.exists()
     if not _abc123_gone:
@@ -452,15 +433,9 @@ def run(ctx: JourneyContext) -> ActResult:
         )
     cross_check_passed[28] = _abc123_gone
 
-    # Phase 29: transcript shows the specific failed+PID envelope from one of the
-    # parallel refresh calls. Require the {"status":"failed",...} envelope pattern
-    # combined with a PID reference or "in progress" message — generic "flock" or
-    # "retry" keywords can appear for other reasons.
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
 
-        # The spec says one call returns a failed envelope with "in progress" or "PID".
-        # Look for the JSON status:failed pattern combined with the contention message.
         has_failed_envelope = bool(
             re.search(r'"status"\s*:\s*"failed"', transcript_text)
             or re.search(r"status.*failed.*PID\s*\d+", transcript_text, re.IGNORECASE)
@@ -470,8 +445,6 @@ def run(ctx: JourneyContext) -> ActResult:
             or re.search(r'"error".*PID\s*\d+', transcript_text)
             or re.search(r"already.*running.*PID\s*\d+", transcript_text, re.IGNORECASE)
         )
-        # Also accept "OUT1:" / "OUT2:" pattern that the test script prints —
-        # confirms the parallel invocation actually ran.
         has_parallel_output = bool(
             re.search(r"OUT[12]\s*:", transcript_text)
         )
@@ -479,7 +452,6 @@ def run(ctx: JourneyContext) -> ActResult:
         if (has_failed_envelope or has_pid_contention) and has_parallel_output:
             cross_check_passed[29] = True
         elif has_failed_envelope and has_pid_contention:
-            # Both contention signals without the OUT prefix is still strong evidence.
             cross_check_passed[29] = True
         else:
             cross_check_passed[29] = False
@@ -494,32 +466,22 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[29] = f"transcript scan error for phase 29: {exc}"
         cross_check_passed[29] = False
 
-    # Phase 30: glob brace expansion verified by specific output evidence.
-    # Require that:
-    #   (a) refresh_repo was called with the brace-glob profile, AND
-    #   (b) transcript shows specific expansion results (4 patterns from
-    #       {components,hooks} x {ts,tsx}) or the 512-cap enforcement.
-    # Generic "brace" / "expansion" keywords from the prompt text are not enough.
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
 
         refresh_called = "refresh_repo" in transcript_text
 
-        # 4-pattern expansion evidence: both component and hooks arm appeared together
-        # in an expanded-patterns context (not just the prompt text repeating them).
         has_expansion_result = bool(
             re.search(r"components.*hooks|hooks.*components", transcript_text, re.IGNORECASE)
             and re.search(r"\b4\s+(?:expanded\s+)?patterns?\b|4\s+(?:path|glob)", transcript_text, re.IGNORECASE)
         )
 
-        # 512-cap enforcement: specific cap number near "pattern" or "glob".
         has_512_cap = bool(
             re.search(r"512\s*(?:pattern|glob|cap|limit)", transcript_text, re.IGNORECASE)
             or re.search(r"(?:pattern|glob|cap|limit)\s*512", transcript_text, re.IGNORECASE)
             or re.search(r"(?:exceeds?|over|too\s+many).*512|512.*(?:exceeds?|over|too\s+many)", transcript_text, re.IGNORECASE)
         )
 
-        # paths_glob was updated (profile was actually modified)
         has_paths_glob_written = bool(
             re.search(r"updated\s+paths_glob|paths_glob.*brace|brace.*paths_glob", transcript_text, re.IGNORECASE)
         )
@@ -540,7 +502,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[30] = f"transcript scan error for phase 30: {exc}"
         cross_check_passed[30] = False
 
-    # Phase 31: transcript shows 3-way merge success (no conflict markers)
     try:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
         merge_success_signals = [
@@ -559,9 +520,7 @@ def run(ctx: JourneyContext) -> ActResult:
                 "no merge driver signal found in transcript; "
                 "3-way merge test may not have been exercised"
             )
-        # Check that conflict markers did NOT appear in a merge result context
         conflict_markers = ["<<<<<<<", "=======", ">>>>>>>"]
-        # Only flag if they appear near merge-related text
         for marker in conflict_markers:
             if marker in transcript_text:
                 existing = notes_extra.get(31, "")
@@ -575,7 +534,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[31] = f"transcript scan error for phase 31: {exc}"
     cross_check_passed[31] = 31 not in notes_extra
 
-    # Phase 32: working/ts_monorepo/.chameleon/profile.json exists with workspaces field
     ts_monorepo_profile = ctx.fixture("ts_monorepo") / ".chameleon" / "profile.json"
     try:
         expect.path_exists(32, ts_monorepo_profile)
@@ -584,12 +542,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[32] = str(e)
         cross_check_passed[32] = False
 
-    # Cross-check results can promote SKIP or FAIL -> PASS.
-    # Phase 28 checkpoint may be "failed" because the in-session alive-PID
-    # test is unreliable (shell PID dies between Bash calls). The runner
-    # independently verifies Step 1 (legacy orphan cleanup), which is the
-    # primary gate. When cross_check_passed[28] is True, promote regardless
-    # of the checkpoint's self-report.
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -599,16 +551,12 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
             elif outcomes[phase].status == "FAIL":
-                # Runner cross-check verified the primary assertion. Promote;
-                # preserve original notes as a CONCERN via notes_extra so
-                # the known limitation remains visible in the report.
                 original_notes = outcomes[phase].notes
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from FAIL by runner cross-check (Step 1 verified)"
                 if original_notes and phase not in notes_extra:
                     notes_extra[phase] = original_notes
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

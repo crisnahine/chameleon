@@ -16,9 +16,6 @@ from chameleon_mcp import tools
 mcp = FastMCP("chameleon-mcp")
 
 
-# Register all 20 MCP tools.
-
-
 @mcp.tool()
 def detect_repo(file_path: str) -> dict:
     """Detect the repo a given file path belongs to.
@@ -281,7 +278,7 @@ def doctor() -> dict:
     Returns a structured envelope with subsystem checks. Each check has a
     status (ok | warn | error) and a brief detail string. Subsystems checked:
     python version, bash on PATH, timeout(1) on PATH, plugin data dir
-    writable, all 4 hook scripts present and executable, HMAC key sane,
+    writable, all 5 hook scripts present and executable, HMAC key sane,
     daemon liveness, last 5 hook error log lines, per-known-repo
     profile/trust state.
 

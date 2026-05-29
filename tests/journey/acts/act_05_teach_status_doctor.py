@@ -76,11 +76,9 @@ def run(ctx: JourneyContext) -> ActResult:
         ctx.current_checkpoint_file, expected_phases=[16]
     )
 
-    # Runner-side cross-checks (defense in depth)
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    # Phase 16: read idioms.md, verify it exists and has at least one ### header
     ts_basic_chameleon = ctx.fixture("ts_basic") / ".chameleon"
     idioms_md = ts_basic_chameleon / "idioms.md"
     try:
@@ -99,7 +97,6 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[16] = str(e)
         cross_check_passed[16] = False
 
-    # Cross-check results can promote SKIP -> PASS
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:
             if outcomes[phase].status == "SKIP":
@@ -109,7 +106,6 @@ def run(ctx: JourneyContext) -> ActResult:
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
-    # Cross-check concerns (append, don't demote PASS)
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""

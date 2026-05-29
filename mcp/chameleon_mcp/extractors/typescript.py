@@ -21,7 +21,7 @@ from pathlib import Path
 
 import xxhash
 
-from chameleon_mcp.extractors._base import Extractor, ParsedFile, ParseResult
+from chameleon_mcp.extractors._base import ParsedFile, ParseResult
 from chameleon_mcp.plugin_paths import plugin_root
 
 
@@ -30,7 +30,6 @@ class TypeScriptExtractor:
 
     language = "typescript"
 
-    # Resolved at construction; subprocess spawned lazily on first parse_repo call.
     _ts_dump_script: Path
 
     def __init__(self, ts_dump_script: Path | None = None) -> None:
@@ -109,7 +108,6 @@ class TypeScriptExtractor:
                     return False
         if (repo_root / "pnpm-workspace.yaml").exists():
             return False
-        # Workspace-shaped subdirs (Turborepo / Nx style) — defer.
         for parent in ("apps", "packages", "services", "workspaces"):
             parent_dir = repo_root / parent
             if not parent_dir.is_dir():
@@ -120,11 +118,6 @@ class TypeScriptExtractor:
                         return False
             except (OSError, PermissionError):
                 continue
-        # BUG-010 fallback: any .ts/.tsx file within depth 3 of the root.
-        return _has_typescript_source_files(repo_root, max_depth=3)
-
-    @staticmethod
-    def _shallow_ts_scan(repo_root: Path) -> bool:  # pragma: no cover - thin alias
         return _has_typescript_source_files(repo_root, max_depth=3)
 
     def parse_repo(
@@ -147,8 +140,6 @@ class TypeScriptExtractor:
         Returns:
             ParseResult with files + skipped lists.
         """
-        # 1. Use explicit paths if given (preferred — keeps exclusion logic in
-        # bootstrap/discovery.py); else fall back to the local glob.
         if paths is not None:
             files = list(paths)
         else:
@@ -158,19 +149,20 @@ class TypeScriptExtractor:
         if not files:
             return ParseResult(files=[], skipped=[])
 
-        # 2. Spawn ts_dump.mjs subprocess
         if not self._ts_dump_script.exists():
             raise FileNotFoundError(
                 f"ts_dump.mjs not found at {self._ts_dump_script}; "
                 "the plugin install appears incomplete."
             )
         self._ensure_node_modules()
+        if not shutil.which("node"):
+            raise RuntimeError(
+                "chameleon: `node` not found on PATH. Install Node.js >= 20 "
+                "to use the TypeScript extractor."
+            )
         env = os.environ.copy()
-        # NODE_PATH so the script can resolve TypeScript from mcp/node_modules
         env["NODE_PATH"] = str(plugin_root() / "mcp" / "node_modules")
 
-        # Build input as one big string; communicate() handles pipe-deadlock
-        # internally via threads (avoids the classic stdout-buffer-full hang).
         input_data = "".join(f"{fp.resolve()}\n" for fp in files)
 
         proc = subprocess.Popen(
@@ -183,17 +175,12 @@ class TypeScriptExtractor:
             cwd=str(plugin_root() / "mcp"),
         )
 
-        # Communicate writes all input + reads all stdout/stderr in
-        # background threads; safe for arbitrarily large data.
-        # Timeout sized for ~5,000 files at ~75ms each ≈ 6.5min; we cap at
-        # 10min for headroom.
         try:
             stdout_data, _stderr = proc.communicate(input=input_data, timeout=600)
         except subprocess.TimeoutExpired:
             proc.kill()
             stdout_data, _stderr = proc.communicate()
 
-        # Parse NDJSON output line by line
         results = []
         skipped: list[tuple[Path, str]] = []
         for line in stdout_data.splitlines():
@@ -223,7 +210,6 @@ def _expand_glob(root: Path, glob: str) -> list[Path]:
     `pathspec` or `wcmatch` for fuller .gitignore-style semantics.
     """
     if "{" in glob and "}" in glob:
-        # Expand `prefix{a,b,c}suffix` → ['prefixasuffix', 'prefixbsuffix', ...]
         prefix, _, rest = glob.partition("{")
         body, _, suffix = rest.partition("}")
         alts = [a.strip() for a in body.split(",")]
@@ -243,12 +229,6 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
 
     Computes sha_hint (xxhash64) on the Python side to keep ts_dump.mjs lean.
     """
-    # The double-read (parse in JS, hash in Python) is intentional: ts_dump.mjs
-    # stays narrow (it only does what the TypeScript Compiler API gives it for
-    # free), and xxhash here is dominated by disk-page-cache reads, not parse
-    # cost. If profiling on >5k-file repos eventually shows this is a real
-    # bottleneck, push the hash into ts_dump.mjs and stream it back in the
-    # NDJSON record instead of re-opening here. No benchmark today says it is.
     try:
         sha_hint = xxhash.xxh64(path.read_bytes()).hexdigest()
     except OSError:
@@ -294,8 +274,6 @@ def _has_typescript_source_files(
         ".venv",
         "vendor",
     }
-    # Walk breadth-first up to max_depth so shallow .ts files are found
-    # before paying for any deep descent.
     frontier: list[tuple[Path, int]] = [(repo_root, 0)]
     while frontier:
         next_frontier: list[tuple[Path, int]] = []
@@ -317,11 +295,6 @@ def _has_typescript_source_files(
                         next_frontier.append((entry, depth + 1))
                 else:
                     if name.endswith(".ts") or name.endswith(".tsx"):
-                        # One hit is enough — anything > 0 means TS.
                         return True
         frontier = next_frontier
     return False
-
-
-# Verify protocol conformance at import time
-_extractor: Extractor = TypeScriptExtractor()

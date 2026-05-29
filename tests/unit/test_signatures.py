@@ -10,10 +10,6 @@ from chameleon_mcp.signatures import (
     path_pattern_bucket_for,
 )
 
-# ---------------------------------------------------------------------------
-# bucket_named_export_count — boundary values
-# ---------------------------------------------------------------------------
-
 
 class TestBucketNamedExportCount:
     def test_zero(self):
@@ -44,11 +40,6 @@ class TestBucketNamedExportCount:
         assert bucket_named_export_count(100) == "10+"
 
 
-# ---------------------------------------------------------------------------
-# hash_import_set — deterministic, order-independent
-# ---------------------------------------------------------------------------
-
-
 class TestHashImportSet:
     def test_deterministic(self):
         imports = [("react", "default"), ("lodash", "named")]
@@ -69,17 +60,12 @@ class TestHashImportSet:
     def test_empty(self):
         h = hash_import_set([])
         assert isinstance(h, str)
-        assert len(h) == 64  # sha256 hex
+        assert len(h) == 64
 
     def test_kind_matters(self):
         a = [("react", "default")]
         b = [("react", "named")]
         assert hash_import_set(a) != hash_import_set(b)
-
-
-# ---------------------------------------------------------------------------
-# path_pattern_bucket_for — short paths, include_extension
-# ---------------------------------------------------------------------------
 
 
 class TestPathPatternBucketFor:
@@ -130,11 +116,6 @@ class TestPathPatternBucketFor:
         assert b1 != b2
 
 
-# ---------------------------------------------------------------------------
-# content_signal_match_for — each directive
-# ---------------------------------------------------------------------------
-
-
 class TestContentSignalMatchFor:
     def test_use_client_double_quotes(self):
         assert content_signal_match_for('"use client";') == "use_client"
@@ -161,11 +142,6 @@ class TestContentSignalMatchFor:
         assert content_signal_match_for("") == "none"
 
 
-# ---------------------------------------------------------------------------
-# compute_signature — returns frozen hashable ClusterKey
-# ---------------------------------------------------------------------------
-
-
 class TestComputeSignature:
     def test_returns_cluster_key(self):
         key = compute_signature(
@@ -189,7 +165,6 @@ class TestComputeSignature:
             import_specifiers=[],
             has_jsx=False,
         )
-        # frozen dataclass is hashable -> usable as dict key
         d = {key: True}
         assert d[key] is True
 

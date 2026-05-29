@@ -36,9 +36,16 @@ def plugin_data_dir() -> Path:
 
 
 def repo_data_dir(repo_id: str) -> Path:
-    """`${PLUGIN_DATA}/<repo_id>/` directory, created if missing."""
-    d = plugin_data_dir() / repo_id
-    d.mkdir(parents=True, exist_ok=True)
+    """`${PLUGIN_DATA}/<repo_id>/` directory, created if missing (0700)."""
+    from chameleon_mcp.plugin_paths import ensure_plugin_data_dir
+
+    base = ensure_plugin_data_dir()
+    d = base / repo_id
+    d.mkdir(exist_ok=True, mode=0o700)
+    try:
+        os.chmod(d, 0o700)
+    except OSError:
+        pass
     return d
 
 
@@ -75,9 +82,6 @@ class TrustRecord:
     @classmethod
     def from_dict(cls, data: dict) -> TrustRecord:
         raw_map = data.get("repo_root_specific_hashes") or {}
-        # Defensive: only accept str→str entries. Anything else gets dropped
-        # so a corrupted record still loads (the worst case is a fallback
-        # to ``profile_sha256``, i.e., the pre-v0.5.1 behavior).
         specific: dict[str, str] = {}
         if isinstance(raw_map, dict):
             for k, v in raw_map.items():
@@ -98,8 +102,6 @@ class TrustRecord:
             "profile_sha256": self.profile_sha256,
             "repo_root": self.repo_root,
         }
-        # Only persist the map when it carries data — keeps v0.5.0 records
-        # byte-identical to before so the diff stays minimal on disk.
         if self.repo_root_specific_hashes:
             out["repo_root_specific_hashes"] = dict(self.repo_root_specific_hashes)
         return out
@@ -126,13 +128,11 @@ class TrustRecord:
         return self.profile_sha256
 
 
-# The artifact ordering for hash_profile. Listed alphabetically so a hash
-# value can be reproduced offline (e.g., from a git diff) without needing
-# to consult the source. Each entry is hashed only when present on disk.
 _HASHED_ARTIFACTS: tuple[str, ...] = (
     ".archetype_renames.json",
     "archetypes.json",
     "canonicals.json",
+    "config.json",
     "conventions.json",
     "principles.md",
     "idioms.md",
@@ -181,18 +181,8 @@ def hash_profile(profile_dir: Path) -> str:
         try:
             body = safe_read_profile_artifact_bytes(artifact)
         except FileNotFoundError:
-            # Genuinely absent: skip framing. Adding the file later produces
-            # a distinct hash because the framing bytes appear then.
             continue
         except (OSError, UnsafeFileError) as exc:
-            # Symlink, non-regular, or oversized artifact. A teammate-
-            # committed 100 MB idioms.md (or a symlink to /etc/passwd)
-            # must not balloon trust-check memory — and must not collide
-            # with the "absent" hash, otherwise an attacker who plants
-            # an unsafe artifact after grant cannot be detected as a
-            # material change. Frame a distinguishing sentinel that
-            # depends on the failure reason so post-grant swaps trip
-            # the trust re-prompt.
             h.update(b"\x01" + filename.encode("utf-8") + b"\x01")
             h.update(b"UNSAFE:" + type(exc).__name__.encode("ascii"))
             continue
@@ -265,14 +255,9 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
                 repo_root_specific_hashes={repo_root_str: new_hash},
             )
         else:
-            # Mutate the existing record additively. Reuse the original
-            # granted_at + granted_by_user when we're only extending coverage
-            # to a new workspace so the audit trail still points at the first
-            # grant; refresh them on a same-root re-grant.
             specific = dict(existing.repo_root_specific_hashes)
             specific[repo_root_str] = new_hash
             if existing.repo_root == repo_root_str or not existing.repo_root:
-                # Same root - also refresh the top-level fields.
                 record = TrustRecord(
                     granted_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     granted_by_user=_current_user(),
@@ -281,9 +266,6 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
                     repo_root_specific_hashes=specific,
                 )
             else:
-                # Different root (workspace-internal grant under same repo_id):
-                # keep the original "root" trust intact and only extend the
-                # per-root map.
                 record = TrustRecord(
                     granted_at=existing.granted_at,
                     granted_by_user=existing.granted_by_user,
@@ -306,7 +288,6 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
     return record
 
 
-
 def is_material_change(repo_id: str, current_profile_dir: Path) -> bool:
     """Return True iff the trusted profile_sha256 no longer matches current.
 
@@ -324,7 +305,7 @@ def is_material_change(repo_id: str, current_profile_dir: Path) -> bool:
     """
     record = trust_state_for(repo_id)
     if record is None:
-        return False  # no trust record → not a "material change" (just untrusted)
+        return False
     expected = record.hash_for_root(current_profile_dir.parent)
     return expected != hash_profile(current_profile_dir)
 

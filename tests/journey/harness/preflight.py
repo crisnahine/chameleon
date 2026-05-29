@@ -57,8 +57,6 @@ def fixtures_present(plugin_root: Path) -> dict[str, Path]:
 def acquire_lock(run_dir: Path) -> Path:
     """Acquire an exclusive lock for the current run_dir. Returns path."""
     lock_path = run_dir / ".lock"
-    # run_dir is already unique per timestamp; if .lock exists, another runner
-    # is using this exact path (extremely unlikely race). Abort with diagnostic.
     if lock_path.exists():
         raise PreflightError(f"another runner has acquired {lock_path}; aborting")
     lock_path.write_text(str(os.getpid()), encoding="utf-8")

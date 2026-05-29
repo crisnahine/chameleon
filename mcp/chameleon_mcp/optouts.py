@@ -20,10 +20,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Polyfill for Python <3.11 (system python3 on macOS Command Line Tools
-# is 3.9; Debian-stable ships 3.11+ only). The hook-side bash wrapper
-# falls back to system python3 when no venv is bundled with the plugin,
-# so this module MUST import cleanly on 3.9.
 try:
     from datetime import UTC  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover - exercised on Py<3.11 only
@@ -88,20 +84,14 @@ def _marker_has_valid_signature(
         elif line.startswith("disabled-at="):
             disabled_at_line = line[len("disabled-at=") :].strip()
 
-    # If THIS system can produce signatures, the marker MUST be signed.
-    # Compute the expected signature first so we know whether the key
-    # is available; if it is, the absence of a sig line is rejection.
     try:
         disabled_at = float(disabled_at_line)
     except ValueError:
         return False
     expected = _sign_marker(repo_id, session_id, disabled_at)
     if not expected:
-        # Key unavailable: can't verify anything; fail-open.
         return True
     if not sig_line:
-        # Key IS available but marker has no signature: this is the
-        # downgrade-attack shape. Reject.
         return False
     return _hmac.compare_digest(sig_line, expected)
 
@@ -151,13 +141,11 @@ def is_chameleon_suppressed(
                 expiry = datetime.fromisoformat(expiry_iso.replace("Z", "+00:00"))
                 if expiry.timestamp() > time.time():
                     return "pause"
-                # Expired — clean up so future calls don't re-read
                 try:
                     pause_path.unlink()
                 except OSError:
                     pass
             except (ValueError, OSError):
-                # Malformed pause file → treat as not paused, but don't crash
                 pass
 
     return None
@@ -184,14 +172,15 @@ def write_session_disable(repo_id: str, session_id: str) -> Path:
     sig = _sign_marker(repo_id, session_id, disabled_at)
     sig_line = f"sig={sig}\n" if sig else ""
     content = f"disabled-at={disabled_at}\nsession_id={session_id}\n{sig_line}"
-    tmp = marker.with_suffix('.tmp')
+    tmp = marker.parent / (marker.name + ".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.write(fd, content.encode("utf-8"))
-    os.fsync(fd)
-    os.close(fd)
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     os.replace(str(tmp), str(marker))
     return marker
-
 
 
 def write_pause(repo_id: str, minutes: int = 15) -> str:
@@ -203,9 +192,11 @@ def write_pause(repo_id: str, minutes: int = 15) -> str:
     pause_path = repo_data_dir(repo_id) / ".pause_until"
     tmp = pause_path.with_suffix('.tmp')
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.write(fd, expiry_iso.encode("utf-8"))
-    os.fsync(fd)
-    os.close(fd)
+    try:
+        os.write(fd, expiry_iso.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     os.replace(str(tmp), str(pause_path))
     return expiry_iso
 

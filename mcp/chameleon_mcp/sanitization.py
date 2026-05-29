@@ -13,26 +13,17 @@ from __future__ import annotations
 import re
 import unicodedata
 
-# Tag-boundary tokens to sanitize. We replace each with a zero-width-stripped
-# placeholder so the model still reads the intent but cannot exit the tag.
 _DANGEROUS_TOKENS = (
     "</chameleon-context>",
     "</chameleon",
     "<chameleon-context>",
     "<chameleon",
-    # Common system-prompt boundary tokens (defense in depth — not strictly
-    # chameleon's tag, but injecting these into model context is suspicious)
     "</system>",
     "<system>",
-    # system-reminder variants: Claude treats <system-reminder> as
-    # load-bearing context; a hostile canonical witness could inject one.
     "</system-reminder>",
     "<system-reminder>",
     "</system_reminder>",
     "<system_reminder>",
-    # im_start / im_end: ChatML boundary tokens used by some model families.
-    # Pipe-bracketed variants are already handled below; bare-tag variants
-    # are also blocked in case Claude parses them.
     "</im_start>",
     "<im_start>",
     "</im_end>",
@@ -43,21 +34,6 @@ _DANGEROUS_TOKENS = (
 )
 
 
-# Trojan Source / CVE-2021-42574 — bidirectional formatting controls that
-# can re-order code visually one way while the parser/LLM reads it another
-# way. v0.5.1 dogfood revealed these were reaching model context verbatim.
-# The full character set per the CVE:
-#   U+202A LRE — left-to-right embedding
-#   U+202B RLE — right-to-left embedding
-#   U+202C PDF — pop directional formatting
-#   U+202D LRO — left-to-right override
-#   U+202E RLO — right-to-left override
-#   U+2066 LRI — left-to-right isolate
-#   U+2067 RLI — right-to-left isolate
-#   U+2068 FSI — first strong isolate
-#   U+2069 PDI — pop directional isolate
-# Each is stripped byte-for-byte (no normalization, no replacement marker)
-# so attacker-shaped strings get their original visual order back.
 _BIDI_CONTROLS = (
     "‪‫‬‭‮"
     "⁦⁧⁨⁩"
@@ -65,8 +41,6 @@ _BIDI_CONTROLS = (
 _BIDI_RE = re.compile(f"[{_BIDI_CONTROLS}]")
 
 
-# NOTE: changing this transform (token list, bidi set, order, NFC step)
-# is a cache-visible change. Bump _excerpt_cache.CONTEXT_TRANSFORM_VERSION.
 def sanitize_for_chameleon_context(content: str) -> str:
     """Replace dangerous tag-boundary tokens with neutral text.
 

@@ -7,9 +7,6 @@ import stat
 from pathlib import Path
 from unittest.mock import patch
 
-# ---------------------------------------------------------------------------
-# 1. HMAC key generation -> mode 0600
-# ---------------------------------------------------------------------------
 
 def test_hmac_key_created_with_mode_0600(tmp_path: Path):
     key_file = tmp_path / "hmac.key"
@@ -37,10 +34,6 @@ def test_hmac_key_reuse_on_second_call(tmp_path: Path):
     assert k1 == k2
 
 
-# ---------------------------------------------------------------------------
-# 2. append_exec_log writes NDJSON with hmac field
-# ---------------------------------------------------------------------------
-
 def test_append_writes_ndjson_with_hmac(tmp_path: Path):
     key_file = tmp_path / "hmac.key"
     key_file.write_bytes(b"k" * 32)
@@ -60,7 +53,6 @@ def test_append_writes_ndjson_with_hmac(tmp_path: Path):
             duration_ms=42,
         )
 
-    # Find the written log file
     log_dir = tmp_path / ".chameleon_exec_log" / "repo-1"
     log_files = list(log_dir.glob("*.jsonl"))
     assert len(log_files) == 1
@@ -76,10 +68,6 @@ def test_append_writes_ndjson_with_hmac(tmp_path: Path):
     assert record["duration_ms"] == 42
     assert "ts" in record
 
-
-# ---------------------------------------------------------------------------
-# 3. Round-trip: write then verify = True
-# ---------------------------------------------------------------------------
 
 def test_verify_roundtrip(tmp_path: Path):
     key_file = tmp_path / "hmac.key"
@@ -105,10 +93,6 @@ def test_verify_roundtrip(tmp_path: Path):
 
         assert verify_exec_log_line(line) is True
 
-
-# ---------------------------------------------------------------------------
-# 4. Tampered command -> verify = False
-# ---------------------------------------------------------------------------
 
 def test_verify_tampered_command(tmp_path: Path):
     key_file = tmp_path / "hmac.key"
@@ -139,10 +123,6 @@ def test_verify_tampered_command(tmp_path: Path):
         assert verify_exec_log_line(tampered) is False
 
 
-# ---------------------------------------------------------------------------
-# 5. Malformed JSON -> verify = False
-# ---------------------------------------------------------------------------
-
 def test_verify_malformed_json(tmp_path: Path):
     key_file = tmp_path / "hmac.key"
     key_file.write_bytes(b"k" * 32)
@@ -154,10 +134,6 @@ def test_verify_malformed_json(tmp_path: Path):
         assert verify_exec_log_line("{not json at all") is False
         assert verify_exec_log_line("") is False
 
-
-# ---------------------------------------------------------------------------
-# 6. Command truncation at 1KB
-# ---------------------------------------------------------------------------
 
 def test_command_truncated_at_1kb(tmp_path: Path):
     key_file = tmp_path / "hmac.key"

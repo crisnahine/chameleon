@@ -1,24 +1,4 @@
 #!/usr/bin/env bash
-# Git merge driver wrapper for chameleon profile JSONs.
-#
-# Register with:
-#   git config merge.chameleon.driver \\
-#     "${CLAUDE_PLUGIN_ROOT}/scripts/chameleon-merge-driver.sh %O %A %B %P"
-#
-# And in .gitattributes:
-#   .chameleon/archetypes.json merge=chameleon
-#   .chameleon/canonicals.json merge=chameleon
-#   .chameleon/rules.json      merge=chameleon
-#   .chameleon/profile.json    merge=chameleon
-#
-# Git invokes this with:
-#   $1 = %O — path to common ancestor (base) version
-#   $2 = %A — path to "ours" version (also the merge target; we WRITE here)
-#   $3 = %B — path to "theirs" version
-#   $4 = %P — original pathname (e.g. ".chameleon/archetypes.json")
-#
-# Exit 0 on successful merge. Non-zero leaves git's regular conflict
-# markers in $2 for manual resolution.
 
 set -euo pipefail
 

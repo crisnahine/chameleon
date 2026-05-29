@@ -14,10 +14,6 @@ from chameleon_mcp.lint_engine import (
     lint_conventions,
 )
 
-# ---------------------------------------------------------------------------
-# detect_language
-# ---------------------------------------------------------------------------
-
 
 class TestDetectLanguage:
     def test_ts(self):
@@ -56,11 +52,6 @@ class TestDetectLanguage:
     def test_case_insensitive(self):
         assert detect_language("FOO.TS") == "typescript"
         assert detect_language("bar.RB") == "ruby"
-
-
-# ---------------------------------------------------------------------------
-# _extract_typescript — default export kind
-# ---------------------------------------------------------------------------
 
 
 class TestExtractTsDefaultExport:
@@ -105,11 +96,6 @@ class TestExtractTsDefaultExport:
         assert snap.default_export_kind is None
 
 
-# ---------------------------------------------------------------------------
-# _extract_typescript — named export counting
-# ---------------------------------------------------------------------------
-
-
 class TestExtractTsNamedExports:
     def test_zero(self):
         code = "const x = 1;\n"
@@ -141,19 +127,12 @@ class TestExtractTsNamedExports:
     def test_export_list_with_alias(self):
         code = "const x = 1;\nexport { x as y };\n"
         snap = _extract_typescript(code)
-        # count is 1 (the alias target)
         assert snap.named_export_count == 1
 
     def test_deduplicates(self):
-        # same name exported via const and re-export list
         code = "export const foo = 1;\nexport { foo };\n"
         snap = _extract_typescript(code)
         assert snap.named_export_count == 1
-
-
-# ---------------------------------------------------------------------------
-# _extract_typescript — JSX detection (after string/comment stripping)
-# ---------------------------------------------------------------------------
 
 
 class TestExtractTsJsx:
@@ -178,7 +157,6 @@ class TestExtractTsJsx:
         assert snap.jsx_present is False
 
     def test_jsx_in_string_stripped(self):
-        # JSX-like text inside a string literal should not trigger jsx_present
         code = 'const html = "</div>";\n'
         snap = _extract_typescript(code)
         assert snap.jsx_present is False
@@ -192,11 +170,6 @@ class TestExtractTsJsx:
         code = "/* <Component /> */\nconst x = 1;\n"
         snap = _extract_typescript(code)
         assert snap.jsx_present is False
-
-
-# ---------------------------------------------------------------------------
-# _extract_typescript — content_signal
-# ---------------------------------------------------------------------------
 
 
 class TestExtractTsContentSignal:
@@ -216,11 +189,6 @@ class TestExtractTsContentSignal:
         assert snap.content_signal is None
 
 
-# ---------------------------------------------------------------------------
-# _extract_ruby — top-level class/module at column 0
-# ---------------------------------------------------------------------------
-
-
 class TestExtractRubyTopLevel:
     def test_class_at_column_zero(self):
         code = "class User\nend\n"
@@ -233,10 +201,8 @@ class TestExtractRubyTopLevel:
         assert "ModuleNode" in snap.top_level_node_kinds
 
     def test_indented_class_not_top_level(self):
-        # indented class should not be detected as top-level in the column-0 pass
         code = "  class Nested\n  end\n"
         snap = _extract_ruby(code)
-        # no top-level class or module from the column-0 scan
         column0_kinds = [
             k for k in snap.top_level_node_kinds
             if not k.startswith("IncludeCall:") and not k.startswith("DslCall:")
@@ -247,11 +213,6 @@ class TestExtractRubyTopLevel:
         code = "def helper\nend\n"
         snap = _extract_ruby(code)
         assert "DefNode" in snap.top_level_node_kinds
-
-
-# ---------------------------------------------------------------------------
-# _extract_ruby — superclass detection
-# ---------------------------------------------------------------------------
 
 
 class TestExtractRubySuperclass:
@@ -268,16 +229,20 @@ class TestExtractRubySuperclass:
     def test_no_superclass(self):
         code = "class PlainRuby\nend\n"
         snap = _extract_ruby(code)
-        # bare ClassNode, no colon-suffixed variant
         assert "ClassNode" in snap.top_level_node_kinds
         assert not any(
             k.startswith("ClassNode:") for k in snap.top_level_node_kinds
         )
 
-
-# ---------------------------------------------------------------------------
-# _extract_ruby — DSL call detection
-# ---------------------------------------------------------------------------
+    def test_superclass_resolved_per_class(self):
+        code = (
+            "class Plain\nend\n"
+            "class Account < ApplicationRecord\nend\n"
+        )
+        snap = _extract_ruby(code)
+        assert "ClassNode" in snap.top_level_node_kinds
+        assert "ClassNode:ApplicationRecord" in snap.top_level_node_kinds
+        assert "ClassNode:Plain" not in snap.top_level_node_kinds
 
 
 class TestExtractRubyDsl:
@@ -318,11 +283,6 @@ class TestExtractRubyDsl:
             k for k in snap.top_level_node_kinds if k == "DslCall:validates"
         ]
         assert len(dsl_validates) == 1
-
-
-# ---------------------------------------------------------------------------
-# lint() — violations on dimension mismatch
-# ---------------------------------------------------------------------------
 
 
 class TestLint:
@@ -393,7 +353,6 @@ class TestLint:
         assert violations[0].rule == "top-level-node-kinds-mismatch"
 
     def test_null_ast_query_fields_not_flagged(self):
-        # null fields in ast_query mean "no expectation" - never flag
         snap = DimensionSnapshot(
             default_export_kind="ClassDeclaration",
             jsx_present=True,
@@ -422,11 +381,6 @@ class TestLint:
         assert "default-export-kind-mismatch" in rules
         assert "jsx-presence-mismatch" in rules
         assert "content-signal-mismatch" in rules
-
-
-# ---------------------------------------------------------------------------
-# canonical_confidence()
-# ---------------------------------------------------------------------------
 
 
 class TestCanonicalConfidence:
@@ -479,13 +433,7 @@ class TestCanonicalConfidence:
             "default_export_kind": "FunctionDeclaration",
             "jsx_present": True,
         }
-        # 1 of 2 checks pass
         assert canonical_confidence(snap, query) == 0.5
-
-
-# ---------------------------------------------------------------------------
-# _fold_string_concat()
-# ---------------------------------------------------------------------------
 
 
 class TestFoldStringConcat:
@@ -507,17 +455,11 @@ class TestFoldStringConcat:
         assert _fold_string_concat(original) == original
 
     def test_max_folds_cap(self):
-        # with max_folds=1 only one pair gets folded
         result = _fold_string_concat('"a" + "b" + "c"', max_folds=1)
         assert result == '"ab" + "c"'
 
     def test_whitespace_around_plus(self):
         assert _fold_string_concat('"a"  +  "b"') == '"ab"'
-
-
-# ---------------------------------------------------------------------------
-# _coarse_normalize — BUG-031
-# ---------------------------------------------------------------------------
 
 
 class TestCoarseNormalize:
@@ -553,11 +495,6 @@ class TestCoarseNormalize:
 
     def test_class_declaration_passthrough(self):
         assert _coarse_normalize("ClassDeclaration") == "ClassDeclaration"
-
-
-# ---------------------------------------------------------------------------
-# _top_level_kinds_match — BUG-031 threshold + coarse dedup
-# ---------------------------------------------------------------------------
 
 
 class TestTopLevelKindsMatch:
@@ -632,11 +569,6 @@ class TestTopLevelKindsMatch:
             ["ImportDeclaration"],
             ["ImportDeclaration", "ClassDeclaration", "InterfaceDeclaration", "TypeAliasDeclaration"],
         ) is False
-
-
-# ---------------------------------------------------------------------------
-# lint_conventions — convention-based lint (import preference + naming)
-# ---------------------------------------------------------------------------
 
 
 class TestConventionLint:

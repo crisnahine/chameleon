@@ -51,7 +51,6 @@ When `trust_state` is `untrusted` or `stale`, the line should be highlighted and
 ## Slash command surface
 
 - `/chameleon-status` — default summary
-- `/cham-status` — short alias
 
 ## Out of scope
 

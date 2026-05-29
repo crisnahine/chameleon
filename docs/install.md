@@ -180,7 +180,7 @@ Open a TypeScript or Ruby on Rails repo in Claude Code.
 
 ## Opt-out
 
-Four layers, most permanent at the top:
+Five layers, most permanent at the top:
 
 ```
 .chameleon/.skip       per-repo, all users (committed to the repo)
@@ -191,8 +191,6 @@ CHAMELEON_VERIFY=0      disable post-edit verification only
 ```
 
 Use `.chameleon/.skip` for repos chameleon should never touch (a docs-only repo, for example). Use the env var to turn it off for yourself everywhere. Use the slash commands for a quick, scoped pause.
-
-Set `CHAMELEON_ENFORCEMENT_MODE=additionalContext` to revert post-edit violations from `updatedToolOutput` (v0.7.0 default) to the v0.6.x advisory style.
 
 ---
 
@@ -222,9 +220,11 @@ scripts/prune-plugin-cache.sh --apply   # delete every cached version except the
 /plugin marketplace remove chameleon
 ```
 
-Then clear your local trust and drift cache:
+chameleon runs a long-lived per-user daemon. Stop it (if running), then clear your local trust and drift cache:
 
 ```bash
+# stop the background daemon if it's still alive (it also idles out after 10 min)
+[ -f ~/.local/share/chameleon/.daemon.pid ] && kill "$(head -1 ~/.local/share/chameleon/.daemon.pid)" 2>/dev/null
 rm -rf ~/.local/share/chameleon
 ```
 
@@ -236,7 +236,7 @@ rm -rf ~/.local/share/chameleon
 
 You install three tools (`uv`, Node, optionally Ruby). chameleon builds everything else itself:
 
-- **Python server.** The plugin's [`.mcp.json`](../.mcp.json) runs `uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp`. On first launch `uv` builds an isolated environment in its own cache (5 to 10 seconds). After that, instant.
+- **Python server.** The plugin's [`.mcp.json`](../.mcp.json) runs `uvx --refresh-package chameleon-mcp --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp`. On first launch `uv` builds an isolated environment in its own cache (5 to 10 seconds). After that, instant.
 - **TypeScript reader.** The first `/chameleon-init` on a TypeScript repo runs `npm install` once inside the plugin folder (about 10 seconds). If you only touch Ruby repos this never runs.
 
 This is why the prerequisite list is short: the tools build the rest on demand.
