@@ -38,7 +38,7 @@ write_json_field() {
   local jq_path
   jq_path=$(echo "$field" | sed -E 's/\.([0-9]+)/[\1]/g' | sed 's/^/./' | sed 's/\.\././g')
   local tmp="${file}.tmp"
-  jq "$jq_path = \"$value\"" "$file" > "$tmp" && mv "$tmp" "$file"
+  jq --arg v "$value" "$jq_path = \$v" "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
 _read_py_field() {
@@ -136,6 +136,13 @@ cmd_check() {
 
   echo ""
 
+  # Guard the empty case before expanding "${versions[@]}": macOS bash 3.2
+  # errors on an empty-array expansion under `set -u`.
+  if [[ ${#versions[@]} -eq 0 ]]; then
+    echo "error: no declared files found in .version-bump.json" >&2
+    return 1
+  fi
+
   local unique
   unique=$(printf '%s\n' "${versions[@]}" | sort -u | wc -l | tr -d ' ')
   if [[ "$unique" -gt 1 ]]; then
@@ -218,8 +225,8 @@ cmd_audit() {
 cmd_bump() {
   local new_version="$1"
 
-  if ! echo "$new_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
-    echo "error: '$new_version' doesn't look like a version (expected X.Y.Z)" >&2
+  if ! echo "$new_version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    echo "error: '$new_version' doesn't look like a version (expected exactly X.Y.Z)" >&2
     exit 1
   fi
 
@@ -250,6 +257,29 @@ cmd_bump() {
     if [[ $cleaned -gt 0 ]]; then
       echo "Cleaned $cleaned stale dist-info dir(s) from venv."
     fi
+  fi
+
+  # Regenerate lockfiles so they carry the new version. CI runs
+  # `uv sync --frozen` and `npm ci`, both of which fail if the lock is stale
+  # after a version bump. Non-fatal: warn and continue if a tool is absent or
+  # offline, so a bump never hard-fails on lock regeneration.
+  if command -v uv >/dev/null 2>&1; then
+    if (cd "$REPO_ROOT/mcp" && uv lock >/dev/null 2>&1); then
+      echo "Regenerated mcp/uv.lock"
+    else
+      echo "WARN: 'uv lock' failed; run it in mcp/ before pushing (CI uses --frozen)" >&2
+    fi
+  else
+    echo "WARN: uv not found; mcp/uv.lock not regenerated (CI uses --frozen)" >&2
+  fi
+  if command -v npm >/dev/null 2>&1; then
+    if (cd "$REPO_ROOT/mcp" && npm install --package-lock-only --silent >/dev/null 2>&1); then
+      echo "Regenerated mcp/package-lock.json"
+    else
+      echo "WARN: 'npm install --package-lock-only' failed; regenerate mcp/package-lock.json before pushing" >&2
+    fi
+  else
+    echo "WARN: npm not found; mcp/package-lock.json not regenerated" >&2
   fi
 
   echo ""
