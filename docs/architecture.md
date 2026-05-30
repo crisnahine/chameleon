@@ -694,6 +694,13 @@ Loads `using-chameleon` SKILL.md, wraps in `<chameleon-context>`, appends drift 
 
 Primes the model before the edit. Does not enforce - PostToolUse does that.
 
+> Contract note: `additionalContext` on **PreToolUse** is not in Claude Code's
+> published hook contract (which documents it for PostToolUse, UserPromptSubmit,
+> and SessionStart). It works empirically today, but treat it as best-effort: the
+> documented, load-bearing paths are SessionStart priming and PostToolUse
+> correction. If a future Claude build stops surfacing PreToolUse
+> `additionalContext`, chameleon degrades to those, it does not break.
+
 **Safety gate:** fail-closed deny via `safe_open` with lstat + realpath prefix-match. Checks:
 - Null bytes, Windows ADS streams
 - NFD-encoded `..` traversal
