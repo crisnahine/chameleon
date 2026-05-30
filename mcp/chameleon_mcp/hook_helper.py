@@ -971,10 +971,16 @@ def preflight_and_advise() -> int:
         block += "Canonical witness:\n```\n"
         block += excerpt_content
         block += "\n```\n\n"
-    if rules_count:
-        block += f"Rules: {rules_count} entries available via get_rules({archetype_name!r}).\n"
     if has_idioms:
-        block += "Team idioms captured via /chameleon-teach are available via get_pattern_context.\n"
+        # Inline the team idioms (already loaded + sanitized by get_pattern_context)
+        # instead of pointing at another tool call — they are the highest-signal,
+        # repo-specific guidance and were previously discarded to a boolean.
+        block += "Team idioms (captured via /chameleon-teach):\n"
+        block += idioms_text.rstrip() + "\n\n"
+    if rules_count:
+        # Rules are verbose lint/formatter config; keep the pointer rather than
+        # flooding the block, but inline the idioms above.
+        block += f"Rules: {rules_count} apply — call get_rules({archetype_name!r}) for the config.\n"
     try:
         from chameleon_mcp.conventions import format_directory_listing
         dir_listing = format_directory_listing(file_path)
