@@ -54,7 +54,7 @@ def generate_principles(
         data.get("competing")
         for data in conv.get("imports", {}).values()
     )
-    if not has_competing:
+    if has_competing:
         principles.append(
             "Use the project's wrapper, not the raw library."
         )

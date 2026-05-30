@@ -316,13 +316,16 @@ class TestKeyExportsExtractor:
         result = extract_key_exports(files, language="typescript")
         assert result == []
 
-    def test_deduplicates_and_limits(self, tmp_path):
+    def test_deduplicates_across_files(self, tmp_path):
         files = []
         for i in range(15):
             exports = "\n".join(f"export const item{j} = {j};" for j in range(30))
             files.append(_make_ts_file(tmp_path, f"f{i}.ts", exports))
         result = extract_key_exports(files, language="typescript")
-        assert len(result) <= 20
+        # Deduplicated to the 30 distinct names (not 15*30); the old hard cap of
+        # 20 is gone (default is now effectively unbounded, env-overridable).
+        assert len(result) == 30
+        assert len(result) == len(set(result))
 
 
 class TestFormatSessionReuse:

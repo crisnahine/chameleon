@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -228,7 +229,22 @@ _TS_EXPORT_NAME_RE = re.compile(
 _RUBY_CLASS_NAME_RE = re.compile(r"^\s*class\s+(\w+)", re.MULTILINE)
 _RUBY_MODULE_NAME_RE = re.compile(r"^\s*module\s+(\w+)", re.MULTILINE)
 
-_MAX_KEY_EXPORTS = 20
+def _int_env(name: str, default: int) -> int:
+    """Read a positive-int env override; else the default.
+
+    For the "defaults ON for quality, opt out only for a reason" caps: the
+    default surfaces all real signal, and the env var lets a repo bound it.
+    """
+    try:
+        v = int(os.environ.get(name) or "")
+    except ValueError:
+        return default
+    return v if v > 0 else default
+
+
+# No real cap by default (a real archetype has far fewer distinct key exports);
+# env-overridable for the rare repo that wants to bound it.
+_MAX_KEY_EXPORTS = _int_env("CHAMELEON_MAX_KEY_EXPORTS", 200)
 
 
 def extract_key_exports(files: list[ParsedFile], *, language: str) -> list[str]:
@@ -295,7 +311,9 @@ def extract_method_call_conventions(files: list[ParsedFile]) -> dict:
     if not call_counts:
         return {}
 
-    common_top5 = [name for name, _count in call_counts.most_common(5)]
+    # Store ALL matched DSL calls (the regex is already an allow-list, so this is
+    # naturally bounded); the 'common_top5' key name is kept for back-compat.
+    common_top5 = [name for name, _count in call_counts.most_common()]
     return {"common_top5": common_top5, "sample_size": total}
 
 
@@ -365,7 +383,7 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
                 seen_preferred.add(mod)
                 all_preferred.append((p["frequency"], mod))
     all_preferred.sort(reverse=True)
-    for _freq, mod in all_preferred[:10]:
+    for _freq, mod in all_preferred:
         basename = mod.rsplit("/", 1)[-1]
         if len(basename) > 2 and basename not in ("index", "types", "utils"):
             import_lines.append(f"- Prefer {mod}")
@@ -410,19 +428,19 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     method_lines: list[str] = []
     seen_methods: set[str] = set()
     for _arch, data in conv.get("method_calls", {}).items():
-        for call in data.get("common_top5", [])[:3]:
+        for call in data.get("common_top5", []):
             if call not in seen_methods:
                 seen_methods.add(call)
     if seen_methods:
-        method_lines.append(f"- Common DSL: {', '.join(sorted(seen_methods)[:8])}")
+        method_lines.append(f"- Common DSL: {', '.join(sorted(seen_methods))}")
 
     export_lines: list[str] = []
     all_exports: set[str] = set()
     for _arch, names in conv.get("key_exports", {}).items():
-        for n in names[:5]:
+        for n in names:
             all_exports.add(n)
     if all_exports:
-        sorted_exports = sorted(all_exports)[:15]
+        sorted_exports = sorted(all_exports)
         export_lines.append(f"- Check before creating: {', '.join(sorted_exports)}")
 
     principle_lines: list[str] = []
@@ -475,7 +493,9 @@ _SOURCE_EXTENSIONS = frozenset({
 })
 
 
-def format_directory_listing(file_path: str | None, *, max_files: int = 15) -> str:
+def format_directory_listing(
+    file_path: str | None, *, max_files: int = _int_env("CHAMELEON_MAX_SIBLINGS", 200)
+) -> str:
     """List sibling files in the same directory, framed as actionable context.
 
     Returns something like:
