@@ -429,6 +429,27 @@ def _marker_path_is_fresh(marker: Path, ttl_seconds: int) -> bool:
     return (time.time() - st.st_mtime) < ttl_seconds
 
 
+def _sanitize_profile_obj(obj: object) -> object:
+    """Recursively sanitize every string in a JSON-loaded profile structure.
+
+    Neutralizes tag-boundary tokens in attacker-controllable committed data
+    (conventions.json values) BEFORE it is formatted into a block. We sanitize
+    the INPUTS, not the assembled block: ``format_conventions_for_session`` adds
+    its own legitimate ``<chameleon-conventions>`` wrapper, and ``<chameleon``
+    is itself a dangerous token, so sanitizing the output would corrupt the
+    wrapper.
+    """
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    if isinstance(obj, str):
+        return sanitize_for_chameleon_context(obj)
+    if isinstance(obj, dict):
+        return {k: _sanitize_profile_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_profile_obj(v) for v in obj]
+    return obj
+
+
 def session_start() -> int:
     """SessionStart: inject using-chameleon SKILL.md + profile primer."""
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
@@ -601,14 +622,31 @@ def session_start() -> int:
     try:
         from chameleon_mcp.conventions import format_conventions_for_session
         if repo_root and (repo_root / ".chameleon" / "conventions.json").is_file():
-            import json as _conv_json
-            conv_text = (repo_root / ".chameleon" / "conventions.json").read_text(encoding="utf-8")
-            conv_data = _conv_json.loads(conv_text)
-            pr_text = ""
-            pr_path = repo_root / ".chameleon" / "principles.md"
-            if pr_path.is_file():
-                pr_text = pr_path.read_text(encoding="utf-8")
-            conventions_block = format_conventions_for_session(conv_data, principles_text=pr_text)
+            # Trust gate: conventions.json + principles.md are attacker-controllable
+            # committed content, so don't inject an untrusted profile's conventions
+            # into trusted system context (stale still injects, matching the
+            # canonical path and the documented contract). And route the assembled
+            # block through the context sanitizer — every other injection site does,
+            # this one historically did not, leaving a tag-boundary injection vector
+            # through principles.md prose / convention values.
+            from chameleon_mcp.profile.trust import trust_state_for
+            from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+            from chameleon_mcp.tools import _compute_repo_id
+            if trust_state_for(_compute_repo_id(repo_root)) is not None:
+                import json as _conv_json
+                conv_text = (repo_root / ".chameleon" / "conventions.json").read_text(encoding="utf-8")
+                conv_data = _conv_json.loads(conv_text)
+                pr_text = ""
+                pr_path = repo_root / ".chameleon" / "principles.md"
+                if pr_path.is_file():
+                    pr_text = pr_path.read_text(encoding="utf-8")
+                # Sanitize the attacker-controllable inputs at the boundary (see
+                # _sanitize_profile_obj — sanitizing the assembled block would
+                # mangle its <chameleon-conventions> wrapper).
+                conventions_block = format_conventions_for_session(
+                    _sanitize_profile_obj(conv_data),
+                    principles_text=sanitize_for_chameleon_context(pr_text),
+                )
     except Exception:
         pass
 
@@ -890,7 +928,14 @@ def preflight_and_advise() -> int:
                         pr_text = pr_path.read_text(encoding="utf-8")
                     except OSError:
                         pass
-                conv_echo = format_conventions_echo(conv_data, archetype=archetype_name, principles_text=pr_text)
+                # Sanitize attacker-controllable inputs at the boundary, for
+                # parity with the SessionStart path (the assembled echo carries a
+                # <chameleon-conventions> wrapper the output-sanitizer would mangle).
+                conv_echo = format_conventions_echo(
+                    _sanitize_profile_obj(conv_data),
+                    archetype=archetype_name,
+                    principles_text=sanitize_for_chameleon_context(pr_text),
+                )
         except Exception:
             pass
         if conv_echo:
@@ -1031,6 +1076,7 @@ def posttool_verify() -> int:
     try:
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.profile.trust import trust_state_for
         from chameleon_mcp.tools import _compute_repo_id
 
         repo_root = find_repo_root(Path(file_path).expanduser())
@@ -1041,6 +1087,15 @@ def posttool_verify() -> int:
         repo_id = _compute_repo_id(repo_root)
 
         if is_chameleon_suppressed(repo_root, repo_id, session_id) is not None:
+            _emit({})
+            return 0
+
+        # Trust gate: PreToolUse already returns early for an untrusted profile;
+        # mirror it here so PostToolUse does not feed violation messages derived
+        # from an untrusted (attacker-controllable) profile — conventions.json
+        # values and witness content — back to the model. Stale still verifies
+        # (the profile was trusted once); only never-trusted is skipped.
+        if trust_state_for(repo_id) is None:
             _emit({})
             return 0
 
