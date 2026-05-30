@@ -14,6 +14,12 @@
 # To register the merge driver, run once in your repo (or globally with --global):
 #
 #   git config merge.chameleon.name "chameleon profile merge"
-#   git config merge.chameleon.driver "chameleon-mcp merge_profiles --base %O --ours %A --theirs %B --output %A"
+#   git config merge.chameleon.driver "/path/to/chameleon/scripts/chameleon-merge-driver.sh %O %A %B %P"
+#
+# Replace /path/to/chameleon with your installed plugin dir, e.g.
+#   ~/.claude/plugins/cache/chameleon/chameleon/<version>
+# (The old `chameleon-mcp merge_profiles ...` form does not work — that console
+#  script only launches the stdio MCP server; the shell driver above is the real
+#  merge driver.)
 #
 # Without registration, git falls back to its default conflict-marker behavior.
