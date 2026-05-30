@@ -141,3 +141,21 @@ def test_nearest_canonical_entry_resolves_by_subbucket():
     assert fallback["witness"]["path"] == "app/services/amazon_s3/create_download_link.rb"
     # empty -> {}
     assert tools._nearest_canonical_entry("x.rb", []) == {}
+
+
+def test_bootstrap_repo_blocked_when_lock_held(tmp_path, monkeypatch):
+    """A second bootstrap of the same repo while the .bootstrap.lock is held
+    returns a clean 'in progress' envelope instead of racing the clusterer."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    from chameleon_mcp.locks import acquire_advisory_lock
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    lock_dir = repo_data_dir(tools._compute_repo_id(repo.resolve()))
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    with acquire_advisory_lock(lock_dir / ".bootstrap.lock"):
+        res = tools.bootstrap_repo(str(repo))["data"]
+    assert res.get("status") == "failed"
+    assert "in progress" in (res.get("error") or "")

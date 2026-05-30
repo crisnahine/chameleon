@@ -2860,6 +2860,47 @@ def bootstrap_repo(
     force: bool = False,
     now: float | None = None,
 ) -> dict:
+    """First-time analysis, serialized by a per-repo advisory lock.
+
+    Acquires a ``.bootstrap.lock`` in plugin-data so two concurrent inits on the
+    same repo don't both run the clusterer and race the COMMITTED check. The
+    lock is SEPARATE from ``.refresh.lock``: refresh calls this while holding
+    its own lock, so the two distinct locks nest without re-entering the same
+    flock (no deadlock). The actual work lives in ``_bootstrap_repo_unlocked``.
+    """
+    from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+
+    resolved_path, _ = _resolve_repo_arg(path)
+    if resolved_path is None or not resolved_path.is_dir():
+        # Degenerate input (or by-id): let the core emit the precise envelope.
+        return _bootstrap_repo_unlocked(path, paths_glob, force, now)
+    try:
+        repo_root = resolved_path.resolve()
+    except (OSError, ValueError):
+        repo_root = resolved_path
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    lock_dir = repo_data_dir(_compute_repo_id(repo_root))
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with acquire_advisory_lock(lock_dir / ".bootstrap.lock"):
+            return _bootstrap_repo_unlocked(path, paths_glob, force, now)
+    except LockHeldError as e:
+        return _envelope({
+            "status": "failed",
+            "error": (
+                f"another bootstrap is in progress for this repo (PID {e.holder_pid}); "
+                "retry shortly"
+            ),
+        })
+
+
+def _bootstrap_repo_unlocked(
+    path: str,
+    paths_glob: str | None = None,
+    force: bool = False,
+    now: float | None = None,
+) -> dict:
     """First-time analysis: AST scan + (Phase 2D interview) + atomic profile commit.
 
     v0.4 (2D.3): for monorepos with detected workspace_paths, runs the full
