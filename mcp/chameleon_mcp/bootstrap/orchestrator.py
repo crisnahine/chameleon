@@ -312,7 +312,12 @@ def _glob_for_extractor(extractor: Extractor) -> str:
         return "**/*.rb"
     return "**/*.{ts,tsx,js,jsx,mjs,cjs}"
 
-PROFILE_SCHEMA_VERSION = 7
+# Must track profile.schema.CURRENT_SCHEMA_VERSION — this is the version stamped
+# into the profiles the bootstrap WRITES. v8: cluster signature unified with the
+# conformance metric (sorted-set node kinds, import hash dropped from the key).
+# Profiles written by old code (<=7) still load under this engine, but a profile
+# written here (8) is refused by old engines (MAX=7), signaling the rebuild.
+PROFILE_SCHEMA_VERSION = 8
 
 try:
     from importlib.metadata import PackageNotFoundError as _PkgNotFound
