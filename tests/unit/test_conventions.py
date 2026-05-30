@@ -386,6 +386,24 @@ class TestInheritanceExtractor:
         assert result["dominant_base"] == "ApplicationRecord"
         assert result["frequency"] >= 0.9
 
+    def test_counts_namespaced_class_base_and_records_known_bases(self, tmp_path):
+        # Regression: compact-namespaced classes (`class Api::V1::X < Base`)
+        # were skipped entirely by the builder regex, so an established
+        # intermediate base was never learned and the linter later flagged it.
+        files = []
+        for i in range(10):
+            files.append(_make_ruby_file(
+                tmp_path, f"c{i}.rb",
+                f"class Api::V1::C{i}Controller < ApplicationController\nend\n"))
+        for i in range(4):
+            files.append(_make_ruby_file(
+                tmp_path, f"a{i}.rb",
+                f"class Api::V2::A{i}Controller < Api::V2::BaseController\nend\n"))
+        result = extract_inheritance_conventions(files)
+        assert result["dominant_base"] == "ApplicationController"
+        assert "Api::V2::BaseController" in result["known_bases"]
+        assert "ApplicationController" in result["known_bases"]
+
     def test_detects_include_mixin(self, tmp_path):
         files = []
         for i in range(12):

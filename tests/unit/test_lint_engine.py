@@ -676,3 +676,38 @@ class TestConventionLint:
         }
         violations = lint_conventions(content, conventions, language="typescript")
         assert len(violations) == 0
+
+    def test_namespaced_class_with_known_base_not_flagged(self):
+        # Regression (real-app test, maybe): a compact-namespaced controller
+        # `class Api::V1::FooController < Api::V1::BaseController` was misparsed
+        # (name truncated to `Api`, base read as `none`) and flagged, then the
+        # PostToolUse escalation drove an unsatisfiable L0->L1->L2 STOP loop.
+        # An established intermediate base must NOT be a violation.
+        content = "class Api::V1::ChameleonProbeController < Api::V1::BaseController\nend\n"
+        conventions = {
+            "inheritance": {
+                "dominant_base": "ApplicationController",
+                "frequency": 0.64,
+                "sample_size": 200,
+                "known_bases": ["Api::V1::BaseController", "ApplicationController"],
+            },
+        }
+        violations = lint_conventions(content, conventions, language="ruby")
+        assert violations == []
+
+    def test_namespaced_class_name_parsed_fully(self):
+        # A genuinely novel base on a namespaced class still flags, but the
+        # message must carry the FULL class name, not the truncated namespace.
+        content = "class Api::V1::FooController < SomethingNovel\nend\n"
+        conventions = {
+            "inheritance": {
+                "dominant_base": "ApplicationController",
+                "frequency": 0.64,
+                "sample_size": 200,
+                "known_bases": ["ApplicationController"],
+            },
+        }
+        violations = lint_conventions(content, conventions, language="ruby")
+        assert len(violations) == 1
+        assert "Api::V1::FooController" in violations[0].message
+        assert violations[0].actual == "SomethingNovel"

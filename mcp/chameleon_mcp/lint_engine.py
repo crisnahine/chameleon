@@ -933,10 +933,17 @@ def lint_conventions(
             inheritance = conventions.get("inheritance") or {}
             dominant_base = inheritance.get("dominant_base")
             if dominant_base and inheritance.get("frequency", 0) >= 0.60:
-                for m in re.finditer(r"^\s*class\s+(\w+)(?:\s*<\s*([\w:]+))?", content, re.MULTILINE):
+                # Accept any base the repo has established for this archetype,
+                # not just the single dominant one. ``[\w:]+`` for the class
+                # name captures namespaced declarations fully (a bare ``\w+``
+                # truncated ``Api::V1::Foo`` to ``Api`` and lost the ``< Base``,
+                # mis-flagging legit controllers and driving a STOP loop).
+                known_bases = set(inheritance.get("known_bases") or ())
+                known_bases.add(dominant_base)
+                for m in re.finditer(r"^\s*class\s+([\w:]+)(?:\s*<\s*([\w:]+))?", content, re.MULTILINE):
                     class_name = m.group(1)
                     superclass = m.group(2)
-                    if superclass != dominant_base:
+                    if superclass is None or superclass not in known_bases:
                         violations.append(Violation(
                             rule="inheritance-convention-violation",
                             expected=dominant_base,

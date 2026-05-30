@@ -160,7 +160,11 @@ def extract_naming_conventions(*, declarations: dict[str, list[str]]) -> dict:
 
 _INHERITANCE_THRESHOLD = 0.60
 
-_RUBY_CLASS_RE = re.compile(r"^\s*class\s+\w+\s*<\s*([\w:]+)", re.MULTILINE)
+# The class name may be namespaced (``class Api::V1::FooController < Base``).
+# A bare ``\w+`` stops at the first ``::`` and the whole declaration fails to
+# match, so namespaced classes were invisible to convention-building (and the
+# linter then flagged their bases as novel). ``[\w:]+`` matches the full name.
+_RUBY_CLASS_RE = re.compile(r"^\s*class\s+[\w:]+\s*<\s*([\w:]+)", re.MULTILINE)
 _RUBY_INCLUDE_RE = re.compile(r"^\s*include\s+([\w:]+)", re.MULTILINE)
 _RUBY_DSL_CALL_RE = re.compile(
     r"^  (validates|validate|belongs_to|has_many|has_one|has_and_belongs_to_many"
@@ -212,6 +216,13 @@ def extract_inheritance_conventions(files: list[ParsedFile]) -> dict:
             result["dominant_base"] = top_base
             result["frequency"] = round(top_count / total, 3)
             result["sample_size"] = total
+            # Any base the archetype uses at least twice is an established
+            # choice, not a violation (e.g. an intermediate
+            # ``Api::V1::BaseController`` alongside a dominant
+            # ``ApplicationController``). Recording the set lets the linter
+            # flag only a genuinely novel base instead of every non-dominant
+            # one -- the latter drove an unsatisfiable PostToolUse STOP loop.
+            result["known_bases"] = sorted(b for b, c in base_counts.items() if c >= 2)
 
     if include_counts:
         top_include, inc_count = include_counts.most_common(1)[0]
