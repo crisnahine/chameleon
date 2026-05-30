@@ -246,6 +246,15 @@ def _int_env(name: str, default: int) -> int:
 # env-overridable for the rare repo that wants to bound it.
 _MAX_KEY_EXPORTS = _int_env("CHAMELEON_MAX_KEY_EXPORTS", 200)
 
+# Generous ceiling on the ASSEMBLED SessionStart convention block. Per-archetype
+# counts are small, but their UNION across a large monorepo (hundreds of
+# archetypes) is not — and an 80K-token wall of comma-separated names dilutes
+# the model's attention, which hurts quality. So cap the two repo-size-scaling
+# sinks (preferred imports, key-export union) at a generous, env-overridable
+# value with an explicit "+N more" tail (no silent drop). 60 >> the real signal
+# in any normal repo; raise CHAMELEON_MAX_CONVENTION_ITEMS to lift it.
+_MAX_CONVENTION_ITEMS = _int_env("CHAMELEON_MAX_CONVENTION_ITEMS", 60)
+
 
 def extract_key_exports(files: list[ParsedFile], *, language: str) -> list[str]:
     """Extract the most common exported names across files in an archetype."""
@@ -383,10 +392,16 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
                 seen_preferred.add(mod)
                 all_preferred.append((p["frequency"], mod))
     all_preferred.sort(reverse=True)
+    _pref_shown = _pref_total = 0
     for _freq, mod in all_preferred:
         basename = mod.rsplit("/", 1)[-1]
         if len(basename) > 2 and basename not in ("index", "types", "utils"):
-            import_lines.append(f"- Prefer {mod}")
+            _pref_total += 1
+            if _pref_shown < _MAX_CONVENTION_ITEMS:
+                import_lines.append(f"- Prefer {mod}")
+                _pref_shown += 1
+    if _pref_total > _pref_shown:
+        import_lines.append(f"- (+{_pref_total - _pref_shown} more preferred modules)")
 
     naming_lines: list[str] = []
     seen_naming: set[str] = set()
@@ -441,7 +456,10 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
             all_exports.add(n)
     if all_exports:
         sorted_exports = sorted(all_exports)
-        export_lines.append(f"- Check before creating: {', '.join(sorted_exports)}")
+        shown = sorted_exports[:_MAX_CONVENTION_ITEMS]
+        overflow = len(sorted_exports) - len(shown)
+        tail = f" (+{overflow} more)" if overflow > 0 else ""
+        export_lines.append(f"- Check before creating: {', '.join(shown)}{tail}")
 
     principle_lines: list[str] = []
     if principles_text:
@@ -494,7 +512,7 @@ _SOURCE_EXTENSIONS = frozenset({
 
 
 def format_directory_listing(
-    file_path: str | None, *, max_files: int = _int_env("CHAMELEON_MAX_SIBLINGS", 200)
+    file_path: str | None, *, max_files: int = _int_env("CHAMELEON_MAX_SIBLINGS", 60)
 ) -> str:
     """List sibling files in the same directory, framed as actionable context.
 

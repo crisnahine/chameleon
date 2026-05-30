@@ -240,7 +240,7 @@ def _detect_workspace_ts_monorepo(
         (``typescript``, ``ts-node``, ``vite``) — same signal
         ``TypeScriptExtractor.can_handle`` uses on a single repo.
 
-    The first-level scan is bounded at ``_WORKSPACE_FANOUT_CAP`` (50)
+    The first-level scan is bounded at ``_WORKSPACE_FANOUT_CAP`` (500)
     entries per parent dir so a pathological tree with hundreds of
     empty entries can't walk forever. When the cap fires, the orchestrator
     sets ``fanout_capped=True`` in the bootstrap envelope.
