@@ -124,3 +124,20 @@ def test_doctor(tmp_path, monkeypatch):
 def test_daemon_status(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
     _assert_envelope(tools.daemon_status())
+
+
+def test_nearest_canonical_entry_resolves_by_subbucket():
+    """A dense archetype with witnesses in distinct sub-buckets injects the one
+    nearest the edited file, not always entries[0]."""
+    entries = [
+        {"witness": {"path": "app/services/amazon_s3/create_download_link.rb"}},
+        {"witness": {"path": "app/services/hubspot/upsert_contact.rb"}},
+    ]
+    # a hubspot edit gets the hubspot witness, not the first (s3) one
+    chosen = tools._nearest_canonical_entry("app/services/hubspot/sync_lead.rb", entries)
+    assert chosen["witness"]["path"] == "app/services/hubspot/upsert_contact.rb"
+    # no path overlap -> falls back to entries[0]
+    fallback = tools._nearest_canonical_entry("lib/unrelated/thing.rb", entries)
+    assert fallback["witness"]["path"] == "app/services/amazon_s3/create_download_link.rb"
+    # empty -> {}
+    assert tools._nearest_canonical_entry("x.rb", []) == {}

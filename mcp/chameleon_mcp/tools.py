@@ -598,6 +598,34 @@ def _prefix_overlap_fallback(
     return primary, alternatives
 
 
+def _nearest_canonical_entry(rel_str: str, entries: list) -> dict:
+    """Pick the canonical entry whose witness shares the most leading directory
+    segments with the edited file.
+
+    A dense archetype can carry several merged sub-buckets (e.g. services across
+    amazon_s3/, hubspot/, llm/), each with its own canonical witness. Resolving
+    by nearest path means a hubspot/ edit is shown a hubspot/ witness instead of
+    always the first (e.g. amazon_s3/) one. Falls back to entries[0].
+    """
+    if not entries:
+        return {}
+    q_parts = rel_str.split("/")[:-1]
+    best = entries[0] or {}
+    best_overlap = -1
+    for e in entries:
+        w_parts = (((e or {}).get("witness") or {}).get("path") or "").split("/")[:-1]
+        overlap = 0
+        for a, b in zip(q_parts, w_parts):  # noqa: B905
+            if a == b:
+                overlap += 1
+            else:
+                break
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best = e or {}
+    return best
+
+
 def _witness_path_overlap(rel_str: str, canonicals: dict, archetype_name: str) -> int:
     """Count leading directory segments shared between `rel_str` (the
     query file's repo-relative path) and the archetype's canonical
@@ -1004,7 +1032,11 @@ def get_pattern_context(file_path: str) -> dict:
     if arch_data["archetype"]:
         canonicals = loaded.canonicals.get("canonicals", {}).get(arch_data["archetype"], [])
         if canonicals:
-            first = canonicals[0]
+            try:
+                rel_str = p.resolve().relative_to(repo_root.resolve()).as_posix()
+            except (ValueError, OSError):
+                rel_str = p.name
+            first = _nearest_canonical_entry(rel_str, canonicals)
             witness_rel = first.get("witness", {}).get("path")
             if witness_rel:
                 try:
