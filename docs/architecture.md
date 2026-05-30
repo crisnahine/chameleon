@@ -709,7 +709,7 @@ Primes the model before the edit. Does not enforce - PostToolUse does that.
 - **Tier 1 (pointer)** — archetype already seen this session with no recorded violations: a short `[🦎 chameleon: <name> (<band>)]` pointer plus a one-line summary (~50 tokens).
 - **Tier 2 (canonical)** — first edit in an archetype, or an archetype with a prior violation: the full `<chameleon-context>` block with the `[🦎 chameleon: archetype=<name>, confidence=<band>, match_quality=<...>, sub_buckets=<N>]` header, the canonical witness excerpt, rules count, idioms availability, and any trust-state advisory.
 
-Tier 2 injection is capped at ~1,500 tokens (char-length limit in `preflight_and_advise`).
+Tier 2 injection is NOT token-capped: the full canonical witness is injected (quality over token cost). The only bound is a 5 MB safety ceiling on the witness read (`WITNESS_MAX_BYTES` in `tools.py`); a witness over that ceiling is flagged (`truncated`/`oversize`) rather than silently dropped. Real witnesses are a few KB, so they inject in full. (A prior version of this doc claimed a ~1,500-token char-length cap in `preflight_and_advise`; no such cap exists in the code.)
 
 **Trust gate:** untrusted profiles get a one-time trust prompt per session (marker file dedup), then suppressed - no canonical injection until `/chameleon-trust`.
 

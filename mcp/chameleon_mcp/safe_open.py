@@ -24,6 +24,17 @@ class UnsafeFileError(Exception):
     """Raised when a file fails one of safe_open's security checks."""
 
 
+class FileTooLargeError(UnsafeFileError):
+    """Raised specifically when a file exceeds the size ceiling.
+
+    A subclass of UnsafeFileError so existing ``except UnsafeFileError``
+    handlers still catch it, but callers that want to distinguish "too big"
+    (a quality/DoS bound — safe to flag-and-continue) from a security
+    rejection (traversal/symlink/ADS — must fail closed) can catch this first
+    instead of string-matching the message.
+    """
+
+
 def safe_open(repo_root: Path, rel_path: str, *, max_size_bytes: int = 1_000_000) -> Path:
     """Resolve and validate a relative path inside a repo. Returns the safe absolute Path.
 
@@ -79,7 +90,7 @@ def safe_open(repo_root: Path, rel_path: str, *, max_size_bytes: int = 1_000_000
         raise UnsafeFileError(f"path is not a regular file: {unresolved}")
 
     if st.st_size > max_size_bytes:
-        raise UnsafeFileError(f"file too large: {st.st_size} bytes > {max_size_bytes} cap")
+        raise FileTooLargeError(f"file too large: {st.st_size} bytes > {max_size_bytes} cap")
 
     return candidate
 
@@ -128,7 +139,7 @@ def _open_profile_artifact_fd(path: Path, max_bytes: int) -> tuple[int, os.stat_
         raise UnsafeFileError(f"not a regular file: {path}")
     if st.st_size > max_bytes:
         os.close(fd)
-        raise UnsafeFileError(
+        raise FileTooLargeError(
             f"profile artifact {path} is {st.st_size} bytes, exceeds {max_bytes} cap"
         )
     return fd, st
@@ -239,7 +250,7 @@ def safe_open_fd(
         if stat.S_ISLNK(st.st_mode):
             raise UnsafeFileError(f"path is a symlink (refused): {candidate}")
         if st.st_size > max_size_bytes:
-            raise UnsafeFileError(
+            raise FileTooLargeError(
                 f"file too large: {st.st_size} bytes > {max_size_bytes} cap"
             )
     except UnsafeFileError:

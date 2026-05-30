@@ -59,6 +59,14 @@ def _envelope(data: dict, truncated: bool = False, next_cursor: str | None = Non
     return out
 
 
+# Witness excerpt read ceiling. Real canonical witnesses are a few KB; this
+# 5 MB ceiling (matching the profile-artifact cap) lets even an unusually large
+# hand-written exemplar inject in FULL — quality over token cost — while still
+# bounding a pathological/generated witness from flooding context or memory.
+# Over the ceiling the excerpt is FLAGGED (truncated/oversize) rather than
+# silently returning nothing, so the model still learns a witness exists.
+WITNESS_MAX_BYTES = 5 * 1024 * 1024
+
 _REPO_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 
 _WS_PRUNE_DIRS = frozenset({
@@ -1004,6 +1012,7 @@ def get_pattern_context(file_path: str) -> dict:
 
                     from chameleon_mcp import _excerpt_cache
                     from chameleon_mcp.safe_open import (
+                        FileTooLargeError,
                         UnsafeFileError,
                         safe_open_fd,
                     )
@@ -1012,7 +1021,7 @@ def get_pattern_context(file_path: str) -> dict:
                     )
 
                     fd, st, safe_path = safe_open_fd(
-                        repo_root, witness_rel, max_size_bytes=200_000
+                        repo_root, witness_rel, max_size_bytes=WITNESS_MAX_BYTES
                     )
                     key = (
                         str(safe_path),
@@ -1070,7 +1079,20 @@ def get_pattern_context(file_path: str) -> dict:
                         "truncated": truncated,
                         "sha_hint": first.get("witness", {}).get("sha_hint"),
                     }
+                except FileTooLargeError:
+                    # A witness over the 5 MB ceiling (a pathological/generated file
+                    # mis-selected as canonical) must not silently vanish: flag it
+                    # (a direct get_canonical_excerpt caller then knows a witness
+                    # exists and can read it by path).
+                    canonical_data = {
+                        "content": "",
+                        "witness_path": witness_rel,
+                        "truncated": True,
+                        "oversize": True,
+                        "sha_hint": first.get("witness", {}).get("sha_hint"),
+                    }
                 except (UnsafeFileError, FileNotFoundError, OSError):
+                    # Security rejection (traversal/symlink) or read error: leave empty.
                     pass
 
     idioms_text = loaded.idioms_text or ""
@@ -1299,9 +1321,23 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         })
 
     try:
-        from chameleon_mcp.safe_open import UnsafeFileError, safe_read_text
+        from chameleon_mcp.safe_open import (
+            FileTooLargeError,
+            UnsafeFileError,
+            safe_read_text,
+        )
 
-        content = safe_read_text(repo_root, witness_rel, max_size_bytes=200_000)
+        content = safe_read_text(repo_root, witness_rel, max_size_bytes=WITNESS_MAX_BYTES)
+    except FileTooLargeError:
+        # Over the 5 MB ceiling: flag it (truncated/oversize) instead of an empty
+        # success, so an explicit agent pull still learns the witness exists.
+        return _envelope({
+            "status": "oversize",
+            "content": "",
+            "witness_path": witness_rel,
+            "truncated": True,
+            "sha_hint": witness.get("sha_hint"),
+        })
     except (UnsafeFileError, FileNotFoundError, OSError):
         return _envelope({
             "content": "",
