@@ -155,6 +155,29 @@ class TestComputeSignature:
         )
         assert isinstance(key, ClusterKey)
 
+    def test_cluster_key_is_order_and_import_insensitive(self):
+        """v8 metric: node-kind ORDER and the import set no longer fragment the
+        cluster (clustering now agrees with the lint set-match)."""
+        a = compute_signature(
+            file_path="app/services/s.ts",
+            content_first_200_bytes="",
+            top_level_node_kinds=["ClassDeclaration", "ImportDeclaration"],
+            default_export_kind=None,
+            named_export_count=0,
+            import_specifiers=[("axios", "default")],
+            has_jsx=False,
+        )
+        b = compute_signature(
+            file_path="app/services/s.ts",
+            content_first_200_bytes="",
+            top_level_node_kinds=["ImportDeclaration", "ClassDeclaration"],  # different order
+            default_export_kind=None,
+            named_export_count=0,
+            import_specifiers=[("lodash", "named")],  # different imports
+            has_jsx=False,
+        )
+        assert a == b
+
     def test_frozen_hashable(self):
         key = compute_signature(
             file_path="src/utils/math.ts",

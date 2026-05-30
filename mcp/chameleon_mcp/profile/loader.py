@@ -27,7 +27,7 @@ from chameleon_mcp.safe_open import (
     safe_read_profile_artifact,
 )
 
-MAX_SUPPORTED_SCHEMA_VERSION = 7
+MAX_SUPPORTED_SCHEMA_VERSION = 8
 
 _REPO_ROOT_CACHE: dict[str, Path | None] = {}
 

@@ -264,14 +264,24 @@ def compute_signature(
         archetype_paths,
         include_extension=include_extension_in_bucket,
     )
+    del import_specifiers  # intentionally not part of the cluster key (see below)
     return ClusterKey(
         path_pattern_bucket=bucket,
         content_signal_match=content_signal_match_for(
             content_first_200_bytes, archetype_signals
         ),
-        top_level_node_kinds=tuple(top_level_node_kinds),
+        # Order- and multiplicity-insensitive so clustering AGREES with the
+        # runtime lint conformance check (lint_engine compares node kinds as a
+        # coarse set). The old order-sensitive tuple over-fragmented files that
+        # are the same archetype but declare members in a different order.
+        top_level_node_kinds=tuple(sorted(set(top_level_node_kinds))),
         default_export_kind=default_export_kind,
         named_export_count_bucket=bucket_named_export_count(named_export_count),
-        import_module_set_hash=hash_import_set(import_specifiers),
+        # Dropped from the cluster key. The exact import-module set made every
+        # service its own cluster (each imports its own deps) even though the
+        # lint engine ignores imports entirely — the single largest source of
+        # over-fragmentation. Clustering is now by shape + path. Import
+        # conventions are still derived separately (conventions.extract_import_conventions).
+        import_module_set_hash="",
         jsx_present=has_jsx,
     )

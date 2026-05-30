@@ -13,7 +13,10 @@ from __future__ import annotations
 import re
 from typing import Any
 
-CURRENT_SCHEMA_VERSION = 7
+# v8: cluster signature unified with the runtime conformance metric
+# (sorted-set top_level_node_kinds; import_module_set_hash dropped from the key).
+# Re-clusters, so old profiles must re-bootstrap.
+CURRENT_SCHEMA_VERSION = 8
 
 MAX_JSON_DEPTH = 64
 
