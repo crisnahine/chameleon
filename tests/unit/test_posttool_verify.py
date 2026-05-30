@@ -113,6 +113,7 @@ def test_failed_edit_success_false():
 def test_suppressed_session_skipped():
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value="abc123"),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value="session_disabled"),
     ):
@@ -140,6 +141,7 @@ def test_cooldown_skips_reverification(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -171,6 +173,7 @@ def test_hook_event_name_is_posttool(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -210,6 +213,7 @@ def test_violation_messages_sanitized(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -246,6 +250,7 @@ def test_all_violations_included(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -302,6 +307,7 @@ def test_no_archetype_emits_empty(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -333,6 +339,7 @@ def test_fail_open_on_file_read_error(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -363,6 +370,7 @@ def test_exactly_one_emit_on_violation(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -393,6 +401,7 @@ def test_clean_file_emits_empty(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -419,6 +428,7 @@ def test_large_file_still_processed(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -445,6 +455,7 @@ def test_metrics_emitted_on_violations(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -479,6 +490,7 @@ def test_violations_use_additional_context(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -528,6 +540,7 @@ def test_corrections_exhausted_emits_advisory(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
@@ -570,6 +583,7 @@ def test_clean_after_violation_emits_archetype_clean(tmp_path: Path):
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
