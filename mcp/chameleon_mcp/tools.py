@@ -493,7 +493,10 @@ def detect_repo(file_path: str) -> dict:
 
     if not profile_present or profile_corrupted or profile_unsupported_schema:
         trust_state = "n/a"
-    elif trust is None:
+    elif trust is None or not trust.grants_root(profile_dir.parent):
+        # No record, or a record that covers a different root under the same
+        # (monorepo-shared) repo_id -- this workspace profile was never
+        # granted, so it is untrusted, not stale.
         trust_state = "untrusted"
     elif is_material_change(repo_id, profile_dir):
         trust_state = "stale"
@@ -993,7 +996,7 @@ def get_pattern_context(file_path: str) -> dict:
     from chameleon_mcp.profile.trust import is_material_change
     trust = trust_state_for(repo_id)
     trust_check_dir = repo_root / ".chameleon"
-    if trust is None:
+    if trust is None or not trust.grants_root(trust_check_dir.parent):
         trust_state_str = "untrusted"
     elif is_material_change(repo_id, trust_check_dir):
         trust_state_str = "stale"

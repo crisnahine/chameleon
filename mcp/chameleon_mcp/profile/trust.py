@@ -127,6 +127,28 @@ class TrustRecord:
             return specific
         return self.profile_sha256
 
+    def grants_root(self, repo_root: Path | str) -> bool:
+        """True iff this record was granted for ``repo_root`` specifically.
+
+        A record is keyed by repo_id, which a monorepo shares across its root
+        and every workspace-internal ``.chameleon`` profile. A grant on the
+        root does NOT vouch for a different workspace's profile (different
+        code, different conventions, never reviewed), so an ungranted
+        workspace must read as *untrusted* -- not *stale*, which both leaks an
+        unreviewed canonical and implies a refresh that never happened.
+
+        v0.5.1+ records seed ``repo_root_specific_hashes`` with every granted
+        root, so membership there is authoritative. Legacy v0.5.0 records have
+        no map; fall back to the single top-level ``repo_root``.
+        """
+        try:
+            key = str(Path(repo_root).resolve())
+        except OSError:
+            key = str(repo_root)
+        if self.repo_root_specific_hashes:
+            return key in self.repo_root_specific_hashes
+        return key == self.repo_root
+
 
 _HASHED_ARTIFACTS: tuple[str, ...] = (
     ".archetype_renames.json",

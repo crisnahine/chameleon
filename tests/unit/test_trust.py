@@ -211,3 +211,57 @@ class TestGrantAndQuery:
         assert is_material_change(repo_id, root_profile) is False
         assert is_material_change(repo_id, ws_a_profile) is False
         assert is_material_change(repo_id, ws_b_profile) is False
+
+
+class TestGrantsRoot:
+    """grants_root distinguishes a never-granted workspace (untrusted) from a
+    granted-but-changed one (stale) under a monorepo-shared repo_id."""
+
+    def _record(self, root: Path, *, with_map: bool = True) -> TrustRecord:
+        rr = str(root.resolve())
+        return TrustRecord(
+            granted_at="2026-01-01T00:00:00Z",
+            granted_by_user="u",
+            profile_sha256="aaa",
+            repo_root=rr,
+            repo_root_specific_hashes={rr: "aaa"} if with_map else {},
+        )
+
+    def test_granted_root_is_granted(self, tmp_path: Path):
+        root = tmp_path / "repo"
+        root.mkdir()
+        assert self._record(root).grants_root(root) is True
+
+    def test_ungranted_nested_workspace_is_not_granted(self, tmp_path: Path):
+        # Regression (real-app test, plane): a nested workspace with its own
+        # .chameleon shares the root's git-based repo_id, but the root grant
+        # must not vouch for it -- otherwise it reads "stale" and leaks an
+        # unreviewed canonical instead of prompting for trust.
+        root = tmp_path / "repo"
+        ws = root / "packages" / "svc"
+        ws.mkdir(parents=True)
+        assert self._record(root).grants_root(ws) is False
+
+    def test_legacy_record_without_map_grants_only_top_level(self, tmp_path: Path):
+        root = tmp_path / "repo"
+        (root / "sub").mkdir(parents=True)
+        rec = self._record(root, with_map=False)
+        assert rec.grants_root(root) is True
+        assert rec.grants_root(root / "sub") is False
+
+    def test_workspace_granted_after_its_own_grant(self, tmp_path: Path, monkeypatch):
+        # After /chameleon-trust on the workspace, grants_root becomes True.
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+        root = tmp_path / "repo"
+        ws = root / "packages" / "svc"
+        root_profile = _make_profile_dir(root)
+        ws_profile = _make_profile_dir(ws, extra_files={
+            "profile.json": json.dumps({"generation": 1, "language": "ruby"})})
+        from chameleon_mcp.tools import _compute_repo_id
+        repo_id = _compute_repo_id(root.resolve())
+        grant_trust(repo_id, root_profile)
+        assert trust_state_for(repo_id).grants_root(ws) is False
+        grant_trust(repo_id, ws_profile)
+        assert trust_state_for(repo_id).grants_root(ws) is True
+        # root grant survives the workspace grant
+        assert trust_state_for(repo_id).grants_root(root) is True

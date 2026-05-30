@@ -509,7 +509,8 @@ def session_start() -> int:
         def _trust_for(root: Path) -> str:
             rid = _compute_repo_id(root)
             ts = trust_state_for(rid)
-            if ts is None:
+            if ts is None or not ts.grants_root(root):
+                # ungranted workspace under a monorepo-shared repo_id
                 return "untrusted"
             pdir = root / ".chameleon"
             if pdir.is_dir():
