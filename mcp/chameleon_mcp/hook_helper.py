@@ -681,7 +681,7 @@ def preflight_and_advise() -> int:
     emits the result as additionalContext.
 
     Fast path (Phase 4.5): try the long-lived daemon at
-    ``${PLUGIN_DATA}/.daemon.sock``. The daemon holds the python import
+    ``${PLUGIN_DATA}/.daemon-<version>.sock``. The daemon holds the python import
     cache + profile state hot between hook calls, so warm latency drops
     from 200-500 ms (subprocess) to sub-100 ms (socket roundtrip).
 

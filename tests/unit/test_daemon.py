@@ -14,9 +14,13 @@ from chameleon_mcp.daemon import (
     MAX_FRAME_BYTES,
     _DaemonState,
     _idle_timeout_from_env,
+    _sweep_orphan_version_files,
+    _version_tag,
     daemon_info,
+    pid_path,
     recv_frame,
     send_frame,
+    socket_path,
 )
 
 
@@ -254,3 +258,50 @@ def test_idle_timeout_from_env_garbage_uses_default():
 def test_idle_timeout_from_env_empty_uses_default():
     with patch.dict(os.environ, {"CHAMELEON_DAEMON_IDLE_TIMEOUT": ""}):
         assert _idle_timeout_from_env() == DEFAULT_IDLE_TIMEOUT_S
+
+
+def test_socket_and_pid_paths_are_version_scoped(tmp_path: Path):
+    fake = tmp_path / "d"
+    fake.mkdir()
+    with patch("chameleon_mcp.daemon._plugin_data", return_value=fake):
+        sp = socket_path()
+        pp = pid_path()
+    tag = _version_tag()
+    assert tag and "/" not in tag
+    assert sp.name == f".daemon-{tag}.sock"
+    assert pp.name == f".daemon-{tag}.pid"
+
+
+def test_socket_path_differs_across_versions(tmp_path: Path):
+    # Regression: a newer plugin build must not reuse a daemon spawned by an
+    # older build (which would serve stale in-memory advisory logic until it
+    # idle-exited). Different versions -> different sockets.
+    fake = tmp_path / "d"
+    fake.mkdir()
+    with patch("chameleon_mcp.daemon._plugin_data", return_value=fake):
+        with patch("chameleon_mcp.daemon._version_tag", return_value="1.2.3"):
+            a = socket_path()
+        with patch("chameleon_mcp.daemon._version_tag", return_value="1.2.4"):
+            b = socket_path()
+    assert a != b
+    assert a.name == ".daemon-1.2.3.sock"
+    assert b.name == ".daemon-1.2.4.sock"
+
+
+def test_sweep_orphan_version_files_drops_dead_keeps_live(tmp_path: Path):
+    fake = tmp_path / "d"
+    fake.mkdir()
+    dead_pid = fake / ".daemon-9.9.9.pid"
+    dead_pid.write_text("99999999\nx\n")
+    dead_sock = fake / ".daemon-9.9.9.sock"
+    dead_sock.write_text("")
+    live_pid = fake / ".daemon-8.8.8.pid"
+    live_pid.write_text(f"{os.getpid()}\nx\n")  # our own pid -> alive
+    live_sock = fake / ".daemon-8.8.8.sock"
+    live_sock.write_text("")
+    with patch("chameleon_mcp.daemon._plugin_data", return_value=fake):
+        _sweep_orphan_version_files()
+    assert not dead_pid.exists()
+    assert not dead_sock.exists()
+    assert live_pid.exists()
+    assert live_sock.exists()

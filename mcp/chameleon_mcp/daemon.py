@@ -53,6 +53,7 @@ import errno
 import fcntl
 import json
 import os
+import re
 import signal
 import socket
 import struct
@@ -91,20 +92,39 @@ def _plugin_data() -> Path:
     return plugin_data_dir()
 
 
+def _version_tag() -> str:
+    """Filesystem-safe identifier for the running plugin build.
+
+    The socket/pidfile names are scoped by this so a newer plugin build never
+    connects to a daemon spawned by an older build: the daemon holds the
+    advisory code (lint engine, conventions) in memory, so a reused old daemon
+    would serve stale logic for up to one idle window after an upgrade. Each
+    version gets its own socket; the prior version's daemon idle-exits on its
+    own and removes its files.
+    """
+    try:
+        from chameleon_mcp import __version__ as v
+    except Exception:  # noqa: BLE001 - version lookup must never break daemon paths
+        v = "0"
+    return re.sub(r"[^0-9A-Za-z._-]", "_", str(v)) or "0"
+
+
 def socket_path() -> Path:
     """UNIX socket path. Lives at the plugin data root so it's shared
     across all repos this user works on (the daemon is per-user, not
-    per-repo). Created on demand by `start_daemon()`."""
+    per-repo) but scoped by plugin version. Created on demand by
+    `start_daemon()`."""
     d = _plugin_data()
     d.mkdir(parents=True, exist_ok=True)
-    return d / ".daemon.sock"
+    return d / f".daemon-{_version_tag()}.sock"
 
 
 def pid_path() -> Path:
-    """PID file location. Contains `<pid>\\n<socket_path>\\n`."""
+    """PID file location. Contains `<pid>\\n<socket_path>\\n`. Version-scoped
+    to match :func:`socket_path`."""
     d = _plugin_data()
     d.mkdir(parents=True, exist_ok=True)
-    return d / ".daemon.pid"
+    return d / f".daemon-{_version_tag()}.pid"
 
 
 def log_path() -> Path:
@@ -175,6 +195,40 @@ def _cleanup_stale() -> None:
             Path(sock).unlink()
         except (FileNotFoundError, OSError):
             pass
+    _sweep_orphan_version_files()
+
+
+def _sweep_orphan_version_files() -> None:
+    """Remove `.daemon-<ver>.{pid,sock}` left by a dead daemon of any version.
+
+    Version-scoped socket names mean each upgrade introduces a new filename; a
+    daemon that crashed (rather than idle-exiting cleanly) leaves its files
+    behind. This best-effort sweep drops the ones whose recorded PID is no
+    longer alive, so PLUGIN_DATA doesn't accumulate dead sockets over many
+    upgrades. A live daemon's files are always left untouched.
+    """
+    try:
+        data_dir = _plugin_data()
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        pidfiles = list(data_dir.glob(".daemon-*.pid"))
+    except OSError:
+        return
+    for pf in pidfiles:
+        try:
+            raw = pf.read_text(encoding="utf-8").strip().splitlines()
+            pid = int(raw[0]) if raw else None
+        except (OSError, UnicodeDecodeError, ValueError):
+            pid = None
+        if pid is not None and _pid_alive(pid):
+            continue
+        sock_file = pf.with_suffix(".sock")
+        for p in (pf, sock_file):
+            try:
+                p.unlink()
+            except (FileNotFoundError, OSError):
+                pass
 
 
 def _recv_exact(conn: socket.socket, n: int) -> bytes | None:
