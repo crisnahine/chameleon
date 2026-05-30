@@ -112,13 +112,23 @@ def recalibrate_ast_query(witness_snapshot: DimensionSnapshot) -> dict:
     prism_dump.rb) at bootstrap, but lint() compares against regex-derived
     dimensions. The two extractors disagree on counts (ImportDeclaration,
     InterfaceDeclaration, jsx_present) causing false positives. Recalibrating
-    to regex-vs-regex eliminates this gap.
+    to regex-vs-regex — deriving the query from the witness's OWN regex
+    snapshot — eliminates that gap, so all five dimensions can be enforced
+    instead of only two. Both the witness ast_query and the candidate snapshot
+    now come from the same regex extractor, so a conforming candidate matches
+    exactly. Set ``CHAMELEON_LINT_DIMENSIONS=core`` to fall back to the coarse
+    two-dimension behavior (top_level_node_kinds + content_signal only).
     """
+    import os
+
+    core_only = os.environ.get("CHAMELEON_LINT_DIMENSIONS") == "core"
     return {
-        "default_export_kind": None,
-        "jsx_present": None,
+        "default_export_kind": None if core_only else witness_snapshot.default_export_kind,
+        "jsx_present": None if core_only else witness_snapshot.jsx_present,
         "top_level_node_kinds": sorted(set(witness_snapshot.top_level_node_kinds)),
-        "named_export_count_bucket": None,
+        "named_export_count_bucket": (
+            None if core_only else witness_snapshot.named_export_count_bucket
+        ),
         "content_signal": witness_snapshot.content_signal,
     }
 
