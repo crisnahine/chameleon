@@ -175,11 +175,13 @@ class TypeScriptExtractor:
             cwd=str(plugin_root() / "mcp"),
         )
 
+        timed_out = False
         try:
             stdout_data, _stderr = proc.communicate(input=input_data, timeout=600)
         except subprocess.TimeoutExpired:
             proc.kill()
             stdout_data, _stderr = proc.communicate()
+            timed_out = True
 
         results = []
         skipped: list[tuple[Path, str]] = []
@@ -196,6 +198,18 @@ class TypeScriptExtractor:
                 skipped.append((path, record["error"]))
                 continue
             results.append(_parsed_file_from_record(path, record))
+
+        # A timeout or non-zero exit means files past the failure point never
+        # reached stdout. Mark them skipped so a truncated sample is VISIBLE
+        # instead of being silently treated as the whole corpus.
+        rc = proc.returncode
+        if timed_out or rc not in (0, None):
+            seen = {str(pf.path) for pf in results} | {str(p) for p, _ in skipped}
+            reason = "extractor_timeout" if timed_out else f"extractor_exit_{rc}"
+            for fp in files:
+                rp = str(fp.resolve())
+                if rp not in seen:
+                    skipped.append((Path(rp), reason))
 
         return ParseResult(files=results, skipped=skipped)
 
