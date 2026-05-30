@@ -1078,6 +1078,24 @@ def get_pattern_context(file_path: str) -> dict:
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
         idioms_text = sanitize_for_chameleon_context(idioms_text)
 
+    rules_out = list(loaded.rules.get("rules", {}).items())
+
+    # Trust gate at the data layer. An untrusted .chameleon profile is
+    # attacker-controllable, and this tool is model-callable, so ALL
+    # profile-derived content must be withheld on a direct call — not only via
+    # the hook presentation layer (preflight_and_advise), which is one of
+    # several callers. That means the witness content, team idioms, the
+    # archetype summary (free prose from archetypes.json), and the rules map.
+    # Stale (trusted-then-changed) still flows, matching the documented
+    # contract: the hook injects stale content with a warning. Metadata
+    # (archetype name, witness_path, sha_hint, trust_state) is preserved so a
+    # caller can tell "gated for trust" from "no witness found".
+    if trust_state_str == "untrusted":
+        canonical_data = {**canonical_data, "content": "", "redacted_reason": "untrusted"}
+        idioms_text = ""
+        arch_data.pop("summary", None)
+        rules_out = []
+
     return _envelope({
         "repo": {
             "id": repo_id,
@@ -1086,7 +1104,7 @@ def get_pattern_context(file_path: str) -> dict:
         },
         "archetype": arch_data,
         "canonical_excerpt": canonical_data,
-        "rules": list(loaded.rules.get("rules", {}).items()),
+        "rules": rules_out,
         "idioms": idioms_text,
         "meta": {
             "mtime_token": loaded.mtime_token,
@@ -1259,6 +1277,27 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             "sha_hint": witness.get("sha_hint"),
         })
 
+    # Trust gate at the data layer, before any witness read. This tool is
+    # model-callable and previously returned full witness content for ANY trust
+    # state. An untrusted profile is attacker-controllable, so block it here
+    # (the repo arg may be a path, so repo_id is None — derive it from the final
+    # repo_root, which already accounts for the workspace fallback above). Stale
+    # still flows, matching get_pattern_context and the documented contract.
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+
+    gate_repo_id = _compute_repo_id(repo_root)
+    if _trust_state_for(gate_repo_id) is None:
+        return _envelope({
+            "status": "untrusted",
+            "reason": "profile is not trusted for this user; grant with /chameleon-trust",
+            "archetype_name": archetype,
+            "repo_id": gate_repo_id,
+            "content": None,
+            "witness_path": witness_rel,
+            "truncated": False,
+            "sha_hint": witness.get("sha_hint"),
+        })
+
     try:
         from chameleon_mcp.safe_open import UnsafeFileError, safe_read_text
 
@@ -1362,6 +1401,16 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         repo_root = _resolve_repo_root_by_id(repo_id)
     if repo_root is None or not repo_root.is_dir():
         env = {"rules": []}
+        if deprecation_note:
+            env["deprecation"] = deprecation_note
+        return _envelope(env)
+
+    # Trust gate: rules.json is derived from committed (attacker-controllable)
+    # eslint/rubocop/tsconfig config. This tool is model-callable, so withhold
+    # it for an untrusted profile. Stale still flows (trusted once).
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+    if _trust_state_for(_compute_repo_id(repo_root)) is None:
+        env = {"status": "untrusted", "rules": []}
         if deprecation_note:
             env["deprecation"] = deprecation_note
         return _envelope(env)
