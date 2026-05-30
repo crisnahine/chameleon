@@ -1616,6 +1616,29 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             truncated=truncated,
         )
 
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+    if _trust_state_for(_compute_repo_id(repo_root)) is None:
+        # Untrusted profile: withhold convention/AST checks — their messages
+        # embed attacker-controllable conventions.json / witness strings. Secret
+        # detection on the caller's OWN submitted content is independent of
+        # profile trust, so it still runs. Stale flows. Mirrors the data-layer
+        # gate on the other model-callable tools and posttool_verify.
+        return _envelope(
+            {
+                "stub": True,
+                "status": "untrusted",
+                "stub_reason": (
+                    "profile is not trusted for this user; grant with "
+                    "/chameleon-trust (convention/AST checks withheld)"
+                ),
+                "violations": secret_violations,
+                "canonical_confidence": 0.0,
+                "unparseable_regions": [],
+                "content_size": content_size,
+            },
+            truncated=truncated,
+        )
+
     try:
         loaded = load_profile_dir(_effective_profile_dir(repo_root))
     except Exception:
@@ -1738,6 +1761,16 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             ]
     except Exception:
         pass
+
+    # Sanitize profile-derived violation messages (they embed conventions.json /
+    # witness-derived strings) before returning on a model-callable surface,
+    # matching posttool_verify. Secret violations come from the caller's own
+    # content and are left as-is.
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
+    for _v in best_ast_violations + convention_violations:
+        for _k, _val in list(_v.items()):
+            if isinstance(_val, str):
+                _v[_k] = _sanitize(_val)
 
     violations = secret_violations + best_ast_violations + convention_violations
 

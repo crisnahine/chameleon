@@ -24,6 +24,7 @@ from chameleon_mcp.tools import (
     get_canonical_excerpt,
     get_pattern_context,
     get_rules,
+    lint_file,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]  # the chameleon repo (has SKILL.md)
@@ -178,6 +179,26 @@ def test_get_rules_returned_when_trusted(tmp_path, monkeypatch):
     repo = _build_repo(tmp_path)
     grant_trust(_compute_repo_id(repo), repo / ".chameleon")
     res = get_rules(str(repo))["data"]
+    assert res.get("status") != "untrusted"
+
+
+# --- lint_file (model-callable; profile-derived violations must not leak untrusted)
+
+def test_lint_file_blocked_when_untrusted(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    repo = _build_repo(tmp_path)
+    res = lint_file(str(repo), ARCH, "export const x = 1;\n", file_path="x.ts")["data"]
+    assert res.get("status") == "untrusted"
+    assert res.get("stub") is True  # convention/AST checks withheld
+
+
+def test_lint_file_proceeds_when_trusted(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    repo = _build_repo(tmp_path)
+    grant_trust(_compute_repo_id(repo), repo / ".chameleon")
+    res = lint_file(str(repo), ARCH, "export const x = 1;\n", file_path="x.ts")["data"]
     assert res.get("status") != "untrusted"
 
 

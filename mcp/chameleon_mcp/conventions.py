@@ -447,7 +447,10 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
             if call not in seen_methods:
                 seen_methods.add(call)
     if seen_methods:
-        method_lines.append(f"- Common DSL: {', '.join(sorted(seen_methods))}")
+        _dsl = sorted(seen_methods)
+        _dsl_shown = _dsl[:_MAX_CONVENTION_ITEMS]
+        _dsl_tail = f" (+{len(_dsl) - len(_dsl_shown)} more)" if len(_dsl) > len(_dsl_shown) else ""
+        method_lines.append(f"- Common DSL: {', '.join(_dsl_shown)}{_dsl_tail}")
 
     export_lines: list[str] = []
     all_exports: set[str] = set()
