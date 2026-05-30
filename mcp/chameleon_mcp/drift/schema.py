@@ -26,22 +26,9 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   v TEXT NOT NULL
 );
 
--- Per-file drift state (hot path: PreToolUse hook reads + writes).
--- WITHOUT ROWID saves a rowid->row indirection on PK lookup.
-CREATE TABLE IF NOT EXISTS files (
-  rel_path TEXT PRIMARY KEY,
-  inode INTEGER,
-  mtime_ns INTEGER NOT NULL,
-  size INTEGER,
-  sha_hint BLOB,                      -- xxhash64 (8 bytes), non-crypto
-  archetype TEXT,
-  cached_sig BLOB,                    -- serialized 7-tuple cluster signature
-  last_observed_confidence REAL,
-  last_seen_at INTEGER NOT NULL       -- unix epoch seconds
-) WITHOUT ROWID;
-
-CREATE INDEX IF NOT EXISTS idx_files_last_seen ON files(last_seen_at);
-CREATE INDEX IF NOT EXISTS idx_files_archetype ON files(archetype);
+-- (The `files` table was removed: it had no readers anywhere — drift
+-- detection runs entirely off edit_observations — so it was pure write
+-- amplification + unbounded growth. Old databases keep the table harmlessly.)
 
 -- Per-edit confidence history (powers drift-driven nags).
 CREATE TABLE IF NOT EXISTS edit_observations (
