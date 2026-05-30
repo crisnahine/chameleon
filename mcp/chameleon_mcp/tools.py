@@ -2856,7 +2856,6 @@ def _iso_to_epoch(ts: str) -> float:
 
 def bootstrap_repo(
     path: str,
-    mode: str = "full",
     paths_glob: str | None = None,
     force: bool = False,
     now: float | None = None,
@@ -2959,7 +2958,6 @@ def bootstrap_repo(
                 ),
             })
 
-    del mode
     report = _bootstrap(repo_root, paths_glob=paths_glob, now=now)
 
     if report.status == "success":
