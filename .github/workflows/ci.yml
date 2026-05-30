@@ -66,6 +66,11 @@ jobs:
           cache: 'npm'
           cache-dependency-path: 'mcp/package-lock.json'
 
+      - name: Set up Ruby (Ruby extractor golden corpus)
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'  # 3.3+ bundles prism
+
       - name: Install Python dependencies (uv sync)
         working-directory: mcp
         run: uv sync --frozen --extra dev
