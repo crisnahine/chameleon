@@ -2,6 +2,11 @@
 
 set -euo pipefail
 
+# Kill switches: emit empty output and skip the python spawn entirely when
+# the plugin is disabled or post-edit verification is turned off.
+if [ "${CHAMELEON_DISABLE:-}" = "1" ]; then printf '{}\n'; exit 0; fi
+if [ "${CHAMELEON_VERIFY:-}" = "0" ]; then printf '{}\n'; exit 0; fi
+
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}"
 MCP_DIR="${PLUGIN_ROOT}/mcp"
 

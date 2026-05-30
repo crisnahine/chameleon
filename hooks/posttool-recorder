@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+# Kill switch: emit empty output and skip the python spawn entirely when disabled.
+if [ "${CHAMELEON_DISABLE:-}" = "1" ]; then printf '{}\n'; exit 0; fi
+
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}"
 MCP_DIR="${PLUGIN_ROOT}/mcp"
 
