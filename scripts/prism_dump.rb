@@ -111,7 +111,10 @@ def extract_file(file_path)
 
   begin
     walker.call(ast)
-  rescue StandardError => e
+  rescue StandardError, SystemStackError => e
+    # SystemStackError (deep recursion) is NOT a StandardError; without it a
+    # modestly-nested file would crash the whole subprocess and silently
+    # truncate the bootstrap sample from that file onward.
     return { path: file_path, error: 'walk_error', message: e.message }
   end
 
@@ -137,7 +140,7 @@ STDIN.each_line do |line|
     record = extract_file(path)
     STDOUT.puts JSON.generate(record)
     STDOUT.flush
-  rescue StandardError => e
+  rescue StandardError, SystemStackError => e
     STDOUT.puts JSON.generate(path: path, error: 'extractor_crash', message: e.message)
     STDOUT.flush
   end

@@ -143,7 +143,7 @@ def _ad_hoc_discovery_hints(repo_root: Path) -> list[dict]:
     declared workspaces (yarn / pnpm / Turborepo).
     """
     hints: list[dict] = []
-    cap = 50
+    cap = 500  # high enough to surface every real sub-project; the four parent dirs bound it
     for parent in ("apps", "packages", "services", "workspaces"):
         parent_dir = repo_root / parent
         if not parent_dir.is_dir():
@@ -214,7 +214,9 @@ def _select_extractor(repo_root: Path) -> Extractor | None:
     return None
 
 
-_WORKSPACE_FANOUT_CAP = 50
+# Raised from 50: workspaces 51+ were never analyzed (a sampling cap, not a
+# safety guard). REPO_SIZE_GUARD is the real post-exclusion DoS backstop.
+_WORKSPACE_FANOUT_CAP = 500
 
 _WORKSPACE_PARENT_DIRS = ("apps", "packages", "services", "workspaces")
 
@@ -1376,7 +1378,9 @@ def _bootstrap_single(
             merged: dict[str, list[str]] = {}
             for pf in pf_list:
                 try:
-                    content = pf.path.read_bytes()[:100_000].decode("utf-8", errors="replace")
+                    # 1 MB (matches the extractor MAX_FILE_SIZE) so declarations
+                    # past 100KB in a member file are not dropped from naming.
+                    content = pf.path.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
                     decls = extract_declarations_from_content(content, language="typescript")
                     for decl_type, names in decls.items():
                         merged.setdefault(decl_type, []).extend(names)

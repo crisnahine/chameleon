@@ -694,7 +694,9 @@ def canonical_confidence(snapshot: DimensionSnapshot, ast_query: dict | None) ->
     return sum(1 for c in checks if c) / len(checks)
 
 
-MAX_SECRETS_PER_FILE = 50
+# Surface every secret in a file (bounded by the 100KB content ceiling), not
+# just the first 50; the ERROR-severity rollup still summarizes.
+MAX_SECRETS_PER_FILE = 1000
 
 _MAX_CONCAT_FOLDS_PER_FILE = 1000
 
