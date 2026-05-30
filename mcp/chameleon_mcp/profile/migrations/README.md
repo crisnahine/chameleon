@@ -38,6 +38,8 @@ profile.json has `schema_version == <from>` and produces a profile with
 
 ## v1 status
 
-No migrations exist yet — the engine is at schema_version 7. A profile
-written by a newer schema is refused at load time; the first migration
-will be authored when the next schema bump lands.
+No migration scripts exist yet — the engine is at schema_version 8. The
+v7→v8 bump (cluster-signature metric change) intentionally ships no migration:
+an older-schema profile still loads, and re-bootstrap re-clusters it under the
+new metric. A profile written by a *newer* schema is refused at load time; the
+first migration script will be authored when a bump needs one.

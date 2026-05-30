@@ -27,17 +27,17 @@ PHASE 33 - daemon lifecycle + serial queue + idle shutdown:
     Report the daemon PID.
 
   STEP 2 - verify socket and pidfile:
-    Use Bash to check:
-      SOCK="$CHAMELEON_PLUGIN_DATA/.daemon.sock"
-      if [ -S "$SOCK" ]; then
+    Use Bash to check (the socket is version-scoped: .daemon-<version>.sock):
+      SOCK="$(ls "$CHAMELEON_PLUGIN_DATA"/.daemon-*.sock 2>/dev/null | head -1)"
+      if [ -n "$SOCK" ] && [ -S "$SOCK" ]; then
         echo "socket exists: $SOCK"
         stat -c "%a" "$SOCK" 2>/dev/null || stat -f "%Lp" "$SOCK"
       else
-        echo "socket NOT found at $SOCK"
+        echo "socket NOT found under $CHAMELEON_PLUGIN_DATA (.daemon-*.sock)"
       fi
     Report whether the socket exists and its mode (should be 0600).
     Also check for a pidfile:
-      ls "$CHAMELEON_PLUGIN_DATA"/.daemon.pid 2>/dev/null && \
+      ls "$CHAMELEON_PLUGIN_DATA"/.daemon-*.pid 2>/dev/null && \
         cat "$CHAMELEON_PLUGIN_DATA"/.daemon.pid || echo "no pidfile found"
 
   STEP 3 - call daemon_status:
@@ -68,9 +68,10 @@ PHASE 33 - daemon lifecycle + serial queue + idle shutdown:
     Use Bash to attempt 50 rapid connections to the daemon socket and verify
     no ECONNREFUSED errors:
       python3 -c "
-      import socket, os, time
-      sock_path = os.environ.get('CHAMELEON_PLUGIN_DATA', '') + '/.daemon.sock'
-      if not os.path.exists(sock_path):
+      import socket, os, time, glob
+      _socks = glob.glob(os.path.join(os.environ.get('CHAMELEON_PLUGIN_DATA', ''), '.daemon-*.sock'))
+      sock_path = _socks[0] if _socks else ''
+      if not sock_path or not os.path.exists(sock_path):
           print('socket not found, skipping flood test')
       else:
           errors = 0

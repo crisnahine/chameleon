@@ -221,7 +221,11 @@ def _sweep_orphan_version_files() -> None:
             pid = int(raw[0]) if raw else None
         except (OSError, UnicodeDecodeError, ValueError):
             pid = None
-        if pid is not None and _pid_alive(pid):
+        # Only reap when the PID is parseable AND confirmed dead. An empty or
+        # half-written pidfile (a daemon mid-startup, before it writes its pid)
+        # must be left alone, or the sweep would delete a live daemon's socket
+        # in that window.
+        if pid is None or _pid_alive(pid):
             continue
         sock_file = pf.with_suffix(".sock")
         for p in (pf, sock_file):

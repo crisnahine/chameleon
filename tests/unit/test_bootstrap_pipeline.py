@@ -68,3 +68,16 @@ def test_select_canonicals_picks_a_real_witness(tmp_path):
     witness = next(iter(sel.selections.values())).witness_path
     assert witness.exists()
     assert witness.suffix == ".rb"
+
+
+def test_schema_version_constants_agree():
+    # Regression guard for the inert-bump bug: the bootstrap WRITES profiles
+    # using orchestrator.PROFILE_SCHEMA_VERSION, which must track the engine's
+    # CURRENT_SCHEMA_VERSION and the loader's MAX_SUPPORTED. They drifted once
+    # (orchestrator left at 7 while schema/loader moved to 8), so a freshly
+    # bootstrapped profile was stamped with a stale version.
+    from chameleon_mcp.bootstrap.orchestrator import PROFILE_SCHEMA_VERSION
+    from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
+    from chameleon_mcp.profile.schema import CURRENT_SCHEMA_VERSION
+
+    assert PROFILE_SCHEMA_VERSION == CURRENT_SCHEMA_VERSION == MAX_SUPPORTED_SCHEMA_VERSION

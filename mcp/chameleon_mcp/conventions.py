@@ -237,8 +237,12 @@ _TS_EXPORT_NAME_RE = re.compile(
     r"^\s*export\s+(?:const|let|var|function|class|interface|type|enum)\s+(\w+)",
     re.MULTILINE,
 )
-_RUBY_CLASS_NAME_RE = re.compile(r"^\s*class\s+(\w+)", re.MULTILINE)
-_RUBY_MODULE_NAME_RE = re.compile(r"^\s*module\s+(\w+)", re.MULTILINE)
+# Capture the full namespaced name (Api::V1::Foo); a bare \w+ stops at the
+# first '::' and records the outer namespace ("Api") for every namespaced
+# class, polluting the key-export list and losing the real name. Callers take
+# the last "::" segment as the meaningful export name.
+_RUBY_CLASS_NAME_RE = re.compile(r"^\s*class\s+([\w:]+)", re.MULTILINE)
+_RUBY_MODULE_NAME_RE = re.compile(r"^\s*module\s+([\w:]+)", re.MULTILINE)
 
 def _int_env(name: str, default: int) -> int:
     """Read a positive-int env override; else the default.
@@ -287,12 +291,12 @@ def extract_key_exports(files: list[ParsedFile], *, language: str) -> list[str]:
                     seen.add(name)
         elif language == "ruby":
             for m in _RUBY_CLASS_NAME_RE.finditer(content):
-                name = m.group(1)
+                name = m.group(1).split("::")[-1]  # Api::V1::Foo -> Foo
                 if name not in seen:
                     name_counts[name] += 1
                     seen.add(name)
             for m in _RUBY_MODULE_NAME_RE.finditer(content):
-                name = m.group(1)
+                name = m.group(1).split("::")[-1]
                 if name not in seen:
                     name_counts[name] += 1
                     seen.add(name)

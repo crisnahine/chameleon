@@ -311,6 +311,19 @@ class TestKeyExportsExtractor:
         assert "User" in result
         assert "Listing" in result
 
+    def test_extracts_compact_namespaced_ruby_exports(self, tmp_path):
+        # Regression: a bare \w+ recorded the outer namespace ("Api") for every
+        # compact-namespaced class and lost the real name. The meaningful export
+        # name is the last "::" segment.
+        files = []
+        for i in range(12):
+            files.append(_make_ruby_file(
+                tmp_path, f"c{i}.rb",
+                f"class Api::V1::Widget{i}Controller < Api::V1::BaseController\nend\n"))
+        result = extract_key_exports(files, language="ruby")
+        assert "Api" not in result  # outer namespace must not be the recorded name
+        assert any(n.startswith("Widget") for n in result)
+
     def test_skips_below_sample_size(self, tmp_path):
         files = [_make_ts_file(tmp_path, "one.ts", "export const foo = 1;\n")]
         result = extract_key_exports(files, language="typescript")

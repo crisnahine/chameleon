@@ -305,3 +305,18 @@ def test_sweep_orphan_version_files_drops_dead_keeps_live(tmp_path: Path):
     assert not dead_sock.exists()
     assert live_pid.exists()
     assert live_sock.exists()
+
+
+def test_sweep_orphan_keeps_empty_pidfile_startup_window(tmp_path: Path):
+    # A daemon mid-startup may have written an empty/half pidfile before its pid.
+    # The sweep must not reap it (would delete a live daemon's socket).
+    fake = tmp_path / "d"
+    fake.mkdir()
+    empty_pid = fake / ".daemon-7.7.7.pid"
+    empty_pid.write_text("")  # not yet written
+    empty_sock = fake / ".daemon-7.7.7.sock"
+    empty_sock.write_text("")
+    with patch("chameleon_mcp.daemon._plugin_data", return_value=fake):
+        _sweep_orphan_version_files()
+    assert empty_pid.exists()
+    assert empty_sock.exists()

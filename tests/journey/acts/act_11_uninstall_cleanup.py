@@ -141,8 +141,11 @@ def run(ctx: JourneyContext) -> ActResult:
         contents = list(plugin_data.iterdir())
         non_lock = [
             p for p in contents
-            if p.name not in (".lock", ".daemon.sock", ".gitkeep")
+            if p.name not in (".lock", ".gitkeep")
             and not p.suffix == ".lock"
+            # version-scoped daemon runtime files: .daemon-<version>.{sock,pid}
+            and not p.name.startswith(".daemon-")
+            and p.name != ".daemon.sock"
         ]
         if non_lock:
             notes_extra[37] = (
