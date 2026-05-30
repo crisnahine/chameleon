@@ -246,3 +246,94 @@ def test_posttool_verify_proceeds_when_trusted(tmp_path, monkeypatch):
     repo = _build_repo(tmp_path)
     _emitted, calls = _run_posttool_verify(repo, monkeypatch, trusted=True)
     assert calls != []          # reached the lint path (gate did not fire)
+
+
+# --- monorepo: a root grant must NOT vouch for an ungranted nested workspace ---
+# A workspace with its own .chameleon shares the root's git-based repo_id, so a
+# root-only grant previously leaked the workspace's canonical / rules / lint /
+# verify output (the gates checked `trust record exists for repo_id`, not
+# `record grants THIS root`). These pin the closed gate on every model-callable
+# surface + PostToolUse.
+
+_MONO_ID = "a1" * 32  # 64-char hex; stands in for the shared git-based repo_id
+
+
+def _build_monorepo(tmp_path: Path) -> tuple[Path, Path]:
+    root = tmp_path / "mono"
+    ws = root / "packages" / "svc"
+    for base in (root, ws):
+        cham = base / ".chameleon"
+        cham.mkdir(parents=True)
+        (cham / "profile.json").write_text(json.dumps({"generation": 1, "language": "typescript"}))
+        (cham / "archetypes.json").write_text(
+            json.dumps({"generation": 1, "archetypes": {ARCH: {"summary": "service objects"}}}))
+        (cham / "rules.json").write_text(
+            json.dumps({"generation": 1, "rules": {"no-default-export": {"severity": "warn"}}}))
+        (cham / "canonicals.json").write_text(json.dumps({
+            "generation": 1,
+            "canonicals": {ARCH: [{"witness": {"path": WITNESS, "sha_hint": "deadbeef"}}]}}))
+        (cham / "idioms.md").write_text(IDIOMS)
+        (cham / "COMMITTED").touch()
+        (base / WITNESS).write_text(WITNESS_CONTENT)
+    return root, ws
+
+
+def _grant_root_only(monkeypatch, root: Path) -> None:
+    # Collapse root + workspace to one repo_id (git does this), grant ONLY root.
+    monkeypatch.setattr("chameleon_mcp.tools._compute_repo_id", lambda p: _MONO_ID)
+    grant_trust(_MONO_ID, root / ".chameleon")
+
+
+def test_canonical_excerpt_untrusted_for_ungranted_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    root, ws = _build_monorepo(tmp_path)
+    _grant_root_only(monkeypatch, root)
+    assert get_canonical_excerpt(str(root), ARCH)["data"].get("status") != "untrusted"
+    res = get_canonical_excerpt(str(ws), ARCH)["data"]
+    assert res.get("status") == "untrusted"
+    assert res.get("content") is None
+
+
+def test_get_rules_untrusted_for_ungranted_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    root, ws = _build_monorepo(tmp_path)
+    _grant_root_only(monkeypatch, root)
+    assert get_rules(str(root))["data"].get("status") != "untrusted"
+    res = get_rules(str(ws))["data"]
+    assert res.get("status") == "untrusted"
+    assert res.get("rules") == []
+
+
+def test_lint_file_untrusted_for_ungranted_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    root, ws = _build_monorepo(tmp_path)
+    _grant_root_only(monkeypatch, root)
+    assert lint_file(str(root), ARCH, "export const x = 1;\n",
+                     file_path="x.ts")["data"].get("status") != "untrusted"
+    res = lint_file(str(ws), ARCH, "export const x = 1;\n", file_path="x.ts")["data"]
+    assert res.get("status") == "untrusted"
+    assert res.get("stub") is True
+
+
+def test_posttool_verify_skips_ungranted_workspace(tmp_path, monkeypatch):
+    root, ws = _build_monorepo(tmp_path)
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    _grant_root_only(monkeypatch, root)
+    calls: list = []
+    monkeypatch.setattr("chameleon_mcp.daemon_client.call",
+                        lambda method, *a, **k: (calls.append(method), None)[1])
+    payload = json.dumps({"tool_name": "Edit",
+                          "tool_input": {"file_path": str(ws / WITNESS)},
+                          "tool_response": {"success": True}, "session_id": "s1"})
+    captured: list[str] = []
+    with patch("sys.stdin", io.StringIO(payload)), patch("sys.stdout") as out:
+        out.write = captured.append
+        from chameleon_mcp.hook_helper import posttool_verify
+        posttool_verify()
+    text = "".join(captured).strip()
+    assert (json.loads(text) if text else {}) == {}
+    assert calls == []

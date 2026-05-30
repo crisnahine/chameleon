@@ -1343,7 +1343,8 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
 
     gate_repo_id = _compute_repo_id(repo_root)
-    if _trust_state_for(gate_repo_id) is None:
+    _gate_rec = _trust_state_for(gate_repo_id)
+    if _gate_rec is None or not _gate_rec.grants_root(repo_root):
         return _envelope({
             "status": "untrusted",
             "reason": "profile is not trusted for this user; grant with /chameleon-trust",
@@ -1480,7 +1481,8 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     # eslint/rubocop/tsconfig config. This tool is model-callable, so withhold
     # it for an untrusted profile. Stale still flows (trusted once).
     from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
-    if _trust_state_for(_compute_repo_id(repo_root)) is None:
+    _gate_rec = _trust_state_for(_compute_repo_id(repo_root))
+    if _gate_rec is None or not _gate_rec.grants_root(repo_root):
         env = {"status": "untrusted", "rules": []}
         if deprecation_note:
             env["deprecation"] = deprecation_note
@@ -1652,7 +1654,8 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
         )
 
     from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
-    if _trust_state_for(_compute_repo_id(repo_root)) is None:
+    _gate_rec = _trust_state_for(_compute_repo_id(repo_root))
+    if _gate_rec is None or not _gate_rec.grants_root(repo_root):
         # Untrusted profile: withhold convention/AST checks — their messages
         # embed attacker-controllable conventions.json / witness strings. Secret
         # detection on the caller's OWN submitted content is independent of

@@ -633,7 +633,8 @@ def session_start() -> int:
             from chameleon_mcp.profile.trust import trust_state_for
             from chameleon_mcp.sanitization import sanitize_for_chameleon_context
             from chameleon_mcp.tools import _compute_repo_id
-            if trust_state_for(_compute_repo_id(repo_root)) is not None:
+            _ss_rec = trust_state_for(_compute_repo_id(repo_root))
+            if _ss_rec is not None and _ss_rec.grants_root(repo_root):
                 import json as _conv_json
                 conv_text = (repo_root / ".chameleon" / "conventions.json").read_text(encoding="utf-8")
                 conv_data = _conv_json.loads(conv_text)
@@ -1101,8 +1102,10 @@ def posttool_verify() -> int:
         # mirror it here so PostToolUse does not feed violation messages derived
         # from an untrusted (attacker-controllable) profile — conventions.json
         # values and witness content — back to the model. Stale still verifies
-        # (the profile was trusted once); only never-trusted is skipped.
-        if trust_state_for(repo_id) is None:
+        # (the profile was trusted once); only never-trusted is skipped. An
+        # ungranted workspace under a monorepo-shared repo_id is untrusted too.
+        _gate_rec = trust_state_for(repo_id)
+        if _gate_rec is None or not _gate_rec.grants_root(repo_root):
             _emit({})
             return 0
 
