@@ -2371,7 +2371,15 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             "error": "refresh_repo expects an absolute repo path",
         })
 
-    refresh_lock_path = repo_path / ".chameleon" / ".refresh.lock"
+    # Lock lives in plugin-data, NOT inside .chameleon/: atomic_profile_commit
+    # renames the whole .chameleon/ dir away during refresh, which orphaned a
+    # lock held inside it — a second /chameleon-refresh starting after the rename
+    # flocked a DIFFERENT inode and ran concurrently. A stable per-repo
+    # plugin-data path keeps the lock inode constant across the profile swap.
+    from chameleon_mcp.profile.trust import repo_data_dir
+    _lock_dir = repo_data_dir(_compute_repo_id(repo_path))
+    _lock_dir.mkdir(parents=True, exist_ok=True)
+    refresh_lock_path = _lock_dir / ".refresh.lock"
     try:
         with acquire_advisory_lock(refresh_lock_path):
             pre_state = _capture_pre_refresh_state(repo_path)
@@ -3414,7 +3422,8 @@ def teach_profile(repo: str, feedback: str) -> dict:
             language = "any"
         addition = f"\n### {slug}\nLanguage: {language}\nStatus: active (added {timestamp})\n{body}\n"
 
-    lock_path = idioms_path.parent / ".idioms.lock"
+    from chameleon_mcp.profile.trust import repo_data_dir as _rdd
+    lock_path = _rdd(_compute_repo_id(idioms_path.parent.parent)) / ".idioms.lock"
     try:
         with acquire_advisory_lock(lock_path):
             current = (
@@ -4700,7 +4709,8 @@ def _transition_slug_to_deprecated(
         example=san_example, counterexample=san_counter,
     )
 
-    lock_path = idioms_path.parent / ".idioms.lock"
+    from chameleon_mcp.profile.trust import repo_data_dir as _rdd
+    lock_path = _rdd(_compute_repo_id(idioms_path.parent.parent)) / ".idioms.lock"
     try:
         with acquire_advisory_lock(lock_path):
             text = idioms_path.read_text(encoding="utf-8")
@@ -4816,7 +4826,8 @@ def _write_new_deprecated_idiom(
         example=san_example, counterexample=san_counter,
     )
 
-    lock_path = idioms_path.parent / ".idioms.lock"
+    from chameleon_mcp.profile.trust import repo_data_dir as _rdd
+    lock_path = _rdd(_compute_repo_id(idioms_path.parent.parent)) / ".idioms.lock"
     try:
         with acquire_advisory_lock(lock_path):
             if idioms_path.is_file():
