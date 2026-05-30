@@ -5,9 +5,13 @@ Per docs/architecture.md "Hook stack" PostToolUse Bash + "Security mitigations" 
 
 Design notes:
 - Writes AND reads use ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/.
+- Only command_sha256 is stored, never the command body: the only consumer
+  needs "was this session seen", and Bash command lines routinely carry secrets
+  (Authorization headers, AWS keys, db URLs) that must not sit in plaintext.
 - Fail-loud HMAC key: raises if /dev/urandom is unavailable (no silent
   unsigned mode).
-- GC: weekly purge of logs older than 30 days using mtime semantics.
+- GC: logs older than RETENTION_DAYS days are purged opportunistically when a
+  new session's log file is first created.
 """
 
 from __future__ import annotations
@@ -114,6 +118,28 @@ def _exec_log_dir(repo_id: str) -> Path:
     return repo_dir
 
 
+RETENTION_DAYS = 30
+
+
+def _gc_old_logs(exec_dir: Path) -> None:
+    """Best-effort purge of session logs older than RETENTION_DAYS.
+
+    Called only when a new session's log file is first created, so the
+    per-command append path rarely pays for a directory scan.
+    """
+    cutoff = time.time() - RETENTION_DAYS * 86400
+    try:
+        entries = list(exec_dir.glob("*.jsonl"))
+    except OSError:
+        return
+    for p in entries:
+        try:
+            if p.stat().st_mtime < cutoff:
+                p.unlink()
+        except OSError:
+            pass
+
+
 def append_exec_log(
     repo_id: str,
     *,
@@ -128,7 +154,7 @@ def append_exec_log(
       {
         "ts": <unix epoch float>,
         "session_id": str,
-        "command": str (truncated to 1KB),
+        "command_sha256": str (hex sha256 of the command; the body is never stored),
         "exit_code": int,
         "duration_ms": int | null,
         "hmac": "<hex sha256-hmac>"
@@ -137,13 +163,16 @@ def append_exec_log(
     key = _ensure_hmac_key()
     from chameleon_mcp.optouts import _safe_session_marker
     log_path = _exec_log_dir(repo_id) / f"{_safe_session_marker(session_id)}.jsonl"
+    new_session = not log_path.exists()
 
-    truncated_command = command[:1024]
+    # Store only the SHA-256 of the command, never the body: the consumer just
+    # needs to know a session was seen, and command lines routinely carry secrets.
+    command_sha256 = hashlib.sha256(command.encode("utf-8")).hexdigest()
 
     payload = {
         "ts": time.time(),
         "session_id": session_id,
-        "command": truncated_command,
+        "command_sha256": command_sha256,
         "exit_code": exit_code,
         "duration_ms": duration_ms,
     }
@@ -154,6 +183,9 @@ def append_exec_log(
     line = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
     with open(log_path, "a", encoding="utf-8") as f:
         f.write(line)
+
+    if new_session:
+        _gc_old_logs(log_path.parent)
 
 
 def verify_exec_log_line(line: str) -> bool:

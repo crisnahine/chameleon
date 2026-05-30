@@ -63,7 +63,9 @@ def test_append_writes_ndjson_with_hmac(tmp_path: Path):
     record = json.loads(lines[0])
     assert "hmac" in record
     assert record["session_id"] == "s1"
-    assert record["command"] == "echo hello"
+    import hashlib
+    assert record["command_sha256"] == hashlib.sha256(b"echo hello").hexdigest()
+    assert "command" not in record  # the raw command body is never stored
     assert record["exit_code"] == 0
     assert record["duration_ms"] == 42
     assert "ts" in record
@@ -117,7 +119,7 @@ def test_verify_tampered_command(tmp_path: Path):
         line = log_file.read_text(encoding="utf-8").strip()
 
         record = json.loads(line)
-        record["command"] = "rm -rf /"
+        record["command_sha256"] = "0" * 64
         tampered = json.dumps(record, sort_keys=True, separators=(",", ":"))
 
         assert verify_exec_log_line(tampered) is False
@@ -135,7 +137,10 @@ def test_verify_malformed_json(tmp_path: Path):
         assert verify_exec_log_line("") is False
 
 
-def test_command_truncated_at_1kb(tmp_path: Path):
+def test_command_body_not_stored(tmp_path: Path):
+    """The raw command (which can carry secrets) is never persisted — only a
+    fixed-length sha256."""
+    import hashlib
     key_file = tmp_path / "hmac.key"
     key_file.write_bytes(b"k" * 32)
     key_file.chmod(0o600)
@@ -146,18 +151,41 @@ def test_command_truncated_at_1kb(tmp_path: Path):
     }):
         from chameleon_mcp.exec_log import append_exec_log
 
-        long_command = "x" * 2048
-        append_exec_log(
-            "repo-1",
-            session_id="s1",
-            command=long_command,
-            exit_code=0,
-        )
+        secret_cmd = "curl -H 'Authorization: Bearer sk-SECRETVALUE' https://x"
+        append_exec_log("repo-1", session_id="s1", command=secret_cmd, exit_code=0)
 
         log_dir = tmp_path / ".chameleon_exec_log" / "repo-1"
-        log_file = list(log_dir.glob("*.jsonl"))[0]
-        line = log_file.read_text(encoding="utf-8").strip()
-        record = json.loads(line)
+        text = list(log_dir.glob("*.jsonl"))[0].read_text(encoding="utf-8")
+        record = json.loads(text.strip())
 
-        assert len(record["command"]) == 1024
-        assert record["command"] == "x" * 1024
+        assert "command" not in record
+        assert "SECRETVALUE" not in text  # the secret never reaches disk
+        assert record["command_sha256"] == hashlib.sha256(secret_cmd.encode()).hexdigest()
+        assert len(record["command_sha256"]) == 64
+
+
+def test_gc_purges_old_session_logs(tmp_path: Path):
+    """A new session's first append purges session logs older than RETENTION_DAYS."""
+    import time
+    key_file = tmp_path / "hmac.key"
+    key_file.write_bytes(b"k" * 32)
+    key_file.chmod(0o600)
+
+    with patch.dict(os.environ, {
+        "CHAMELEON_HMAC_KEY_PATH": str(key_file),
+        "TMPDIR": str(tmp_path),
+    }):
+        from chameleon_mcp.exec_log import RETENTION_DAYS, append_exec_log
+
+        log_dir = tmp_path / ".chameleon_exec_log" / "repo-1"
+        log_dir.mkdir(parents=True)
+        stale = log_dir / "old-session.jsonl"
+        stale.write_text("{}\n", encoding="utf-8")
+        old_mtime = time.time() - (RETENTION_DAYS + 5) * 86400
+        os.utime(stale, (old_mtime, old_mtime))
+
+        append_exec_log("repo-1", session_id="fresh", command="ls", exit_code=0)
+
+        remaining = list(log_dir.glob("*.jsonl"))
+        assert stale not in remaining          # stale log purged
+        assert len(remaining) == 1             # only the fresh session's log
