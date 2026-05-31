@@ -514,6 +514,23 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
         except Exception:
             pass
 
+    protocol_lines: list[str] = []
+    if principles_text:
+        try:
+            in_protocol = False
+            for line in principles_text.splitlines():
+                stripped = line.strip()
+                if stripped.lower().startswith("## anti-hallucination protocol"):
+                    in_protocol = True
+                    continue
+                if in_protocol:
+                    if stripped.startswith("## "):
+                        break  # next section
+                    if stripped.startswith("- "):
+                        protocol_lines.append(stripped)
+        except Exception:
+            protocol_lines = []
+
     if (
         not import_lines
         and not naming_lines
@@ -521,6 +538,7 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
         and not method_lines
         and not export_lines
         and not principle_lines
+        and not protocol_lines
     ):
         return ""
 
@@ -550,6 +568,10 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     if principle_lines:
         lines.append("PRINCIPLES:")
         lines.extend(principle_lines)
+        lines.append("")
+    if protocol_lines:
+        lines.append("ANTI-HALLUCINATION PROTOCOL:")
+        lines.extend(protocol_lines)
         lines.append("")
     lines.append("</chameleon-conventions>")
     return "\n".join(lines)
@@ -650,5 +672,10 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
 
             idx = zlib.crc32(archetype.encode("utf-8")) % len(p_lines)
             parts.append(p_lines[idx][:80])
+
+    # Fixed anti-hallucination reminder, always present (not derived from
+    # principles_text) so it shows on every edit regardless of the rotating
+    # principle picked above.
+    parts.append("Verify symbols/imports/paths exist before using them; don't invent")
 
     return ". ".join(parts)

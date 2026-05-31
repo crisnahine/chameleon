@@ -1577,9 +1577,10 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
 
     The 100 KB content cap from v0.2 is preserved: oversized content is
     flagged via the `truncated` envelope field and the engine processes
-    the truncated buffer (not the full content). The engine is otherwise
-    pure (no I/O), so the function is safe to call repeatedly without
-    leaking subprocess state.
+    the truncated buffer (not the full content). The engine is pure
+    except for the advisory phantom-import check, which probes the
+    filesystem for unresolved relative / tsconfig-alias imports; that
+    check is silent unless `file_path` is an absolute path under `repo`.
     """
     from chameleon_mcp.lint_engine import (
         canonical_confidence as _canonical_confidence,
@@ -1838,17 +1839,35 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     except Exception:
         pass
 
+    # Phantom-import check (filesystem-touching; advisory). Needs the edited
+    # file's absolute path; silent when file_path is absent or unresolvable.
+    phantom_violations: list[dict] = []
+    try:
+        from chameleon_mcp.phantom_imports import lint_phantom_imports
+        phantom_violations = [
+            v.to_dict()
+            for v in lint_phantom_imports(
+                working_content,
+                file_path=file_path,
+                repo_root=repo_root,
+                language=language,
+                rules=loaded.rules,
+            )
+        ]
+    except Exception:
+        phantom_violations = []
+
     # Sanitize profile-derived violation messages (they embed conventions.json /
     # witness-derived strings) before returning on a model-callable surface,
     # matching posttool_verify. Secret violations come from the caller's own
     # content and are left as-is.
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
-    for _v in best_ast_violations + convention_violations:
+    for _v in best_ast_violations + convention_violations + phantom_violations:
         for _k, _val in list(_v.items()):
             if isinstance(_val, str):
                 _v[_k] = _sanitize(_val)
 
-    violations = secret_violations + best_ast_violations + convention_violations
+    violations = secret_violations + best_ast_violations + convention_violations + phantom_violations
 
     return _envelope(
         {

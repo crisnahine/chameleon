@@ -314,11 +314,15 @@ def _dispatch(method: str, payload: dict) -> dict:
         repo = payload.get("repo")
         archetype = payload.get("archetype")
         content = payload.get("content", "")
+        file_path = payload.get("file_path")
         if not isinstance(repo, str) or not isinstance(archetype, str):
             return {"error": "repo + archetype required"}
         if not isinstance(content, str):
             return {"error": "content must be a string"}
-        return _tools.lint_file(repo, archetype, content)
+        return _tools.lint_file(
+            repo, archetype, content,
+            file_path=file_path if isinstance(file_path, str) else None,
+        )
 
     if method == "invalidate_cache":
         from chameleon_mcp.profile.loader import clear_profile_cache

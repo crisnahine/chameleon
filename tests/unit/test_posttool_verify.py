@@ -601,3 +601,23 @@ def test_clean_after_violation_emits_archetype_clean(tmp_path: Path):
     hook_output = result.get("hookSpecificOutput", {})
     assert "additionalContext" in hook_output
     assert "[🦎 archetype: clean]" in hook_output["additionalContext"]
+
+
+def test_phantom_import_surfaced_in_process(tmp_path):
+    """The in-process fallback contract: lint_phantom_imports flags a relative
+    import that resolves to no file and returns Violation instances."""
+    import chameleon_mcp.phantom_imports as pi
+    from chameleon_mcp.lint_engine import Violation
+
+    editing = tmp_path / "app.ts"
+    editing.write_text("import x from './missing';\n", encoding="utf-8")
+
+    out = pi.lint_phantom_imports(
+        "import x from './missing';\n",
+        file_path=str(editing),
+        repo_root=str(tmp_path),
+        language="typescript",
+        rules={},
+    )
+    assert len(out) == 1 and out[0].rule == "phantom-import"
+    assert isinstance(out[0], Violation)

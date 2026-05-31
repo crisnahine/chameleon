@@ -241,12 +241,14 @@ class TestFormatConventionsEcho:
         assert "I-prefix" in text
         assert len(text) < 200
 
-    def test_empty_returns_empty(self):
+    def test_empty_conventions_returns_only_protocol_reminder(self):
+        # With no conventions, the echo carries just the always-on
+        # anti-hallucination reminder (no convention/principle parts).
         from chameleon_mcp.conventions import format_conventions_echo
 
         conventions = empty_conventions(generation=1)
         text = format_conventions_echo(conventions, archetype="hook")
-        assert text == ""
+        assert text == "Verify symbols/imports/paths exist before using them; don't invent"
 
     def test_archetype_not_in_conventions_falls_back(self):
         from chameleon_mcp.conventions import format_conventions_echo
@@ -618,3 +620,79 @@ class TestDirectoryListing:
         from chameleon_mcp.conventions import format_directory_listing
 
         assert format_directory_listing(None) == ""
+
+
+from chameleon_mcp.principles import generate_principles  # noqa: E402
+
+
+class TestGeneratePrinciplesProtocol:
+    def test_universal_lines_always_present(self):
+        out = generate_principles(conventions={}, archetypes={})
+        assert "## anti-hallucination protocol" in out
+        assert "Don't invent symbols" in out
+        assert "canonical witness" in out
+
+    def test_key_exports_line_gated_on_data(self):
+        without = generate_principles(conventions={"conventions": {}}, archetypes={})
+        assert "Check before creating" not in without
+        with_exports = generate_principles(
+            conventions={"conventions": {"key_exports": {"service": ["formatDate"]}}},
+            archetypes={},
+        )
+        assert "Check before creating" in with_exports
+
+    def test_known_bases_line_gated_on_ruby_inheritance(self):
+        without = generate_principles(conventions={"conventions": {}}, archetypes={})
+        assert "Inherit only from bases" not in without
+        with_bases = generate_principles(
+            conventions={"conventions": {"inheritance": {
+                "model": {"dominant_base": "ApplicationRecord", "known_bases": ["ApplicationRecord"]}
+            }}},
+            archetypes={},
+        )
+        assert "Inherit only from bases" in with_bases
+
+    def test_protocol_lines_are_bullets_not_numbered(self):
+        out = generate_principles(conventions={}, archetypes={})
+        protocol_idx = out.index("## anti-hallucination protocol")
+        tail = out[protocol_idx:]
+        for line in tail.splitlines():
+            if line.strip() and line[0].isdigit():
+                raise AssertionError(f"protocol line is numbered: {line!r}")
+
+
+class TestSessionProtocolBlock:
+    def test_protocol_block_rendered(self):
+        from chameleon_mcp.conventions import empty_conventions, format_conventions_for_session
+        principles = (
+            "# principles\n\n1. Match directory granularity.\n\n"
+            "## anti-hallucination protocol\n\n"
+            "- Don't invent symbols, imports, file paths, config keys, or APIs.\n"
+            "- Match the canonical witness's real shape.\n"
+        )
+        out = format_conventions_for_session(empty_conventions(generation=1), principles_text=principles)
+        assert "ANTI-HALLUCINATION PROTOCOL:" in out
+        assert "Don't invent symbols" in out
+        assert "PRINCIPLES:" in out
+        assert "Match directory granularity" in out
+
+    def test_no_protocol_section_no_block(self):
+        from chameleon_mcp.conventions import empty_conventions, format_conventions_for_session
+        principles = "# principles\n\n1. Only a numbered principle.\n"
+        out = format_conventions_for_session(empty_conventions(generation=1), principles_text=principles)
+        assert "ANTI-HALLUCINATION PROTOCOL:" not in out
+        assert "PRINCIPLES:" in out
+
+
+class TestEchoProtocolReminder:
+    def test_echo_carries_reminder(self):
+        from chameleon_mcp.conventions import empty_conventions, format_conventions_echo
+        out = format_conventions_echo(empty_conventions(generation=1), archetype="service")
+        assert "Verify symbols/imports/paths exist" in out
+
+    def test_reminder_present_even_without_principles(self):
+        from chameleon_mcp.conventions import empty_conventions, format_conventions_echo
+        out = format_conventions_echo(
+            empty_conventions(generation=1), archetype="service", principles_text=""
+        )
+        assert "Verify symbols/imports/paths exist" in out

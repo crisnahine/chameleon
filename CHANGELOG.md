@@ -4,6 +4,13 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-05-31
+
+### Added
+
+- **Anti-hallucination protocol.** `principles.md` now carries an always-on protocol (don't invent symbols, imports, paths, config keys, or APIs; match the canonical witness; reuse the listed key exports). It is injected at SessionStart as its own `ANTI-HALLUCINATION PROTOCOL:` block and as a short reminder on every edit. Data-gated lines reference the repo's real key exports and known base classes when present.
+- **`phantom-import` lint check** (PostToolUse, advisory). Flags a relative import, tsconfig path-alias import, or Ruby `require_relative` whose target resolves to no file on disk; a high-precision signal for typo'd or invented paths. Conservative by design: bare packages, unmapped aliases, bundler query suffixes (`?react`, `?url`), framework typegen (`./+types/*`), imports embedded in comments or template literals, and any filesystem ambiguity are skipped. Path aliases anchor to the nearest `tsconfig.json` (monorepo-correct). Never blocks an edit; honors `chameleon-ignore phantom-import`. Verified against nine real repos: zero false positives across ~48k source files, all injected typos caught.
+
 ## [1.4.0] - 2026-05-31
 
 A full-subsystem correctness audit and remediation, plus a new tool for capturing wrapper-preference conventions that AST analysis cannot infer.

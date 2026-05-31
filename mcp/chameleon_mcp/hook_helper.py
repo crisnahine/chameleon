@@ -1261,6 +1261,7 @@ def posttool_verify() -> int:
                 "repo": str(repo_root),
                 "archetype": archetype_name,
                 "content": content,
+                "file_path": file_path,
             })
             if lint_result is not None:
                 daemon_responded = True
@@ -1317,6 +1318,21 @@ def posttool_verify() -> int:
                     violations.extend(
                         v.to_dict() for v in conv_violations if v.rule != "secret-detected-in-content"
                     )
+            except Exception:
+                pass
+
+            try:
+                from chameleon_mcp.phantom_imports import lint_phantom_imports
+                violations.extend(
+                    v.to_dict()
+                    for v in lint_phantom_imports(
+                        content,
+                        file_path=file_path,
+                        repo_root=repo_root,
+                        language=language,
+                        rules=loaded.rules,
+                    )
+                )
             except Exception:
                 pass
 
