@@ -17,12 +17,24 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import xxhash
 
 from chameleon_mcp.extractors._base import ParsedFile, ParseResult
 from chameleon_mcp.plugin_paths import plugin_root
+
+
+class NodeUnavailableError(RuntimeError):
+    """Node.js / npm (or an installed node_modules) is unavailable.
+
+    Raised by the TypeScript extractor when its node deps cannot be
+    provisioned. Subclasses ``RuntimeError`` so callers that catch
+    ``RuntimeError`` still work; the bootstrap orchestrator catches it
+    specifically and degrades to a ``failed_node_unavailable`` report instead
+    of aborting the whole run.
+    """
 
 
 class TypeScriptExtractor:
@@ -38,39 +50,216 @@ class TypeScriptExtractor:
         else:
             self._ts_dump_script = ts_dump_script
 
-    def _ensure_node_modules(self) -> None:
-        """Run `npm install` in mcp/ the first time TS extraction is needed.
+    @staticmethod
+    def _node_modules_ready(node_modules: Path) -> bool:
+        """True only when the real ``require('typescript')`` entry module exists.
 
-        Required because uvx-based MCP install does not run the npm step,
-        and the TS extractor depends on mcp/node_modules/typescript.
+        ``npm ci`` builds the tree in place and is NOT atomic: the
+        ``typescript/`` directory appears tens of ms before ``lib/typescript.js``
+        (the package ``main``) is written. Gating on the bare directory would
+        hand a concurrent reader a half-written tree, so check the actual file
+        that ``require('typescript')`` loads.
         """
-        mcp_dir = plugin_root() / "mcp"
-        if (mcp_dir / "node_modules" / "typescript").exists():
-            return
+        return (node_modules / "typescript" / "lib" / "typescript.js").is_file()
+
+    def _node_modules_dir(self) -> Path:
+        """Per-user, version-scoped install dir for the TS extractor's node deps.
+
+        Lives under the writable chameleon data dir (NOT the read-only,
+        rebuilt-per-version plugin cache), so TS extraction survives
+        locked-down installs, offline upgrades, and plugin-cache pruning.
+        Version-scoped so an upgrade gets a clean install rather than reusing
+        a stale TypeScript.
+        """
+        from chameleon_mcp import __version__
+        from chameleon_mcp.plugin_paths import plugin_data_dir
+
+        return plugin_data_dir() / "node-deps" / __version__
+
+    def _ensure_node_modules(self) -> Path:
+        """Provision the TS extractor's node deps. Return the node_modules path.
+
+        Resolution order:
+          1. Already installed in the per-user data dir -> use it.
+          2. Legacy/dev location (``<plugin>/mcp/node_modules``) already has
+             it -> use it read-only (we never write into the plugin dir).
+          3. Install into the data dir via ``npm ci`` (lockfile) /
+             ``npm install``.
+
+        Required because the uvx-based MCP install does not run an npm step.
+        Raises ``NodeUnavailableError`` if npm is absent or the install fails.
+        """
+        data_node_modules = self._node_modules_dir() / "node_modules"
+        if self._node_modules_ready(data_node_modules):
+            return data_node_modules
+
+        legacy_node_modules = plugin_root() / "mcp" / "node_modules"
+        if self._node_modules_ready(legacy_node_modules):
+            return legacy_node_modules
 
         if not shutil.which("npm"):
-            raise RuntimeError(
+            raise NodeUnavailableError(
                 "chameleon: `npm` not found on PATH. Install Node.js >= 20 "
                 "to use the TypeScript extractor."
             )
 
-        print(
-            "chameleon: first-run setup — installing Node deps (~10s)...",
-            file=sys.stderr,
-            flush=True,
-        )
-        result = subprocess.run(
-            ["npm", "install", "--no-audit", "--no-fund"],
-            cwd=str(mcp_dir),
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                "chameleon: `npm install` failed in "
-                f"{mcp_dir}:\n{result.stderr}"
+        from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+
+        target = self._node_modules_dir()
+        node_deps_root = target.parent
+        try:
+            node_deps_root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise NodeUnavailableError(
+                f"chameleon: node-deps dir is not writable ({node_deps_root}): {exc}"
+            ) from exc
+
+        # Version-scope the lock: different plugin versions install disjoint
+        # target dirs, so they must not block each other; same-version installs
+        # still serialize on this file. (target.name == the plugin version.)
+        lock_path = node_deps_root / f".install-{target.name}.lock"
+        # Wait at least as long as a peer's worst-case hold: `npm ci` (300s) +
+        # the `npm install` fallback (300s), plus margin, so we don't give up
+        # while a legitimate install is still running.
+        deadline = time.monotonic() + 660.0
+        while True:
+            # A peer may have finished installing since we last looked.
+            if self._node_modules_ready(data_node_modules):
+                return data_node_modules
+            try:
+                with acquire_advisory_lock(lock_path):
+                    # Re-check under the lock: the previous holder may have just
+                    # completed the install.
+                    if self._node_modules_ready(data_node_modules):
+                        return data_node_modules
+                    self._run_npm_install(target)
+                    self._prune_stale_node_deps()
+                    return data_node_modules
+            except LockHeldError:
+                # A live peer is installing into the shared dir. Wait for it
+                # rather than racing a destructive `npm ci` that wipes the tree
+                # the peer (or a reader) is mid-use.
+                if time.monotonic() > deadline:
+                    raise NodeUnavailableError(
+                        "chameleon: timed out waiting for a concurrent Node "
+                        f"dependency install at {data_node_modules}."
+                    ) from None
+                time.sleep(0.5)
+            except OSError as exc:
+                raise NodeUnavailableError(
+                    f"chameleon: node-deps dir is not writable ({node_deps_root}): {exc}"
+                ) from exc
+
+    def _run_npm_install(self, target: Path) -> None:
+        """Install node deps into a private staging dir, then atomically swap the
+        completed tree into ``target``. The caller holds the install lock.
+
+        Installing into staging + ``os.rename`` (atomic on the same filesystem)
+        means a lock-free reader — which gates on
+        ``target/node_modules/typescript/lib/typescript.js`` — only ever sees the
+        old (absent) state or the complete tree, never a half-written one. Raises
+        ``NodeUnavailableError`` on any failure; leaves no staging dir behind.
+        """
+        node_deps_root = target.parent
+        staging = node_deps_root / f"{target.name}.staging-{os.getpid()}"
+        try:
+            try:
+                if staging.exists():
+                    shutil.rmtree(staging, ignore_errors=True)
+                staging.mkdir(parents=True, exist_ok=True)
+                src_mcp = plugin_root() / "mcp"
+                for fname in ("package.json", "package-lock.json"):
+                    src = src_mcp / fname
+                    if src.is_file():
+                        shutil.copy2(src, staging / fname)
+            except OSError as exc:
+                raise NodeUnavailableError(
+                    f"chameleon: could not seed node-deps staging dir {staging}: {exc}"
+                ) from exc
+
+            has_lock = (staging / "package-lock.json").is_file()
+            base_cmd = ["npm", "ci"] if has_lock else ["npm", "install"]
+            print(
+                "chameleon: first-run setup — installing Node deps (~10s)...",
+                file=sys.stderr,
+                flush=True,
             )
+            try:
+                result = subprocess.run(
+                    [*base_cmd, "--no-audit", "--no-fund"],
+                    cwd=str(staging),
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                if result.returncode != 0 and has_lock:
+                    # `npm ci` aborts if the lockfile drifts from package.json;
+                    # fall back to a plain install once before giving up.
+                    result = subprocess.run(
+                        ["npm", "install", "--no-audit", "--no-fund"],
+                        cwd=str(staging),
+                        capture_output=True,
+                        text=True,
+                        timeout=300,
+                    )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise NodeUnavailableError(
+                    f"chameleon: npm could not be launched or timed out: {exc}"
+                ) from exc
+            if result.returncode != 0:
+                raise NodeUnavailableError(
+                    f"chameleon: Node dependency install failed in {staging}:\n{result.stderr}"
+                )
+            if not self._node_modules_ready(staging / "node_modules"):
+                # Install reported success but the dep is missing — usually means
+                # the plugin's mcp/package.json couldn't be found to seed the copy.
+                raise NodeUnavailableError(
+                    "chameleon: Node dependency install completed but 'typescript' "
+                    f"is missing under {staging / 'node_modules'}. Verify the "
+                    "plugin's mcp/package.json is present."
+                )
+
+            # Atomically promote the completed staging tree into place.
+            try:
+                if target.exists():
+                    shutil.rmtree(target, ignore_errors=True)
+                os.rename(staging, target)
+            except OSError as exc:
+                raise NodeUnavailableError(
+                    f"chameleon: could not finalize node deps at {target}: {exc}"
+                ) from exc
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+
+    def _prune_stale_node_deps(self) -> None:
+        """Best-effort removal of ``node-deps`` dirs from other plugin versions.
+
+        Keeps the per-user data dir from accumulating stale node_modules trees
+        (tens of MB each) across upgrades. Never raises.
+        """
+        from chameleon_mcp import __version__
+
+        root = self._node_modules_dir().parent
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            return
+        now = time.time()
+        # Don't delete a sibling that may still be live for another plugin
+        # version's running ts_dump.mjs (readers hold no lock). Only reclaim
+        # dirs untouched for a generous window; the disk cost of the lag is
+        # negligible next to corrupting an in-use tree.
+        ttl_seconds = 7 * 24 * 3600
+        for child in children:
+            try:
+                if child.name == __version__ or not child.is_dir():
+                    continue
+                if (now - child.stat().st_mtime) < ttl_seconds:
+                    continue
+                shutil.rmtree(child, ignore_errors=True)
+            except OSError:
+                continue
 
     def can_handle(self, repo_root: Path) -> bool:
         """Detect TS via tsconfig.json or package.json with TS-related deps.
@@ -154,14 +343,15 @@ class TypeScriptExtractor:
                 f"ts_dump.mjs not found at {self._ts_dump_script}; "
                 "the plugin install appears incomplete."
             )
-        self._ensure_node_modules()
+        node_modules = self._ensure_node_modules()
         if not shutil.which("node"):
-            raise RuntimeError(
+            raise NodeUnavailableError(
                 "chameleon: `node` not found on PATH. Install Node.js >= 20 "
                 "to use the TypeScript extractor."
             )
         env = os.environ.copy()
-        env["NODE_PATH"] = str(plugin_root() / "mcp" / "node_modules")
+        env["NODE_PATH"] = str(node_modules)
+        env["CHAMELEON_NODE_MODULES"] = str(node_modules)
 
         input_data = "".join(f"{fp.resolve()}\n" for fp in files)
 
@@ -197,7 +387,13 @@ class TypeScriptExtractor:
             if "error" in record:
                 skipped.append((path, record["error"]))
                 continue
-            results.append(_parsed_file_from_record(path, record))
+            try:
+                results.append(_parsed_file_from_record(path, record))
+            except (ValueError, TypeError):
+                # One malformed record must skip that file, not abort the whole
+                # corpus (mirrors the per-line JSONDecodeError skip above).
+                skipped.append((path, "malformed_record"))
+                continue
 
         # A timeout or non-zero exit means files past the failure point never
         # reached stdout. Mark them skipped so a truncated sample is VISIBLE

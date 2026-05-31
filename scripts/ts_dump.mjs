@@ -7,8 +7,15 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const mcpPackageJson = path.resolve(__dirname, "..", "mcp", "package.json");
-const require = createRequire(mcpPackageJson);
+// Resolve `typescript` from the chameleon-provisioned node_modules. The
+// installer (extractors/typescript.py) sets CHAMELEON_NODE_MODULES to the
+// per-user, version-scoped install dir; fall back to the legacy
+// <plugin>/mcp/node_modules for dev / older installs.
+const nodeModules = process.env.CHAMELEON_NODE_MODULES;
+const requireBase = nodeModules
+  ? path.join(nodeModules, "..", "package.json")
+  : path.resolve(__dirname, "..", "mcp", "package.json");
+const require = createRequire(requireBase);
 const ts = require("typescript");
 
 const MAX_AST_NODES = 50_000;
