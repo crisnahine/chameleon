@@ -104,9 +104,7 @@ class TestDisplayedPathsPattern:
         assert o._displayed_paths_pattern("app/models", "") == "app/models"
 
     def test_first_segment_not_app_unchanged(self):
-        assert (
-            o._displayed_paths_pattern("x/y/z", "lib/models/rule/foo.rb") == "x/y/z"
-        )
+        assert o._displayed_paths_pattern("x/y/z", "lib/models/rule/foo.rb") == "x/y/z"
 
     def test_second_segment_not_load_bearing_unchanged(self):
         # "vendor" is not in _RAILS_LOAD_BEARING_SECOND_SEGS -> unchanged
@@ -337,9 +335,7 @@ class TestLoadUserRenames:
         pdir = self._profile_dir(tmp_path)
         # "Bad_Name" violates ARCHETYPE_NAME_RE (uppercase + underscore)
         (pdir / "renames.json").write_text(
-            json.dumps(
-                {"schema_version": 1, "renames": {"good": "Bad_Name", "ok": "fine-name"}}
-            )
+            json.dumps({"schema_version": 1, "renames": {"good": "Bad_Name", "ok": "fine-name"}})
         )
         assert o._load_user_renames(pdir) == {"ok": "fine-name"}
 
@@ -355,7 +351,9 @@ class TestLoadUserRenames:
 
     def test_schema_version_not_int_returns_empty(self, tmp_path: Path):
         pdir = self._profile_dir(tmp_path)
-        (pdir / "renames.json").write_text(json.dumps({"schema_version": "1", "renames": {"a": "b"}}))
+        (pdir / "renames.json").write_text(
+            json.dumps({"schema_version": "1", "renames": {"a": "b"}})
+        )
         assert o._load_user_renames(pdir) == {}
 
     def test_empty_key_or_value_skipped(self, tmp_path: Path):
@@ -581,8 +579,7 @@ class TestGenerateArchetypeSummary:
         summary = o._generate_archetype_summary(entry, rb, "ruby")
         # node kinds capped at the first 3; inheritance + signal appended
         assert summary == (
-            "app/models. ClassNode, ModuleNode, Method. active_record. "
-            "inherits Api::V1::Base."
+            "app/models. ClassNode, ModuleNode, Method. active_record. inherits Api::V1::Base."
         )
 
     def test_ts_extends_and_use_client(self, tmp_path: Path):
@@ -595,7 +592,10 @@ class TestGenerateArchetypeSummary:
         }
         summary = o._generate_archetype_summary(entry, ts, "typescript")
         # content_signal "none" suppressed; both inherit + client component shown
-        assert summary == "src/components. ClassDeclaration. inherits React.Component. client component."
+        assert (
+            summary
+            == "src/components. ClassDeclaration. inherits React.Component. client component."
+        )
 
     def test_empty_entry_no_witness(self):
         assert o._generate_archetype_summary({}, None, "ruby") == ""

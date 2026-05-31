@@ -23,7 +23,6 @@ import pytest
 
 from chameleon_mcp.bootstrap import discovery as d
 
-
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
@@ -295,10 +294,7 @@ def test_too_many_files_error_message_and_attrs():
     err = d.TooManyFilesError(7, ceiling=5)
     assert err.count == 7
     assert err.ceiling == 5
-    assert str(err) == (
-        "repo has 7 files (ceiling 5); use explicit paths_glob "
-        "to scope analysis"
-    )
+    assert str(err) == ("repo has 7 files (ceiling 5); use explicit paths_glob to scope analysis")
 
 
 def test_too_many_files_error_default_ceiling_is_repo_size_guard():

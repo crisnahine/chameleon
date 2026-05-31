@@ -173,12 +173,15 @@ class TestRailsPriors:
 
     def test_helper_with_suffix_matches_but_without_suffix_has_no_fallback(self):
         # _helper.rb suffix matches the prior...
-        assert _base_name_for(
-            _cluster(
-                bucket="app/helpers",
-                members=["app/helpers/x_helper.rb", "app/helpers/y_helper.rb"],
+        assert (
+            _base_name_for(
+                _cluster(
+                    bucket="app/helpers",
+                    members=["app/helpers/x_helper.rb", "app/helpers/y_helper.rb"],
+                )
             )
-        ) == "helper"
+            == "helper"
+        )
         # ...but with no suffix there is NO generic _has("helpers") fallback,
         # so the base name is None and the caller drops to a cluster-hash form.
         no_suffix = _cluster(

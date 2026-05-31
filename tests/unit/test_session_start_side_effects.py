@@ -441,9 +441,7 @@ def test_auto_refresh_skips_when_disabled(tmp_path, monkeypatch):
     )
     assert not popen.called
     # no cooldown marker either (returned before the spawn block)
-    assert not (
-        tmp_path / "data" / "rid_ar_disabled" / hh._AUTO_REFRESH_COOLDOWN_FILENAME
-    ).exists()
+    assert not (tmp_path / "data" / "rid_ar_disabled" / hh._AUTO_REFRESH_COOLDOWN_FILENAME).exists()
     _reset_drift_conn_cache()
 
 

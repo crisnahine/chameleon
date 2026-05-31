@@ -148,9 +148,7 @@ class TestRenderHeader:
             "schema_version": 2,
             "archetype_count": 0,
         }
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta=meta, idioms_text=""
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta=meta, idioms_text="")
         lines = _lines(out)
         assert lines[0] == "# chameleon profile summary"
         assert "Generated: 2026-05-31T00:00:00Z" in lines
@@ -160,15 +158,11 @@ class TestRenderHeader:
         assert "Schema version: 2" in lines
 
     def test_source_defaults_to_bootstrap_when_absent(self):
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta={}, idioms_text=""
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta={}, idioms_text="")
         assert "Source: bootstrap" in _lines(out)
 
     def test_empty_meta_renders_blank_values_not_crash(self):
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta={}, idioms_text=""
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta={}, idioms_text="")
         lines = _lines(out)
         assert "Generated: " in lines
         assert "Engine: chameleon v" in lines
@@ -219,16 +213,12 @@ class TestSecondaryLanguageHint:
         # A hint dict that exists but has a falsy secondary_detected must not
         # render the section.
         meta = {"archetype_count": 0, "language_hint": {"primary": "ruby"}}
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta=meta, idioms_text=""
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta=meta, idioms_text="")
         assert "## Secondary language detected" not in out
 
     def test_non_dict_hint_is_ignored(self):
         meta = {"archetype_count": 0, "language_hint": "ruby"}
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta=meta, idioms_text=""
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta=meta, idioms_text="")
         assert "## Secondary language detected" not in out
 
 
@@ -245,9 +235,7 @@ class TestArchetypesSection:
         assert "## 7 archetypes detected" in _lines(out)
 
     def test_archetype_count_defaults_to_zero(self):
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta={}, idioms_text=""
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta={}, idioms_text="")
         assert "## 0 archetypes detected" in _lines(out)
 
     def test_archetypes_rendered_sorted_by_name(self):
@@ -273,8 +261,7 @@ class TestArchetypesSection:
             "- **component** (cluster_size 5, paths src/components/**) — canonical: `(none)`"
         )
         model_idx = lines.index(
-            "- **model** (cluster_size 12, paths app/models/) — "
-            "canonical: `app/models/user.rb`"
+            "- **model** (cluster_size 12, paths app/models/) — canonical: `app/models/user.rb`"
         )
         # sorted() places component before model.
         assert comp_idx < model_idx
@@ -300,7 +287,9 @@ class TestArchetypesSection:
         assert "app/services/**" not in line
 
     def test_falls_back_to_raw_paths_pattern_when_no_display(self):
-        archetypes = {"archetypes": {"svc": {"cluster_size": 1, "paths_pattern": "app/services/**"}}}
+        archetypes = {
+            "archetypes": {"svc": {"cluster_size": 1, "paths_pattern": "app/services/**"}}
+        }
         out = render_summary_md(
             archetypes=archetypes,
             canonicals={},
@@ -419,9 +408,7 @@ class TestRulesSection:
             archetypes={}, canonicals={}, profile_meta={}, idioms_text="", rules_data=rules_data
         )
         lines = _lines(out)
-        assert (
-            "_Auto-derived from 2 tool config file(s): `rubocop`, `tsconfig`._" in lines
-        )
+        assert "_Auto-derived from 2 tool config file(s): `rubocop`, `tsconfig`._" in lines
         # rubocop: Style/Foo scalar (1) + Layout/Bar nested {x:1} (1) = 2
         assert "- **rubocop** — 2 rule(s) extracted" in lines
         assert "- **tsconfig** — 1 rule(s) extracted" in lines
@@ -450,9 +437,7 @@ class TestRulesSection:
 
 class TestIdiomsSection:
     def test_no_idioms_renders_teach_prompt(self):
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta={}, idioms_text=""
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta={}, idioms_text="")
         assert (
             "_No idioms captured yet. Run /chameleon-teach to record team conventions._"
             in _lines(out)
@@ -460,9 +445,7 @@ class TestIdiomsSection:
 
     def test_active_idioms_rendered_with_trust_warning(self):
         idioms = "## active\n- always use Foo\n- never inline SQL\n"
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta={}, idioms_text=idioms
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta={}, idioms_text=idioms)
         assert "- always use Foo\n- never inline SQL" in out
         assert "Review carefully before granting trust." in out
         # teach prompt is suppressed when active idioms exist
@@ -470,32 +453,24 @@ class TestIdiomsSection:
 
     def test_placeholder_active_idioms_shows_teach_prompt(self):
         idioms = "## active\n_(none)_\n"
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta={}, idioms_text=idioms
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta={}, idioms_text=idioms)
         assert "_No idioms captured yet." in out
 
     def test_deprecated_idioms_section_rendered(self):
         idioms = "## active\n- use Foo\n## deprecated\n- old Bar\n"
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta={}, idioms_text=idioms
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta={}, idioms_text=idioms)
         assert "## Deprecated idioms" in _lines(out)
         assert "- old Bar" in _lines(out)
         assert "kept here for audit history and are NOT injected into" in out
 
     def test_no_deprecated_section_when_absent(self):
         idioms = "## active\n- use Foo\n"
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta={}, idioms_text=idioms
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta={}, idioms_text=idioms)
         assert "## Deprecated idioms" not in out
 
     def test_placeholder_deprecated_idioms_omitted(self):
         idioms = "## active\n- use Foo\n## deprecated\n_(none)_\n"
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta={}, idioms_text=idioms
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta={}, idioms_text=idioms)
         assert "## Deprecated idioms" not in out
 
 
@@ -537,9 +512,7 @@ class TestSectionStructure:
         assert positions == sorted(positions)
 
     def test_output_is_newline_joined_string(self):
-        out = render_summary_md(
-            archetypes={}, canonicals={}, profile_meta={}, idioms_text=""
-        )
+        out = render_summary_md(archetypes={}, canonicals={}, profile_meta={}, idioms_text="")
         assert isinstance(out, str)
         # no trailing newline appended by the renderer beyond the joined lines
         assert not out.endswith("\n\n\n")

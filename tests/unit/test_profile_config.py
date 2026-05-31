@@ -112,9 +112,7 @@ class TestValidParse:
         assert c == ChameleonConfig(
             schema_version="chameleon-config-0.6.0",
             canonical_ref="origin/develop",
-            auto_refresh=AutoRefreshConfig(
-                enabled=False, drift_threshold=0.5, max_age_hours=24
-            ),
+            auto_refresh=AutoRefreshConfig(enabled=False, drift_threshold=0.5, max_age_hours=24),
             trust=TrustConfig(auto_preserve_when="pulled_from_remote"),
             auto_rename=False,
         )
@@ -253,9 +251,7 @@ class TestWrongTypes:
     def test_canonical_ref_blank_string_rejected(self, tmp_path: Path):
         d = tmp_path / "profile"
         _write(d, {"canonical_ref": "   "})
-        with pytest.raises(
-            ChameleonConfigError, match="non-empty string or null"
-        ):
+        with pytest.raises(ChameleonConfigError, match="non-empty string or null"):
             load_config(d)
 
     def test_auto_rename_not_bool_rejected(self, tmp_path: Path):
@@ -267,9 +263,7 @@ class TestWrongTypes:
     def test_auto_refresh_not_object_rejected(self, tmp_path: Path):
         d = tmp_path / "profile"
         _write(d, {"auto_refresh": "nope"})
-        with pytest.raises(
-            ChameleonConfigError, match="`auto_refresh` must be an object"
-        ):
+        with pytest.raises(ChameleonConfigError, match="`auto_refresh` must be an object"):
             load_config(d)
 
     def test_trust_not_object_rejected(self, tmp_path: Path):
@@ -281,35 +275,27 @@ class TestWrongTypes:
     def test_auto_refresh_enabled_not_bool_rejected(self, tmp_path: Path):
         d = tmp_path / "profile"
         _write(d, {"auto_refresh": {"enabled": "true"}})
-        with pytest.raises(
-            ChameleonConfigError, match="`auto_refresh.enabled` must be bool"
-        ):
+        with pytest.raises(ChameleonConfigError, match="`auto_refresh.enabled` must be bool"):
             load_config(d)
 
     def test_drift_threshold_bool_rejected(self, tmp_path: Path):
         # bool is an int subclass; the loader must explicitly reject it.
         d = tmp_path / "profile"
         _write(d, {"auto_refresh": {"drift_threshold": True}})
-        with pytest.raises(
-            ChameleonConfigError, match="drift_threshold.*in .0, 1."
-        ):
+        with pytest.raises(ChameleonConfigError, match="drift_threshold.*in .0, 1."):
             load_config(d)
 
     def test_max_age_hours_bool_rejected(self, tmp_path: Path):
         d = tmp_path / "profile"
         _write(d, {"auto_refresh": {"max_age_hours": True}})
-        with pytest.raises(
-            ChameleonConfigError, match="max_age_hours.*positive int"
-        ):
+        with pytest.raises(ChameleonConfigError, match="max_age_hours.*positive int"):
             load_config(d)
 
     def test_max_age_hours_float_rejected(self, tmp_path: Path):
         # max_age_hours must be a strict int, not a float
         d = tmp_path / "profile"
         _write(d, {"auto_refresh": {"max_age_hours": 24.0}})
-        with pytest.raises(
-            ChameleonConfigError, match="max_age_hours.*positive int"
-        ):
+        with pytest.raises(ChameleonConfigError, match="max_age_hours.*positive int"):
             load_config(d)
 
 
@@ -334,17 +320,13 @@ class TestRangeAndEnum:
     def test_invalid_auto_preserve_when_rejected(self, tmp_path: Path):
         d = tmp_path / "profile"
         _write(d, {"trust": {"auto_preserve_when": "nonsense"}})
-        with pytest.raises(
-            ChameleonConfigError, match="auto_preserve_when"
-        ):
+        with pytest.raises(ChameleonConfigError, match="auto_preserve_when"):
             load_config(d)
 
     def test_valid_auto_preserve_when_accepted(self, tmp_path: Path):
         d = tmp_path / "profile"
         _write(d, {"trust": {"auto_preserve_when": "pulled_from_remote"}})
-        assert (
-            load_config(d).trust.auto_preserve_when == "pulled_from_remote"
-        )
+        assert load_config(d).trust.auto_preserve_when == "pulled_from_remote"
 
 
 # --------------------------------------------------------------------------

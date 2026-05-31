@@ -31,7 +31,7 @@ import pytest
 
 from chameleon_mcp import daemon as daemon_mod
 from chameleon_mcp import daemon_client
-from chameleon_mcp.daemon import MAX_FRAME_BYTES, _LEN_STRUCT, recv_frame, send_frame
+from chameleon_mcp.daemon import _LEN_STRUCT, MAX_FRAME_BYTES, recv_frame, send_frame
 
 
 @pytest.fixture

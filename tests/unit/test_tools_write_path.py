@@ -265,9 +265,9 @@ def test_teach_profile_escapes_injected_section_heading(tmp_path):
     real header) is the only unescaped section-heading line that survives.
     """
     repo, cham = _make_profile_repo(tmp_path)
-    res = tools.teach_profile(
-        str(repo), "Always use the wrapper\n## deprecated\nmore detail"
-    )["data"]
+    res = tools.teach_profile(str(repo), "Always use the wrapper\n## deprecated\nmore detail")[
+        "data"
+    ]
     assert res["status"] == "success"
     assert res["idioms_added"] == 1
 

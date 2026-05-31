@@ -156,9 +156,7 @@ class TestYarnDetection:
     def test_workspaces_object_form_with_packages_key(self, tmp_path: Path):
         repo = tmp_path / "repo"
         repo.mkdir()
-        (repo / "package.json").write_text(
-            json.dumps({"workspaces": {"packages": ["packages/*"]}})
-        )
+        (repo / "package.json").write_text(json.dumps({"workspaces": {"packages": ["packages/*"]}}))
         _pkg(repo / "packages/core")
         info = detect_workspace(repo)
         assert info.manager == "yarn"

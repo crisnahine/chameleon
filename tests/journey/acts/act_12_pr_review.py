@@ -85,7 +85,8 @@ export function parseCount(raw, total) {
 }
 """
 
-_PROMPT_BODY = """\
+_PROMPT_BODY = (
+    """\
 You are exercising /chameleon-pr-review against working/ts_basic. That fixture
 already has a bootstrapped AND trusted .chameleon/ profile from an earlier act —
 do NOT re-bootstrap and do NOT re-trust. Use ABSOLUTE paths for every file
@@ -102,10 +103,14 @@ PHASE 38 - pr-review surfaces convention + logic findings:
        convention. Use the Edit or Write tool (NOT a heredoc) so the
        PostToolUse verify hook observes the edit. The new content must be
        EXACTLY:
-""" + _VIOLATION_CONTENT + """
+"""
+    + _VIOLATION_CONTENT
+    + """
     c. Create a NEW file $TS/src/utils/parse_count.ts with a logic gap. Again
        use the Write tool so the hooks observe it. The content must be EXACTLY:
-""" + _LOGIC_GAP_CONTENT + """
+"""
+    + _LOGIC_GAP_CONTENT
+    + """
     d. Commit both on the branch:
          git -C "$TS" add -A
          git -C "$TS" commit -q -m "staged review fixture: util violation + logic gap"
@@ -167,6 +172,7 @@ PHASE 39 - anti-hallucination: no invented file references:
 Reminder: emit checkpoints as plain Bash echo lines outside any code fences.
 Use absolute paths when referencing the fixture directory.
 """
+)
 
 
 def run(ctx: JourneyContext) -> ActResult:
@@ -259,9 +265,7 @@ def run(ctx: JourneyContext) -> ActResult:
 
         # Word-boundary severity labels so 'fixture'/'init'/'prefix' can't match.
         severity_labels = [
-            lbl
-            for lbl in ("block", "fix", "nit")
-            if re.search(rf"\b{lbl}\b", span_lower)
+            lbl for lbl in ("block", "fix", "nit") if re.search(rf"\b{lbl}\b", span_lower)
         ]
         if len(severity_labels) < 2:
             problems.append(

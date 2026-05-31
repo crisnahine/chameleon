@@ -251,9 +251,7 @@ def test_write_failure_is_swallowed(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path))
 
     with patch("chameleon_mcp.metrics.open", side_effect=OSError("disk full")):
-        result = emit_hook_metric(
-            "preflight", elapsed_ms=1, repo_id="r", advisory_emitted=True
-        )
+        result = emit_hook_metric("preflight", elapsed_ms=1, repo_id="r", advisory_emitted=True)
 
     assert result is None
 
@@ -262,12 +260,8 @@ def test_mkdir_failure_is_swallowed(monkeypatch, tmp_path: Path):
     """If the parent dir can't be created, emit must not raise and not write."""
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path))
 
-    with patch(
-        "pathlib.Path.mkdir", side_effect=PermissionError("nope")
-    ):
-        result = emit_hook_metric(
-            "preflight", elapsed_ms=1, repo_id="r", advisory_emitted=True
-        )
+    with patch("pathlib.Path.mkdir", side_effect=PermissionError("nope")):
+        result = emit_hook_metric("preflight", elapsed_ms=1, repo_id="r", advisory_emitted=True)
 
     assert result is None
     assert not (tmp_path / "metrics.jsonl").exists()

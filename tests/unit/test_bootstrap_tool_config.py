@@ -132,11 +132,11 @@ class TestTsconfigBasic:
     def test_tsconfig_with_jsonc_comments_and_schema_url(self, tmp_path):
         # $schema URL contains `//` which must NOT be eaten as a comment.
         (tmp_path / "tsconfig.json").write_text(
-            '{\n'
+            "{\n"
             '  "$schema": "https://json.schemastore.org/tsconfig", // schema ref\n'
-            '  /* block */\n'
+            "  /* block */\n"
             '  "compilerOptions": { "strict": true, }\n'
-            '}\n'
+            "}\n"
         )
         res = read_tool_configs(tmp_path)
         assert res.tsconfig == {
@@ -262,11 +262,11 @@ class TestTsconfigExtends:
 class TestEslint:
     def test_eslintrc_json_with_comments_and_trailing_comma(self, tmp_path):
         (tmp_path / ".eslintrc.json").write_text(
-            '{\n'
-            '  // a comment\n'
+            "{\n"
+            "  // a comment\n"
             '  "extends": ["eslint:recommended"],\n'
             '  "rules": {"no-console": "warn",},\n'
-            '}\n'
+            "}\n"
         )
         res = read_tool_configs(tmp_path)
         assert res.eslint == {"extends": ["eslint:recommended"], "rules": {"no-console": "warn"}}
@@ -274,21 +274,14 @@ class TestEslint:
         assert res.has_eslint_js_plugins is False
 
     def test_eslint_plugins_array_sets_flag(self, tmp_path):
-        (tmp_path / ".eslintrc.json").write_text(
-            json.dumps({"plugins": ["react"], "rules": {}})
-        )
+        (tmp_path / ".eslintrc.json").write_text(json.dumps({"plugins": ["react"], "rules": {}}))
         res = read_tool_configs(tmp_path)
         assert res.eslint == {"plugins": ["react"], "rules": {}}
         assert res.has_eslint_js_plugins is True
 
     def test_eslintrc_yaml_parsed(self, tmp_path):
         (tmp_path / ".eslintrc.yml").write_text(
-            "extends:\n"
-            "  - eslint:recommended\n"
-            "rules:\n"
-            "  no-console: warn\n"
-            "plugins:\n"
-            "  - react\n"
+            "extends:\n  - eslint:recommended\nrules:\n  no-console: warn\nplugins:\n  - react\n"
         )
         res = read_tool_configs(tmp_path)
         assert res.eslint == {
@@ -432,9 +425,7 @@ class TestEslintNodeEvalGate:
         monkeypatch.delenv("CHAMELEON_ALLOW_ESLINT_EVAL", raising=False)
 
         def _boom(*_args, **_kwargs):
-            raise AssertionError(
-                "Node-eval path was taken with CHAMELEON_ALLOW_ESLINT_EVAL unset"
-            )
+            raise AssertionError("Node-eval path was taken with CHAMELEON_ALLOW_ESLINT_EVAL unset")
 
         monkeypatch.setattr(tool_config_mod, "_parse_eslint_js_via_node", _boom)
 

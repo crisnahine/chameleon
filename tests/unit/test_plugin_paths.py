@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pytest
 
+import chameleon_mcp.plugin_paths as pp
 from chameleon_mcp.plugin_paths import (
     ensure_plugin_data_dir,
     plugin_data_dir,
     plugin_root,
 )
-import chameleon_mcp.plugin_paths as pp
 
 
 @pytest.fixture(autouse=True)
