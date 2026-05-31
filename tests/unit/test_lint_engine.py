@@ -722,6 +722,42 @@ class TestConventionLint:
         violations = lint_conventions(content, conventions, language="ruby")
         assert len(violations) == 0
 
+    def test_inheritance_lint_skips_indented_inner_class(self):
+        # Outer class has the correct base; the indented inner class is base-less
+        # but must NOT be flagged. The MULTILINE ^\\s*class regex used to match
+        # the inner declaration and report "class Result should inherit ...".
+        content = (
+            "class FooController < ApplicationController\n"
+            "  class Result\n"
+            "    def ok; end\n"
+            "  end\n"
+            "end\n"
+        )
+        conventions = {
+            "inheritance": {
+                "dominant_base": "ApplicationController",
+                "frequency": 0.9,
+                "sample_size": 100,
+            },
+        }
+        violations = lint_conventions(content, conventions, language="ruby")
+        assert violations == [], [v.message for v in violations]
+
+    def test_inheritance_lint_flags_sibling_top_level_class(self):
+        # Two top-level classes, the second lacks the base -> still flagged
+        # (the inner-class skip must not suppress same-indent siblings).
+        content = "class A < ApplicationController\nend\nclass B\nend\n"
+        conventions = {
+            "inheritance": {
+                "dominant_base": "ApplicationController",
+                "frequency": 0.9,
+                "sample_size": 100,
+            },
+        }
+        violations = lint_conventions(content, conventions, language="ruby")
+        assert len(violations) == 1
+        assert "class B" in violations[0].message
+
     def test_inheritance_chameleon_ignore(self):
         content = "# chameleon-ignore inheritance-convention\nclass MyService\nend\n"
         conventions = {

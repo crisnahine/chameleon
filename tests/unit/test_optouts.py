@@ -267,3 +267,29 @@ def test_write_pause_creates_file(tmp_path: Path):
     assert parsed.timestamp() > time.time()
 
     assert not pause_path.with_suffix(".tmp").exists()
+
+
+def test_reap_stale_session_markers(tmp_path, monkeypatch):
+    """Stale .session_disabled.<sid> markers (no SessionEnd cleanup exists) are
+    reaped; fresh ones from a live session are kept."""
+    import os
+    import time
+
+    from chameleon_mcp import optouts
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path))
+    rid = "a" * 64
+    dd = repo_data_dir(rid)
+    dd.mkdir(parents=True, exist_ok=True)
+    fresh = dd / ".session_disabled.fresh"
+    fresh.write_text("disabled-at=now\n", encoding="utf-8")
+    stale = dd / ".session_disabled.stale"
+    stale.write_text("disabled-at=old\n", encoding="utf-8")
+    old = time.time() - 8 * 86_400
+    os.utime(stale, (old, old))
+
+    removed = optouts.reap_stale_session_markers(rid)
+    assert removed == 1
+    assert fresh.exists()
+    assert not stale.exists()

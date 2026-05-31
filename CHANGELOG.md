@@ -4,6 +4,20 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2] - 2026-06-01
+
+Follow-up to 1.5.1: completes the version-aware refresh UX and clears several deferred lint/housekeeping gaps.
+
+### Added
+
+- **Engine-upgrade drift signal.** After a chameleon upgrade, SessionStart surfaces a one-line banner ("the engine was upgraded since this profile was built; run /chameleon-refresh") and `get_drift_status` reports `engine_version_mismatch` with a matching recommendation. This is the prompt half of 1.5.1's version-aware refresh: the refresh re-clusters on a version change, this tells the user to run it. Its own cooldown keeps it from firing every session.
+
+### Fixed
+
+- **Inheritance lint flagged base-less inner classes.** The Ruby `inheritance-convention` lint matched indented inner class declarations, so a `class Result` inside a controller was wrongly flagged "should inherit ApplicationController." It now skips classes nested deeper than the outermost class; same-indent siblings and module-nested top-level classes are still checked.
+- **Stale `.session_disabled` markers are reaped.** Per-session opt-out markers had no cleanup path. SessionStart now removes ones older than 7 days (far beyond any session); each only ever matched its own session, so removal is safe.
+- **Stale canonical sort-key docstrings.** Corrected to the real tie-break (recency desc, typicality desc, lexicographic path); they claimed a path-length tie-break the code does not apply.
+
 ## [1.5.1] - 2026-06-01
 
 Bug-fix release from a from-zero validation pass across nine real repos (TypeScript + Rails). The headline fix restores test-file guidance on Rails repos; the rest harden the engine-version stamp and the canonical-excerpt sanitizer.

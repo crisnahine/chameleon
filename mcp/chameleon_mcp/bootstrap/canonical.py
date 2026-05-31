@@ -12,7 +12,7 @@ Phase 2C selects the witness with deterministic recency weighting:
 - Exclude files containing detected secrets
 - Exclude files containing instruction-shaped natural language
 - Among remaining: rank by recency weight (mtime-within-window doubles vote),
-  break ties on (path length, lexicographic path) for reproducibility.
+  break ties on (typicality of AST shape, lexicographic path) for reproducibility.
 
 The recency window + multiplier are calibration targets.
 """
@@ -155,9 +155,10 @@ def select_canonicals(
 
     Selection order within a cluster:
       1. Drop files in test/legacy/archive/etc. (canonical-pool exclusions)
-      2. Sort remaining by (-recency_weight, path-length, path-string).
-         Recency-weighted files come first; ties resolve to the shortest
-         path, then lexicographic for full determinism.
+      2. Sort remaining by (-recency_weight, -typicality, path-string).
+         Recency-weighted files come first; ties resolve to the more typical
+         AST shape (most common signature in the cluster), then lexicographic
+         path for full determinism.
       3. Walk the sorted list; first file that passes secret + injection +
          poisoning scans wins. Failing files are tracked so the bootstrap
          report can surface clusters that have NO clean canonical.

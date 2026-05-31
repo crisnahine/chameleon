@@ -217,6 +217,7 @@ def _emit_session_context(content: str) -> None:
 
 
 _DRIFT_BANNER_FILENAME = ".drift_banner.last"
+_ENGINE_BANNER_FILENAME = ".engine_banner.last"
 
 
 def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> str | None:
@@ -253,6 +254,38 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
 
         if is_chameleon_suppressed(resolved_root, repo_id, session_id) is not None:
             return None
+
+        # Engine-version upgrade is a stronger staleness signal than
+        # edit-observation drift: the analysis logic changed, so re-derive
+        # regardless of recorded edits. Its own cooldown marker keeps it from
+        # firing every session until the user refreshes (which clears the
+        # mismatch). Falls through to the edit-drift logic when versions match.
+        try:
+            from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+            from chameleon_mcp.tools import _engine_version_changed
+
+            if _engine_version_changed(resolved_root / ".chameleon", ENGINE_MIN_VERSION):
+                emarker = _plugin_data_dir() / repo_id / _ENGINE_BANNER_FILENAME
+                if _marker_path_is_fresh(emarker, threshold_int("DRIFT_BANNER_TTL_SECONDS")):
+                    return None
+                emarker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                try:
+                    os.chmod(emarker.parent, 0o700)
+                except OSError:
+                    pass
+                emarker.write_text(str(int(time.time())), encoding="utf-8")
+                try:
+                    os.chmod(emarker, 0o600)
+                except OSError:
+                    pass
+                return (
+                    "[🦎 chameleon: drift]\n"
+                    "The chameleon engine was upgraded since this profile was "
+                    "built, so its clustering may be out of date. Suggest "
+                    "**/chameleon-refresh** to re-derive the profile."
+                )
+        except Exception:
+            pass
 
         stats = compute_drift_stats(repo_id)
         if stats is None:
@@ -499,6 +532,15 @@ def session_start() -> int:
                                 p.unlink()
                         except OSError:
                             pass
+                # Reap stale per-session opt-out markers (no SessionEnd hook
+                # exists to clean them up; safe since each only matches its own
+                # session_id).
+                try:
+                    from chameleon_mcp.optouts import reap_stale_session_markers
+
+                    reap_stale_session_markers(repo_id)
+                except Exception:
+                    pass
     except Exception:
         pass
 

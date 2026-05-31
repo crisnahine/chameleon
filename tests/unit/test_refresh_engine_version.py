@@ -105,6 +105,68 @@ def test_refresh_rebootstraps_on_engine_version_change(tmp_path, monkeypatch):
     assert out["data"]["status"] == "rebootstrapped"
 
 
+def test_drift_status_flags_engine_version_mismatch(tmp_path, monkeypatch):
+    """get_drift_status recommends /chameleon-refresh when the profile was built
+    by a different engine version, even absent a drift or age signal. This is the
+    user-facing half of the version-aware refresh: the refresh re-clusters, but
+    nothing prompts the user without this signal."""
+    from chameleon_mcp import index_db
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "_data"))
+    monkeypatch.setattr(index_db, "_INDEX_CONN", None)
+    repo = tmp_path / "repo"
+    pd = repo / ".chameleon"
+    pd.mkdir(parents=True)
+    pd.joinpath("archetypes.json").write_text(
+        json.dumps({"schema_version": 8, "engine_min_version": "0.5.0", "archetypes": {}}),
+        encoding="utf-8",
+    )
+    out = t.get_drift_status(str(repo.resolve())).get("data", {})
+    assert out.get("engine_version_mismatch") is True
+    action = (out.get("recommended_action") or "").lower()
+    assert "refresh" in action and "engine" in action
+
+
+def test_session_drift_banner_fires_on_engine_mismatch(tmp_path, monkeypatch):
+    """At SessionStart the drift banner must also fire on an engine-version
+    mismatch (stronger than edit-observation drift), so the user is prompted to
+    refresh after an upgrade even with no recorded edits."""
+    from chameleon_mcp import hook_helper, index_db
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "_data"))
+    monkeypatch.setattr(index_db, "_INDEX_CONN", None)
+    repo = tmp_path / "repo"
+    pd = repo / ".chameleon"
+    pd.mkdir(parents=True)
+    pd.joinpath("archetypes.json").write_text(
+        json.dumps({"schema_version": 8, "engine_min_version": "0.5.0", "archetypes": {}}),
+        encoding="utf-8",
+    )
+    banner = hook_helper._drift_banner_for_repo(repo.resolve(), session_id="s1")
+    assert banner is not None
+    low = banner.lower()
+    assert "refresh" in low and ("engine" in low or "upgrad" in low)
+
+
+def test_drift_status_no_engine_flag_when_versions_match(tmp_path, monkeypatch):
+    from chameleon_mcp import index_db
+    from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "_data"))
+    monkeypatch.setattr(index_db, "_INDEX_CONN", None)
+    repo = tmp_path / "repo"
+    pd = repo / ".chameleon"
+    pd.mkdir(parents=True)
+    pd.joinpath("archetypes.json").write_text(
+        json.dumps(
+            {"schema_version": 8, "engine_min_version": ENGINE_MIN_VERSION, "archetypes": {}}
+        ),
+        encoding="utf-8",
+    )
+    out = t.get_drift_status(str(repo.resolve())).get("data", {})
+    assert out.get("engine_version_mismatch") is False
+
+
 def test_refresh_noops_when_engine_matches(tmp_path, monkeypatch):
     """Same noop-eligible setup but a current engine stamp must still noop —
     the guard fires only on a genuine mismatch, not on every refresh."""

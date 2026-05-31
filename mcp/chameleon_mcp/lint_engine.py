@@ -977,11 +977,25 @@ def lint_conventions(
                 # mis-flagging legit controllers and driving a STOP loop).
                 known_bases = set(inheritance.get("known_bases") or ())
                 known_bases.add(dominant_base)
+                min_class_indent = None
                 for m in re.finditer(
-                    r"^\s*class\s+([\w:]+)(?:\s*<\s*([\w:]+))?", scan_content, re.MULTILINE
+                    r"^([ \t]*)class\s+([\w:]+)(?:\s*<\s*([\w:]+))?",
+                    scan_content,
+                    re.MULTILINE,
                 ):
-                    class_name = m.group(1)
-                    superclass = m.group(2)
+                    indent = len(m.group(1))
+                    class_name = m.group(2)
+                    superclass = m.group(3)
+                    # Skip a class nested deeper than the outermost class: an inner
+                    # class (e.g. `class Result` inside a controller) is not a
+                    # top-level declaration of this archetype, so the inheritance
+                    # convention does not apply. Same-indent siblings and
+                    # module-nested top-level classes are still checked.
+                    if min_class_indent is not None and indent > min_class_indent:
+                        continue
+                    min_class_indent = (
+                        indent if min_class_indent is None else min(min_class_indent, indent)
+                    )
                     if superclass is None or superclass not in known_bases:
                         violations.append(
                             Violation(

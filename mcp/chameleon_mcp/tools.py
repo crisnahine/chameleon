@@ -1992,7 +1992,21 @@ def get_drift_status(repo: str) -> dict:
 
     drift_score = compute_drift_score(repo_id)
 
-    if days_since_refresh is None:
+    # Engine-version mismatch is the strongest staleness signal: the analysis
+    # logic, not just the codebase, changed. It outranks drift/age because a
+    # refresh re-derives the profile regardless. This is the user-facing half of
+    # the version-aware refresh (the refresh itself re-clusters on mismatch).
+    engine_version_mismatch = False
+    if resolved_path is not None:
+        from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+
+        engine_version_mismatch = _engine_version_changed(
+            resolved_path / ".chameleon", ENGINE_MIN_VERSION
+        )
+
+    if engine_version_mismatch:
+        recommended = "engine upgraded since this profile was built; run /chameleon-refresh"
+    elif days_since_refresh is None:
         recommended = "no trust grant found; run /chameleon-trust first"
     elif drift_score is not None and drift_score > 0.5:
         recommended = f"observed drift is high ({drift_score:.2f}); run /chameleon-refresh"
@@ -2008,6 +2022,7 @@ def get_drift_status(repo: str) -> dict:
             "repo_id": repo_id,
             "days_since_refresh": days_since_refresh,
             "observed_drift_score": drift_score,
+            "engine_version_mismatch": engine_version_mismatch,
             "recommended_action": recommended,
         }
     )

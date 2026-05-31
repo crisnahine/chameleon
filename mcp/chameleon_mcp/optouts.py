@@ -195,3 +195,33 @@ def write_pause(repo_id: str, minutes: int = 15) -> str:
         os.close(fd)
     os.replace(str(tmp), str(pause_path))
     return expiry_iso
+
+
+def reap_stale_session_markers(repo_id: str, max_age_seconds: int = 604_800) -> int:
+    """Best-effort removal of stale ``.session_disabled.<sid>`` markers.
+
+    These per-session opt-out markers have no SessionEnd cleanup path, so they
+    accumulate (~120 bytes each). A marker older than ``max_age_seconds``
+    (default 7 days, far beyond any Claude Code session) is from a dead session;
+    because it is keyed by ``sha256(session_id)[:16]`` it could only ever match
+    its own session, so removing it is safe. Returns the count removed; never
+    raises (called best-effort from SessionStart).
+    """
+    try:
+        data_dir = repo_data_dir(repo_id)
+        markers = list(data_dir.glob(".session_disabled.*"))
+    except Exception:  # noqa: BLE001 - best-effort housekeeping
+        return 0
+    now = time.time()
+    removed = 0
+    for marker in markers:
+        if marker.name.endswith(".tmp"):
+            continue
+        try:
+            if now - marker.stat().st_mtime <= max_age_seconds:
+                continue
+            marker.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
