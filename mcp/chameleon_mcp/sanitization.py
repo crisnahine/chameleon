@@ -37,6 +37,14 @@ _DANGEROUS_TOKENS = (
 _BIDI_CONTROLS = "‪‫‬‭‮⁦⁧⁨⁩"
 _BIDI_RE = re.compile(f"[{_BIDI_CONTROLS}]")
 
+# Forged chameleon status header, e.g. `[🦎 chameleon: ...]` or the
+# `[🦎 archetype: clean]` verdict form. The lizard emoji is chameleon's marker
+# signature and never appears in real source, so breaking ANY `[🦎` opener is
+# the robust neutralizer: anchoring on the literal word "chameleon" was bypassed
+# by a variation selector / combining mark after the emoji, a homoglyph keyword,
+# or the second `[🦎 archetype: ...]` voice form.
+_SPOOFED_HEADER_RE = re.compile(r"\[\s*\U0001f98e")
+
 
 def sanitize_for_chameleon_context(content: str) -> str:
     """Replace dangerous tag-boundary tokens with neutral text.
@@ -71,5 +79,11 @@ def sanitize_for_chameleon_context(content: str) -> str:
     for token in _DANGEROUS_TOKENS:
         replacement = f"[chameleon-sanitized: {token.strip('<>')}]"
         cleaned = re.sub(re.escape(token), replacement, cleaned, flags=re.IGNORECASE)
+
+    # 7. Neutralize a forged chameleon status header. Excerpts / idioms must not
+    #    be able to spoof chameleon's own `[🦎 ...]` voice once they land in
+    #    <chameleon-context>. Breaking the `[🦎` opener kills every variant
+    #    (chameleon:, archetype:, variation-selector, homoglyph keyword).
+    cleaned = _SPOOFED_HEADER_RE.sub("[chameleon-sanitized: marker]", cleaned)
 
     return cleaned

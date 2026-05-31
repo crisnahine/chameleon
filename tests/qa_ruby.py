@@ -231,6 +231,17 @@ for label, archetype_name in discovered_archetypes.items():
         data = result.get("data", {})
         content = data.get("content") or ""
 
+        # Canonical-less archetypes (all-spec/test clusters, whose members are
+        # canonical-pool-excluded) legitimately have no witness: get_canonical_excerpt
+        # returns status="no_witness". That is the correct outcome, not a failure.
+        if data.get("status") == "no_witness":
+            record(
+                f"get_canonical_excerpt({label}={archetype_name}): canonical-less ok",
+                True,
+                "no witness (canonical-pool-excluded archetype, e.g. spec/test)",
+            )
+            continue
+
         record(
             f"get_canonical_excerpt({label}={archetype_name}): content non-empty",
             len(content) > 0,

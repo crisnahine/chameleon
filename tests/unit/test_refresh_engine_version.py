@@ -1,0 +1,120 @@
+"""Refresh must re-cluster across an engine-version change, not silently noop.
+
+A profile stamped by an older engine (e.g. 0.5.7) can have unchanged files yet
+out-of-date clustering after an upgrade. The refresh noop short-circuit keys on
+file mtimes only, so without an engine-version guard a user keeps stale analysis
+until a manual force-refresh.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from chameleon_mcp import tools as t
+
+
+def _profile(tmp_path: Path, engine_version: str | None) -> Path:
+    pd = tmp_path / ".chameleon"
+    pd.mkdir()
+    body: dict = {"schema_version": 8, "generation": 1, "archetypes": {}}
+    if engine_version is not None:
+        body["engine_min_version"] = engine_version
+    (pd / "archetypes.json").write_text(json.dumps(body), encoding="utf-8")
+    return pd
+
+
+def test_engine_version_changed_true_on_mismatch(tmp_path):
+    pd = _profile(tmp_path, "0.5.7")
+    assert t._engine_version_changed(pd, "1.5.0") is True
+
+
+def test_engine_version_changed_false_on_match(tmp_path):
+    pd = _profile(tmp_path, "1.5.0")
+    assert t._engine_version_changed(pd, "1.5.0") is False
+
+
+def test_engine_version_changed_false_when_absent(tmp_path):
+    # No engine stamp at all -> can't prove a mismatch, so don't force a rerun.
+    pd = _profile(tmp_path, None)
+    assert t._engine_version_changed(pd, "1.5.0") is False
+
+
+def test_engine_version_changed_false_when_no_profile(tmp_path):
+    pd = tmp_path / ".chameleon"
+    pd.mkdir()
+    assert t._engine_version_changed(pd, "1.5.0") is False
+
+
+def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
+    """A minimal Ruby repo + .chameleon profile + index_db row, noop-eligible
+    (files unchanged) so only the engine-version guard can force a rerun."""
+    from chameleon_mcp import index_db
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "_data"))
+    # index_db caches a module-level connection that ignores the env once opened;
+    # drop it so upsert/get_repo bind to this test's isolated data dir.
+    monkeypatch.setattr(index_db, "_INDEX_CONN", None)
+    repo = tmp_path / "repo"
+    (repo / "app" / "models").mkdir(parents=True)
+    # Gemfile alone selects the Ruby extractor; keep exactly one discoverable .rb
+    # so files_indexed=1 gives cardinality_match (noop-eligible).
+    (repo / "Gemfile").write_text("source 'https://rubygems.org'\n", encoding="utf-8")
+    (repo / "app" / "models" / "user.rb").write_text(
+        "class User < ApplicationRecord\nend\n", encoding="utf-8"
+    )
+    pd = repo / ".chameleon"
+    pd.mkdir()
+    stamp = {"schema_version": 8, "engine_min_version": engine_version, "archetypes": {}}
+    (pd / "profile.json").write_text(json.dumps(stamp), encoding="utf-8")
+    (pd / "archetypes.json").write_text(json.dumps(stamp), encoding="utf-8")
+    (pd / "conventions.json").write_text(
+        json.dumps({"schema_version": 8, "rules": {}}), encoding="utf-8"
+    )
+    (pd / "principles.md").write_text("# principles\n", encoding="utf-8")
+
+    repo_root = repo.resolve()
+    repo_id = t._compute_repo_id(repo_root)
+    # files_indexed=1 matches the single discoverable .rb (cardinality_match),
+    # last_seen far in the future so nothing_newer -> noop-eligible.
+    index_db.upsert_repo(
+        repo_id,
+        str(repo_root),
+        archetype_count=0,
+        files_indexed=1,
+        bootstrap_ms=1,
+        profile_sha256="seed",
+        last_seen_at="2096-01-01T00:00:00Z",
+    )
+    return repo_root
+
+
+def test_refresh_rebootstraps_on_engine_version_change(tmp_path, monkeypatch):
+    """The guard must sit ABOVE the noop short-circuit: even with unchanged
+    files (noop-eligible), a stale engine stamp forces a full re-bootstrap."""
+    repo_root = _seed_repo(tmp_path, monkeypatch, engine_version="0.5.0")
+    called: dict = {}
+
+    def fake_bootstrap(path, *, force=False, paths_glob=None, **kw):
+        called["force"] = force
+        return {"data": {"status": "rebootstrapped"}}
+
+    monkeypatch.setattr(t, "bootstrap_repo", fake_bootstrap)
+    out = t._refresh_repo_locked(repo_root, force=False)
+    assert called.get("force") is True
+    assert out["data"]["status"] == "rebootstrapped"
+
+
+def test_refresh_noops_when_engine_matches(tmp_path, monkeypatch):
+    """Same noop-eligible setup but a current engine stamp must still noop —
+    the guard fires only on a genuine mismatch, not on every refresh."""
+    from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+
+    repo_root = _seed_repo(tmp_path, monkeypatch, engine_version=ENGINE_MIN_VERSION)
+
+    def fake_bootstrap(path, *, force=False, paths_glob=None, **kw):
+        raise AssertionError("bootstrap_repo must NOT be called when engine matches")
+
+    monkeypatch.setattr(t, "bootstrap_repo", fake_bootstrap)
+    out = t._refresh_repo_locked(repo_root, force=False)
+    assert out["data"]["status"] == "noop"

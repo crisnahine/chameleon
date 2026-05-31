@@ -70,6 +70,27 @@ def record(name: str, passed: bool, detail: str = ""):
         print(f"         {d}")
 
 
+def _nearest_profile_archetype_count(fpath: str) -> int:
+    """Archetype count of the .chameleon profile nearest to ``fpath``.
+
+    A single-file / vendored workspace member (e.g. a 1-file package) forms no
+    clusters, so its profile has 0 archetypes and get_archetype correctly
+    returns None for its files. Returns -1 if it can't be determined. Used to
+    tolerate that legitimate None instead of flagging it as a resolution miss.
+    """
+    import json
+
+    try:
+        root = (detect_repo(fpath).get("data", {}) or {}).get("repo_root")
+        if not root:
+            return -1
+        with open(os.path.join(root, ".chameleon", "archetypes.json")) as fh:
+            data = json.load(fh)
+        return len(data.get("archetypes", data))
+    except Exception:
+        return -1
+
+
 print("\n=== Test 1: detect_repo ===")
 try:
     dr = detect_repo(os.path.join(REPO_PATH, "src/index.tsx"))
@@ -119,10 +140,15 @@ for fpath in TEST_FILES:
         match_q = ad.get("match_quality")
 
         ok = arch_name is not None and isinstance(arch_name, str) and len(arch_name) > 0
+        detail = f"archetype={arch_name!r}"
+        if not ok and _nearest_profile_archetype_count(fpath) == 0:
+            # Single-file / vendored package: 0 archetypes, so None is correct.
+            ok = True
+            detail = f"archetype=None (nearest profile has 0 archetypes — expected for {rel})"
         record(
             f"get_archetype({rel}).archetype",
             ok,
-            f"archetype={arch_name!r}",
+            detail,
         )
         record(
             f"get_archetype({rel}).confidence_band",

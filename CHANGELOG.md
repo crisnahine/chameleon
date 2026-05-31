@@ -4,6 +4,23 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-06-01
+
+Bug-fix release from a from-zero validation pass across nine real repos (TypeScript + Rails). The headline fix restores test-file guidance on Rails repos; the rest harden the engine-version stamp and the canonical-excerpt sanitizer.
+
+### Fixed
+
+- **Spec/test clusters were silently dropped from the profile.** A cluster whose members are all canonical-pool-excluded (an all-`spec/` or all-`test/` cluster) had no eligible canonical witness, so the orchestrator skipped it entirely. Every file in such a cluster then resolved to `archetype=None` with no rules or nearby-sibling guidance, which on a Rails repo silently halved the archetype count (the whole `spec/` tree). Canonical-less clusters now emit a witnessless archetype, matching the documented `EXCLUDE_FROM_CANONICAL_POOL` contract ("clustered but never picked as canonical"). TypeScript was unaffected because it co-locates tests under `__tests__/`. (`bootstrap/orchestrator.py`)
+- **Engine version stamp was meaningless.** `ENGINE_MIN_VERSION` read `importlib.metadata.version("chameleon-mcp")`, which falls back to a hardcoded `0.5.7` whenever the package is not pip-installed (the plugin runs via its module path). Every profile was stamped `0.5.7` regardless of the real version. The write side now uses the package `__version__`, the same reliable source the read-side loader gate already used.
+
+### Added
+
+- **Version-aware refresh.** `/chameleon-refresh` now re-derives the profile when its stamped engine version differs from the running engine, instead of noop-ing on unchanged files. After an engine upgrade that changes clustering without a schema bump, a refresh updates the analysis rather than silently keeping the old one.
+
+### Security
+
+- **Sanitizer neutralizes a forged status header.** A canonical excerpt or taught idiom could embed chameleon's own `[🦎 ...]` status-header form and have it injected verbatim into `<chameleon-context>`, spoofing the trusted advisory voice. The sanitizer now breaks any `[🦎` opener, closing the variation-selector, combining-mark, Unicode-homoglyph, and `[🦎 archetype: ...]` verdict-form bypasses. (`sanitization.py`)
+
 ## [1.5.0] - 2026-05-31
 
 ### Added

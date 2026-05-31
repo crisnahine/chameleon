@@ -28,7 +28,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from chameleon_mcp.bootstrap.canonical import derive_ast_query, select_canonicals
+from chameleon_mcp.bootstrap.canonical import (
+    _hash_cluster_key,
+    derive_ast_query,
+    select_canonicals,
+)
 from chameleon_mcp.bootstrap.clustering import (
     BIMODAL_DOMINANT_SHARE_THRESHOLD,
     cluster_files,
@@ -329,16 +333,12 @@ def _glob_for_extractor(extractor: Extractor) -> str:
 # written here (8) is refused by old engines (MAX=7), signaling the rebuild.
 PROFILE_SCHEMA_VERSION = 8
 
-try:
-    from importlib.metadata import PackageNotFoundError as _PkgNotFound
-    from importlib.metadata import version as _pkg_version
-
-    try:
-        ENGINE_MIN_VERSION = _pkg_version("chameleon-mcp")
-    except _PkgNotFound:  # pragma: no cover - editable install w/o metadata
-        ENGINE_MIN_VERSION = "0.5.7"
-except Exception:  # pragma: no cover - defensive fallback
-    ENGINE_MIN_VERSION = "0.5.7"
+# Use the package's bump-synced __version__ (same source as the read-side gate
+# in profile/loader.py:ENGINE_VERSION). importlib.metadata.version("chameleon-mcp")
+# returns a stale 0.5.7 fallback when the package isn't pip-installed (run via
+# PYTHONPATH / the plugin's module path), which would make the engine stamp
+# meaningless and the refresh engine-version guard inert.
+from chameleon_mcp import __version__ as ENGINE_MIN_VERSION
 
 
 @dataclass
@@ -842,6 +842,31 @@ def _collapse_same_pattern_archetypes(
     return new_archetypes, new_canonicals
 
 
+def _resolve_cluster_id(cluster, selection):
+    """Map a dense cluster to its ``(cluster_id, selection_or_None)``.
+
+    - ``(cluster_id, CanonicalSelection)`` when the cluster has a chosen witness.
+    - ``(cluster_id, None)`` when the cluster has no eligible/clean canonical
+      (e.g. an all-spec/test cluster, where every member is canonical-pool
+      excluded). The archetype is still emitted — just without a witness — so
+      its files get rules + nearby-sibling guidance instead of resolving to
+      ``archetype=None``. Mirrors the ``EXCLUDE_FROM_CANONICAL_POOL`` contract
+      in ``discovery.py`` ("clustered but never picked as canonical").
+    - ``(None, None)`` when the cluster is unknown to the selection (only-failing
+      scans, which intentionally stay dropped so an unsafe witness is never
+      surfaced).
+    """
+    members = {pf.path for pf in cluster.members}
+    for cid, sel in selection.selections.items():
+        if sel.witness_path in members:
+            return cid, sel
+    cid = _hash_cluster_key(cluster)
+    no_canonical_ids = {_hash_cluster_key(c) for c in selection.clusters_without_eligible_canonical}
+    if cid in no_canonical_ids:
+        return cid, None
+    return None, None
+
+
 def bootstrap_repo(
     repo_root: Path,
     *,
@@ -1321,15 +1346,8 @@ def _bootstrap_single(
         assigned_names.add(target)
 
     for cluster in clustering.dense_clusters:
-        cluster_id = next(
-            (
-                cid
-                for cid, sel in selection.selections.items()
-                if sel.witness_path in {pf.path for pf in cluster.members}
-            ),
-            None,
-        )
-        if not cluster_id:
+        cluster_id, sel = _resolve_cluster_id(cluster, selection)
+        if cluster_id is None:
             continue
         auto_name = propose_archetype_name(
             cluster,
@@ -1340,10 +1358,15 @@ def _bootstrap_single(
         effective_name = rename_map.get(auto_name, auto_name)
         assigned_names.add(auto_name)
         assigned_names.add(effective_name)
-        sel = selection.selections[cluster_id]
-        try:
-            witness_relpath = str(sel.witness_path.relative_to(repo_root))
-        except ValueError:
+        # Clusters whose members are all canonical-pool-excluded (e.g. an
+        # all-spec/test cluster) have sel is None: emit the archetype with no
+        # witness so those files still get rules + nearby guidance.
+        if sel is not None:
+            try:
+                witness_relpath = str(sel.witness_path.relative_to(repo_root))
+            except ValueError:
+                witness_relpath = ""
+        else:
             witness_relpath = ""
         bucket = cluster.key.path_pattern_bucket
         display_pattern = _displayed_paths_pattern(bucket, witness_relpath)
@@ -1372,24 +1395,25 @@ def _bootstrap_single(
             extractor.language,
         )
         archetypes_data["archetypes"][effective_name] = archetype_entry
-        canonicals_data["canonicals"][effective_name] = [
-            {
-                "witness": {
-                    "path": witness_relpath or str(sel.witness_path),
-                    "sha_hint": sel.sha_hint,
-                },
-                "normative_shape": {
-                    "ast_query": derive_ast_query(cluster.key),
-                },
-                "normative_idioms": {
-                    "comments": [],
-                },
-                "secret_scan_passed": sel.secret_scan_passed,
-                "injection_scan_passed": sel.injection_scan_passed,
-                "poisoning_scan_passed": sel.poisoning_scan_passed,
-                "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
-        ]
+        if sel is not None:
+            canonicals_data["canonicals"][effective_name] = [
+                {
+                    "witness": {
+                        "path": witness_relpath or str(sel.witness_path),
+                        "sha_hint": sel.sha_hint,
+                    },
+                    "normative_shape": {
+                        "ast_query": derive_ast_query(cluster.key),
+                    },
+                    "normative_idioms": {
+                        "comments": [],
+                    },
+                    "secret_scan_passed": sel.secret_scan_passed,
+                    "injection_scan_passed": sel.injection_scan_passed,
+                    "poisoning_scan_passed": sel.poisoning_scan_passed,
+                    "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                }
+            ]
 
     archetypes_data["archetypes"], canonicals_data["canonicals"] = (
         _collapse_same_pattern_archetypes(
@@ -1408,14 +1432,7 @@ def _bootstrap_single(
 
     files_by_archetype: dict[str, list] = {}
     for cluster in clustering.dense_clusters:
-        cluster_id = next(
-            (
-                cid
-                for cid, sel in selection.selections.items()
-                if sel.witness_path in {pf.path for pf in cluster.members}
-            ),
-            None,
-        )
+        cluster_id, _sel = _resolve_cluster_id(cluster, selection)
         arch_name = _cid_to_archname.get(cluster_id) if cluster_id else None
         if arch_name:
             files_by_archetype.setdefault(arch_name, []).extend(cluster.members)
