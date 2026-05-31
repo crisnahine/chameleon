@@ -2883,6 +2883,22 @@ def _engine_version_changed(profile_dir, current_version: str) -> bool:
     return bool(pv) and bool(current_version) and pv != current_version
 
 
+def _principles_incomplete(profile_dir) -> bool:
+    """True if principles.md is absent or missing the always-on anti-hallucination
+    protocol.
+
+    principles.md is generated content, but the refresh noop and partial paths
+    preserve it verbatim, so a stale profile (pre-1.4.0, or one whose principles
+    were hand-edited / dropped) would never regain the protocol. Detecting that
+    lets refresh force a full re-derive instead.
+    """
+    p = profile_dir / "principles.md"
+    try:
+        return "anti-hallucination protocol" not in p.read_text(encoding="utf-8").lower()
+    except OSError:
+        return True
+
+
 def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     """Execute refresh logic. Called while .chameleon/.refresh.lock is held."""
     from chameleon_mcp import index_db
@@ -2940,6 +2956,12 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
 
     if _engine_version_changed(profile_dir, ENGINE_MIN_VERSION):
+        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+
+    # Principles guard: principles.md is generated, but the noop and partial paths
+    # preserve it verbatim. If it's missing the always-on anti-hallucination
+    # protocol (a stale or hand-stripped profile), re-derive fully so it's restored.
+    if _principles_incomplete(profile_dir):
         return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
     if cardinality_match and nothing_newer and not missing_artifacts:

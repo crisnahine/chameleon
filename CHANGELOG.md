@@ -4,6 +4,12 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.3] - 2026-06-01
+
+### Fixed
+
+- **`/chameleon-refresh` did not restore a stale `principles.md`.** `principles.md` is generated content, but the refresh noop and partial-refresh paths preserved it verbatim. A profile whose principles were missing the always-on anti-hallucination protocol (a pre-1.4.0 profile, or one that was hand-edited) never regained it through a normal refresh, only a force-refresh. Refresh now re-derives the full profile when `principles.md` is missing the protocol, so the protocol comes back.
+
 ## [1.5.2] - 2026-06-01
 
 Follow-up to 1.5.1: completes the version-aware refresh UX and clears several deferred lint/housekeeping gaps.

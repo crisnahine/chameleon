@@ -71,7 +71,12 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
     (pd / "conventions.json").write_text(
         json.dumps({"schema_version": 8, "rules": {}}), encoding="utf-8"
     )
-    (pd / "principles.md").write_text("# principles\n", encoding="utf-8")
+    # complete principles (incl. the protocol) so the noop path isn't forced
+    # into a rebuild by the principles guard
+    (pd / "principles.md").write_text(
+        "# principles\n\n## anti-hallucination protocol\n\n- Don't invent symbols.\n",
+        encoding="utf-8",
+    )
 
     repo_root = repo.resolve()
     repo_id = t._compute_repo_id(repo_root)
@@ -180,3 +185,24 @@ def test_refresh_noops_when_engine_matches(tmp_path, monkeypatch):
     monkeypatch.setattr(t, "bootstrap_repo", fake_bootstrap)
     out = t._refresh_repo_locked(repo_root, force=False)
     assert out["data"]["status"] == "noop"
+
+
+def test_principles_incomplete_detects_missing_protocol(tmp_path):
+    """principles.md is generated content; a copy missing the always-on
+    anti-hallucination protocol (stale pre-1.4.0 or hand-stripped) must be
+    detected so refresh re-derives it instead of noop/partial preserving it."""
+    pd = tmp_path / ".chameleon"
+    pd.mkdir()
+    pd.joinpath("principles.md").write_text("# principles\n\n1. foo\n", encoding="utf-8")
+    assert t._principles_incomplete(pd) is True
+    pd.joinpath("principles.md").write_text(
+        "# principles\n\n## anti-hallucination protocol\n\n- Don't invent symbols.\n",
+        encoding="utf-8",
+    )
+    assert t._principles_incomplete(pd) is False
+
+
+def test_principles_incomplete_when_absent(tmp_path):
+    pd = tmp_path / ".chameleon"
+    pd.mkdir()
+    assert t._principles_incomplete(pd) is True
