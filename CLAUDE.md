@@ -121,6 +121,45 @@ sqlite3 ~/.local/share/chameleon/<repo_id>/drift.db
 sqlite> SELECT * FROM edit_observations ORDER BY observed_at DESC LIMIT 10;
 ```
 
+## Testing discipline (MANDATORY before claiming "tested" or "done")
+
+When asked to test or validate, or before declaring any work complete, run the FULL matrix below — not a happy-path spot check. "I tested everything" is only true after the **depth** pass actually ran. Real bugs live in degraded/edge/interaction state, not the happy path (a tool returning once proves it works on good input, not bad/stale state).
+
+Shortcut: `/qa` runs this whole matrix and reports. Use it instead of re-explaining.
+
+### Pass 1 — breadth
+Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries + a from-zero bootstrap against the real repos.
+
+### Pass 2 — depth (the pass that finds real bugs)
+- **Stale/damaged artifacts**: for each generated artifact (`archetypes`/`canonicals`/`rules`/`conventions.json`, `principles.md`, `profile.summary.md`) test missing + corrupt + stale, then `/chameleon-refresh` — is it repaired (not noop-preserved)?
+- **Damaged-profile read tools**: corrupt each artifact, call every read tool — crash or fail-open?
+- **Boundary inputs**: empty / huge / binary / unicode / null-byte files; non-existent / traversal / null-byte paths.
+- **Hook robustness**: every hook against malformed payloads (empty stdin, garbage, null fields, huge, missing keys) — must fail-open (exit 0, valid JSON, no crash).
+- **Lifecycle chains**: bootstrap -> trust -> teach -> refresh -> rename -> merge; verify `idioms.md` survives + artifacts stay consistent.
+- **Trust states**: every tool under untrusted / stale / trusted.
+
+### Pass 3 — full surface (beyond tools + hooks)
+- **Slash-command / skill flows**: drive each `/chameleon-*` end-to-end (init, refresh, status, teach, trust, disable, pause-15m, doctor, pr-review) — the skill logic + output, not just the underlying tool.
+- **Statusline**: `bin/chameleon-statusline.sh` with a sample payload — correct format, within the <100ms budget, respects `CHAMELEON_DISABLE`.
+- **MCP stdio server**: `python -m chameleon_mcp.server` — call a tool over the real stdio transport, not just in-process.
+- **Daemon**: `daemon.py` / `daemon_client.py` — startup, socket, idle-timeout self-exit, `daemon_status`.
+- **Merge driver**: `scripts/chameleon-merge-driver.sh` on a real `.chameleon` git merge conflict (3-way).
+- **Hot path**: `tests/bench_hot_path.py` — `get_pattern_context` p50/p99 within budget.
+- **Schema migrations**: load an old-schema-version profile — migrate or reject cleanly (don't crash).
+
+### Out of scope for `/qa` (use the right method, don't fake it)
+- **Journey harness** (real `claude -p` editing): `/chameleon-journey` or `tests/journey/runner.py` — ~$33, ~65 min. Run before a release, not on every `/qa`. Ask before spending.
+- **Visual statusline rendering** in the live terminal, and **cross-platform** (Linux / other Python versions): CI matrix + manual, not `/qa`.
+- Say plainly when one of these was NOT run.
+
+### Rules
+- Prefer the free real-repo test (9 bootstrapped repos in `~/Documents/Projects/Testing Apps/`) over the ~$33 journey harness.
+- Fix CHAMELEON, not the test, when a test surfaces a gap. Tests enforce the spec.
+- Verify load-bearing claims yourself before relaying them.
+- After any fix: 2-3 rounds of review (read-only `Explore` agents, or back up first — review subagents can mutate the working tree), THEN run the matrix.
+- Always bump the version (`scripts/bump-version.sh <ver>`); the plugin cache is version-keyed. Run `ruff check` AND `ruff format --check` from `mcp/` over `chameleon_mcp/ ../tests/unit/` before pushing.
+- Do NOT claim "I tested everything" until Pass 2 ran.
+
 ## Environment variables
 
 - `CHAMELEON_DISABLE=1` — disable plugin globally for this session

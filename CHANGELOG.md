@@ -4,6 +4,12 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.5] - 2026-06-01
+
+### Fixed
+
+- **Status line kept showing `(stale)` after `/chameleon-trust`.** The status line reads trust from a per-project cache (`.claude/.chameleon-statusline-cache`) that was only written at SessionStart, so a mid-session `/chameleon-trust` (or refresh that changed the trust state) was not reflected until the next session. `trust_profile` and `refresh_repo` now update the cache, so the status line shows the new state immediately. (The 30s cache TTL in the status line script only gated the activity line, never the trust state.)
+
 ## [1.5.4] - 2026-06-01
 
 ### Fixed

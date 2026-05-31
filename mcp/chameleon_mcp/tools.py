@@ -2508,6 +2508,16 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             envelope = _refresh_repo_locked(repo_path, force=force)
             _inject_archetype_diff(envelope, repo_path, pre_state)
             _maybe_preserve_trust_across_refresh(repo_path, pre_state, envelope)
+            # Keep the status line in sync with the post-refresh trust state
+            # (a refresh can flip trusted->stale; the cache otherwise lags a session).
+            try:
+                _ts = (
+                    detect_repo(str(repo_path / "profile.json")).get("data", {}).get("trust_state")
+                )
+                if isinstance(_ts, str) and _ts in ("trusted", "stale", "untrusted"):
+                    _update_statusline_trust(repo_path, _ts)
+            except Exception:
+                pass
             _notify_daemon_cache_invalidation()
             return envelope
     except LockHeldError as e:
@@ -2927,6 +2937,30 @@ def _profile_needs_rederive(profile_dir) -> bool:
     if not (profile_dir / "profile.summary.md").is_file():
         return True
     return _principles_incomplete(profile_dir)
+
+
+def _update_statusline_trust(repo_path, trust_state: str) -> None:
+    """Best-effort: update the per-project statusline cache trust value so the
+    status line reflects a /chameleon-trust (or refresh) immediately, instead of
+    the SessionStart snapshot — which kept showing ``(stale)`` after a successful
+    trust until the next session. The cache profile is keyed by the repo
+    directory name (matches the SessionStart writer). Never raises.
+    """
+    try:
+        cache = Path(repo_path) / ".claude" / ".chameleon-statusline-cache"
+        if not cache.is_file():
+            return
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        name = Path(repo_path).name
+        changed = False
+        for prof in data.get("profiles", []) or []:
+            if prof.get("name") == name:
+                prof["trust"] = trust_state
+                changed = True
+        if changed:
+            cache.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
@@ -4072,6 +4106,10 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
         )
 
     record = grant_trust(repo_id, profile_dir)
+    # Reflect the new trust state in the status line immediately (it reads a
+    # SessionStart-written cache that /chameleon-trust did not update, so it kept
+    # showing `(stale)` until the next session).
+    _update_statusline_trust(repo_path, "trusted")
 
     workspace_trust_count = 0
     for child_chameleon in _iter_workspace_chameleon_dirs(repo_path):
