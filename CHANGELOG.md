@@ -4,6 +4,38 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-05-31
+
+A full-subsystem correctness audit and remediation, plus a new tool for capturing wrapper-preference conventions that AST analysis cannot infer.
+
+### Added
+
+- **`teach_competing_import`** MCP tool: capture a "use X, not Y" import rule for an archetype (for example, import the project HTTP wrapper, not raw `axios`). It writes `conventions.imports.<archetype>.competing`, which now drives the `import-preference` lint rule and the "use the project's wrapper" principle that were previously unreachable. Surfaced through `/chameleon-teach` as a third capture mode.
+
+### Fixed
+
+- **Split archetypes were silently dropped from the profile.** `_split_by_sub_bucket` children inherited the parent cluster key, so they hashed to the same cluster id and one overwrote the other. Children now carry a `split_tag` folded into both the writer and reader cluster-id hashes; non-split clusters keep their existing id.
+- **`lint_file` could leak an untrusted workspace profile.** The trust gate ran before the monorepo workspace fallback, so an ungranted workspace's committed conventions/AST queries reached a model-callable surface. Trust is now re-checked against the final workspace root after the fallback.
+- **`apply_archetype_renames` silently dropped `conventions.json` and `principles.md`.** The atomic commit replaces the whole profile dir and does not copy protocol files, so a rename that did not rewrite them lost them. Rename now renames the conventions keys and preserves principles.
+- **TypeScript repos got bogus Ruby conventions.** The inheritance and DSL extractors ran on every archetype; they are now gated on the profile language, which also drives key-export extraction.
+- **`paths_glob` could read files outside the repo.** A `../`-escaping glob produced lexically-relative paths that bypassed the boundary check; out-of-tree matches are now dropped.
+- **Lint convention scans ran on raw content.** A class or interface declaration inside a heredoc, template string, or comment produced false naming/inheritance violations; those scans now run on strings/comments-stripped content.
+- **Read-only `index.db` reads were silently disabled.** `open_hardened(read_only=True)` ran `PRAGMA journal_mode=WAL`, which throws on a non-WAL or read-only file and fail-opened the whole index to "repo unknown". Read-only connections now apply only the pragmas that succeed read-only.
+- **A stale HMAC key tmp file bricked key generation** and silently dropped signing on session-disable markers. The orphaned tmp is now reclaimed and the create retried.
+- **One malformed extractor record aborted the entire parse.** A bad record now skips that one file instead of taking down the whole corpus.
+- **Monorepos with non-standard package directories got zero profiles.** When the root has no language of its own, the per-workspace fanout still runs, and the report distinguishes `success_workspaces_only`.
+- **Daemon hardening:** the idle-shutdown timer uses a monotonic clock (immune to wall-clock jumps), the accept loop backs off instead of hot-spinning on fd pressure, and `stop_daemon` confirms ownership via the pidfile flock instead of a pid comparison that cannot detect a recycled pid.
+- **SessionStart now honors the opt-out hierarchy** (`.skip` / `/chameleon-disable` / `/chameleon-pause-15m`) like the other hooks, and its statusLine write defers to an existing user-global or project statusLine instead of overriding it.
+- Witness reads in `lint_file` route through `safe_open` (path-traversal and symlink safe) while keeping the truncate-and-use semantics for large witnesses; `safe_open` also blocks common secret files (`.env`, `.npmrc`, and friends).
+
+### Changed
+
+- **TypeScript Node dependencies install into a writable, version-scoped per-user dir** (`~/.local/share/chameleon/node-deps/<version>/`) instead of the read-only, rebuilt-per-version plugin-cache dir. The install is advisory-locked, staged and atomically promoted, and degrades to a `failed_node_unavailable` report rather than crashing when Node/npm is unavailable.
+
+### Compliance
+
+- Aligned the plugin manifests, `hooks.json`, and docs with the Claude Code contract: dropped the non-schema `async` hook field and the off-schema marketplace description, corrected the statusline fail-open, and reconciled doc claims about a PreToolUse safety gate that does not exist.
+
 ## [1.3.0] - 2026-05-29
 
 A production-readiness pass driven by an exhaustive multi-lens audit: security, crash-safety, concurrency, dead-code, and doc fixes, plus a source-comment cleanup.

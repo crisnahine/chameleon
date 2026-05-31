@@ -7,7 +7,10 @@ CONN_RECV_TIMEOUT_S on each accepted connection.
 """
 from __future__ import annotations
 
+import os
+import shutil
 import socket
+import tempfile
 import threading
 import time
 
@@ -19,13 +22,16 @@ def _ping_dispatcher(method: str, payload: dict) -> dict:
     return {"ok": True, "method": method}
 
 
-def test_stalled_client_does_not_wedge_daemon(tmp_path, monkeypatch):
+def test_stalled_client_does_not_wedge_daemon(monkeypatch):
     # Short per-connection read timeout keeps the test fast.
     monkeypatch.setattr(daemon_mod, "CONN_RECV_TIMEOUT_S", 0.3)
 
-    sock_path = tmp_path / "d.sock"
+    # AF_UNIX paths are capped (~104 bytes on macOS); pytest's tmp_path on CI
+    # runners can exceed that, so bind under a short /tmp dir instead.
+    sock_dir = tempfile.mkdtemp(prefix="cs", dir="/tmp")
+    sock_path = os.path.join(sock_dir, "d.sock")
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(str(sock_path))
+    srv.bind(sock_path)
     srv.listen(8)
 
     state = _DaemonState(idle_timeout_s=30.0)
@@ -61,3 +67,4 @@ def test_stalled_client_does_not_wedge_daemon(tmp_path, monkeypatch):
             except OSError:
                 pass
         server_thread.join(timeout=3.0)
+        shutil.rmtree(sock_dir, ignore_errors=True)
