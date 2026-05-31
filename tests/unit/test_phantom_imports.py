@@ -376,7 +376,7 @@ class TestRuby:
     def test_absolute_require_relative_is_skipped(self, tmp_path):
         editing = tmp_path / "config" / "puma.rb"
         editing.parent.mkdir(parents=True, exist_ok=True)
-        content = "require_relative '/home/git/app/lib/thing'\n"
+        content = "require_relative '/opt/app/lib/thing'\n"
         v = lint_phantom_imports(
             content, file_path=str(editing), repo_root=str(tmp_path),
             language="ruby", rules={},
