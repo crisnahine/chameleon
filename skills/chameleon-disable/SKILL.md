@@ -5,7 +5,7 @@ description: Use when the user explicitly invokes /chameleon-disable to suppress
 
 # /chameleon-disable
 
-Disable chameleon's advisory injections for the current session. Hook stack still fires (safety hard-deny preserved) but no `<chameleon-context>` content is injected.
+Disable chameleon's advisory injections for the current session. Hook stack still fires but no `<chameleon-context>` content is injected.
 
 ## When to use
 

@@ -129,8 +129,14 @@ sqlite> SELECT * FROM edit_observations ORDER BY observed_at DESC LIMIT 10;
 - `CHAMELEON_MAX_CONVENTION_ITEMS` — cap on each repo-size-scaling section of the SessionStart convention block (preferred imports, DSL calls, key-export union); default 60, over-cap shows a "+N more" tail. Raise to surface more, lower to shrink the block. Read at import time.
 - `CHAMELEON_MAX_KEY_EXPORTS` — cap on stored key exports per archetype (default 200). Read at import time.
 - `CHAMELEON_MAX_SIBLINGS` — cap on the per-edit "Nearby files" sibling listing (default 60). Read at import time.
+- `CHAMELEON_EXCERPT_CACHE_CAP` — LRU capacity for the canonical-excerpt cache (default 64). Read at import time.
+- `CHAMELEON_LINT_DIMENSIONS` — set to `core` to use the coarse lint dimension set instead of the full per-rule set.
+- `CHAMELEON_DAEMON_IDLE_TIMEOUT` — seconds the advisor daemon stays alive while idle before self-exiting.
+- `CHAMELEON_<THRESHOLD>` — operator override for any tuning threshold in `mcp/chameleon_mcp/_thresholds.py` (e.g. `CHAMELEON_WORKSPACE_FANOUT_CAP`, `CHAMELEON_EDIT_OBS_HARD_CAP`, `CHAMELEON_DRIFT_BANNER_THRESHOLD`); see that module's `DEFAULTS` for the full list and defaults.
 - `CHAMELEON_PLUGIN_DATA` — override `~/.local/share/chameleon/` (tests only)
 - `CHAMELEON_HMAC_KEY_PATH` — override the HMAC key location (tests only)
+- `CHAMELEON_ALLOW_TMP_REPO=1` — allow bootstrapping a repo under a temp dir (tests only)
+- `CHAMELEON_PLUGIN_ROOT` — override plugin root path resolution (tests only)
 - `CHAMELEON_HOOK_ERROR_LOG` — override hook error log path
 - `CLAUDE_PLUGIN_ROOT` — set by Claude Code; path to installed plugin
 - `TMPDIR` — honored for HMAC exec log location

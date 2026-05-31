@@ -641,14 +641,13 @@ One line. Once per repo per user.
  ┌──────────▼──────────┐
  │ PreToolUse │  preflight-and-advise
  │ │
- │ 1. Safety gate │─── DENY → tool blocked
- │ 2. Opt-out check │
- │ 3. Resolve archetype │
+ │ 1. Opt-out check │
+ │ 2. Resolve archetype │
  │ (daemon or │
  │ in-process) │
- │ 4. Record drift obs │
- │ 5. Trust gate │
- │ 6. Emit full │
+ │ 3. Record drift obs │
+ │ 4. Trust gate │
+ │ 5. Emit full │
  │ canonical excerpt │
  │ via │
  │ additionalContext │
@@ -686,6 +685,8 @@ One line. Once per repo per user.
 
 Loads `using-chameleon` SKILL.md, wraps in `<chameleon-context>`, appends drift banner if applicable, fires auto-refresh in background. See "Bootstrap mechanism" above for the full 11-step sequence.
 
+Honors the opt-out hierarchy (`.skip` / `/chameleon-disable` / `/chameleon-pause-15m`) like PreToolUse/PostToolUse: when suppressed it injects nothing and skips the statusLine write and auto-refresh. The statusLine write also defers to an existing project-level `.claude/settings.json` or user-global `~/.claude/settings.json` statusLine, so it never overrides a statusLine the user already configured.
+
 #### PreToolUse specification
 
 **Matcher:** `Edit|Write|NotebookEdit`
@@ -700,15 +701,6 @@ Primes the model before the edit. Does not enforce - PostToolUse does that.
 > documented, load-bearing paths are SessionStart priming and PostToolUse
 > correction. If a future Claude build stops surfacing PreToolUse
 > `additionalContext`, chameleon degrades to those, it does not break.
-
-**Safety gate:** fail-closed deny via `safe_open` with lstat + realpath prefix-match. Checks:
-- Null bytes, Windows ADS streams
-- NFD-encoded `..` traversal
-- Forbidden path segments: `..`, `.git`, `.ssh`, `.aws`, `.gnupg`
-- Symlink refusal (lstat before open)
-- Repo-boundary escape (resolved path must be under repo_root)
-- Non-regular files (devices, fifos, sockets)
-- File size ceiling (1 MB default)
 
 **Archetype resolve:** daemon fast path (sub-100ms socket roundtrip), in-process `get_pattern_context` fallback. 2s hard timeout on the entire hook, fail-open on any error.
 
@@ -955,6 +947,17 @@ FastMCP-based, stdio transport (NEVER exposed over network).
 ## TypeScript-first extractor (vendored, integrity-checked)
 
 v1 ships TypeScript only via TS Compiler API subprocess.
+
+> **As-built (v1.3+):** TypeScript is NOT committed/vendored — `mcp/node_modules`
+> is gitignored and the wheel is Python-only. The extractor provisions its node
+> deps at first use via `npm ci` into a writable, version-scoped per-user dir
+> (`~/.local/share/chameleon/node-deps/<version>/`), reusing a legacy
+> `<plugin>/mcp/node_modules` if present. The install is advisory-locked and
+> degrades to a `failed_node_unavailable` bootstrap report (not a crash) when
+> npm/node is absent or the dir is read-only. `mcp/typescript-checksums.json` is
+> generated but NOT verified at runtime, so the SHA-256 "integrity" path below is
+> aspirational/CI-only, not a runtime guarantee. The vendoring narrative that
+> follows is the original design intent, kept for reference.
 
 **Vendoring + integrity strategy:**
 - TypeScript pinned at specific version in `mcp/node_modules/typescript`
@@ -1908,10 +1911,10 @@ Magic numbers in the architecture, with evaluation protocols for validation:
 ## Inheritance from predecessor projects
 
 What's preserved (REVIEWED — not "verbatim"):
-- Preflight-check safety hard-deny logic (1001 lines per current source — RECONCILED + EXPLICIT BLOCKLIST as test fixture)
+- Preflight-check hook + path-safety helper (the predecessor's tool-blocking hard-deny was dropped; path checks survive only as the `safe_open` file-reading guard — preflight is advisory fail-open, see "What's redesigned")
 - Posttool-recorder HMAC exec log (with **GC bug fix + path mismatch fix + per-repo log directory**)
 - Callout-detector frustration phrase reminder (extended to surface disable hints)
-- TS Compiler API extractor approach (vendored + checksum-verified)
+- TS Compiler API extractor approach (deps provisioned at runtime via npm; see the "As-built" note under "TypeScript-first extractor")
 - MCP server + Skills + PostToolUse pattern
 
 What's redesigned:

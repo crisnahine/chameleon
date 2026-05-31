@@ -1,6 +1,6 @@
 ---
 name: chameleon-pr-review
-description: "Review a PR or branch diff against the repo's chameleon conventions, principles, and task requirements. Reports convention violations + logic gaps."
+description: "Use when the user explicitly invokes /chameleon-pr-review to review a PR or branch diff against the repo's chameleon conventions, principles, and task requirements. Reports convention violations + logic gaps."
 ---
 
 # PR Review with Chameleon Context
