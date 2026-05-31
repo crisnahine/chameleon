@@ -499,6 +499,20 @@ def session_start() -> int:
     except Exception:
         pass
 
+    # Opt-out gate: honor .skip / session-disable / pause at SessionStart too,
+    # matching PreToolUse/PostToolUse. When suppressed, inject nothing and skip
+    # the statusLine write + auto-refresh side effects (a .skip repo opted out).
+    try:
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.tools import _compute_repo_id
+
+        sup_repo_id = _compute_repo_id(repo_root) if repo_root else None
+        if is_chameleon_suppressed(repo_root, sup_repo_id, session_id) is not None:
+            _emit({})
+            return 0
+    except Exception:
+        pass
+
     try:
         from chameleon_mcp.profile.trust import hash_profile, trust_state_for
 
@@ -591,6 +605,19 @@ def session_start() -> int:
                         current_cmd = None
                 except Exception:
                     pass
+
+            if current_cmd is not None:
+                # Defer to a user-global statusLine too: settings.local.json
+                # outranks ~/.claude/settings.json, so writing here would
+                # silently override the user's explicit global choice.
+                user_settings = Path.home() / ".claude" / "settings.json"
+                if user_settings.is_file():
+                    try:
+                        ud = json.loads(user_settings.read_text(encoding="utf-8"))
+                        if "statusLine" in ud:
+                            current_cmd = None
+                    except Exception:
+                        pass
 
             if current_cmd is not None:
                 existing = {}
@@ -739,6 +766,7 @@ def preflight_and_advise() -> int:
         return 0
 
     repo_id_hint: str | None = None
+    repo_root_path: Path | None = None
     try:
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.loader import find_repo_root
@@ -1017,7 +1045,12 @@ def posttool_recorder() -> int:
     session_id = payload.get("session_id", "unknown")
     exit_code = tool_response.get("returnCode") if isinstance(tool_response, dict) else None
 
-    cwd = Path(os.environ.get("CLAUDE_CWD") or os.getcwd()).resolve()
+    cwd_raw = payload.get("cwd")
+    cwd_str = cwd_raw if isinstance(cwd_raw, str) and cwd_raw else os.getcwd()
+    try:
+        cwd = Path(cwd_str).resolve()
+    except (OSError, ValueError):
+        cwd = Path(os.getcwd())
     try:
         from chameleon_mcp.tools import _compute_repo_id
 

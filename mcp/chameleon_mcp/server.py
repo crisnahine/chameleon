@@ -260,6 +260,28 @@ def teach_profile_structured(
 
 
 @mcp.tool()
+def teach_competing_import(
+    repo: str,
+    archetype: str,
+    preferred: str,
+    over: str,
+) -> dict:
+    """Capture a wrapper-preference ("use `preferred`, not `over`") for an archetype.
+
+    Writes conventions.imports.<archetype>.competing, enabling the
+    banned-raw-import / mandatory-wrapper convention + principle that AST
+    analysis cannot infer (e.g. "import the project http wrapper, not raw
+    axios"). In-place, flock-serialized single-file write.
+    """
+    return tools.teach_competing_import(
+        repo,
+        archetype=archetype,
+        preferred=preferred,
+        over=over,
+    )
+
+
+@mcp.tool()
 def daemon_status() -> dict:
     """Return current chameleon-mcp daemon status.
 

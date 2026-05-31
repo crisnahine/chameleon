@@ -17,6 +17,10 @@ Supports two capture modes:
 - **Structured** — the user supplies discrete fields (`slug:`, `rationale:`,
   `example:`, `counterexample:`); skill calls `teach_profile_structured`
   which validates each field and renders the canonical idiom layout.
+- **Wrapper-preference** — the user states a "use X, not Y" import rule for an
+  archetype ("import our `http` wrapper, not raw `axios`"); skill calls
+  `teach_competing_import`, which writes a structured `competing` convention
+  the lint engine + SessionStart block then enforce (not just a prose idiom).
 
 ## When to use
 
@@ -118,6 +122,27 @@ Each field is one line (or a fenced code block for example/counterexample).
 | `status must be` | Tell user: status must be `active` or `deprecated` (default: active) |
 | `archetype` regex error | Tell user: archetype names must be 1-64 chars, lowercase letters/digits/hyphens, start with a letter (min length differs from slugs) |
 | `no profile in this repo` | Tell user to run `/chameleon-init` first |
+
+## The wrapper-preference flow
+
+When the user states a banned-import / mandatory-wrapper rule scoped to an
+archetype ("use `@/lib/http`, not `axios`"), capture it as a structured
+`competing` convention instead of a prose idiom — it then drives the
+`import-preference` lint rule and the "use the project's wrapper" principle:
+
+```
+chameleon-mcp::teach_competing_import(
+  repo=<abs-repo-path>,
+  archetype=<archetype name>,
+  preferred=<the wrapper/module to use>,
+  over=<the raw module to avoid>,
+)
+```
+
+The tool validates the archetype name, requires non-empty distinct
+`preferred`/`over`, and writes `conventions.imports.<archetype>.competing` in
+place (flock-serialized). The profile hash changes, so tell the user to run
+`/chameleon-trust` if it shows as stale.
 
 ## Idiom format examples
 

@@ -100,6 +100,10 @@ def _loads_hardened(content: str) -> dict:
         _check_depth(obj)
     except (SchemaError, json.JSONDecodeError) as exc:
         raise ProfileLoadError(f"profile artifact rejected: {exc}") from exc
+    if not isinstance(obj, dict):
+        # Valid JSON but not an object (e.g. a bare list/number) — downstream
+        # code does dict ops, so reject cleanly instead of AttributeError later.
+        raise ProfileLoadError("profile artifact must be a JSON object")
     return obj
 
 
@@ -277,20 +281,29 @@ def _find_repo_root_uncached(current: Path) -> Path | None:
     return first_marker_ancestor
 
 
-def _compute_mtime_token(artifact_paths: list[Path], idioms_path: Path) -> str:
-    """Build an mtime fingerprint from the 4 JSON artifacts + idioms.md.
+def _compute_mtime_token(
+    artifact_paths: list[Path],
+    idioms_path: Path,
+    conventions_path: Path | None = None,
+) -> str:
+    """Build an mtime fingerprint from the 4 JSON artifacts + idioms.md
+    (+ optional conventions.json).
 
-    Returns a dash-joined string of st_mtime_ns values. idioms.md
-    contributes "0" when absent so the token length is always 5 parts.
+    Returns a dash-joined string of st_mtime_ns values. idioms.md and
+    conventions.json each contribute "0" when absent so the token shape is
+    stable.
 
-    Raises FileNotFoundError / OSError if any JSON artifact is missing
-    (idioms.md absence is not an error).
+    Raises FileNotFoundError / OSError if any of the 4 required JSON artifacts
+    is missing (idioms.md / conventions.json absence is not an error).
     """
     parts = [str(p.stat().st_mtime_ns) for p in artifact_paths]
-    try:
-        parts.append(str(idioms_path.stat().st_mtime_ns))
-    except FileNotFoundError:
-        parts.append("0")
+    for optional in (idioms_path, conventions_path):
+        if optional is None:
+            continue
+        try:
+            parts.append(str(optional.stat().st_mtime_ns))
+        except FileNotFoundError:
+            parts.append("0")
     return "-".join(parts)
 
 
@@ -319,7 +332,10 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
             profile_dir / "canonicals.json",
         ]
         quick_idioms = profile_dir / "idioms.md"
-        quick_token = _compute_mtime_token(quick_artifact_paths, quick_idioms)
+        quick_conventions = profile_dir / "conventions.json"
+        quick_token = _compute_mtime_token(
+            quick_artifact_paths, quick_idioms, quick_conventions
+        )
         cached = _PROFILE_CACHE.get(cache_key)
         if cached is not None and cached[0] == quick_token:
             return cached[1]
@@ -342,14 +358,22 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         if not p.is_file():
             raise ProfileLoadError(f"missing required artifact: {p}")
 
+    conventions_path = profile_dir / "conventions.json"
+
+    def _opt_mtime(pp: Path) -> int | None:
+        try:
+            return pp.stat().st_mtime_ns
+        except OSError:
+            return None
+
     mtimes_before = tuple(p.stat().st_mtime_ns for p in artifact_paths)
+    conv_mtime_before = _opt_mtime(conventions_path)
 
     profile = _loads_hardened(_safe_read_artifact(artifact_paths[0]))
     archetypes = _loads_hardened(_safe_read_artifact(artifact_paths[1]))
     rules = _loads_hardened(_safe_read_artifact(artifact_paths[2]))
     canonicals = _loads_hardened(_safe_read_artifact(artifact_paths[3]))
 
-    conventions_path = profile_dir / "conventions.json"
     try:
         conventions = _loads_hardened(_safe_read_artifact(conventions_path))
     except FileNotFoundError:
@@ -362,7 +386,11 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         idioms_text = ""
 
     mtimes_after = tuple(p.stat().st_mtime_ns for p in artifact_paths)
-    if mtimes_before != mtimes_after:
+    conv_mtime_after = _opt_mtime(conventions_path)
+    # conventions.json is in the cache token, so it must also be in the
+    # mid-load mutation guard, or a conventions rewrite (e.g. teach_competing_
+    # import) between read and token-compute could cache stale content.
+    if mtimes_before != mtimes_after or conv_mtime_before != conv_mtime_after:
         raise ProfileLoadError(
             "profile changed during load (mid-load mutation detected); retry"
         )
@@ -394,12 +422,10 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
             f"upgrade chameleon-mcp"
         )
 
-    idioms_mtime = "0"
-    try:
-        idioms_mtime = str(idioms_path.stat().st_mtime_ns)
-    except FileNotFoundError:
-        pass
-    mtime_token = "-".join(str(m) for m in mtimes_after) + "-" + idioms_mtime
+    # Use the same helper as the cache-hit check so the read- and write-side
+    # tokens are byte-identical (4 artifacts + idioms.md + conventions.json).
+    # mtimes_after == mtimes_before was just verified, so re-stat is consistent.
+    mtime_token = _compute_mtime_token(artifact_paths, idioms_path, conventions_path)
 
     # Drop archetype-name keys that don't match ARCHETYPE_NAME_RE so a poisoned
     # or hand-edited archetypes.json can't push a name with an embedded newline

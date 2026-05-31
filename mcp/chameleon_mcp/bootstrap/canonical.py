@@ -78,7 +78,17 @@ def _hash_cluster_key(cluster: Cluster) -> str:
     import hashlib
     import json
 
-    canonical = json.dumps(cluster.key.to_dict(), sort_keys=True, separators=(",", ":"))
+    key_dict = cluster.key.to_dict()
+    split_tag = getattr(cluster, "split_tag", "") or ""
+    if split_tag:
+        # Split children share their parent's key; discriminate them so they
+        # don't collide on the same cluster_id (and silently overwrite one
+        # archetype). Non-split clusters (split_tag == "") keep the legacy
+        # key-only hash, so existing profiles' ids stay stable.
+        payload = {"k": key_dict, "s": split_tag}
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    else:
+        canonical = json.dumps(key_dict, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
@@ -174,10 +184,16 @@ def select_canonicals(
     for cluster in clusters:
         cluster_id = _hash_cluster_key(cluster)
 
-        eligible = [
-            pf for pf in cluster.members
-            if is_eligible_as_canonical(str(pf.path.relative_to(repo_root)))
-        ]
+        eligible = []
+        for pf in cluster.members:
+            try:
+                rel = str(pf.path.relative_to(repo_root))
+            except ValueError:
+                # Member resolved outside repo_root (stray/symlinked path).
+                # Mirror clustering.py's guard instead of crashing bootstrap.
+                rel = str(pf.path)
+            if is_eligible_as_canonical(rel):
+                eligible.append(pf)
         if not eligible:
             no_eligible.append(cluster)
             continue

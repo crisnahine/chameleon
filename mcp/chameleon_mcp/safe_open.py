@@ -61,10 +61,22 @@ def safe_open(repo_root: Path, rel_path: str, *, max_size_bytes: int = 1_000_000
         if ".." in normalized:
             raise UnsafeFileError("path contains .. after NFC normalization")
 
-    suspicious_segments = {"..", ".git", ".ssh", ".aws", ".gnupg"}
+    suspicious_segments = {
+        "..",
+        ".git",
+        ".ssh",
+        ".aws",
+        ".gnupg",
+        ".npmrc",
+        ".netrc",
+        ".pypirc",
+        ".dockercfg",
+    }
     parts = Path(rel_path).parts
     for part in parts:
-        if part in suspicious_segments:
+        # Block common in-repo secret files (a witness/lint path should never
+        # name one). Covers .env and its variants (.env.local, .env.production).
+        if part in suspicious_segments or part == ".env" or part.startswith(".env."):
             raise UnsafeFileError(f"path contains forbidden segment: {part}")
 
     unresolved = repo_root / rel_path
@@ -215,10 +227,22 @@ def safe_open_fd(
     if normalized != rel_path:
         if ".." in normalized:
             raise UnsafeFileError("path contains .. after NFC normalization")
-    suspicious_segments = {"..", ".git", ".ssh", ".aws", ".gnupg"}
+    suspicious_segments = {
+        "..",
+        ".git",
+        ".ssh",
+        ".aws",
+        ".gnupg",
+        ".npmrc",
+        ".netrc",
+        ".pypirc",
+        ".dockercfg",
+    }
     parts = Path(rel_path).parts
     for part in parts:
-        if part in suspicious_segments:
+        # Block common in-repo secret files (a witness/lint path should never
+        # name one). Covers .env and its variants (.env.local, .env.production).
+        if part in suspicious_segments or part == ".env" or part.startswith(".env."):
             raise UnsafeFileError(f"path contains forbidden segment: {part}")
 
     unresolved = repo_root / rel_path

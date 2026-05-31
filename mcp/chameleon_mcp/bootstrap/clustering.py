@@ -52,6 +52,10 @@ class Cluster:
     sparse_threshold: int = SPARSE_CLUSTER_THRESHOLD
     cluster_tier: str = "tight"
     sub_bucket_counts: dict[str, int] = field(default_factory=dict)
+    # Discriminator for clusters split out of a shared key by
+    # _split_by_sub_bucket (e.g. "concerns" vs "" for the base). Folded into the
+    # cluster-id hash so split children get distinct ids instead of colliding.
+    split_tag: str = ""
 
     @property
     def size(self) -> int:
@@ -494,6 +498,7 @@ def _split_by_sub_bucket(
                     sparse_threshold=cluster.sparse_threshold,
                     cluster_tier=cluster.cluster_tier,
                     sub_bucket_counts=dict(sub_counts),
+                    split_tag=_tag,
                 )
             )
         sub_counts = Counter(sb for _m, sb in without_suffix)
@@ -504,6 +509,7 @@ def _split_by_sub_bucket(
                 sparse_threshold=cluster.sparse_threshold,
                 cluster_tier=cluster.cluster_tier,
                 sub_bucket_counts=dict(sub_counts),
+                split_tag="",
             )
         )
 

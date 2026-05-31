@@ -346,12 +346,17 @@ def extract_all_conventions(
     files_by_archetype: dict[str, list[ParsedFile]],
     declarations_by_archetype: dict[str, dict[str, list[str]]],
     generation: int,
+    language: str = "typescript",
 ) -> dict:
     """Extract import and naming conventions for each archetype.
 
     Called by the bootstrap orchestrator after clustering.  Returns a
     full conventions dict ready for ``serialize_conventions`` and
     writing to ``conventions.json``.
+
+    ``language`` (the profile's extractor language) gates the Ruby/Rails-only
+    extractors so a TypeScript repo doesn't get bogus inheritance / DSL
+    conventions, and selects the key-export extraction mode.
     """
     conventions = empty_conventions(generation=generation)
     for archetype, files in files_by_archetype.items():
@@ -362,18 +367,23 @@ def extract_all_conventions(
         naming_conv = extract_naming_conventions(declarations=declarations)
         if naming_conv:
             conventions["conventions"]["naming"][archetype] = naming_conv
+    if language == "ruby":
+        # Inheritance + DSL method-call conventions are Ruby/Rails-specific;
+        # running them on TS files emits bogus "Inherit <type-param>" /
+        # "Common DSL: scope" lines into the SessionStart block.
+        for archetype, files in files_by_archetype.items():
+            inheritance_conv = extract_inheritance_conventions(files)
+            if inheritance_conv:
+                conventions["conventions"].setdefault("inheritance", {})[archetype] = (
+                    inheritance_conv
+                )
+        for archetype, files in files_by_archetype.items():
+            method_conv = extract_method_call_conventions(files)
+            if method_conv:
+                conventions["conventions"].setdefault("method_calls", {})[archetype] = (
+                    method_conv
+                )
     for archetype, files in files_by_archetype.items():
-        inheritance_conv = extract_inheritance_conventions(files)
-        if inheritance_conv:
-            conventions["conventions"].setdefault("inheritance", {})[archetype] = inheritance_conv
-    for archetype, files in files_by_archetype.items():
-        method_conv = extract_method_call_conventions(files)
-        if method_conv:
-            conventions["conventions"].setdefault("method_calls", {})[archetype] = method_conv
-    for archetype, files in files_by_archetype.items():
-        language = "typescript"
-        if any(str(f.path).endswith(".rb") for f in files[:3]):
-            language = "ruby"
         exports = extract_key_exports(files, language=language)
         if exports:
             conventions["conventions"].setdefault("key_exports", {})[archetype] = exports
@@ -392,20 +402,34 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     import_lines: list[str] = []
     seen_competing: set[str] = set()
     for _arch, data in conv.get("imports", {}).items():
+        if not isinstance(data, dict):
+            continue
         for c in data.get("competing", []):
-            key = f"{c['preferred']}>{c['over']}"
+            # Tolerate a malformed competing entry (hand-edited conventions.json
+            # / buggy merge) — drop just that entry, not the whole block. The
+            # lint path is guarded the same way.
+            if not isinstance(c, dict):
+                continue
+            pref, over = c.get("preferred"), c.get("over")
+            if not pref or not over:
+                continue
+            key = f"{pref}>{over}"
             if key not in seen_competing:
                 seen_competing.add(key)
-                import_lines.append(f"- Use {c['preferred']}, not {c['over']}")
+                import_lines.append(f"- Use {pref}, not {over}")
 
     seen_preferred: set[str] = set()
     all_preferred: list[tuple[int, str]] = []
     for _arch, data in conv.get("imports", {}).items():
+        if not isinstance(data, dict):
+            continue
         for p in data.get("preferred", []):
+            if not isinstance(p, dict) or not p.get("module"):
+                continue
             mod = p["module"]
             if mod not in seen_preferred:
                 seen_preferred.add(mod)
-                all_preferred.append((p["frequency"], mod))
+                all_preferred.append((p.get("frequency", 0), mod))
     all_preferred.sort(reverse=True)
     _pref_shown = _pref_total = 0
     for _freq, mod in all_preferred:
@@ -490,7 +514,14 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
         except Exception:
             pass
 
-    if not import_lines and not naming_lines and not inheritance_lines and not export_lines and not principle_lines:
+    if (
+        not import_lines
+        and not naming_lines
+        and not inheritance_lines
+        and not method_lines
+        and not export_lines
+        and not principle_lines
+    ):
         return ""
 
     lines.append("<chameleon-conventions>")
@@ -575,11 +606,16 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
     arch_imports = conv.get("imports", {}).get(archetype, {})
     if not arch_imports and conv.get("imports"):
         arch_imports = next(iter(conv["imports"].values()), {})
+    if not isinstance(arch_imports, dict):
+        arch_imports = {}
     for c in arch_imports.get("competing", [])[:2]:
-        parts.append(f"Imports: {c['preferred']}")
+        if isinstance(c, dict) and c.get("preferred"):
+            parts.append(f"Imports: {c['preferred']}")
     if not parts:
         top_preferred = arch_imports.get("preferred", [])[:2]
         for p in top_preferred:
+            if not isinstance(p, dict) or not p.get("module"):
+                continue
             basename = p["module"].rsplit("/", 1)[-1]
             if len(basename) > 2 and basename not in ("index", "types", "utils"):
                 parts.append(f"Imports: {p['module']}")
@@ -608,7 +644,11 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
             if line.strip() and line[0].isdigit()
         ]
         if p_lines:
-            idx = hash(archetype) % len(p_lines)
+            # zlib.crc32 (not builtin hash()) so the chosen principle is stable
+            # across processes — hash() is salted per-process via PYTHONHASHSEED.
+            import zlib
+
+            idx = zlib.crc32(archetype.encode("utf-8")) % len(p_lines)
             parts.append(p_lines[idx][:80])
 
     return ". ".join(parts)

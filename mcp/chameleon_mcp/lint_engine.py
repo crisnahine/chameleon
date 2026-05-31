@@ -471,6 +471,8 @@ def _normalize_kind(kind: str) -> str:
     IncludeCall:* -> IncludeCall (any include matches any include).
     TS FunctionDeclaration/FirstStatement/ExportAssignment -> CodeDeclaration.
     """
+    if not isinstance(kind, str):
+        return ""
     if kind.startswith("DslCall:"):
         dsl_name = kind.split(":", 1)[1]
         return _DSL_CATEGORY.get(dsl_name, "DslCall")
@@ -883,10 +885,26 @@ def lint_conventions(
     for m in _CHAMELEON_IGNORE_RE.finditer(content):
         ignored_rules.add(m.group(1))
 
+    # Run the NAMING + INHERITANCE violation scans against a strings/comments-
+    # stripped copy so a class/interface decl inside a heredoc / template string
+    # / comment (common in Rails generators + specs) doesn't trip a false
+    # violation that drives the L2 STOP escalation. The strip helpers preserve
+    # length so positions stay aligned. The import scan keeps RAW content — it
+    # needs the `from "<module>"` literal, which the strip blanks. Ignore-
+    # directive scans also stay on raw `content` (directives live in comments).
+    if language == "ruby":
+        scan_content = _strip_ruby_strings_and_comments(content)
+    elif language == "typescript":
+        scan_content = _strip_ts_strings_and_comments(content)
+    else:
+        scan_content = content
+
     violations: list[Violation] = []
 
     if "import-preference" not in ignored_rules:
         for competing in (conventions.get("imports") or {}).get("competing", []):
+            if not isinstance(competing, dict):
+                continue
             over_mod = competing.get("over")
             preferred_mod = competing.get("preferred")
             if not over_mod or not preferred_mod:
@@ -914,7 +932,7 @@ def lint_conventions(
         prefix_entry = naming.get("interface_prefix")
         if prefix_entry and prefix_entry.get("consistency", 0) >= 0.60:
             expected_prefix = prefix_entry["pattern"]
-            for m in _TS_INTERFACE_DECL_RE.finditer(content):
+            for m in _TS_INTERFACE_DECL_RE.finditer(scan_content):
                 name = m.group(1)
                 if not name.startswith(expected_prefix) or (len(name) > 1 and name[1].islower()):
                     violations.append(Violation(
@@ -940,7 +958,7 @@ def lint_conventions(
                 # mis-flagging legit controllers and driving a STOP loop).
                 known_bases = set(inheritance.get("known_bases") or ())
                 known_bases.add(dominant_base)
-                for m in re.finditer(r"^\s*class\s+([\w:]+)(?:\s*<\s*([\w:]+))?", content, re.MULTILINE):
+                for m in re.finditer(r"^\s*class\s+([\w:]+)(?:\s*<\s*([\w:]+))?", scan_content, re.MULTILINE):
                     class_name = m.group(1)
                     superclass = m.group(2)
                     if superclass is None or superclass not in known_bases:

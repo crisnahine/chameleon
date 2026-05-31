@@ -1041,7 +1041,17 @@ def get_pattern_context(file_path: str) -> dict:
                 rel_str = p.name
             first = _nearest_canonical_entry(rel_str, canonicals)
             witness_rel = first.get("witness", {}).get("path")
-            if witness_rel:
+            if witness_rel and trust_state_str == "untrusted":
+                # Untrusted: the witness content is redacted below anyway, so
+                # skip the file read + sanitize + cache on the hot path. Keep
+                # the metadata so a caller knows a witness exists.
+                canonical_data = {
+                    "content": "",
+                    "witness_path": witness_rel,
+                    "truncated": False,
+                    "sha_hint": first.get("witness", {}).get("sha_hint"),
+                }
+            elif witness_rel:
                 try:
                     import os as _os
 
@@ -1695,6 +1705,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     canonicals = loaded.canonicals.get("canonicals", {}) or {}
     entries = canonicals.get(archetype) or []
 
+    _ws_fallback_used = False
     if not entries:
         for ws_cham in _iter_workspace_chameleon_dirs(repo_root):
             if not (ws_cham / "profile.json").is_file():
@@ -1707,9 +1718,33 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
                     repo_root = ws_cham.parent
                     canonicals = ws_loaded.canonicals.get("canonicals", {}) or {}
                     entries = ws_entries
+                    _ws_fallback_used = True
                     break
             except Exception:
                 continue
+
+    if _ws_fallback_used:
+        # The fallback reassigned repo_root to a workspace whose committed
+        # profile is attacker-controllable. The early gate only covered the
+        # top-level root, so re-gate against the final workspace root before its
+        # conventions/AST queries reach the model surface.
+        _gate_rec2 = _trust_state_for(_compute_repo_id(repo_root))
+        if _gate_rec2 is None or not _gate_rec2.grants_root(repo_root):
+            return _envelope(
+                {
+                    "stub": True,
+                    "status": "untrusted",
+                    "stub_reason": (
+                        "profile is not trusted for this user; grant with "
+                        "/chameleon-trust (convention/AST checks withheld)"
+                    ),
+                    "violations": secret_violations,
+                    "canonical_confidence": 0.0,
+                    "unparseable_regions": [],
+                    "content_size": content_size,
+                },
+                truncated=truncated,
+            )
 
     ast_query: dict | None = None
     witness_rel_path: str | None = None
@@ -1728,12 +1763,15 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             if not e_ast or not e_witness:
                 continue
             try:
-                w_full = repo_root / e_witness
-                if not w_full.is_file():
-                    continue
-                w_raw = w_full.read_bytes()[:100_000].decode(
-                    "utf-8", errors="replace"
-                )
+                # Route through safe_open for path-safety (reject traversal /
+                # symlinks / non-regular files — a committed witness path is
+                # attacker-controllable), but preserve the old truncate-and-use
+                # semantics: only the first 100KB feeds the AST recalibration, so
+                # a legitimately large witness must NOT be dropped on size.
+                from chameleon_mcp.safe_open import safe_open
+
+                _wpath = safe_open(repo_root, e_witness, max_size_bytes=WITNESS_MAX_BYTES)
+                w_raw = _wpath.read_bytes()[:100_000].decode("utf-8", errors="replace")
                 w_lang = _detect_language(e_witness) or profile_lang
                 w_snap = _extract_dimensions(w_raw, language=w_lang)
                 candidate_queries.append(_recalibrate_ast_query(w_snap))
@@ -1936,16 +1974,23 @@ def _content_sha_hint(path: Path) -> str | None:
         return None
 
 
-def _hash_cluster_key_for(key) -> str:
-    """Compute the 16-char cluster_id hash for a ClusterKey.
+def _hash_cluster_key_for(key, split_tag: str = "") -> str:
+    """Compute the 16-char cluster_id hash for a ClusterKey (+ split_tag).
 
-    Mirrors `bootstrap.canonical._hash_cluster_key` exactly so the
+    Mirrors `bootstrap.canonical._hash_cluster_key` EXACTLY so the
     cluster_ids stored in file_clusters match the cluster_ids written
-    into archetypes.json. Duplicating the 4-line helper here keeps
-    `tools.py` independent of `canonical.py` for this code path; the
-    upstream helper is private to the bootstrap layer.
+    into archetypes.json. Duplicating the helper here keeps `tools.py`
+    independent of `canonical.py` for this code path; the upstream helper
+    is private to the bootstrap layer. The split_tag handling MUST stay
+    byte-identical to canonical._hash_cluster_key.
     """
-    canonical = json.dumps(key.to_dict(), sort_keys=True, separators=(",", ":"))
+    key_dict = key.to_dict()
+    split_tag = split_tag or ""
+    if split_tag:
+        payload = {"k": key_dict, "s": split_tag}
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    else:
+        canonical = json.dumps(key_dict, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
@@ -2001,7 +2046,7 @@ def _compute_file_cluster_map(
 
     rows: list[tuple[str, str, str | None]] = []
     for cluster in clustering.clusters:
-        cluster_id = _hash_cluster_key_for(cluster.key)
+        cluster_id = _hash_cluster_key_for(cluster.key, getattr(cluster, "split_tag", ""))
         for pf in cluster.members:
             try:
                 rel = str(pf.path.relative_to(repo_root))
@@ -2044,7 +2089,7 @@ def _reparse_changed_files(
     clustering = cluster_files(parse_result.files, repo_root=repo_root)
     out: dict[str, tuple[str, str | None]] = {}
     for cluster in clustering.clusters:
-        cluster_id = _hash_cluster_key_for(cluster.key)
+        cluster_id = _hash_cluster_key_for(cluster.key, getattr(cluster, "split_tag", ""))
         for pf in cluster.members:
             try:
                 rel = str(pf.path.relative_to(repo_root))
@@ -3027,32 +3072,35 @@ def _bootstrap_repo_unlocked(
             index_db.delete_all_file_clusters(repo_id)
             if file_cluster_rows:
                 index_db.upsert_file_clusters(repo_id, file_cluster_rows)
-        for ws in report.workspace_reports or []:
-            if ws.get("status") != "success":
-                continue
-            ws_root_str = ws.get("repo_root")
-            if not ws_root_str:
-                continue
-            ws_root = Path(ws_root_str)
-            ws_repo_id = _compute_repo_id(ws_root)
-            index_db.upsert_repo(
-                ws_repo_id,
-                str(ws_root),
-                profile_sha256=hash_profile(ws_root / ".chameleon"),
-                archetype_count=ws.get("archetypes_detected"),
-                files_indexed=ws.get("files_processed"),
-                bootstrap_ms=ws.get("duration_ms"),
+    # Index successfully-bootstrapped workspaces regardless of the root's
+    # status: a coordinator-only root (non-standard package dir, no own
+    # language) still produces working workspace profiles above.
+    for ws in report.workspace_reports or []:
+        if ws.get("status") != "success":
+            continue
+        ws_root_str = ws.get("repo_root")
+        if not ws_root_str:
+            continue
+        ws_root = Path(ws_root_str)
+        ws_repo_id = _compute_repo_id(ws_root)
+        index_db.upsert_repo(
+            ws_repo_id,
+            str(ws_root),
+            profile_sha256=hash_profile(ws_root / ".chameleon"),
+            archetype_count=ws.get("archetypes_detected"),
+            files_indexed=ws.get("files_processed"),
+            bootstrap_ms=ws.get("duration_ms"),
+        )
+        try:
+            ws_rows = _compute_file_cluster_map(
+                ws_root, paths_glob=paths_glob
             )
-            try:
-                ws_rows = _compute_file_cluster_map(
-                    ws_root, paths_glob=paths_glob
-                )
-            except Exception:
-                ws_rows = None
-            if ws_rows is not None:
-                index_db.delete_all_file_clusters(ws_repo_id)
-                if ws_rows:
-                    index_db.upsert_file_clusters(ws_repo_id, ws_rows)
+        except Exception:
+            ws_rows = None
+        if ws_rows is not None:
+            index_db.delete_all_file_clusters(ws_repo_id)
+            if ws_rows:
+                index_db.upsert_file_clusters(ws_repo_id, ws_rows)
 
     _notify_daemon_cache_invalidation()
     return _envelope(report.to_dict())
@@ -3324,6 +3372,9 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
         if k in _SAFE_TOP_LEVEL_KEYS or k.startswith("_")
     }
     merged_data["archetypes"] = merged
+    # Keep the denormalized counts consistent with the merged set.
+    merged_data["archetype_count"] = len(merged)
+    merged_data["archetypes_detected"] = len(merged)
 
     ours_path.write_text(
         json.dumps(merged_data, indent=2, sort_keys=True), encoding="utf-8"
@@ -4085,6 +4136,15 @@ def _validate_renames(
 
     effective: dict[str, str] = {}
     seen_targets: set[str] = set()
+    # Sources actually being renamed AWAY (excluding self-renames). A
+    # self-rename ({"x": "x"}) leaves "x" occupied, so it must NOT count as
+    # freeing the name "x" for another rename to land on — otherwise one
+    # archetype silently overwrites the other.
+    renamed_away = {
+        k
+        for k, v in renames.items()
+        if isinstance(k, str) and isinstance(v, str) and k != v
+    }
     for old, new in renames.items():
         if not isinstance(old, str) or not isinstance(new, str):
             return {}, f"rename keys/values must be strings (got {old!r} → {new!r})"
@@ -4099,7 +4159,7 @@ def _validate_renames(
         if new in seen_targets:
             return {}, f"two renames collide on target {new!r}"
         seen_targets.add(new)
-        if new in existing_names and new not in renames:
+        if new in existing_names and new not in renamed_away:
             return {}, f"target {new!r} already exists and is not being renamed away"
         effective[old] = new
 
@@ -4326,7 +4386,9 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     - archetypes.json: rename keys under "archetypes"
     - canonicals.json: rename keys under "canonicals"
     - rules.json: rename any keys that exactly equal an old archetype name
+    - conventions.json: rename the per-archetype keys under each section
     - profile.summary.md: regenerate from the renamed data
+    - principles.md: preserved verbatim (not archetype-keyed)
 
     Uses atomic_profile_commit so a crash mid-write leaves the previous
     profile untouched. Returns status, renames_applied, new_profile_sha256.
@@ -4403,6 +4465,30 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         new_rules_map[effective.get(k, k)] = v
     rules_data["rules"] = new_rules_map
 
+    # Preserve + rename conventions.json (its sub-sections are keyed per
+    # archetype) and preserve principles.md. atomic_profile_commit replaces the
+    # whole .chameleon dir and does NOT copy protocol files, so any artifact not
+    # written into txn_dir below is LOST — previously rename silently dropped
+    # both of these.
+    conventions_path = profile_dir / "conventions.json"
+    conventions_data = (
+        json.loads(json.dumps(loaded.conventions))
+        if conventions_path.is_file()
+        else None
+    )
+    if isinstance(conventions_data, dict):
+        _conv_block = conventions_data.get("conventions")
+        if isinstance(_conv_block, dict):
+            for _section in ("imports", "naming", "inheritance", "method_calls", "key_exports"):
+                _sub = _conv_block.get(_section)
+                if isinstance(_sub, dict):
+                    _conv_block[_section] = {effective.get(k, k): v for k, v in _sub.items()}
+
+    principles_path = profile_dir / "principles.md"
+    principles_text = (
+        principles_path.read_text(encoding="utf-8") if principles_path.is_file() else None
+    )
+
     idioms_path = profile_dir / "idioms.md"
     idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
 
@@ -4445,6 +4531,12 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
             (txn_dir / "rules.json").write_text(
                 json.dumps(rules_data, indent=2, sort_keys=True), encoding="utf-8"
             )
+            if conventions_data is not None:
+                (txn_dir / "conventions.json").write_text(
+                    json.dumps(conventions_data, indent=2, sort_keys=True), encoding="utf-8"
+                )
+            if principles_text is not None:
+                (txn_dir / "principles.md").write_text(principles_text, encoding="utf-8")
             (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
             (txn_dir / "profile.summary.md").write_text(summary_md, encoding="utf-8")
             (txn_dir / "renames.json").write_text(
@@ -4484,6 +4576,120 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
 
 _SLUG_RE = __import__("re").compile(r"^[a-z][a-z0-9-]{2,63}$")
 _STRUCTURED_TOTAL_CAP = 50_000
+
+
+def teach_competing_import(
+    repo: str,
+    *,
+    archetype: str,
+    preferred: str,
+    over: str,
+) -> dict:
+    """Capture a wrapper-preference ("use ``preferred``, not ``over``") for an
+    archetype, written to ``conventions.imports.<archetype>.competing``.
+
+    This enables the banned-raw-import / mandatory-wrapper convention and its
+    principle, which AST analysis cannot infer (a team rule like "import the
+    project's ``http`` wrapper, not raw ``axios``"). Mirrors ``teach_profile``'s
+    in-place, flock-serialized single-file write — it does not touch any other
+    profile artifact, so it can't drop conventions/principles the way a full
+    atomic_profile_commit that omits protocol files would.
+    """
+    from chameleon_mcp.conventions import empty_conventions
+    from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+    from chameleon_mcp.profile.schema import ARCHETYPE_NAME_RE
+    from chameleon_mcp.profile.trust import repo_data_dir as _rdd
+    from chameleon_mcp.safe_open import safe_read_profile_artifact
+
+    if not isinstance(archetype, str) or not ARCHETYPE_NAME_RE.match(archetype):
+        return _envelope({
+            "status": "failed",
+            "error": f"archetype {archetype!r} must match {ARCHETYPE_NAME_RE.pattern!r}",
+        })
+    preferred = (preferred or "").strip() if isinstance(preferred, str) else ""
+    over = (over or "").strip() if isinstance(over, str) else ""
+    if not preferred or not over:
+        return _envelope({
+            "status": "failed",
+            "error": "both 'preferred' and 'over' are required and must be non-empty",
+        })
+    if len(preferred) > 200 or len(over) > 200:
+        return _envelope({"status": "failed", "error": "'preferred'/'over' exceed the 200-char cap"})
+    if preferred == over:
+        return _envelope({"status": "failed", "error": "'preferred' and 'over' must differ"})
+
+    repo_path, _repo_id = _resolve_repo_arg(repo)
+    if repo_path is None:
+        return _envelope({
+            "status": "failed",
+            "error": "expected absolute repo path or 64-char repo_id hex digest",
+        })
+    profile_dir = repo_path / ".chameleon"
+    if not profile_dir.is_dir():
+        return _envelope({"status": "failed", "error": "no profile in this repo (run /chameleon-init)"})
+    conv_path = profile_dir / "conventions.json"
+
+    lock_path = _rdd(_compute_repo_id(repo_path)) / ".conventions.lock"
+    try:
+        with acquire_advisory_lock(lock_path):
+            try:
+                conv = (
+                    json.loads(safe_read_profile_artifact(conv_path))
+                    if conv_path.is_file()
+                    else empty_conventions(generation=0)
+                )
+            except Exception:
+                conv = empty_conventions(generation=0)
+            if not isinstance(conv, dict):
+                conv = empty_conventions(generation=0)
+
+            block = conv.setdefault("conventions", {})
+            if not isinstance(block, dict):
+                conv["conventions"] = block = {}
+            imports = block.setdefault("imports", {})
+            if not isinstance(imports, dict):
+                block["imports"] = imports = {}
+            entry = imports.setdefault(archetype, {"preferred": [], "competing": []})
+            if not isinstance(entry, dict):
+                imports[archetype] = entry = {"preferred": [], "competing": []}
+            entry.setdefault("preferred", [])
+            competing = entry.setdefault("competing", [])
+            if not isinstance(competing, list):
+                entry["competing"] = competing = []
+
+            already = any(
+                isinstance(c, dict) and c.get("preferred") == preferred and c.get("over") == over
+                for c in competing
+            )
+            if not already:
+                competing.append({"preferred": preferred, "over": over})
+
+            # Atomic write: conventions.json is JSON-parsed on load and a
+            # truncated file raises ProfileLoadError (bricks the whole profile),
+            # so write to a tmp + os.replace rather than truncating in place.
+            _tmp = conv_path.with_suffix(".json.tmp")
+            _tmp.write_text(
+                json.dumps(conv, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            _tmp.replace(conv_path)
+    except LockHeldError as e:
+        return _envelope({
+            "status": "failed",
+            "error": f"another conventions write is in progress: {e}",
+        })
+    except Exception as e:
+        return _envelope({"status": "failed", "error": f"conventions write failed: {e}"})
+
+    return _envelope({
+        "status": "ok",
+        "archetype": archetype,
+        "competing": {"preferred": preferred, "over": over},
+        "already_present": already,
+        "note": (
+            "wrapper-preference recorded in conventions.json; the profile hash "
+            "changed, so run /chameleon-trust if it shows as stale."
+        ),
+    })
 
 
 def teach_profile_structured(

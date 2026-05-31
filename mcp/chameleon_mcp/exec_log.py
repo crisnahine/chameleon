@@ -75,18 +75,32 @@ def _ensure_hmac_key() -> bytes:
         raise HMACKeyError(f"failed to read /dev/urandom: {e}") from e
 
     tmp_path = key_path.with_suffix(".key.tmp")
+
+    def _create_excl() -> int:
+        return os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+
     try:
-        fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = _create_excl()
     except FileExistsError:
         import time as _time
         for _ in range(20):
             _time.sleep(0.05)
             if key_path.is_file():
                 return key_path.read_bytes()
-        raise HMACKeyError(
-            f"HMAC key tmp file {tmp_path} exists and final {key_path} "
-            f"never appeared after retries"
-        ) from None
+        # The final key never appeared: the tmp is an orphan from a writer that
+        # crashed between O_EXCL create and os.replace. Without reclaiming it,
+        # key generation is bricked forever (and markers get written unsigned).
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        try:
+            fd = _create_excl()
+        except FileExistsError:
+            raise HMACKeyError(
+                f"HMAC key tmp file {tmp_path} exists and final {key_path} "
+                f"never appeared after retries"
+            ) from None
     try:
         os.write(fd, key)
         os.fsync(fd)

@@ -50,7 +50,7 @@ from chameleon_mcp.conventions import (
 )
 from chameleon_mcp.extractors._base import Extractor
 from chameleon_mcp.extractors.ruby import RubyExtractor
-from chameleon_mcp.extractors.typescript import TypeScriptExtractor
+from chameleon_mcp.extractors.typescript import NodeUnavailableError, TypeScriptExtractor
 
 
 def _is_rails_with_frontend(repo_root: Path) -> bool:
@@ -870,12 +870,14 @@ def bootstrap_repo(
         now=now,
     )
 
-    if report.status != "success":
-        return report
-
     workspace = detect_workspace(repo_root)
     if not workspace.has_workspaces:
         return report
+
+    # NB: do NOT early-return on a failed root here. A pnpm/yarn/lerna root
+    # whose packages live under a non-standard dir (modules/*, clients/*, ...)
+    # fails its own language detection, but detect_workspace still located the
+    # bootstrappable workspaces — fan out to them anyway (coordinator-only root).
 
     workspace_reports: list[dict] = []
     for ws_path in workspace.workspace_paths:
@@ -909,9 +911,18 @@ def bootstrap_repo(
 
     if workspace_reports:
         report.workspace_reports = workspace_reports
-        _amend_root_profile_with_workspaces(
-            repo_root / profile_dir_name, workspace_reports
-        )
+        # Only amend the root profile if the root actually produced one; a
+        # coordinator-only root (failed language detection) has no root profile
+        # to amend, but its workspaces were still bootstrapped above.
+        if report.status == "success":
+            _amend_root_profile_with_workspaces(
+                repo_root / profile_dir_name, workspace_reports
+            )
+        elif any(w.get("status") == "success" for w in workspace_reports):
+            # Coordinator-only root (no own language) but >=1 workspace
+            # bootstrapped — report partial success so the envelope doesn't
+            # claim init failed when profiles were actually created.
+            report.status = "success_workspaces_only"
 
     return report
 
@@ -1248,7 +1259,28 @@ def _bootstrap_single(
             discovered_files_post_exclusion=post_exclusion_count,
         )
 
-    parse_result = extractor.parse_repo(repo_root, paths=candidates)
+    try:
+        parse_result = extractor.parse_repo(repo_root, paths=candidates)
+    except NodeUnavailableError as exc:
+        # Node/npm couldn't be provisioned for the TS extractor. Degrade to a
+        # clean report instead of aborting the whole bootstrap run.
+        return BootstrapReport(
+            status="failed_node_unavailable",
+            archetypes_detected=0,
+            rules_extracted=0,
+            idioms_collected=0,
+            canonicals_skipped_failed_scans=0,
+            files_processed=0,
+            files_skipped_generated=0,
+            files_skipped_parse=0,
+            duration_ms=int((time.time() - started_at) * 1000),
+            profile_path=None,
+            error=str(exc),
+            workspace_roots=list(workspace_roots),
+            fanout_capped=fanout_capped,
+            discovered_files_pre_exclusion=pre_exclusion_count,
+            discovered_files_post_exclusion=post_exclusion_count,
+        )
     files_skipped_parse = len(parse_result.skipped)
 
     clustering = cluster_files(parse_result.files, repo_root=repo_root)
@@ -1400,6 +1432,7 @@ def _bootstrap_single(
         files_by_archetype=files_by_archetype,
         declarations_by_archetype=declarations_by_archetype,
         generation=generation,
+        language=extractor.language,
     )
 
     profile_data: dict = {

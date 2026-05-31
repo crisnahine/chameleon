@@ -342,12 +342,16 @@ class _DaemonState:
     def __init__(self, idle_timeout_s: float) -> None:
         self.started_at = time.time()
         self.last_request_at = time.time()
+        # Monotonic clock drives the idle decision so a wall-clock jump
+        # (NTP step, manual set) can't make the daemon hang or reap early.
+        self.last_request_mono = time.monotonic()
         self.idle_timeout_s = idle_timeout_s
         self.request_count = 0
         self.shutdown_requested = False
 
     def mark_request(self) -> None:
         self.last_request_at = time.time()
+        self.last_request_mono = time.monotonic()
         self.request_count += 1
 
 
@@ -425,7 +429,7 @@ def serve_forever(
     """
     sock.settimeout(1.0)
     while not state.shutdown_requested:
-        if (time.time() - state.last_request_at) > state.idle_timeout_s:
+        if (time.monotonic() - state.last_request_mono) > state.idle_timeout_s:
             sys.stderr.write(
                 f"[chameleon-daemon] idle for {state.idle_timeout_s}s, shutting down\n"
             )
@@ -438,6 +442,9 @@ def serve_forever(
             if e.errno in (errno.EBADF, errno.EINVAL):
                 return
             sys.stderr.write(f"[chameleon-daemon] accept error: {e}\n")
+            # Back off so a persistent error (e.g. EMFILE fd pressure) can't
+            # hot-spin the loop at 100% CPU and flood the log.
+            time.sleep(0.1)
             continue
         # Accepted sockets are blocking by default; bound recv/send so one
         # stalled client can't wedge the loop for the rest of the session.
@@ -539,18 +546,6 @@ def run_daemon() -> int:
         except OSError:
             pass
     return 0
-
-
-def _write_pidfile(pid: int, sock_path: Path) -> None:
-    pf = pid_path()
-    tmp = pf.with_suffix(".pid.tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        os.write(fd, f"{pid}\n{sock_path}\n".encode())
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(tmp, pf)
 
 
 def _wait_for_socket(sock_path: Path, deadline: float) -> bool:
@@ -706,6 +701,35 @@ def stop_daemon(*, timeout: float = 5.0) -> dict:
             except (FileNotFoundError, OSError):
                 pass
         return {"status": "not_running", "pid": None}
+
+    # Recycle-TOCTOU guard: a LIVE daemon holds an exclusive flock on the
+    # pidfile (see serve_forever's lock_fd). Probe it — if we can ACQUIRE the
+    # lock, no live daemon holds the file, so `pid` is a stale/recycled value
+    # (an unrelated process that inherited it). Don't SIGTERM that process.
+    # (Re-reading the pidfile is useless here: its bytes don't change on a pid
+    # recycle, so a content comparison can't detect it.)
+    try:
+        _probe_fd = os.open(str(pid_path()), os.O_RDWR)
+    except OSError:
+        _probe_fd = None
+    if _probe_fd is not None:
+        try:
+            fcntl.flock(_probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            # Held by the live daemon — expected; fall through and signal it.
+            os.close(_probe_fd)
+        else:
+            # Acquired => no live daemon. Release, clean stale files, bail.
+            try:
+                fcntl.flock(_probe_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(_probe_fd)
+            for p in (pid_path(), socket_path()):
+                try:
+                    p.unlink()
+                except (FileNotFoundError, OSError):
+                    pass
+            return {"status": "not_running", "pid": None}
 
     try:
         os.kill(pid, signal.SIGTERM)

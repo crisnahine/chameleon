@@ -107,7 +107,13 @@ class RubyExtractor:
             if "error" in record:
                 skipped.append((path, record["error"]))
                 continue
-            results.append(_parsed_file_from_record(path, record))
+            try:
+                results.append(_parsed_file_from_record(path, record))
+            except (ValueError, TypeError):
+                # One malformed record must skip that file, not abort the whole
+                # corpus (mirrors the per-line JSONDecodeError skip above).
+                skipped.append((path, "malformed_record"))
+                continue
 
         # A timeout or non-zero exit means files past the failure point never
         # reached stdout. Mark them skipped so a truncated sample is VISIBLE

@@ -102,6 +102,36 @@ def test_lint_file(trusted_repo):
     _assert_envelope(res)
 
 
+def test_rename_preserves_and_renames_conventions_and_principles(trusted_repo):
+    """Regression: apply_archetype_renames used to silently DROP conventions.json
+    and principles.md (atomic_profile_commit replaces the whole dir and doesn't
+    copy protocol files). It must preserve them and rename the conv keys."""
+    from chameleon_mcp.profile import loader as _loader
+
+    cham = trusted_repo / ".chameleon"
+    (cham / "conventions.json").write_text(
+        json.dumps({
+            "generation": 1,
+            "conventions": {
+                "naming": {ARCH: {"interface_prefix": {"pattern": "I", "consistency": 0.9}}}
+            },
+        })
+    )
+    (cham / "principles.md").write_text("# principles\n\n1. Use the project wrapper.\n")
+    _loader._PROFILE_CACHE.clear()
+
+    res = tools.apply_archetype_renames(str(trusted_repo), {ARCH: "renamed-arch"})
+    assert res.get("data", res).get("status") == "success"
+
+    assert (cham / "conventions.json").is_file(), "rename dropped conventions.json"
+    assert (cham / "principles.md").is_file(), "rename dropped principles.md"
+
+    conv = json.loads((cham / "conventions.json").read_text())["conventions"]
+    assert ARCH not in conv.get("naming", {})
+    assert "renamed-arch" in conv.get("naming", {})
+    assert "Use the project wrapper" in (cham / "principles.md").read_text()
+
+
 def test_get_drift_status(trusted_repo):
     _assert_envelope(tools.get_drift_status(str(trusted_repo)))
 
