@@ -71,8 +71,11 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
     (pd / "conventions.json").write_text(
         json.dumps({"schema_version": 8, "rules": {}}), encoding="utf-8"
     )
-    # complete principles (incl. the protocol) so the noop path isn't forced
-    # into a rebuild by the principles guard
+    # all core artifacts present + complete so the repair guard doesn't force a
+    # rebuild on the noop path
+    (pd / "canonicals.json").write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+    (pd / "rules.json").write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+    (pd / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
     (pd / "principles.md").write_text(
         "# principles\n\n## anti-hallucination protocol\n\n- Don't invent symbols.\n",
         encoding="utf-8",
@@ -206,3 +209,39 @@ def test_principles_incomplete_when_absent(tmp_path):
     pd = tmp_path / ".chameleon"
     pd.mkdir()
     assert t._principles_incomplete(pd) is True
+
+
+def _complete_profile(tmp_path):
+    pd = tmp_path / ".chameleon"
+    pd.mkdir(exist_ok=True)
+    for name in ("archetypes.json", "canonicals.json", "rules.json", "conventions.json"):
+        pd.joinpath(name).write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+    pd.joinpath("profile.summary.md").write_text("# summary\n", encoding="utf-8")
+    pd.joinpath("principles.md").write_text(
+        "# principles\n\n## anti-hallucination protocol\n\n- x\n", encoding="utf-8"
+    )
+    return pd
+
+
+def test_profile_needs_rederive_false_when_complete(tmp_path):
+    pd = _complete_profile(tmp_path)
+    assert t._profile_needs_rederive(pd) is False
+
+
+def test_profile_needs_rederive_on_missing_core_artifact(tmp_path):
+    for missing in ("archetypes.json", "canonicals.json", "rules.json", "profile.summary.md"):
+        pd = _complete_profile(tmp_path)
+        pd.joinpath(missing).unlink()
+        assert t._profile_needs_rederive(pd) is True, missing
+
+
+def test_profile_needs_rederive_on_corrupt_json(tmp_path):
+    pd = _complete_profile(tmp_path)
+    pd.joinpath("archetypes.json").write_text("STALE not json\n", encoding="utf-8")
+    assert t._profile_needs_rederive(pd) is True
+
+
+def test_profile_needs_rederive_on_stale_principles(tmp_path):
+    pd = _complete_profile(tmp_path)
+    pd.joinpath("principles.md").write_text("# principles\n1. foo\n", encoding="utf-8")
+    assert t._profile_needs_rederive(pd) is True

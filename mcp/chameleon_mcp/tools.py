@@ -2899,6 +2899,36 @@ def _principles_incomplete(profile_dir) -> bool:
         return True
 
 
+def _profile_needs_rederive(profile_dir) -> bool:
+    """True if the profile is structurally incomplete or corrupt.
+
+    The refresh noop and partial paths preserve existing artifacts verbatim, so a
+    profile damaged by a crashed bootstrap, partial write, bad merge, or manual
+    edit would never be repaired by a normal refresh. This forces a full
+    re-derive when any core generated artifact is missing or unparseable:
+
+    - ``archetypes/canonicals/rules/conventions.json`` must exist and parse as
+      JSON objects;
+    - ``profile.summary.md`` must exist;
+    - ``principles.md`` must carry the anti-hallucination protocol.
+
+    ``idioms.md`` is user-taught content (preserved across a re-derive), so a
+    missing idioms file does NOT force a rebuild.
+    """
+    import json as _json
+
+    for name in ("archetypes.json", "canonicals.json", "rules.json", "conventions.json"):
+        try:
+            obj = _json.loads((profile_dir / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return True
+        if not isinstance(obj, dict):
+            return True
+    if not (profile_dir / "profile.summary.md").is_file():
+        return True
+    return _principles_incomplete(profile_dir)
+
+
 def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     """Execute refresh logic. Called while .chameleon/.refresh.lock is held."""
     from chameleon_mcp import index_db
@@ -2958,10 +2988,12 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     if _engine_version_changed(profile_dir, ENGINE_MIN_VERSION):
         return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
-    # Principles guard: principles.md is generated, but the noop and partial paths
-    # preserve it verbatim. If it's missing the always-on anti-hallucination
-    # protocol (a stale or hand-stripped profile), re-derive fully so it's restored.
-    if _principles_incomplete(profile_dir):
+    # Repair guard: the noop and partial paths preserve artifacts verbatim, so a
+    # structurally incomplete or corrupt profile (missing/unparseable core JSON,
+    # missing summary, or principles lacking the protocol) would never be fixed by
+    # a normal refresh. Re-derive fully to repair it. A full re-derive preserves
+    # user-taught idioms.md.
+    if _profile_needs_rederive(profile_dir):
         return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
     if cardinality_match and nothing_newer and not missing_artifacts:

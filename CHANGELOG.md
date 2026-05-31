@@ -4,6 +4,12 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.4] - 2026-06-01
+
+### Fixed
+
+- **`/chameleon-refresh` did not repair a damaged profile.** The noop and partial-refresh paths preserve artifacts verbatim, so a profile with a missing or corrupt core artifact (`archetypes` / `canonicals` / `rules` / `conventions.json`, or `principles.md` missing the protocol) from a crashed bootstrap, partial write, bad merge, or manual edit was never repaired by a normal refresh, only a force-refresh. Refresh now detects a structurally incomplete or unparseable profile and re-derives it, preserving user-taught `idioms.md`. Generalizes the 1.5.3 principles-only check to all core artifacts.
+
 ## [1.5.3] - 2026-06-01
 
 ### Fixed

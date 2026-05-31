@@ -1,6 +1,6 @@
 [project]
 name = "chameleon-mcp"
-version = "1.5.3"
+version = "1.5.4"
 description = "MCP server for chameleon. Auto-derives codebase conventions and serves archetype-keyed guidance via stdio JSON-RPC."
 authors = [
     { name = "Cris Nahine", email = "crisjosephnahine@gmail.com" }
