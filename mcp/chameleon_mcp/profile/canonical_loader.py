@@ -80,9 +80,7 @@ def _resolve_ref(repo_root: Path, ref: str) -> str | None:
     return sha if len(sha) in (40, 64) else None
 
 
-def _materialize_artifact(
-    repo_root: Path, ref_sha: str, artifact: str, dest: Path
-) -> bool:
+def _materialize_artifact(repo_root: Path, ref_sha: str, artifact: str, dest: Path) -> bool:
     """Write ``git show <ref_sha>:.chameleon/<artifact>`` to ``dest``.
 
     Returns True on success, False if the artifact doesn't exist at the
@@ -127,9 +125,7 @@ def _is_cache_valid(cache_dir: Path) -> bool:
     return all((cache_dir / a).is_file() for a in _REQUIRED_ARTIFACTS)
 
 
-def materialize_canonical(
-    repo_root: Path, repo_id: str, canonical_ref: str
-) -> Path | None:
+def materialize_canonical(repo_root: Path, repo_id: str, canonical_ref: str) -> Path | None:
     """Materialize the canonical profile and return its cache dir, or None.
 
     The returned path is suitable as the ``profile_dir`` argument to
@@ -171,17 +167,14 @@ def materialize_canonical(
             return cache_dir
 
         for artifact in _REQUIRED_ARTIFACTS:
-            if not _materialize_artifact(
-                repo_root, ref_sha, artifact, cache_dir / artifact
-            ):
+            if not _materialize_artifact(repo_root, ref_sha, artifact, cache_dir / artifact):
                 return None
         for artifact in _OPTIONAL_ARTIFACTS:
-            _materialize_artifact(
-                repo_root, ref_sha, artifact, cache_dir / artifact
-            )
+            _materialize_artifact(repo_root, ref_sha, artifact, cache_dir / artifact)
 
         if not _canonical_artifacts_pass_scans(cache_dir):
             import shutil as _shutil
+
             _shutil.rmtree(cache_dir, ignore_errors=True)
             return None
         try:
@@ -281,9 +274,7 @@ def _canonical_artifacts_pass_scans(cache_dir: Path) -> bool:
                 archetypes_path.read_text(encoding="utf-8", errors="replace")
             )
             arch_dict = (
-                archetypes_data.get("archetypes")
-                if isinstance(archetypes_data, dict)
-                else None
+                archetypes_data.get("archetypes") if isinstance(archetypes_data, dict) else None
             )
             if isinstance(arch_dict, dict):
                 for name in arch_dict.keys():
@@ -320,9 +311,7 @@ def gc_stale_caches(repo_id: str, *, keep_n: int = 4) -> int:
     if not root.is_dir():
         return 0
     try:
-        entries = [
-            p for p in root.iterdir() if p.is_dir() and len(p.name) in (40, 64)
-        ]
+        entries = [p for p in root.iterdir() if p.is_dir() and len(p.name) in (40, 64)]
     except OSError:
         return 0
     removed = 0
@@ -344,5 +333,3 @@ def gc_stale_caches(repo_id: str, *, keep_n: int = 4) -> int:
         except OSError:
             continue
     return removed
-
-

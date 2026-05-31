@@ -98,11 +98,13 @@ def hash_import_set(import_specifiers: Sequence[tuple[str, str]]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-_MONOREPO_WORKSPACE_ROOTS: frozenset[str] = frozenset({
-    "packages",
-    "apps",
-    "workspaces",
-})
+_MONOREPO_WORKSPACE_ROOTS: frozenset[str] = frozenset(
+    {
+        "packages",
+        "apps",
+        "workspaces",
+    }
+)
 
 
 def path_pattern_bucket_for(
@@ -163,10 +165,7 @@ def path_pattern_bucket_for(
     if len(parts) < 2:
         return ("(root)", "")
     sub_bucket = ""
-    if (
-        len(parts) >= 4
-        and parts[0] in _MONOREPO_WORKSPACE_ROOTS
-    ):
+    if len(parts) >= 4 and parts[0] in _MONOREPO_WORKSPACE_ROOTS:
         bucket = f"{parts[0]}/{parts[1]}/{parts[2]}"
     elif len(parts) >= 4:
         depth = threshold_int("CLUSTER_PATH_BUCKET_DEPTH")
@@ -200,7 +199,7 @@ def _extension_of(filename: str) -> str:
     dot = filename.rfind(".")
     if dot <= 0:
         return ""
-    return filename[dot + 1:]
+    return filename[dot + 1 :]
 
 
 def content_signal_match_for(
@@ -267,9 +266,7 @@ def compute_signature(
     del import_specifiers  # intentionally not part of the cluster key (see below)
     return ClusterKey(
         path_pattern_bucket=bucket,
-        content_signal_match=content_signal_match_for(
-            content_first_200_bytes, archetype_signals
-        ),
+        content_signal_match=content_signal_match_for(content_first_200_bytes, archetype_signals),
         # Order- and multiplicity-insensitive so clustering AGREES with the
         # runtime lint conformance check (lint_engine compares node kinds as a
         # coarse set). The old order-sensitive tuple over-fragmented files that

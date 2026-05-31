@@ -6,6 +6,7 @@ enforcement state:
 - Tier 2 (annotated canonical) for first-edit archetypes or archetypes
   with prior violations
 """
+
 from __future__ import annotations
 
 import io
@@ -172,9 +173,7 @@ def _run_preflight_second_edit(tmp_path: Path, archetype: str) -> dict:
     state = EnforcementState(archetypes_seen={archetype})
     save_state(state, repo_data_dir, "test-session")
 
-    return _run_preflight_with_context(
-        tmp_path, archetype, daemon_result=daemon_result
-    )
+    return _run_preflight_with_context(tmp_path, archetype, daemon_result=daemon_result)
 
 
 def _run_preflight_with_violations(tmp_path: Path, archetype: str) -> dict:
@@ -198,9 +197,7 @@ def _run_preflight_with_violations(tmp_path: Path, archetype: str) -> dict:
     )
     save_state(state, repo_data_dir, "test-session")
 
-    return _run_preflight_with_context(
-        tmp_path, archetype, daemon_result=daemon_result
-    )
+    return _run_preflight_with_context(tmp_path, archetype, daemon_result=daemon_result)
 
 
 def test_tier1_pointer_for_seen_archetype(tmp_path):

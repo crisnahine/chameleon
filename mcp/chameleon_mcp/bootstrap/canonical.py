@@ -8,7 +8,7 @@ A canonical has three faces (trichotomized):
 3. Normative idioms — prose annotations (user-provided via /chameleon-teach)
 
 Phase 2C selects the witness with deterministic recency weighting:
-- Exclude files matching EXCLUDE_FROM_CANONICAL_POOL_PATTERNS (tests, legacy)
+- Exclude files in the canonical-pool denylist dirs / leaf globs (tests, legacy)
 - Exclude files containing detected secrets
 - Exclude files containing instruction-shaped natural language
 - Among remaining: rank by recency weight (mtime-within-window doubles vote),
@@ -53,11 +53,7 @@ class CanonicalSelection:
 
     @property
     def all_scans_passed(self) -> bool:
-        return (
-            self.secret_scan_passed
-            and self.injection_scan_passed
-            and self.poisoning_scan_passed
-        )
+        return self.secret_scan_passed and self.injection_scan_passed and self.poisoning_scan_passed
 
 
 @dataclass
@@ -213,7 +209,10 @@ def select_canonicals(
                 lang = detect_language(str(pf.path))
                 snap = extract_dimensions(content, language=lang, file_path=str(pf.path))
                 jsx_tag = ("jsx",) if snap.jsx_present else ()
-                sig = tuple(sorted(set(_normalize_kind(k) for k in snap.top_level_node_kinds))) + jsx_tag
+                sig = (
+                    tuple(sorted(set(_normalize_kind(k) for k in snap.top_level_node_kinds)))
+                    + jsx_tag
+                )
             except Exception:
                 sig = ()
             signatures[i] = sig
@@ -225,11 +224,13 @@ def select_canonicals(
             (pf, _file_recency_weight(pf.path, now=now), typicality.get(i, 0))
             for i, pf in enumerate(eligible)
         ]
-        scored.sort(key=lambda item: (
-            -item[1],
-            -item[2],
-            str(item[0].path),
-        ))
+        scored.sort(
+            key=lambda item: (
+                -item[1],
+                -item[2],
+                str(item[0].path),
+            )
+        )
 
         chosen: CanonicalSelection | None = None
         for candidate, weight, _typ in scored:

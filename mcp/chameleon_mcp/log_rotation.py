@@ -4,6 +4,7 @@ Called from bash hook scripts via `python -m chameleon_mcp.log_rotation`
 before appending to .hook_errors.log. Rotates when the file exceeds
 ROTATE_THRESHOLD_BYTES; keeps up to MAX_ROTATIONS old files (.1, .2, ...).
 """
+
 from __future__ import annotations
 
 import sys

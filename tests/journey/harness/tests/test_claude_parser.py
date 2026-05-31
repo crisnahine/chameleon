@@ -1,4 +1,5 @@
 """Unit tests for stream-json parsing (no actual claude spawn)."""
+
 from __future__ import annotations
 
 from tests.journey.harness.claude import parse_stream_json
@@ -6,7 +7,8 @@ from tests.journey.harness.claude import parse_stream_json
 SAMPLE_STREAM = """
 {"type": "system", "subtype": "init", "session_id": "abc"}
 {"type": "system", "subtype": "hook_response", "hook_name": "PreToolUse:Edit", "stdout": "{\\"hookSpecificOutput\\":{\\"additionalContext\\":\\"<chameleon-context>archetype=util</chameleon-context>\\"}}"}
-{"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}, {"type": "tool_use", "name": "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context", "input": {}}]}}
+{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "mcp__plugin_chameleon_chameleon-mcp__lint_file", "input": {}}]}}
 {"type": "result", "subtype": "success", "total_cost_usd": 0.12, "duration_ms": 4200}
 """.strip()
 
@@ -28,3 +30,24 @@ def test_parse_malformed_lines_skipped() -> None:
     stream = '{"type": "system", "subtype": "init"}\nthis is junk\n{"type": "result", "total_cost_usd": 0.05}'
     parsed = parse_stream_json(stream)
     assert parsed.cost_usd == 0.05
+
+
+def test_parse_tool_uses() -> None:
+    """tool_use block names are collected from assistant messages, in order."""
+    parsed = parse_stream_json(SAMPLE_STREAM)
+    assert parsed.tool_uses == [
+        "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
+        "mcp__plugin_chameleon_chameleon-mcp__lint_file",
+    ]
+    assert sum(1 for n in parsed.tool_uses if "get_pattern_context" in n) == 1
+    assert sum(1 for n in parsed.tool_uses if "lint_file" in n) == 1
+
+
+def test_parse_tool_uses_empty_when_no_tool_use() -> None:
+    """A transcript with only text blocks yields an empty tool_uses list."""
+    stream = (
+        '{"type": "assistant", "message": {"content": [{"type": "text", "text": "hi"}]}}\n'
+        '{"type": "result", "total_cost_usd": 0.01}'
+    )
+    parsed = parse_stream_json(stream)
+    assert parsed.tool_uses == []

@@ -1,4 +1,5 @@
 """Act 5c: Doctor stale errors filter (Phase 18)."""
+
 from __future__ import annotations
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
@@ -107,9 +108,9 @@ def run(ctx: JourneyContext) -> ActResult:
             elif outcomes[phase].status == "FAIL":
                 original_notes = outcomes[phase].notes
                 outcomes[phase].status = "PASS"
-                outcomes[phase].notes = (
-                    "promoted from FAIL by runner cross-check (stale filter verified)"
-                )
+                outcomes[
+                    phase
+                ].notes = "promoted from FAIL by runner cross-check (stale filter verified)"
                 if original_notes:
                     notes_extra.setdefault(phase, original_notes)
 

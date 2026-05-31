@@ -1,4 +1,5 @@
 """Act 6: Suppression - pause, disable, 4-level precedence (Phase 19)."""
+
 from __future__ import annotations
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
@@ -114,7 +115,9 @@ def run(ctx: JourneyContext) -> ActResult:
         ctx.fast_forward_marker(pause_until_path, age_seconds=16 * 60)
 
     try:
-        transcript_text = transcript.read_text(encoding="utf-8", errors="replace") if transcript.exists() else ""
+        transcript_text = (
+            transcript.read_text(encoding="utf-8", errors="replace") if transcript.exists() else ""
+        )
 
         has_pause_file = any(ctx.plugin_data_dir.rglob(".pause_until"))
         has_disable_marker = bool(

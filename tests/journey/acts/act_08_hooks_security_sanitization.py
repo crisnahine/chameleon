@@ -1,4 +1,5 @@
 """Act 8: Hooks + security + sanitization (Phases 22, 24, 25, 26)."""
+
 from __future__ import annotations
 
 import json
@@ -229,8 +230,7 @@ def run(ctx: JourneyContext) -> ActResult:
                 ctx.fast_forward_marker(sample_log, age_seconds=31 * 24 * 3600)
             else:
                 notes_extra[22] = (
-                    f"no .jsonl files found under {exec_log_root}; "
-                    "exec recorder may not have fired"
+                    f"no .jsonl files found under {exec_log_root}; exec recorder may not have fired"
                 )
         else:
             notes_extra[22] = (
@@ -249,7 +249,9 @@ def run(ctx: JourneyContext) -> ActResult:
     cross_check_passed[22] = 22 not in notes_extra
 
     try:
-        transcript_text = transcript.read_text(encoding="utf-8", errors="replace") if transcript.exists() else ""
+        transcript_text = (
+            transcript.read_text(encoding="utf-8", errors="replace") if transcript.exists() else ""
+        )
 
         hook_event_marker = any(
             "[chameleon-sanitized:" in he.stdout

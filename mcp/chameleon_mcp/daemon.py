@@ -320,12 +320,15 @@ def _dispatch(method: str, payload: dict) -> dict:
         if not isinstance(content, str):
             return {"error": "content must be a string"}
         return _tools.lint_file(
-            repo, archetype, content,
+            repo,
+            archetype,
+            content,
             file_path=file_path if isinstance(file_path, str) else None,
         )
 
     if method == "invalidate_cache":
         from chameleon_mcp.profile.loader import clear_profile_cache
+
         clear_profile_cache()
         return {"ok": True, "cleared": True}
 
@@ -376,7 +379,10 @@ def _handle_connection(
         try:
             request = json.loads(frame.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            send_frame(conn, json.dumps({"error": f"invalid_json: {exc.__class__.__name__}"}).encode("utf-8"))
+            send_frame(
+                conn,
+                json.dumps({"error": f"invalid_json: {exc.__class__.__name__}"}).encode("utf-8"),
+            )
             return
         method = request.get("method") if isinstance(request, dict) else None
         payload = request.get("payload") if isinstance(request, dict) else None
@@ -387,12 +393,17 @@ def _handle_connection(
         # ping is a pure status query: report the real last-request time and
         # do NOT mark_request (so /chameleon-status doesn't reset the idle timer).
         if method == "ping":
-            send_frame(conn, json.dumps({
-                "ok": True,
-                "ts": time.time(),
-                "last_request_at": state.last_request_at,
-                "request_count": state.request_count,
-            }).encode("utf-8"))
+            send_frame(
+                conn,
+                json.dumps(
+                    {
+                        "ok": True,
+                        "ts": time.time(),
+                        "last_request_at": state.last_request_at,
+                        "request_count": state.request_count,
+                    }
+                ).encode("utf-8"),
+            )
             return
 
         state.mark_request()

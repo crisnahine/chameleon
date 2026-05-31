@@ -4,6 +4,7 @@ Tracks escalation levels (L0/L1/L2), correction counts, and cooldowns
 per file per session. State persists in a JSON file under the plugin
 data directory, guarded by flock.
 """
+
 from __future__ import annotations
 
 import json
@@ -80,12 +81,14 @@ class EnforcementState:
 
 def _state_path(repo_dir: Path, session_id: str) -> Path:
     from chameleon_mcp.optouts import _safe_session_marker
+
     safe_sid = _safe_session_marker(session_id)
     return repo_dir / f".enforcement.{safe_sid}.json"
 
 
 def _lock_path(repo_dir: Path, session_id: str) -> Path:
     from chameleon_mcp.optouts import _safe_session_marker
+
     safe_sid = _safe_session_marker(session_id)
     return repo_dir / f".enforcement.{safe_sid}.lock"
 
@@ -141,6 +144,7 @@ def save_state(state: EnforcementState, repo_dir: Path, session_id: str) -> None
             pass
 
     from chameleon_mcp.locks import acquire_advisory_lock
+
     try:
         with acquire_advisory_lock(lock, stale_after_seconds=60):
             _merge_and_write()

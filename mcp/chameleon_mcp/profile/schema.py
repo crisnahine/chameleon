@@ -47,5 +47,3 @@ def _no_duplicate_keys(pairs: list) -> dict:
             raise SchemaError(f"duplicate key in JSON: {key}")
         seen.add(key)
     return dict(pairs)
-
-

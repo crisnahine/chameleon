@@ -4,6 +4,7 @@ Use for state introspection (e.g., list_profiles to verify registration),
 NOT for replacing user-facing flows. Bypassing /chameleon-init with
 bootstrap_repo() defeats the test purpose.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,26 +35,32 @@ def call_mcp_tool(
     proc_env.update(env)
     proc_env["PYTHONPATH"] = str(plugin_root / "mcp")
 
-    init_msg = json.dumps({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "journey-harness", "version": "1.0"},
-        },
-    })
-    initialized_notification = json.dumps({
-        "jsonrpc": "2.0",
-        "method": "notifications/initialized",
-    })
-    call_msg = json.dumps({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/call",
-        "params": {"name": tool_name, "arguments": args},
-    })
+    init_msg = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "journey-harness", "version": "1.0"},
+            },
+        }
+    )
+    initialized_notification = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        }
+    )
+    call_msg = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": args},
+        }
+    )
     stdin_payload = init_msg + "\n" + initialized_notification + "\n" + call_msg + "\n"
 
     proc = subprocess.run(

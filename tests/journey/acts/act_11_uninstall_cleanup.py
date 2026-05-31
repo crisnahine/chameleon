@@ -1,4 +1,5 @@
 """Act 11: Uninstall + cleanup + isolation verify (Phase 37)."""
+
 from __future__ import annotations
 
 import subprocess
@@ -135,12 +136,12 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-
     plugin_data = ctx.plugin_data_dir
     if plugin_data.exists():
         contents = list(plugin_data.iterdir())
         non_lock = [
-            p for p in contents
+            p
+            for p in contents
             if p.name not in (".lock", ".gitkeep")
             and not p.suffix == ".lock"
             # version-scoped daemon runtime files: .daemon-<version>.{sock,pid}
@@ -161,8 +162,8 @@ def run(ctx: JourneyContext) -> ActResult:
                     entry.resolve().relative_to(ctx.run_dir.resolve())
                     existing = notes_extra.get(37, "")
                     notes_extra[37] = (
-                        (existing + "; " if existing else "") +
-                        f"real chameleon data dir contains entry {entry.name} "
+                        (existing + "; " if existing else "")
+                        + f"real chameleon data dir contains entry {entry.name} "
                         "that is inside the harness run_dir - isolation violation"
                     ).strip("; ")
                     break
@@ -171,8 +172,7 @@ def run(ctx: JourneyContext) -> ActResult:
         except Exception as exc:
             existing = notes_extra.get(37, "")
             notes_extra[37] = (
-                (existing + "; " if existing else "") +
-                f"home dir isolation scan error: {exc}"
+                (existing + "; " if existing else "") + f"home dir isolation scan error: {exc}"
             ).strip("; ")
 
     plugin_json = ctx.plugin_root / ".claude-plugin" / "plugin.json"
@@ -180,9 +180,7 @@ def run(ctx: JourneyContext) -> ActResult:
         expect.path_exists(37, plugin_json)
     except expect.PhaseAssertionError as e:
         existing = notes_extra.get(37, "")
-        notes_extra[37] = (
-            (existing + "; " if existing else "") + str(e)
-        ).strip("; ")
+        notes_extra[37] = ((existing + "; " if existing else "") + str(e)).strip("; ")
 
     try:
         result = subprocess.run(
@@ -192,20 +190,20 @@ def run(ctx: JourneyContext) -> ActResult:
             timeout=10,
         )
         daemon_lines = [
-            line for line in result.stdout.splitlines()
+            line
+            for line in result.stdout.splitlines()
             if "chameleon_mcp.daemon" in line and "grep" not in line
         ]
         if daemon_lines:
             existing = notes_extra.get(37, "")
             notes_extra[37] = (
-                (existing + "; " if existing else "") +
-                f"chameleon daemon process still running after uninstall: {daemon_lines[0][:120]}"
+                (existing + "; " if existing else "")
+                + f"chameleon daemon process still running after uninstall: {daemon_lines[0][:120]}"
             ).strip("; ")
     except Exception as exc:
         existing = notes_extra.get(37, "")
         notes_extra[37] = (
-            (existing + "; " if existing else "") +
-            f"daemon process check failed: {exc}"
+            (existing + "; " if existing else "") + f"daemon process check failed: {exc}"
         ).strip("; ")
 
     cross_check_passed[37] = 37 not in notes_extra

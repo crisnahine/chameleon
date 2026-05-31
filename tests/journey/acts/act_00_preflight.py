@@ -4,6 +4,7 @@ This act is mostly runner-side scaffolding. The runner has already created
 <run_dir>/* in build_context() and copied fixtures via setup_fixture() in
 runner.py. This act verifies isolation and emits a single checkpoint.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -19,7 +20,12 @@ def run(ctx: JourneyContext) -> ActResult:
     notes: list[str] = []
 
     try:
-        for var in ("CHAMELEON_PLUGIN_DATA", "CHAMELEON_HMAC_KEY_PATH", "TMPDIR", "CHAMELEON_HOOK_ERROR_LOG"):
+        for var in (
+            "CHAMELEON_PLUGIN_DATA",
+            "CHAMELEON_HMAC_KEY_PATH",
+            "TMPDIR",
+            "CHAMELEON_HOOK_ERROR_LOG",
+        ):
             value = ctx.env.get(var)
             assert value, f"{var} not set in ctx.env"
             assert str(ctx.run_dir) in value, f"{var}={value!r} is not under {ctx.run_dir}"
@@ -37,7 +43,9 @@ def run(ctx: JourneyContext) -> ActResult:
             except ValueError:
                 pass
 
-        outcome = PhaseOutcome(phase=phase, status="PASS", notes="; ".join(notes) or "isolation verified")
+        outcome = PhaseOutcome(
+            phase=phase, status="PASS", notes="; ".join(notes) or "isolation verified"
+        )
     except (expect.PhaseAssertionError, AssertionError) as e:
         outcome = PhaseOutcome(phase=phase, status="FAIL", notes=str(e))
 

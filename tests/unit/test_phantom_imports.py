@@ -15,8 +15,11 @@ class TestTypeScriptRelative:
         editing = tmp_path / "index.ts"
         content = "import { foo } from './user-service';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
@@ -25,8 +28,11 @@ class TestTypeScriptRelative:
         editing = tmp_path / "index.ts"
         content = "import { foo } from './uesr-service';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert len(v) == 1
         assert v[0].rule == "phantom-import"
@@ -38,8 +44,11 @@ class TestTypeScriptRelative:
         editing = tmp_path / "app.ts"
         content = "import { W } from './widgets';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
@@ -48,38 +57,53 @@ class TestTypeScriptRelative:
         editing = tmp_path / "app.ts"
         content = "import x from './components';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
     def test_require_and_dynamic_import(self, tmp_path):
         editing = tmp_path / "app.ts"
-        content = (
-            "const a = require('./missing-a');\n"
-            "const b = await import('./missing-b');\n"
-        )
+        content = "const a = require('./missing-a');\nconst b = await import('./missing-b');\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         specs = {x.actual for x in v}
         assert specs == {"./missing-a", "./missing-b"}
 
     def test_missing_file_path_returns_empty(self, tmp_path):
         content = "import { foo } from './whatever';\n"
-        assert lint_phantom_imports(
-            content, file_path=None, repo_root=str(tmp_path),
-            language="typescript", rules={},
-        ) == []
+        assert (
+            lint_phantom_imports(
+                content,
+                file_path=None,
+                repo_root=str(tmp_path),
+                language="typescript",
+                rules={},
+            )
+            == []
+        )
 
     def test_file_outside_repo_returns_empty(self, tmp_path):
         outside = tmp_path.parent / "elsewhere.ts"
         content = "import { foo } from './nope';\n"
-        assert lint_phantom_imports(
-            content, file_path=str(outside), repo_root=str(tmp_path),
-            language="typescript", rules={},
-        ) == []
+        assert (
+            lint_phantom_imports(
+                content,
+                file_path=str(outside),
+                repo_root=str(tmp_path),
+                language="typescript",
+                rules={},
+            )
+            == []
+        )
 
 
 class TestTypeScriptAlias:
@@ -91,8 +115,11 @@ class TestTypeScriptAlias:
         editing = tmp_path / "src" / "app.ts"
         content = "import { u } from '@/user';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules=self._rules(paths={"@/*": ["./src/*"]}),
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules=self._rules(paths={"@/*": ["./src/*"]}),
         )
         assert v == []
 
@@ -101,8 +128,11 @@ class TestTypeScriptAlias:
         editing = tmp_path / "src" / "app.ts"
         content = "import { u } from '@/usr';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules=self._rules(paths={"@/*": ["./src/*"]}),
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules=self._rules(paths={"@/*": ["./src/*"]}),
         )
         assert len(v) == 1
         assert v[0].actual == "@/usr"
@@ -112,8 +142,11 @@ class TestTypeScriptAlias:
         editing.parent.mkdir(parents=True)
         content = "import { u } from '~/whatever';\n"  # no ~/* mapping
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules=self._rules(paths={"@/*": ["./src/*"]}),
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules=self._rules(paths={"@/*": ["./src/*"]}),
         )
         assert v == []
 
@@ -122,8 +155,11 @@ class TestTypeScriptAlias:
         editing.parent.mkdir(parents=True)
         content = "import React from 'react';\nimport { z } from '@scope/pkg';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules=self._rules(paths={"@/*": ["./src/*"]}),
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules=self._rules(paths={"@/*": ["./src/*"]}),
         )
         assert v == []
 
@@ -133,8 +169,11 @@ class TestTypeScriptAlias:
         editing.parent.mkdir(parents=True)
         content = "import { u } from '@/nowhere/user';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules=self._rules(paths={"@/*": ["./src/*"]}),
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules=self._rules(paths={"@/*": ["./src/*"]}),
         )
         assert v == []
 
@@ -146,17 +185,28 @@ class TestTypeScriptAlias:
         _write(tmp_path / "apps" / "b" / "tsconfig.json", "{}")
         _write(tmp_path / "apps" / "a" / "src" / "user.ts")
         editing = tmp_path / "apps" / "a" / "src" / "app.ts"
-        rules = {"rules": {"typescript": {
-            "source": "apps/b/tsconfig.json", "paths": {"@/*": ["./src/*"]},
-        }}}
+        rules = {
+            "rules": {
+                "typescript": {
+                    "source": "apps/b/tsconfig.json",
+                    "paths": {"@/*": ["./src/*"]},
+                }
+            }
+        }
         clean = lint_phantom_imports(
-            "import { u } from '@/user';\n", file_path=str(editing),
-            repo_root=str(tmp_path), language="typescript", rules=rules,
+            "import { u } from '@/user';\n",
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules=rules,
         )
         assert clean == []
         typo = lint_phantom_imports(
-            "import { u } from '@/usr';\n", file_path=str(editing),
-            repo_root=str(tmp_path), language="typescript", rules=rules,
+            "import { u } from '@/usr';\n",
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules=rules,
         )
         assert len(typo) == 1 and typo[0].actual == "@/usr"
 
@@ -165,8 +215,11 @@ class TestTypeScriptAlias:
         editing.parent.mkdir(parents=True)
         content = "import './styles.css';\nimport logo from './logo.svg';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules=self._rules(),
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules=self._rules(),
         )
         assert v == []
 
@@ -185,8 +238,11 @@ class TestNoiseAndTypegen:
             "`;\n"
         )
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
@@ -200,8 +256,11 @@ class TestNoiseAndTypegen:
             "const code = \"require('./gone')\";\n",
         ):
             v = lint_phantom_imports(
-                snippet, file_path=str(editing), repo_root=str(tmp_path),
-                language="typescript", rules={},
+                snippet,
+                file_path=str(editing),
+                repo_root=str(tmp_path),
+                language="typescript",
+                rules={},
             )
             assert v == [], f"string-value snippet should not flag: {snippet!r}"
 
@@ -209,13 +268,13 @@ class TestNoiseAndTypegen:
         # Guard the mask doesn't over-suppress: a real import on a later line
         # after a code-as-string assignment must still be checked.
         editing = tmp_path / "gen.ts"
-        content = (
-            "const code = \"import a from './a'\";\n"
-            "import { real } from './missing-real';\n"
-        )
+        content = "const code = \"import a from './a'\";\nimport { real } from './missing-real';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert [x.actual for x in v] == ["./missing-real"]
 
@@ -223,8 +282,11 @@ class TestNoiseAndTypegen:
         editing = tmp_path / "app.ts"
         content = "/* import x from './gone'; */\nexport const y = 1;\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
@@ -235,8 +297,11 @@ class TestNoiseAndTypegen:
         editing.parent.mkdir(parents=True, exist_ok=True)
         content = "import Logo from './assets/logo.svg?react';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
@@ -248,8 +313,11 @@ class TestNoiseAndTypegen:
         editing.parent.mkdir(parents=True, exist_ok=True)
         content = 'import { k } from "../..//shortcut";\n'
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
@@ -257,8 +325,11 @@ class TestNoiseAndTypegen:
         editing = tmp_path / "app.ts"
         content = "  // import x from './deleted';\nexport const y = 1;\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
@@ -271,8 +342,11 @@ class TestNoiseAndTypegen:
             "import type { L } from '../+types/layout';\n"
         )
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
@@ -284,8 +358,11 @@ class TestNodeNextAndContainment:
         editing = tmp_path / "src" / "app.ts"
         for spec in ("./bar.js",):
             v = lint_phantom_imports(
-                f"import {{ x }} from '{spec}';\n", file_path=str(editing),
-                repo_root=str(tmp_path), language="typescript", rules={},
+                f"import {{ x }} from '{spec}';\n",
+                file_path=str(editing),
+                repo_root=str(tmp_path),
+                language="typescript",
+                rules={},
             )
             assert v == [], f"{spec} should resolve to bar.ts"
 
@@ -293,18 +370,26 @@ class TestNodeNextAndContainment:
         _write(tmp_path / "src" / "util.mts")
         editing = tmp_path / "src" / "app.ts"
         v = lint_phantom_imports(
-            "import { x } from './util.mjs';\n", file_path=str(editing),
-            repo_root=str(tmp_path), language="typescript", rules={},
+            "import { x } from './util.mjs';\n",
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
     def test_alias_js_specifier_maps_to_ts_source(self, tmp_path):
         _write(tmp_path / "src" / "user.ts")
         editing = tmp_path / "src" / "app.ts"
-        rules = {"rules": {"typescript": {"source": "tsconfig.json", "paths": {"@/*": ["./src/*"]}}}}
+        rules = {
+            "rules": {"typescript": {"source": "tsconfig.json", "paths": {"@/*": ["./src/*"]}}}
+        }
         v = lint_phantom_imports(
-            "import { u } from '@/user.js';\n", file_path=str(editing),
-            repo_root=str(tmp_path), language="typescript", rules=rules,
+            "import { u } from '@/user.js';\n",
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules=rules,
         )
         assert v == []
 
@@ -313,8 +398,11 @@ class TestNodeNextAndContainment:
         editing = tmp_path / "src" / "app.ts"
         editing.parent.mkdir(parents=True, exist_ok=True)
         v = lint_phantom_imports(
-            "import x from '../../../../../../etc/passwd';\n", file_path=str(editing),
-            repo_root=str(tmp_path), language="typescript", rules={},
+            "import x from '../../../../../../etc/passwd';\n",
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
@@ -322,8 +410,11 @@ class TestNodeNextAndContainment:
         editing = tmp_path / "src" / "app.ts"
         editing.parent.mkdir(parents=True, exist_ok=True)
         v = lint_phantom_imports(
-            "import x from './missing';\n", file_path=str(editing),
-            repo_root=str(tmp_path), language="typescript", rules={},
+            "import x from './missing';\n",
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert len(v) == 1
         # `expected` must not leak an absolute path
@@ -337,8 +428,11 @@ class TestNodeNextAndContainment:
         editing = tmp_path / "app.ts"
         content = "const doc = `" + ("\\`" * 30000) + "\n import x from './nope';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
@@ -349,8 +443,11 @@ class TestRuby:
         editing = tmp_path / "main.rb"
         content = "require_relative 'helper'\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="ruby", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="ruby",
+            rules={},
         )
         assert v == []
 
@@ -358,8 +455,11 @@ class TestRuby:
         editing = tmp_path / "main.rb"
         editing.write_text("require_relative 'helpr'\n", encoding="utf-8")
         v = lint_phantom_imports(
-            content="require_relative 'helpr'\n", file_path=str(editing),
-            repo_root=str(tmp_path), language="ruby", rules={},
+            content="require_relative 'helpr'\n",
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="ruby",
+            rules={},
         )
         assert len(v) == 1
         assert v[0].actual == "helpr"
@@ -368,8 +468,11 @@ class TestRuby:
         editing = tmp_path / "main.rb"
         content = "require 'json'\nrequire 'some/lib/path'\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="ruby", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="ruby",
+            rules={},
         )
         assert v == []
 
@@ -378,8 +481,11 @@ class TestRuby:
         editing.parent.mkdir(parents=True, exist_ok=True)
         content = "require_relative '/opt/app/lib/thing'\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="ruby", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="ruby",
+            rules={},
         )
         assert v == []
 
@@ -389,8 +495,11 @@ class TestRuby:
         editing.parent.mkdir(parents=True, exist_ok=True)
         content = "require_relative '../ee/support/thing'\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="ruby", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="ruby",
+            rules={},
         )
         assert v == []
 
@@ -400,8 +509,11 @@ class TestRuby:
         editing = tmp_path / "main.rb"
         content = 'require_relative "sub/#{name}"\n'
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="ruby", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="ruby",
+            rules={},
         )
         assert v == []
 
@@ -410,8 +522,11 @@ class TestRuby:
         editing = tmp_path / "lib" / "main.rb"
         content = "require_relative 'helpr'\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="ruby", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="ruby",
+            rules={},
         )
         assert len(v) == 1 and v[0].actual == "helpr"
 
@@ -421,8 +536,11 @@ class TestIgnoreDirective:
         editing = tmp_path / "app.ts"
         content = "// chameleon-ignore phantom-import\nimport x from './nope';\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="typescript", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
         )
         assert v == []
 
@@ -430,8 +548,11 @@ class TestIgnoreDirective:
         editing = tmp_path / "main.rb"
         content = "# chameleon-ignore phantom-import\nrequire_relative 'nope'\n"
         v = lint_phantom_imports(
-            content, file_path=str(editing), repo_root=str(tmp_path),
-            language="ruby", rules={},
+            content,
+            file_path=str(editing),
+            repo_root=str(tmp_path),
+            language="ruby",
+            rules={},
         )
         assert v == []
 
@@ -439,7 +560,10 @@ class TestIgnoreDirective:
 def test_returns_violation_instances(tmp_path):
     editing = tmp_path / "app.ts"
     out = lint_phantom_imports(
-        "import x from './missing';\n", file_path=str(editing),
-        repo_root=str(tmp_path), language="typescript", rules={},
+        "import x from './missing';\n",
+        file_path=str(editing),
+        repo_root=str(tmp_path),
+        language="typescript",
+        rules={},
     )
     assert len(out) == 1 and isinstance(out[0], Violation)

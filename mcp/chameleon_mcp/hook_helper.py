@@ -188,9 +188,12 @@ def _should_emit_untrusted_prompt(repo_id: str, session_id: str | None) -> bool:
         return True
     try:
         from chameleon_mcp.optouts import _safe_session_marker
+
         marker_dir = _plugin_data_dir() / repo_id
         marker_dir.mkdir(parents=True, exist_ok=True)
-        marker = marker_dir / _TRUST_PROMPT_FILENAME.format(session=_safe_session_marker(session_id))
+        marker = marker_dir / _TRUST_PROMPT_FILENAME.format(
+            session=_safe_session_marker(session_id)
+        )
         if _marker_is_fresh(marker):
             return False
         marker.touch(exist_ok=True)
@@ -203,12 +206,14 @@ def _emit_session_context(content: str) -> None:
     """Emit SessionStart context in Claude Code's expected JSON shape:
     `{ "hookSpecificOutput": { "hookEventName": "SessionStart", "additionalContext": ... } }`
     """
-    _emit({
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": content,
+    _emit(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": content,
+            }
         }
-    })
+    )
 
 
 _DRIFT_BANNER_FILENAME = ".drift_banner.last"
@@ -325,9 +330,7 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
         repo_id = _compute_repo_id(resolved_root)
 
         cooldown_seconds = max(60, (cfg.auto_refresh.max_age_hours * 3600) // 4)
-        cooldown_marker = (
-            _plugin_data_dir() / repo_id / _AUTO_REFRESH_COOLDOWN_FILENAME
-        )
+        cooldown_marker = _plugin_data_dir() / repo_id / _AUTO_REFRESH_COOLDOWN_FILENAME
         if _marker_path_is_fresh(cooldown_marker, cooldown_seconds):
             return
 
@@ -534,10 +537,7 @@ def session_start() -> int:
                     return "stale"
             return "trusted"
 
-        has_own_profile = (
-            repo_root
-            and (repo_root / ".chameleon" / "profile.json").is_file()
-        )
+        has_own_profile = repo_root and (repo_root / ".chameleon" / "profile.json").is_file()
         if has_own_profile:
             profiles.append({"name": repo_root.name, "trust": _trust_for(repo_root)})
         else:
@@ -551,10 +551,12 @@ def session_start() -> int:
                     if child.is_dir() and (child / ".chameleon" / "profile.json").is_file():
                         child_root = find_repo_root(child)
                         if child_root:
-                            profiles.append({
-                                "name": child_root.name,
-                                "trust": _trust_for(child_root),
-                            })
+                            profiles.append(
+                                {
+                                    "name": child_root.name,
+                                    "trust": _trust_for(child_root),
+                                }
+                            )
                 except Exception:
                     pass
 
@@ -577,6 +579,7 @@ def session_start() -> int:
                     cache_data["update"] = installed_version or "new"
                     try:
                         from chameleon_mcp.daemon import stop_daemon
+
                         stop_daemon(timeout=2.0)
                     except Exception:
                         pass
@@ -623,9 +626,7 @@ def session_start() -> int:
                 existing = {}
                 if local_settings.is_file():
                     try:
-                        existing = json.loads(
-                            local_settings.read_text(encoding="utf-8")
-                        )
+                        existing = json.loads(local_settings.read_text(encoding="utf-8"))
                     except Exception:
                         existing = {}
                 old_cmd = (existing.get("statusLine") or {}).get("command", "")
@@ -640,15 +641,14 @@ def session_start() -> int:
                     "command": current_cmd,
                 }
                 local_settings.parent.mkdir(parents=True, exist_ok=True)
-                local_settings.write_text(
-                    json.dumps(existing, indent=2) + "\n", encoding="utf-8"
-                )
+                local_settings.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
     except Exception:
         pass
 
     conventions_block = ""
     try:
         from chameleon_mcp.conventions import format_conventions_for_session
+
         if repo_root and (repo_root / ".chameleon" / "conventions.json").is_file():
             # Trust gate: conventions.json + principles.md are attacker-controllable
             # committed content, so don't inject an untrusted profile's conventions
@@ -660,10 +660,14 @@ def session_start() -> int:
             from chameleon_mcp.profile.trust import trust_state_for
             from chameleon_mcp.sanitization import sanitize_for_chameleon_context
             from chameleon_mcp.tools import _compute_repo_id
+
             _ss_rec = trust_state_for(_compute_repo_id(repo_root))
             if _ss_rec is not None and _ss_rec.grants_root(repo_root):
                 import json as _conv_json
-                conv_text = (repo_root / ".chameleon" / "conventions.json").read_text(encoding="utf-8")
+
+                conv_text = (repo_root / ".chameleon" / "conventions.json").read_text(
+                    encoding="utf-8"
+                )
                 conv_data = _conv_json.loads(conv_text)
                 pr_text = ""
                 pr_path = repo_root / ".chameleon" / "principles.md"
@@ -740,6 +744,7 @@ def preflight_and_advise() -> int:
     ) -> None:
         try:
             from chameleon_mcp.metrics import emit_hook_metric
+
             emit_hook_metric(
                 "preflight-and-advise",
                 elapsed_ms=_elapsed(),
@@ -797,7 +802,11 @@ def preflight_and_advise() -> int:
 
     if result is not None:
         _profile_status = (result.get("data") or {}).get("repo", {}).get("profile_status")
-        if _profile_status in ("profile_corrupted", "profile_unsupported_schema_version", "no_profile"):
+        if _profile_status in (
+            "profile_corrupted",
+            "profile_unsupported_schema_version",
+            "no_profile",
+        ):
             result = None
 
     if result is None:
@@ -809,6 +818,7 @@ def preflight_and_advise() -> int:
             pass
         try:
             from chameleon_mcp.tools import get_pattern_context
+
             result = get_pattern_context(file_path)
         except Exception as exc:
             _metric(advisory_emitted=False, repo_id=repo_id_hint, fail_open=True)
@@ -911,6 +921,7 @@ def preflight_and_advise() -> int:
     match_quality = archetype_obj.get("match_quality") or "unknown"
     sub_buckets_count = archetype_obj.get("sub_buckets_count") or 0
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
     safe_name = sanitize_for_chameleon_context(archetype_name or "")
     safe_band = sanitize_for_chameleon_context(confidence_band or "unknown")
     safe_match = sanitize_for_chameleon_context(str(match_quality))
@@ -918,6 +929,7 @@ def preflight_and_advise() -> int:
     enforcement_state = None
     try:
         from chameleon_mcp import enforcement
+
         repo_data = _plugin_data_dir() / repo_id if repo_id else None
         if repo_data and session_id:
             enforcement_state = enforcement.load_state(repo_data, session_id)
@@ -939,16 +951,16 @@ def preflight_and_advise() -> int:
     use_tier2 = first_in_archetype or has_violations or not summary
 
     if not use_tier2:
-        block = (
-            "<chameleon-context>\n"
-            f"[🦎 chameleon: {safe_name} ({safe_band})]\n"
-        )
+        block = f"<chameleon-context>\n[🦎 chameleon: {safe_name} ({safe_band})]\n"
         if summary:
             block += f"{sanitize_for_chameleon_context(summary)}\n"
         conv_echo = ""
         try:
             from chameleon_mcp.conventions import format_conventions_echo
-            conventions_path = repo_root_path / ".chameleon" / "conventions.json" if repo_root_path else None
+
+            conventions_path = (
+                repo_root_path / ".chameleon" / "conventions.json" if repo_root_path else None
+            )
             if conventions_path and conventions_path.is_file():
                 conv_data = json.loads(conventions_path.read_text(encoding="utf-8"))
                 pr_text = ""
@@ -979,7 +991,11 @@ def preflight_and_advise() -> int:
             confidence=confidence_band,
         )
         _emit_chameleon_context(block)
-        _update_statusline(f"{safe_name} ({safe_band})", repo_name=repo_root_path.name if repo_root_path else None, trust_state=trust_state)
+        _update_statusline(
+            f"{safe_name} ({safe_band})",
+            repo_name=repo_root_path.name if repo_root_path else None,
+            trust_state=trust_state,
+        )
         return 0
 
     block = (
@@ -1010,9 +1026,12 @@ def preflight_and_advise() -> int:
     if rules_count:
         # Rules are verbose lint/formatter config; keep the pointer rather than
         # flooding the block, but inline the idioms above.
-        block += f"Rules: {rules_count} apply — call get_rules({archetype_name!r}) for the config.\n"
+        block += (
+            f"Rules: {rules_count} apply — call get_rules({archetype_name!r}) for the config.\n"
+        )
     try:
         from chameleon_mcp.conventions import format_directory_listing
+
         dir_listing = format_directory_listing(file_path)
         if dir_listing:
             block += f"\n{dir_listing}\n"
@@ -1028,7 +1047,11 @@ def preflight_and_advise() -> int:
         confidence=confidence_band,
     )
     _emit_chameleon_context(block)
-    _update_statusline(f"{safe_name} ({safe_band})", repo_name=repo_root_path.name if repo_root_path else None, trust_state=trust_state)
+    _update_statusline(
+        f"{safe_name} ({safe_band})",
+        repo_name=repo_root_path.name if repo_root_path else None,
+        trust_state=trust_state,
+    )
     return 0
 
 
@@ -1151,6 +1174,7 @@ def posttool_verify() -> int:
         archetype_name: str | None = None
         try:
             from chameleon_mcp import daemon_client
+
             arch_result = daemon_client.call(
                 "get_archetype", {"repo": str(repo_root), "file_path": file_path}
             )
@@ -1161,6 +1185,7 @@ def posttool_verify() -> int:
 
         if not archetype_name:
             from chameleon_mcp.tools import get_archetype
+
             arch_result = get_archetype(str(repo_root), file_path)
             archetype_name = (arch_result.get("data") or {}).get("archetype")
 
@@ -1171,6 +1196,7 @@ def posttool_verify() -> int:
         if repo_id:
             try:
                 from chameleon_mcp.drift.observations import record_edit_observation
+
                 confidence_band = (arch_result.get("data") or {}).get("confidence_band")
                 record_edit_observation(
                     repo_id=repo_id,
@@ -1200,6 +1226,7 @@ def posttool_verify() -> int:
                 should_surface_to_user,
                 tone_for_level,
             )
+
             enforcement_state = load_state(repo_data_dir, session_id or "")
             file_state = enforcement_state.files.get(file_path)
             if file_state is None:
@@ -1214,6 +1241,7 @@ def posttool_verify() -> int:
                 maybe_reset_correction_count(file_state, _started)
                 if file_state.correction_count >= MAX_CORRECTIONS_PER_FILE:
                     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
                     safe_path = sanitize_for_chameleon_context(file_path)
                     _emit_posttool_context(
                         "<chameleon-context>\n"
@@ -1257,18 +1285,20 @@ def posttool_verify() -> int:
 
         try:
             from chameleon_mcp import daemon_client as _dc
-            lint_result = _dc.call("lint_file", {
-                "repo": str(repo_root),
-                "archetype": archetype_name,
-                "content": content,
-                "file_path": file_path,
-            })
+
+            lint_result = _dc.call(
+                "lint_file",
+                {
+                    "repo": str(repo_root),
+                    "archetype": archetype_name,
+                    "content": content,
+                    "file_path": file_path,
+                },
+            )
             if lint_result is not None:
                 daemon_responded = True
                 raw = (lint_result.get("data") or {}).get("violations") or []
-                violations = [
-                    v for v in raw if v.get("rule") != "secret-detected-in-content"
-                ]
+                violations = [v for v in raw if v.get("rule") != "secret-detected-in-content"]
         except Exception:
             pass
 
@@ -1284,9 +1314,7 @@ def posttool_verify() -> int:
             from chameleon_mcp.tools import _effective_profile_dir
 
             loaded = load_profile_dir(_effective_profile_dir(repo_root))
-            canonicals = (
-                (loaded.canonicals.get("canonicals") or {}).get(archetype_name) or []
-            )
+            canonicals = (loaded.canonicals.get("canonicals") or {}).get(archetype_name) or []
             ast_query: dict | None = None
             if canonicals:
                 first = canonicals[0] or {}
@@ -1305,7 +1333,11 @@ def posttool_verify() -> int:
                 violations = [v.to_dict() for v in lint(snapshot, ast_query)]
 
             try:
-                conv_data = loaded.conventions.get("conventions", {}) if hasattr(loaded, "conventions") else {}
+                conv_data = (
+                    loaded.conventions.get("conventions", {})
+                    if hasattr(loaded, "conventions")
+                    else {}
+                )
                 arch_conv: dict = {}
                 if conv_data.get("imports", {}).get(archetype_name):
                     arch_conv["imports"] = conv_data["imports"][archetype_name]
@@ -1316,13 +1348,16 @@ def posttool_verify() -> int:
                 if arch_conv:
                     conv_violations = lint_conventions(content, arch_conv, language=language)
                     violations.extend(
-                        v.to_dict() for v in conv_violations if v.rule != "secret-detected-in-content"
+                        v.to_dict()
+                        for v in conv_violations
+                        if v.rule != "secret-detected-in-content"
                     )
             except Exception:
                 pass
 
             try:
                 from chameleon_mcp.phantom_imports import lint_phantom_imports
+
                 violations.extend(
                     v.to_dict()
                     for v in lint_phantom_imports(
@@ -1339,6 +1374,7 @@ def posttool_verify() -> int:
         elapsed_ms = int((time.time() - _started) * 1000)
         try:
             from chameleon_mcp.metrics import emit_hook_metric
+
             emit_hook_metric(
                 "posttool-verify",
                 elapsed_ms=elapsed_ms,
@@ -1373,7 +1409,8 @@ def posttool_verify() -> int:
 
             block = (
                 f"[🦎 chameleon: {len(violations)} violations]\n"
-                + "\n".join(violation_lines) + "\n"
+                + "\n".join(violation_lines)
+                + "\n"
                 + current_tone
             )
 
@@ -1389,9 +1426,7 @@ def posttool_verify() -> int:
                 except Exception:
                     pass
 
-            _emit_posttool_context(
-                f"<chameleon-context>\n{block}\n</chameleon-context>"
-            )
+            _emit_posttool_context(f"<chameleon-context>\n{block}\n</chameleon-context>")
             _update_statusline(f"{len(violations)} violation{'s' if len(violations) != 1 else ''}")
 
             if enforcement_state is not None:
@@ -1532,12 +1567,14 @@ def callout_detector() -> int:
         "If chameleon is unrelated, ignore this note.\n"
         "</chameleon-context>"
     )
-    _emit({
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": hint,
+    _emit(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": hint,
+            }
         }
-    })
+    )
     return 0
 
 

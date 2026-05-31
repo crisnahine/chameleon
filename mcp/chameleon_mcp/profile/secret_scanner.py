@@ -24,15 +24,26 @@ _FALLBACK_PATTERNS = (
     (re.compile(r"\b(rk|sk)_(live|test)_[A-Za-z0-9]{24,}\b"), "stripe_key"),
     (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "slack_token"),
     (re.compile(r"\b[a-f0-9]{40,}\b"), "high_entropy_hex"),
-    (re.compile(r"-----BEGIN (RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----"), "private_key"),
-    (re.compile(r"""(password|passwd|pwd|secret|api[_-]?key|access[_-]?token)\s*[:=]\s*['"][^'"]{8,}['"]""", re.IGNORECASE), "password_assignment"),
+    (
+        re.compile(r"-----BEGIN (RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----"),
+        "private_key",
+    ),
+    (
+        re.compile(
+            r"""(password|passwd|pwd|secret|api[_-]?key|access[_-]?token)\s*[:=]\s*['"][^'"]{8,}['"]""",
+            re.IGNORECASE,
+        ),
+        "password_assignment",
+    ),
 )
 
 
-_NOISY_DETECT_SECRETS_TYPES = frozenset({
-    "Base64 High Entropy String",
-    "Hex High Entropy String",
-})
+_NOISY_DETECT_SECRETS_TYPES = frozenset(
+    {
+        "Base64 High Entropy String",
+        "Hex High Entropy String",
+    }
+)
 
 
 def _try_detect_secrets(content: str) -> list[dict[str, Any]] | None:
@@ -50,11 +61,13 @@ def _try_detect_secrets(content: str) -> list[dict[str, Any]] | None:
                     for s in scan_line(line):
                         if s.type in _NOISY_DETECT_SECRETS_TYPES:
                             continue
-                        hits.append({
-                            "type": s.type,
-                            "line_number": line_no,
-                            "secret_value": "<redacted>",
-                        })
+                        hits.append(
+                            {
+                                "type": s.type,
+                                "line_number": line_no,
+                                "secret_value": "<redacted>",
+                            }
+                        )
                 except Exception:
                     continue
     except Exception:
@@ -67,11 +80,13 @@ def _fallback_scan(content: str) -> list[dict[str, Any]]:
     hits: list[dict[str, Any]] = []
     for pattern, kind in _FALLBACK_PATTERNS:
         for match in pattern.finditer(content):
-            hits.append({
-                "type": kind,
-                "position": match.start(),
-                "secret_value": "<redacted>",
-            })
+            hits.append(
+                {
+                    "type": kind,
+                    "position": match.start(),
+                    "secret_value": "<redacted>",
+                }
+            )
     return hits
 
 
@@ -101,5 +116,3 @@ def scan_for_secrets(content: str) -> list[dict[str, Any]]:
             hits.append(hit)
 
     return hits
-
-

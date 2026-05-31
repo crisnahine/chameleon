@@ -3,6 +3,7 @@
 The parser is split from spawn_claude() so we can unit-test it without
 spawning real Claude.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -23,6 +24,11 @@ class ParsedSession:
     cost_usd: float
     hook_events: list[HookEvent]
     raw_lines: list[str]
+    # Names of every tool_use block emitted by the assistant, in order. A real
+    # tool invocation cannot be faked by prose in the transcript text, so acts
+    # use this to assert a command actually called a given MCP tool. Backward
+    # compatible: defaults to an empty list for callers that ignore it.
+    tool_uses: list[str] = dataclasses.field(default_factory=list)
 
 
 def parse_stream_json(stream: str) -> ParsedSession:
@@ -30,6 +36,7 @@ def parse_stream_json(stream: str) -> ParsedSession:
     cost = 0.0
     hook_events: list[HookEvent] = []
     raw_lines: list[str] = []
+    tool_uses: list[str] = []
 
     for line in stream.splitlines():
         line = line.strip()
@@ -52,8 +59,22 @@ def parse_stream_json(stream: str) -> ParsedSession:
                     stdout=obj.get("stdout", ""),
                 )
             )
+        elif obj.get("type") == "assistant":
+            message = obj.get("message") or {}
+            content = message.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        name = block.get("name")
+                        if isinstance(name, str) and name:
+                            tool_uses.append(name)
 
-    return ParsedSession(cost_usd=cost, hook_events=hook_events, raw_lines=raw_lines)
+    return ParsedSession(
+        cost_usd=cost,
+        hook_events=hook_events,
+        raw_lines=raw_lines,
+        tool_uses=tool_uses,
+    )
 
 
 @dataclasses.dataclass
@@ -62,6 +83,8 @@ class ClaudeSession:
     hook_events: list[HookEvent]
     transcript_path: Path
     returncode: int
+    # Tool-use block names the assistant emitted, in order (see ParsedSession).
+    tool_uses: list[str] = dataclasses.field(default_factory=list)
 
 
 def spawn_claude(
@@ -79,13 +102,19 @@ def spawn_claude(
 ) -> ClaudeSession:
     """Spawn `claude -p` and capture its stream-json output."""
     args = [
-        "claude", "-p", prompt,
-        "--output-format", "stream-json",
+        "claude",
+        "-p",
+        prompt,
+        "--output-format",
+        "stream-json",
         "--verbose",
         "--include-hook-events",
-        "--max-turns", str(max_turns),
-        "--model", model,
-        "--permission-mode", permission_mode,
+        "--max-turns",
+        str(max_turns),
+        "--model",
+        model,
+        "--permission-mode",
+        permission_mode,
     ]
     if plugin_root is not None:
         args += ["--plugin-dir", str(plugin_root)]
@@ -126,4 +155,5 @@ def spawn_claude(
         hook_events=parsed.hook_events,
         transcript_path=transcript_path,
         returncode=proc.returncode,
+        tool_uses=parsed.tool_uses,
     )

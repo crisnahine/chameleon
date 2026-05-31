@@ -5,6 +5,7 @@ version) plugin cache into the writable per-user data dir, and the bootstrap
 orchestrator degrading to a clean report when Node/npm is unavailable instead
 of aborting the whole run.
 """
+
 from __future__ import annotations
 
 import os
@@ -261,9 +262,7 @@ def test_bootstrap_degrades_when_node_unavailable(tmp_path, monkeypatch):
     def _boom(self, repo_root, paths=None, **kw):  # noqa: ARG001
         raise NodeUnavailableError("npm not found")
 
-    monkeypatch.setattr(
-        orchestrator.TypeScriptExtractor, "parse_repo", _boom, raising=True
-    )
+    monkeypatch.setattr(orchestrator.TypeScriptExtractor, "parse_repo", _boom, raising=True)
     report = orchestrator._bootstrap_single(repo)
     assert report.status == "failed_node_unavailable"
     assert "npm" in (report.error or "")

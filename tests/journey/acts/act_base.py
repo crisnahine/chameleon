@@ -1,4 +1,5 @@
 """Common types + helpers used by all act modules."""
+
 from __future__ import annotations
 
 import dataclasses

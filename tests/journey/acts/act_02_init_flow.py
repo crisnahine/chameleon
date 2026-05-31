@@ -1,4 +1,5 @@
 """Act 2: Init flow (TS, both auto_rename modes + force=True) (Phases 5, 6, 7, 15)."""
+
 from __future__ import annotations
 
 import hashlib
@@ -29,7 +30,7 @@ PHASE 5 - cold-start init interactive:
     .chameleon/rules.json
     .chameleon/idioms.md
     .chameleon/profile.summary.md
-  Use Bash to read .chameleon/profile.json and confirm schema_version is 7.
+  Use Bash to read .chameleon/profile.json and confirm schema_version is 8.
   emit checkpoint completed phase 5
 
 PHASE 6 - cold-start init auto_rename:
@@ -105,7 +106,13 @@ def _compute_fixture_repo_id(repo_path: Path) -> str:
             path = proto_match.group(3) or ""
             if "@" in host:
                 host = host.split("@", 1)[1]
-            case_insensitive = {"github.com", "gitlab.com", "bitbucket.org", "dev.azure.com", "ssh.dev.azure.com"}
+            case_insensitive = {
+                "github.com",
+                "gitlab.com",
+                "bitbucket.org",
+                "dev.azure.com",
+                "ssh.dev.azure.com",
+            }
             if host.lower() in case_insensitive:
                 host = host.lower()
                 scheme = "https"
@@ -163,7 +170,9 @@ def run(ctx: JourneyContext) -> ActResult:
     profile_json = ts_basic_chameleon / "profile.json"
     try:
         expect.path_exists(5, profile_json)
-        expect.json_field(5, profile_json, "schema_version", 7)
+        # Tracks CURRENT_SCHEMA_VERSION in mcp/chameleon_mcp/profile/schema.py.
+        # Bump this in lockstep when the schema version changes.
+        expect.json_field(5, profile_json, "schema_version", 8)
         expect.path_exists(5, ts_basic_chameleon / "COMMITTED")
         expect.path_exists(5, ts_basic_chameleon / "canonicals.json")
         expect.path_exists(5, ts_basic_chameleon / "archetypes.json")
@@ -199,9 +208,17 @@ def run(ctx: JourneyContext) -> ActResult:
     if renames_json.exists():
         try:
             data = json.loads(renames_json.read_text(encoding="utf-8"))
-            entries = data if isinstance(data, list) else list(data.values()) if isinstance(data, dict) else []
+            entries = (
+                data
+                if isinstance(data, list)
+                else list(data.values())
+                if isinstance(data, dict)
+                else []
+            )
             if len(entries) > 256:
-                notes_extra[15] = f"archetype_renames.json has {len(entries)} entries, expected <= 256"
+                notes_extra[15] = (
+                    f"archetype_renames.json has {len(entries)} entries, expected <= 256"
+                )
                 cross_check_passed[15] = False
             else:
                 cross_check_passed[15] = True

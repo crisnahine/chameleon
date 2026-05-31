@@ -1,4 +1,5 @@
 """Unit tests for safe_open.py — path-traversal, symlink, boundary, and size checks."""
+
 from __future__ import annotations
 
 import os

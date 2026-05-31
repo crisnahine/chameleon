@@ -4,6 +4,7 @@ Appends one JSON line to ${PLUGIN_DATA}/metrics.jsonl. Rotated by
 log_rotation when it crosses the size threshold. All errors swallowed
 so emission failure never breaks the hook.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,6 +15,7 @@ from pathlib import Path
 try:
     from chameleon_mcp.log_rotation import rotate_if_needed
 except ImportError:
+
     def rotate_if_needed(_path: Path) -> None:  # noqa: ARG001
         return None
 

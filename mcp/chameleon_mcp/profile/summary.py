@@ -89,32 +89,34 @@ def render_summary_md(
 
     hint = profile_meta.get("language_hint")
     if isinstance(hint, dict) and hint.get("secondary_detected"):
-        lines.extend([
-            "## Secondary language detected",
-            "",
-            (
-                f"This bootstrap scanned **{hint.get('primary', '?')}** only. "
-                f"A sibling **{hint['secondary_detected']}** codebase "
-                f"({hint.get('secondary_file_count', 0)} files at "
-                f"`{hint.get('secondary_path', '')}`) was deliberately excluded."
-            ),
-            "",
-            hint.get("note", ""),
-            "",
-        ])
+        lines.extend(
+            [
+                "## Secondary language detected",
+                "",
+                (
+                    f"This bootstrap scanned **{hint.get('primary', '?')}** only. "
+                    f"A sibling **{hint['secondary_detected']}** codebase "
+                    f"({hint.get('secondary_file_count', 0)} files at "
+                    f"`{hint.get('secondary_path', '')}`) was deliberately excluded."
+                ),
+                "",
+                hint.get("note", ""),
+                "",
+            ]
+        )
 
-    lines.extend([
-        f"## {profile_meta.get('archetype_count', 0)} archetypes detected",
-        "",
-    ])
+    lines.extend(
+        [
+            f"## {profile_meta.get('archetype_count', 0)} archetypes detected",
+            "",
+        ]
+    )
     for name, arch in sorted((archetypes.get("archetypes") or {}).items()):
         canonical_entries = (canonicals.get("canonicals") or {}).get(name) or []
         first = canonical_entries[0] if canonical_entries else None
         witness = first.get("witness") if isinstance(first, dict) else None
         canonical_path = (
-            witness.get("path")
-            if isinstance(witness, dict) and witness.get("path")
-            else "(none)"
+            witness.get("path") if isinstance(witness, dict) and witness.get("path") else "(none)"
         )
         display_paths = arch.get("paths_pattern_display") or arch.get("paths_pattern", "")
         lines.append(
@@ -157,10 +159,7 @@ def render_summary_md(
         lines.append(active_idioms)
         lines.append("")
     else:
-        lines.append(
-            "_No idioms captured yet. Run /chameleon-teach to record team "
-            "conventions._"
-        )
+        lines.append("_No idioms captured yet. Run /chameleon-teach to record team conventions._")
         lines.append("")
 
     deprecated_idioms = extract_idioms_section(idioms_text, "## deprecated")

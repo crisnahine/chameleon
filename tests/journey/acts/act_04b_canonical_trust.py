@@ -1,4 +1,5 @@
 """Act 4b: canonical_ref lifecycle + trust.auto_preserve_when (Phases 13, 14)."""
+
 from __future__ import annotations
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
@@ -112,8 +113,8 @@ def run(ctx: JourneyContext) -> ActResult:
         trust_files = list(ctx.plugin_data_dir.rglob(".trust"))
         if not trust_files:
             notes_extra[13] = (
-                (notes_extra.get(13, "") + "; no .trust file under plugin_data_dir").strip("; ")
-            )
+                notes_extra.get(13, "") + "; no .trust file under plugin_data_dir"
+            ).strip("; ")
             _phase13_fail = True
         cross_check_passed[13] = not _phase13_fail
     except expect.PhaseAssertionError as e:

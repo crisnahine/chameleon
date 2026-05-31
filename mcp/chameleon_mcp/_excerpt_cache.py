@@ -67,9 +67,7 @@ _CAP = _resolve_cap()
 _CACHE: OrderedDict[tuple, tuple[str, bool]] = OrderedDict()
 
 
-def get_or_build(
-    key: tuple, build: Callable[[], tuple[str, bool]]
-) -> tuple[str, bool]:
+def get_or_build(key: tuple, build: Callable[[], tuple[str, bool]]) -> tuple[str, bool]:
     """Return the cached (content, truncated) for `key`, or build, store,
     and return it. LRU: most-recent key moves to the end; oldest evicted
     when over _CAP."""

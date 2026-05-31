@@ -280,9 +280,7 @@ def _resolve_tsconfig_chain(
             )
             break
 
-        extends_targets = (
-            [extends_field] if isinstance(extends_field, str) else list(extends_field)
-        )
+        extends_targets = [extends_field] if isinstance(extends_field, str) else list(extends_field)
 
         resolved_parents: list[dict] = []
         resolved_names: list[str] = []
@@ -383,9 +381,7 @@ def _resolve_extends_target(
             except OSError:  # pragma: no cover — defensive
                 break
 
-        candidates.extend(
-            _resolve_workspace_package_target(target, from_dir, repo_root)
-        )
+        candidates.extend(_resolve_workspace_package_target(target, from_dir, repo_root))
 
     for cand in candidates:
         if cand.is_file():
@@ -424,9 +420,7 @@ def _workspace_monorepo_root(start: Path) -> Path | None:
     return None
 
 
-def _resolve_workspace_package_target(
-    target: str, from_path: Path, repo_root: Path
-) -> list[Path]:
+def _resolve_workspace_package_target(target: str, from_path: Path, repo_root: Path) -> list[Path]:
     """Find candidate paths for an org-prefixed workspace-local package.
 
     BUG-NEW-012 (v0.5.7-redo): pnpm/yarn-workspace monorepos like plane
@@ -771,7 +765,7 @@ def _scan_balanced_braces(text: str, start: int) -> str | None:
     return None
 
 
-_JS_KEY_RE = re.compile(r'([{,]\s*)([A-Za-z_$][A-Za-z0-9_$]*)(\s*:)')
+_JS_KEY_RE = re.compile(r"([{,]\s*)([A-Za-z_$][A-Za-z0-9_$]*)(\s*:)")
 
 _SINGLE_QUOTE_STRING_RE = re.compile(r"'((?:\\.|[^'\\])*)'")
 
@@ -792,6 +786,7 @@ def _jsish_to_json(text: str) -> str:
     """
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     text = re.sub(r"(^|[^:])//[^\n]*", r"\1", text)
+
     def _swap_quotes(m: re.Match[str]) -> str:
         inner = m.group(1)
         inner = inner.replace("\\'", "'").replace('"', '\\"')

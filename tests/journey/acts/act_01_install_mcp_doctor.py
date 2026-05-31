@@ -1,4 +1,5 @@
 """Act 1: Install + MCP boot + Doctor + using-chameleon verify (Phases 1-4)."""
+
 from __future__ import annotations
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
@@ -78,9 +79,7 @@ def run(ctx: JourneyContext) -> ActResult:
             env=ctx.env,
         )
         if tools_result is None or "error" in tools_result:
-            notes_extra[2] = (
-                f"MCP doctor returned error or None: {tools_result!r}"
-            )
+            notes_extra[2] = f"MCP doctor returned error or None: {tools_result!r}"
             cross_check_passed[2] = False
         else:
             cross_check_passed[2] = True
@@ -97,7 +96,9 @@ def run(ctx: JourneyContext) -> ActResult:
 
     checksums_file = ctx.plugin_root / "mcp" / "typescript-checksums.json"
     if not checksums_file.exists():
-        notes_concern[4] = "mcp/typescript-checksums.json does not exist (concern only, not required)"
+        notes_concern[4] = (
+            "mcp/typescript-checksums.json does not exist (concern only, not required)"
+        )
 
     for phase, passed in cross_check_passed.items():
         if phase in outcomes and passed:

@@ -19,34 +19,36 @@ from pathlib import Path
 
 REPO_SIZE_GUARD = 200_000
 
-EXCLUDE_FROM_CLUSTERING_DIRS = frozenset({
-    "node_modules",
-    "vendor",
-    "dist",
-    "build",
-    ".next",
-    ".nuxt",
-    ".turbo",
-    ".cache",
-    ".parcel-cache",
-    "__generated__",
-    "generated",
-    ".git",
-    "storage",
-    "tmp",
-    "coverage",
-    ".coverage",
-    ".pytest_cache",
-    ".ruff_cache",
-    ".mypy_cache",
-    ".venv",
-    "venv",
-    "__pycache__",
-    ".idea",
-    ".vscode",
-    ".chameleon",
-    ".claude",
-})
+EXCLUDE_FROM_CLUSTERING_DIRS = frozenset(
+    {
+        "node_modules",
+        "vendor",
+        "dist",
+        "build",
+        ".next",
+        ".nuxt",
+        ".turbo",
+        ".cache",
+        ".parcel-cache",
+        "__generated__",
+        "generated",
+        ".git",
+        "storage",
+        "tmp",
+        "coverage",
+        ".coverage",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".idea",
+        ".vscode",
+        ".chameleon",
+        ".claude",
+    }
+)
 
 EXCLUDE_FROM_CLUSTERING_FILE_GLOBS = (
     ".DS_Store",
@@ -56,29 +58,44 @@ EXCLUDE_FROM_CLUSTERING_FILE_GLOBS = (
     "*.lock",
 )
 
-EXCLUDE_FROM_CLUSTERING_EXACT_RELPATHS = frozenset({
-    "db/schema.rb",
-    "db/structure.sql",
-})
+EXCLUDE_FROM_CLUSTERING_EXACT_RELPATHS = frozenset(
+    {
+        "db/schema.rb",
+        "db/structure.sql",
+    }
+)
 
-EXCLUDE_FROM_CANONICAL_POOL_PATTERNS = (
-    "**/__tests__/**",
-    "**/test/**",
-    "**/tests/**",
-    "**/spec/**",
-    "**/specs/**",
-    "**/legacy/**",
-    "**/archive/**",
-    "**/_archive/**",
-    "**/.archive/**",
-    "**/deprecated/**",
-    "**/*.test.*",
-    "**/*.spec.*",
-    "**/*.stories.*",
-    "**/*.fixture.*",
-    "**/cypress/**",
-    "**/e2e/**",
-    "**/.storybook/**",
+# Directory-component exclusions for canonical selection. Matched against any
+# path segment (top-level OR nested), mirroring EXCLUDE_FROM_CLUSTERING_DIRS.
+# fnmatch globs like "**/tests/**" silently miss a top-level "tests/" dir
+# (the leading "**/" requires a preceding segment), which is the most common
+# layout in TS/JS and Rails repos — so component matching is used instead.
+EXCLUDE_FROM_CANONICAL_POOL_DIRS = frozenset(
+    {
+        "__tests__",
+        "test",
+        "tests",
+        "spec",
+        "specs",
+        "legacy",
+        "archive",
+        "_archive",
+        ".archive",
+        "deprecated",
+        "cypress",
+        "e2e",
+        ".storybook",
+    }
+)
+
+# Leaf-name filename globs for canonical selection (test/story/fixture files
+# that live alongside ordinary source). Matched against the bare filename so
+# top-level and nested files are both caught.
+EXCLUDE_FROM_CANONICAL_POOL_FILE_GLOBS = (
+    "*.test.*",
+    "*.spec.*",
+    "*.stories.*",
+    "*.fixture.*",
 )
 
 
@@ -89,8 +106,7 @@ class TooManyFilesError(Exception):
         self.count = count
         self.ceiling = ceiling
         super().__init__(
-            f"repo has {count} files (ceiling {ceiling}); "
-            "use explicit paths_glob to scope analysis"
+            f"repo has {count} files (ceiling {ceiling}); use explicit paths_glob to scope analysis"
         )
 
 
@@ -363,9 +379,16 @@ def is_eligible_as_canonical(rel_path: str) -> bool:
     """Return True if a file may be picked as a canonical witness.
 
     Files in test/, legacy/, archive/, etc. are excluded from canonical
-    selection but remain eligible for clustering.
+    selection but remain eligible for clustering. Directory exclusions match
+    any path component (top-level OR nested) — a top-level "tests/" dir is
+    just as disqualifying as a nested "src/tests/" one. Test/story/fixture
+    files are excluded by their leaf filename.
     """
-    return not _matches_any(rel_path, EXCLUDE_FROM_CANONICAL_POOL_PATTERNS)
+    if _has_excluded_component(Path(rel_path), EXCLUDE_FROM_CANONICAL_POOL_DIRS):
+        return False
+    if _matches_any(Path(rel_path).name, EXCLUDE_FROM_CANONICAL_POOL_FILE_GLOBS):
+        return False
+    return True
 
 
 def is_likely_generated(content_first_200_bytes: str) -> bool:

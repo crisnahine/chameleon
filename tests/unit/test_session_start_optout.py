@@ -4,6 +4,7 @@ Regression guard: session_start() must gate on is_chameleon_suppressed like
 PreToolUse/PostToolUse do, so a .skip / paused / session-disabled repo gets no
 skill injection, no statusLine write, and no auto-refresh at session start.
 """
+
 from __future__ import annotations
 
 import io

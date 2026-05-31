@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.signatures — pure functions, no I/O."""
+
 from __future__ import annotations
 
 from chameleon_mcp.signatures import (

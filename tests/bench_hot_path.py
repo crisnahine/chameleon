@@ -123,6 +123,7 @@ def main():
     if profiled_repo:
         lang_file = profiled_repo / ".chameleon" / "profile.json"
         import json
+
         lang = "?"
         try:
             with open(lang_file) as f:
@@ -160,9 +161,12 @@ def main():
         _REPO_ID_CACHE.clear()
         _PROFILE_CACHE.clear()
         from chameleon_mcp import _excerpt_cache
+
         _excerpt_cache.clear()
 
-    print(f"  {'Component':<40s}  {'Cold p50':>10s}  {'Cold p99':>10s}  {'Warm p50':>10s}  {'Warm p99':>10s}")
+    print(
+        f"  {'Component':<40s}  {'Cold p50':>10s}  {'Cold p99':>10s}  {'Warm p50':>10s}  {'Warm p99':>10s}"
+    )
     print(f"  {'-' * 40}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 10}")
 
     def clear_repo_root():
@@ -256,7 +260,9 @@ def main():
         p99 = fmt_ms(percentile(cold_times, 99))
         mn = fmt_ms(min(cold_times))
         mx = fmt_ms(max(cold_times))
-        print(f"  {'get_pattern_context (cold x30)':<40s}  {p50:>10s}  {p99:>10s}  {mn:>10s}  {mx:>10s}")
+        print(
+            f"  {'get_pattern_context (cold x30)':<40s}  {p50:>10s}  {p99:>10s}  {mn:>10s}  {mx:>10s}"
+        )
 
         cold_times_noprof = []
         for _ in range(30):
@@ -270,7 +276,9 @@ def main():
         p99 = fmt_ms(percentile(cold_times_noprof, 99))
         mn = fmt_ms(min(cold_times_noprof))
         mx = fmt_ms(max(cold_times_noprof))
-        print(f"  {'get_pattern_context no-prof (cold x30)':<40s}  {p50:>10s}  {p99:>10s}  {mn:>10s}  {mx:>10s}")
+        print(
+            f"  {'get_pattern_context no-prof (cold x30)':<40s}  {p50:>10s}  {p99:>10s}  {mn:>10s}  {mx:>10s}"
+        )
 
     print()
     print("=" * 100)

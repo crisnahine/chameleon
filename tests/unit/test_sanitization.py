@@ -1,4 +1,5 @@
 """Unit tests for sanitization.py — tag-boundary, bidi, ANSI, and control-byte stripping."""
+
 from __future__ import annotations
 
 import pytest

@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.profile.trust — hashing, grant, state queries."""
+
 from __future__ import annotations
 
 import json
@@ -112,16 +113,18 @@ class TestTrustRecord:
         assert record.repo_root_specific_hashes == {}
 
     def test_from_dict_drops_non_string_map_entries(self):
-        record = TrustRecord.from_dict({
-            "granted_at": "2025-01-01T00:00:00Z",
-            "granted_by_user": "u",
-            "profile_sha256": "sha",
-            "repo_root_specific_hashes": {
-                "/good": "hash1",
-                123: "bad_key",
-                "/also_bad": 999,
-            },
-        })
+        record = TrustRecord.from_dict(
+            {
+                "granted_at": "2025-01-01T00:00:00Z",
+                "granted_by_user": "u",
+                "profile_sha256": "sha",
+                "repo_root_specific_hashes": {
+                    "/good": "hash1",
+                    123: "bad_key",
+                    "/also_bad": 999,
+                },
+            }
+        )
         assert record.repo_root_specific_hashes == {"/good": "hash1"}
 
 
@@ -173,9 +176,12 @@ class TestGrantAndQuery:
         grant_trust(repo_id, root_profile)
 
         ws = tmp_path / "monorepo" / "packages" / "web"
-        ws_profile = _make_profile_dir(ws, extra_files={
-            "profile.json": json.dumps({"generation": 1, "language": "typescript", "ws": True}),
-        })
+        ws_profile = _make_profile_dir(
+            ws,
+            extra_files={
+                "profile.json": json.dumps({"generation": 1, "language": "typescript", "ws": True}),
+            },
+        )
         grant_trust(repo_id, ws_profile)
 
         record = trust_state_for(repo_id)
@@ -197,15 +203,21 @@ class TestGrantAndQuery:
         grant_trust(repo_id, root_profile)
 
         ws_a = tmp_path / "monorepo" / "packages" / "a"
-        ws_a_profile = _make_profile_dir(ws_a, extra_files={
-            "profile.json": json.dumps({"generation": 2, "language": "typescript"}),
-        })
+        ws_a_profile = _make_profile_dir(
+            ws_a,
+            extra_files={
+                "profile.json": json.dumps({"generation": 2, "language": "typescript"}),
+            },
+        )
         grant_trust(repo_id, ws_a_profile)
 
         ws_b = tmp_path / "monorepo" / "packages" / "b"
-        ws_b_profile = _make_profile_dir(ws_b, extra_files={
-            "profile.json": json.dumps({"generation": 3, "language": "ruby"}),
-        })
+        ws_b_profile = _make_profile_dir(
+            ws_b,
+            extra_files={
+                "profile.json": json.dumps({"generation": 3, "language": "ruby"}),
+            },
+        )
         grant_trust(repo_id, ws_b_profile)
 
         assert is_material_change(repo_id, root_profile) is False
@@ -255,9 +267,11 @@ class TestGrantsRoot:
         root = tmp_path / "repo"
         ws = root / "packages" / "svc"
         root_profile = _make_profile_dir(root)
-        ws_profile = _make_profile_dir(ws, extra_files={
-            "profile.json": json.dumps({"generation": 1, "language": "ruby"})})
+        ws_profile = _make_profile_dir(
+            ws, extra_files={"profile.json": json.dumps({"generation": 1, "language": "ruby"})}
+        )
         from chameleon_mcp.tools import _compute_repo_id
+
         repo_id = _compute_repo_id(root.resolve())
         grant_trust(repo_id, root_profile)
         assert trust_state_for(repo_id).grants_root(ws) is False

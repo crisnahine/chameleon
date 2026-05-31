@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.lint_engine — pure functions, no I/O."""
+
 from __future__ import annotations
 
 from chameleon_mcp.lint_engine import (
@@ -204,7 +205,8 @@ class TestExtractRubyTopLevel:
         code = "  class Nested\n  end\n"
         snap = _extract_ruby(code)
         column0_kinds = [
-            k for k in snap.top_level_node_kinds
+            k
+            for k in snap.top_level_node_kinds
             if not k.startswith("IncludeCall:") and not k.startswith("DslCall:")
         ]
         assert column0_kinds == []
@@ -230,15 +232,10 @@ class TestExtractRubySuperclass:
         code = "class PlainRuby\nend\n"
         snap = _extract_ruby(code)
         assert "ClassNode" in snap.top_level_node_kinds
-        assert not any(
-            k.startswith("ClassNode:") for k in snap.top_level_node_kinds
-        )
+        assert not any(k.startswith("ClassNode:") for k in snap.top_level_node_kinds)
 
     def test_superclass_resolved_per_class(self):
-        code = (
-            "class Plain\nend\n"
-            "class Account < ApplicationRecord\nend\n"
-        )
+        code = "class Plain\nend\nclass Account < ApplicationRecord\nend\n"
         snap = _extract_ruby(code)
         assert "ClassNode" in snap.top_level_node_kinds
         assert "ClassNode:ApplicationRecord" in snap.top_level_node_kinds
@@ -272,16 +269,9 @@ class TestExtractRubyDsl:
         assert "DslCall:scope" in snap.top_level_node_kinds
 
     def test_deduplicates_dsl(self):
-        code = (
-            "class User < ApplicationRecord\n"
-            "  validates :a\n"
-            "  validates :b\n"
-            "end\n"
-        )
+        code = "class User < ApplicationRecord\n  validates :a\n  validates :b\nend\n"
         snap = _extract_ruby(code)
-        dsl_validates = [
-            k for k in snap.top_level_node_kinds if k == "DslCall:validates"
-        ]
+        dsl_validates = [k for k in snap.top_level_node_kinds if k == "DslCall:validates"]
         assert len(dsl_validates) == 1
 
 
@@ -502,32 +492,44 @@ class TestTopLevelKindsMatch:
         assert _top_level_kinds_match(["ClassNode"], []) is True
 
     def test_exact_match(self):
-        assert _top_level_kinds_match(
-            ["ClassNode", "DslCall:validates"],
-            ["ClassNode", "DslCall:validates"],
-        ) is True
+        assert (
+            _top_level_kinds_match(
+                ["ClassNode", "DslCall:validates"],
+                ["ClassNode", "DslCall:validates"],
+            )
+            is True
+        )
 
     def test_bare_class_fails_two_kind_expected(self):
         """BUG-031: 1 match of 2 coarse kinds must fail (min-2 threshold)."""
-        assert _top_level_kinds_match(
-            ["ClassNode"],
-            ["ClassNode", "DslCall:scope"],
-        ) is False
+        assert (
+            _top_level_kinds_match(
+                ["ClassNode"],
+                ["ClassNode", "DslCall:scope"],
+            )
+            is False
+        )
 
     def test_bare_const_fails_two_kind_ts_expected(self):
         """BUG-031: TS const x=1 (FirstStatement) vs action with imports."""
-        assert _top_level_kinds_match(
-            ["FirstStatement"],
-            ["FirstStatement", "ImportDeclaration"],
-        ) is False
+        assert (
+            _top_level_kinds_match(
+                ["FirstStatement"],
+                ["FirstStatement", "ImportDeclaration"],
+            )
+            is False
+        )
 
     def test_coarse_dedup_prevents_inflated_match(self):
         """BUG-031: FirstStatement + ExportAssignment both -> CodeDeclaration.
         A file with just FirstStatement should NOT count as 2 matches."""
-        assert _top_level_kinds_match(
-            ["FirstStatement"],
-            ["ClassDeclaration", "ExportAssignment", "FirstStatement", "ImportDeclaration"],
-        ) is False
+        assert (
+            _top_level_kinds_match(
+                ["FirstStatement"],
+                ["ClassDeclaration", "ExportAssignment", "FirstStatement", "ImportDeclaration"],
+            )
+            is False
+        )
 
     def test_single_expected_kind_still_requires_match(self):
         assert _top_level_kinds_match(["ClassNode"], ["ModuleNode"]) is False
@@ -538,37 +540,67 @@ class TestTopLevelKindsMatch:
     def test_dsl_cross_category_not_conflict(self):
         """BUG-031: Ruby core DSL (attr_reader) + ActiveRecord DSL (validates)
         in the same file should NOT trigger DSL conflict."""
-        assert _top_level_kinds_match(
-            ["ClassNode:ApplicationRecord", "DslCall:validates", "DslCall:belongs_to"],
-            ["ClassNode", "DslCall:attr_reader"],
-        ) is True
+        assert (
+            _top_level_kinds_match(
+                ["ClassNode:ApplicationRecord", "DslCall:validates", "DslCall:belongs_to"],
+                ["ClassNode", "DslCall:attr_reader"],
+            )
+            is True
+        )
 
     def test_dsl_real_conflict_still_fires(self):
         """ActiveRecord vs ActionController DSLs should still conflict."""
-        assert _top_level_kinds_match(
-            ["ClassNode", "DslCall:before_action"],
-            ["ClassNode", "DslCall:validates", "DslCall:belongs_to"],
-        ) is False
+        assert (
+            _top_level_kinds_match(
+                ["ClassNode", "DslCall:before_action"],
+                ["ClassNode", "DslCall:validates", "DslCall:belongs_to"],
+            )
+            is False
+        )
 
     def test_extras_in_file_ok(self):
         """File having MORE kinds than expected is fine."""
-        assert _top_level_kinds_match(
-            ["ClassNode:ApplicationRecord", "DslCall:validates", "DslCall:scope", "IncludeCall:AASM"],
-            ["ClassNode", "DslCall:validates"],
-        ) is True
+        assert (
+            _top_level_kinds_match(
+                [
+                    "ClassNode:ApplicationRecord",
+                    "DslCall:validates",
+                    "DslCall:scope",
+                    "IncludeCall:AASM",
+                ],
+                ["ClassNode", "DslCall:validates"],
+            )
+            is True
+        )
 
     def test_half_threshold_for_large_expected(self):
         """For 4+ coarse kinds, 50% threshold applies (at least 2)."""
-        assert _top_level_kinds_match(
-            ["ImportDeclaration", "ClassDeclaration"],
-            ["ImportDeclaration", "ClassDeclaration", "InterfaceDeclaration", "TypeAliasDeclaration"],
-        ) is True
+        assert (
+            _top_level_kinds_match(
+                ["ImportDeclaration", "ClassDeclaration"],
+                [
+                    "ImportDeclaration",
+                    "ClassDeclaration",
+                    "InterfaceDeclaration",
+                    "TypeAliasDeclaration",
+                ],
+            )
+            is True
+        )
 
     def test_below_half_threshold_fails(self):
-        assert _top_level_kinds_match(
-            ["ImportDeclaration"],
-            ["ImportDeclaration", "ClassDeclaration", "InterfaceDeclaration", "TypeAliasDeclaration"],
-        ) is False
+        assert (
+            _top_level_kinds_match(
+                ["ImportDeclaration"],
+                [
+                    "ImportDeclaration",
+                    "ClassDeclaration",
+                    "InterfaceDeclaration",
+                    "TypeAliasDeclaration",
+                ],
+            )
+            is False
+        )
 
 
 class TestConventionLint:
@@ -576,7 +608,14 @@ class TestConventionLint:
         content = 'import { useQuery } from "@tanstack/react-query";\n'
         conventions = {
             "imports": {
-                "competing": [{"preferred": "useCustomQuery", "over": "useQuery", "preferred_count": 47, "over_count": 0}],
+                "competing": [
+                    {
+                        "preferred": "useCustomQuery",
+                        "over": "useQuery",
+                        "preferred_count": 47,
+                        "over_count": 0,
+                    }
+                ],
             },
         }
         violations = lint_conventions(content, conventions, language="typescript")
@@ -588,14 +627,21 @@ class TestConventionLint:
         content = 'import { useCustomQuery } from "@/hooks/useCustomQuery";\n'
         conventions = {
             "imports": {
-                "competing": [{"preferred": "useCustomQuery", "over": "useQuery", "preferred_count": 47, "over_count": 0}],
+                "competing": [
+                    {
+                        "preferred": "useCustomQuery",
+                        "over": "useQuery",
+                        "preferred_count": 47,
+                        "over_count": 0,
+                    }
+                ],
             },
         }
         violations = lint_conventions(content, conventions, language="typescript")
         assert len(violations) == 0
 
     def test_naming_convention_violation(self):
-        content = 'interface UserProps {\n  name: string;\n}\n'
+        content = "interface UserProps {\n  name: string;\n}\n"
         conventions = {
             "naming": {
                 "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 2158},
@@ -606,7 +652,7 @@ class TestConventionLint:
         assert violations[0].rule == "naming-convention-violation"
 
     def test_no_naming_violation_with_correct_prefix(self):
-        content = 'interface IUserProps {\n  name: string;\n}\n'
+        content = "interface IUserProps {\n  name: string;\n}\n"
         conventions = {
             "naming": {
                 "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 2158},
@@ -619,7 +665,14 @@ class TestConventionLint:
         content = '// chameleon-ignore import-preference\nimport { useQuery } from "@tanstack/react-query";\n'
         conventions = {
             "imports": {
-                "competing": [{"preferred": "useCustomQuery", "over": "useQuery", "preferred_count": 47, "over_count": 0}],
+                "competing": [
+                    {
+                        "preferred": "useCustomQuery",
+                        "over": "useQuery",
+                        "preferred_count": 47,
+                        "over_count": 0,
+                    }
+                ],
             },
         }
         violations = lint_conventions(content, conventions, language="typescript")
@@ -647,7 +700,11 @@ class TestConventionLint:
     def test_inheritance_convention_violation(self):
         content = "class MyService\n  def execute\n  end\nend\n"
         conventions = {
-            "inheritance": {"dominant_base": "ActiveInteraction::Base", "frequency": 0.82, "sample_size": 1414},
+            "inheritance": {
+                "dominant_base": "ActiveInteraction::Base",
+                "frequency": 0.82,
+                "sample_size": 1414,
+            },
         }
         violations = lint_conventions(content, conventions, language="ruby")
         assert len(violations) == 1
@@ -656,7 +713,11 @@ class TestConventionLint:
     def test_no_inheritance_violation_with_correct_base(self):
         content = "class MyService < ActiveInteraction::Base\n  def execute\n  end\nend\n"
         conventions = {
-            "inheritance": {"dominant_base": "ActiveInteraction::Base", "frequency": 0.82, "sample_size": 1414},
+            "inheritance": {
+                "dominant_base": "ActiveInteraction::Base",
+                "frequency": 0.82,
+                "sample_size": 1414,
+            },
         }
         violations = lint_conventions(content, conventions, language="ruby")
         assert len(violations) == 0
@@ -664,7 +725,11 @@ class TestConventionLint:
     def test_inheritance_chameleon_ignore(self):
         content = "# chameleon-ignore inheritance-convention\nclass MyService\nend\n"
         conventions = {
-            "inheritance": {"dominant_base": "ActiveInteraction::Base", "frequency": 0.82, "sample_size": 1414},
+            "inheritance": {
+                "dominant_base": "ActiveInteraction::Base",
+                "frequency": 0.82,
+                "sample_size": 1414,
+            },
         }
         violations = lint_conventions(content, conventions, language="ruby")
         assert len(violations) == 0
@@ -672,7 +737,11 @@ class TestConventionLint:
     def test_inheritance_not_checked_for_typescript(self):
         content = "class MyService {\n}\n"
         conventions = {
-            "inheritance": {"dominant_base": "ApplicationRecord", "frequency": 0.96, "sample_size": 117},
+            "inheritance": {
+                "dominant_base": "ApplicationRecord",
+                "frequency": 0.96,
+                "sample_size": 117,
+            },
         }
         violations = lint_conventions(content, conventions, language="typescript")
         assert len(violations) == 0

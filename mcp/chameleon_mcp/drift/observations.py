@@ -111,18 +111,14 @@ def record_edit_observation(
                 """,
                 (rel_path, archetype, confidence, 1 if matched_canonical else 0, ts),
             )
-            (count,) = conn.execute(
-                "SELECT COUNT(*) FROM edit_observations"
-            ).fetchone()
+            (count,) = conn.execute("SELECT COUNT(*) FROM edit_observations").fetchone()
             if count > _EDIT_OBS_HARD_CAP:
                 ninety_days_ago = ts - 90 * 24 * 3600
                 conn.execute(
                     "DELETE FROM edit_observations WHERE observed_at < ?",
                     (ninety_days_ago,),
                 )
-                (count_after,) = conn.execute(
-                    "SELECT COUNT(*) FROM edit_observations"
-                ).fetchone()
+                (count_after,) = conn.execute("SELECT COUNT(*) FROM edit_observations").fetchone()
                 if count_after > _EDIT_OBS_SOFT_CAP:
                     conn.execute(
                         """

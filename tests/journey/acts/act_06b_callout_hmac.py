@@ -1,4 +1,5 @@
 """Act 6b: Callout-detector + HMAC tampering security (Phases 20, 23)."""
+
 from __future__ import annotations
 
 import re
@@ -111,8 +112,7 @@ def run(ctx: JourneyContext) -> ActResult:
             r"chameleon-pause",
         ]
         found_any_callout = any(
-            re.search(p, transcript_text, re.IGNORECASE)
-            for p in callout_patterns
+            re.search(p, transcript_text, re.IGNORECASE) for p in callout_patterns
         )
         if not found_any_callout:
             notes_extra[20] = (

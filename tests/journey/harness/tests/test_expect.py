@@ -1,4 +1,5 @@
 """Unit tests for expect.* assertion helpers."""
+
 from __future__ import annotations
 
 import json
@@ -49,7 +50,9 @@ def test_json_field_mismatch_raises(tmp_path: Path) -> None:
 def test_json_field_in_allowed(tmp_path: Path) -> None:
     f = tmp_path / "doc.json"
     f.write_text(json.dumps({"match_quality": "ast"}))
-    expect.json_field_in(phase=1, path=f, key="match_quality", allowed=["ast", "exact", "fallback", "none"])
+    expect.json_field_in(
+        phase=1, path=f, key="match_quality", allowed=["ast", "exact", "fallback", "none"]
+    )
 
 
 def test_file_size_between(tmp_path: Path) -> None:

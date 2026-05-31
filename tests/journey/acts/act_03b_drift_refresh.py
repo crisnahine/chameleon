@@ -1,4 +1,5 @@
 """Act 3b: PreToolUse advisory coverage + drift + refresh recovery (Phases 10, 11)."""
+
 from __future__ import annotations
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
@@ -91,14 +92,9 @@ def run(ctx: JourneyContext) -> ActResult:
     cross_check_passed: dict[int, bool] = {}
 
     try:
-        pre_tool_events = [
-            e for e in session.hook_events
-            if "PreToolUse" in e.hook_name
-        ]
+        pre_tool_events = [e for e in session.hook_events if "PreToolUse" in e.hook_name]
         if len(pre_tool_events) < 3:
-            notes_extra[10] = (
-                f"expected >= 3 PreToolUse hook events, got {len(pre_tool_events)}"
-            )
+            notes_extra[10] = f"expected >= 3 PreToolUse hook events, got {len(pre_tool_events)}"
             cross_check_passed[10] = False
         else:
             cross_check_passed[10] = True

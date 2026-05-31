@@ -8,7 +8,8 @@
 # Jobs:
 #   - test-python:      matrix on Python 3.11-3.13 across Ubuntu + macOS.
 #                        Runs unit tests + harness library tests.
-#   - lint:             ruff check on MCP package + unit tests + journey tests.
+#   - lint:             ruff check + ruff format --check on MCP package +
+#                        unit tests + journey tests.
 #   - version-sync:     bash scripts/bump-version.sh --check (fails CI on drift).
 #   - no-personal-paths: fails CI if a tracked file hardcodes a developer
 #                        home path (/Users/<name> or /home/<name>).
@@ -115,6 +116,14 @@ jobs:
         # config (line-length, target-version, select) lives in
         # mcp/pyproject.toml -- uvx picks it up from the working directory.
         run: uvx ruff@0.15.13 check chameleon_mcp/ ../tests/unit/ ../tests/journey/
+
+      - name: Ruff format check (MCP package + tests)
+        working-directory: mcp
+        # Formatter gate, same scope and pinned version as the check above
+        # so the local venv (uv.lock pins ruff 0.15.13) and CI agree
+        # byte-for-byte. Run `uvx ruff@0.15.13 format chameleon_mcp/ ../tests/`
+        # to fix locally.
+        run: uvx ruff@0.15.13 format --check chameleon_mcp/ ../tests/unit/ ../tests/journey/
 
   version-sync:
     name: version-sync (bump-version.sh --check)

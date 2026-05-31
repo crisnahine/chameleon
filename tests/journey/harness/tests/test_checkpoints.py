@@ -1,4 +1,5 @@
 """Unit tests for checkpoint JSONL parsing + phase attribution."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -65,7 +66,7 @@ def test_malformed_line_is_skipped(tmp_path: Path) -> None:
     f = tmp_path / "cp.jsonl"
     f.write_text(
         '{"phase": 4, "status": "started", "ts": "2026-05-21T00:00:00Z"}\n'
-        'this is not json\n'
+        "this is not json\n"
         '{"phase": 4, "status": "completed", "ts": "2026-05-21T00:00:05Z"}\n'
     )
 
@@ -96,7 +97,7 @@ def test_skip_phase_with_parse_errors_includes_hint(tmp_path: Path) -> None:
     """SKIP-attributed phases include corruption hint when parse_errors > 0."""
     f = tmp_path / "cp.jsonl"
     f.write_text(
-        'invalid json line\n'
+        "invalid json line\n"
         '{"phase": 5, "status": "started", "ts": "2026-05-21T00:00:00Z"}\n'
         '{"phase": 5, "status": "completed", "ts": "2026-05-21T00:00:05Z"}\n'
     )

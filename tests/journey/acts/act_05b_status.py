@@ -1,4 +1,5 @@
 """Act 5b: Status v0.6.0 config surface (Phase 17)."""
+
 from __future__ import annotations
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt

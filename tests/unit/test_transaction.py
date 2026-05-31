@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.bootstrap.transaction."""
+
 from __future__ import annotations
 
 import os

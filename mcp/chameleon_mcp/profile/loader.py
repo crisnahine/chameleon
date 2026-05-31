@@ -333,9 +333,7 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         ]
         quick_idioms = profile_dir / "idioms.md"
         quick_conventions = profile_dir / "conventions.json"
-        quick_token = _compute_mtime_token(
-            quick_artifact_paths, quick_idioms, quick_conventions
-        )
+        quick_token = _compute_mtime_token(quick_artifact_paths, quick_idioms, quick_conventions)
         cached = _PROFILE_CACHE.get(cache_key)
         if cached is not None and cached[0] == quick_token:
             return cached[1]
@@ -391,9 +389,7 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
     # mid-load mutation guard, or a conventions rewrite (e.g. teach_competing_
     # import) between read and token-compute could cache stale content.
     if mtimes_before != mtimes_after or conv_mtime_before != conv_mtime_after:
-        raise ProfileLoadError(
-            "profile changed during load (mid-load mutation detected); retry"
-        )
+        raise ProfileLoadError("profile changed during load (mid-load mutation detected); retry")
 
     gens = (
         profile.get("generation"),
@@ -403,8 +399,7 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
     )
     if not all(isinstance(g, int) for g in gens) or len(set(gens)) != 1:
         raise ProfileLoadError(
-            f"profile generation mismatch across artifacts: {gens}; "
-            "/chameleon-refresh recommended"
+            f"profile generation mismatch across artifacts: {gens}; /chameleon-refresh recommended"
         )
 
     declared_min = profile.get("engine_min_version") or archetypes.get("engine_min_version")
@@ -434,8 +429,7 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
     _arch_map = archetypes.get("archetypes")
     if isinstance(_arch_map, dict):
         archetypes["archetypes"] = {
-            k: v for k, v in _arch_map.items()
-            if isinstance(k, str) and ARCHETYPE_NAME_RE.match(k)
+            k: v for k, v in _arch_map.items() if isinstance(k, str) and ARCHETYPE_NAME_RE.match(k)
         }
     archetype_names = sorted((archetypes.get("archetypes") or {}).keys())
 

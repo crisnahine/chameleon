@@ -7,6 +7,7 @@ CHAMELEON_TEST_RUBY_REPO, then runs each through the actual hook scripts
 PreToolUse injects archetype context for trusted profiles, and PostToolUse
 lints the written content without crashing.
 """
+
 import json
 import os
 import subprocess
@@ -147,8 +148,10 @@ def main():
         else:
             pre_pass = pre_error is None
 
-        print(f"  PreToolUse: {pre_ms:.0f}ms  pattern_context={has_pattern} "
-              f"trust={trust.get(repo)}  RESULT={'PASS' if pre_pass else 'FAIL'}")
+        print(
+            f"  PreToolUse: {pre_ms:.0f}ms  pattern_context={has_pattern} "
+            f"trust={trust.get(repo)}  RESULT={'PASS' if pre_pass else 'FAIL'}"
+        )
         if pre_error:
             print(f"    ERROR: {pre_error}")
 
@@ -167,18 +170,22 @@ def main():
         has_violations = "violation" in post_context.lower()
         post_pass = post_error is None
 
-        print(f"  PostToolUse: {post_ms:.0f}ms  violations_surfaced={has_violations}  "
-              f"RESULT={'PASS' if post_pass else 'FAIL'}")
+        print(
+            f"  PostToolUse: {post_ms:.0f}ms  violations_surfaced={has_violations}  "
+            f"RESULT={'PASS' if post_pass else 'FAIL'}"
+        )
         if post_error:
             print(f"    ERROR: {post_error}")
 
-        results.append({
-            "task": task["label"],
-            "pre_pass": pre_pass,
-            "post_pass": post_pass,
-            "pre_ms": pre_ms,
-            "post_ms": post_ms,
-        })
+        results.append(
+            {
+                "task": task["label"],
+                "pre_pass": pre_pass,
+                "post_pass": post_pass,
+                "pre_ms": pre_ms,
+                "post_ms": post_ms,
+            }
+        )
 
     print(f"\n{'=' * 80}")
     print("SUMMARY")
@@ -198,9 +205,11 @@ def main():
 
     for r in results:
         status = "PASS" if r["pre_pass"] and r["post_pass"] else "FAIL"
-        print(f"  {r['task']}: Pre={'OK' if r['pre_pass'] else 'FAIL'} "
-              f"Post={'OK' if r['post_pass'] else 'FAIL'} "
-              f"({r['pre_ms']:.0f}ms + {r['post_ms']:.0f}ms) [{status}]")
+        print(
+            f"  {r['task']}: Pre={'OK' if r['pre_pass'] else 'FAIL'} "
+            f"Post={'OK' if r['post_pass'] else 'FAIL'} "
+            f"({r['pre_ms']:.0f}ms + {r['post_ms']:.0f}ms) [{status}]"
+        )
 
     sys.exit(0 if all_passed == n else 1)
 

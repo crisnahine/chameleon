@@ -31,33 +31,35 @@ from typing import Any
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 
-_GENERIC_TAIL_SEGMENTS = frozenset({
-    "controllers",
-    "models",
-    "services",
-    "policies",
-    "serializers",
-    "jobs",
-    "mailers",
-    "workers",
-    "components",
-    "hooks",
-    "utils",
-    "util",
-    "lib",
-    "src",
-    "app",
-    "spec",
-    "test",
-    "tests",
-    "queries",
-    "mutations",
-    "migrate",
-    "migrations",
-    "config",
-    "initializers",
-    "types",
-})
+_GENERIC_TAIL_SEGMENTS = frozenset(
+    {
+        "controllers",
+        "models",
+        "services",
+        "policies",
+        "serializers",
+        "jobs",
+        "mailers",
+        "workers",
+        "components",
+        "hooks",
+        "utils",
+        "util",
+        "lib",
+        "src",
+        "app",
+        "spec",
+        "test",
+        "tests",
+        "queries",
+        "mutations",
+        "migrate",
+        "migrations",
+        "config",
+        "initializers",
+        "types",
+    }
+)
 
 _TEST_DIR_TOKENS = frozenset({"spec", "specs", "test", "tests", "__tests__"})
 
@@ -176,16 +178,11 @@ def _looks_like_test(paths_pattern: str, member_paths: Iterable[str]) -> bool:
     if not member_list:
         return False
 
-    suffix_hits = sum(
-        1 for p in member_list if any(p.endswith(suf) for suf in _TEST_FILE_SUFFIXES)
-    )
+    suffix_hits = sum(1 for p in member_list if any(p.endswith(suf) for suf in _TEST_FILE_SUFFIXES))
     if suffix_hits * 2 >= len(member_list):
         return True
 
-    if all(
-        any(seg in _TEST_DIR_TOKENS for seg in p.split("/"))
-        for p in member_list
-    ):
+    if all(any(seg in _TEST_DIR_TOKENS for seg in p.split("/")) for p in member_list):
         return True
 
     return False
@@ -308,7 +305,7 @@ def _has_dir_chain(member_paths: list[str], chain: tuple[str, ...]) -> bool:
     for p in member_paths:
         segs = p.split("/")
         for i in range(len(segs) - len(chain) + 1):
-            if tuple(segs[i:i + len(chain)]) == chain:
+            if tuple(segs[i : i + len(chain)]) == chain:
                 matches += 1
                 break
     return matches * 2 >= len(member_paths)
@@ -347,24 +344,18 @@ def _strip_workspace_prefix(
     """
     if not member_paths:
         return list(member_paths)
-    roots_sorted = (
-        sorted(workspace_roots, key=len, reverse=True) if workspace_roots else []
-    )
+    roots_sorted = sorted(workspace_roots, key=len, reverse=True) if workspace_roots else []
     out: list[str] = []
     for p in member_paths:
         stripped: str | None = None
         for root in roots_sorted:
             prefix = root.rstrip("/") + "/"
             if p.startswith(prefix):
-                stripped = p[len(prefix):]
+                stripped = p[len(prefix) :]
                 break
         if stripped is None:
             segs = p.split("/", 2)
-            if (
-                len(segs) >= 3
-                and segs[0] in _WORKSPACE_PARENT_DIRS_NAMING
-                and segs[1]
-            ):
+            if len(segs) >= 3 and segs[0] in _WORKSPACE_PARENT_DIRS_NAMING and segs[1]:
                 stripped = segs[2]
         out.append(stripped if stripped is not None else p)
     return out
@@ -395,22 +386,28 @@ def _fn_any(_name: str) -> bool:
 
 def _fn_in(allowed: frozenset[str]) -> Callable[[str], bool]:
     """Build a predicate that matches only the given exact basenames."""
+
     def _pred(name: str) -> bool:
         return name in allowed
+
     return _pred
 
 
 def _fn_not_in(disallowed: frozenset[str]) -> Callable[[str], bool]:
     """Build a predicate that rejects the given basenames (everything else passes)."""
+
     def _pred(name: str) -> bool:
         return name not in disallowed
+
     return _pred
 
 
 def _fn_starts_with(prefix: str) -> Callable[[str], bool]:
     """Build a predicate that matches basenames starting with ``prefix``."""
+
     def _pred(name: str) -> bool:
         return name.startswith(prefix)
+
     return _pred
 
 
@@ -431,18 +428,13 @@ _TS_PRIORS: tuple[
     ...,
 ] = (
     (("app", "api"), _fn_in(_NEXT_APP_ROUTE_FILES), (), "app-route-handler"),
-
     (("app", "routes"), _fn_any, (), "remix-route"),
-
     (("app",), _fn_in(_NEXT_APP_PAGE_FILES), (("app", "api"),), "app-page-component"),
     (("app",), _fn_in(_NEXT_APP_LAYOUT_FILES), (("app", "api"),), "app-layout"),
     (("app",), _fn_in(_NEXT_APP_SPECIAL_FILES), (("app", "api"),), "app-special-component"),
-
     (("pages", "api"), _fn_any, (), "pages-api-handler"),
-
     (("pages",), _fn_in(_NEXT_PAGES_SPECIAL_FILES), (("pages", "api"),), "pages-special-component"),
     (("pages",), _fn_not_in(_NEXT_PAGES_SPECIAL_FILES), (("pages", "api"),), "pages-component"),
-
     (("components",), _fn_any, (), "component"),
     (("ui",), _fn_any, (), "ui-component"),
     (("hooks",), _fn_starts_with("use"), (), "hook"),
@@ -457,7 +449,6 @@ _TS_PRIORS: tuple[
     (("types",), _fn_any, (), "type-module"),
     (("queries",), _fn_starts_with("use"), (), "query-hook"),
     (("queries",), _fn_any, (), "query"),
-
     (("features",), _fn_any, (), "feature-module"),
     (("testing", "mocks"), _fn_any, (), "test-mock"),
     (("mocks", "handlers"), _fn_any, (), "test-mock-handler"),
@@ -517,24 +508,14 @@ def _ts_prior_match(member_paths: list[str]) -> str | None:
         if hits * 2 >= member_count:
             return name
 
-    middleware_hits = sum(
-        1 for p in member_paths if p.rsplit("/", 1)[-1] == "middleware.ts"
-    )
-    if (
-        middleware_hits * 2 >= member_count
-        and not _has_dir_chain(member_paths, ("middleware",))
-    ):
+    middleware_hits = sum(1 for p in member_paths if p.rsplit("/", 1)[-1] == "middleware.ts")
+    if middleware_hits * 2 >= member_count and not _has_dir_chain(member_paths, ("middleware",)):
         return "middleware"
 
-    api_first_segment = sum(
-        1
-        for p in member_paths
-        if p.split("/", 1)[0] == "api"
-    )
+    api_first_segment = sum(1 for p in member_paths if p.split("/", 1)[0] == "api")
     if api_first_segment * 2 >= member_count:
-        nextjs_overlap = (
-            _has_dir_chain(member_paths, ("pages", "api"))
-            or _has_dir_chain(member_paths, ("app", "api"))
+        nextjs_overlap = _has_dir_chain(member_paths, ("pages", "api")) or _has_dir_chain(
+            member_paths, ("app", "api")
         )
         if not nextjs_overlap:
             return "api-client"
@@ -582,9 +563,7 @@ def _base_name_for(
         segment. We fall back to inspecting the raw member paths so the
         heuristic still recognizes Rails clusters with deep namespaces.
         """
-        return _pattern_contains(paths_pattern, token) or _members_contain(
-            member_paths, token
-        )
+        return _pattern_contains(paths_pattern, token) or _members_contain(member_paths, token)
 
     if _looks_like_test(paths_pattern, member_paths):
         return "test"
@@ -627,7 +606,6 @@ def _base_name_for(
     if _has("services"):
         return "service"
 
-
     if _has("components") and jsx_present:
         return "component"
 
@@ -650,9 +628,7 @@ def _base_name_for(
 
     if is_class_default and not jsx_present:
         if paths_pattern and paths_pattern != "(root)":
-            suffix_candidates = _disambiguation_suffixes(
-                cluster, repo_root=repo_root
-            )
+            suffix_candidates = _disambiguation_suffixes(cluster, repo_root=repo_root)
             for suffix in suffix_candidates:
                 if suffix == "root":
                     continue

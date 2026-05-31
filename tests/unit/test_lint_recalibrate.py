@@ -7,6 +7,7 @@ error-severity jsx rule was dead. Sourcing the 3 dims from the witness's own
 regex snapshot makes the comparison regex-vs-regex (the gap the nulling avoided),
 so all 5 enforce without false positives on conforming code.
 """
+
 from __future__ import annotations
 
 from chameleon_mcp.lint_engine import extract_dimensions, lint, recalibrate_ast_query

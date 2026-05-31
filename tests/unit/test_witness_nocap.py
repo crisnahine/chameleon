@@ -5,6 +5,7 @@ quality outcome). The ceiling is now 5MB so any real source file injects in
 full, and a pathological >5MB witness is FLAGGED (truncated/oversize) instead of
 silently returning nothing.
 """
+
 from __future__ import annotations
 
 import json
@@ -29,7 +30,12 @@ def _repo_with_witness(tmp_path, monkeypatch, *, witness_bytes: int):
     )
     (cham / "rules.json").write_text(json.dumps({"generation": 1, "rules": {}}))
     (cham / "canonicals.json").write_text(
-        json.dumps({"generation": 1, "canonicals": {ARCH: [{"witness": {"path": WITNESS, "sha_hint": "x"}}]}})
+        json.dumps(
+            {
+                "generation": 1,
+                "canonicals": {ARCH: [{"witness": {"path": WITNESS, "sha_hint": "x"}}]},
+            }
+        )
     )
     (cham / "COMMITTED").touch()
     reps = (witness_bytes // len(SAFE_LINE)) + 1
@@ -49,7 +55,7 @@ def test_witness_over_old_200kb_cap_now_injects_fully(tmp_path, monkeypatch):
 def test_witness_over_5mb_is_flagged_not_silent(tmp_path, monkeypatch):
     repo = _repo_with_witness(tmp_path, monkeypatch, witness_bytes=WITNESS_MAX_BYTES + 100_000)
     res = get_canonical_excerpt(str(repo), ARCH)["data"]
-    assert res.get("status") == "oversize"   # explicit, not an empty success
+    assert res.get("status") == "oversize"  # explicit, not an empty success
     assert res.get("truncated") is True
     assert res.get("witness_path") == WITNESS  # model still learns the witness exists
 

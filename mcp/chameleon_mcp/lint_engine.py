@@ -169,6 +169,7 @@ def _strip_ts_strings_and_comments(content: str) -> str:
     We replace each match with a same-length run of spaces so positions
     elsewhere remain meaningful (regex flag offsets / future line numbering).
     """
+
     def _spaces(m: re.Match) -> str:
         return " " * len(m.group(0))
 
@@ -199,11 +200,16 @@ _TS_EXPORT_LIST = re.compile(r"^\s*export\s*\{\s*([^}]*)\s*\}\s*;?\s*$", re.MULT
 
 _TS_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^\s*import\s", re.MULTILINE), "ImportDeclaration"),
-    (re.compile(r"^\s*export\s+default\s+(?:async\s+)?function\b", re.MULTILINE), "FunctionDeclaration"),
+    (
+        re.compile(r"^\s*export\s+default\s+(?:async\s+)?function\b", re.MULTILINE),
+        "FunctionDeclaration",
+    ),
     (re.compile(r"^\s*export\s+default\s+class\b", re.MULTILINE), "ClassDeclaration"),
     (re.compile(r"^\s*export\s+default\s", re.MULTILINE), "ExportAssignment"),
     (
-        re.compile(r"^\s*export\s*\{[^}]*\}\s*(?:from\s+[\"'][^\"']*[\"'])?\s*;?\s*$", re.MULTILINE),
+        re.compile(
+            r"^\s*export\s*\{[^}]*\}\s*(?:from\s+[\"'][^\"']*[\"'])?\s*;?\s*$", re.MULTILINE
+        ),
         "ExportDeclaration",
     ),
     (re.compile(r"^\s*export\s+(?:async\s+)?function\s", re.MULTILINE), "FunctionDeclaration"),
@@ -221,9 +227,7 @@ _TS_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 _JSX_CLOSING = re.compile(r"</[A-Za-z][\w.-]*\s*>")
-_JSX_SELF_CLOSING = re.compile(
-    r"(?<![A-Za-z0-9_])<[A-Za-z][\w.]*(?:\s[^<>]*?)?/>", re.DOTALL
-)
+_JSX_SELF_CLOSING = re.compile(r"(?<![A-Za-z0-9_])<[A-Za-z][\w.]*(?:\s[^<>]*?)?/>", re.DOTALL)
 _JSX_FRAGMENT = re.compile(r"<>|</>")
 
 
@@ -327,15 +331,27 @@ _RUBY_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
 
 _RUBY_SUPERCLASS_RE = re.compile(r"^class\s+\w[\w:]*\s*<\s*([\w:]+)", re.MULTILINE)
 _RUBY_INCLUDE_RE = re.compile(r"^\s+include\s+([\w:]+)", re.MULTILINE)
-_RUBY_DSL_CALLS = frozenset({
-    "validates", "validate", "belongs_to", "has_many", "has_one",
-    "has_and_belongs_to_many", "before_action", "after_action",
-    "around_action", "before_validation", "after_commit", "scope",
-    "enum", "delegate", "attr_accessor", "attr_reader",
-})
-_RUBY_DSL_RE = re.compile(
-    r"^\s+(" + "|".join(_RUBY_DSL_CALLS) + r")\b", re.MULTILINE
+_RUBY_DSL_CALLS = frozenset(
+    {
+        "validates",
+        "validate",
+        "belongs_to",
+        "has_many",
+        "has_one",
+        "has_and_belongs_to_many",
+        "before_action",
+        "after_action",
+        "around_action",
+        "before_validation",
+        "after_commit",
+        "scope",
+        "enum",
+        "delegate",
+        "attr_accessor",
+        "attr_reader",
+    }
 )
+_RUBY_DSL_RE = re.compile(r"^\s+(" + "|".join(_RUBY_DSL_CALLS) + r")\b", re.MULTILINE)
 
 
 def _extract_ruby(content: str) -> DimensionSnapshot:
@@ -377,9 +393,7 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
                     named_export_count += 1
                 break
 
-    has_module = any(
-        k == "ModuleNode" or k.startswith("ModuleNode:") for k in top_level
-    )
+    has_module = any(k == "ModuleNode" or k.startswith("ModuleNode:") for k in top_level)
     if has_module:
         for m in _NESTED_CLASS_RE.finditer(stripped):
             nested_sc = m.group(2)
@@ -400,9 +414,7 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
             top_level.append(f"DslCall:{dsl_name}")
 
     default_export_kind = (
-        top_level_class_or_module[0]
-        if len(top_level_class_or_module) == 1
-        else None
+        top_level_class_or_module[0] if len(top_level_class_or_module) == 1 else None
     )
 
     head = content[:200]
@@ -446,14 +458,27 @@ def extract_dimensions(
     return DimensionSnapshot()
 
 
-_TS_CODE_KINDS = frozenset({
-    "FunctionDeclaration", "FirstStatement", "ExportAssignment",
-})
+_TS_CODE_KINDS = frozenset(
+    {
+        "FunctionDeclaration",
+        "FirstStatement",
+        "ExportAssignment",
+    }
+)
 
 _DSL_CATEGORY: dict[str, str] = {}
-for _d in ("validates", "validate", "belongs_to", "has_many", "has_one",
-           "has_and_belongs_to_many", "scope", "enum",
-           "before_validation", "after_commit"):
+for _d in (
+    "validates",
+    "validate",
+    "belongs_to",
+    "has_many",
+    "has_one",
+    "has_and_belongs_to_many",
+    "scope",
+    "enum",
+    "before_validation",
+    "after_commit",
+):
     _DSL_CATEGORY[_d] = "DslCall:ActiveRecord"
 for _d in ("before_action", "after_action", "around_action"):
     _DSL_CATEGORY[_d] = "DslCall:ActionController"
@@ -527,12 +552,8 @@ def _top_level_kinds_match(file_kinds: list[str], expected: list[str]) -> bool:
         return False
 
     _NEUTRAL_DSL = {"DslCall", "DslCall:Ruby"}
-    expected_dsl = {
-        _normalize_kind(k) for k in expected if k.startswith("DslCall:")
-    } - _NEUTRAL_DSL
-    file_dsl = {
-        _normalize_kind(k) for k in file_kinds if k.startswith("DslCall:")
-    } - _NEUTRAL_DSL
+    expected_dsl = {_normalize_kind(k) for k in expected if k.startswith("DslCall:")} - _NEUTRAL_DSL
+    file_dsl = {_normalize_kind(k) for k in file_kinds if k.startswith("DslCall:")} - _NEUTRAL_DSL
     if expected_dsl and file_dsl and not (expected_dsl & file_dsl):
         return False
 
@@ -691,9 +712,7 @@ def canonical_confidence(snapshot: DimensionSnapshot, ast_query: dict | None) ->
         checks.append(_top_level_kinds_match(snapshot.top_level_node_kinds, list(expected_kinds)))
 
     if ast_query.get("named_export_count_bucket") is not None:
-        checks.append(
-            ast_query["named_export_count_bucket"] == snapshot.named_export_count_bucket
-        )
+        checks.append(ast_query["named_export_count_bucket"] == snapshot.named_export_count_bucket)
 
     if ast_query.get("jsx_present") is not None:
         checks.append(bool(ast_query["jsx_present"]) == bool(snapshot.jsx_present))
@@ -722,9 +741,7 @@ _CONCAT_SQ = re.compile(
 )
 
 
-def _fold_string_concat(
-    content: str, *, max_folds: int = _MAX_CONCAT_FOLDS_PER_FILE
-) -> str:
+def _fold_string_concat(content: str, *, max_folds: int = _MAX_CONCAT_FOLDS_PER_FILE) -> str:
     """Iteratively collapse `"a" + "b"` / `'a' + 'b'` into single literals.
 
     Runs multiple passes because folding can create new folding opportunities
@@ -802,9 +819,7 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
     folded = _fold_string_concat(content)
     if folded != content:
         seen_types_lines = {
-            (h.get("type"), h.get("line_number"))
-            for h in hits
-            if h.get("line_number") is not None
+            (h.get("type"), h.get("line_number")) for h in hits if h.get("line_number") is not None
         }
         seen_types = {h.get("type") for h in hits}
         for fh in scan_for_secrets(folded):
@@ -918,13 +933,15 @@ def lint_conventions(
                 continue
             for m in _TS_IMPORT_FROM_RE.finditer(content):
                 if over_re.search(m.group(0)):
-                    violations.append(Violation(
-                        rule="import-preference-violation",
-                        expected=preferred_mod,
-                        actual=over_mod,
-                        severity="warning",
-                        message=f"IMPORT: {over_mod} imported - replace with {preferred_mod} (all usages)",
-                    ))
+                    violations.append(
+                        Violation(
+                            rule="import-preference-violation",
+                            expected=preferred_mod,
+                            actual=over_mod,
+                            severity="warning",
+                            message=f"IMPORT: {over_mod} imported - replace with {preferred_mod} (all usages)",
+                        )
+                    )
                     break
 
     if language == "typescript" and "naming-convention" not in ignored_rules:
@@ -935,13 +952,15 @@ def lint_conventions(
             for m in _TS_INTERFACE_DECL_RE.finditer(scan_content):
                 name = m.group(1)
                 if not name.startswith(expected_prefix) or (len(name) > 1 and name[1].islower()):
-                    violations.append(Violation(
-                        rule="naming-convention-violation",
-                        expected=f"{expected_prefix}-prefix",
-                        actual=name,
-                        severity="warning",
-                        message=f"NAMING: interface {name} should use {expected_prefix}-prefix ({prefix_entry['consistency']:.0%} convention)",
-                    ))
+                    violations.append(
+                        Violation(
+                            rule="naming-convention-violation",
+                            expected=f"{expected_prefix}-prefix",
+                            actual=name,
+                            severity="warning",
+                            message=f"NAMING: interface {name} should use {expected_prefix}-prefix ({prefix_entry['consistency']:.0%} convention)",
+                        )
+                    )
 
     if language == "ruby" and "inheritance-convention" not in ignored_rules:
         for m in _CHAMELEON_IGNORE_RUBY_RE.finditer(content):
@@ -958,16 +977,20 @@ def lint_conventions(
                 # mis-flagging legit controllers and driving a STOP loop).
                 known_bases = set(inheritance.get("known_bases") or ())
                 known_bases.add(dominant_base)
-                for m in re.finditer(r"^\s*class\s+([\w:]+)(?:\s*<\s*([\w:]+))?", scan_content, re.MULTILINE):
+                for m in re.finditer(
+                    r"^\s*class\s+([\w:]+)(?:\s*<\s*([\w:]+))?", scan_content, re.MULTILINE
+                ):
                     class_name = m.group(1)
                     superclass = m.group(2)
                     if superclass is None or superclass not in known_bases:
-                        violations.append(Violation(
-                            rule="inheritance-convention-violation",
-                            expected=dominant_base,
-                            actual=superclass or "none",
-                            severity="warning",
-                            message=f"INHERITANCE: class {class_name} should inherit {dominant_base} ({inheritance['frequency']:.0%} convention)",
-                        ))
+                        violations.append(
+                            Violation(
+                                rule="inheritance-convention-violation",
+                                expected=dominant_base,
+                                actual=superclass or "none",
+                                severity="warning",
+                                message=f"INHERITANCE: class {class_name} should inherit {dominant_base} ({inheritance['frequency']:.0%} convention)",
+                            )
+                        )
 
     return violations

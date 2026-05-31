@@ -57,8 +57,7 @@ def _ensure_hmac_key() -> bytes:
         st = os.stat(key_path)
         if st.st_uid != os.geteuid():
             raise HMACKeyError(
-                f"HMAC key {key_path} owned by uid {st.st_uid}, "
-                f"expected {os.geteuid()}"
+                f"HMAC key {key_path} owned by uid {st.st_uid}, expected {os.geteuid()}"
             )
         if st.st_mode & 0o077:
             os.chmod(key_path, 0o600)
@@ -83,6 +82,7 @@ def _ensure_hmac_key() -> bytes:
         fd = _create_excl()
     except FileExistsError:
         import time as _time
+
         for _ in range(20):
             _time.sleep(0.05)
             if key_path.is_file():
@@ -176,6 +176,7 @@ def append_exec_log(
     """
     key = _ensure_hmac_key()
     from chameleon_mcp.optouts import _safe_session_marker
+
     log_path = _exec_log_dir(repo_id) / f"{_safe_session_marker(session_id)}.jsonl"
     new_session = not log_path.exists()
 
@@ -221,5 +222,3 @@ def verify_exec_log_line(line: str) -> bool:
         return False
     actual = hmac.new(key, canonical, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, actual)
-
-

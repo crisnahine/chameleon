@@ -5,6 +5,7 @@ all inherited the parent ClusterKey, so _hash_cluster_key collided them and one
 archetype was silently dropped from the profile (reproduced on mastodon's
 app/models + app/models/concerns layout).
 """
+
 from __future__ import annotations
 
 import hashlib

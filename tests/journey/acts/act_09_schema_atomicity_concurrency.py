@@ -1,4 +1,5 @@
 """Act 9: Schema + atomicity + concurrency + monorepo (Phases 27, 28, 29, 30, 31, 32)."""
+
 from __future__ import annotations
 
 import re
@@ -401,7 +402,11 @@ def run(ctx: JourneyContext) -> ActResult:
             or re.search(r'"error".*"unsupported"', transcript_text, re.IGNORECASE)
         )
         has_migration_response = bool(
-            re.search(r"already_bootstrapped|bootstrapped|migrated|handled\s+gracefully", transcript_text, re.IGNORECASE)
+            re.search(
+                r"already_bootstrapped|bootstrapped|migrated|handled\s+gracefully",
+                transcript_text,
+                re.IGNORECASE,
+            )
             or re.search(r'"status".*"ok"', transcript_text)
         )
         has_v99_handled = bool(
@@ -409,7 +414,9 @@ def run(ctx: JourneyContext) -> ActResult:
             and detect_repo_called
         )
 
-        if detect_repo_called and (has_refusal_response or has_migration_response or has_v99_handled):
+        if detect_repo_called and (
+            has_refusal_response or has_migration_response or has_v99_handled
+        ):
             cross_check_passed[27] = True
         else:
             cross_check_passed[27] = False
@@ -445,9 +452,7 @@ def run(ctx: JourneyContext) -> ActResult:
             or re.search(r'"error".*PID\s*\d+', transcript_text)
             or re.search(r"already.*running.*PID\s*\d+", transcript_text, re.IGNORECASE)
         )
-        has_parallel_output = bool(
-            re.search(r"OUT[12]\s*:", transcript_text)
-        )
+        has_parallel_output = bool(re.search(r"OUT[12]\s*:", transcript_text))
 
         if (has_failed_envelope or has_pid_contention) and has_parallel_output:
             cross_check_passed[29] = True
@@ -473,17 +478,29 @@ def run(ctx: JourneyContext) -> ActResult:
 
         has_expansion_result = bool(
             re.search(r"components.*hooks|hooks.*components", transcript_text, re.IGNORECASE)
-            and re.search(r"\b4\s+(?:expanded\s+)?patterns?\b|4\s+(?:path|glob)", transcript_text, re.IGNORECASE)
+            and re.search(
+                r"\b4\s+(?:expanded\s+)?patterns?\b|4\s+(?:path|glob)",
+                transcript_text,
+                re.IGNORECASE,
+            )
         )
 
         has_512_cap = bool(
             re.search(r"512\s*(?:pattern|glob|cap|limit)", transcript_text, re.IGNORECASE)
             or re.search(r"(?:pattern|glob|cap|limit)\s*512", transcript_text, re.IGNORECASE)
-            or re.search(r"(?:exceeds?|over|too\s+many).*512|512.*(?:exceeds?|over|too\s+many)", transcript_text, re.IGNORECASE)
+            or re.search(
+                r"(?:exceeds?|over|too\s+many).*512|512.*(?:exceeds?|over|too\s+many)",
+                transcript_text,
+                re.IGNORECASE,
+            )
         )
 
         has_paths_glob_written = bool(
-            re.search(r"updated\s+paths_glob|paths_glob.*brace|brace.*paths_glob", transcript_text, re.IGNORECASE)
+            re.search(
+                r"updated\s+paths_glob|paths_glob.*brace|brace.*paths_glob",
+                transcript_text,
+                re.IGNORECASE,
+            )
         )
 
         if refresh_called and (has_expansion_result or has_512_cap or has_paths_glob_written):
@@ -512,8 +529,7 @@ def run(ctx: JourneyContext) -> ActResult:
             r"_branch_[ab]_marker",
         ]
         found_merge = any(
-            re.search(p, transcript_text, re.IGNORECASE)
-            for p in merge_success_signals
+            re.search(p, transcript_text, re.IGNORECASE) for p in merge_success_signals
         )
         if not found_merge:
             notes_extra[31] = (
@@ -525,8 +541,8 @@ def run(ctx: JourneyContext) -> ActResult:
             if marker in transcript_text:
                 existing = notes_extra.get(31, "")
                 notes_extra[31] = (
-                    (existing + "; " if existing else "") +
-                    f"conflict marker {marker!r} found in transcript; "
+                    (existing + "; " if existing else "")
+                    + f"conflict marker {marker!r} found in transcript; "
                     "3-way merge may have produced unresolved conflicts"
                 ).strip("; ")
                 break

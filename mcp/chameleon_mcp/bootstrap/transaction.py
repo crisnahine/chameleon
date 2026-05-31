@@ -27,18 +27,20 @@ from pathlib import Path
 
 COMMITTED_SENTINEL = "COMMITTED"
 
-_PROTOCOL_FILES = frozenset({
-    COMMITTED_SENTINEL,
-    "profile.json",
-    "archetypes.json",
-    "canonicals.json",
-    "conventions.json",
-    "principles.md",
-    "rules.json",
-    "idioms.md",
-    "profile.summary.md",
-    "renames.json",
-})
+_PROTOCOL_FILES = frozenset(
+    {
+        COMMITTED_SENTINEL,
+        "profile.json",
+        "archetypes.json",
+        "canonicals.json",
+        "conventions.json",
+        "principles.md",
+        "rules.json",
+        "idioms.md",
+        "profile.summary.md",
+        "renames.json",
+    }
+)
 
 
 def _open_rename_lock_fd(lock_dir: Path) -> int:
@@ -212,6 +214,7 @@ def _pid_alive(pid: int) -> bool:
     """POSIX liveness check. Permission errors count as 'alive' (conservative)."""
     import errno
     import os
+
     try:
         os.kill(pid, 0)
         return True

@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.profile.loader — repo root discovery, profile loading, caches."""
+
 from __future__ import annotations
 
 import json
@@ -22,7 +23,10 @@ def _make_profile(root: Path, *, generation: int = 1, language: str = "typescrip
     profile_dir.mkdir(parents=True, exist_ok=True)
     artifacts = {
         "profile.json": {"generation": generation, "language": language, "schema_version": 1},
-        "archetypes.json": {"generation": generation, "archetypes": {"component": {"pattern": "*.tsx"}}},
+        "archetypes.json": {
+            "generation": generation,
+            "archetypes": {"component": {"pattern": "*.tsx"}},
+        },
         "rules.json": {"generation": generation, "rules": []},
         "canonicals.json": {"generation": generation, "canonicals": {}},
     }

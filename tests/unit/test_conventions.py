@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.conventions — schema, serialization, extraction."""
+
 from __future__ import annotations
 
 import json
@@ -19,7 +20,9 @@ from chameleon_mcp.conventions import (
 from chameleon_mcp.extractors._base import ParsedFile
 
 
-def _make_parsed_file(path: str, imports: list[tuple[str, str]], *, top_level_kinds: tuple[str, ...] = ()) -> ParsedFile:
+def _make_parsed_file(
+    path: str, imports: list[tuple[str, str]], *, top_level_kinds: tuple[str, ...] = ()
+) -> ParsedFile:
     return ParsedFile(
         path=Path(path),
         content_first_200_bytes="",
@@ -29,6 +32,7 @@ def _make_parsed_file(path: str, imports: list[tuple[str, str]], *, top_level_ki
         import_specifiers=tuple(imports),
         has_jsx=False,
     )
+
 
 class TestConventionsSchema:
     def test_empty_conventions_has_schema_version(self):
@@ -41,21 +45,36 @@ class TestConventionsSchema:
     def test_serialize_round_trip(self):
         c = empty_conventions(generation=1)
         c["conventions"]["imports"]["model"] = {
-            "preferred": [{"module": "useCustomQuery", "source": "@/hooks", "frequency": 47, "total": 52}],
-            "competing": [{"preferred": "useCustomQuery", "over": "useQuery", "preferred_count": 47, "over_count": 0}],
+            "preferred": [
+                {"module": "useCustomQuery", "source": "@/hooks", "frequency": 47, "total": 52}
+            ],
+            "competing": [
+                {
+                    "preferred": "useCustomQuery",
+                    "over": "useQuery",
+                    "preferred_count": 47,
+                    "over_count": 0,
+                }
+            ],
         }
         c["conventions"]["naming"]["component"] = {
             "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 2158},
         }
         text = serialize_conventions(c)
         parsed = json.loads(text)
-        assert parsed["conventions"]["imports"]["model"]["preferred"][0]["module"] == "useCustomQuery"
-        assert parsed["conventions"]["naming"]["component"]["interface_prefix"]["consistency"] == 0.999
+        assert (
+            parsed["conventions"]["imports"]["model"]["preferred"][0]["module"] == "useCustomQuery"
+        )
+        assert (
+            parsed["conventions"]["naming"]["component"]["interface_prefix"]["consistency"] == 0.999
+        )
 
 
 class TestImportFrequencyExtractor:
     def test_detects_preferred_import(self):
-        files = [_make_parsed_file(f"src/hooks/use{i}.ts", [("@/lib/api", "named")]) for i in range(15)]
+        files = [
+            _make_parsed_file(f"src/hooks/use{i}.ts", [("@/lib/api", "named")]) for i in range(15)
+        ]
         result = extract_import_conventions(files)
         preferred = [p["module"] for p in result.get("preferred", [])]
         assert "@/lib/api" in preferred
@@ -92,9 +111,16 @@ class TestImportFrequencyExtractor:
 class TestNamingExtractor:
     def test_detects_interface_i_prefix(self):
         declarations = [
-            "IUserProps", "IChartData", "IListingData", "IApiResponse",
-            "ITableRow", "IFormValues", "IModalProps", "ISearchParams",
-            "IFilterState", "IConfig",
+            "IUserProps",
+            "IChartData",
+            "IListingData",
+            "IApiResponse",
+            "ITableRow",
+            "IFormValues",
+            "IModalProps",
+            "ISearchParams",
+            "IFilterState",
+            "IConfig",
         ]
         result = extract_naming_conventions(declarations={"interface": declarations})
         assert result["interface_prefix"]["pattern"] == "I"
@@ -103,7 +129,10 @@ class TestNamingExtractor:
     def test_no_prefix_when_inconsistent(self):
         declarations = ["IFoo", "Bar", "IBaz", "Qux", "Hello"]
         result = extract_naming_conventions(declarations={"interface": declarations})
-        assert "interface_prefix" not in result or result.get("interface_prefix", {}).get("consistency", 0) < 0.6
+        assert (
+            "interface_prefix" not in result
+            or result.get("interface_prefix", {}).get("consistency", 0) < 0.6
+        )
 
     def test_detects_type_t_prefix(self):
         declarations = ["TTheme", "TRoute", "TConfig", "TState", "TProps", "TData"]
@@ -116,7 +145,14 @@ class TestNamingExtractor:
         assert result == {}
 
     def test_no_prefix_convention_for_bulletproof_style(self):
-        declarations = ["UserProps", "ChartData", "ListingData", "ApiResponse", "TableRow", "FormValues"]
+        declarations = [
+            "UserProps",
+            "ChartData",
+            "ListingData",
+            "ApiResponse",
+            "TableRow",
+            "FormValues",
+        ]
         result = extract_naming_conventions(declarations={"interface": declarations})
         assert "interface_prefix" not in result
 
@@ -125,7 +161,9 @@ class TestExtractAllConventions:
     def test_produces_conventions_dict(self):
         files_by_archetype = {
             "component": [
-                _make_parsed_file(f"src/c{i}.tsx", [("react", "namespace"), ("@/hooks/useCustomQuery", "named")])
+                _make_parsed_file(
+                    f"src/c{i}.tsx", [("react", "namespace"), ("@/hooks/useCustomQuery", "named")]
+                )
                 for i in range(15)
             ],
         }
@@ -169,10 +207,7 @@ class TestExtractAllConventions:
 
     def test_skips_archetype_below_sample_size(self):
         files_by_archetype = {
-            "tiny": [
-                _make_parsed_file(f"src/t{i}.ts", [("lodash", "named")])
-                for i in range(3)
-            ],
+            "tiny": [_make_parsed_file(f"src/t{i}.ts", [("lodash", "named")]) for i in range(3)],
         }
         result = extract_all_conventions(
             files_by_archetype=files_by_archetype,
@@ -187,7 +222,14 @@ class TestFormatConventionsForSession:
         conventions = empty_conventions(generation=1)
         conventions["conventions"]["imports"]["component"] = {
             "preferred": [],
-            "competing": [{"preferred": "useCustomQuery", "over": "useQuery", "preferred_count": 47, "over_count": 0}],
+            "competing": [
+                {
+                    "preferred": "useCustomQuery",
+                    "over": "useQuery",
+                    "preferred_count": 47,
+                    "over_count": 0,
+                }
+            ],
         }
         text = format_conventions_for_session(conventions)
         assert "useCustomQuery" in text
@@ -205,7 +247,9 @@ class TestFormatConventionsForSession:
 
     def test_empty_conventions_with_principles(self):
         conventions = empty_conventions(generation=1)
-        text = format_conventions_for_session(conventions, principles_text="1. Search the codebase for existing utilities.")
+        text = format_conventions_for_session(
+            conventions, principles_text="1. Search the codebase for existing utilities."
+        )
         assert "PRINCIPLES:" in text
         assert "Search the codebase" in text
 
@@ -219,7 +263,9 @@ class TestFormatConventionsForSession:
         conventions["conventions"]["naming"]["component"] = {
             "enum_prefix": {"pattern": "E", "consistency": 0.55, "sample_size": 8},
         }
-        text = format_conventions_for_session(conventions, principles_text="1. Match testing granularity of sibling files.")
+        text = format_conventions_for_session(
+            conventions, principles_text="1. Match testing granularity of sibling files."
+        )
         assert "NAMING" not in text
         assert "PRINCIPLES:" in text
 
@@ -231,7 +277,14 @@ class TestFormatConventionsEcho:
         conventions = empty_conventions(generation=1)
         conventions["conventions"]["imports"]["hook"] = {
             "preferred": [],
-            "competing": [{"preferred": "useCustomQuery", "over": "useQuery", "preferred_count": 47, "over_count": 0}],
+            "competing": [
+                {
+                    "preferred": "useCustomQuery",
+                    "over": "useQuery",
+                    "preferred_count": 47,
+                    "over_count": 0,
+                }
+            ],
         }
         conventions["conventions"]["naming"]["hook"] = {
             "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 100},
@@ -290,7 +343,9 @@ class TestKeyExportsExtractor:
         ]:
             files.append(_make_ts_file(tmp_path, name, content))
         for i in range(8):
-            files.append(_make_ts_file(tmp_path, f"filler{i}.ts", f"export const filler{i} = {i};\n"))
+            files.append(
+                _make_ts_file(tmp_path, f"filler{i}.ts", f"export const filler{i} = {i};\n")
+            )
 
         result = extract_key_exports(files, language="typescript")
         assert "useDebounce" in result
@@ -307,7 +362,9 @@ class TestKeyExportsExtractor:
         ]:
             files.append(_make_ruby_file(tmp_path, name, content))
         for i in range(10):
-            files.append(_make_ruby_file(tmp_path, f"m{i}.rb", f"class Model{i} < ApplicationRecord\nend\n"))
+            files.append(
+                _make_ruby_file(tmp_path, f"m{i}.rb", f"class Model{i} < ApplicationRecord\nend\n")
+            )
 
         result = extract_key_exports(files, language="ruby")
         assert "User" in result
@@ -319,9 +376,13 @@ class TestKeyExportsExtractor:
         # name is the last "::" segment.
         files = []
         for i in range(12):
-            files.append(_make_ruby_file(
-                tmp_path, f"c{i}.rb",
-                f"class Api::V1::Widget{i}Controller < Api::V1::BaseController\nend\n"))
+            files.append(
+                _make_ruby_file(
+                    tmp_path,
+                    f"c{i}.rb",
+                    f"class Api::V1::Widget{i}Controller < Api::V1::BaseController\nend\n",
+                )
+            )
         result = extract_key_exports(files, language="ruby")
         assert "Api" not in result  # outer namespace must not be the recorded name
         assert any(n.startswith("Widget") for n in result)
@@ -347,7 +408,9 @@ class TestFormatSessionReuse:
     def test_reuse_section_in_session(self):
         conventions = empty_conventions(generation=1)
         conventions["conventions"]["key_exports"]["hook"] = [
-            "useDebounce", "useToggle", "formatCurrency",
+            "useDebounce",
+            "useToggle",
+            "formatCurrency",
         ]
         text = format_conventions_for_session(conventions)
         assert "REUSE:" in text
@@ -368,7 +431,8 @@ class TestFormatSessionReuse:
     def test_reuse_alone_produces_output(self):
         conventions = empty_conventions(generation=1)
         conventions["conventions"]["key_exports"]["component"] = [
-            "useDebounce", "useToggle",
+            "useDebounce",
+            "useToggle",
         ]
         text = format_conventions_for_session(conventions)
         assert text != ""
@@ -396,7 +460,13 @@ class TestInheritanceExtractor:
     def test_detects_dominant_base_class(self, tmp_path):
         files = []
         for i in range(15):
-            files.append(_make_ruby_file(tmp_path, f"m{i}.rb", f"class Model{i} < ApplicationRecord\n  validates :name\nend\n"))
+            files.append(
+                _make_ruby_file(
+                    tmp_path,
+                    f"m{i}.rb",
+                    f"class Model{i} < ApplicationRecord\n  validates :name\nend\n",
+                )
+            )
         result = extract_inheritance_conventions(files)
         assert result["dominant_base"] == "ApplicationRecord"
         assert result["frequency"] >= 0.9
@@ -407,13 +477,21 @@ class TestInheritanceExtractor:
         # intermediate base was never learned and the linter later flagged it.
         files = []
         for i in range(10):
-            files.append(_make_ruby_file(
-                tmp_path, f"c{i}.rb",
-                f"class Api::V1::C{i}Controller < ApplicationController\nend\n"))
+            files.append(
+                _make_ruby_file(
+                    tmp_path,
+                    f"c{i}.rb",
+                    f"class Api::V1::C{i}Controller < ApplicationController\nend\n",
+                )
+            )
         for i in range(4):
-            files.append(_make_ruby_file(
-                tmp_path, f"a{i}.rb",
-                f"class Api::V2::A{i}Controller < Api::V2::BaseController\nend\n"))
+            files.append(
+                _make_ruby_file(
+                    tmp_path,
+                    f"a{i}.rb",
+                    f"class Api::V2::A{i}Controller < Api::V2::BaseController\nend\n",
+                )
+            )
         result = extract_inheritance_conventions(files)
         assert result["dominant_base"] == "ApplicationController"
         assert "Api::V2::BaseController" in result["known_bases"]
@@ -422,7 +500,11 @@ class TestInheritanceExtractor:
     def test_detects_include_mixin(self, tmp_path):
         files = []
         for i in range(12):
-            files.append(_make_ruby_file(tmp_path, f"w{i}.rb", f"class Worker{i}\n  include Sidekiq::Worker\nend\n"))
+            files.append(
+                _make_ruby_file(
+                    tmp_path, f"w{i}.rb", f"class Worker{i}\n  include Sidekiq::Worker\nend\n"
+                )
+            )
         result = extract_inheritance_conventions(files)
         assert result["dominant_include"] == "Sidekiq::Worker"
 
@@ -445,8 +527,13 @@ class TestMethodCallExtractor:
     def test_detects_common_dsl_calls(self, tmp_path):
         files = []
         for i in range(15):
-            files.append(_make_ruby_file(tmp_path, f"m{i}.rb",
-                f"class M{i} < ApplicationRecord\n  validates :name\n  belongs_to :user\n  scope :active, -> {{}}\nend\n"))
+            files.append(
+                _make_ruby_file(
+                    tmp_path,
+                    f"m{i}.rb",
+                    f"class M{i} < ApplicationRecord\n  validates :name\n  belongs_to :user\n  scope :active, -> {{}}\nend\n",
+                )
+            )
         result = extract_method_call_conventions(files)
         assert "validates" in result["common_top5"]
         assert "belongs_to" in result["common_top5"]
@@ -645,9 +732,16 @@ class TestGeneratePrinciplesProtocol:
         without = generate_principles(conventions={"conventions": {}}, archetypes={})
         assert "Inherit only from bases" not in without
         with_bases = generate_principles(
-            conventions={"conventions": {"inheritance": {
-                "model": {"dominant_base": "ApplicationRecord", "known_bases": ["ApplicationRecord"]}
-            }}},
+            conventions={
+                "conventions": {
+                    "inheritance": {
+                        "model": {
+                            "dominant_base": "ApplicationRecord",
+                            "known_bases": ["ApplicationRecord"],
+                        }
+                    }
+                }
+            },
             archetypes={},
         )
         assert "Inherit only from bases" in with_bases
@@ -664,13 +758,16 @@ class TestGeneratePrinciplesProtocol:
 class TestSessionProtocolBlock:
     def test_protocol_block_rendered(self):
         from chameleon_mcp.conventions import empty_conventions, format_conventions_for_session
+
         principles = (
             "# principles\n\n1. Match directory granularity.\n\n"
             "## anti-hallucination protocol\n\n"
             "- Don't invent symbols, imports, file paths, config keys, or APIs.\n"
             "- Match the canonical witness's real shape.\n"
         )
-        out = format_conventions_for_session(empty_conventions(generation=1), principles_text=principles)
+        out = format_conventions_for_session(
+            empty_conventions(generation=1), principles_text=principles
+        )
         assert "ANTI-HALLUCINATION PROTOCOL:" in out
         assert "Don't invent symbols" in out
         assert "PRINCIPLES:" in out
@@ -678,8 +775,11 @@ class TestSessionProtocolBlock:
 
     def test_no_protocol_section_no_block(self):
         from chameleon_mcp.conventions import empty_conventions, format_conventions_for_session
+
         principles = "# principles\n\n1. Only a numbered principle.\n"
-        out = format_conventions_for_session(empty_conventions(generation=1), principles_text=principles)
+        out = format_conventions_for_session(
+            empty_conventions(generation=1), principles_text=principles
+        )
         assert "ANTI-HALLUCINATION PROTOCOL:" not in out
         assert "PRINCIPLES:" in out
 
@@ -687,11 +787,13 @@ class TestSessionProtocolBlock:
 class TestEchoProtocolReminder:
     def test_echo_carries_reminder(self):
         from chameleon_mcp.conventions import empty_conventions, format_conventions_echo
+
         out = format_conventions_echo(empty_conventions(generation=1), archetype="service")
         assert "Verify symbols/imports/paths exist" in out
 
     def test_reminder_present_even_without_principles(self):
         from chameleon_mcp.conventions import empty_conventions, format_conventions_echo
+
         out = format_conventions_echo(
             empty_conventions(generation=1), archetype="service", principles_text=""
         )

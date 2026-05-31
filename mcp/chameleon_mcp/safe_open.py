@@ -96,7 +96,9 @@ def safe_open(repo_root: Path, rel_path: str, *, max_size_bytes: int = 1_000_000
     try:
         candidate.relative_to(repo_resolved)
     except ValueError as e:
-        raise UnsafeFileError(f"path escapes repo boundary: {candidate} not under {repo_resolved}") from e
+        raise UnsafeFileError(
+            f"path escapes repo boundary: {candidate} not under {repo_resolved}"
+        ) from e
 
     if not stat.S_ISREG(st.st_mode):
         raise UnsafeFileError(f"path is not a regular file: {unresolved}")
@@ -268,15 +270,11 @@ def safe_open_fd(
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
-            raise UnsafeFileError(
-                f"path is not a regular file: {candidate}"
-            )
+            raise UnsafeFileError(f"path is not a regular file: {candidate}")
         if stat.S_ISLNK(st.st_mode):
             raise UnsafeFileError(f"path is a symlink (refused): {candidate}")
         if st.st_size > max_size_bytes:
-            raise FileTooLargeError(
-                f"file too large: {st.st_size} bytes > {max_size_bytes} cap"
-            )
+            raise FileTooLargeError(f"file too large: {st.st_size} bytes > {max_size_bytes} cap")
     except UnsafeFileError:
         os.close(fd)
         raise

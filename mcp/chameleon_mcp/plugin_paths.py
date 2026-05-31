@@ -14,6 +14,7 @@ plugin root, so the extractors can't find sibling artifacts like
 the authoritative source and fall back to file-relative resolution only
 for legacy invocations.
 """
+
 from __future__ import annotations
 
 import os

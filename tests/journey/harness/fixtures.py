@@ -4,6 +4,7 @@ Committed seeds under tests/journey/fixtures/<name>/ are SOURCE-CODE-ONLY (no .g
 This module initializes them as git repos with a bare loopback origin so
 `git show origin/main:<artifact>` works offline.
 """
+
 from __future__ import annotations
 
 import re

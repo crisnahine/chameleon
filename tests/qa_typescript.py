@@ -34,10 +34,7 @@ for root, _dirs, files in os.walk(REPO_PATH):
         if f.endswith(".tsx") and len(_tsx_files) < 4:
             _tsx_files.append(full)
         elif (
-            f.endswith(".ts")
-            and not f.endswith(".d.ts")
-            and "/src/" in full
-            and len(_ts_files) < 4
+            f.endswith(".ts") and not f.endswith(".d.ts") and "/src/" in full and len(_ts_files) < 4
         ):
             _ts_files.append(full)
     if len(_tsx_files) >= 4 and len(_ts_files) >= 4:
@@ -88,7 +85,9 @@ try:
     )
     record(
         "detect_repo.repo_id_format",
-        isinstance(repo_id, str) and len(repo_id) == 64 and re.match(r"^[0-9a-f]{64}$", repo_id) is not None,
+        isinstance(repo_id, str)
+        and len(repo_id) == 64
+        and re.match(r"^[0-9a-f]{64}$", repo_id) is not None,
         f"repo_id={repo_id!r}",
     )
     record(
@@ -235,7 +234,9 @@ try:
         record(
             "get_rules.shape",
             isinstance(first, (list, tuple)) and len(first) == 2,
-            f"first_rule_key={first[0]!r}" if isinstance(first, (list, tuple)) and first else str(first)[:80],
+            f"first_rule_key={first[0]!r}"
+            if isinstance(first, (list, tuple)) and first
+            else str(first)[:80],
         )
 except Exception as exc:
     record("get_rules", False, f"EXCEPTION: {exc}")
@@ -315,10 +316,7 @@ try:
     )
 
     repo_name = os.path.basename(os.path.normpath(REPO_PATH))
-    self_found = any(
-        repo_name in (p.get("repo_root") or "")
-        for p in profiles
-    )
+    self_found = any(repo_name in (p.get("repo_root") or "") for p in profiles)
     record(
         "list_profiles.repo_under_test_present",
         self_found,
@@ -356,7 +354,9 @@ if TEST_FILES:
         record(
             "caching.warm_faster",
             warm_ms < cold_ms,
-            f"cold={cold_ms:.2f}ms, warm={warm_ms:.2f}ms, speedup={cold_ms / warm_ms:.1f}x" if warm_ms > 0 else "warm=0ms",
+            f"cold={cold_ms:.2f}ms, warm={warm_ms:.2f}ms, speedup={cold_ms / warm_ms:.1f}x"
+            if warm_ms > 0
+            else "warm=0ms",
         )
     except Exception as exc:
         record("caching", False, f"EXCEPTION: {exc}")

@@ -1,4 +1,5 @@
 """Act 4: v0.6.0 UX bundle - auto_refresh subprocess discipline (Phase 12)."""
+
 from __future__ import annotations
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt

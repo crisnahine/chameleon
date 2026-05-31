@@ -3,6 +3,7 @@
 Raises PhaseAssertionError on miss. The runner catches this and records
 the phase as FAIL, then continues with the next phase.
 """
+
 from __future__ import annotations
 
 import json
@@ -38,9 +39,7 @@ def json_field(phase: int, path: Path, key: str, expected: Any) -> None:
         else:
             raise PhaseAssertionError(phase, f"key {key!r} not found in {path}")
     if actual != expected:
-        raise PhaseAssertionError(
-            phase, f"{path}: key={key} expected={expected!r}, got={actual!r}"
-        )
+        raise PhaseAssertionError(phase, f"{path}: key={key} expected={expected!r}, got={actual!r}")
 
 
 def json_field_in(phase: int, path: Path, key: str, allowed: list[Any]) -> None:
@@ -49,9 +48,7 @@ def json_field_in(phase: int, path: Path, key: str, allowed: list[Any]) -> None:
     for part in key.split("."):
         actual = actual[part]
     if actual not in allowed:
-        raise PhaseAssertionError(
-            phase, f"{path}: key={key} value={actual!r} not in {allowed!r}"
-        )
+        raise PhaseAssertionError(phase, f"{path}: key={key} value={actual!r} not in {allowed!r}")
 
 
 def file_size_between(phase: int, path: Path, min_bytes: int, max_bytes: int) -> None:
@@ -59,9 +56,7 @@ def file_size_between(phase: int, path: Path, min_bytes: int, max_bytes: int) ->
         raise PhaseAssertionError(phase, f"file missing for size check: {path}")
     size = path.stat().st_size
     if not (min_bytes <= size <= max_bytes):
-        raise PhaseAssertionError(
-            phase, f"{path}: size={size} not in [{min_bytes}, {max_bytes}]"
-        )
+        raise PhaseAssertionError(phase, f"{path}: size={size} not in [{min_bytes}, {max_bytes}]")
 
 
 def file_mode(phase: int, path: Path, mode: int) -> None:
@@ -69,8 +64,4 @@ def file_mode(phase: int, path: Path, mode: int) -> None:
         raise PhaseAssertionError(phase, f"file missing for mode check: {path}")
     actual_mode = stat.S_IMODE(path.stat().st_mode)
     if actual_mode != mode:
-        raise PhaseAssertionError(
-            phase, f"{path}: mode={oct(actual_mode)} expected={oct(mode)}"
-        )
-
-
+        raise PhaseAssertionError(phase, f"{path}: mode={oct(actual_mode)} expected={oct(mode)}")

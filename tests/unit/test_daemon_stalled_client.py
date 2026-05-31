@@ -5,6 +5,7 @@ fix a client that connected but never sent its frame blocked recv() forever and
 starved every later hook for the rest of the session. serve_forever now sets
 CONN_RECV_TIMEOUT_S on each accepted connection.
 """
+
 from __future__ import annotations
 
 import os
@@ -56,9 +57,7 @@ def test_stalled_client_does_not_wedge_daemon(monkeypatch):
         elapsed = time.time() - start
 
         assert resp is not None, "well-behaved client got no response — daemon wedged"
-        assert elapsed < 2.0, (
-            f"response took {elapsed:.2f}s; the stalled client wedged the loop"
-        )
+        assert elapsed < 2.0, f"response took {elapsed:.2f}s; the stalled client wedged the loop"
     finally:
         state.shutdown_requested = True
         for s in (stalled, good, srv):

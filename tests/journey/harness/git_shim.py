@@ -4,6 +4,7 @@ Used to test trust.auto_preserve_when 2-second timeout (Phase 14).
 ShimHandle supports context-manager protocol so PATH is restored even
 if the test raises.
 """
+
 from __future__ import annotations
 
 import os
@@ -51,7 +52,7 @@ def setup_git_shim(delay_seconds: float, shim_dir_parent: Path) -> ShimHandle:
         raise RuntimeError("could not locate real git binary on PATH")
 
     shim_path.write_text(
-        f"#!/bin/bash\nsleep {delay_seconds}\nexec {real_git} \"$@\"\n",
+        f'#!/bin/bash\nsleep {delay_seconds}\nexec {real_git} "$@"\n',
         encoding="utf-8",
     )
     shim_path.chmod(shim_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)

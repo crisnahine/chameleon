@@ -1,4 +1,5 @@
 """Convention schema, serialization, and extraction for Smart Injection v0.9.0."""
+
 from __future__ import annotations
 
 import json
@@ -39,11 +40,20 @@ _FRAMEWORK_THRESHOLD = 0.80
 _MIN_PREFERRED_COUNT = 10
 _MIN_COMPETING_COUNT = 5
 
-_FRAMEWORK_MODULES = frozenset({
-    "react", "react-dom", "vue", "svelte", "next", "nuxt",
-    "@angular/core", "@angular/common",
-    "solid-js", "preact",
-})
+_FRAMEWORK_MODULES = frozenset(
+    {
+        "react",
+        "react-dom",
+        "vue",
+        "svelte",
+        "next",
+        "nuxt",
+        "@angular/core",
+        "@angular/common",
+        "solid-js",
+        "preact",
+    }
+)
 
 
 def extract_import_conventions(
@@ -75,10 +85,14 @@ def extract_import_conventions(
             p_count = module_counts.get(preferred_mod, 0)
             o_count = module_counts.get(over_mod, 0)
             if p_count >= _MIN_COMPETING_COUNT and o_count <= 2:
-                competing.append({
-                    "preferred": preferred_mod, "over": over_mod,
-                    "preferred_count": p_count, "over_count": o_count,
-                })
+                competing.append(
+                    {
+                        "preferred": preferred_mod,
+                        "over": over_mod,
+                        "preferred_count": p_count,
+                        "over_count": o_count,
+                    }
+                )
 
     preferred: list[dict] = []
     for module, count in module_counts.most_common():
@@ -96,9 +110,7 @@ _TS_TYPE_NAME_RE = re.compile(r"^\s*(?:export\s+)?type\s+([A-Z]\w*)\s*[=<]", re.
 _TS_ENUM_NAME_RE = re.compile(r"^\s*(?:export\s+)?(?:const\s+)?enum\s+([A-Z]\w*)", re.MULTILINE)
 
 
-def extract_declarations_from_content(
-    content: str, *, language: str
-) -> dict[str, list[str]]:
+def extract_declarations_from_content(content: str, *, language: str) -> dict[str, list[str]]:
     """Extract interface/type/enum declaration names from file content.
 
     Returns {"interface": ["IFoo", "IBar"], "type": ["TBaz"], "enum": ["EQux"]}.
@@ -244,6 +256,7 @@ _TS_EXPORT_NAME_RE = re.compile(
 _RUBY_CLASS_NAME_RE = re.compile(r"^\s*class\s+([\w:]+)", re.MULTILINE)
 _RUBY_MODULE_NAME_RE = re.compile(r"^\s*module\s+([\w:]+)", re.MULTILINE)
 
+
 def _int_env(name: str, default: int) -> int:
     """Read a positive-int env override; else the default.
 
@@ -380,9 +393,7 @@ def extract_all_conventions(
         for archetype, files in files_by_archetype.items():
             method_conv = extract_method_call_conventions(files)
             if method_conv:
-                conventions["conventions"].setdefault("method_calls", {})[archetype] = (
-                    method_conv
-                )
+                conventions["conventions"].setdefault("method_calls", {})[archetype] = method_conv
     for archetype, files in files_by_archetype.items():
         exports = extract_key_exports(files, language=language)
         if exports:
@@ -543,7 +554,9 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
         return ""
 
     lines.append("<chameleon-conventions>")
-    lines.append("Follow these on every edit. When a canonical witness diverges from a convention below, follow the convention.")
+    lines.append(
+        "Follow these on every edit. When a canonical witness diverges from a convention below, follow the convention."
+    )
     lines.append("")
     if import_lines:
         lines.append("IMPORTS (enforce):")
@@ -577,9 +590,16 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     return "\n".join(lines)
 
 
-_SOURCE_EXTENSIONS = frozenset({
-    ".ts", ".tsx", ".js", ".jsx", ".rb", ".py",
-})
+_SOURCE_EXTENSIONS = frozenset(
+    {
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".rb",
+        ".py",
+    }
+)
 
 
 def format_directory_listing(
@@ -602,9 +622,7 @@ def format_directory_listing(
         siblings = sorted(
             entry.name
             for entry in parent.iterdir()
-            if entry.is_file()
-            and entry.suffix in _SOURCE_EXTENSIONS
-            and entry.name != target_name
+            if entry.is_file() and entry.suffix in _SOURCE_EXTENSIONS and entry.name != target_name
         )
     except OSError:
         return ""

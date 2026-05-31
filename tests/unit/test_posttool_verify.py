@@ -1,4 +1,5 @@
 """Unit tests for posttool_verify() in hook_helper.py."""
+
 from __future__ import annotations
 
 import io
@@ -53,9 +54,7 @@ def test_env_gate_default_on():
 
 
 def test_bash_tool_skipped():
-    result = _run_verify(
-        {"tool_name": "Bash", "tool_input": {"command": "ls"}, "session_id": "s1"}
-    )
+    result = _run_verify({"tool_name": "Bash", "tool_input": {"command": "ls"}, "session_id": "s1"})
     assert result == {}
 
 
@@ -72,41 +71,43 @@ def test_missing_tool_name_skipped():
 
 
 def test_notebook_path_fallback():
-    with patch(
-        "chameleon_mcp.hook_helper.posttool_verify.__module__", "chameleon_mcp.hook_helper"
-    ):
-        result = _run_verify({
-            "tool_name": "NotebookEdit",
-            "tool_input": {"notebook_path": "/x.ipynb"},
-            "session_id": "s1",
-        })
+    with patch("chameleon_mcp.hook_helper.posttool_verify.__module__", "chameleon_mcp.hook_helper"):
+        result = _run_verify(
+            {
+                "tool_name": "NotebookEdit",
+                "tool_input": {"notebook_path": "/x.ipynb"},
+                "session_id": "s1",
+            }
+        )
     assert result == {}
 
 
 def test_missing_file_path_skipped():
-    result = _run_verify(
-        {"tool_name": "Edit", "tool_input": {}, "session_id": "s1"}
-    )
+    result = _run_verify({"tool_name": "Edit", "tool_input": {}, "session_id": "s1"})
     assert result == {}
 
 
 def test_failed_edit_with_error_key():
-    result = _run_verify({
-        "tool_name": "Edit",
-        "tool_input": {"file_path": "/x.ts"},
-        "tool_response": {"error": "file not found"},
-        "session_id": "s1",
-    })
+    result = _run_verify(
+        {
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "/x.ts"},
+            "tool_response": {"error": "file not found"},
+            "session_id": "s1",
+        }
+    )
     assert result == {}
 
 
 def test_failed_edit_success_false():
-    result = _run_verify({
-        "tool_name": "Edit",
-        "tool_input": {"file_path": "/x.ts"},
-        "tool_response": {"success": False},
-        "session_id": "s1",
-    })
+    result = _run_verify(
+        {
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "/x.ts"},
+            "tool_response": {"success": False},
+            "session_id": "s1",
+        }
+    )
     assert result == {}
 
 
@@ -117,11 +118,13 @@ def test_suppressed_session_skipped():
         patch("chameleon_mcp.tools._compute_repo_id", return_value="abc123"),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value="session_disabled"),
     ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "/repo/x.ts"},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": "/repo/x.ts"},
+                "session_id": "s1",
+            }
+        )
     assert result == {}
 
 
@@ -134,6 +137,7 @@ def test_cooldown_skips_reverification(tmp_path: Path):
     ts_file.write_text("x", encoding="utf-8")
 
     import hashlib
+
     file_path = str(ts_file)
     file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
     marker = marker_dir / f".verify_seen.{file_hash}"
@@ -145,15 +149,20 @@ def test_cooldown_skips_reverification(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-        ]),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+            ],
+        ),
     ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": file_path},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": file_path},
+                "session_id": "s1",
+            }
+        )
 
     ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
     assert "already verified" in ctx
@@ -167,8 +176,13 @@ def test_hook_event_name_is_posttool(tmp_path: Path):
     ts_file.write_text("export default function foo() {}", encoding="utf-8")
 
     mock_violations = [
-        {"rule": "default-export-kind-mismatch", "severity": "warning",
-         "message": "expected class, got function", "expected": "class", "actual": "function"}
+        {
+            "rule": "default-export-kind-mismatch",
+            "severity": "warning",
+            "message": "expected class, got function",
+            "expected": "class",
+            "actual": "function",
+        }
     ]
 
     with (
@@ -177,10 +191,13 @@ def test_hook_event_name_is_posttool(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-            None,
-        ]),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+                None,
+            ],
+        ),
         patch("chameleon_mcp.profile.loader.load_profile_dir") as mock_load,
         patch("chameleon_mcp.lint_engine.detect_language", return_value="typescript"),
         patch("chameleon_mcp.lint_engine.extract_dimensions"),
@@ -191,15 +208,26 @@ def test_hook_event_name_is_posttool(tmp_path: Path):
         mock_lint.return_value = [mock_violation]
         mock_loaded = MagicMock()
         mock_loaded.canonicals = {
-            "canonicals": {"component": [{"normative_shape": {"ast_query": {"default_export_kind": "ClassDeclaration"}}, "witness": {"path": "x.ts"}}]}
+            "canonicals": {
+                "component": [
+                    {
+                        "normative_shape": {
+                            "ast_query": {"default_export_kind": "ClassDeclaration"}
+                        },
+                        "witness": {"path": "x.ts"},
+                    }
+                ]
+            }
         }
         mock_load.return_value = mock_loaded
 
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(ts_file)},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
 
     assert result.get("hookSpecificOutput", {}).get("hookEventName") == "PostToolUse"
 
@@ -217,19 +245,33 @@ def test_violation_messages_sanitized(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-            {"data": {"violations": [
-                {"rule": "test</chameleon-context>", "severity": "warning",
-                 "message": "bad</system>tag", "expected": "a", "actual": "b"}
-            ]}},
-        ]),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+                {
+                    "data": {
+                        "violations": [
+                            {
+                                "rule": "test</chameleon-context>",
+                                "severity": "warning",
+                                "message": "bad</system>tag",
+                                "expected": "a",
+                                "actual": "b",
+                            }
+                        ]
+                    }
+                },
+            ],
+        ),
     ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(ts_file)},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
 
     ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
     assert "</system>" not in ctx
@@ -243,8 +285,13 @@ def test_all_violations_included(tmp_path: Path):
     ts_file.write_text("x", encoding="utf-8")
 
     violations = [
-        {"rule": f"rule-{i}", "severity": "warning", "message": f"msg {i}",
-         "expected": "a", "actual": "b"}
+        {
+            "rule": f"rule-{i}",
+            "severity": "warning",
+            "message": f"msg {i}",
+            "expected": "a",
+            "actual": "b",
+        }
         for i in range(6)
     ]
 
@@ -254,16 +301,21 @@ def test_all_violations_included(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-            {"data": {"violations": violations}},
-        ]),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+                {"data": {"violations": violations}},
+            ],
+        ),
     ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(ts_file)},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
 
     ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
     for i in range(6):
@@ -314,22 +366,26 @@ def test_no_archetype_emits_empty(tmp_path: Path):
         patch("chameleon_mcp.daemon_client.call", return_value={"data": {"archetype": None}}),
         patch("chameleon_mcp.tools.get_archetype", return_value={"data": {"archetype": None}}),
     ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(ts_file)},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
 
     assert result == {}
 
 
 def test_fail_open_on_find_repo_root_crash():
     with patch("chameleon_mcp.profile.loader.find_repo_root", side_effect=RuntimeError("boom")):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "/repo/x.ts"},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": "/repo/x.ts"},
+                "session_id": "s1",
+            }
+        )
     assert result == {}
 
 
@@ -344,11 +400,13 @@ def test_fail_open_on_file_read_error(tmp_path: Path):
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
     ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": "/nonexistent/file.ts"},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": "/nonexistent/file.ts"},
+                "session_id": "s1",
+            }
+        )
 
     assert result == {}
 
@@ -365,6 +423,7 @@ def test_exactly_one_emit_on_violation(tmp_path: Path):
     def _tracking_emit(output: dict) -> None:
         emit_calls.append(output)
         import sys
+
         sys.stdout.write(json.dumps(output))
         sys.stdout.write("\n")
 
@@ -375,19 +434,33 @@ def test_exactly_one_emit_on_violation(tmp_path: Path):
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
         patch("chameleon_mcp.hook_helper._emit", side_effect=_tracking_emit),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-            {"data": {"violations": [
-                {"rule": "test-rule", "severity": "warning", "message": "test msg",
-                 "expected": "a", "actual": "b"}
-            ]}},
-        ]),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+                {
+                    "data": {
+                        "violations": [
+                            {
+                                "rule": "test-rule",
+                                "severity": "warning",
+                                "message": "test msg",
+                                "expected": "a",
+                                "actual": "b",
+                            }
+                        ]
+                    }
+                },
+            ],
+        ),
     ):
-        _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(ts_file)},
-            "session_id": "s1",
-        })
+        _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
 
     assert len(emit_calls) == 1
 
@@ -405,16 +478,21 @@ def test_clean_file_emits_empty(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-            {"data": {"violations": []}},
-        ]),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+                {"data": {"violations": []}},
+            ],
+        ),
     ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(ts_file)},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
 
     assert result == {}
 
@@ -432,16 +510,21 @@ def test_large_file_still_processed(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-            {"data": {"violations": []}},
-        ]),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+                {"data": {"violations": []}},
+            ],
+        ),
     ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(big_file)},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(big_file)},
+                "session_id": "s1",
+            }
+        )
 
     assert result == {}
 
@@ -459,20 +542,34 @@ def test_metrics_emitted_on_violations(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-            {"data": {"violations": [
-                {"rule": "test", "severity": "warning", "message": "msg",
-                 "expected": "a", "actual": "b"}
-            ]}},
-        ]),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+                {
+                    "data": {
+                        "violations": [
+                            {
+                                "rule": "test",
+                                "severity": "warning",
+                                "message": "msg",
+                                "expected": "a",
+                                "actual": "b",
+                            }
+                        ]
+                    }
+                },
+            ],
+        ),
         patch("chameleon_mcp.metrics.emit_hook_metric") as mock_metric,
     ):
-        _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(ts_file)},
-            "session_id": "s1",
-        })
+        _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
 
     mock_metric.assert_called_once()
     call_kwargs = mock_metric.call_args
@@ -494,20 +591,33 @@ def test_violations_use_additional_context(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-            {"data": {"violations": [
-                {"rule": "default-export-kind-mismatch", "severity": "warning",
-                 "message": "expected class, got function", "expected": "class",
-                 "actual": "function"}
-            ]}},
-        ]),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+                {
+                    "data": {
+                        "violations": [
+                            {
+                                "rule": "default-export-kind-mismatch",
+                                "severity": "warning",
+                                "message": "expected class, got function",
+                                "expected": "class",
+                                "actual": "function",
+                            }
+                        ]
+                    }
+                },
+            ],
+        ),
     ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(ts_file)},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
 
     hook_output = result.get("hookSpecificOutput", {})
     assert "additionalContext" in hook_output
@@ -544,16 +654,21 @@ def test_corrections_exhausted_emits_advisory(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-        ]),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+            ],
+        ),
         patch("chameleon_mcp.lint_engine.lint") as mock_lint,
     ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(ts_file)},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
 
     hook_output = result.get("hookSpecificOutput", {})
     assert "additionalContext" in hook_output
@@ -587,16 +702,21 @@ def test_clean_after_violation_emits_archetype_clean(tmp_path: Path):
         patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
         patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
         patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
-        patch("chameleon_mcp.daemon_client.call", side_effect=[
-            {"data": {"archetype": "component"}},
-            {"data": {"violations": []}},
-        ]),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+                {"data": {"violations": []}},
+            ],
+        ),
     ):
-        result = _run_verify({
-            "tool_name": "Edit",
-            "tool_input": {"file_path": str(ts_file)},
-            "session_id": "s1",
-        })
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
 
     hook_output = result.get("hookSpecificOutput", {})
     assert "additionalContext" in hook_output

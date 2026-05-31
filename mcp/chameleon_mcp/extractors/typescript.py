@@ -450,18 +450,14 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
         top_level_node_kinds=tuple(record.get("top_level_node_kinds", [])),
         default_export_kind=record.get("default_export_kind"),
         named_export_count=int(record.get("named_export_count", 0)),
-        import_specifiers=tuple(
-            (str(m), str(k)) for m, k in record.get("import_specifiers", [])
-        ),
+        import_specifiers=tuple((str(m), str(k)) for m, k in record.get("import_specifiers", [])),
         has_jsx=bool(record.get("has_jsx", False)),
         parse_diagnostics_count=int(record.get("parse_diagnostics_count", 0)),
         sha_hint=sha_hint,
     )
 
 
-def _has_typescript_source_files(
-    repo_root: Path, *, max_depth: int = 3
-) -> bool:
+def _has_typescript_source_files(repo_root: Path, *, max_depth: int = 3) -> bool:
     """Shallow-walk to find any .ts/.tsx file (BUG-010 detection fallback).
 
     Bounded by depth and total files found so a giant tree can't hang

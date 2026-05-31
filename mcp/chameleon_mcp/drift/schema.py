@@ -59,5 +59,3 @@ def init_drift_db(db_path: Path) -> sqlite3.Connection:
     )
 
     return conn
-
-

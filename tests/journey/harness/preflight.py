@@ -7,6 +7,7 @@ Checked:
   - mcp/.venv/bin/python present
   - no concurrent runner (lockfile in run_dir parent)
 """
+
 from __future__ import annotations
 
 import os
@@ -23,16 +24,16 @@ class PreflightError(Exception):
 def claude_on_path() -> Path:
     p = shutil.which("claude")
     if not p:
-        raise PreflightError("`claude` CLI not on PATH; install Claude Code or unset CHAMELEON_TEST_NO_CLAUDE")
+        raise PreflightError(
+            "`claude` CLI not on PATH; install Claude Code or unset CHAMELEON_TEST_NO_CLAUDE"
+        )
     return Path(p)
 
 
 def python_venv_present(plugin_root: Path) -> Path:
     p = plugin_root / "mcp" / ".venv" / "bin" / "python"
     if not p.is_file():
-        raise PreflightError(
-            f"missing {p}; run `cd mcp && uv sync` from the chameleon repo first"
-        )
+        raise PreflightError(f"missing {p}; run `cd mcp && uv sync` from the chameleon repo first")
     return p
 
 
@@ -48,9 +49,7 @@ def fixtures_present(plugin_root: Path) -> dict[str, Path]:
         else:
             found[name] = path
     if missing:
-        raise PreflightError(
-            f"missing fixtures: {missing}; expected under {fixtures_root}"
-        )
+        raise PreflightError(f"missing fixtures: {missing}; expected under {fixtures_root}")
     return found
 
 

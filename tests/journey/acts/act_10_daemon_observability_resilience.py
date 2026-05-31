@@ -1,4 +1,5 @@
 """Act 10: Daemon + observability + resilience (Phases 33, 34, 35)."""
+
 from __future__ import annotations
 
 import re
@@ -256,7 +257,11 @@ def run(ctx: JourneyContext) -> ActResult:
         response_fields_present = has_alive_field and has_pid_field
 
         idle_shutdown_confirmed = bool(
-            re.search(r"PASS.*daemon.*exited|daemon.*exited.*idle|exited after idle", transcript_text, re.IGNORECASE)
+            re.search(
+                r"PASS.*daemon.*exited|daemon.*exited.*idle|exited after idle",
+                transcript_text,
+                re.IGNORECASE,
+            )
             or re.search(r"pidfile\s+removed|pidfile.*PASS", transcript_text, re.IGNORECASE)
         )
 
@@ -295,10 +300,7 @@ def run(ctx: JourneyContext) -> ActResult:
     else:
         sample = metrics_found[0]
         if sample.stat().st_size == 0:
-            notes_extra[35] = (
-                f"metrics.jsonl at {sample} is empty; "
-                "no metrics entries were written"
-            )
+            notes_extra[35] = f"metrics.jsonl at {sample} is empty; no metrics entries were written"
     cross_check_passed[35] = 35 not in notes_extra
 
     for phase, passed in cross_check_passed.items():

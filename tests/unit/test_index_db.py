@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.index_db — init, upsert, resolve, list."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,9 +31,7 @@ class TestInitIndexDb:
         conn = init_index_db(db_path)
         tables = {
             r[0]
-            for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ).fetchall()
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
         conn.close()
         assert "repos" in tables
@@ -44,9 +43,7 @@ class TestInitIndexDb:
         conn1 = init_index_db(db_path)
         conn1.close()
         conn2 = init_index_db(db_path)
-        ver = conn2.execute(
-            "SELECT v FROM schema_meta WHERE k = 'schema_version'"
-        ).fetchone()
+        ver = conn2.execute("SELECT v FROM schema_meta WHERE k = 'schema_version'").fetchone()
         conn2.close()
         assert ver is not None
         assert ver[0] == "1"
@@ -85,8 +82,7 @@ class TestUpsertAndResolve:
         db_path = tmp_path / "index.db"
         conn = init_index_db(db_path)
         row = conn.execute(
-            "SELECT profile_sha256, archetype_count FROM repos "
-            "WHERE repo_id = ? AND repo_root = ?",
+            "SELECT profile_sha256, archetype_count FROM repos WHERE repo_id = ? AND repo_root = ?",
             ("repo-upd", "/home/user/old"),
         ).fetchone()
         conn.close()
@@ -161,6 +157,7 @@ class TestReadOnlyConnection:
         close_index_connections()
 
         import sqlite3
+
         with pytest.raises((sqlite3.OperationalError, sqlite3.Error)):
             _get_index_conn_readonly()
 

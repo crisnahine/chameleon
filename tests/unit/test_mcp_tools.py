@@ -10,6 +10,7 @@ no env dependency) and asserts every read-path tool returns the standard
 envelope and survives. It is the safety net the tools.py / extraction refactors
 depend on.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,11 +26,26 @@ WITNESS = "service.ts"
 # Every tool name registered in server.py, asserted present so a dropped/renamed
 # registration is caught.
 REGISTERED_TOOLS = [
-    "detect_repo", "get_archetype", "get_pattern_context", "get_canonical_excerpt",
-    "get_rules", "lint_file", "get_drift_status", "refresh_repo", "bootstrap_repo",
-    "list_profiles", "merge_profiles", "teach_profile", "trust_profile",
-    "disable_session", "pause_session", "propose_archetype_renames",
-    "apply_archetype_renames", "teach_profile_structured", "daemon_status", "doctor",
+    "detect_repo",
+    "get_archetype",
+    "get_pattern_context",
+    "get_canonical_excerpt",
+    "get_rules",
+    "lint_file",
+    "get_drift_status",
+    "refresh_repo",
+    "bootstrap_repo",
+    "list_profiles",
+    "merge_profiles",
+    "teach_profile",
+    "trust_profile",
+    "disable_session",
+    "pause_session",
+    "propose_archetype_renames",
+    "apply_archetype_renames",
+    "teach_profile_structured",
+    "daemon_status",
+    "doctor",
 ]
 
 
@@ -48,10 +64,12 @@ def trusted_repo(tmp_path, monkeypatch):
         json.dumps({"generation": 1, "rules": {"no-default-export": {"severity": "warn"}}})
     )
     (cham / "canonicals.json").write_text(
-        json.dumps({
-            "generation": 1,
-            "canonicals": {ARCH: [{"witness": {"path": WITNESS, "sha_hint": "deadbeef"}}]},
-        })
+        json.dumps(
+            {
+                "generation": 1,
+                "canonicals": {ARCH: [{"witness": {"path": WITNESS, "sha_hint": "deadbeef"}}]},
+            }
+        )
     )
     (cham / "idioms.md").write_text("Always use the apiClient helper.\n")
     (cham / "conventions.json").write_text(json.dumps({"generation": 1, "conventions": {}}))
@@ -110,12 +128,14 @@ def test_rename_preserves_and_renames_conventions_and_principles(trusted_repo):
 
     cham = trusted_repo / ".chameleon"
     (cham / "conventions.json").write_text(
-        json.dumps({
-            "generation": 1,
-            "conventions": {
-                "naming": {ARCH: {"interface_prefix": {"pattern": "I", "consistency": 0.9}}}
-            },
-        })
+        json.dumps(
+            {
+                "generation": 1,
+                "conventions": {
+                    "naming": {ARCH: {"interface_prefix": {"pattern": "I", "consistency": 0.9}}}
+                },
+            }
+        )
     )
     (cham / "principles.md").write_text("# principles\n\n1. Use the project wrapper.\n")
     _loader._PROFILE_CACHE.clear()

@@ -1,4 +1,5 @@
 """Unit tests for bash subprocess wrapper."""
+
 from __future__ import annotations
 
 from pathlib import Path

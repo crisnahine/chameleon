@@ -36,10 +36,17 @@ import re
 from chameleon_mcp.profile.secret_scanner import scan_for_secrets
 
 INSTRUCTION_PATTERNS = (
-    re.compile(r"\b(you|the\s+ai|claude|gpt|the\s+model|the\s+assistant)\s+(must|should|will|always|never)\b", re.IGNORECASE),
-    re.compile(r"\b(ignore|disregard|forget)\s+(prior|previous|all\s+previous|all)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(you|the\s+ai|claude|gpt|the\s+model|the\s+assistant)\s+(must|should|will|always|never)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(ignore|disregard|forget)\s+(prior|previous|all\s+previous|all)\b", re.IGNORECASE
+    ),
     re.compile(r"\b(system\s+prompt|instructions|directives)\b", re.IGNORECASE),
-    re.compile(r"<\s*(system|important|extremely[_\-]important|chameleon[_\-]context)\s*>", re.IGNORECASE),
+    re.compile(
+        r"<\s*(system|important|extremely[_\-]important|chameleon[_\-]context)\s*>", re.IGNORECASE
+    ),
 )
 
 
@@ -55,11 +62,13 @@ def scan_for_injection_signals(content: str) -> list[dict]:
     hits = []
     for pattern in INSTRUCTION_PATTERNS:
         for match in pattern.finditer(content):
-            hits.append({
-                "pattern": pattern.pattern,
-                "match": match.group(0),
-                "position": match.start(),
-            })
+            hits.append(
+                {
+                    "pattern": pattern.pattern,
+                    "match": match.group(0),
+                    "position": match.start(),
+                }
+            )
     return hits
 
 
@@ -89,7 +98,4 @@ def is_safe_canonical(content: str) -> bool:
     credentials can never be promoted to a canonical witness — even if
     it happens to be free of instruction-shaped comments.
     """
-    return (
-        not scan_for_injection_signals(content)
-        and not scan_for_secrets_in_canonical(content)
-    )
+    return not scan_for_injection_signals(content) and not scan_for_secrets_in_canonical(content)

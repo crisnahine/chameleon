@@ -65,5 +65,3 @@ def open_hardened(db_path: Path, *, read_only: bool = False) -> sqlite3.Connecti
     conn.row_factory = sqlite3.Row
 
     return conn
-
-

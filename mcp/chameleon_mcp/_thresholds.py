@@ -18,7 +18,7 @@ import os
 from typing import Final
 
 DEFAULTS: Final[dict[str, int | float]] = {
-    "WORKSPACE_FANOUT_CAP": 50,
+    "WORKSPACE_FANOUT_CAP": 500,
     "WARNING_SAMPLE_PATHS": 3,
     "SPARSE_WARNING_LIMIT": 50,
     "MAX_EXTENDS_HOPS": 8,

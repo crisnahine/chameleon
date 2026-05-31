@@ -7,6 +7,7 @@ in CI). This drives synthetic ParsedFiles through cluster_files +
 select_canonicals against real on-disk files, with no subprocess or env
 dependency.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -54,7 +55,9 @@ def test_distinct_shapes_form_distinct_clusters(tmp_path):
     repo = tmp_path / "repo"
     pfs = _services(repo, 3)
     for i in range(3):
-        p = _write(repo, f"app/components/Comp{i}.tsx", f"export function Comp{i}() {{ return {i}; }}\n")
+        p = _write(
+            repo, f"app/components/Comp{i}.tsx", f"export function Comp{i}() {{ return {i}; }}\n"
+        )
         pfs.append(_pf(p, kinds=("FunctionDeclaration",), jsx=True))
     result = cluster_files(pfs, repo, min_cluster_size=2)
     assert len(result.clusters) >= 2

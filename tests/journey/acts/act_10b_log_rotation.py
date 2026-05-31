@@ -1,4 +1,5 @@
 """Act 10b: Log rotation + auto_refresh.log truncate (Phase 36)."""
+
 from __future__ import annotations
 
 import re
@@ -155,8 +156,7 @@ def run(ctx: JourneyContext) -> ActResult:
                 r"hook_errors.*backup",
             ]
             found_rotation = any(
-                re.search(p, transcript_text, re.IGNORECASE)
-                for p in rotation_signals
+                re.search(p, transcript_text, re.IGNORECASE) for p in rotation_signals
             )
             hook_log_exists = hook_error_log.exists()
             if found_rotation and hook_log_exists:

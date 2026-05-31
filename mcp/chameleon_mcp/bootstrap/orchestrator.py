@@ -166,11 +166,13 @@ def _ad_hoc_discovery_hints(repo_root: Path) -> list[dict]:
                 rel = str(child.relative_to(repo_root))
             except ValueError:
                 rel = str(child)
-            hints.append({
-                "subdir": rel,
-                "abs_path": str(child),
-                "language": language,
-            })
+            hints.append(
+                {
+                    "subdir": rel,
+                    "abs_path": str(child),
+                    "language": language,
+                }
+            )
             if len(hints) >= cap:
                 return hints
     return hints
@@ -214,8 +216,10 @@ def _select_extractor(repo_root: Path) -> Extractor | None:
     return None
 
 
-# Raised from 50: workspaces 51+ were never analyzed (a sampling cap, not a
+# Raised from 50: workspaces 501+ were never analyzed (a sampling cap, not a
 # safety guard). REPO_SIZE_GUARD is the real post-exclusion DoS backstop.
+# Back-compat alias only; the live cap is read from _thresholds at call time
+# (see _detect_workspace_ts_monorepo) so CHAMELEON_WORKSPACE_FANOUT_CAP works.
 _WORKSPACE_FANOUT_CAP = 500
 
 _WORKSPACE_PARENT_DIRS = ("apps", "packages", "services", "workspaces")
@@ -240,10 +244,12 @@ def _detect_workspace_ts_monorepo(
         (``typescript``, ``ts-node``, ``vite``) — same signal
         ``TypeScriptExtractor.can_handle`` uses on a single repo.
 
-    The first-level scan is bounded at ``_WORKSPACE_FANOUT_CAP`` (500)
-    entries per parent dir so a pathological tree with hundreds of
-    empty entries can't walk forever. When the cap fires, the orchestrator
-    sets ``fanout_capped=True`` in the bootstrap envelope.
+    The first-level scan is bounded at the ``WORKSPACE_FANOUT_CAP``
+    threshold (default 500, overridable via
+    ``CHAMELEON_WORKSPACE_FANOUT_CAP``) entries per parent dir so a
+    pathological tree with hundreds of empty entries can't walk forever.
+    When the cap fires, the orchestrator sets ``fanout_capped=True`` in
+    the bootstrap envelope.
 
     Args:
         repo_root: absolute path to repo root
@@ -254,7 +260,7 @@ def _detect_workspace_ts_monorepo(
           paths (e.g. ``["apps/api", "apps/web"]``) — empty if no
           qualifying workspaces found.
         - ``fanout_capped`` is True if any parent dir hit the
-          ``_WORKSPACE_FANOUT_CAP`` ceiling.
+          ``WORKSPACE_FANOUT_CAP`` ceiling.
     """
     package_json = repo_root / "package.json"
     if not package_json.is_file():
@@ -268,6 +274,9 @@ def _detect_workspace_ts_monorepo(
     if any(token in content for token in ("typescript", '"ts-node"', '"vite"')):
         return ([], False)
 
+    from chameleon_mcp import _thresholds
+
+    cap = _thresholds.threshold_int("WORKSPACE_FANOUT_CAP")
     workspace_roots: list[str] = []
     fanout_capped = False
     for parent_name in _WORKSPACE_PARENT_DIRS:
@@ -278,9 +287,9 @@ def _detect_workspace_ts_monorepo(
             entries = sorted(p for p in parent.iterdir() if p.is_dir())
         except OSError:
             continue
-        if len(entries) > _WORKSPACE_FANOUT_CAP:
+        if len(entries) > cap:
             fanout_capped = True
-            entries = entries[:_WORKSPACE_FANOUT_CAP]
+            entries = entries[:cap]
         for entry in entries:
             if _is_ts_workspace(entry):
                 workspace_roots.append(f"{parent_name}/{entry.name}")
@@ -311,6 +320,7 @@ def _glob_for_extractor(extractor: Extractor) -> str:
     if extractor.language == "ruby":
         return "**/*.rb"
     return "**/*.{ts,tsx,js,jsx,mjs,cjs}"
+
 
 # Must track profile.schema.CURRENT_SCHEMA_VERSION — this is the version stamped
 # into the profiles the bootstrap WRITES. v8: cluster signature unified with the
@@ -562,21 +572,23 @@ def _generation_counter(now: float | None = None) -> int:
     return int(now if now is not None else time.time())
 
 
-_RAILS_LOAD_BEARING_SECOND_SEGS = frozenset({
-    "models",
-    "controllers",
-    "services",
-    "jobs",
-    "mailers",
-    "helpers",
-    "policies",
-    "serializers",
-    "presenters",
-    "workers",
-    "views",
-    "channels",
-    "javascript",
-})
+_RAILS_LOAD_BEARING_SECOND_SEGS = frozenset(
+    {
+        "models",
+        "controllers",
+        "services",
+        "jobs",
+        "mailers",
+        "helpers",
+        "policies",
+        "serializers",
+        "presenters",
+        "workers",
+        "views",
+        "channels",
+        "javascript",
+    }
+)
 
 
 def _displayed_paths_pattern(
@@ -676,8 +688,7 @@ def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
     for cluster in sparse_clusters:
         bucket = cluster.key.path_pattern_bucket or "(unknown)"
         sample_paths = [
-            _rel_or_abs(m.path, repo_root)
-            for m in cluster.members[:_WARNING_SAMPLE_PATHS]
+            _rel_or_abs(m.path, repo_root) for m in cluster.members[:_WARNING_SAMPLE_PATHS]
         ]
         if bucket not in grouped:
             grouped[bucket] = {
@@ -712,10 +723,7 @@ def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
             else f"{min(thresholds)}-{max(thresholds)}"
         )
         if g["cluster_count"] == 1:
-            g["reason"] = (
-                f"cluster has {g['total_members']} members "
-                f"(threshold {threshold_str})"
-            )
+            g["reason"] = f"cluster has {g['total_members']} members (threshold {threshold_str})"
             g["size"] = g.pop("total_members")
             g.pop("min_size", None)
             g.pop("max_size", None)
@@ -732,17 +740,19 @@ def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
     truncated = total_groups > _SPARSE_WARNING_LIMIT
     if truncated:
         warnings = warnings[:_SPARSE_WARNING_LIMIT]
-        warnings.append({
-            "kind": "sparse_cluster_truncated",
-            "truncated": True,
-            "total_groups": total_groups,
-            "shown": _SPARSE_WARNING_LIMIT,
-            "note": (
-                f"BUG-008/009: {total_groups - _SPARSE_WARNING_LIMIT} "
-                "additional sparse-cluster groups omitted to keep the "
-                "bootstrap response within MCP transport limits."
-            ),
-        })
+        warnings.append(
+            {
+                "kind": "sparse_cluster_truncated",
+                "truncated": True,
+                "total_groups": total_groups,
+                "shown": _SPARSE_WARNING_LIMIT,
+                "note": (
+                    f"BUG-008/009: {total_groups - _SPARSE_WARNING_LIMIT} "
+                    "additional sparse-cluster groups omitted to keep the "
+                    "bootstrap response within MCP transport limits."
+                ),
+            }
+        )
     return warnings
 
 
@@ -761,26 +771,26 @@ def _build_bimodal_warnings(bimodal_clusters, repo_root: Path) -> list[dict]:
         for dim in flagged_dims:
             raw = cluster.dimension_distribution(dim)
             distributions[dim] = {
-                _stringify_distribution_key(value): count
-                for value, count in raw.items()
+                _stringify_distribution_key(value): count for value, count in raw.items()
             }
         sample_paths = [
-            _rel_or_abs(m.path, repo_root)
-            for m in cluster.members[:_WARNING_SAMPLE_PATHS]
+            _rel_or_abs(m.path, repo_root) for m in cluster.members[:_WARNING_SAMPLE_PATHS]
         ]
-        warnings.append({
-            "kind": "bimodal_cluster",
-            "reason": (
-                f"cluster splits 60/40 or worse on "
-                f"{', '.join(flagged_dims)} "
-                f"(threshold {int(BIMODAL_DOMINANT_SHARE_THRESHOLD * 100)}% dominant share)"
-            ),
-            "paths_pattern": cluster.key.path_pattern_bucket,
-            "size": cluster.size,
-            "dimensions": flagged_dims,
-            "distributions": distributions,
-            "sample_paths": sample_paths,
-        })
+        warnings.append(
+            {
+                "kind": "bimodal_cluster",
+                "reason": (
+                    f"cluster splits 60/40 or worse on "
+                    f"{', '.join(flagged_dims)} "
+                    f"(threshold {int(BIMODAL_DOMINANT_SHARE_THRESHOLD * 100)}% dominant share)"
+                ),
+                "paths_pattern": cluster.key.path_pattern_bucket,
+                "size": cluster.size,
+                "dimensions": flagged_dims,
+                "distributions": distributions,
+                "sample_paths": sample_paths,
+            }
+        )
     return warnings
 
 
@@ -819,9 +829,7 @@ def _collapse_same_pattern_archetypes(
         keeper = names_sorted[0]
         losers = names_sorted[1:]
         kept_meta = dict(new_archetypes[keeper])
-        kept_meta["cluster_size"] = sum(
-            archetypes[n].get("cluster_size", 0) for n in names_sorted
-        )
+        kept_meta["cluster_size"] = sum(archetypes[n].get("cluster_size", 0) for n in names_sorted)
         new_archetypes[keeper] = kept_meta
         merged_canonicals = list(new_canonicals.get(keeper, []))
         for loser in losers:
@@ -895,19 +903,19 @@ def bootstrap_repo(
         )
         from chameleon_mcp.tools import _compute_repo_id as _id
 
-        workspace_reports.append({
-            "workspace_path": str(ws_path),
-            "repo_root": str(ws_root),
-            "repo_id": _id(ws_root),
-            "profile_dir": (
-                str(ws_report.profile_path) if ws_report.profile_path else None
-            ),
-            "status": ws_report.status,
-            "archetypes_detected": ws_report.archetypes_detected,
-            "files_processed": ws_report.files_processed,
-            "duration_ms": ws_report.duration_ms,
-            "error": ws_report.error,
-        })
+        workspace_reports.append(
+            {
+                "workspace_path": str(ws_path),
+                "repo_root": str(ws_root),
+                "repo_id": _id(ws_root),
+                "profile_dir": (str(ws_report.profile_path) if ws_report.profile_path else None),
+                "status": ws_report.status,
+                "archetypes_detected": ws_report.archetypes_detected,
+                "files_processed": ws_report.files_processed,
+                "duration_ms": ws_report.duration_ms,
+                "error": ws_report.error,
+            }
+        )
 
     if workspace_reports:
         report.workspace_reports = workspace_reports
@@ -915,9 +923,7 @@ def bootstrap_repo(
         # coordinator-only root (failed language detection) has no root profile
         # to amend, but its workspaces were still bootstrapped above.
         if report.status == "success":
-            _amend_root_profile_with_workspaces(
-                repo_root / profile_dir_name, workspace_reports
-            )
+            _amend_root_profile_with_workspaces(repo_root / profile_dir_name, workspace_reports)
         elif any(w.get("status") == "success" for w in workspace_reports):
             # Coordinator-only root (no own language) but >=1 workspace
             # bootstrapped — report partial success so the envelope doesn't
@@ -927,9 +933,7 @@ def bootstrap_repo(
     return report
 
 
-def _amend_root_profile_with_workspaces(
-    profile_dir: Path, workspace_reports: list[dict]
-) -> None:
+def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: list[dict]) -> None:
     """Re-write profile.json with a `workspaces` array describing each
     successfully bootstrapped sub-workspace.
 
@@ -983,17 +987,13 @@ def _amend_root_profile_with_workspaces(
     idioms_text: str
     idioms_path = profile_dir / "idioms.md"
     try:
-        idioms_text = (
-            idioms_path.read_text(encoding="utf-8") if idioms_path.is_file() else ""
-        )
+        idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.is_file() else ""
     except OSError:
         idioms_text = ""
 
     summary_path = profile_dir / "profile.summary.md"
     try:
-        summary_text = (
-            summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
-        )
+        summary_text = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
     except OSError:
         summary_text = ""
 
@@ -1040,6 +1040,7 @@ def _generate_archetype_summary(
         try:
             head = canonical_witness_path.read_bytes()[:2000].decode("utf-8", errors="replace")
             import re
+
             # [\w:]+ for the class name + base so a namespaced declaration
             # (class Api::V1::Foo < Api::V1::Base) still yields "inherits ...".
             m = re.search(r"class\s+[\w:]+\s*<\s*([\w:]+)", head)
@@ -1115,11 +1116,7 @@ def _bootstrap_single(
         workspace_roots, fanout_capped = _detect_workspace_ts_monorepo(repo_root)
         if workspace_roots:
             extractor = TypeScriptExtractor()
-            if (
-                not tool_configs.eslint
-                and not tool_configs.prettier
-                and not tool_configs.tsconfig
-            ):
+            if not tool_configs.eslint and not tool_configs.prettier and not tool_configs.tsconfig:
                 for ws_rel in workspace_roots:
                     ws_path = repo_root / ws_rel
                     if not ws_path.is_dir():
@@ -1325,14 +1322,19 @@ def _bootstrap_single(
 
     for cluster in clustering.dense_clusters:
         cluster_id = next(
-            (cid for cid, sel in selection.selections.items()
-             if sel.witness_path in {pf.path for pf in cluster.members}),
+            (
+                cid
+                for cid, sel in selection.selections.items()
+                if sel.witness_path in {pf.path for pf in cluster.members}
+            ),
             None,
         )
         if not cluster_id:
             continue
         auto_name = propose_archetype_name(
-            cluster, assigned_names, workspace_roots=workspace_roots or None,
+            cluster,
+            assigned_names,
+            workspace_roots=workspace_roots or None,
             repo_root=str(repo_root),
         )
         effective_name = rename_map.get(auto_name, auto_name)
@@ -1360,30 +1362,34 @@ def _bootstrap_single(
             archetype_entry["sub_buckets"] = dict(cluster.sub_bucket_counts)
         witness_path = None
         try:
-            if hasattr(sel, 'witness_path') and sel.witness_path:
+            if hasattr(sel, "witness_path") and sel.witness_path:
                 witness_path = repo_root / sel.witness_path
         except Exception:
             pass
         archetype_entry["summary"] = _generate_archetype_summary(
-            archetype_entry, witness_path, extractor.language,
+            archetype_entry,
+            witness_path,
+            extractor.language,
         )
         archetypes_data["archetypes"][effective_name] = archetype_entry
-        canonicals_data["canonicals"][effective_name] = [{
-            "witness": {
-                "path": witness_relpath or str(sel.witness_path),
-                "sha_hint": sel.sha_hint,
-            },
-            "normative_shape": {
-                "ast_query": derive_ast_query(cluster.key),
-            },
-            "normative_idioms": {
-                "comments": [],
-            },
-            "secret_scan_passed": sel.secret_scan_passed,
-            "injection_scan_passed": sel.injection_scan_passed,
-            "poisoning_scan_passed": sel.poisoning_scan_passed,
-            "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }]
+        canonicals_data["canonicals"][effective_name] = [
+            {
+                "witness": {
+                    "path": witness_relpath or str(sel.witness_path),
+                    "sha_hint": sel.sha_hint,
+                },
+                "normative_shape": {
+                    "ast_query": derive_ast_query(cluster.key),
+                },
+                "normative_idioms": {
+                    "comments": [],
+                },
+                "secret_scan_passed": sel.secret_scan_passed,
+                "injection_scan_passed": sel.injection_scan_passed,
+                "poisoning_scan_passed": sel.poisoning_scan_passed,
+                "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+        ]
 
     archetypes_data["archetypes"], canonicals_data["canonicals"] = (
         _collapse_same_pattern_archetypes(
@@ -1403,8 +1409,11 @@ def _bootstrap_single(
     files_by_archetype: dict[str, list] = {}
     for cluster in clustering.dense_clusters:
         cluster_id = next(
-            (cid for cid, sel in selection.selections.items()
-             if sel.witness_path in {pf.path for pf in cluster.members}),
+            (
+                cid
+                for cid, sel in selection.selections.items()
+                if sel.witness_path in {pf.path for pf in cluster.members}
+            ),
             None,
         )
         arch_name = _cid_to_archname.get(cluster_id) if cluster_id else None
@@ -1536,6 +1545,7 @@ def _bootstrap_single(
         )
         try:
             from chameleon_mcp.principles import generate_principles
+
             (txn_dir / "principles.md").write_text(
                 generate_principles(
                     language=extractor.language,
@@ -1583,8 +1593,11 @@ def _bootstrap_single(
         baseline_rows: list[tuple[str, str | None, str | None]] = []
         for cluster in clustering.dense_clusters:
             cluster_id = next(
-                (cid for cid, sel in selection.selections.items()
-                 if sel.witness_path in {pf.path for pf in cluster.members}),
+                (
+                    cid
+                    for cid, sel in selection.selections.items()
+                    if sel.witness_path in {pf.path for pf in cluster.members}
+                ),
                 None,
             )
             arch_name = cluster_id_to_name.get(cluster_id) if cluster_id else None

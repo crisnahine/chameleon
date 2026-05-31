@@ -2,6 +2,7 @@
 
 Distinct from Claude's own Bash tool calls inside a session.
 """
+
 from __future__ import annotations
 
 import dataclasses

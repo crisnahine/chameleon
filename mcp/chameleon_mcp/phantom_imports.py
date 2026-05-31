@@ -10,6 +10,7 @@ non-code extensions, out-of-repo targets, and any I/O ambiguity are skipped (no
 violation) rather than risk a false positive. Advisory only; never blocks an
 edit.
 """
+
 from __future__ import annotations
 
 import re
@@ -45,9 +46,7 @@ _NON_CODE_EXT_RE = re.compile(
 )
 _IGNORE_TS_RE = re.compile(r"//\s*chameleon-ignore\s+([\w-]+)")
 
-_RUBY_REQUIRE_RELATIVE_RE = re.compile(
-    r"^\s*require_relative\s+['\"]([^'\"]+)['\"]", re.MULTILINE
-)
+_RUBY_REQUIRE_RELATIVE_RE = re.compile(r"^\s*require_relative\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
 _IGNORE_RUBY_RE = re.compile(r"#\s*chameleon-ignore\s+([\w-]+)")
 _RUBY_SUFFIXES = ("", ".rb", ".so", ".bundle")
 
@@ -252,7 +251,7 @@ def _alias_targets(spec: str, paths: dict, ts_config_dir: Path) -> list[Path]:
                 continue
             if len(spec) < len(prefix) + len(suffix):
                 continue
-            middle = spec[len(prefix): len(spec) - len(suffix)] if suffix else spec[len(prefix):]
+            middle = spec[len(prefix) : len(spec) - len(suffix)] if suffix else spec[len(prefix) :]
             for t in targets:
                 if isinstance(t, str):
                     out.append(ts_config_dir / t.replace("*", middle, 1))
@@ -330,7 +329,9 @@ def lint_phantom_imports(
             # tsconfig path alias?
             if root is None:
                 continue
-            targets = [t for t in _alias_targets(spec, paths, ts_config_dir) if _under_repo(t, root)]
+            targets = [
+                t for t in _alias_targets(spec, paths, ts_config_dir) if _under_repo(t, root)
+            ]
             if not targets:
                 continue  # bare package, unmapped alias, or out-of-repo -> skip
             if any(_ts_resolves(t) for t in targets):

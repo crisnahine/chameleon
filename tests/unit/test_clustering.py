@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.bootstrap.clustering helpers."""
+
 from __future__ import annotations
 
 from pathlib import Path

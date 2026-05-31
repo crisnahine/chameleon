@@ -1,4 +1,5 @@
 """Act 5: Teach idiom (structured + cap tests) (Phase 16)."""
+
 from __future__ import annotations
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
@@ -86,11 +87,16 @@ def run(ctx: JourneyContext) -> ActResult:
         expect.file_size_between(16, idioms_md, 1, 200 * 1024)
         idioms_content = idioms_md.read_text(encoding="utf-8")
         _phase16_fail = False
-        if "Language: typescript" not in idioms_content and "Language:typescript" not in idioms_content:
+        if (
+            "Language: typescript" not in idioms_content
+            and "Language:typescript" not in idioms_content
+        ):
             notes_extra[16] = "idioms.md missing 'Language: typescript' frontmatter"
             _phase16_fail = True
         if "###" not in idioms_content:
-            notes_extra[16] = (notes_extra.get(16, "") + "; idioms.md has no ### headers").strip("; ")
+            notes_extra[16] = (notes_extra.get(16, "") + "; idioms.md has no ### headers").strip(
+                "; "
+            )
             _phase16_fail = True
         cross_check_passed[16] = not _phase16_fail
     except expect.PhaseAssertionError as e:

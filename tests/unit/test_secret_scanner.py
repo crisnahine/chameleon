@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.profile.secret_scanner."""
+
 from __future__ import annotations
 
 from chameleon_mcp.profile.secret_scanner import _try_detect_secrets, scan_for_secrets

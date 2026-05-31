@@ -1,4 +1,5 @@
 """Act 7: Rails parity (Phase 21)."""
+
 from __future__ import annotations
 
 import json
@@ -133,9 +134,7 @@ def run(ctx: JourneyContext) -> ActResult:
             profile_data = json.loads(profile_json.read_text(encoding="utf-8"))
             lang = profile_data.get("language") or profile_data.get("language_hint", "")
             if str(lang).lower() not in ("ruby", "rails"):
-                notes_extra[21] = (
-                    f"profile.json language field is {lang!r}, expected 'ruby'"
-                )
+                notes_extra[21] = f"profile.json language field is {lang!r}, expected 'ruby'"
         except expect.PhaseAssertionError as e:
             notes_extra[21] = str(e)
         except (json.JSONDecodeError, OSError) as e:
@@ -162,8 +161,7 @@ def run(ctx: JourneyContext) -> ActResult:
             archetypes_data = json.loads(archetypes_json.read_text(encoding="utf-8"))
             if isinstance(archetypes_data, list):
                 names = [
-                    a.get("name", "") if isinstance(a, dict) else str(a)
-                    for a in archetypes_data
+                    a.get("name", "") if isinstance(a, dict) else str(a) for a in archetypes_data
                 ]
             elif isinstance(archetypes_data, dict):
                 names = list(archetypes_data.keys())

@@ -66,9 +66,9 @@ def record(name: str, passed: bool, detail: str = ""):
 
 
 def section(title: str):
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {title}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 from chameleon_mcp.tools import (  # noqa: E402
@@ -218,7 +218,9 @@ for label, fpath in [("controller", CONTROLLER_FILE), ("model", MODEL_FILE)]:
             f"computed_at={meta.get('computed_at')!r}",
         )
     except Exception as exc:
-        record(f"get_pattern_context({label}): call succeeded", False, f"{type(exc).__name__}: {exc}")
+        record(
+            f"get_pattern_context({label}): call succeeded", False, f"{type(exc).__name__}: {exc}"
+        )
 
 
 section("4. get_canonical_excerpt (discovered archetypes)")
@@ -358,7 +360,8 @@ try:
 
     record(
         "get_drift_status: recommended_action present",
-        data.get("recommended_action") is not None and isinstance(data.get("recommended_action"), str),
+        data.get("recommended_action") is not None
+        and isinstance(data.get("recommended_action"), str),
         f"recommended_action={data.get('recommended_action')!r}",
     )
 
@@ -402,7 +405,9 @@ except Exception as exc:
 
 try:
     ctrl_content = Path(CONTROLLER_FILE).read_text(encoding="utf-8", errors="replace")
-    ctrl_archetype = _archetype_for(CONTROLLER_FILE) or discovered_archetypes.get("controller", "controller")
+    ctrl_archetype = _archetype_for(CONTROLLER_FILE) or discovered_archetypes.get(
+        "controller", "controller"
+    )
     result = lint_file(REPO_PATH, ctrl_archetype, ctrl_content, file_path=CONTROLLER_FILE)
     data = result.get("data", {})
 
@@ -426,6 +431,7 @@ section("9. Caching test (get_pattern_context cold vs warm)")
 
 try:
     from chameleon_mcp.tools import _REPO_ID_CACHE
+
     _REPO_ID_CACHE.clear()
 
     t0 = time.perf_counter()
@@ -449,7 +455,7 @@ try:
     record(
         "caching: warm is faster than cold",
         warm_ms < cold_ms,
-        f"cold={cold_ms:.1f}ms, warm={warm_ms:.1f}ms, speedup={cold_ms/max(warm_ms, 0.001):.1f}x",
+        f"cold={cold_ms:.1f}ms, warm={warm_ms:.1f}ms, speedup={cold_ms / max(warm_ms, 0.001):.1f}x",
     )
 except Exception as exc:
     record("caching: timing test", False, f"{type(exc).__name__}: {exc}")
@@ -513,9 +519,9 @@ except Exception as exc:
     record("doctor: call succeeded", False, f"{type(exc).__name__}: {exc}")
 
 
-print(f"\n{'='*60}")
+print(f"\n{'=' * 60}")
 print("  SUMMARY")
-print(f"{'='*60}")
+print(f"{'=' * 60}")
 
 total = len(results)
 passed = sum(1 for _, ok, _ in results if ok)

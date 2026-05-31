@@ -32,6 +32,7 @@ def plugin_data_dir() -> Path:
     (would partition trust records across launchers).
     """
     from chameleon_mcp.plugin_paths import plugin_data_dir as _pd
+
     return _pd()
 
 

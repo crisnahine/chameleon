@@ -6,7 +6,7 @@ concatenation in an "auth" canonical, eval/exec invocations in a "utility"
 canonical, weak hashes in a security-related canonical, etc.).
 
 Patterns flagged unconditionally: raw_sql_concat, eval_call, exec_call,
-subprocess_shell_true, private_key headers. Patterns flagged only when a
+subprocess_shell_true. Patterns flagged only when a
 security keyword (password / token / signature / auth / hmac / csrf /
 session / api_key / nonce / salt / crypto / encrypt / decrypt / sign)
 appears within ±200 chars: weak_hash, math_random_for_security — this
@@ -19,7 +19,15 @@ from __future__ import annotations
 import re
 
 DANGEROUS_PATTERNS: tuple[tuple[re.Pattern[str], str, bool], ...] = (
-    (re.compile(r"`[^`]*\$\{[^}]+\}[^`]*\b(SELECT|INSERT|UPDATE|DELETE|DROP)\b", re.IGNORECASE), "raw_sql_concat", False),
+    (
+        re.compile(
+            r"`[^`]*(?:\b(?:SELECT|INSERT|UPDATE|DELETE|DROP)\b[^`]*\$\{[^}]+\}|"
+            r"\$\{[^}]+\}[^`]*\b(?:SELECT|INSERT|UPDATE|DELETE|DROP)\b)",
+            re.IGNORECASE,
+        ),
+        "raw_sql_concat",
+        False,
+    ),
     (re.compile(r"\beval\s*\(", re.IGNORECASE), "eval_call", False),
     (re.compile(r"\bexec\s*\(", re.IGNORECASE), "exec_call", False),
     (re.compile(r"shell\s*=\s*True", re.IGNORECASE), "subprocess_shell_true", False),
@@ -35,7 +43,9 @@ _SECURITY_KEYWORDS = re.compile(
 )
 
 
-def _has_security_context(content: str, match_start: int, match_end: int, *, window: int = 200) -> bool:
+def _has_security_context(
+    content: str, match_start: int, match_end: int, *, window: int = 200
+) -> bool:
     """Return True if a security-related keyword appears within ±window chars."""
     start = max(0, match_start - window)
     end = min(len(content), match_end + window)
@@ -55,11 +65,11 @@ def scan_for_dangerous_patterns(content: str) -> list[dict]:
                 content, match.start(), match.end()
             ):
                 continue
-            hits.append({
-                "kind": kind,
-                "match": match.group(0),
-                "position": match.start(),
-            })
+            hits.append(
+                {
+                    "kind": kind,
+                    "match": match.group(0),
+                    "position": match.start(),
+                }
+            )
     return hits
-
-

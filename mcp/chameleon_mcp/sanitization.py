@@ -34,10 +34,7 @@ _DANGEROUS_TOKENS = (
 )
 
 
-_BIDI_CONTROLS = (
-    "‪‫‬‭‮"
-    "⁦⁧⁨⁩"
-)
+_BIDI_CONTROLS = "‪‫‬‭‮⁦⁧⁨⁩"
 _BIDI_RE = re.compile(f"[{_BIDI_CONTROLS}]")
 
 

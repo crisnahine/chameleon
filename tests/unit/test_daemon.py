@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.daemon wire protocol and state."""
+
 from __future__ import annotations
 
 import json

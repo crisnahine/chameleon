@@ -4,6 +4,7 @@ Per-run isolation: all chameleon state writes go to <run_dir>/chameleon_data
 via CHAMELEON_PLUGIN_DATA. HMAC key, exec log, hook errors log are also
 per-run-dir to keep the developer's home dir untouched.
 """
+
 from __future__ import annotations
 
 import dataclasses

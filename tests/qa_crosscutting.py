@@ -191,12 +191,7 @@ def test_11_cross_repo_cache_isolation() -> None:
     id2 = r2.get("data", {}).get("repo", {}).get("id")
     id3 = r3.get("data", {}).get("repo", {}).get("id")
 
-    ok = (
-        id1 is not None
-        and id2 is not None
-        and id1 != id2
-        and id1 == id3
-    )
+    ok = id1 is not None and id2 is not None and id1 != id2 and id1 == id3
     _record(
         "11_cross_repo_isolation",
         ok,
@@ -301,7 +296,9 @@ def test_15_daemon_status_alive_field() -> None:
 
 
 def main() -> int:
-    if not os.environ.get("CHAMELEON_TEST_TS_REPO") or not os.environ.get("CHAMELEON_TEST_RUBY_REPO"):
+    if not os.environ.get("CHAMELEON_TEST_TS_REPO") or not os.environ.get(
+        "CHAMELEON_TEST_RUBY_REPO"
+    ):
         print("SKIP: CHAMELEON_TEST_TS_REPO and CHAMELEON_TEST_RUBY_REPO not set")
         return 0
 

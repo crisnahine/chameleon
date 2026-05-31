@@ -302,22 +302,21 @@ def upsert_repo(
                 """,
                 (repo_id, repo_root),
             ).fetchone()
-            already_present = conn.execute(
-                "SELECT 1 FROM repos WHERE repo_id = ? AND repo_root = ?",
-                (repo_id, repo_root),
-            ).fetchone() is not None
-            inherited_sha = (
-                inherit["profile_sha256"] if (inherit and not already_present) else None
+            already_present = (
+                conn.execute(
+                    "SELECT 1 FROM repos WHERE repo_id = ? AND repo_root = ?",
+                    (repo_id, repo_root),
+                ).fetchone()
+                is not None
             )
+            inherited_sha = inherit["profile_sha256"] if (inherit and not already_present) else None
             inherited_arch = (
                 inherit["archetype_count"] if (inherit and not already_present) else None
             )
             inherited_files = (
                 inherit["files_indexed"] if (inherit and not already_present) else None
             )
-            inherited_ms = (
-                inherit["bootstrap_ms"] if (inherit and not already_present) else None
-            )
+            inherited_ms = inherit["bootstrap_ms"] if (inherit and not already_present) else None
             conn.execute(
                 """
                 INSERT INTO repos
@@ -613,8 +612,11 @@ def list_repos(
                 sql,
                 (
                     cursor_ts,
-                    cursor_ts, cursor_id,
-                    cursor_ts, cursor_id, cursor_root or "",
+                    cursor_ts,
+                    cursor_id,
+                    cursor_ts,
+                    cursor_id,
+                    cursor_root or "",
                     limit + 1,
                 ),
             ).fetchall()
@@ -641,9 +643,7 @@ def list_repos(
 
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor: str | None = (
-            f"{last['last_seen_at']}|{last['repo_id']}|{last['repo_root']}"
-        )
+        next_cursor: str | None = f"{last['last_seen_at']}|{last['repo_id']}|{last['repo_root']}"
     else:
         next_cursor = None
 
@@ -685,9 +685,7 @@ def forget_repo(
                     (repo_id, repo_root),
                 )
             else:
-                cur = conn.execute(
-                    "DELETE FROM repos WHERE repo_id = ?", (repo_id,)
-                )
+                cur = conn.execute("DELETE FROM repos WHERE repo_id = ?", (repo_id,))
             return cur.rowcount > 0
     except sqlite3.Error:
         return False
@@ -853,9 +851,7 @@ def delete_all_file_clusters(repo_id: str, *, db_path: Path | None = None) -> in
         return 0
     try:
         with conn:
-            cur = conn.execute(
-                "DELETE FROM file_clusters WHERE repo_id = ?", (repo_id,)
-            )
+            cur = conn.execute("DELETE FROM file_clusters WHERE repo_id = ?", (repo_id,))
             return cur.rowcount if cur.rowcount >= 0 else 0
     except sqlite3.Error:
         return 0

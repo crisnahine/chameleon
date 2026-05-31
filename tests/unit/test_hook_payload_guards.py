@@ -6,6 +6,7 @@ bash wrapper's ``|| printf '{}'`` to mask the traceback. These tests pin the
 Python-layer fail-open contract directly: every entry point must emit a clean
 JSON object and return 0 on any malformed stdin, with no exception.
 """
+
 from __future__ import annotations
 
 import io
@@ -77,6 +78,7 @@ def test_entry_points_fail_open_on_hostile_payload(entry, raw, tmp_path):
 
 
 # --- the helpers in isolation -------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "raw,expected",

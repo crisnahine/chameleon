@@ -87,6 +87,7 @@ class Cluster:
             return member.has_jsx
         if dimension == "content_signal_match":
             from chameleon_mcp.signatures import content_signal_match_for
+
             return content_signal_match_for(member.content_first_200_bytes)
         return None
 
@@ -95,9 +96,7 @@ class Cluster:
 
         Empty when the cluster has no members.
         """
-        return dict(Counter(
-            self._dimension_value_for(m, dimension) for m in self.members
-        ))
+        return dict(Counter(self._dimension_value_for(m, dimension) for m in self.members))
 
     @property
     def bimodal_dimensions(self) -> list[str]:
@@ -243,9 +242,7 @@ def cluster_files(
         else:
             file_path_for_signature = str(pf.path)
 
-        _, sub_bucket = path_pattern_bucket_for(
-            file_path_for_signature, include_extension=True
-        )
+        _, sub_bucket = path_pattern_bucket_for(file_path_for_signature, include_extension=True)
         key = compute_signature(
             file_path=file_path_for_signature,
             content_first_200_bytes=pf.content_first_200_bytes,
@@ -302,9 +299,7 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
     return len(a & b) / len(union)
 
 
-def _loose_merge_sparse_clusters(
-    clusters: list[Cluster], sparse_threshold: int
-) -> list[Cluster]:
+def _loose_merge_sparse_clusters(clusters: list[Cluster], sparse_threshold: int) -> list[Cluster]:
     """Second-pass merge of sparse clusters by paths_pattern + Jaccard.
 
     Group by ``(path_pattern_bucket, jsx_present)``; within each group,
@@ -362,9 +357,7 @@ def _loose_merge_sparse_clusters(
                 members=combined_members,
                 sparse_threshold=sparse_threshold,
                 cluster_tier="loose",
-                sub_bucket_counts=_merge_sub_bucket_counts(
-                    [group[idx] for idx in indices]
-                ),
+                sub_bucket_counts=_merge_sub_bucket_counts([group[idx] for idx in indices]),
             )
             merged.append(new_cluster)
 
@@ -379,14 +372,16 @@ def _merge_sub_bucket_counts(clusters: list[Cluster]) -> dict[str, int]:
     return dict(merged)
 
 
-_SPLIT_BY_SUB_BUCKET_SUFFIXES: frozenset[str] = frozenset({
-    "concerns",
-    "base",
-    "__tests__",
-    "spec",
-    "tests",
-    "test",
-})
+_SPLIT_BY_SUB_BUCKET_SUFFIXES: frozenset[str] = frozenset(
+    {
+        "concerns",
+        "base",
+        "__tests__",
+        "spec",
+        "tests",
+        "test",
+    }
+)
 
 
 def _member_sub_bucket(member: ParsedFile, repo_root: Path | None = None) -> str:
@@ -441,9 +436,7 @@ def _split_by_sub_bucket(
             result.append(cluster)
             continue
 
-        member_buckets = [
-            (m, _member_sub_bucket(m, repo_root)) for m in cluster.members
-        ]
+        member_buckets = [(m, _member_sub_bucket(m, repo_root)) for m in cluster.members]
 
         def _split_key(sb: str) -> str | None:
             if not sb:
@@ -618,9 +611,7 @@ def _shape_fuzzy_merge(clusters: list[Cluster]) -> list[Cluster]:
                 members=combined_members,
                 sparse_threshold=group[indices[0]].sparse_threshold,
                 cluster_tier="shape-merged",
-                sub_bucket_counts=_merge_sub_bucket_counts(
-                    [group[idx] for idx in indices]
-                ),
+                sub_bucket_counts=_merge_sub_bucket_counts([group[idx] for idx in indices]),
             )
             result.append(new_cluster)
 

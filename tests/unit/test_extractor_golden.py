@@ -7,6 +7,7 @@ dimensions for known inputs. Skipped (not failed) when the node/ruby toolchain
 is absent, so a CI runner without it stays green; a runner with setup-node +
 setup-ruby exercises them.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -26,9 +27,12 @@ def _have_prism() -> bool:
     if not shutil.which("ruby"):
         return False
     try:
-        return subprocess.run(
-            ["ruby", "-e", "require 'prism'"], capture_output=True, timeout=15
-        ).returncode == 0
+        return (
+            subprocess.run(
+                ["ruby", "-e", "require 'prism'"], capture_output=True, timeout=15
+            ).returncode
+            == 0
+        )
     except (OSError, subprocess.SubprocessError):
         return False
 

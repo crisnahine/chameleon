@@ -29,7 +29,9 @@ from chameleon_mcp.daemon import (
 DEFAULT_TIMEOUT_S = 1.5
 
 
-def call(method: str, payload: dict | None = None, *, timeout: float = DEFAULT_TIMEOUT_S) -> dict | None:
+def call(
+    method: str, payload: dict | None = None, *, timeout: float = DEFAULT_TIMEOUT_S
+) -> dict | None:
     """Send a single request to the daemon. Returns the response dict or None.
 
     Failure modes that return None:
@@ -108,5 +110,3 @@ def call(method: str, payload: dict | None = None, *, timeout: float = DEFAULT_T
                 conn.close()
             except OSError:
                 pass
-
-

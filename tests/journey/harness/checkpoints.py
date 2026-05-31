@@ -8,6 +8,7 @@ Legacy schema (backwards compat, still accepted):
 
 Malformed lines are logged (caller decides where) and skipped via a parse-error count.
 """
+
 from __future__ import annotations
 
 import dataclasses

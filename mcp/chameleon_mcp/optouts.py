@@ -49,9 +49,7 @@ def _sign_marker(repo_id: str, session_id: str, disabled_at: float) -> str:
     return _hmac.new(key, msg, hashlib.sha256).hexdigest()
 
 
-def _marker_has_valid_signature(
-    marker: Path, repo_id: str, session_id: str
-) -> bool:
+def _marker_has_valid_signature(marker: Path, repo_id: str, session_id: str) -> bool:
     """Verify the HMAC signature on a session-disable marker.
 
     Defense against an attacker who knows another user's session_id and
@@ -186,11 +184,9 @@ def write_session_disable(repo_id: str, session_id: str) -> Path:
 def write_pause(repo_id: str, minutes: int = 15) -> str:
     """Write a .pause_until file with expiry = now + minutes. Returns ISO timestamp."""
     expiry = datetime.now(UTC).timestamp() + minutes * 60
-    expiry_iso = datetime.fromtimestamp(expiry, tz=UTC).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    expiry_iso = datetime.fromtimestamp(expiry, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     pause_path = repo_data_dir(repo_id) / ".pause_until"
-    tmp = pause_path.with_suffix('.tmp')
+    tmp = pause_path.with_suffix(".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
         os.write(fd, expiry_iso.encode("utf-8"))
@@ -199,5 +195,3 @@ def write_pause(repo_id: str, minutes: int = 15) -> str:
         os.close(fd)
     os.replace(str(tmp), str(pause_path))
     return expiry_iso
-
-

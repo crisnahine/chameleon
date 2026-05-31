@@ -5,6 +5,7 @@ spawned (optouts returned user_disable at the end), so a "disabled" plugin
 still paid ~80ms per Edit/Write/Bash. The wrappers now short-circuit in bash
 (emit {} and exit) before any python spawn.
 """
+
 from __future__ import annotations
 
 import os
@@ -18,8 +19,11 @@ HOOKS = REPO_ROOT / "hooks"
 PAYLOAD = '{"tool_name":"Edit","tool_input":{"file_path":"/tmp/x.ts"},"session_id":"s"}'
 
 ALL_WRAPPERS = [
-    "preflight-and-advise", "session-start", "posttool-recorder",
-    "posttool-verify", "callout-detector",
+    "preflight-and-advise",
+    "session-start",
+    "posttool-recorder",
+    "posttool-verify",
+    "callout-detector",
 ]
 
 
@@ -33,7 +37,11 @@ def _run(wrapper: str, env_extra: dict, tmp_path: Path) -> subprocess.CompletedP
     }
     return subprocess.run(
         [str(HOOKS / wrapper)],
-        input=PAYLOAD, capture_output=True, text=True, env=env, timeout=15,
+        input=PAYLOAD,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=15,
     )
 
 

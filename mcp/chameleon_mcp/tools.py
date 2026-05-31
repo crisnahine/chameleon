@@ -44,6 +44,7 @@ def _notify_daemon_cache_invalidation() -> None:
     """
     try:
         from chameleon_mcp import daemon_client
+
         daemon_client.call("invalidate_cache", {})
     except Exception:
         pass
@@ -69,10 +70,23 @@ WITNESS_MAX_BYTES = 5 * 1024 * 1024
 
 _REPO_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 
-_WS_PRUNE_DIRS = frozenset({
-    "node_modules", ".git", "dist", "build", ".next", "out",
-    "vendor", "tmp", ".venv", "venv", "__pycache__", ".cache", "coverage",
-})
+_WS_PRUNE_DIRS = frozenset(
+    {
+        "node_modules",
+        ".git",
+        "dist",
+        "build",
+        ".next",
+        "out",
+        "vendor",
+        "tmp",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".cache",
+        "coverage",
+    }
+)
 _WS_MAX_DEPTH = 4
 
 
@@ -332,9 +346,7 @@ def _effective_profile_dir(repo_root: Path) -> Path:
         return working
 
 
-def _log_effective_profile_dir_fallback(
-    repo_root: Path, reason: str, detail: str
-) -> None:
+def _log_effective_profile_dir_fallback(repo_root: Path, reason: str, detail: str) -> None:
     """Write a single-line note to stderr when branch pinning falls back.
 
     Best-effort: any failure here is silently ignored (logging must
@@ -434,22 +446,26 @@ def detect_repo(file_path: str) -> dict:
     from chameleon_mcp.profile.trust import is_material_change, trust_state_for
 
     if not _validate_file_path_arg(file_path):
-        return _envelope({
-            "repo_id": None,
-            "repo_root": None,
-            "profile_status": "no_repo",
-            "trust_state": "n/a",
-        })
+        return _envelope(
+            {
+                "repo_id": None,
+                "repo_root": None,
+                "profile_status": "no_repo",
+                "trust_state": "n/a",
+            }
+        )
 
     p = Path(file_path).expanduser()
     repo_root = find_repo_root(p)
     if repo_root is None:
-        return _envelope({
-            "repo_id": None,
-            "repo_root": None,
-            "profile_status": "no_repo",
-            "trust_state": "n/a",
-        })
+        return _envelope(
+            {
+                "repo_id": None,
+                "repo_root": None,
+                "profile_status": "no_repo",
+                "trust_state": "n/a",
+            }
+        )
 
     try:
         home = Path.home().resolve()
@@ -458,16 +474,16 @@ def detect_repo(file_path: str) -> dict:
         home = None  # type: ignore[assignment]
         resolved = repo_root
     if home is not None and (
-        resolved == home
-        or resolved in home.parents
-        or resolved == Path(resolved.anchor)
+        resolved == home or resolved in home.parents or resolved == Path(resolved.anchor)
     ):
-        return _envelope({
-            "repo_id": None,
-            "repo_root": None,
-            "profile_status": "no_repo",
-            "trust_state": "n/a",
-        })
+        return _envelope(
+            {
+                "repo_id": None,
+                "repo_root": None,
+                "profile_status": "no_repo",
+                "trust_state": "n/a",
+            }
+        )
 
     repo_id = _compute_repo_id(repo_root)
     profile_dir = repo_root / ".chameleon"
@@ -558,9 +574,7 @@ def detect_repo(file_path: str) -> dict:
     return _envelope(data)
 
 
-def _prefix_overlap_fallback(
-    rel_str: str, archetypes: dict
-) -> tuple[str | None, list[str]]:
+def _prefix_overlap_fallback(rel_str: str, archetypes: dict) -> tuple[str | None, list[str]]:
     """BUG-015: pick the archetype that shares the longest directory prefix.
 
     Returns (primary, alternatives). When no archetype shares at least one
@@ -714,13 +728,15 @@ def get_archetype(repo: str, file_path: str) -> dict:
     from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir
 
     if not _validate_file_path_arg(file_path):
-        return _envelope({
-            "archetype": None,
-            "alternatives": [],
-            "content_signal_match": "none",
-            "confidence_band": "low",
-            "match_quality": "none",
-        })
+        return _envelope(
+            {
+                "archetype": None,
+                "alternatives": [],
+                "content_signal_match": "none",
+                "confidence_band": "low",
+                "match_quality": "none",
+            }
+        )
 
     p = Path(file_path).expanduser()
 
@@ -728,46 +744,54 @@ def get_archetype(repo: str, file_path: str) -> dict:
 
     repo_root = find_repo_root(p)
     if repo_root is None:
-        return _envelope({
-            "archetype": None,
-            "alternatives": [],
-            "content_signal_match": content_signal_value,
-            "confidence_band": "low",
-            "match_quality": "none",
-        })
+        return _envelope(
+            {
+                "archetype": None,
+                "alternatives": [],
+                "content_signal_match": content_signal_value,
+                "confidence_band": "low",
+                "match_quality": "none",
+            }
+        )
 
     expected_repo_id = _compute_repo_id(repo_root)
     if _REPO_ID_RE.match(repo) if isinstance(repo, str) else False:
         if expected_repo_id != repo:
-            return _envelope({
-                "archetype": None,
-                "alternatives": [],
-                "content_signal_match": content_signal_value,
-                "confidence_band": "low",
-                "match_quality": "none",
-            })
+            return _envelope(
+                {
+                    "archetype": None,
+                    "alternatives": [],
+                    "content_signal_match": content_signal_value,
+                    "confidence_band": "low",
+                    "match_quality": "none",
+                }
+            )
     else:
         _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
         if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            return _envelope({
-                "archetype": None,
-                "alternatives": [],
-                "content_signal_match": content_signal_value,
-                "confidence_band": "low",
-                "match_quality": "none",
-            })
+            return _envelope(
+                {
+                    "archetype": None,
+                    "alternatives": [],
+                    "content_signal_match": content_signal_value,
+                    "confidence_band": "low",
+                    "match_quality": "none",
+                }
+            )
 
     profile_dir = _effective_profile_dir(repo_root)
     try:
         loaded: LoadedProfile = load_profile_dir(profile_dir)
     except Exception:
-        return _envelope({
-            "archetype": None,
-            "alternatives": [],
-            "content_signal_match": content_signal_value,
-            "confidence_band": "low",
-            "match_quality": "none",
-        })
+        return _envelope(
+            {
+                "archetype": None,
+                "alternatives": [],
+                "content_signal_match": content_signal_value,
+                "confidence_band": "low",
+                "match_quality": "none",
+            }
+        )
 
     return _get_archetype_with_loaded(p, repo_root, loaded, content_signal_value)
 
@@ -826,17 +850,17 @@ def _get_archetype_with_loaded(
             alternatives = fallback_matches[1:]
             confidence = "low"
         else:
-            primary, alternatives = _prefix_overlap_fallback(
-                rel_str, archetypes
-            )
+            primary, alternatives = _prefix_overlap_fallback(rel_str, archetypes)
             confidence = "low"
-        return _envelope({
-            "archetype": primary,
-            "alternatives": alternatives,
-            "content_signal_match": content_signal_value,
-            "confidence_band": confidence,
-            "match_quality": "fallback" if primary is not None else "none",
-        })
+        return _envelope(
+            {
+                "archetype": primary,
+                "alternatives": alternatives,
+                "content_signal_match": content_signal_value,
+                "confidence_band": confidence,
+                "match_quality": "fallback" if primary is not None else "none",
+            }
+        )
 
     canonicals_for_locality = loaded.canonicals.get("canonicals", {}) or {}
     exact_matches.sort(
@@ -855,13 +879,15 @@ def _get_archetype_with_loaded(
             content = None
 
     if content is None:
-        return _envelope({
-            "archetype": exact_matches[0],
-            "alternatives": exact_matches[1:],
-            "content_signal_match": content_signal_value,
-            "confidence_band": "high" if len(exact_matches) == 1 else "low",
-            "match_quality": "exact",
-        })
+        return _envelope(
+            {
+                "archetype": exact_matches[0],
+                "alternatives": exact_matches[1:],
+                "content_signal_match": content_signal_value,
+                "confidence_band": "high" if len(exact_matches) == 1 else "low",
+                "match_quality": "exact",
+            }
+        )
 
     language = detect_language(str(p)) or loaded.profile.get("language")
     if language not in ("typescript", "ruby"):
@@ -879,13 +905,17 @@ def _get_archetype_with_loaded(
         if not ast_query:
             scored.append((name, -1.0, 0))
             continue
-        constrained = sum(1 for k in (
-            "default_export_kind",
-            "top_level_node_kinds",
-            "named_export_count_bucket",
-            "jsx_present",
-            "content_signal",
-        ) if ast_query.get(k) not in (None, [], ""))
+        constrained = sum(
+            1
+            for k in (
+                "default_export_kind",
+                "top_level_node_kinds",
+                "named_export_count_bucket",
+                "jsx_present",
+                "content_signal",
+            )
+            if ast_query.get(k) not in (None, [], "")
+        )
         ratio = canonical_confidence(snapshot, ast_query)
         absolute_matches = ratio * constrained
         scored.append((name, absolute_matches, constrained))
@@ -914,16 +944,20 @@ def _get_archetype_with_loaded(
         confidence = "high" if len(exact_matches) == 1 else "low"
         match_quality = "exact"
 
-    final_signal = content_signal_value if content_signal_value is not None else (
-        snapshot.content_signal if snapshot.content_signal is not None else "none"
+    final_signal = (
+        content_signal_value
+        if content_signal_value is not None
+        else (snapshot.content_signal if snapshot.content_signal is not None else "none")
     )
-    return _envelope({
-        "archetype": primary,
-        "alternatives": alternatives,
-        "content_signal_match": final_signal,
-        "confidence_band": confidence,
-        "match_quality": match_quality,
-    })
+    return _envelope(
+        {
+            "archetype": primary,
+            "alternatives": alternatives,
+            "content_signal_match": final_signal,
+            "confidence_band": confidence,
+            "match_quality": match_quality,
+        }
+    )
 
 
 def _empty_pattern_envelope(
@@ -974,26 +1008,21 @@ def get_pattern_context(file_path: str) -> dict:
     from chameleon_mcp.profile.trust import trust_state_for
 
     if not _validate_file_path_arg(file_path):
-        return _envelope(
-            _empty_pattern_envelope(None, "no_repo", "n/a")
-        )
+        return _envelope(_empty_pattern_envelope(None, "no_repo", "n/a"))
 
     p = Path(file_path).expanduser()
     repo_root = find_repo_root(p)
     if repo_root is None:
-        return _envelope(
-            _empty_pattern_envelope(None, "no_repo", "n/a")
-        )
+        return _envelope(_empty_pattern_envelope(None, "no_repo", "n/a"))
 
     repo_id = _compute_repo_id(repo_root)
     profile_dir = _effective_profile_dir(repo_root)
     profile_file = profile_dir / "profile.json"
     if not profile_file.exists():
-        return _envelope(
-            _empty_pattern_envelope(repo_id, "no_profile", "n/a")
-        )
+        return _envelope(_empty_pattern_envelope(repo_id, "no_profile", "n/a"))
 
     from chameleon_mcp.profile.trust import is_material_change
+
     trust = trust_state_for(repo_id)
     trust_check_dir = repo_root / ".chameleon"
     if trust is None or not trust.grants_root(trust_check_dir.parent):
@@ -1006,25 +1035,16 @@ def get_pattern_context(file_path: str) -> dict:
     try:
         loaded = load_profile_dir(profile_dir)
     except Exception:
-        return _envelope(
-            _empty_pattern_envelope(repo_id, "profile_corrupted", "n/a")
-        )
+        return _envelope(_empty_pattern_envelope(repo_id, "profile_corrupted", "n/a"))
 
     content_signal_value = _content_signal_for_path(p)
-    arch_response = _get_archetype_with_loaded(
-        p, repo_root, loaded, content_signal_value
-    )
+    arch_response = _get_archetype_with_loaded(p, repo_root, loaded, content_signal_value)
     arch_data = arch_response["data"]
 
     if arch_data.get("archetype"):
-        arch_entry = (
-            loaded.archetypes.get("archetypes", {}).get(arch_data["archetype"], {})
-            or {}
-        )
+        arch_entry = loaded.archetypes.get("archetypes", {}).get(arch_data["archetype"], {}) or {}
         sub_buckets = arch_entry.get("sub_buckets") or {}
-        arch_data["sub_buckets_count"] = (
-            len(sub_buckets) if isinstance(sub_buckets, dict) else 0
-        )
+        arch_data["sub_buckets_count"] = len(sub_buckets) if isinstance(sub_buckets, dict) else 0
         summary = arch_entry.get("summary") or ""
         if summary:
             arch_data["summary"] = summary
@@ -1089,29 +1109,21 @@ def get_pattern_context(file_path: str) -> dict:
                         except OSError as e:
                             raise OSError(f"read failed: {e}") from e
                         raw_bytes = b"".join(chunks)
-                        raw = raw_bytes.decode(
-                            "utf-8", errors="replace"
-                        )
+                        raw = raw_bytes.decode("utf-8", errors="replace")
                         try:
                             st2 = _os.fstat(fd)
                         except OSError as e:
-                            raise OSError(
-                                f"fstat after read failed: {e}"
-                            ) from e
+                            raise OSError(f"fstat after read failed: {e}") from e
                         if (
                             st2.st_size != st.st_size
                             or st2.st_mtime_ns != st.st_mtime_ns
                             or st2.st_ctime_ns != st.st_ctime_ns
                         ):
-                            raise OSError(
-                                "witness changed mid-read; failing open"
-                            )
+                            raise OSError("witness changed mid-read; failing open")
                         return sanitize_for_chameleon_context(raw), False
 
                     try:
-                        content, truncated = _excerpt_cache.get_or_build(
-                            key, _build
-                        )
+                        content, truncated = _excerpt_cache.get_or_build(key, _build)
                     finally:
                         try:
                             _os.close(fd)
@@ -1143,6 +1155,7 @@ def get_pattern_context(file_path: str) -> dict:
     idioms_text = loaded.idioms_text or ""
     if idioms_text:
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
         idioms_text = sanitize_for_chameleon_context(idioms_text)
 
     rules_out = list(loaded.rules.get("rules", {}).items())
@@ -1163,26 +1176,26 @@ def get_pattern_context(file_path: str) -> dict:
         arch_data.pop("summary", None)
         rules_out = []
 
-    return _envelope({
-        "repo": {
-            "id": repo_id,
-            "profile_status": "profile_present",
-            "trust_state": trust_state_str,
-        },
-        "archetype": arch_data,
-        "canonical_excerpt": canonical_data,
-        "rules": rules_out,
-        "idioms": idioms_text,
-        "meta": {
-            "mtime_token": loaded.mtime_token,
-            "computed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        },
-    })
+    return _envelope(
+        {
+            "repo": {
+                "id": repo_id,
+                "profile_status": "profile_present",
+                "trust_state": trust_state_str,
+            },
+            "archetype": arch_data,
+            "canonical_excerpt": canonical_data,
+            "rules": rules_out,
+            "idioms": idioms_text,
+            "meta": {
+                "mtime_token": loaded.mtime_token,
+                "computed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            },
+        }
+    )
 
 
-def _resolve_repo_root_by_id(
-    repo_id: str, repo_root_hint: str | None = None
-) -> Path | None:
+def _resolve_repo_root_by_id(repo_id: str, repo_root_hint: str | None = None) -> Path | None:
     """Map a repo_id back to its repo_root.
 
     Phase 4.4 lookup order:
@@ -1250,36 +1263,42 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
 
     resolved_path, repo_id = _resolve_repo_arg(repo)
     if repo_id is None and resolved_path is None:
-        return _envelope({
-            "status": "failed",
-            "error": "repo_id not found",
-            "content": None,
-            "witness_path": None,
-            "truncated": False,
-            "sha_hint": None,
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "repo_id not found",
+                "content": None,
+                "witness_path": None,
+                "truncated": False,
+                "sha_hint": None,
+            }
+        )
     repo_root = resolved_path
     if repo_root is None and repo_id is not None:
         repo_root = _resolve_repo_root_by_id(repo_id)
     if repo_root is None:
-        return _envelope({
-            "status": "failed",
-            "error": "repo_id not found",
-            "content": None,
-            "witness_path": None,
-            "truncated": False,
-            "sha_hint": None,
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "repo_id not found",
+                "content": None,
+                "witness_path": None,
+                "truncated": False,
+                "sha_hint": None,
+            }
+        )
 
     try:
         loaded = load_profile_dir(_effective_profile_dir(repo_root))
     except Exception:
-        return _envelope({
-            "content": "",
-            "witness_path": None,
-            "truncated": False,
-            "sha_hint": None,
-        })
+        return _envelope(
+            {
+                "content": "",
+                "witness_path": None,
+                "truncated": False,
+                "sha_hint": None,
+            }
+        )
 
     known_archetypes = loaded.archetypes.get("archetypes", {}) or {}
     if archetype not in known_archetypes:
@@ -1299,50 +1318,56 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             except Exception:
                 continue
         if not found_in_workspace:
-            return _envelope({
-                "status": "failed",
-                "error": "archetype not found",
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": "archetype not found",
+                    "archetype_name": archetype,
+                    "repo_id": repo_id,
+                    "content": None,
+                    "witness_path": None,
+                    "truncated": False,
+                    "sha_hint": None,
+                }
+            )
+
+    canonicals = loaded.canonicals.get("canonicals", {}).get(archetype, [])
+    if not canonicals:
+        return _envelope(
+            {
+                "status": "no_witness",
+                "reason": (
+                    "archetype has no canonical witness (below confidence "
+                    "threshold, or all candidates contained secrets)"
+                ),
                 "archetype_name": archetype,
                 "repo_id": repo_id,
                 "content": None,
                 "witness_path": None,
                 "truncated": False,
                 "sha_hint": None,
-            })
-
-    canonicals = loaded.canonicals.get("canonicals", {}).get(archetype, [])
-    if not canonicals:
-        return _envelope({
-            "status": "no_witness",
-            "reason": (
-                "archetype has no canonical witness (below confidence "
-                "threshold, or all candidates contained secrets)"
-            ),
-            "archetype_name": archetype,
-            "repo_id": repo_id,
-            "content": None,
-            "witness_path": None,
-            "truncated": False,
-            "sha_hint": None,
-        })
+            }
+        )
 
     first = canonicals[0]
     witness = first.get("witness", {}) or {}
     witness_rel = witness.get("path")
     if not witness_rel:
-        return _envelope({
-            "status": "no_witness",
-            "reason": (
-                "archetype has no canonical witness (below confidence "
-                "threshold, or all candidates contained secrets)"
-            ),
-            "archetype_name": archetype,
-            "repo_id": repo_id,
-            "content": None,
-            "witness_path": None,
-            "truncated": False,
-            "sha_hint": witness.get("sha_hint"),
-        })
+        return _envelope(
+            {
+                "status": "no_witness",
+                "reason": (
+                    "archetype has no canonical witness (below confidence "
+                    "threshold, or all candidates contained secrets)"
+                ),
+                "archetype_name": archetype,
+                "repo_id": repo_id,
+                "content": None,
+                "witness_path": None,
+                "truncated": False,
+                "sha_hint": witness.get("sha_hint"),
+            }
+        )
 
     # Trust gate at the data layer, before any witness read. This tool is
     # model-callable and previously returned full witness content for ANY trust
@@ -1355,16 +1380,18 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     gate_repo_id = _compute_repo_id(repo_root)
     _gate_rec = _trust_state_for(gate_repo_id)
     if _gate_rec is None or not _gate_rec.grants_root(repo_root):
-        return _envelope({
-            "status": "untrusted",
-            "reason": "profile is not trusted for this user; grant with /chameleon-trust",
-            "archetype_name": archetype,
-            "repo_id": gate_repo_id,
-            "content": None,
-            "witness_path": witness_rel,
-            "truncated": False,
-            "sha_hint": witness.get("sha_hint"),
-        })
+        return _envelope(
+            {
+                "status": "untrusted",
+                "reason": "profile is not trusted for this user; grant with /chameleon-trust",
+                "archetype_name": archetype,
+                "repo_id": gate_repo_id,
+                "content": None,
+                "witness_path": witness_rel,
+                "truncated": False,
+                "sha_hint": witness.get("sha_hint"),
+            }
+        )
 
     try:
         from chameleon_mcp.safe_open import (
@@ -1377,20 +1404,24 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     except FileTooLargeError:
         # Over the 5 MB ceiling: flag it (truncated/oversize) instead of an empty
         # success, so an explicit agent pull still learns the witness exists.
-        return _envelope({
-            "status": "oversize",
-            "content": "",
-            "witness_path": witness_rel,
-            "truncated": True,
-            "sha_hint": witness.get("sha_hint"),
-        })
+        return _envelope(
+            {
+                "status": "oversize",
+                "content": "",
+                "witness_path": witness_rel,
+                "truncated": True,
+                "sha_hint": witness.get("sha_hint"),
+            }
+        )
     except (UnsafeFileError, FileNotFoundError, OSError):
-        return _envelope({
-            "content": "",
-            "witness_path": witness_rel,
-            "truncated": False,
-            "sha_hint": witness.get("sha_hint"),
-        })
+        return _envelope(
+            {
+                "content": "",
+                "witness_path": witness_rel,
+                "truncated": False,
+                "sha_hint": witness.get("sha_hint"),
+            }
+        )
 
     # The witness passed the secret/injection scan at bootstrap time, but the
     # working-tree file may have been edited since. Re-scan the freshly-read
@@ -1400,29 +1431,33 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         from chameleon_mcp.bootstrap.canonical_scanner import is_safe_canonical
 
         if not is_safe_canonical(content):
-            return _envelope({
-                "status": "no_witness",
-                "reason": (
-                    "live canonical witness now contains a secret or "
-                    "injection pattern; run /chameleon-refresh"
-                ),
-                "archetype_name": archetype,
-                "repo_id": repo_id,
-                "content": None,
-                "witness_path": witness_rel,
-                "truncated": False,
-                "sha_hint": witness.get("sha_hint"),
-            })
+            return _envelope(
+                {
+                    "status": "no_witness",
+                    "reason": (
+                        "live canonical witness now contains a secret or "
+                        "injection pattern; run /chameleon-refresh"
+                    ),
+                    "archetype_name": archetype,
+                    "repo_id": repo_id,
+                    "content": None,
+                    "witness_path": witness_rel,
+                    "truncated": False,
+                    "sha_hint": witness.get("sha_hint"),
+                }
+            )
     except Exception:
         pass
 
     content = sanitize_for_chameleon_context(content)
-    return _envelope({
-        "content": content,
-        "witness_path": witness_rel,
-        "truncated": False,
-        "sha_hint": witness.get("sha_hint"),
-    })
+    return _envelope(
+        {
+            "content": content,
+            "witness_path": witness_rel,
+            "truncated": False,
+            "sha_hint": witness.get("sha_hint"),
+        }
+    )
 
 
 def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
@@ -1458,13 +1493,15 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     legacy_archetype = kwargs.pop("archetype", None)
     if kwargs:
         unknown = sorted(kwargs.keys())
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"get_rules got unexpected keyword argument(s): {unknown!r}. "
-                "Use `repo` and (optionally) `source`."
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"get_rules got unexpected keyword argument(s): {unknown!r}. "
+                    "Use `repo` and (optionally) `source`."
+                ),
+            }
+        )
     if legacy_archetype is not None and source is None:
         source = legacy_archetype
         deprecation_note = (
@@ -1491,6 +1528,7 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     # eslint/rubocop/tsconfig config. This tool is model-callable, so withhold
     # it for an untrusted profile. Stale still flows (trusted once).
     from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+
     _gate_rec = _trust_state_for(_compute_repo_id(repo_root))
     if _gate_rec is None or not _gate_rec.grants_root(repo_root):
         env = {"status": "untrusted", "rules": []}
@@ -1606,10 +1644,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
         return _envelope(
             {
                 "stub": True,
-                "stub_reason": (
-                    "content must be a string; got "
-                    f"{type(content).__name__}"
-                ),
+                "stub_reason": (f"content must be a string; got {type(content).__name__}"),
                 "violations": [],
                 "canonical_confidence": 0.0,
                 "unparseable_regions": [],
@@ -1620,10 +1655,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
         return _envelope(
             {
                 "stub": True,
-                "stub_reason": (
-                    "archetype must be a string; got "
-                    f"{type(archetype).__name__}"
-                ),
+                "stub_reason": (f"archetype must be a string; got {type(archetype).__name__}"),
                 "violations": [],
                 "canonical_confidence": 0.0,
                 "unparseable_regions": [],
@@ -1665,6 +1697,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
         )
 
     from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+
     _gate_rec = _trust_state_for(_compute_repo_id(repo_root))
     if _gate_rec is None or not _gate_rec.grants_root(repo_root):
         # Untrusted profile: withhold convention/AST checks — their messages
@@ -1824,6 +1857,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     convention_violations: list[dict] = []
     try:
         from chameleon_mcp.lint_engine import lint_conventions as _lint_conventions
+
         conv_data = loaded.conventions.get("conventions", {})
         arch_conv: dict = {}
         if conv_data.get("imports", {}).get(archetype):
@@ -1834,7 +1868,8 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             arch_conv["inheritance"] = conv_data["inheritance"][archetype]
         if arch_conv:
             convention_violations = [
-                v.to_dict() for v in _lint_conventions(working_content, arch_conv, language=language)
+                v.to_dict()
+                for v in _lint_conventions(working_content, arch_conv, language=language)
             ]
     except Exception:
         pass
@@ -1844,6 +1879,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     phantom_violations: list[dict] = []
     try:
         from chameleon_mcp.phantom_imports import lint_phantom_imports
+
         phantom_violations = [
             v.to_dict()
             for v in lint_phantom_imports(
@@ -1862,12 +1898,15 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     # matching posttool_verify. Secret violations come from the caller's own
     # content and are left as-is.
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
+
     for _v in best_ast_violations + convention_violations + phantom_violations:
         for _k, _val in list(_v.items()):
             if isinstance(_val, str):
                 _v[_k] = _sanitize(_val)
 
-    violations = secret_violations + best_ast_violations + convention_violations + phantom_violations
+    violations = (
+        secret_violations + best_ast_violations + convention_violations + phantom_violations
+    )
 
     return _envelope(
         {
@@ -1913,23 +1952,29 @@ def get_drift_status(repo: str) -> dict:
     from chameleon_mcp.profile.trust import plugin_data_dir, trust_state_for
 
     if not isinstance(repo, str) or not repo:
-        return _envelope({
-            "status": "failed",
-            "error": "expected repo path or repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected repo path or repo_id hex digest",
+            }
+        )
 
     resolved_path, repo_id = _resolve_repo_arg(repo)
     if repo_id is None and resolved_path is not None:
-        return _envelope({
-            "status": "failed",
-            "error": "expected repo path or repo_id hex digest",
-        })
-    if repo_id is None:
-        if "/" in repo or ".." in repo or "\\" in repo:
-            return _envelope({
+        return _envelope(
+            {
                 "status": "failed",
                 "error": "expected repo path or repo_id hex digest",
-            })
+            }
+        )
+    if repo_id is None:
+        if "/" in repo or ".." in repo or "\\" in repo:
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": "expected repo path or repo_id hex digest",
+                }
+            )
         repo_id = repo
 
     repo_data = plugin_data_dir() / repo_id
@@ -1940,9 +1985,7 @@ def get_drift_status(repo: str) -> dict:
         try:
             import calendar as _calendar
 
-            granted_epoch = _calendar.timegm(
-                time.strptime(trust.granted_at, "%Y-%m-%dT%H:%M:%SZ")
-            )
+            granted_epoch = _calendar.timegm(time.strptime(trust.granted_at, "%Y-%m-%dT%H:%M:%SZ"))
             days_since_refresh = max(0, int((time.time() - granted_epoch) / 86_400))
         except ValueError:
             days_since_refresh = None
@@ -1952,9 +1995,7 @@ def get_drift_status(repo: str) -> dict:
     if days_since_refresh is None:
         recommended = "no trust grant found; run /chameleon-trust first"
     elif drift_score is not None and drift_score > 0.5:
-        recommended = (
-            f"observed drift is high ({drift_score:.2f}); run /chameleon-refresh"
-        )
+        recommended = f"observed drift is high ({drift_score:.2f}); run /chameleon-refresh"
     elif days_since_refresh > 90:
         recommended = "profile may be stale; run /chameleon-refresh"
     elif days_since_refresh > 30:
@@ -1962,12 +2003,14 @@ def get_drift_status(repo: str) -> dict:
     else:
         recommended = "fresh"
 
-    return _envelope({
-        "repo_id": repo_id,
-        "days_since_refresh": days_since_refresh,
-        "observed_drift_score": drift_score,
-        "recommended_action": recommended,
-    })
+    return _envelope(
+        {
+            "repo_id": repo_id,
+            "days_since_refresh": days_since_refresh,
+            "observed_drift_score": drift_score,
+            "recommended_action": recommended,
+        }
+    )
 
 
 PARTIAL_REFRESH_CHANGE_RATIO_CEILING = 0.10
@@ -2048,9 +2091,7 @@ def _compute_file_cluster_map(
 
     discovery_glob = paths_glob or _glob_for_extractor(extractor)
     try:
-        candidates = discover_files(
-            repo_root, glob=discovery_glob, paths_glob=paths_glob
-        )
+        candidates = discover_files(repo_root, glob=discovery_glob, paths_glob=paths_glob)
     except Exception:
         return None
     if not candidates:
@@ -2193,18 +2234,10 @@ def _attempt_partial_refresh(
             safe_read_profile_artifact,
         )
 
-        archetypes_data = json.loads(
-            safe_read_profile_artifact(profile_dir / "archetypes.json")
-        )
-        canonicals_data = json.loads(
-            safe_read_profile_artifact(profile_dir / "canonicals.json")
-        )
-        profile_data = json.loads(
-            safe_read_profile_artifact(profile_dir / "profile.json")
-        )
-        rules_data = json.loads(
-            safe_read_profile_artifact(profile_dir / "rules.json")
-        )
+        archetypes_data = json.loads(safe_read_profile_artifact(profile_dir / "archetypes.json"))
+        canonicals_data = json.loads(safe_read_profile_artifact(profile_dir / "canonicals.json"))
+        profile_data = json.loads(safe_read_profile_artifact(profile_dir / "profile.json"))
+        rules_data = json.loads(safe_read_profile_artifact(profile_dir / "rules.json"))
     except (OSError, json.JSONDecodeError, UnsafeFileError):
         return None
 
@@ -2215,9 +2248,7 @@ def _attempt_partial_refresh(
         if cid:
             cluster_id_to_archetype[cid] = name
 
-    reparse_paths = [
-        current_by_rel[rel]["path"] for rel in (modified + added)
-    ]
+    reparse_paths = [current_by_rel[rel]["path"] for rel in (modified + added)]
     reparsed = _reparse_changed_files(repo_root, reparse_paths)
     if reparsed is None:
         return None
@@ -2245,7 +2276,6 @@ def _attempt_partial_refresh(
         witness_rel = (entries[0].get("witness") or {}).get("path")
         if witness_rel == rel:
             return None
-
 
     prev_membership: dict[str, int] = {}
     for _rel, prev in prev_state.items():
@@ -2336,13 +2366,9 @@ def _attempt_partial_refresh(
                 encoding="utf-8",
             )
             (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
-            (txn_dir / "profile.summary.md").write_text(
-                summary_text, encoding="utf-8"
-            )
+            (txn_dir / "profile.summary.md").write_text(summary_text, encoding="utf-8")
             if renames_text is not None:
-                (txn_dir / "renames.json").write_text(
-                    renames_text, encoding="utf-8"
-                )
+                (txn_dir / "renames.json").write_text(renames_text, encoding="utf-8")
     except Exception:
         return None
 
@@ -2352,11 +2378,13 @@ def _attempt_partial_refresh(
         upsert_rows.append((rel, new_cid, new_sha))
     for rel in unchanged:
         prev = prev_state[rel]
-        upsert_rows.append((
-            rel,
-            prev.get("cluster_id") or "",
-            current_by_rel[rel].get("sha_hint") or prev.get("sha_hint"),
-        ))
+        upsert_rows.append(
+            (
+                rel,
+                prev.get("cluster_id") or "",
+                current_by_rel[rel].get("sha_hint") or prev.get("sha_hint"),
+            )
+        )
     if upsert_rows:
         index_db.upsert_file_clusters(repo_id, upsert_rows)
     if removed:
@@ -2373,19 +2401,21 @@ def _attempt_partial_refresh(
         bootstrap_ms=duration_ms,
     )
 
-    return _envelope({
-        "status": "partial_refresh",
-        "files_changed": len(modified),
-        "files_added": len(added),
-        "files_removed": len(removed),
-        "files_processed": files_processed,
-        "duration_ms": duration_ms,
-        "archetypes_unchanged": archetypes_unchanged,
-        "archetypes_amended": archetypes_amended,
-        "archetypes_detected": profile_data["archetype_count"],
-        "profile_path": str(profile_dir),
-        "change_ratio": round(change_ratio, 4),
-    })
+    return _envelope(
+        {
+            "status": "partial_refresh",
+            "files_changed": len(modified),
+            "files_added": len(added),
+            "files_removed": len(removed),
+            "files_processed": files_processed,
+            "duration_ms": duration_ms,
+            "archetypes_unchanged": archetypes_unchanged,
+            "archetypes_amended": archetypes_amended,
+            "archetypes_detected": profile_data["archetype_count"],
+            "profile_path": str(profile_dir),
+            "change_ratio": round(change_ratio, 4),
+        }
+    )
 
 
 def refresh_repo(repo: str, force: bool = False) -> dict:
@@ -2423,23 +2453,29 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     _clear_repo_id_cache()
 
     if not _validate_file_path_arg(repo):
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
 
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
     if resolved_path is None:
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
     repo_path = resolved_path
     if not repo_path.is_absolute() or not repo_path.is_dir():
-        return _envelope({
-            "status": "failed",
-            "error": "refresh_repo expects an absolute repo path",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "refresh_repo expects an absolute repo path",
+            }
+        )
 
     # Lock lives in plugin-data, NOT inside .chameleon/: atomic_profile_commit
     # renames the whole .chameleon/ dir away during refresh, which orphaned a
@@ -2447,6 +2483,7 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     # flocked a DIFFERENT inode and ran concurrently. A stable per-repo
     # plugin-data path keeps the lock inode constant across the profile swap.
     from chameleon_mcp.profile.trust import repo_data_dir
+
     _lock_dir = repo_data_dir(_compute_repo_id(repo_path))
     _lock_dir.mkdir(parents=True, exist_ok=True)
     refresh_lock_path = _lock_dir / ".refresh.lock"
@@ -2459,13 +2496,14 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             _notify_daemon_cache_invalidation()
             return envelope
     except LockHeldError as e:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"another /chameleon-refresh is in progress (PID {e.holder_pid}); "
-                "retry shortly"
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"another /chameleon-refresh is in progress (PID {e.holder_pid}); retry shortly"
+                ),
+            }
+        )
 
 
 def _capture_pre_refresh_state(repo_path: Path) -> dict | None:
@@ -2515,21 +2553,19 @@ def _structural_hashes(profile_dir: Path) -> dict[str, str]:
         safe_read_profile_artifact_bytes,
     )
 
-    _STRIP_KEYS = frozenset({
-        "generation",
-        "created_at",
-        "updated_at",
-        "computed_at",
-        "scanned_at",
-    })
+    _STRIP_KEYS = frozenset(
+        {
+            "generation",
+            "created_at",
+            "updated_at",
+            "computed_at",
+            "scanned_at",
+        }
+    )
 
     def _strip_volatile(obj):
         if isinstance(obj, dict):
-            return {
-                k: _strip_volatile(v)
-                for k, v in obj.items()
-                if k not in _STRIP_KEYS
-            }
+            return {k: _strip_volatile(v) for k, v in obj.items() if k not in _STRIP_KEYS}
         if isinstance(obj, list):
             return [_strip_volatile(item) for item in obj]
         return obj
@@ -2544,9 +2580,7 @@ def _structural_hashes(profile_dir: Path) -> dict[str, str]:
         except json.JSONDecodeError:
             return hashlib.sha256(raw).hexdigest()
         stripped = _strip_volatile(data)
-        canonical = json.dumps(
-            stripped, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        canonical = json.dumps(stripped, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(canonical).hexdigest()
 
     def _hash_text(path: Path) -> str | None:
@@ -2599,16 +2633,12 @@ def _maybe_preserve_trust_across_refresh(
 
     profile_dir = repo_path / ".chameleon"
     diff = data.get("archetype_diff") or {}
-    structurally_identical = (
-        not (
-            diff.get("added")
-            or diff.get("removed")
-            or diff.get("renamed")
-            or diff.get("dropped_invalid_names")
-        )
-        and _structural_hashes(profile_dir)
-        == (pre_state.get("structural_hashes") or {})
-    )
+    structurally_identical = not (
+        diff.get("added")
+        or diff.get("removed")
+        or diff.get("renamed")
+        or diff.get("dropped_invalid_names")
+    ) and _structural_hashes(profile_dir) == (pre_state.get("structural_hashes") or {})
 
     preserve_reason: str | None = None
     if structurally_identical:
@@ -2842,9 +2872,7 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
 
     try:
         discovery_glob = persisted_pg or _glob_for_extractor(extractor)
-        candidates = discover_files(
-            repo_root, glob=discovery_glob, paths_glob=persisted_pg
-        )
+        candidates = discover_files(repo_root, glob=discovery_glob, paths_glob=persisted_pg)
     except Exception:
         return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
@@ -2871,14 +2899,16 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
             bootstrap_ms=cached.get("bootstrap_ms"),
             profile_sha256=cached.get("profile_sha256"),
         )
-        return _envelope({
-            "status": "noop",
-            "reason": "no files changed since last refresh",
-            "archetypes_detected": cached.get("archetype_count") or 0,
-            "files_processed": cached_files,
-            "duration_ms": 0,
-            "profile_path": str(profile_dir),
-        })
+        return _envelope(
+            {
+                "status": "noop",
+                "reason": "no files changed since last refresh",
+                "archetypes_detected": cached.get("archetype_count") or 0,
+                "files_processed": cached_files,
+                "duration_ms": 0,
+                "profile_path": str(profile_dir),
+            }
+        )
 
     prev_state = index_db.get_file_clusters(repo_id)
     if prev_state:
@@ -2956,13 +2986,15 @@ def bootstrap_repo(
         with acquire_advisory_lock(lock_dir / ".bootstrap.lock"):
             return _bootstrap_repo_unlocked(path, paths_glob, force, now)
     except LockHeldError as e:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"another bootstrap is in progress for this repo (PID {e.holder_pid}); "
-                "retry shortly"
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"another bootstrap is in progress for this repo (PID {e.holder_pid}); "
+                    "retry shortly"
+                ),
+            }
+        )
 
 
 def _bootstrap_repo_unlocked(
@@ -2993,42 +3025,53 @@ def _bootstrap_repo_unlocked(
     _clear_repo_id_cache()
 
     if not _validate_file_path_arg(path):
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
 
     resolved_path, _resolved_id = _resolve_repo_arg(path)
     if resolved_path is None:
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
     try:
         repo_root = resolved_path.resolve()
     except (OSError, ValueError):
         repo_root = resolved_path
     if not repo_root.is_dir():
-        return _envelope({
-            "status": "failed",
-            "error": f"path is not a directory: {path}",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": f"path is not a directory: {path}",
+            }
+        )
 
     if now is not None:
         if not isinstance(now, int | float) or isinstance(now, bool):
-            return _envelope({
-                "status": "failed",
-                "error": f"now must be a finite non-negative float; got {type(now).__name__}",
-            })
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": f"now must be a finite non-negative float; got {type(now).__name__}",
+                }
+            )
         now_f = float(now)
         if math.isnan(now_f) or math.isinf(now_f) or now_f < 0:
-            return _envelope({
-                "status": "failed",
-                "error": f"now must be a finite non-negative float; got {now_f!r}",
-            })
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": f"now must be a finite non-negative float; got {now_f!r}",
+                }
+            )
 
     try:
         from chameleon_mcp.bootstrap.transaction import cleanup_orphan_tmp_dirs
+
         cleanup_orphan_tmp_dirs(repo_root)
     except Exception:
         pass
@@ -3043,6 +3086,7 @@ def _bootstrap_repo_unlocked(
                 _arch_count: int | None = None
                 try:
                     import json as _json
+
                     _arc_data = _json.loads(
                         (profile_dir / "archetypes.json").read_text(encoding="utf-8")
                     )
@@ -3059,15 +3103,17 @@ def _bootstrap_repo_unlocked(
                 )
             except Exception:
                 pass
-            return _envelope({
-                "status": "already_bootstrapped",
-                "profile_path": profile_path,
-                "message": (
-                    "A committed profile already exists at this path. "
-                    "Pass force=true to overwrite, or run /chameleon-refresh "
-                    "to re-analyze without clearing trust state."
-                ),
-            })
+            return _envelope(
+                {
+                    "status": "already_bootstrapped",
+                    "profile_path": profile_path,
+                    "message": (
+                        "A committed profile already exists at this path. "
+                        "Pass force=true to overwrite, or run /chameleon-refresh "
+                        "to re-analyze without clearing trust state."
+                    ),
+                }
+            )
 
     report = _bootstrap(repo_root, paths_glob=paths_glob, now=now)
 
@@ -3082,9 +3128,7 @@ def _bootstrap_repo_unlocked(
             bootstrap_ms=report.duration_ms,
         )
         try:
-            file_cluster_rows = _compute_file_cluster_map(
-                repo_root, paths_glob=paths_glob
-            )
+            file_cluster_rows = _compute_file_cluster_map(repo_root, paths_glob=paths_glob)
         except Exception:
             file_cluster_rows = None
         if file_cluster_rows is not None:
@@ -3111,9 +3155,7 @@ def _bootstrap_repo_unlocked(
             bootstrap_ms=ws.get("duration_ms"),
         )
         try:
-            ws_rows = _compute_file_cluster_map(
-                ws_root, paths_glob=paths_glob
-            )
+            ws_rows = _compute_file_cluster_map(ws_root, paths_glob=paths_glob)
         except Exception:
             ws_rows = None
         if ws_rows is not None:
@@ -3146,26 +3188,32 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
     from chameleon_mcp.profile.trust import plugin_data_dir, trust_state_for
 
     if not isinstance(limit, int) or limit <= 0 or limit > 1000:
-        return _envelope({
-            "status": "failed",
-            "error": "limit must be an integer in 1..1000",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "limit must be an integer in 1..1000",
+            }
+        )
 
     if cursor is not None:
         if not isinstance(cursor, str) or not cursor:
-            return _envelope({
-                "status": "failed",
-                "error": (
-                    f"unknown cursor {cursor!r}; pass the next_cursor value from a prior page"
-                ),
-            })
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        f"unknown cursor {cursor!r}; pass the next_cursor value from a prior page"
+                    ),
+                }
+            )
         if cursor.count("|") not in (1, 2):
-            return _envelope({
-                "status": "failed",
-                "error": (
-                    f"unknown cursor {cursor!r}; pass the next_cursor value from a prior page"
-                ),
-            })
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        f"unknown cursor {cursor!r}; pass the next_cursor value from a prior page"
+                    ),
+                }
+            )
 
     _backfill_index_from_legacy_dirs()
 
@@ -3174,29 +3222,33 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
     try:
         page_rows, next_cursor, total_known = index_db.list_repos(cursor, limit)
     except ValueError:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"unknown cursor {cursor!r}; pass the next_cursor value from a prior page"
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"unknown cursor {cursor!r}; pass the next_cursor value from a prior page"
+                ),
+            }
+        )
 
     base = plugin_data_dir()
     profiles = []
     for row in page_rows:
         repo_id = row["repo_id"]
         trust = trust_state_for(repo_id) if (base / repo_id).is_dir() else None
-        profiles.append({
-            "repo_id": repo_id,
-            "trust_state": "trusted" if trust else "untrusted",
-            "trusted_at": trust.granted_at if trust else None,
-            "trusted_by": trust.granted_by_user if trust else None,
-            "repo_root": row.get("repo_root"),
-            "archetype_count": row.get("archetype_count"),
-            "files_indexed": row.get("files_indexed"),
-            "bootstrap_ms": row.get("bootstrap_ms"),
-            "last_seen_at": row.get("last_seen_at"),
-        })
+        profiles.append(
+            {
+                "repo_id": repo_id,
+                "trust_state": "trusted" if trust else "untrusted",
+                "trusted_at": trust.granted_at if trust else None,
+                "trusted_by": trust.granted_by_user if trust else None,
+                "repo_root": row.get("repo_root"),
+                "archetype_count": row.get("archetype_count"),
+                "files_indexed": row.get("files_indexed"),
+                "bootstrap_ms": row.get("bootstrap_ms"),
+                "last_seen_at": row.get("last_seen_at"),
+            }
+        )
 
     return _envelope(
         {"profiles": profiles, "total_known": total_known},
@@ -3272,10 +3324,7 @@ def _prune_dead_temp_repos() -> int:
         return 0
     for row in rows:
         repo_root = row.get("repo_root")
-        if not (
-            _is_dead_temp_repo_root(repo_root)
-            or _is_dead_chameleon_profile(repo_root)
-        ):
+        if not (_is_dead_temp_repo_root(repo_root) or _is_dead_chameleon_profile(repo_root)):
             continue
         try:
             if index_db.forget_repo(row["repo_id"], repo_root=repo_root):
@@ -3301,8 +3350,7 @@ def _backfill_index_from_legacy_dirs() -> None:
         return
     try:
         candidate_ids = [
-            d.name for d in base.iterdir()
-            if d.is_dir() and not d.name.startswith(".")
+            d.name for d in base.iterdir() if d.is_dir() and not d.name.startswith(".")
         ]
     except OSError:
         return
@@ -3320,13 +3368,26 @@ def _backfill_index_from_legacy_dirs() -> None:
             last_seen_at=trust.granted_at or None,
         )
 
+
 _SAFE_TOP_LEVEL_KEYS = {
-    "schema_version", "engine_min_version",
-    "repo_id", "language", "language_hint", "source",
-    "workspace", "workspaces", "platforms",
-    "archetypes", "archetypes_detected", "archetype_count", "tool_configs",
-    "generation", "created_at", "updated_at",
-    "clustering_algorithm_version", "discovery",
+    "schema_version",
+    "engine_min_version",
+    "repo_id",
+    "language",
+    "language_hint",
+    "source",
+    "workspace",
+    "workspaces",
+    "platforms",
+    "archetypes",
+    "archetypes_detected",
+    "archetype_count",
+    "tool_configs",
+    "generation",
+    "created_at",
+    "updated_at",
+    "clustering_algorithm_version",
+    "discovery",
 }
 
 
@@ -3351,21 +3412,25 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     ours_path = Path(ours)
     theirs_path = Path(theirs)
     if not ours_path.is_file() or not theirs_path.is_file():
-        return _envelope({
-            "status": "failed",
-            "error": "ours and theirs must point to existing profile JSON files",
-            "merged_profile_path": None,
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "ours and theirs must point to existing profile JSON files",
+                "merged_profile_path": None,
+            }
+        )
 
     try:
         ours_data = json.loads(ours_path.read_text(encoding="utf-8"))
         theirs_data = json.loads(theirs_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
-        return _envelope({
-            "status": "failed",
-            "error": f"profile JSON parse error: {e}",
-            "merged_profile_path": None,
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": f"profile JSON parse error: {e}",
+                "merged_profile_path": None,
+            }
+        )
 
     ours_archs = ours_data.get("archetypes", {}) or {}
     theirs_archs = theirs_data.get("archetypes", {}) or {}
@@ -3387,29 +3452,28 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
 
     unioned = {**ours_data, **theirs_data}
     merged_data = {
-        k: v for k, v in unioned.items()
-        if k in _SAFE_TOP_LEVEL_KEYS or k.startswith("_")
+        k: v for k, v in unioned.items() if k in _SAFE_TOP_LEVEL_KEYS or k.startswith("_")
     }
     merged_data["archetypes"] = merged
     # Keep the denormalized counts consistent with the merged set.
     merged_data["archetype_count"] = len(merged)
     merged_data["archetypes_detected"] = len(merged)
 
-    ours_path.write_text(
-        json.dumps(merged_data, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    ours_path.write_text(json.dumps(merged_data, indent=2, sort_keys=True), encoding="utf-8")
 
-    return _envelope({
-        "status": "success",
-        "merged_profile_path": str(ours_path),
-        "merged_archetype_count": len(merged),
-        "ours_archetype_count": len(ours_archs),
-        "theirs_archetype_count": len(theirs_archs),
-        "note": (
-            "merged by archetype-name union; run /chameleon-refresh after accepting "
-            "the merge to re-cluster from the actual merged repo state"
-        ),
-    })
+    return _envelope(
+        {
+            "status": "success",
+            "merged_profile_path": str(ours_path),
+            "merged_archetype_count": len(merged),
+            "ours_archetype_count": len(ours_archs),
+            "theirs_archetype_count": len(theirs_archs),
+            "note": (
+                "merged by archetype-name union; run /chameleon-refresh after accepting "
+                "the merge to re-cluster from the actual merged repo state"
+            ),
+        }
+    )
 
 
 _IDIOMS_FILE_CAP = 200_000
@@ -3454,16 +3518,20 @@ def teach_profile(repo: str, feedback: str) -> dict:
 
     repo_path, _repo_id = _resolve_repo_arg(repo)
     if repo_path is None:
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
     if not repo_path.is_dir():
         return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
 
     idioms_path = repo_path / ".chameleon" / "idioms.md"
     if not idioms_path.parent.exists():
-        return _envelope({"status": "failed", "error": "no profile in this repo (run /chameleon-init)"})
+        return _envelope(
+            {"status": "failed", "error": "no profile in this repo (run /chameleon-init)"}
+        )
 
     suspicious, suspicious_pattern = _looks_suspicious(feedback)
 
@@ -3479,11 +3547,7 @@ def teach_profile(repo: str, feedback: str) -> dict:
     if body.lstrip().startswith("### "):
         addition = f"\n{body.rstrip()}\n"
     else:
-        existing_text = (
-            idioms_path.read_text(encoding="utf-8")
-            if idioms_path.exists()
-            else ""
-        )
+        existing_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
 
         def _slug_from_rationale(text: str) -> str:
             import re as _re
@@ -3505,10 +3569,7 @@ def teach_profile(repo: str, feedback: str) -> dict:
             return candidate[:40]
 
         def _new_slug() -> str:
-            return (
-                f"idiom-{timestamp}-{int(time.time())}-"
-                f"{secrets.token_hex(2)}"
-            )
+            return f"idiom-{timestamp}-{int(time.time())}-{secrets.token_hex(2)}"
 
         rationale_slug = _slug_from_rationale(body)
         if rationale_slug and (
@@ -3529,15 +3590,19 @@ def teach_profile(repo: str, feedback: str) -> dict:
             language = profile_data.get("language", "any")
         except Exception as exc:
             import sys
+
             print(
                 f"[chameleon] WARNING: profile.json read failed in teach_profile;"
                 f" defaulting language to 'any'. Detail: {exc}",
                 file=sys.stderr,
             )
             language = "any"
-        addition = f"\n### {slug}\nLanguage: {language}\nStatus: active (added {timestamp})\n{body}\n"
+        addition = (
+            f"\n### {slug}\nLanguage: {language}\nStatus: active (added {timestamp})\n{body}\n"
+        )
 
     from chameleon_mcp.profile.trust import repo_data_dir as _rdd
+
     lock_path = _rdd(_compute_repo_id(idioms_path.parent.parent)) / ".idioms.lock"
     try:
         with acquire_advisory_lock(lock_path):
@@ -3556,25 +3621,28 @@ def teach_profile(repo: str, feedback: str) -> dict:
             else:
                 new_content = current + addition
             if len(new_content.encode("utf-8")) > _IDIOMS_FILE_CAP:
-                return _envelope({
-                    "status": "failed",
-                    "error": (
-                        f"idioms.md would exceed {_IDIOMS_FILE_CAP // 1000}KB "
-                        f"cumulative cap ({len(new_content.encode('utf-8'))} bytes "
-                        f"after append). Move older idioms to '## deprecated', "
-                        f"trim the file, or run /chameleon-refresh before "
-                        f"capturing more."
-                    ),
-                })
+                return _envelope(
+                    {
+                        "status": "failed",
+                        "error": (
+                            f"idioms.md would exceed {_IDIOMS_FILE_CAP // 1000}KB "
+                            f"cumulative cap ({len(new_content.encode('utf-8'))} bytes "
+                            f"after append). Move older idioms to '## deprecated', "
+                            f"trim the file, or run /chameleon-refresh before "
+                            f"capturing more."
+                        ),
+                    }
+                )
             idioms_path.write_text(new_content, encoding="utf-8")
     except LockHeldError as e:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"another /chameleon-teach is in progress (PID {e.holder_pid}); "
-                "retry shortly"
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"another /chameleon-teach is in progress (PID {e.holder_pid}); retry shortly"
+                ),
+            }
+        )
 
     _notify_daemon_cache_invalidation()
 
@@ -3618,11 +3686,7 @@ def _escape_markdown_section_headings(text: str) -> str:
             continue
         stripped = line.lstrip()
         indent = line[: len(line) - len(stripped)]
-        if (
-            stripped.startswith("## ")
-            or stripped.startswith("# ")
-            or stripped in ("##", "#")
-        ):
+        if stripped.startswith("## ") or stripped.startswith("# ") or stripped in ("##", "#"):
             out.append(f"{indent}\\{stripped}")
         else:
             out.append(line)
@@ -3681,35 +3745,41 @@ def disable_session(repo: str, session_id: str, force: bool = False) -> dict:
 
     _repo_path, repo_id = _resolve_repo_arg(repo)
     if repo_id is None:
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
 
     if trust_state_for(repo_id) is None:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                "disable_session requires a trust grant for the repo. "
-                "Run /chameleon-trust first."
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    "disable_session requires a trust grant for the repo. "
+                    "Run /chameleon-trust first."
+                ),
+            }
+        )
 
     session_unknown = _session_unseen_for_repo(repo_id, session_id)
 
     if session_unknown and not force:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                "session_id has not invoked any other chameleon tool "
-                "for this repo (session_unknown_to_chameleon). The "
-                "marker was NOT written. If this is a legitimate "
-                "first-time disable from a brand-new session, retry "
-                "with force=True."
-            ),
-            "session_unknown_to_chameleon": True,
-            "session_id": session_id,
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    "session_id has not invoked any other chameleon tool "
+                    "for this repo (session_unknown_to_chameleon). The "
+                    "marker was NOT written. If this is a legitimate "
+                    "first-time disable from a brand-new session, retry "
+                    "with force=True."
+                ),
+                "session_unknown_to_chameleon": True,
+                "session_id": session_id,
+            }
+        )
 
     marker = write_session_disable(repo_id, session_id)
     envelope: dict = {
@@ -3797,26 +3867,31 @@ def pause_session(repo: str, minutes: int = 15) -> dict:
 
     _repo_path, repo_id = _resolve_repo_arg(repo)
     if repo_id is None:
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
 
     if trust_state_for(repo_id) is None:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                "pause_session requires a trust grant for the repo. "
-                "Run /chameleon-trust first."
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    "pause_session requires a trust grant for the repo. Run /chameleon-trust first."
+                ),
+            }
+        )
 
     expiry_iso = write_pause(repo_id, minutes)
-    return _envelope({
-        "status": "success",
-        "expires_at": expiry_iso,
-        "minutes": minutes,
-    })
+    return _envelope(
+        {
+            "status": "success",
+            "expires_at": expiry_iso,
+            "minutes": minutes,
+        }
+    )
 
 
 def trust_profile(repo: str, confirmation_token: str) -> dict:
@@ -3836,10 +3911,12 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
 
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
     if resolved_path is None:
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
     repo_path = resolved_path
     if not repo_path.exists():
         return _envelope({"status": "failed", "error": f"repo path does not exist: {repo!r}"})
@@ -3848,34 +3925,45 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
 
     profile_dir = repo_path / ".chameleon"
     if not profile_dir.is_dir():
-        return _envelope({"status": "failed", "error": "no .chameleon/ directory (run /chameleon-init first)"})
+        return _envelope(
+            {"status": "failed", "error": "no .chameleon/ directory (run /chameleon-init first)"}
+        )
     if not (profile_dir / "profile.json").is_file():
-        return _envelope({"status": "failed", "error": "no profile.json in .chameleon/ (run /chameleon-init first)"})
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "no profile.json in .chameleon/ (run /chameleon-init first)",
+            }
+        )
 
     from chameleon_mcp.profile.loader import ProfileLoadError, load_profile_dir
 
     try:
         load_profile_dir(profile_dir)
     except (ProfileLoadError, json.JSONDecodeError) as exc:
-        return _envelope({
-            "status": "failed",
-            "error": f"profile is not loadable: {exc}",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": f"profile is not loadable: {exc}",
+            }
+        )
 
     repo_id = _compute_repo_id(repo_path)
     expected_short = repo_id[:8]
 
     if confirmation_token != repo_path.name and confirmation_token != f"yes-trust-{expected_short}":
-        return _envelope({
-            "status": "failed",
-            "error": (
-                "confirmation_token must be exactly the repo basename "
-                f"{repo_path.name!r}, or the literal string "
-                f"'yes-trust-{expected_short}' "
-                f"(yes-trust- prefix + the first 8 hex chars of repo_id "
-                f"{repo_id!r}). Substring / prefix variants are NOT accepted."
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    "confirmation_token must be exactly the repo basename "
+                    f"{repo_path.name!r}, or the literal string "
+                    f"'yes-trust-{expected_short}' "
+                    f"(yes-trust- prefix + the first 8 hex chars of repo_id "
+                    f"{repo_id!r}). Substring / prefix variants are NOT accepted."
+                ),
+            }
+        )
 
     record = grant_trust(repo_id, profile_dir)
 
@@ -3917,25 +4005,26 @@ def _sanitize_user_input(text: str) -> str:
 
 
 _SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("ignore previous instructions",
-     re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE)),
-    ("disregard above/prior",
-     re.compile(r"disregard\s+(the\s+)?(above|prior)", re.IGNORECASE)),
-    ("you are now <mode>",
-     re.compile(r"you\s+are\s+now\s+(in\s+)?[\w\s]{0,32}mode", re.IGNORECASE)),
-    ("system role injection",
-     re.compile(r"(<\s*/?\s*system\s*>|system\s*:\s*)", re.IGNORECASE)),
-    ("eval()",
-     re.compile(r"\beval\s*\(", re.IGNORECASE)),
-    ("exec()",
-     re.compile(r"\bexec\s*\(", re.IGNORECASE)),
-    ("rm -rf",
-     re.compile(r"\brm\s+-rf\b", re.IGNORECASE)),
-    ("reveal secrets/prompt",
-     re.compile(
-         r"reveal\s+(the\s+)?(secret|api\s*key|prompt|system\s+prompt)",
-         re.IGNORECASE,
-     )),
+    (
+        "ignore previous instructions",
+        re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE),
+    ),
+    ("disregard above/prior", re.compile(r"disregard\s+(the\s+)?(above|prior)", re.IGNORECASE)),
+    (
+        "you are now <mode>",
+        re.compile(r"you\s+are\s+now\s+(in\s+)?[\w\s]{0,32}mode", re.IGNORECASE),
+    ),
+    ("system role injection", re.compile(r"(<\s*/?\s*system\s*>|system\s*:\s*)", re.IGNORECASE)),
+    ("eval()", re.compile(r"\beval\s*\(", re.IGNORECASE)),
+    ("exec()", re.compile(r"\bexec\s*\(", re.IGNORECASE)),
+    ("rm -rf", re.compile(r"\brm\s+-rf\b", re.IGNORECASE)),
+    (
+        "reveal secrets/prompt",
+        re.compile(
+            r"reveal\s+(the\s+)?(secret|api\s*key|prompt|system\s+prompt)",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 
@@ -3976,6 +4065,7 @@ def _slugify(value: str) -> str | None:
     cap at 64 chars. Returns None on empty / leading-digit candidates.
     """
     import re as _re
+
     if not isinstance(value, str):
         return None
     candidate = _re.sub(r"[^a-z0-9-]+", "-", value.lower()).strip("-")
@@ -4000,6 +4090,7 @@ def _propose_alternatives_for(
     top-level node kinds, and the current heuristic name.
     """
     import re as _re
+
     candidates: list[str] = []
     current_slug = _slugify(current_name) if current_name else None
 
@@ -4083,17 +4174,21 @@ def propose_archetype_renames(repo: str, top_n: int = 8) -> dict:
 
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
     if resolved_path is None:
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
     if not resolved_path.is_dir():
         return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
     repo_root = resolved_path.resolve()
 
     profile_dir = repo_root / ".chameleon"
     if not profile_dir.is_dir():
-        return _envelope({"status": "failed", "error": "no .chameleon/ directory (run /chameleon-init first)"})
+        return _envelope(
+            {"status": "failed", "error": "no .chameleon/ directory (run /chameleon-init first)"}
+        )
 
     try:
         loaded = load_profile_dir(profile_dir)
@@ -4115,20 +4210,24 @@ def propose_archetype_renames(repo: str, top_n: int = 8) -> dict:
         if canonical_entry:
             canonical_path = (canonical_entry.get("witness") or {}).get("path", "")
         alternatives = _propose_alternatives_for(name, arch or {}, canonical_entry)
-        rows.append({
-            "current_name": name,
-            "cluster_size": int((arch or {}).get("cluster_size", 0)),
-            "canonical_file": canonical_path,
-            "paths_pattern": (arch or {}).get("paths_pattern", ""),
-            "suggested_alternatives": alternatives,
-        })
+        rows.append(
+            {
+                "current_name": name,
+                "cluster_size": int((arch or {}).get("cluster_size", 0)),
+                "canonical_file": canonical_path,
+                "paths_pattern": (arch or {}).get("paths_pattern", ""),
+                "suggested_alternatives": alternatives,
+            }
+        )
 
-    return _envelope({
-        "status": "success",
-        "repo_id": _compute_repo_id(repo_root),
-        "archetypes": rows,
-        "total_archetypes": len(archetypes),
-    })
+    return _envelope(
+        {
+            "status": "success",
+            "repo_id": _compute_repo_id(repo_root),
+            "archetypes": rows,
+            "total_archetypes": len(archetypes),
+        }
+    )
 
 
 def _validate_renames(
@@ -4160,9 +4259,7 @@ def _validate_renames(
     # freeing the name "x" for another rename to land on — otherwise one
     # archetype silently overwrites the other.
     renamed_away = {
-        k
-        for k, v in renames.items()
-        if isinstance(k, str) and isinstance(v, str) and k != v
+        k for k, v in renames.items() if isinstance(k, str) and isinstance(v, str) and k != v
     }
     for old, new in renames.items():
         if not isinstance(old, str) or not isinstance(new, str):
@@ -4170,9 +4267,7 @@ def _validate_renames(
         if old not in existing_names:
             return {}, f"unknown archetype {old!r} (not in committed profile)"
         if not ARCHETYPE_NAME_RE.match(new):
-            return {}, (
-                f"target name {new!r} must match {ARCHETYPE_NAME_RE.pattern}"
-            )
+            return {}, (f"target name {new!r} must match {ARCHETYPE_NAME_RE.pattern}")
         if old == new:
             continue
         if new in seen_targets:
@@ -4430,17 +4525,21 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
 
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
     if resolved_path is None:
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
     if not resolved_path.is_dir():
         return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
     repo_root = resolved_path.resolve()
 
     profile_dir = repo_root / ".chameleon"
     if not profile_dir.is_dir():
-        return _envelope({"status": "failed", "error": "no .chameleon/ directory (run /chameleon-init first)"})
+        return _envelope(
+            {"status": "failed", "error": "no .chameleon/ directory (run /chameleon-init first)"}
+        )
 
     try:
         loaded = load_profile_dir(profile_dir)
@@ -4453,12 +4552,14 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         return _envelope({"status": "failed", "error": err})
 
     if not effective:
-        return _envelope({
-            "status": "success",
-            "renames_applied": 0,
-            "new_profile_sha256": hash_profile(profile_dir),
-            "note": "no effective renames (all no-ops or empty mapping)",
-        })
+        return _envelope(
+            {
+                "status": "success",
+                "renames_applied": 0,
+                "new_profile_sha256": hash_profile(profile_dir),
+                "note": "no effective renames (all no-ops or empty mapping)",
+            }
+        )
 
     archetypes_data = json.loads(json.dumps(loaded.archetypes))
     canonicals_data = json.loads(json.dumps(loaded.canonicals))
@@ -4491,9 +4592,7 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     # both of these.
     conventions_path = profile_dir / "conventions.json"
     conventions_data = (
-        json.loads(json.dumps(loaded.conventions))
-        if conventions_path.is_file()
-        else None
+        json.loads(json.dumps(loaded.conventions)) if conventions_path.is_file() else None
     )
     if isinstance(conventions_data, dict):
         _conv_block = conventions_data.get("conventions")
@@ -4512,22 +4611,27 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
 
     summary_md = _rewrite_summary_md(
-        profile_data, archetypes_data, canonicals_data, idioms_text,
+        profile_data,
+        archetypes_data,
+        canonicals_data,
+        idioms_text,
         rules_data=rules_data,
     )
 
     try:
         existing_renames = _read_renames_overlay_strict(profile_dir)
     except _RenamesOverlayOverCap as exc:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"refusing to rename: {exc}. The on-disk overlay is too "
-                "large to safely merge — review .chameleon/renames.json "
-                "and remove stale entries (or raise CHAMELEON_RENAMES_OVERLAY_CAP) "
-                "before re-running /chameleon-rename."
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"refusing to rename: {exc}. The on-disk overlay is too "
+                    "large to safely merge — review .chameleon/renames.json "
+                    "and remove stale entries (or raise CHAMELEON_RENAMES_OVERLAY_CAP) "
+                    "before re-running /chameleon-rename."
+                ),
+            }
+        )
     merged_renames = _merge_rename_overlay(existing_renames, effective)
     renames_payload = {
         "schema_version": 1,
@@ -4585,12 +4689,14 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     except Exception:  # pragma: no cover - index is best-effort
         pass
 
-    return _envelope({
-        "status": "success",
-        "renames_applied": len(effective),
-        "new_profile_sha256": new_hash,
-        "renames": effective,
-    })
+    return _envelope(
+        {
+            "status": "success",
+            "renames_applied": len(effective),
+            "new_profile_sha256": new_hash,
+            "renames": effective,
+        }
+    )
 
 
 _SLUG_RE = __import__("re").compile(r"^[a-z][a-z0-9-]{2,63}$")
@@ -4621,31 +4727,41 @@ def teach_competing_import(
     from chameleon_mcp.safe_open import safe_read_profile_artifact
 
     if not isinstance(archetype, str) or not ARCHETYPE_NAME_RE.match(archetype):
-        return _envelope({
-            "status": "failed",
-            "error": f"archetype {archetype!r} must match {ARCHETYPE_NAME_RE.pattern!r}",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": f"archetype {archetype!r} must match {ARCHETYPE_NAME_RE.pattern!r}",
+            }
+        )
     preferred = (preferred or "").strip() if isinstance(preferred, str) else ""
     over = (over or "").strip() if isinstance(over, str) else ""
     if not preferred or not over:
-        return _envelope({
-            "status": "failed",
-            "error": "both 'preferred' and 'over' are required and must be non-empty",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "both 'preferred' and 'over' are required and must be non-empty",
+            }
+        )
     if len(preferred) > 200 or len(over) > 200:
-        return _envelope({"status": "failed", "error": "'preferred'/'over' exceed the 200-char cap"})
+        return _envelope(
+            {"status": "failed", "error": "'preferred'/'over' exceed the 200-char cap"}
+        )
     if preferred == over:
         return _envelope({"status": "failed", "error": "'preferred' and 'over' must differ"})
 
     repo_path, _repo_id = _resolve_repo_arg(repo)
     if repo_path is None:
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
     profile_dir = repo_path / ".chameleon"
     if not profile_dir.is_dir():
-        return _envelope({"status": "failed", "error": "no profile in this repo (run /chameleon-init)"})
+        return _envelope(
+            {"status": "failed", "error": "no profile in this repo (run /chameleon-init)"}
+        )
     conv_path = profile_dir / "conventions.json"
 
     lock_path = _rdd(_compute_repo_id(repo_path)) / ".conventions.lock"
@@ -4687,28 +4803,30 @@ def teach_competing_import(
             # truncated file raises ProfileLoadError (bricks the whole profile),
             # so write to a tmp + os.replace rather than truncating in place.
             _tmp = conv_path.with_suffix(".json.tmp")
-            _tmp.write_text(
-                json.dumps(conv, indent=2, sort_keys=True), encoding="utf-8"
-            )
+            _tmp.write_text(json.dumps(conv, indent=2, sort_keys=True), encoding="utf-8")
             _tmp.replace(conv_path)
     except LockHeldError as e:
-        return _envelope({
-            "status": "failed",
-            "error": f"another conventions write is in progress: {e}",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": f"another conventions write is in progress: {e}",
+            }
+        )
     except Exception as e:
         return _envelope({"status": "failed", "error": f"conventions write failed: {e}"})
 
-    return _envelope({
-        "status": "ok",
-        "archetype": archetype,
-        "competing": {"preferred": preferred, "over": over},
-        "already_present": already,
-        "note": (
-            "wrapper-preference recorded in conventions.json; the profile hash "
-            "changed, so run /chameleon-trust if it shows as stale."
-        ),
-    })
+    return _envelope(
+        {
+            "status": "ok",
+            "archetype": archetype,
+            "competing": {"preferred": preferred, "over": over},
+            "already_present": already,
+            "note": (
+                "wrapper-preference recorded in conventions.json; the profile hash "
+                "changed, so run /chameleon-trust if it shows as stale."
+            ),
+        }
+    )
 
 
 def teach_profile_structured(
@@ -4739,34 +4857,40 @@ def teach_profile_structured(
     from chameleon_mcp.profile.schema import ARCHETYPE_NAME_RE
 
     if not isinstance(slug, str) or not _SLUG_RE.match(slug):
-        return _envelope({
-            "status": "failed",
-            "error": f"slug {slug!r} must match {_SLUG_RE.pattern!r}",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": f"slug {slug!r} must match {_SLUG_RE.pattern!r}",
+            }
+        )
     if not isinstance(rationale, str) or not rationale.strip():
         return _envelope({"status": "failed", "error": "rationale is required"})
     if status not in ("active", "deprecated"):
-        return _envelope({
-            "status": "failed",
-            "error": "status must be 'active' or 'deprecated'",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "status must be 'active' or 'deprecated'",
+            }
+        )
     if archetype is not None and not ARCHETYPE_NAME_RE.match(str(archetype)):
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"archetype {archetype!r} must match {ARCHETYPE_NAME_RE.pattern!r}"
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (f"archetype {archetype!r} must match {ARCHETYPE_NAME_RE.pattern!r}"),
+            }
+        )
 
     total = len(rationale) + len(example or "") + len(counterexample or "")
     if total > _STRUCTURED_TOTAL_CAP:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"rationale + example + counterexample size {total} exceeds "
-                f"50KB cap ({_STRUCTURED_TOTAL_CAP})"
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"rationale + example + counterexample size {total} exceeds "
+                    f"50KB cap ({_STRUCTURED_TOTAL_CAP})"
+                ),
+            }
+        )
 
     timestamp = time.strftime("%Y-%m-%d", time.gmtime())
     lines: list[str] = [f"### {slug}"]
@@ -4793,15 +4917,19 @@ def teach_profile_structured(
 
     repo_path, _repo_id = _resolve_repo_arg(repo)
     if repo_path is None:
-        return _envelope({
-            "status": "failed",
-            "error": "expected absolute repo path or 64-char repo_id hex digest",
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
     if not repo_path.is_dir():
         return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
     idioms_path = repo_path / ".chameleon" / "idioms.md"
     if not idioms_path.parent.exists():
-        return _envelope({"status": "failed", "error": "no profile in this repo (run /chameleon-init)"})
+        return _envelope(
+            {"status": "failed", "error": "no profile in this repo (run /chameleon-init)"}
+        )
 
     try:
         from chameleon_mcp.safe_open import safe_read_profile_artifact
@@ -4812,6 +4940,7 @@ def teach_profile_structured(
         language = profile_data.get("language", "any")
     except Exception as exc:
         import sys
+
         print(
             f"[chameleon] WARNING: profile.json read failed in teach_profile_structured;"
             f" defaulting language to 'any'. Detail: {exc}",
@@ -4825,35 +4954,47 @@ def teach_profile_structured(
     in_deprecated = "deprecated" in sections
 
     if in_deprecated:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"slug {slug!r} already exists in '## deprecated'. Pick a "
-                "new slug or edit idioms.md directly to reactivate."
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"slug {slug!r} already exists in '## deprecated'. Pick a "
+                    "new slug or edit idioms.md directly to reactivate."
+                ),
+            }
+        )
     if in_active and status == "active":
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"slug {slug!r} already exists in '## active'. To "
-                "deprecate it, pass status=\"deprecated\"; to update its "
-                "body, edit idioms.md directly or pick a new slug."
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"slug {slug!r} already exists in '## active'. To "
+                    'deprecate it, pass status="deprecated"; to update its '
+                    "body, edit idioms.md directly or pick a new slug."
+                ),
+            }
+        )
     if in_active and status == "deprecated":
         return _transition_slug_to_deprecated(
-            idioms_path, slug, archetype=archetype,
-            rationale=rationale.strip(), timestamp=timestamp,
-            example=example, counterexample=counterexample,
+            idioms_path,
+            slug,
+            archetype=archetype,
+            rationale=rationale.strip(),
+            timestamp=timestamp,
+            example=example,
+            counterexample=counterexample,
         )
 
     if status == "active":
         return teach_profile(repo, rendered)
     return _write_new_deprecated_idiom(
-        idioms_path, slug, archetype=archetype,
-        rationale=rationale.strip(), timestamp=timestamp,
-        example=example, counterexample=counterexample,
+        idioms_path,
+        slug,
+        archetype=archetype,
+        rationale=rationale.strip(),
+        timestamp=timestamp,
+        example=example,
+        counterexample=counterexample,
     )
 
 
@@ -4935,9 +5076,7 @@ def _sanitize_idiom_inputs(
     transition + direct-deprecated paths match teach_profile's
     sanitization. Returns the sanitized triple; empty strings normalize
     to None for example/counterexample so the renderer can skip them."""
-    san_rationale = _escape_markdown_section_headings(
-        _sanitize_user_input(rationale)
-    )
+    san_rationale = _escape_markdown_section_headings(_sanitize_user_input(rationale))
     san_example: str | None = None
     if example is not None:
         cleaned = _escape_markdown_section_headings(_sanitize_user_input(example))
@@ -4974,12 +5113,17 @@ def _transition_slug_to_deprecated(
         rationale, example, counterexample
     )
     new_block = _render_idiom_block(
-        slug, status="deprecated", archetype=archetype,
-        rationale=san_rationale, timestamp=timestamp,
-        example=san_example, counterexample=san_counter,
+        slug,
+        status="deprecated",
+        archetype=archetype,
+        rationale=san_rationale,
+        timestamp=timestamp,
+        example=san_example,
+        counterexample=san_counter,
     )
 
     from chameleon_mcp.profile.trust import repo_data_dir as _rdd
+
     lock_path = _rdd(_compute_repo_id(idioms_path.parent.parent)) / ".idioms.lock"
     try:
         with acquire_advisory_lock(lock_path):
@@ -5023,13 +5167,15 @@ def _transition_slug_to_deprecated(
                 i += 1
 
             if not removed:
-                return _envelope({
-                    "status": "failed",
-                    "error": (
-                        f"slug {slug!r} no longer present in '## active' "
-                        "(concurrent write?); retry"
-                    ),
-                })
+                return _envelope(
+                    {
+                        "status": "failed",
+                        "error": (
+                            f"slug {slug!r} no longer present in '## active' "
+                            "(concurrent write?); retry"
+                        ),
+                    }
+                )
 
             rebuilt: list[str] = []
             rebuilt.extend(preamble)
@@ -5040,33 +5186,38 @@ def _transition_slug_to_deprecated(
             rebuilt.extend(deprecated_body)
             new_content = "".join(rebuilt)
             if len(new_content.encode("utf-8")) > _IDIOMS_FILE_CAP:
-                return _envelope({
-                    "status": "failed",
-                    "error": (
-                        f"idioms.md would exceed {_IDIOMS_FILE_CAP // 1000}KB "
-                        f"cumulative cap ({len(new_content.encode('utf-8'))} "
-                        "bytes after transition). Trim the file or move older "
-                        "entries before transitioning more slugs."
-                    ),
-                })
+                return _envelope(
+                    {
+                        "status": "failed",
+                        "error": (
+                            f"idioms.md would exceed {_IDIOMS_FILE_CAP // 1000}KB "
+                            f"cumulative cap ({len(new_content.encode('utf-8'))} "
+                            "bytes after transition). Trim the file or move older "
+                            "entries before transitioning more slugs."
+                        ),
+                    }
+                )
             idioms_path.write_text(new_content, encoding="utf-8")
     except LockHeldError as e:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"another /chameleon-teach is in progress (PID {e.holder_pid}); "
-                "retry shortly"
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"another /chameleon-teach is in progress (PID {e.holder_pid}); retry shortly"
+                ),
+            }
+        )
 
     _notify_daemon_cache_invalidation()
-    return _envelope({
-        "status": "success",
-        "idioms_added": 0,
-        "idioms_deprecated": 1,
-        "slug": slug,
-        "note": f"moved '### {slug}' from '## active' to '## deprecated'",
-    })
+    return _envelope(
+        {
+            "status": "success",
+            "idioms_added": 0,
+            "idioms_deprecated": 1,
+            "slug": slug,
+            "note": f"moved '### {slug}' from '## active' to '## deprecated'",
+        }
+    )
 
 
 def _write_new_deprecated_idiom(
@@ -5091,12 +5242,17 @@ def _write_new_deprecated_idiom(
         rationale, example, counterexample
     )
     new_block = _render_idiom_block(
-        slug, status="deprecated", archetype=archetype,
-        rationale=san_rationale, timestamp=timestamp,
-        example=san_example, counterexample=san_counter,
+        slug,
+        status="deprecated",
+        archetype=archetype,
+        rationale=san_rationale,
+        timestamp=timestamp,
+        example=san_example,
+        counterexample=san_counter,
     )
 
     from chameleon_mcp.profile.trust import repo_data_dir as _rdd
+
     lock_path = _rdd(_compute_repo_id(idioms_path.parent.parent)) / ".idioms.lock"
     try:
         with acquire_advisory_lock(lock_path):
@@ -5120,33 +5276,38 @@ def _write_new_deprecated_idiom(
                     current += "\n"
                 new_content = current + "\n## deprecated\n" + new_block
             if len(new_content.encode("utf-8")) > _IDIOMS_FILE_CAP:
-                return _envelope({
-                    "status": "failed",
-                    "error": (
-                        f"idioms.md would exceed {_IDIOMS_FILE_CAP // 1000}KB "
-                        f"cumulative cap ({len(new_content.encode('utf-8'))} "
-                        "bytes after append). Trim the file or move older "
-                        "entries before capturing more."
-                    ),
-                })
+                return _envelope(
+                    {
+                        "status": "failed",
+                        "error": (
+                            f"idioms.md would exceed {_IDIOMS_FILE_CAP // 1000}KB "
+                            f"cumulative cap ({len(new_content.encode('utf-8'))} "
+                            "bytes after append). Trim the file or move older "
+                            "entries before capturing more."
+                        ),
+                    }
+                )
             idioms_path.write_text(new_content, encoding="utf-8")
     except LockHeldError as e:
-        return _envelope({
-            "status": "failed",
-            "error": (
-                f"another /chameleon-teach is in progress (PID {e.holder_pid}); "
-                "retry shortly"
-            ),
-        })
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    f"another /chameleon-teach is in progress (PID {e.holder_pid}); retry shortly"
+                ),
+            }
+        )
 
     _notify_daemon_cache_invalidation()
-    return _envelope({
-        "status": "success",
-        "idioms_added": 0,
-        "idioms_deprecated": 1,
-        "slug": slug,
-        "note": f"appended '### {slug}' directly under '## deprecated'",
-    })
+    return _envelope(
+        {
+            "status": "success",
+            "idioms_added": 0,
+            "idioms_deprecated": 1,
+            "slug": slug,
+            "note": f"appended '### {slug}' directly under '## deprecated'",
+        }
+    )
 
 
 def daemon_status() -> dict:
@@ -5178,9 +5339,7 @@ def daemon_status() -> dict:
             raw = pong.get("last_request_at", pong.get("ts"))
             if raw is not None:
                 try:
-                    last_request_at = time.strftime(
-                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(raw))
-                    )
+                    last_request_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(raw)))
                 except (TypeError, ValueError):
                     last_request_at = None
 
@@ -5191,24 +5350,28 @@ def daemon_status() -> dict:
     except Exception:  # pragma: no cover - defensive
         running_version = None
 
-    return _envelope({
-        "alive": bool(info.get("alive")),
-        "pid": info.get("pid"),
-        "socket": info.get("socket"),
-        "uptime_s": info.get("uptime_s"),
-        "last_request_at": last_request_at,
-        "running_version": running_version,
-    })
+    return _envelope(
+        {
+            "alive": bool(info.get("alive")),
+            "pid": info.get("pid"),
+            "socket": info.get("socket"),
+            "uptime_s": info.get("uptime_s"),
+            "last_request_at": last_request_at,
+            "running_version": running_version,
+        }
+    )
 
 
 def _chameleon_version_or_unknown() -> str:
     try:
         from importlib.metadata import version
+
         return version("chameleon-mcp")
     except Exception:
         pass
     try:
         from chameleon_mcp import __version__
+
         return __version__
     except Exception:
         return "unknown"
@@ -5230,15 +5393,33 @@ def doctor() -> dict:
 
     py = sys.version_info
     if py >= (3, 11):
-        checks.append({"name": "python_version", "status": "ok", "detail": f"{py.major}.{py.minor}.{py.micro}"})
+        checks.append(
+            {
+                "name": "python_version",
+                "status": "ok",
+                "detail": f"{py.major}.{py.minor}.{py.micro}",
+            }
+        )
     else:
-        checks.append({"name": "python_version", "status": "error", "detail": f"{py.major}.{py.minor}.{py.micro} (need >= 3.11)"})
+        checks.append(
+            {
+                "name": "python_version",
+                "status": "error",
+                "detail": f"{py.major}.{py.minor}.{py.micro} (need >= 3.11)",
+            }
+        )
 
     bash_path = shutil.which("bash")
     if bash_path:
         checks.append({"name": "bash_on_path", "status": "ok", "detail": bash_path})
     else:
-        checks.append({"name": "bash_on_path", "status": "error", "detail": "bash not on PATH; hooks will not run"})
+        checks.append(
+            {
+                "name": "bash_on_path",
+                "status": "error",
+                "detail": "bash not on PATH; hooks will not run",
+            }
+        )
 
     # The hooks resolve `timeout || gtimeout` and degrade to uncapped python
     # when neither exists, so a missing binary is no longer fatal — but it does
@@ -5248,18 +5429,21 @@ def doctor() -> dict:
     if timeout_path:
         checks.append({"name": "timeout_on_path", "status": "ok", "detail": timeout_path})
     else:
-        checks.append({
-            "name": "timeout_on_path",
-            "status": "warn",
-            "detail": (
-                "neither timeout(1) nor gtimeout on PATH; hooks still run but "
-                "without an external wall-clock cap (in-process timeouts apply). "
-                "macOS: brew install coreutils"
-            ),
-        })
+        checks.append(
+            {
+                "name": "timeout_on_path",
+                "status": "warn",
+                "detail": (
+                    "neither timeout(1) nor gtimeout on PATH; hooks still run but "
+                    "without an external wall-clock cap (in-process timeouts apply). "
+                    "macOS: brew install coreutils"
+                ),
+            }
+        )
 
     try:
         from chameleon_mcp.profile.trust import plugin_data_dir
+
         data_dir = plugin_data_dir()
         data_dir.mkdir(parents=True, exist_ok=True)
         probe = data_dir / ".doctor_probe"
@@ -5267,38 +5451,71 @@ def doctor() -> dict:
         probe.unlink()
         checks.append({"name": "plugin_data_writable", "status": "ok", "detail": str(data_dir)})
     except Exception as exc:
-        checks.append({"name": "plugin_data_writable", "status": "error", "detail": f"{type(exc).__name__}: {exc}"})
+        checks.append(
+            {
+                "name": "plugin_data_writable",
+                "status": "error",
+                "detail": f"{type(exc).__name__}: {exc}",
+            }
+        )
 
     plugin_root_env = os.environ.get("CLAUDE_PLUGIN_ROOT")
     if plugin_root_env:
         plugin_root = Path(plugin_root_env)
         hook_dir = plugin_root / "hooks"
-        for hook_name in ("preflight-and-advise", "posttool-recorder", "posttool-verify", "session-start", "callout-detector"):
+        for hook_name in (
+            "preflight-and-advise",
+            "posttool-recorder",
+            "posttool-verify",
+            "session-start",
+            "callout-detector",
+        ):
             hpath = hook_dir / hook_name
             if hpath.is_file() and os.access(hpath, os.X_OK):
                 checks.append({"name": f"hook_{hook_name}", "status": "ok", "detail": "executable"})
             elif hpath.is_file():
-                checks.append({"name": f"hook_{hook_name}", "status": "error", "detail": "exists but not executable"})
+                checks.append(
+                    {
+                        "name": f"hook_{hook_name}",
+                        "status": "error",
+                        "detail": "exists but not executable",
+                    }
+                )
             else:
                 checks.append({"name": f"hook_{hook_name}", "status": "error", "detail": "missing"})
     else:
-        checks.append({"name": "hooks", "status": "warn", "detail": "CLAUDE_PLUGIN_ROOT not set; cannot locate hook scripts"})
+        checks.append(
+            {
+                "name": "hooks",
+                "status": "warn",
+                "detail": "CLAUDE_PLUGIN_ROOT not set; cannot locate hook scripts",
+            }
+        )
 
     try:
         from chameleon_mcp.exec_log import _ensure_hmac_key
+
         _ensure_hmac_key()
         checks.append({"name": "hmac_key", "status": "ok", "detail": "exists and owner-readable"})
     except Exception as exc:
-        checks.append({"name": "hmac_key", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
+        checks.append(
+            {"name": "hmac_key", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"}
+        )
 
     try:
         ds = daemon_status()
         if ds.get("data", {}).get("alive"):
-            checks.append({"name": "daemon", "status": "ok", "detail": f"alive (pid={ds['data'].get('pid')})"})
+            checks.append(
+                {"name": "daemon", "status": "ok", "detail": f"alive (pid={ds['data'].get('pid')})"}
+            )
         else:
-            checks.append({"name": "daemon", "status": "ok", "detail": "lazy (will spawn on next hook)"})
+            checks.append(
+                {"name": "daemon", "status": "ok", "detail": "lazy (will spawn on next hook)"}
+            )
     except Exception as exc:
-        checks.append({"name": "daemon", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
+        checks.append(
+            {"name": "daemon", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"}
+        )
 
     log_env = os.environ.get("CHAMELEON_HOOK_ERROR_LOG")
     if log_env:
@@ -5338,9 +5555,21 @@ def doctor() -> dict:
             if tail:
                 checks.append({"name": "recent_hook_errors", "status": "warn", "detail": tail})
             else:
-                checks.append({"name": "recent_hook_errors", "status": "ok", "detail": "no errors in the last 72h"})
+                checks.append(
+                    {
+                        "name": "recent_hook_errors",
+                        "status": "ok",
+                        "detail": "no errors in the last 72h",
+                    }
+                )
         except Exception as exc:
-            checks.append({"name": "recent_hook_errors", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
+            checks.append(
+                {
+                    "name": "recent_hook_errors",
+                    "status": "warn",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
     else:
         checks.append({"name": "recent_hook_errors", "status": "ok", "detail": "no errors logged"})
 
@@ -5365,31 +5594,37 @@ def doctor() -> dict:
             }
             checks.append({"name": "config_json", "status": "ok", "detail": detail})
         except ChameleonConfigError as cfg_exc:
-            checks.append({
-                "name": "config_json",
-                "status": "error",
-                "detail": (
-                    f"{cwd_config} is present but malformed: "
-                    f"{type(cfg_exc).__name__}: {cfg_exc}. v0.6.0 features "
-                    "are inactive until fixed."
-                ),
-            })
+            checks.append(
+                {
+                    "name": "config_json",
+                    "status": "error",
+                    "detail": (
+                        f"{cwd_config} is present but malformed: "
+                        f"{type(cfg_exc).__name__}: {cfg_exc}. v0.6.0 features "
+                        "are inactive until fixed."
+                    ),
+                }
+            )
         except Exception as exc:
-            checks.append({
-                "name": "config_json",
-                "status": "warn",
-                "detail": f"{type(exc).__name__}: {exc}",
-            })
+            checks.append(
+                {
+                    "name": "config_json",
+                    "status": "warn",
+                    "detail": f"{type(exc).__name__}: {exc}",
+                }
+            )
     else:
-        checks.append({
-            "name": "config_json",
-            "status": "ok",
-            "detail": (
-                "no .chameleon/config.json (v0.5.x defaults). Drop a "
-                "config.json to opt into v0.6.0 features (canonical_ref, "
-                "auto_refresh, trust.auto_preserve_when, auto_rename)."
-            ),
-        })
+        checks.append(
+            {
+                "name": "config_json",
+                "status": "ok",
+                "detail": (
+                    "no .chameleon/config.json (v0.5.x defaults). Drop a "
+                    "config.json to opt into v0.6.0 features (canonical_ref, "
+                    "auto_refresh, trust.auto_preserve_when, auto_rename)."
+                ),
+            }
+        )
 
     try:
         from chameleon_mcp.bootstrap.transaction import is_committed
@@ -5405,14 +5640,18 @@ def doctor() -> dict:
                 status = "no_profile"
             else:
                 status = "unknown"
-            repo_states.append({
-                "repo_root": root,
-                "profile_status": status,
-                "trust_state": r.get("trust_state"),
-            })
+            repo_states.append(
+                {
+                    "repo_root": root,
+                    "profile_status": status,
+                    "trust_state": r.get("trust_state"),
+                }
+            )
         checks.append({"name": "known_repos", "status": "ok", "detail": repo_states})
     except Exception as exc:
-        checks.append({"name": "known_repos", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"})
+        checks.append(
+            {"name": "known_repos", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"}
+        )
 
     error_count = sum(1 for c in checks if c["status"] == "error")
     warn_count = sum(1 for c in checks if c["status"] == "warn")
@@ -5423,15 +5662,17 @@ def doctor() -> dict:
     else:
         overall = "ok"
 
-    return _envelope({
-        "overall": overall,
-        "platform": {"system": platform.system(), "release": platform.release()},
-        "chameleon_version": _chameleon_version_or_unknown(),
-        "checks": checks,
-        "summary": {
-            "total": len(checks),
-            "ok": len(checks) - error_count - warn_count,
-            "warn": warn_count,
-            "error": error_count,
-        },
-    })
+    return _envelope(
+        {
+            "overall": overall,
+            "platform": {"system": platform.system(), "release": platform.release()},
+            "chameleon_version": _chameleon_version_or_unknown(),
+            "checks": checks,
+            "summary": {
+                "total": len(checks),
+                "ok": len(checks) - error_count - warn_count,
+                "warn": warn_count,
+                "error": error_count,
+            },
+        }
+    )

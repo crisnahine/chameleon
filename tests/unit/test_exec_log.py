@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.exec_log — HMAC-signed execution log."""
+
 from __future__ import annotations
 
 import json
@@ -39,10 +40,13 @@ def test_append_writes_ndjson_with_hmac(tmp_path: Path):
     key_file.write_bytes(b"k" * 32)
     key_file.chmod(0o600)
 
-    with patch.dict(os.environ, {
-        "CHAMELEON_HMAC_KEY_PATH": str(key_file),
-        "TMPDIR": str(tmp_path),
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CHAMELEON_HMAC_KEY_PATH": str(key_file),
+            "TMPDIR": str(tmp_path),
+        },
+    ):
         from chameleon_mcp.exec_log import append_exec_log
 
         append_exec_log(
@@ -64,6 +68,7 @@ def test_append_writes_ndjson_with_hmac(tmp_path: Path):
     assert "hmac" in record
     assert record["session_id"] == "s1"
     import hashlib
+
     assert record["command_sha256"] == hashlib.sha256(b"echo hello").hexdigest()
     assert "command" not in record  # the raw command body is never stored
     assert record["exit_code"] == 0
@@ -76,10 +81,13 @@ def test_verify_roundtrip(tmp_path: Path):
     key_file.write_bytes(b"k" * 32)
     key_file.chmod(0o600)
 
-    with patch.dict(os.environ, {
-        "CHAMELEON_HMAC_KEY_PATH": str(key_file),
-        "TMPDIR": str(tmp_path),
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CHAMELEON_HMAC_KEY_PATH": str(key_file),
+            "TMPDIR": str(tmp_path),
+        },
+    ):
         from chameleon_mcp.exec_log import append_exec_log, verify_exec_log_line
 
         append_exec_log(
@@ -101,10 +109,13 @@ def test_verify_tampered_command(tmp_path: Path):
     key_file.write_bytes(b"k" * 32)
     key_file.chmod(0o600)
 
-    with patch.dict(os.environ, {
-        "CHAMELEON_HMAC_KEY_PATH": str(key_file),
-        "TMPDIR": str(tmp_path),
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CHAMELEON_HMAC_KEY_PATH": str(key_file),
+            "TMPDIR": str(tmp_path),
+        },
+    ):
         from chameleon_mcp.exec_log import append_exec_log, verify_exec_log_line
 
         append_exec_log(
@@ -141,14 +152,18 @@ def test_command_body_not_stored(tmp_path: Path):
     """The raw command (which can carry secrets) is never persisted — only a
     fixed-length sha256."""
     import hashlib
+
     key_file = tmp_path / "hmac.key"
     key_file.write_bytes(b"k" * 32)
     key_file.chmod(0o600)
 
-    with patch.dict(os.environ, {
-        "CHAMELEON_HMAC_KEY_PATH": str(key_file),
-        "TMPDIR": str(tmp_path),
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CHAMELEON_HMAC_KEY_PATH": str(key_file),
+            "TMPDIR": str(tmp_path),
+        },
+    ):
         from chameleon_mcp.exec_log import append_exec_log
 
         secret_cmd = "curl -H 'Authorization: Bearer sk-SECRETVALUE' https://x"
@@ -167,14 +182,18 @@ def test_command_body_not_stored(tmp_path: Path):
 def test_gc_purges_old_session_logs(tmp_path: Path):
     """A new session's first append purges session logs older than RETENTION_DAYS."""
     import time
+
     key_file = tmp_path / "hmac.key"
     key_file.write_bytes(b"k" * 32)
     key_file.chmod(0o600)
 
-    with patch.dict(os.environ, {
-        "CHAMELEON_HMAC_KEY_PATH": str(key_file),
-        "TMPDIR": str(tmp_path),
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CHAMELEON_HMAC_KEY_PATH": str(key_file),
+            "TMPDIR": str(tmp_path),
+        },
+    ):
         from chameleon_mcp.exec_log import RETENTION_DAYS, append_exec_log
 
         log_dir = tmp_path / ".chameleon_exec_log" / "repo-1"
@@ -187,5 +206,5 @@ def test_gc_purges_old_session_logs(tmp_path: Path):
         append_exec_log("repo-1", session_id="fresh", command="ls", exit_code=0)
 
         remaining = list(log_dir.glob("*.jsonl"))
-        assert stale not in remaining          # stale log purged
-        assert len(remaining) == 1             # only the fresh session's log
+        assert stale not in remaining  # stale log purged
+        assert len(remaining) == 1  # only the fresh session's log

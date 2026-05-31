@@ -1,4 +1,5 @@
 """Unit tests for enforcement state machine."""
+
 from __future__ import annotations
 
 import time
@@ -121,7 +122,8 @@ def test_eviction_at_200_files(tmp_path):
     now = time.time()
     for i in range(210):
         state.files[f"/file_{i:04d}.ts"] = FileState(
-            level=0, last_verified_at=now - (210 - i),
+            level=0,
+            last_verified_at=now - (210 - i),
         )
     save_state(state, repo_dir, "session-evict")
     loaded = load_state(repo_dir, "session-evict")

@@ -8,6 +8,7 @@ Each principle is gated on whether the repo has the relevant pattern.
 Token budget: under ~300 tokens for any repo (the always-on
 anti-hallucination protocol adds ~60-90 over the numbered principles).
 """
+
 from __future__ import annotations
 
 
@@ -29,17 +30,11 @@ def generate_principles(
         "The conventions and code patterns shown here are extracted from this codebase. They override general best practices."
     )
 
-    principles.append(
-        "Match directory granularity; don't extract what siblings inline."
-    )
+    principles.append("Match directory granularity; don't extract what siblings inline.")
 
-    has_test_archs = any(
-        name.startswith("test") for name in arch_data
-    )
+    has_test_archs = any(name.startswith("test") for name in arch_data)
     if has_test_archs:
-        principles.append(
-            "Match sibling test shape; skip tests where siblings have none."
-        )
+        principles.append("Match sibling test shape; skip tests where siblings have none.")
 
     has_api = any(
         "controller" in (body.get("paths_pattern") or "")
@@ -51,14 +46,9 @@ def generate_principles(
             "One action, one job: queries return data, downloads produce files. Match the API shape of sibling endpoints."
         )
 
-    has_competing = any(
-        data.get("competing")
-        for data in conv.get("imports", {}).values()
-    )
+    has_competing = any(data.get("competing") for data in conv.get("imports", {}).values())
     if has_competing:
-        principles.append(
-            "Use the project's wrapper, not the raw library."
-        )
+        principles.append("Use the project's wrapper, not the raw library.")
 
     principles.append(
         "Prefer the language's built-in idiom for upserts, lookups, and defaults over manual check-then-create."

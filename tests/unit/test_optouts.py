@@ -1,4 +1,5 @@
 """Unit tests for chameleon_mcp.optouts — opt-out hierarchy enforcement."""
+
 from __future__ import annotations
 
 import hashlib
@@ -65,17 +66,18 @@ def test_session_disable_valid_signature(tmp_path: Path):
     repo_id = "test-repo"
     session_id = "session-abc-123"
 
-    with patch.dict(os.environ, {
-        "CHAMELEON_PLUGIN_DATA": str(data_dir),
-        "CHAMELEON_HMAC_KEY_PATH": str(key_file),
-        "CHAMELEON_DISABLE": "",
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CHAMELEON_PLUGIN_DATA": str(data_dir),
+            "CHAMELEON_HMAC_KEY_PATH": str(key_file),
+            "CHAMELEON_DISABLE": "",
+        },
+    ):
         from chameleon_mcp.optouts import is_chameleon_suppressed, write_session_disable
 
         write_session_disable(repo_id, session_id)
-        result = is_chameleon_suppressed(
-            repo_root=None, repo_id=repo_id, session_id=session_id
-        )
+        result = is_chameleon_suppressed(repo_root=None, repo_id=repo_id, session_id=session_id)
     assert result == "session_disable"
 
 
@@ -87,11 +89,14 @@ def test_session_disable_invalid_signature(tmp_path: Path):
     repo_id = "test-repo"
     session_id = "session-abc-123"
 
-    with patch.dict(os.environ, {
-        "CHAMELEON_PLUGIN_DATA": str(data_dir),
-        "CHAMELEON_HMAC_KEY_PATH": str(key_file),
-        "CHAMELEON_DISABLE": "",
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CHAMELEON_PLUGIN_DATA": str(data_dir),
+            "CHAMELEON_HMAC_KEY_PATH": str(key_file),
+            "CHAMELEON_DISABLE": "",
+        },
+    ):
         from chameleon_mcp.optouts import (
             _safe_session_marker,
             is_chameleon_suppressed,
@@ -106,9 +111,7 @@ def test_session_disable_invalid_signature(tmp_path: Path):
         tampered = text.replace("sig=", "sig=deadbeef")
         marker.write_text(tampered, encoding="utf-8")
 
-        result = is_chameleon_suppressed(
-            repo_root=None, repo_id=repo_id, session_id=session_id
-        )
+        result = is_chameleon_suppressed(repo_root=None, repo_id=repo_id, session_id=session_id)
     assert result is None
 
 
@@ -117,16 +120,17 @@ def test_pause_future_timestamp(tmp_path: Path):
     data_dir.mkdir()
     repo_id = "test-repo"
 
-    with patch.dict(os.environ, {
-        "CHAMELEON_PLUGIN_DATA": str(data_dir),
-        "CHAMELEON_DISABLE": "",
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CHAMELEON_PLUGIN_DATA": str(data_dir),
+            "CHAMELEON_DISABLE": "",
+        },
+    ):
         from chameleon_mcp.optouts import is_chameleon_suppressed, write_pause
 
         write_pause(repo_id, minutes=15)
-        result = is_chameleon_suppressed(
-            repo_root=None, repo_id=repo_id, session_id=None
-        )
+        result = is_chameleon_suppressed(repo_root=None, repo_id=repo_id, session_id=None)
     assert result == "pause"
 
 
@@ -135,10 +139,13 @@ def test_pause_expired_cleans_up(tmp_path: Path):
     data_dir.mkdir()
     repo_id = "test-repo"
 
-    with patch.dict(os.environ, {
-        "CHAMELEON_PLUGIN_DATA": str(data_dir),
-        "CHAMELEON_DISABLE": "",
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CHAMELEON_PLUGIN_DATA": str(data_dir),
+            "CHAMELEON_DISABLE": "",
+        },
+    ):
         from chameleon_mcp.profile.trust import repo_data_dir
 
         pause_path = repo_data_dir(repo_id) / ".pause_until"
@@ -149,9 +156,7 @@ def test_pause_expired_cleans_up(tmp_path: Path):
 
         from chameleon_mcp.optouts import is_chameleon_suppressed
 
-        result = is_chameleon_suppressed(
-            repo_root=None, repo_id=repo_id, session_id=None
-        )
+        result = is_chameleon_suppressed(repo_root=None, repo_id=repo_id, session_id=None)
 
     assert result is None
     assert not pause_path.is_file(), "expired pause file should be deleted"
@@ -162,10 +167,13 @@ def test_pause_malformed_timestamp(tmp_path: Path):
     data_dir.mkdir()
     repo_id = "test-repo"
 
-    with patch.dict(os.environ, {
-        "CHAMELEON_PLUGIN_DATA": str(data_dir),
-        "CHAMELEON_DISABLE": "",
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CHAMELEON_PLUGIN_DATA": str(data_dir),
+            "CHAMELEON_DISABLE": "",
+        },
+    ):
         from chameleon_mcp.profile.trust import repo_data_dir
 
         pause_path = repo_data_dir(repo_id) / ".pause_until"
@@ -173,9 +181,7 @@ def test_pause_malformed_timestamp(tmp_path: Path):
 
         from chameleon_mcp.optouts import is_chameleon_suppressed
 
-        result = is_chameleon_suppressed(
-            repo_root=None, repo_id=repo_id, session_id=None
-        )
+        result = is_chameleon_suppressed(repo_root=None, repo_id=repo_id, session_id=None)
     assert result is None
 
 
@@ -219,10 +225,13 @@ def test_write_session_disable_creates_marker(tmp_path: Path):
     repo_id = "test-repo"
     session_id = "sess-001"
 
-    with patch.dict(os.environ, {
-        "CHAMELEON_PLUGIN_DATA": str(data_dir),
-        "CHAMELEON_HMAC_KEY_PATH": str(key_file),
-    }):
+    with patch.dict(
+        os.environ,
+        {
+            "CHAMELEON_PLUGIN_DATA": str(data_dir),
+            "CHAMELEON_HMAC_KEY_PATH": str(key_file),
+        },
+    ):
         from chameleon_mcp.optouts import _safe_session_marker, write_session_disable
 
         marker_path = write_session_disable(repo_id, session_id)

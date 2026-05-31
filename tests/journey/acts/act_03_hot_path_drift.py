@@ -1,4 +1,5 @@
 """Act 3: Hot path advisory (Edit + Write) (Phases 8, 9)."""
+
 from __future__ import annotations
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
@@ -86,8 +87,7 @@ def run(ctx: JourneyContext) -> ActResult:
 
     try:
         hook_events_with_context = [
-            e for e in session.hook_events
-            if "<chameleon-context>" in e.stdout
+            e for e in session.hook_events if "<chameleon-context>" in e.stdout
         ]
         if not hook_events_with_context:
             notes_extra[8] = "no hook events with <chameleon-context> found in transcript"
@@ -102,7 +102,9 @@ def run(ctx: JourneyContext) -> ActResult:
         transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
         excerpt_call_count = transcript_text.count("get_canonical_excerpt")
         if excerpt_call_count == 0:
-            notes_extra[9] = "no get_canonical_excerpt calls visible in transcript (may be normal if cache hit)"
+            notes_extra[9] = (
+                "no get_canonical_excerpt calls visible in transcript (may be normal if cache hit)"
+            )
             cross_check_passed[9] = len(transcript_text) > 0
         else:
             cross_check_passed[9] = True

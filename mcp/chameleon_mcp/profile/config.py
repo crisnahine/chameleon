@@ -76,15 +76,12 @@ def _coerce_auto_refresh(raw: Any) -> AutoRefreshConfig:
     if raw is None:
         return AutoRefreshConfig()
     if not isinstance(raw, dict):
-        raise ChameleonConfigError(
-            f"`auto_refresh` must be an object, got {type(raw).__name__}"
-        )
+        raise ChameleonConfigError(f"`auto_refresh` must be an object, got {type(raw).__name__}")
     allowed = {"enabled", "drift_threshold", "max_age_hours"}
     unknown = set(raw.keys()) - allowed
     if unknown:
         raise ChameleonConfigError(
-            f"unknown key(s) under auto_refresh: {sorted(unknown)!r}; "
-            f"allowed: {sorted(allowed)!r}"
+            f"unknown key(s) under auto_refresh: {sorted(unknown)!r}; allowed: {sorted(allowed)!r}"
         )
     enabled = raw.get("enabled", True)
     if not isinstance(enabled, bool):
@@ -92,8 +89,10 @@ def _coerce_auto_refresh(raw: Any) -> AutoRefreshConfig:
             f"`auto_refresh.enabled` must be bool, got {type(enabled).__name__}"
         )
     threshold = raw.get("drift_threshold", 0.2)
-    if isinstance(threshold, bool) or not isinstance(threshold, int | float) or not (
-        0.0 <= float(threshold) <= 1.0
+    if (
+        isinstance(threshold, bool)
+        or not isinstance(threshold, int | float)
+        or not (0.0 <= float(threshold) <= 1.0)
     ):
         raise ChameleonConfigError(
             f"`auto_refresh.drift_threshold` must be a number in [0, 1], got {threshold!r}"
@@ -114,9 +113,7 @@ def _coerce_trust(raw: Any) -> TrustConfig:
     if raw is None:
         return TrustConfig()
     if not isinstance(raw, dict):
-        raise ChameleonConfigError(
-            f"`trust` must be an object, got {type(raw).__name__}"
-        )
+        raise ChameleonConfigError(f"`trust` must be an object, got {type(raw).__name__}")
     allowed = {"auto_preserve_when"}
     unknown = set(raw.keys()) - allowed
     if unknown:
@@ -159,9 +156,7 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
     except (json.JSONDecodeError, SchemaError) as exc:
         raise ChameleonConfigError(f"{path} is not valid/safe JSON: {exc}") from exc
     if not isinstance(raw, dict):
-        raise ChameleonConfigError(
-            f"{path}: top-level must be an object, got {type(raw).__name__}"
-        )
+        raise ChameleonConfigError(f"{path}: top-level must be an object, got {type(raw).__name__}")
 
     allowed_top = {
         "$schema",
@@ -179,23 +174,17 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
 
     schema = raw.get("$schema", CURRENT_SCHEMA)
     if not isinstance(schema, str):
-        raise ChameleonConfigError(
-            f"`$schema` must be a string, got {type(schema).__name__}"
-        )
+        raise ChameleonConfigError(f"`$schema` must be a string, got {type(schema).__name__}")
 
     canonical_ref = raw.get("canonical_ref")
-    if canonical_ref is not None and not (
-        isinstance(canonical_ref, str) and canonical_ref.strip()
-    ):
+    if canonical_ref is not None and not (isinstance(canonical_ref, str) and canonical_ref.strip()):
         raise ChameleonConfigError(
             f"`canonical_ref` must be a non-empty string or null, got {canonical_ref!r}"
         )
 
     auto_rename = raw.get("auto_rename", True)
     if not isinstance(auto_rename, bool):
-        raise ChameleonConfigError(
-            f"`auto_rename` must be bool, got {type(auto_rename).__name__}"
-        )
+        raise ChameleonConfigError(f"`auto_rename` must be bool, got {type(auto_rename).__name__}")
 
     return ChameleonConfig(
         schema_version=schema,

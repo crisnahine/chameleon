@@ -5,6 +5,7 @@ None at bootstrap). This tool lets /chameleon-teach write
 conventions.imports.<arch>.competing so the "use X, not Y" import rule and the
 "use the project's wrapper" principle actually fire.
 """
+
 from __future__ import annotations
 
 import json
@@ -60,14 +61,23 @@ def test_teach_competing_import_rejects_bad_input(tmp_path, monkeypatch):
     repo = _setup_repo(tmp_path, monkeypatch)
 
     # empty 'over'
-    assert _data(tools.teach_competing_import(
-        str(repo), archetype="httpclient", preferred="x", over=""
-    ))["status"] == "failed"
+    assert (
+        _data(
+            tools.teach_competing_import(str(repo), archetype="httpclient", preferred="x", over="")
+        )["status"]
+        == "failed"
+    )
     # preferred == over
-    assert _data(tools.teach_competing_import(
-        str(repo), archetype="httpclient", preferred="x", over="x"
-    ))["status"] == "failed"
+    assert (
+        _data(
+            tools.teach_competing_import(str(repo), archetype="httpclient", preferred="x", over="x")
+        )["status"]
+        == "failed"
+    )
     # invalid archetype name
-    assert _data(tools.teach_competing_import(
-        str(repo), archetype="Bad Name!", preferred="x", over="y"
-    ))["status"] == "failed"
+    assert (
+        _data(
+            tools.teach_competing_import(str(repo), archetype="Bad Name!", preferred="x", over="y")
+        )["status"]
+        == "failed"
+    )

@@ -22,13 +22,13 @@ from pathlib import Path
 class LockHeldError(Exception):
     """Raised when a non-blocking lock acquisition fails."""
 
-    def __init__(self, lock_path: Path, holder_pid: int | None, holder_started_at: float | None) -> None:
+    def __init__(
+        self, lock_path: Path, holder_pid: int | None, holder_started_at: float | None
+    ) -> None:
         self.lock_path = lock_path
         self.holder_pid = holder_pid
         self.holder_started_at = holder_started_at
-        super().__init__(
-            f"lock {lock_path} held by PID {holder_pid} (started {holder_started_at})"
-        )
+        super().__init__(f"lock {lock_path} held by PID {holder_pid} (started {holder_started_at})")
 
 
 def _read_lock_metadata(lock_path: Path) -> tuple[int | None, float | None]:
