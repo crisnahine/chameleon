@@ -2673,7 +2673,11 @@ def _maybe_preserve_trust_across_refresh(
             from chameleon_mcp.profile.config import load_config
 
             cfg = load_config(profile_dir)
-            if cfg.trust.auto_preserve_when == "pulled_from_remote":
+            if cfg.trust.auto_preserve_when == "always":
+                # User opted into auto-trust across every refresh (manual or
+                # auto), so they aren't re-prompted on their own repo.
+                preserve_reason = "always"
+            elif cfg.trust.auto_preserve_when == "pulled_from_remote":
                 if _profile_change_came_from_remote_pull(repo_path):
                     preserve_reason = "pulled_from_remote"
         except Exception:  # noqa: BLE001
@@ -5763,9 +5767,12 @@ def doctor() -> dict:
                 "name": "config_json",
                 "status": "ok",
                 "detail": (
-                    "no .chameleon/config.json (v0.5.x defaults). Drop a "
-                    "config.json to opt into v0.6.0 features (canonical_ref, "
-                    "auto_refresh, trust.auto_preserve_when, auto_rename)."
+                    "no .chameleon/config.json — using defaults. ON by default: "
+                    "auto_refresh (drift_threshold=0.2, max_age_hours=168) and "
+                    "auto_rename. OFF by default (opt in via config.json): "
+                    "canonical_ref (branch pinning) and trust.auto_preserve_when. "
+                    'Add a config.json to change these, e.g. {"auto_refresh": '
+                    '{"enabled": false}} to stop drift-triggered auto-refresh.'
                 ),
             }
         )

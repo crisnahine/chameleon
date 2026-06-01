@@ -245,3 +245,30 @@ def test_profile_needs_rederive_on_stale_principles(tmp_path):
     pd = _complete_profile(tmp_path)
     pd.joinpath("principles.md").write_text("# principles\n1. foo\n", encoding="utf-8")
     assert t._profile_needs_rederive(pd) is True
+
+
+def test_maybe_preserve_trust_honors_always(tmp_path, monkeypatch):
+    """A non-structurally-identical refresh still preserves trust when the repo
+    config sets trust.auto_preserve_when='always'."""
+    from chameleon_mcp import index_db
+    from chameleon_mcp.profile.trust import grant_trust, trust_state_for
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "_data"))
+    monkeypatch.setattr(index_db, "_INDEX_CONN", None)
+    repo = tmp_path / "repo"
+    pd = repo / ".chameleon"
+    pd.mkdir(parents=True)
+    pd.joinpath("config.json").write_text(
+        '{"$schema":"chameleon-config-0.6.0","trust":{"auto_preserve_when":"always"}}',
+        encoding="utf-8",
+    )
+    rid = t._compute_repo_id(repo.resolve())
+    grant_trust(rid, pd)  # a prior trust record must exist
+
+    pre = {"trust_record_existed": True, "repo_id": rid, "structural_hashes": {}}
+    envelope = {"data": {"archetype_diff": {"added": ["new-archetype"]}}}  # NOT identical
+    t._maybe_preserve_trust_across_refresh(repo.resolve(), pre, envelope)
+
+    assert envelope["data"].get("trust_preserved") is True
+    assert envelope["data"].get("trust_preserve_reason") == "always"
+    assert trust_state_for(rid) is not None

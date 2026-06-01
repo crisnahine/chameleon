@@ -345,3 +345,18 @@ class TestUnsafeRead:
         os.symlink(real, link)
         with pytest.raises(ChameleonConfigError, match="cannot read"):
             load_config(d)
+
+
+def test_auto_preserve_when_accepts_always(tmp_path):
+    """`trust.auto_preserve_when: "always"` re-grants trust after ANY refresh
+    (manual or auto), so a user who opted into trusting this repo isn't
+    re-prompted on every refresh."""
+    from chameleon_mcp.profile.config import load_config
+
+    pd = tmp_path
+    (pd / "config.json").write_text(
+        '{"$schema":"chameleon-config-0.6.0","trust":{"auto_preserve_when":"always"}}',
+        encoding="utf-8",
+    )
+    cfg = load_config(pd)
+    assert cfg.trust.auto_preserve_when == "always"

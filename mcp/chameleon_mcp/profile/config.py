@@ -17,7 +17,8 @@ Schema (all fields optional, all have safe defaults):
     "max_age_hours": 168
   },
   "trust": {
-    "auto_preserve_when": "pulled_from_remote"  // null | "pulled_from_remote"
+    "auto_preserve_when": "always"  // null | "pulled_from_remote" | "always"
+                                    // "always" re-grants trust after any refresh
   },
   "auto_rename": true                       // skip rename interview in /chameleon-init
 }
@@ -69,7 +70,11 @@ class ChameleonConfig:
         return bool(self.canonical_ref)
 
 
-_VALID_AUTO_PRESERVE = frozenset({None, "pulled_from_remote"})
+# null  -> re-prompt for trust on any non-structurally-identical refresh (default)
+# "pulled_from_remote" -> re-grant only when the change came from a teammate's git pull
+# "always" -> re-grant trust after ANY refresh (manual or auto); opt-in for users who
+#             don't want to re-trust their own repo on every refresh.
+_VALID_AUTO_PRESERVE = frozenset({None, "pulled_from_remote", "always"})
 
 
 def _coerce_auto_refresh(raw: Any) -> AutoRefreshConfig:

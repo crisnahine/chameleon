@@ -4,6 +4,16 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.6] - 2026-06-01
+
+### Added
+
+- **`trust.auto_preserve_when: "always"`.** Re-grants trust automatically after every refresh (manual or drift-triggered auto-refresh), so a user who has trusted their own repo isn't re-prompted on each refresh. Previously the only values were `null` (re-prompt on any non-identical change) and `"pulled_from_remote"` (re-grant only on a teammate's git pull); neither covered the user's own manual/auto refresh. Opt in via `.chameleon/config.json`: `{"trust": {"auto_preserve_when": "always"}}`.
+
+### Fixed
+
+- **`doctor` / `/chameleon-status` misreported the default config as "v0.6.0 features off".** With no `.chameleon/config.json`, the `config_json` check said "v0.5.x defaults" and listed `auto_refresh` among features to "opt into" — but `auto_refresh` (drift_threshold 0.2, max_age_hours 168) and `auto_rename` are ON by default; only `canonical_ref` (branch pinning) and `trust.auto_preserve_when` are off. The detail now states accurately which defaults are on vs off, and how to opt out of auto-refresh. (Note: auto-refresh re-derives the profile on drift >= 0.2, which can flip trust to stale; `/chameleon-status` reports drift "fresh" using a higher 0.5 threshold.)
+
 ## [1.5.5] - 2026-06-01
 
 ### Fixed
