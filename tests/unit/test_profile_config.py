@@ -73,7 +73,8 @@ class TestAbsentFile:
         assert c.auto_refresh == AutoRefreshConfig(
             enabled=True, drift_threshold=0.2, max_age_hours=168
         )
-        assert c.trust == TrustConfig(auto_preserve_when=None)
+        # auto-trust on refresh is the default (opt out with auto_preserve_when=null)
+        assert c.trust == TrustConfig(auto_preserve_when="always")
         assert c.branch_pinning_enabled is False
 
     def test_missing_profile_dir_returns_defaults(self, tmp_path: Path):

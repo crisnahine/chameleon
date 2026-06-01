@@ -5768,11 +5768,12 @@ def doctor() -> dict:
                 "status": "ok",
                 "detail": (
                     "no .chameleon/config.json — using defaults. ON by default: "
-                    "auto_refresh (drift_threshold=0.2, max_age_hours=168) and "
-                    "auto_rename. OFF by default (opt in via config.json): "
-                    "canonical_ref (branch pinning) and trust.auto_preserve_when. "
-                    'Add a config.json to change these, e.g. {"auto_refresh": '
-                    '{"enabled": false}} to stop drift-triggered auto-refresh.'
+                    "auto_refresh (drift_threshold=0.2, max_age_hours=168), "
+                    "auto_rename, and trust.auto_preserve_when=always (a refresh "
+                    "auto-re-grants trust, no re-prompt). OFF by default: "
+                    "canonical_ref (branch pinning). Add a config.json to change "
+                    'these, e.g. {"trust": {"auto_preserve_when": null}} to be '
+                    "re-prompted for trust on each material refresh."
                 ),
             }
         )

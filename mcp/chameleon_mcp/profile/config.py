@@ -54,7 +54,10 @@ class AutoRefreshConfig:
 
 @dataclass(frozen=True)
 class TrustConfig:
-    auto_preserve_when: str | None = None
+    # "always" by default: a refresh (manual or auto) re-grants trust so the user
+    # is not re-prompted on their own repo. Opt out with auto_preserve_when=null
+    # to re-prompt on any non-structurally-identical change.
+    auto_preserve_when: str | None = "always"
 
 
 @dataclass(frozen=True)
@@ -125,7 +128,9 @@ def _coerce_trust(raw: Any) -> TrustConfig:
         raise ChameleonConfigError(
             f"unknown key(s) under trust: {sorted(unknown)!r}; allowed: {sorted(allowed)!r}"
         )
-    apw = raw.get("auto_preserve_when")
+    # Absent key defaults to "always" (auto-trust on refresh); an explicit null
+    # opts back into re-prompting.
+    apw = raw.get("auto_preserve_when", "always")
     if apw not in _VALID_AUTO_PRESERVE:
         raise ChameleonConfigError(
             f"`trust.auto_preserve_when` must be one of {sorted(s for s in _VALID_AUTO_PRESERVE if s)} or null, got {apw!r}"

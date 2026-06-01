@@ -4,6 +4,12 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.7] - 2026-06-01
+
+### Changed
+
+- **Auto-trust on refresh is now the default.** `trust.auto_preserve_when` defaults to `"always"` (was `null`), so a refresh — manual or drift-triggered auto-refresh — re-grants trust automatically; the user is no longer re-prompted on their own repo, and the status line reflects the preserved trust immediately (no more lingering `(stale)` after a refresh). Opt back into re-prompting on each material refresh via `.chameleon/config.json`: `{"trust": {"auto_preserve_when": null}}`. Security note: the `"always"` default also auto-trusts a profile change pulled from a remote; set `"pulled_from_remote"` (re-grant only on your own local refresh) or `null` if you want to review teammates' profile changes before they inject. The bootstrap-time secret / injection / poisoning scans on canonical witnesses still apply regardless.
+
 ## [1.5.6] - 2026-06-01
 
 ### Added
