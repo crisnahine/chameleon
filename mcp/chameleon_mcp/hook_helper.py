@@ -334,7 +334,7 @@ _AUTO_REFRESH_COOLDOWN_FILENAME = ".auto_refresh_cooldown"
 
 
 def _maybe_auto_refresh(repo_root: Path) -> None:
-    """Fire ``refresh_repo`` in background when v0.6.0 auto-refresh fires.
+    """Fire ``refresh_repo`` in background when auto-refresh fires.
 
     Gates (ALL must hold):
       - ``auto_refresh.enabled`` is not explicitly ``false`` in

@@ -1,10 +1,10 @@
-"""Ruby AST extractor — Phase 8 (v1.5) implementation.
+"""Ruby AST extractor.
 
 Spawns `scripts/prism_dump.rb` as a long-lived Ruby subprocess, sends file
 paths via stdin (one per line), reads NDJSON ParsedFile records via
 subprocess.communicate() (avoids the pipe-deadlock bug from Phase 5).
 
-Per docs/architecture.md "TypeScript-first extractor" → "v1.5 expansion"
+Per docs/architecture.md "TypeScript-first extractor" → "expansion"
 + ADR-0003.
 """
 
@@ -64,7 +64,7 @@ class RubyExtractor:
         if not self._prism_dump_script.exists():
             raise FileNotFoundError(
                 f"prism_dump.rb not found at {self._prism_dump_script}; "
-                "Phase 8 (v1.5) Ruby support requires the script."
+                "Ruby support requires this script."
             )
 
         if not shutil.which("ruby"):

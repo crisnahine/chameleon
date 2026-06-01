@@ -7,14 +7,14 @@ Two scanner families live here:
    files that, if injected as `<chameleon-context>`, would constitute a
    prompt injection attack on the AI consumer.
 
-2. **Secret scanner** (`scan_for_secrets_in_canonical`, v0.4 — 4.8):
+2. **Secret scanner** (`scan_for_secrets_in_canonical`):
    Wraps the real `detect-secrets` library so canonical witnesses are
    guaranteed never to leak credentials through the model context. The
    bootstrap selection pipeline already calls `secret_scanner.scan_for_secrets`
    to filter witnesses; this module re-exports it under the
    canonical-scanner namespace so the lint engine and other code paths
    that already import the canonical scanner can adopt secret-scanning
-   with a single import, and the v0.4 integration is wired all the way
+   with a single import, and the integration is wired all the way
    through (no more "partial").
 
 Threat model: bootstrap selects a canonical → get_canonical_excerpt returns
@@ -75,7 +75,7 @@ def scan_for_injection_signals(content: str) -> list[dict]:
 def scan_for_secrets_in_canonical(content: str) -> list[dict]:
     """Run `detect-secrets` against canonical content.
 
-    v0.4 (4.8): the canonical-pool selection in `canonical.py` already
+    The canonical-pool selection in `canonical.py` already
     uses `secret_scanner.scan_for_secrets`; this thin re-export gives
     code paths that import the canonical scanner module a single namespace
     for both kinds of canonical-content safety checks. The underlying
@@ -94,7 +94,7 @@ def scan_for_secrets_in_canonical(content: str) -> list[dict]:
 def is_safe_canonical(content: str) -> bool:
     """True iff content has no injection-shaped patterns AND no secrets.
 
-    v0.4 (4.8): now also checks `detect-secrets` so a file with hardcoded
+    Now also checks `detect-secrets` so a file with hardcoded
     credentials can never be promoted to a canonical witness — even if
     it happens to be free of instruction-shaped comments.
     """

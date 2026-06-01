@@ -259,7 +259,7 @@ def discovery_stats(
 ) -> dict[str, int]:
     """Return pre- and post-exclusion file counts without raising.
 
-    v0.5.3 (Bug D): instrumentation helper for bootstrap_repo so callers
+    Bug D: instrumentation helper for bootstrap_repo so callers
     can report coverage (how many files were discovered, how many made
     it past the exclusion sets, how many were clustered) without
     re-walking the tree multiple times in different layers.
@@ -328,7 +328,7 @@ def discover_files(
         glob: default file glob (TS/JS variants); ignored if paths_glob given
         paths_glob: user-supplied scope override (per architecture "with globs:
                     still enforce 50k post-glob count")
-        workspace_roots: v0.5.3 (Bug B) optional list of repo-relative
+        workspace_roots: Bug B optional list of repo-relative
                     workspace dirs (e.g. ``["apps/web", "apps/api"]``).
                     When provided, the walker scans only inside those dirs
                     (avoiding the empty monorepo root + unrelated siblings).

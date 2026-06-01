@@ -287,7 +287,7 @@ def _git_remote_url(repo_root: Path) -> str | None:
 def _effective_profile_dir(repo_root: Path) -> Path:
     """Return the profile dir READS should use for this repo.
 
-    v0.6.0: when ``.chameleon/config.json`` sets ``canonical_ref`` (e.g.
+    Branch pinning: when ``.chameleon/config.json`` sets ``canonical_ref`` (e.g.
     ``"origin/main"``), reads come from a canonical-ref cache instead
     of the working tree — so a developer on a feature branch sees the
     team's main-branch conventions regardless of what their local
@@ -378,7 +378,7 @@ def _compute_repo_id(repo_root: Path) -> str:
     after moving the working tree — get the same id, so the per-user trust
     grant and drift observations follow the project rather than the
     filesystem location. Repos without `origin` (fresh `git init`, vendored
-    snapshots, archive extracts) keep the v0.1–v0.3 path-based behavior.
+    snapshots, archive extracts) keep the early path-based behavior.
     """
     key = str(repo_root.resolve())
     cached = _REPO_ID_CACHE.get(key)
@@ -402,7 +402,7 @@ def _compute_repo_id(repo_root: Path) -> str:
 def _legacy_path_repo_id(repo_root: Path) -> str:
     """The pre-v6 path-derived repo_id.
 
-    Used by `detect_repo` to look up trust grants made by v0.1–v0.3 engines.
+    Used by `detect_repo` to look up trust grants made by early engines.
     A trust record found at the legacy id surfaces a `legacy_trust_state`
     hint so the model can prompt the user to re-trust under the new id.
     """
@@ -423,19 +423,19 @@ def detect_repo(file_path: str) -> dict:
     Two distinct ``legacy_trust_hint`` surfaces are emitted, mutually
     exclusive by trigger:
 
-    1. **Pre-v0.4 path-id migration** (string hint + ``legacy_repo_id``):
+    1. **Earlier path-id migration** (string hint + ``legacy_repo_id``):
        fires when ``trust_state == "untrusted"`` because the canonical
        (git-remote-derived) id has no record, but the legacy path-derived
-       id DOES. The user trusted the repo before v0.4 changed the repo_id
+       id DOES. The user trusted the repo before the engine changed the repo_id
        derivation and just needs to re-grant under the new id.
 
-    2. **v0.5.1 stale-clone hint** (dict, Bug H2): fires when
+    2. **Stale-clone hint** (dict, Bug H2): fires when
        ``trust_state == "stale"`` AND the trust record's recorded
        ``repo_root`` doesn't match the current ``repo_root``. Same git
        remote + same id, but the trust was granted on a different
        checkout (a prior calibration run, a teammate's clone synced via
-       shared plugin-data, etc.). v0.5.0 surfaced this as a generic
-       "stale" with no explanation; v0.5.1 returns a structured envelope
+       shared plugin-data, etc.). An earlier engine surfaced this as a generic
+       "stale" with no explanation; the engine now returns a structured envelope
        so the using-chameleon skill can tell the user "you're on a fresh
        clone — re-run /chameleon-trust" instead of "something changed
        inside the profile". Genuine in-place stale (recorded_repo_root
@@ -524,7 +524,7 @@ def detect_repo(file_path: str) -> dict:
     legacy_repo_id_value: str | None = None
     if trust is None and legacy_id != repo_id and trust_state_for(legacy_id) is not None:
         legacy_trust_hint_value = (
-            "Trust record found at the legacy (pre-v0.4) path-derived repo_id "
+            "Trust record found at the legacy path-derived repo_id "
             f"{legacy_id[:8]}…; the canonical repo_id is now derived from the "
             "git remote URL. Run /chameleon-trust to re-grant under the new id."
         )
@@ -670,7 +670,7 @@ def _witness_path_overlap(rel_str: str, canonicals: dict, archetype_name: str) -
 def _content_signal_for_path(p: Path) -> str:
     """Read up to 200 bytes of `p` and classify the content signal.
 
-    Extracted from get_archetype (v0.5.2 Bug 3 logic) so the public
+    Extracted from get_archetype (Bug 3 logic) so the public
     get_archetype and get_pattern_context's inlined archetype resolution
     share one implementation. Returns one of
     {"none","use_client","use_server","shebang","ts_pragma"}; never None.
@@ -690,11 +690,11 @@ def _content_signal_for_path(p: Path) -> str:
 def get_archetype(repo: str, file_path: str) -> dict:
     """Look up the archetype a given file matches.
 
-    v0.4 (4.2): tiebreaks among multiple path-bucket matches by AST shape.
+    Tiebreaks among multiple path-bucket matches by AST shape.
     When the file exists on disk we extract its dimensions via the lint
     engine's pure-function `extract_dimensions` and score each path-bucket
     candidate by how many `ast_query` dimensions align. Higher score wins;
-    ties fall back to the v0.3 cluster-size ordering.
+    ties fall back to the cluster-size ordering.
 
     The confidence band reflects how strong the AST signal was:
       "high"   — score >= 4 of 5 ast_query dimensions agreed
@@ -703,11 +703,11 @@ def get_archetype(repo: str, file_path: str) -> dict:
                  substring-only fallback match)
 
     Backwards compat: files without on-disk content (deleted, just-detected
-    from a hook input that doesn't carry content) fall back to the v0.3
+    from a hook input that doesn't carry content) fall back to the
     path-bucket-only behavior so the function stays callable on hypothetical
     paths.
 
-    v0.5.2 (Bug 3): the response envelope's ``content_signal_match`` field
+    Bug 3: the response envelope's ``content_signal_match`` field
     is now populated whenever the file is readable on disk, by reading
     the first 200 bytes ourselves and calling
     ``signatures.content_signal_match_for``. Earlier versions hardcoded
@@ -717,13 +717,13 @@ def get_archetype(repo: str, file_path: str) -> dict:
     "shebang", "ts_pragma") whenever the file head was read, and Python
     ``None`` only when we never looked (file missing, unreadable).
 
-    v0.5.2 (Bug 1) compatibility: this function still computes the
-    file's bucket with the v0.5.x extension-blind
-    ``path_pattern_bucket_for`` (``include_extension=False``) so v0.5.x
-    ``archetypes.json`` files continue to match. New v0.5.2 bootstraps
+    Extension-blind compatibility: this function still computes the
+    file's bucket with the extension-blind
+    ``path_pattern_bucket_for`` (``include_extension=False``) so older
+    ``archetypes.json`` files continue to match. Newer bootstraps
     write extension-aware buckets (e.g. ``"src/components:tsx"``); we
     also check the extension-aware variant as a secondary key so
-    profiles written by v0.5.2 still hit the exact-match path.
+    profiles written by older bootstraps still hit the exact-match path.
     """
     from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir
 
@@ -968,7 +968,7 @@ def _empty_pattern_envelope(
     """Shape of the get_pattern_context response when no archetype data exists.
 
     BUG-022: both the no-repo / no-profile / profile-corrupted early returns
-    must use the same archetype envelope shape as the healthy path. Pre-v0.5.6
+    must use the same archetype envelope shape as the healthy path. Earlier
     we returned ``archetype.name`` (typo of ``archetype.archetype``) and
     dropped ``content_signal_match`` and ``idioms`` entirely. Consumers parsing
     the response then tripped on the key change.
@@ -1200,10 +1200,10 @@ def _resolve_repo_root_by_id(repo_id: str, repo_root_hint: str | None = None) ->
 
     Phase 4.4 lookup order:
       1. index.db (primary; populated by bootstrap_repo on success)
-      2. trust record's repo_root (backward compat with v0.1/v0.2 installs
+      2. trust record's repo_root (backward compat with early installs
          that bootstrapped before index.db existed)
 
-    v0.5.1 (Bug 1): monorepo sub-workspaces share a git-remote-derived
+    Bug 1: monorepo sub-workspaces share a git-remote-derived
     repo_id with the root, so a single repo_id may now resolve to
     multiple candidate roots. When the caller knows which workspace it
     is asking about (e.g., refresh_repo just resolved the absolute path),
@@ -1231,15 +1231,15 @@ def _resolve_repo_root_by_id(repo_id: str, repo_root_hint: str | None = None) ->
 def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     """Return the annotated canonical excerpt for an archetype.
 
-    v0.5.2 (Bug 5): `repo` accepts either an absolute repo path or a
-    64-char repo_id hex digest. Pre-v0.5.2 the function only accepted
+    Bug 5: `repo` accepts either an absolute repo path or a
+    64-char repo_id hex digest. Earlier the function only accepted
     repo_ids and silently returned `{content: "", witness_path: null,
     truncated: false}` when handed a path. Now we shape-detect via
     `_resolve_repo_arg` and emit an explicit `{status: failed, error:
     "repo_id not found"}` envelope for unresolvable input so callers
     can distinguish "no archetype" from "wrong arg shape".
 
-    v0.5.3 (Bug A): the "valid repo, valid archetype name, but the
+    Bug A: the "valid repo, valid archetype name, but the
     archetype has no canonical witness in canonicals.json" path was
     equally silent — the witness can be rejected at bootstrap time
     because every candidate contained secrets / was too long / the
@@ -1247,7 +1247,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     using-chameleon skill, IDE integrations) couldn't distinguish that
     from a transient I/O failure. We now emit three typed envelopes:
       - `status: "failed", error: "repo_id not found"` — unresolvable
-        `repo` argument (unchanged from v0.5.2).
+        `repo` argument (unchanged).
       - `status: "failed", error: "archetype not found"` — the
         `archetype` name isn't in archetypes.json (was previously
         conflated with "no witness").
@@ -1470,7 +1470,7 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
                   ``"rubocop"``, ``"formatting"``, etc.). When omitted,
                   returns all rules.
 
-    v0.5.17 (Bug 1 follow-up): the historical ``archetype=`` kwarg has
+    Bug 1 follow-up: the historical ``archetype=`` kwarg has
     been REMOVED from the public schema. The signature accepts
     ``**kwargs`` so a stale caller passing ``archetype=`` gets a clear
     deprecation error envelope instead of a TypeError — but the kwarg
@@ -1505,14 +1505,14 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     if legacy_archetype is not None and source is None:
         source = legacy_archetype
         deprecation_note = (
-            "the 'archetype' parameter was removed in v0.5.17; the call "
+            "the 'archetype' parameter was removed; the call "
             "still resolves but rename it to 'source' — rules are "
             "tool-scoped (eslint / rubocop / etc), not archetype-scoped."
         )
     elif legacy_archetype is not None and source is not None:
         deprecation_note = (
             "both 'source' and 'archetype' were passed; 'archetype' is "
-            "removed in v0.5.17. Drop it; 'source' wins."
+            "removed. Drop it; 'source' wins."
         )
 
     repo_root, repo_id = _resolve_repo_arg(repo)
@@ -1585,7 +1585,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     """Compare `content` against the archetype's canonical AST shape; return
     structural violations.
 
-    Phase 4.1 (v0.3): real implementation. The engine extracts the file's
+    Phase 4.1: real implementation. The engine extracts the file's
     shape dimensions via language-aware regex heuristics (see
     `lint_engine.extract_dimensions`) and compares them against the
     archetype's `ast_query` block in canonicals.json.
@@ -1607,13 +1607,13 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     - If the archetype exists but its ast_query is null / missing, return
       a real-envelope shape with `"stub": False` and a `"noop_reason"`
       field explaining the no-op (the engine ran; it just had nothing to
-      check). Pre-v0.5.13 this field was named `reason`; rename is
+      check). Earlier this field was named `reason`; rename is
       internal-consistency only.
     - If the repo / profile cannot be resolved at all, fall back to the
       legacy stub envelope (`"stub": True`) so callers without a real
-      profile continue to see the no-op semantics they relied on in v0.2.
+      profile continue to see the no-op semantics they have always relied on.
 
-    The 100 KB content cap from v0.2 is preserved: oversized content is
+    The 100 KB content cap is preserved: oversized content is
     flagged via the `truncated` envelope field and the engine processes
     the truncated buffer (not the full content). The engine is pure
     except for the advisory phantom-import check, which probes the
@@ -1932,8 +1932,8 @@ def get_drift_status(repo: str) -> dict:
       (None if no observations yet)
     - recommended_action: combines both signals
 
-    v0.5.2 (Bug 4): `repo` accepts either an absolute repo path or a
-    64-char repo_id hex digest. Pre-v0.5.2, passing a path silently
+    Bug 4: `repo` accepts either an absolute repo path or a
+    64-char repo_id hex digest. Earlier, passing a path silently
     routed it to `plugin_data_dir() / <path>` which is never a real
     directory; the user got a confusing envelope echoing the path back
     as `repo_id`. Now we shape-detect via `_resolve_repo_arg`:
@@ -2086,7 +2086,7 @@ def _compute_file_cluster_map(
     This is a second pass on top of the orchestrator's bootstrap; the
     orchestrator does not expose the per-file → cluster mapping in its
     BootstrapReport, and the file_clusters write requires it. The cost
-    is bounded by REPO_SIZE_GUARD (200_000 files; v0.5.3) and runs synchronously
+    is bounded by REPO_SIZE_GUARD (200_000 files) and runs synchronously
     after the atomic profile commit so a partial failure here cannot
     corrupt the committed profile.
     """
@@ -2449,13 +2449,13 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     path re-parses only the modified+added files and amends
     archetypes.json / canonicals.json / profile.json in place via the
     same atomic_profile_commit pattern. Repos without per-file cluster
-    state in index.db (legacy v0.4 profiles, or any repo where the
+    state in index.db (legacy profiles, or any repo where the
     initial bootstrap predates this feature) fall through to full
     re-bootstrap unconditionally.
 
     `force=True` bypasses BOTH short-circuits and always re-bootstraps.
 
-    v0.5.2 (Bug 1): `repo` accepts either an absolute repo path or a
+    Bug 1: `repo` accepts either an absolute repo path or a
     64-char repo_id hex digest. See `_resolve_repo_arg`.
 
     Concurrency: acquires .chameleon/.refresh.lock (non-blocking flock) at
@@ -2534,7 +2534,7 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
 def _capture_pre_refresh_state(repo_path: Path) -> dict | None:
     """Snapshot the pre-refresh archetypes for rename-aware diff in the
     response envelope, plus the structural hashes + trust record so we
-    can preserve trust across no-op refreshes (rec-2/v0.5.14 bug 2).
+    can preserve trust across no-op refreshes (rec-2).
     Tolerant: returns None on any error so the diff silently degrades
     to empty rather than breaking refresh.
     """
@@ -2631,15 +2631,15 @@ def _maybe_preserve_trust_across_refresh(
 ) -> None:
     """Re-grant trust if refresh produced a materially-identical profile.
 
-    v0.5.14 bug 2 / rec-2 follow-up: the chameleon-init skill states
+    Bug 2 / rec-2 follow-up: the chameleon-init skill states
     /chameleon-refresh re-analyzes "without clearing trust state", but
     the implementation invalidated trust on every refresh because the
     generation counter bumped on each run (changing the trust hash).
 
     Three paths re-grant trust:
-      1. Structural-equality (v0.5.15): pre/post hashes match AND
+      1. Structural-equality: pre/post hashes match AND
          archetype_diff is empty AND a trust record existed.
-      2. Pulled-from-remote (v0.6.0): the profile change came from a
+      2. Pulled-from-remote: the profile change came from a
          git pull by a different author AND
          ``config.trust.auto_preserve_when == "pulled_from_remote"``.
          Lets a teammate's profile update flow through without forcing
@@ -2847,7 +2847,7 @@ def _inject_archetype_diff(
 def _persisted_paths_glob(profile_dir: Path) -> str | None:
     """Return the persisted user-supplied paths_glob from profile.json, or None.
 
-    v0.5.14 bug 1 / rec-1 follow-up: bootstrap_repo persists the
+    Bug 1 / rec-1 follow-up: bootstrap_repo persists the
     user-supplied paths_glob under profile_data["discovery"]["paths_glob"];
     /chameleon-refresh reads it here so the same scope re-applies on a
     full re-bootstrap. Tolerant: any error returns None and refresh
@@ -3149,16 +3149,16 @@ def _bootstrap_repo_unlocked(
 ) -> dict:
     """First-time analysis: AST scan + (Phase 2D interview) + atomic profile commit.
 
-    v0.4 (2D.3): for monorepos with detected workspace_paths, runs the full
+    For monorepos with detected workspace_paths, runs the full
     pipeline per workspace as well, producing one `.chameleon/` under each
     workspace root in addition to the root profile that catalogs them.
 
-    v0.5.2 (Bug 1): `path` accepts either an absolute repo path or a
+    Bug 1: `path` accepts either an absolute repo path or a
     64-char repo_id hex digest (for repos previously bootstrapped). See
     `_resolve_repo_arg`.
 
-    v0.5.6 (BUG-026): refuses to overwrite a committed profile unless
-    ``force=True``. Pre-v0.5.6 a second call silently clobbered the
+    BUG-026: refuses to overwrite a committed profile unless
+    ``force=True``. Earlier a second call silently clobbered the
     existing profile; the /chameleon-init skill warned the model but the
     MCP had no defense in depth.
     """
@@ -3318,13 +3318,13 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
     recently bootstrapped/refreshed first), then by repo_id ASC as a
     stable tiebreaker.
 
-    For backward compat with v0.1/v0.2 installs that have ${PLUGIN_DATA}/
+    For backward compat with early installs that have ${PLUGIN_DATA}/
     populated but no index.db yet, we fall back to scanning the per-repo
     directory listing and best-effort backfill into the index. After one
     list_profiles call on an existing install, all known repos are
     represented in index.db.
 
-    Validation behavior is preserved from v0.2:
+    Validation behavior is preserved:
     - `limit` must be an int in 1..1000
     - an unknown `cursor` returns an explicit failure envelope
     """
@@ -3430,7 +3430,7 @@ def _is_dead_temp_repo_root(repo_root: str | None) -> bool:
 def _is_dead_chameleon_profile(repo_root: str | None) -> bool:
     """True if ``repo_root`` exists but its ``.chameleon/profile.json`` is gone.
 
-    v0.5.16: external report flagged that a user who deletes
+    An external report flagged that a user who deletes
     ``.chameleon/`` from a still-extant repo (``rm -rf .chameleon``)
     leaves a tombstone row in index_db that surfaces in
     list_profiles forever. Pruning ANY repo whose profile no longer
@@ -3640,10 +3640,10 @@ def teach_profile(repo: str, feedback: str) -> dict:
     - Hold an advisory flock around the read-modify-write so concurrent
       `/chameleon-teach` calls don't lose idioms.
 
-    v0.5.2 (Bug 1): `repo` accepts either an absolute repo path or a
+    Bug 1: `repo` accepts either an absolute repo path or a
     64-char repo_id hex digest. See `_resolve_repo_arg`.
 
-    v0.5.2 (Bug 2 — slug-collision): the auto-generated idiom slug is
+    Bug 2 — slug-collision: the auto-generated idiom slug is
     `idiom-YYYY-MM-DD-{epoch_seconds}-{3hex}`. The 4-hex random suffix
     closes the 1-second collision window where two `/chameleon-teach`
     calls landed in the same epoch second (observed twice in dogfood).
@@ -3651,7 +3651,7 @@ def teach_profile(repo: str, feedback: str) -> dict:
     a fresh suffix; the second collision is statistically negligible
     (4096^2 chance per second).
 
-    v0.5.2 (Bug 7 — suspicious_input): natural-language prompt-injection
+    Bug 7 — suspicious_input: natural-language prompt-injection
     preambles ("ignore previous instructions", "you are now in DAN
     mode", `eval(…)`, `rm -rf`, etc.) are still STORED — the trust gate
     is the defensive boundary — but the response envelope now carries
@@ -3811,7 +3811,7 @@ def _escape_markdown_section_headings(text: str) -> str:
     Only levels 1 and 2 are escaped — `###`, `####`, … are valid idiom
     sub-headers and stay untouched.
 
-    BUG-NEW-007 (v0.5.7): don't escape inside fenced code blocks. A
+    BUG-NEW-007: don't escape inside fenced code blocks. A
     rationale that includes `# frozen_string_literal: true` inside a
     triple-backtick block must render literally. Pre-fix the escape
     produced `\\# frozen_string_literal: true` visible to the reader,
@@ -3848,13 +3848,13 @@ def disable_session(repo: str, session_id: str, force: bool = False) -> dict:
 
     Used by the /chameleon-disable slash command.
 
-    v0.5.2 (Bug 1): `repo` now accepts either an absolute repo path or
+    Bug 1: `repo` now accepts either an absolute repo path or
     a 64-char repo_id hex digest. See `_resolve_repo_arg`.
 
-    v0.5.16 (Bug 8 partial follow-up): chameleon-mcp cannot
+    Bug 8 partial follow-up: chameleon-mcp cannot
     cryptographically authenticate the caller — MCP doesn't pass
     process identity, so any client can claim any session_id. The
-    HMAC-signed marker (v0.5.15) defends against an OUT-OF-PROCESS
+    HMAC-signed marker defends against an OUT-OF-PROCESS
     attacker who writes the marker file directly without the key.
     For IN-PROCESS attackers (anything that can call this MCP tool),
     we add two defenses:
@@ -3870,8 +3870,8 @@ def disable_session(repo: str, session_id: str, force: bool = False) -> dict:
        (per the exec_log). The legitimate user / their review tooling
        can flag that as suspicious.
 
-    v0.5.17 (Bug 2 follow-up): unknown sessions are now REFUSED by
-    default. The reporter pointed out that the warning in v0.5.16 is
+    Bug 2 follow-up: unknown sessions are now REFUSED by
+    default. The reporter pointed out that the earlier warning is
     a useful audit signal but the marker is still written, so an
     attacker who learned the session_id silently suppressed chameleon
     until the legitimate user happened to disable themselves. Now the
@@ -3998,7 +3998,7 @@ def pause_session(repo: str, minutes: int = 15) -> dict:
     Used by the /chameleon-pause-15m slash command (and any future
     /chameleon-pause-<N> variants).
 
-    v0.5.2 (Bug 1): `repo` now accepts either an absolute repo path
+    Bug 1: `repo` now accepts either an absolute repo path
     or a 64-char repo_id hex digest. The asymmetry across MCP tools
     surfaced 4 separate dogfood complaints about pause/disable rejecting
     repo_ids. `_resolve_repo_arg` performs the shape detection.
@@ -4044,9 +4044,9 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     Phase 2D: validates `confirmation_token` matches the repo's basename
     (typed repo name) or `yes-trust-<repo_id_short>`. Writes .trust file.
 
-    BUG-004 (v0.5.6): ``repo`` accepts either an absolute repo path or
+    BUG-004: ``repo`` accepts either an absolute repo path or
     a 64-char repo_id hex digest, matching the behavior of get_archetype,
-    refresh_repo, propose_archetype_renames, etc. Pre-v0.5.6 the function
+    refresh_repo, propose_archetype_renames, etc. Earlier the function
     only accepted a path and rejected repo_id with "repo path must be
     absolute" even though every other tool documented repo_id as the
     canonical handle.
@@ -4312,7 +4312,7 @@ def propose_archetype_renames(repo: str, top_n: int = 8) -> dict:
     1..64"}`. Default is 8, which is what the chameleon-init skill uses
     for its interview prompts.
 
-    v0.5.2 (Bug 1): `repo` accepts either an absolute repo path or a
+    Bug 1: `repo` accepts either an absolute repo path or a
     64-char repo_id hex digest. See `_resolve_repo_arg`.
     """
     from chameleon_mcp.profile.loader import load_profile_dir
@@ -4663,7 +4663,7 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     profile.json byte-for-byte, so trust grants remain valid across
     successive no-op calls.
 
-    v0.5.2 (Bug 1): `repo` accepts either an absolute repo path or a
+    Bug 1: `repo` accepts either an absolute repo path or a
     64-char repo_id hex digest. See `_resolve_repo_arg`.
     """
     from chameleon_mcp import index_db
@@ -5491,12 +5491,19 @@ def daemon_status() -> dict:
                 except (TypeError, ValueError):
                     last_request_at = None
 
+    # Prefer the in-package __version__ (the bump-synced source of truth) so the
+    # reported running version matches the actual code even in an editable/source
+    # checkout, where importlib.metadata can return a stale/absent value. Mirrors
+    # daemon.py's running-version detection.
     try:
-        from importlib.metadata import version as _pkg_version
-
-        running_version = _pkg_version("chameleon-mcp")
+        from chameleon_mcp import __version__ as running_version
     except Exception:  # pragma: no cover - defensive
-        running_version = None
+        try:
+            from importlib.metadata import version as _pkg_version
+
+            running_version = _pkg_version("chameleon-mcp")
+        except Exception:
+            running_version = None
 
     return _envelope(
         {

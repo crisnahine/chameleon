@@ -61,7 +61,7 @@ def run(ctx: JourneyContext) -> ActResult:
         found_keys = [k for k in required_status_keys if k in transcript_text]
         if len(found_keys) < 2:
             notes_extra[17] = (
-                f"status output missing expected v0.6.0 config keys; "
+                f"status output missing expected config keys; "
                 f"found {found_keys!r} out of {required_status_keys!r}"
             )
             cross_check_passed[17] = False

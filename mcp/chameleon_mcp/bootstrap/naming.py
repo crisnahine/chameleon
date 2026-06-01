@@ -201,7 +201,7 @@ def _pattern_contains(paths_pattern: str, token: str) -> bool:
 def _members_contain(member_paths: Iterable[str], token: str) -> bool:
     """Does at least one member's path contain ``token`` as a directory segment?
 
-    The v0.5.9 depth-2 bucket for ``app/controllers/api/v1/foo.rb`` is
+    The depth-2 bucket for ``app/controllers/api/v1/foo.rb`` is
     ``app/controllers``, which already carries the ``controllers`` segment.
     However for unusual layouts where ``controllers`` isn't at parts[1],
     or when running with an old profile generated at depth=3, the bucket
@@ -228,7 +228,7 @@ def _filenames(member_paths: Iterable[str]) -> list[str]:
 def _is_ruby_cluster(member_paths: Iterable[str]) -> bool:
     """Return True when the cluster's canonical witness lives in a `.rb` file.
 
-    v0.5.2 (Bug 2): Rails priors must only fire when the cluster's members
+    Bug 2: Rails priors must only fire when the cluster's members
     are Ruby — otherwise a TS file under ``app/models/`` (e.g., a stray
     type definition the team dropped in the Rails tree) would be named
     ``model`` even though it has no Rails semantics. We use the first
@@ -254,7 +254,7 @@ _TS_JS_EXTENSIONS: tuple[str, ...] = (
 def _is_typescript_cluster(member_paths: Iterable[str]) -> bool:
     """Return True when the cluster's canonical witness is a TS/JS file.
 
-    v0.5.3 (Bug C): The TS-prior table must only fire when the cluster's
+    Bug C: The TS-prior table must only fire when the cluster's
     members are TypeScript or JavaScript — otherwise a ``.rb`` file that
     happens to sit under ``app/`` would be misnamed by the Next.js-style
     rules. We use the first member's extension as the language tell, the
@@ -319,7 +319,7 @@ def _strip_workspace_prefix(
 ) -> list[str]:
     """Return member paths with any matching workspace prefix removed.
 
-    v0.5.4 (Bug F): v0.5.3 Bug B introduced workspace-level bootstrap and
+    Bug F: Bug B introduced workspace-level bootstrap and
     Turborepo / pnpm / Nx layouts deliver paths as
     ``apps/<ws>/src/components/Foo.tsx`` or ``packages/<ws>/src/...``
     instead of root-relative ``src/...``. The TS-prior table's
@@ -331,7 +331,7 @@ def _strip_workspace_prefix(
     Two stripping strategies, both safe:
 
     1. **Explicit roots**: when ``workspace_roots`` is non-empty (the
-       v0.5.3 Bug B path), strip the longest matching root prefix.
+       Bug B path), strip the longest matching root prefix.
     2. **Path-shape fallback**: when ``workspace_roots`` is empty BUT a
        path starts with ``apps/<dir>/``, ``packages/<dir>/``,
        ``services/<dir>/``, or ``workspaces/<dir>/``, strip those two
@@ -534,7 +534,7 @@ def _base_name_for(
     before more general ones (e.g., ``rails-initializer`` before the bare
     ``initializer`` token).
 
-    v0.5.4 (Bug F): when ``workspace_roots`` is non-empty the TS-prior
+    Bug F: when ``workspace_roots`` is non-empty the TS-prior
     pipeline gets workspace-stripped paths so the directory-chain rules
     (``components/``, ``app/``, ``pages/``) match correctly on
     Turborepo / pnpm / Nx layouts. The Rails-prior pipeline doesn't get
@@ -750,12 +750,12 @@ def propose_archetype_name(
             and never mutated.
         workspace_roots: optional list of repo-relative workspace dirs
             (e.g., ``["apps/web", "packages/propel"]``) emitted by
-            ``bootstrap_repo``'s monorepo detection in v0.5.3. When
+            ``bootstrap_repo``'s monorepo detection. When
             provided, the TS-prior pipeline strips the matching prefix
             from member paths before running the directory-chain rules
             so workspace-internal layouts (``apps/web/src/components/``,
             ``packages/propel/src/hooks/``) match the prior table.
-            v0.5.4 (Bug F).
+            Bug F.
         repo_root: absolute path to the repo root. When provided, member
             paths are made relative to it before test-token detection so
             a repo whose absolute location contains "tests" or "spec" in

@@ -58,7 +58,7 @@ from chameleon_mcp.extractors.typescript import NodeUnavailableError, TypeScript
 
 
 def _is_rails_with_frontend(repo_root: Path) -> bool:
-    """Detect a Rails-with-frontend hybrid (Bug 2 fix; v0.5.3 Bug E broaden).
+    """Detect a Rails-with-frontend hybrid (Bug 2 fix; Bug E broaden).
 
     Rails+Stimulus / Rails+Hotwire / Rails+ImportMaps colocate a JS/TS
     sidecar alongside Ruby production code under a handful of well-known
@@ -67,11 +67,11 @@ def _is_rails_with_frontend(repo_root: Path) -> bool:
       - ``app/javascript/`` — modern Rails 6+ webpacker / esbuild /
         importmap-rails entry point (forem, mastodon).
       - ``app/assets/javascripts/`` — legacy Rails 5 sprockets layout
-        (gitlabhq, older Discourse). v0.5.3 (Bug E) added.
+        (gitlabhq, older Discourse). Bug E added.
       - ``app/frontend/`` — Rails 7 convention used by some teams
-        (Vite-rails default, jumpstart-pro). v0.5.3 (Bug E) added.
+        (Vite-rails default, jumpstart-pro). Bug E added.
 
-    The pre-v0.5.1 ``_select_extractor`` picked TypeScript first when both
+    An earlier ``_select_extractor`` picked TypeScript first when both
     ``package.json`` and ``Gemfile`` existed, which silently excluded
     thousands of Ruby files (forem: 3,515; mastodon: 3,179). This
     predicate now fires on any of the three layouts so legacy Rails 5
@@ -234,11 +234,11 @@ def _detect_workspace_ts_monorepo(
 ) -> tuple[list[str], bool]:
     """Detect a TS monorepo whose root package.json has no TS deps.
 
-    v0.5.3 (Bug B): the common Turborepo / pnpm-workspaces / Nx pattern
+    Bug B: the common Turborepo / pnpm-workspaces / Nx pattern
     leaves the root ``package.json`` carrying only ``scripts`` (no
     ``dependencies``/``devDependencies``) and puts ``tsconfig.json`` +
     TS deps inside workspace dirs under ``apps/*``, ``packages/*``,
-    ``services/*``, ``workspaces/*``. The pre-v0.5.3 ``_select_extractor``
+    ``services/*``, ``workspaces/*``. An earlier ``_select_extractor``
     saw no TS signal at the root and returned None → bootstrap reported
     ``failed_unsupported_language`` (bulletproof-react dogfood).
 
@@ -371,7 +371,7 @@ class BootstrapReport:
     these to offer a manual split.
     """
     nested_profile_warnings: list[str] = field(default_factory=list)
-    """BUG-NEW-005 (v0.5.7): pre-existing `.chameleon/` directories found
+    """BUG-NEW-005: pre-existing `.chameleon/` directories found
     in workspace subdirectories of the repo being bootstrapped.
 
     When a prior test/dogfood run bootstrapped a sub-workspace directly,
@@ -384,7 +384,7 @@ class BootstrapReport:
     "apps/react-vite/.chameleon".
     """
     workspace_reports: list[dict] = field(default_factory=list)
-    """v0.4 (2D.3): per-workspace bootstrap summaries for monorepos.
+    """Per-workspace bootstrap summaries for monorepos.
 
     Each entry mirrors the root report shape: {"workspace_path": str,
     "repo_id": str, "profile_dir": str, "repo_root": str, "status": str,
@@ -392,7 +392,7 @@ class BootstrapReport:
     "error": str | None}. Empty list for non-monorepo repos.
     """
     language_hint: dict | None = None
-    """v0.5.1 (Bug 2): hybrid-language detection envelope.
+    """Bug 2: hybrid-language detection envelope.
 
     Populated when bootstrap picks one language but a meaningful sidecar
     in another language exists in the same repo (Rails+JS, TS-with-Ruby-
@@ -409,33 +409,33 @@ class BootstrapReport:
     to run a second bootstrap on the sidecar.
     """
     workspace_roots: list[str] = field(default_factory=list)
-    """v0.5.3 (Bug B): repo-relative workspace dirs found when the root
+    """Bug B: repo-relative workspace dirs found when the root
     package.json has no TS deps but TS lives one level down (Turborepo,
     pnpm-workspaces, Nx). Empty for single-root TS repos. Envelope-only
     today (not persisted to profile.json so the schema doesn't bump).
     """
     fanout_capped: bool = False
-    """v0.5.3 (Bug B): True when the first-level workspace scan hit the
+    """Bug B: True when the first-level workspace scan hit the
     50-entry cap. Surfaced so an unusually large monorepo's report is
     distinguishable from a clean run.
     """
     discovered_files_pre_exclusion: int = 0
-    """v0.5.3 (Bug D): total files walked by discovery, before
+    """Bug D: total files walked by discovery, before
     EXCLUDE_FROM_CLUSTERING_DIRS / EXTENSIONS / EXACT_RELPATHS dropped
     anything. Lets coverage tooling reason about where files went.
     """
     discovered_files_post_exclusion: int = 0
-    """v0.5.3 (Bug D): files that survived the discovery-layer exclusion
+    """Bug D: files that survived the discovery-layer exclusion
     sets and were handed to the extractor. Always <= pre.
     """
     sparse_dropped_files: int = 0
-    """v0.5.3 (Bug D): files dropped because their cluster fell below
+    """Bug D: files dropped because their cluster fell below
     the adaptive sparse_threshold. Sparse-cluster members never reach
     canonical selection but contribute to the post-clustering count.
     Always >= 0.
     """
     discovery_hints: list[dict] = field(default_factory=list)
-    """BUG-001 (v0.5.6): when bootstrap fails with
+    """BUG-001: when bootstrap fails with
     ``failed_unsupported_language`` on a directory that *looks* like an
     ad-hoc monorepo (apps/* or packages/* subdirs each carrying their
     own package.json), this list names the discoverable sub-projects so
@@ -492,9 +492,9 @@ def _compute_repo_id(repo_root: Path) -> str:
     sha256(canonicalize(git_remote_url)) if remote present, else
     sha256(canonicalize_path(repo_root)).
 
-    v0.4 (4.6): delegates to `tools._compute_repo_id` so the orchestrator
+    Delegates to `tools._compute_repo_id` so the orchestrator
     and the MCP tool layer can never disagree on the canonical id — a
-    drift the v0.1–v0.3 code path tolerated only because the two
+    drift the original code path tolerated only because the two
     implementations happened to be byte-identical.
     """
     from chameleon_mcp.tools import _compute_repo_id as _tools_compute_repo_id
@@ -659,8 +659,8 @@ def _stringify_distribution_key(value: object) -> str:
 
 
 _SPARSE_WARNING_LIMIT = 50
-"""BUG-008/009 (v0.5.6): cap on the per-bootstrap sparse_cluster_warnings
-list. Pre-v0.5.6 bootstrap returned 2000-6000 warning entries on
+"""BUG-008/009: cap on the per-bootstrap sparse_cluster_warnings
+list. Earlier bootstrap returned 2000-6000 warning entries on
 mid-sized repos and exceeded the MCP protocol's response size, breaking
 chameleon-init. The cap is applied after the same-paths_pattern
 aggregation step below."""
@@ -669,12 +669,12 @@ aggregation step below."""
 def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
     """Build the sparse-cluster warning payload for BootstrapReport.
 
-    Phase 2C.3: surface clusters with <threshold members. v0.5.2 (Bug 4)
+    Phase 2C.3: surface clusters with <threshold members. Bug 4
     makes the threshold adaptive based on corpus size, so each warning
     records the cluster's resolved threshold instead of the legacy
     module-level constant.
 
-    BUG-008/009 (v0.5.6): aggregate by ``paths_pattern`` first so 50
+    BUG-008/009: aggregate by ``paths_pattern`` first so 50
     singletons at ``src/x/y:ts`` collapse to one row with
     ``cluster_count: 50, total_members: 50``. After aggregation, cap at
     ``_SPARSE_WARNING_LIMIT`` and surface ``truncated`` + ``total_groups``
@@ -879,7 +879,7 @@ def bootstrap_repo(
     Phase 2B emits a non-interactive profile. Phase 2D wraps this with the
     interactive interview flow.
 
-    v0.4 (2D.3): when `detect_workspace` returns one or more workspace_paths
+    When `detect_workspace` returns one or more workspace_paths
     (pnpm/yarn/lerna/turbo/nx), this also runs the full pipeline per
     workspace and writes a `.chameleon/` to each workspace root in addition
     to the repo-root profile. The repo-root profile catalogs the workspaces
@@ -1088,12 +1088,12 @@ def _bootstrap_single(
     profile_dir_name: str = ".chameleon",
     now: float | None = None,
 ) -> BootstrapReport:
-    """The original (v0.3) single-target bootstrap pipeline.
+    """The original single-target bootstrap pipeline.
 
-    Extracted so the v0.4 monorepo loop can call it once per workspace
+    Extracted so the monorepo loop can call it once per workspace
     without duplicating the discovery → cluster → canonical → commit
     plumbing. Behavior on a non-monorepo repo is byte-identical to the
-    pre-v0.4 implementation.
+    An earlier implementation.
     """
     started_at = time.time()
     profile_dir = repo_root / profile_dir_name

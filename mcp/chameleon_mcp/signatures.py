@@ -138,20 +138,20 @@ def path_pattern_bucket_for(
     For shallow paths (≤3 segments) the result is just `parts[0]/parts[-2]`,
     matching v4's behavior on those paths.
 
-    v0.5.2 (Bug 1, opt-in via ``include_extension``): when True, append
+    Bug 1, opt-in via ``include_extension``: when True, append
     ``:<ext>`` (e.g. ``:tsx``) to the bucket so ``.tsx`` and ``.ts`` files
     in the same directory don't share a cluster. The clustering pipeline
-    flips this on; ``get_archetype`` keeps the default (False) so v0.5.x
+    flips this on; ``get_archetype`` keeps the default (False) so
     profiles' ``paths_pattern`` strings still match without migration.
 
-    v0.5.2 (Bug 2): when ``parts[0]`` is a monorepo workspace root
+    Bug 2: when ``parts[0]`` is a monorepo workspace root
     (``packages``, ``apps``, ``workspaces``) and the path has at least 4
     segments, ``parts[1]`` (the workspace name) is preserved so files from
     distinct workspaces don't collide on identical sub-directory shapes.
-    The pre-v0.5.2 formula ``parts[0]/parts[-3]/parts[-2]`` dropped the
+    An earlier formula ``parts[0]/parts[-3]/parts[-2]`` dropped the
     workspace name for any ≥5-part monorepo path.
 
-    v0.5.9 (Option 4): for non-monorepo paths with 4+ segments, the bucket
+    Option 4: for non-monorepo paths with 4+ segments, the bucket
     depth dropped from 3 to 2 (``CLUSTER_PATH_BUCKET_DEPTH`` env var,
     default 2). ``app/services/zoom/recordings.rb`` now maps to bucket
     ``app/services`` (not ``app/services/zoom``), collapsing the long tail
@@ -254,8 +254,8 @@ def compute_signature(
     ``include_extension_in_bucket`` forwards to
     :func:`path_pattern_bucket_for`; the clustering pipeline turns this on
     so ``.tsx`` and ``.ts`` files in the same dir cluster separately
-    (v0.5.2 Bug 1). Callers that need backward-compatible bucket strings
-    (e.g. ``get_archetype`` reading v0.5.x ``paths_pattern`` entries)
+    (Bug 1). Callers that need backward-compatible bucket strings
+    (e.g. ``get_archetype`` reading legacy ``paths_pattern`` entries)
     leave it False.
     """
     bucket, _sub = path_pattern_bucket_for(

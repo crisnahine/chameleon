@@ -4,6 +4,14 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.9] - 2026-06-01
+
+### Changed
+
+- **`daemon_status` reports the version dynamically.** `running_version` (shown by `/chameleon-status`) read `importlib.metadata.version("chameleon-mcp")`, which returns a stale or absent value in a source/editable checkout where the package isn't pip-installed. It now prefers the in-package `__version__` (the bump-synced source of truth, like `daemon.py`), falling back to importlib only if that import fails. So the reported running version always matches the actual code.
+- **Removed every static version literal from user-facing strings.** Deprecation, legacy-trust-hint, and Ruby-extractor error messages no longer cite a fixed version (e.g. "removed in v0.5.17", "pre-v0.4 path-derived repo_id", "Phase 8 (v1.5) Ruby support"). The `/chameleon-status` skill's "Version coherence (v0.5.7)" label dropped the version.
+- **Stripped all internal `vX.Y` version markers from comments and docstrings.** ~160 historical annotations (e.g. "v0.5.2 (Bug 1):", "Pre-v0.5.6 the function", "v0.6.0 introduces...") were de-versioned while preserving meaning and bug-trace identifiers (`(Bug N)` / `BUG-NNN` kept). A backward-compat note keyed on a version now names the data epoch directly ("legacy records that lack `profile_sha256`" instead of "v0.5.0 records"). No code paths changed. Test fixtures that intentionally pin an old schema or engine version (to exercise migration / mismatch detection) were left as-is.
+
 ## [1.5.8] - 2026-06-01
 
 ### Fixed

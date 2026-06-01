@@ -176,7 +176,7 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
 def _strip_jsonc_comments(text: str) -> str:
     """Minimal JSONC → JSON: strip // and /* */ comments. Preserves strings.
 
-    BUG-NEW-012 (v0.5.7-redo): the previous implementation naively split on
+    BUG-NEW-012: the previous implementation naively split on
     `//` and ate everything after, which corrupted URL string literals like
     ``"$schema": "https://json.schemastore.org/tsconfig"``. tsconfig files
     that ship a $schema URL (most modern ones do) failed to parse, returning
@@ -423,7 +423,7 @@ def _workspace_monorepo_root(start: Path) -> Path | None:
 def _resolve_workspace_package_target(target: str, from_path: Path, repo_root: Path) -> list[Path]:
     """Find candidate paths for an org-prefixed workspace-local package.
 
-    BUG-NEW-012 (v0.5.7-redo): pnpm/yarn-workspace monorepos like plane
+    BUG-NEW-012: pnpm/yarn-workspace monorepos like plane
     publish their tsconfig packages via ``link:`` / ``workspace:`` deps,
     so ``node_modules/@plane/typescript-config/react-library.json`` does
     not exist on a fresh checkout. The actual files live at
@@ -534,7 +534,7 @@ def _parse_eslint_yaml(path: Path) -> tuple[dict | None, str | None]:
 
 
 def _parse_rubocop_yaml(path: Path) -> tuple[dict | None, str | None]:
-    """Parse a .rubocop.yml file via PyYAML (BUG-014, v0.5.6).
+    """Parse a .rubocop.yml file via PyYAML (BUG-014).
 
     Captures the top-level mapping verbatim: ``AllCops``, ``plugins``,
     ``require``, ``inherit_from``, plus every cop entry. We cap the
@@ -567,7 +567,7 @@ _EXPORTS_RE = re.compile(
 def _parse_eslint_js_via_node(path: Path) -> tuple[dict | None, str | None]:
     """Evaluate an ESLint config via Node and return its exported object.
 
-    BUG-003 / BUG-020 (v0.5.6): the regex-based parser below handles only
+    BUG-003 / BUG-020: the regex-based parser below handles only
     trivial object literals. Real-world configs use computed values,
     spread, parserOptions nested objects, etc. — anything beyond the
     simplest shape produces "object literal not JSON-coercible". The

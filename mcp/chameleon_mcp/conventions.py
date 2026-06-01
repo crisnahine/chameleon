@@ -1,4 +1,4 @@
-"""Convention schema, serialization, and extraction for Smart Injection v0.9.0."""
+"""Convention schema, serialization, and extraction for Smart Injection."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""v0.6.0 branch-pinning: materialize a canonical-ref profile to a cache dir.
+"""Branch-pinning: materialize a canonical-ref profile to a cache dir.
 
 When ``.chameleon/config.json`` sets ``canonical_ref`` (e.g.
 ``"origin/main"``), chameleon should serve profile reads from THAT ref
@@ -232,7 +232,7 @@ def _canonical_artifacts_pass_scans(cache_dir: Path) -> bool:
         needed here.
 
     Best-effort: scanner import failure does NOT abort the
-    materialize (falls back to v0.5.x behavior; caller proceeds
+    materialize (falls back to the unpinned behavior; caller proceeds
     without the canonical content). We only refuse when a check
     affirmatively reports a problem.
     """
@@ -300,7 +300,7 @@ def gc_stale_caches(repo_id: str, *, keep_n: int = 4) -> int:
     keep history; any cache older than the latest N can go. Returns
     the number of directories removed.
 
-    v0.6.1: also evicts cache dirs missing the COMMITTED sentinel
+    Also evicts cache dirs missing the COMMITTED sentinel
     (half-materialized or scan-rejected dirs that earlier versions
     left behind). Without this, empty SHA-named dirs occupied
     retention slots and evicted valid caches.

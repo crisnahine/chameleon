@@ -93,7 +93,7 @@ def get_rules(repo: str, source: str | None = None) -> dict:
     `"formatting"`, `"typescript"`). Omit to return all. Passing an
     archetype name (e.g. `"component"`) returns a failed envelope —
     rules are SOURCE-scoped, not archetype-scoped. The legacy
-    `archetype=` kwarg was removed from the MCP schema in v0.5.17
+    `archetype=` kwarg was removed from the MCP schema
     (still accepted by the in-process function with a deprecation
     field, but no longer advertised to callers).
     """
@@ -182,7 +182,7 @@ def disable_session(
     `.session_disabled.<session_id>` marker before injecting; when present
     AND validly HMAC-signed, no <chameleon-context> is added.
 
-    Defenses (v0.5.15-17): the marker is HMAC-signed so an out-of-process
+    Defenses: the marker is HMAC-signed so an out-of-process
     attacker can't plant a forgery. The repo must have a trust grant
     before disable_session will write. Sessions whose session_id has never
     invoked another chameleon tool for this repo are REFUSED by default;

@@ -1,15 +1,15 @@
 r"""Lint engine — compare a file's AST-shape dimensions against an archetype's
 canonical `ast_query` and emit violations, AND scan content for secrets.
 
-Phase 4.1 (v0.3): regex-heuristic extraction. The cluster signature function
+Phase 4.1: regex-heuristic extraction. The cluster signature function
 in `signatures.py` operates on a real ParsedFile produced by the long-lived
 ts_dump.mjs / prism_dump.rb subprocesses. Round-tripping through the
 subprocess for every lint_file call would dominate latency (cold-start cost
-of ~200ms per Node spawn, plus the `npm install` first-run trip), so for v0.3
+of ~200ms per Node spawn, plus the `npm install` first-run trip), so
 the lint engine derives the same dimensions from the raw `content` string via
 language-specific regex heuristics.
 
-v0.4 (4.8) adds a `secret-detected-in-content` rule wired to the bootstrap
+A `secret-detected-in-content` rule is wired to the bootstrap
 `detect-secrets` integration. The rule fires regardless of `ast_query` —
 even files without an archetype get scanned — and emits a violation per
 detected secret, capped at 50 per file to avoid the engine blowing up on
@@ -796,7 +796,7 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
     issue, not a style mismatch); the rule fires regardless of whether the
     file has an archetype, so even out-of-tree edits are covered.
 
-    v0.5.2 (forem dogfood bug — "GitHub PAT bypassed by string-concat"):
+    (Forem dogfood bug — "GitHub PAT bypassed by string-concat"):
     a preprocessing pass folds `"prefix" + "rest"` patterns before invoking
     the underlying scanners so that trivially-obfuscated tokens like
     `"ghp_" + "abc…"` reach detect-secrets as `"ghp_abc…"`. Same applies to

@@ -264,7 +264,7 @@ class TypeScriptExtractor:
     def can_handle(self, repo_root: Path) -> bool:
         """Detect TS via tsconfig.json or package.json with TS-related deps.
 
-        BUG-010 (v0.5.6): also accept "any *.ts/*.tsx file in the
+        BUG-010: also accept "any *.ts/*.tsx file in the
         workspace" as a signal. Hoisted-deps monorepos (excalidraw's
         excalidraw-app, Nx-style packages where every TS dep lives at the
         root) have workspaces whose own package.json carries no TS deps
@@ -278,7 +278,7 @@ class TypeScriptExtractor:
         conventional ``apps/`` / ``packages/`` / ``services/`` /
         ``workspaces/`` subdirs that themselves contain a package.json.
         In those cases the orchestrator's per-workspace fanout — not the
-        root extractor — should claim the children. Pre-v0.5.6's
+        root extractor — should claim the children. An earlier
         path-only signal naturally returned False at these roots and the
         workspace fanout depended on it.
         """

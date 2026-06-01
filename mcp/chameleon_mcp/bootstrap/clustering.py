@@ -170,7 +170,7 @@ class ClusteringResult:
 def _adaptive_sparse_threshold(total_files: int) -> int:
     """Pick a sparse-cluster threshold based on corpus size.
 
-    The v0.5.1 hard-coded threshold of 5 killed recall on feature-per-folder
+    An earlier hard-coded threshold of 5 killed recall on feature-per-folder
     layouts (excalidraw: 94.8% sparse warnings; mastodon: 0 archetypes from
     856 files). Repos under ~1k files routinely have meaningful clusters
     with 3–4 members; lowering the floor lets the long tail surface.
@@ -178,7 +178,7 @@ def _adaptive_sparse_threshold(total_files: int) -> int:
     Heuristic (corpus-size tiered):
       - total_files <  1000 → threshold = 3
       - total_files <  5000 → threshold = 4
-      - total_files >= 5000 → threshold = 5 (v0.5.1 behavior preserved
+      - total_files >= 5000 → threshold = 5 (behavior preserved
                               for large monorepos where 5+ members is
                               easy to clear and noisier clusters dominate)
 
@@ -215,7 +215,7 @@ def cluster_files(
                    on the corpus size — 3 for repos < 1k files, 4 for
                    1k–5k, 5 for larger. Tests pass an explicit value for
                    determinism; the orchestrator passes ``None`` so real
-                   repos get the adaptive behavior (v0.5.2 Bug 4).
+                   repos get the adaptive behavior (Bug 4).
 
     Returns:
         ClusteringResult with clusters sorted by size (largest first) for

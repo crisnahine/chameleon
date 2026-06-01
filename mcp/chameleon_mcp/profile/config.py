@@ -1,8 +1,8 @@
-"""``.chameleon/config.json`` reader for v0.6.0 UX features.
+"""``.chameleon/config.json`` reader for per-repo UX features.
 
-v0.5.x had no per-repo configuration file; behavior was hard-coded.
-v0.6.0 introduces configurable features (branch pinning, auto-refresh,
-trust-friction reduction, auto-rename) that need a place to be
+Earlier versions had no per-repo configuration file; behavior was hard-coded.
+These features (branch pinning, auto-refresh,
+trust-friction reduction, auto-rename) need a place to be
 configured per repo. This module loads + validates the file.
 
 Schema (all fields optional, all have safe defaults):

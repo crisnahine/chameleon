@@ -1,4 +1,4 @@
-"""Per-file enforcement state machine for v0.7.0.
+"""Per-file enforcement state machine.
 
 Tracks escalation levels (L0/L1/L2), correction counts, and cooldowns
 per file per session. State persists in a JSON file under the plugin

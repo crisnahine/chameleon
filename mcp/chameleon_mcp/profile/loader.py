@@ -184,7 +184,7 @@ REPO_ROOT_MARKERS: tuple[str, ...] = (
 def find_repo_root(file_path: Path) -> Path | None:
     """Walk up from file_path looking for a repo-root marker.
 
-    Two-pass strategy (BUG-NEW-002, v0.5.7-redo):
+    Two-pass strategy (BUG-NEW-002):
 
     Pass 1 - if the immediate first-marker ancestor's marker is
     ``.chameleon``, return it. (Fast path: behaves like pre-fix code
@@ -197,7 +197,7 @@ def find_repo_root(file_path: Path) -> Path | None:
     32 levels, return THAT one. Otherwise fall back to the first-marker
     ancestor from pass 1 (pre-fix behavior).
 
-    Why two-pass: pre-v0.5.7 the walk stopped at the first marker, so
+    Why two-pass: an earlier walk stopped at the first marker, so
     monorepos with ``.chameleon`` at the root and ``package.json`` at
     each workspace returned the workspace as repo_root and masked the
     root profile. The straight ``.chameleon`` priority within a level

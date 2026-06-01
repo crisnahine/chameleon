@@ -58,7 +58,7 @@ class TrustRecord:
         granted_at: ISO-8601 timestamp of the (first) grant.
         granted_by_user: best-effort username for the audit trail.
         profile_sha256: hash of the "root" profile_dir at grant time. This
-            is what older trust records carried alone; v0.5.1 keeps it as
+            is what older trust records carried alone; newer records keep it as
             the fallback hash for any repo_root not present in the new
             ``repo_root_specific_hashes`` map (backward compat).
         repo_root: filesystem path of the profile_dir's parent recorded
@@ -70,7 +70,7 @@ class TrustRecord:
             → profile_sha256, populated when a workspace-internal profile
             is trusted alongside (or instead of) the root. Lookups for a
             given repo_root prefer this map; absence falls back to
-            ``profile_sha256``. v0.5.0 records that lack this field still
+            ``profile_sha256``. Legacy records that lack this field still
             load (defaults to ``{}``).
     """
 
@@ -114,7 +114,7 @@ class TrustRecord:
             1. ``repo_root_specific_hashes[str(repo_root.resolve())]`` when
                a workspace-internal grant has been recorded.
             2. ``profile_sha256`` — the "root" hash recorded on the first
-               grant. This is the backward-compat path for v0.5.0 records
+               grant. This is the backward-compat path for legacy records
                and for repos where only the top-level was trusted.
 
         Always returns a string (possibly empty when the record is malformed).
@@ -138,8 +138,8 @@ class TrustRecord:
         workspace must read as *untrusted* -- not *stale*, which both leaks an
         unreviewed canonical and implies a refresh that never happened.
 
-        v0.5.1+ records seed ``repo_root_specific_hashes`` with every granted
-        root, so membership there is authoritative. Legacy v0.5.0 records have
+        Newer records seed ``repo_root_specific_hashes`` with every granted
+        root, so membership there is authoritative. Legacy records have
         no map; fall back to the single top-level ``repo_root``.
         """
         try:
@@ -177,14 +177,14 @@ def hash_profile(profile_dir: Path) -> str:
     Included artifacts (alphabetical):
 
     - ``archetypes.json`` — archetype definitions. ``/chameleon-rename``
-      mutates these; v0.5.0 did NOT include this file, so renames slipped
+      mutates these; older records did NOT include this file, so renames slipped
       past trust unchanged (Bug H1).
     - ``canonicals.json`` — canonical witness mappings. Also rewritten by
       ``/chameleon-rename``.
     - ``idioms.md`` — captured team idioms. ``/chameleon-teach`` mutates
       this; included so the user re-reviews new natural-language idioms
       before they reach model context.
-    - ``profile.json`` — top-level profile + summary. The original v0.1
+    - ``profile.json`` — top-level profile + summary. The original
       hash input.
     - ``rules.json`` — lint rules; ``/chameleon-rename`` may rewrite
       archetype-keyed entries here.
@@ -233,7 +233,7 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
     recorded so future tool calls can resolve repo_id → repo_root without
     scanning every known repo.
 
-    Per-root storage (v0.5.1, Bug H6):
+    Per-root storage (Bug H6):
 
     Repositories with multiple `repo_root`-equivalent layouts under the
     same git remote (monorepos with per-workspace .chameleon/, hybrid
@@ -245,7 +245,7 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
     - First grant (no existing record): writes the top-level
       ``profile_sha256`` AND seeds ``repo_root_specific_hashes`` with the
       same hash, keyed by the resolved repo_root. The top-level fields
-      mirror v0.5.0 semantics for any caller still reading the legacy
+      mirror the original semantics for any caller still reading the legacy
       shape.
     - Subsequent grant for the SAME repo_root as the existing record:
       refreshes both the top-level hash and the matching map entry.
@@ -319,11 +319,11 @@ def is_material_change(repo_id: str, current_profile_dir: Path) -> bool:
     material; Phase 4 refines to "any new archetype, new canonical witness file,
     or new active idiom" only.)
 
-    v0.5.1 (Bug H6): consults the per-root hash map first via
+    Bug H6: consults the per-root hash map first via
     ``record.hash_for_root(current_profile_dir.parent)``. When a workspace
     has its own trust grant, this returns the workspace's hash; when only
     the root was trusted, it falls back to ``record.profile_sha256``. Pre-
-    v0.5.1 records (no ``repo_root_specific_hashes``) keep the legacy
+    Older records (no ``repo_root_specific_hashes``) keep the legacy
     "single hash per repo_id" semantics.
     """
     record = trust_state_for(repo_id)

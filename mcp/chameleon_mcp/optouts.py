@@ -152,7 +152,7 @@ def is_chameleon_suppressed(
 def write_session_disable(repo_id: str, session_id: str) -> Path:
     """Write the .session_disabled.<session_id> marker, HMAC-signed.
 
-    v0.5.14 bug 8: the marker is HMAC-signed with the local HMAC key
+    Bug 8: the marker is HMAC-signed with the local HMAC key
     (the same key the exec_log uses) over `repo_id|session_id|disabled-at`.
     A third-party process that learns a session_id cannot forge a valid
     marker without the HMAC key, so `is_chameleon_suppressed` won't
@@ -162,7 +162,7 @@ def write_session_disable(repo_id: str, session_id: str) -> Path:
     only happens when /dev/urandom is unavailable AND no override path
     is writable) the marker is still written but without a signature.
     `_marker_has_valid_signature` treats unsigned markers as valid for
-    back-compat with v0.5.13 and earlier — the security gate only
+    back-compat with older records — the security gate only
     rejects markers whose signature is PRESENT BUT WRONG.
     """
     marker = repo_data_dir(repo_id) / f".session_disabled.{_safe_session_marker(session_id)}"

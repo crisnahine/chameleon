@@ -164,7 +164,7 @@ def init_index_db(db_path: Path | None = None) -> sqlite3.Connection:
     NOT EXISTS + INSERT OR IGNORE for the version row). Returns an open
     hardened connection.
 
-    v0.5.1 migration: the `repos` table changes its PRIMARY KEY from
+    Migration: the `repos` table changes its PRIMARY KEY from
     `(repo_id)` to `(repo_id, repo_root)` so monorepo sub-workspaces no
     longer overwrite the root's row. Detected via `PRAGMA table_info`;
     runs the CREATE/COPY/DROP/RENAME pass in a single transaction so a
@@ -358,22 +358,22 @@ def resolve_repo_root(
 ) -> str | None:
     """Primary fast lookup: repo_id → repo_root.
 
-    v0.5.1 (Bug 1): monorepo sub-workspaces share a git-remote-derived
+    Bug 1: monorepo sub-workspaces share a git-remote-derived
     repo_id with the root, so a single repo_id may now match multiple
     rows.
 
-    v0.5.5 (Bug H): when the workspace-bootstrap path in tools.py inserts
+    Bug H: when the workspace-bootstrap path in tools.py inserts
     a row PER workspace (e.g., plane: 1 root + 17 ``packages/*`` /
     ``apps/*`` rows, all sharing the same repo_id), the previous
     freshest-row rule returned the alphabetically-last workspace
     (``packages/utils``). Downstream consumers (get_canonical_excerpt,
     get_drift_status) then loaded the wrong .chameleon/ and silently
-    emitted ``archetype not found`` for valid archetypes. v0.5.5 makes
+    emitted ``archetype not found`` for valid archetypes. This makes
     the resolver ANCESTOR-AWARE.
 
     Resolution order:
       1. If ``repo_root_hint`` matches a row exactly, return it
-         (unchanged from v0.5.1).
+         (unchanged).
       2. If multiple rows exist for this repo_id, prefer the row whose
          ``repo_root`` is an ancestor of (or equal to) every other row's
          ``repo_root`` — i.e., the actual repo root, not a workspace.
@@ -431,7 +431,7 @@ def resolve_repo_root(
 def _pick_ancestor_or_freshest(candidates: list[str]) -> str:
     """Return the root whose path is an ancestor of every other candidate.
 
-    v0.5.5 Bug H. When ``bootstrap_repo`` runs on a monorepo, the
+    Bug H. When ``bootstrap_repo`` runs on a monorepo, the
     workspace-completion path inserts a row per workspace using
     ``_compute_repo_id(ws_root)``. Because ``_compute_repo_id`` hashes
     the git remote URL, every workspace and the root collapse to the
@@ -489,7 +489,7 @@ def get_repo(
 ) -> dict | None:
     """Return the full row for a repo as a dict, or None if absent.
 
-    v0.5.1: accepts an optional `repo_root_hint` so monorepo callers can
+    Accepts an optional `repo_root_hint` so monorepo callers can
     pinpoint a specific sub-workspace row when the repo_id alone is
     ambiguous. Without a hint, the freshest matching row wins (same
     ordering as `resolve_repo_root`).
@@ -559,7 +559,7 @@ def list_repos(
     Raises:
         ValueError: if `cursor` is non-empty but malformed. Callers
         translate this into the existing "unknown cursor" error envelope
-        so existing v0.2 behavior is preserved.
+        so existing behavior is preserved.
     """
     path = db_path if db_path is not None else _index_db_path()
     if not path.is_file():
@@ -658,11 +658,11 @@ def forget_repo(
 ) -> bool:
     """Delete repo row(s). Returns True if at least one row was removed.
 
-    v0.5.1 (Bug 1): with the composite (repo_id, repo_root) PK, a single
+    Bug 1: with the composite (repo_id, repo_root) PK, a single
     repo_id can map to multiple rows (monorepo root + sub-workspaces).
     When `repo_root` is supplied, only that specific row is removed.
     When omitted, every row sharing `repo_id` is removed — preserving
-    v0.5.0 behavior for uninstall flows that want to forget the entire
+    Behavior for uninstall flows that want to forget the entire
     project at once.
 
     Used by /chameleon-disable and uninstall flows. Idempotent: calling
@@ -758,7 +758,7 @@ def get_file_clusters(
 
     Result shape: `{rel_path: {"cluster_id": str, "sha_hint": str|None,
     "last_seen_at": str}}`. Empty dict when the repo is unknown or has
-    no rows yet (legacy v0.4 profiles); callers treat this as "no
+    no rows yet (legacy profiles); callers treat this as "no
     partial-refresh state available, fall through to full bootstrap".
     """
     if not repo_id:

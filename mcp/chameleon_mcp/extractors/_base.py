@@ -1,6 +1,6 @@
 """Extractor protocol — language-agnostic interface for AST extraction.
 
-All language extractors (TypeScript, Ruby in v1.5, etc.) implement this protocol.
+All language extractors (TypeScript, Ruby, etc.) implement this protocol.
 The downstream clustering, archetype detection, and rule extraction logic operate
 on the normalized ParseResult shape — language details are hidden behind the protocol.
 """

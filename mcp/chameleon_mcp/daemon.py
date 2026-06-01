@@ -42,7 +42,7 @@ Fail-open contract:
     `None` on any framing / socket / parse failure so the hook can fall
     back to the existing in-process path.
 
-Single-threaded for v0.5: each connection is handled to completion
+Single-threaded: each connection is handled to completion
 before the next is accepted. A thread pool can be retrofitted later;
 the protocol is stateless per connection so the change is local.
 """
