@@ -75,6 +75,11 @@ def sanitize_for_chameleon_context(content: str) -> str:
     cleaned = re.sub(r"\x1b\][^\x07]*\x07?", "", cleaned)
     cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", cleaned)
     cleaned = unicodedata.normalize("NFC", cleaned)
+    # NFC does not fold fullwidth (U+FF1C/U+FF1E) or small-form (U+FE64/U+FE65)
+    # angle brackets to ASCII, so `＜/chameleon-context＞` would slip past the
+    # ASCII-only _DANGEROUS_TOKENS match. Fold them to `<`/`>` before the loop so
+    # a spoofed context-close tag is caught like its ASCII form.
+    cleaned = cleaned.translate({0xFF1C: "<", 0xFF1E: ">", 0xFE64: "<", 0xFE65: ">"})
 
     for token in _DANGEROUS_TOKENS:
         replacement = f"[chameleon-sanitized: {token.strip('<>')}]"

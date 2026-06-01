@@ -3,6 +3,11 @@ set -euo pipefail
 
 [[ "${CHAMELEON_DISABLE:-}" == "1" ]] && exit 0
 
+# The statusline cache lives in a repo-relative path (.claude/), so its values
+# are attacker-controllable. Strip control chars (ANSI/OSC escape injection,
+# terminal-title rewrite) before emitting anything to the terminal.
+strip_ctrl() { tr -d '[:cntrl:]'; }
+
 input=$(cat)
 project_dir=""
 if command -v jq &>/dev/null; then
@@ -20,14 +25,15 @@ if [[ -f "$cache_file" ]]; then
     if [[ "$count" -gt 0 ]]; then
       parts=""
       for i in $(seq 0 $((count - 1))); do
-        name=$(jq -r ".profiles[$i].name" "$cache_file" 2>/dev/null)
-        trust=$(jq -r ".profiles[$i].trust" "$cache_file" 2>/dev/null)
+        name=$(jq -r ".profiles[$i].name" "$cache_file" 2>/dev/null | strip_ctrl)
+        trust=$(jq -r ".profiles[$i].trust" "$cache_file" 2>/dev/null | strip_ctrl)
+        case "$trust" in trusted|untrusted|stale|n/a) ;; *) trust="?" ;; esac
         if [[ -n "$parts" ]]; then
           parts="$parts │ "
         fi
         parts="$parts$name ($trust)"
       done
-      activity=$(jq -r '.activity // empty' "$cache_file" 2>/dev/null)
+      activity=$(jq -r '.activity // empty' "$cache_file" 2>/dev/null | strip_ctrl)
       if [[ -n "$activity" ]]; then
         cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)
         cache_age=$(( $(date +%s) - cache_mtime ))
@@ -35,7 +41,7 @@ if [[ -f "$cache_file" ]]; then
           parts="$parts │ $activity"
         fi
       fi
-      update=$(jq -r '.update // empty' "$cache_file" 2>/dev/null)
+      update=$(jq -r '.update // empty' "$cache_file" 2>/dev/null | strip_ctrl)
       if [[ -n "$update" ]]; then
         plugin_init="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}/mcp/chameleon_mcp/__init__.py"
         cur_ver=""
@@ -51,19 +57,23 @@ if [[ -f "$cache_file" ]]; then
     fi
   else
     result=$(CACHE_PATH="$cache_file" python3 -c "
-import json, os
+import json, os, re
 d=json.load(open(os.environ['CACHE_PATH']))
 ps=d.get('profiles',[])
+def _s(v): return re.sub(r'[\x00-\x1f\x7f]','',str(v))
+def _t(v):
+    v=_s(v)
+    return v if v in ('trusted','untrusted','stale','n/a') else '?'
 if ps:
-    parts=' │ '.join(f\"{p['name']} ({p['trust']})\" for p in ps)
-    act=d.get('activity','')
+    parts=' │ '.join(f\"{_s(p.get('name',''))} ({_t(p.get('trust',''))})\" for p in ps)
+    act=_s(d.get('activity',''))
     if act:
         import time
         try:
             age=time.time()-os.path.getmtime(os.environ['CACHE_PATH'])
             if age<30: parts+=f' │ {act}'
         except: pass
-    upd=d.get('update','')
+    upd=_s(d.get('update',''))
     if upd:
         import re as _re
         _pr=os.environ.get('CLAUDE_PLUGIN_ROOT','')

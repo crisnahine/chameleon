@@ -216,11 +216,14 @@ def find_repo_root(file_path: Path) -> Path | None:
     32 parent directories.
     """
     current = file_path.expanduser()
-    if current.is_file():
-        current = current.parent
     try:
+        if current.is_file():
+            current = current.parent
         current = current.resolve()
     except OSError:
+        # ENAMETOOLONG (errno 63) on an over-NAME_MAX component escapes
+        # is_file()/resolve() (pathlib's _IGNORED_ERRORS excludes it); fail
+        # closed to None instead of bubbling an uncaught OSError to the caller.
         return None
 
     cache_key = str(current)

@@ -205,7 +205,7 @@ def materialize_canonical(repo_root: Path, repo_id: str, canonical_ref: str) -> 
         os.close(lock_fd)
 
 
-_PROSE_SCAN_ARTIFACTS = ("canonicals.json", "idioms.md", "principles.md")
+_PROSE_SCAN_ARTIFACTS = ("canonicals.json", "conventions.json", "idioms.md", "principles.md")
 
 
 def _canonical_artifacts_pass_scans(cache_dir: Path) -> bool:
@@ -216,10 +216,14 @@ def _canonical_artifacts_pass_scans(cache_dir: Path) -> bool:
     in ``.hook_errors.log``.
 
     Validation per-artifact type:
-      - ``canonicals.json`` + ``idioms.md``: prose / source — run the
-        bootstrap-time scanners (`scan_for_injection_signals` +
-        `scan_for_secrets`). These check for instruction-shaped
-        comments and hardcoded credentials.
+      - ``canonicals.json`` + ``conventions.json`` + ``idioms.md`` +
+        ``principles.md``: prose / source that reaches model context —
+        run the full bootstrap-time scan set: injection signals,
+        hardcoded secrets, AND dangerous code patterns
+        (`scan_for_dangerous_patterns`), matching bootstrap/canonical.py
+        so a poisoned ref steering the model toward eval()/exec() cannot
+        materialize clean. conventions.json values surface in lint
+        violation messages, so it gets the same scan.
       - ``archetypes.json``: schema — but its KEYS are archetype
         names that flow into the bracketed advisory header. Validate
         every key against ARCHETYPE_NAME_RE so an attacker can't
@@ -231,22 +235,22 @@ def _canonical_artifacts_pass_scans(cache_dir: Path) -> bool:
         hashes, no attacker-controlled prose surface, no validation
         needed here.
 
-    Best-effort: scanner import failure does NOT abort the
-    materialize (falls back to the unpinned behavior; caller proceeds
-    without the canonical content). We only refuse when a check
-    affirmatively reports a problem.
+    Fail CLOSED: a scanner import failure REFUSES the materialize
+    (falls back to the unpinned working tree) rather than serving
+    unvetted branch-pinned content to the model.
     """
     import sys as _sys
 
     try:
         from chameleon_mcp.bootstrap.canonical_scanner import is_safe_canonical
+        from chameleon_mcp.profile.poisoning_scanner import scan_for_dangerous_patterns
     except Exception as exc:  # noqa: BLE001
         print(
             f"chameleon: canonical-ref scanner import failed: "
-            f"{type(exc).__name__}: {exc}; allowing materialize",
+            f"{type(exc).__name__}: {exc}; refusing materialize (fail closed)",
             file=_sys.stderr,
         )
-        return True
+        return False
     for artifact in _PROSE_SCAN_ARTIFACTS:
         path = cache_dir / artifact
         if not path.is_file():
@@ -255,10 +259,10 @@ def _canonical_artifacts_pass_scans(cache_dir: Path) -> bool:
             content = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if not is_safe_canonical(content):
+        if not is_safe_canonical(content) or scan_for_dangerous_patterns(content):
             print(
                 f"chameleon: canonical-ref materialize aborted: "
-                f"{artifact} contains prompt-injection or secret pattern",
+                f"{artifact} contains prompt-injection, secret, or dangerous pattern",
                 file=_sys.stderr,
             )
             return False

@@ -4,6 +4,19 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-06-01
+
+First batch of fixes from the 2026-06-01 plugin audit (security + data loss + a crash cluster). More batches to follow.
+
+### Fixed
+
+- **Data loss: the git merge driver wiped `canonicals.json` / `rules.json` and zeroed `profile.json`'s archetype count.** `merge_profiles` hardcoded the `archetypes` key and filtered output to a safe-key set that excluded `canonicals`/`rules`, so a merge-driver run on those files overwrote them with an empty `{archetypes: {}}` and still returned success — then the generation mismatch hard-failed the whole profile load. It is now shape-aware: it merges the actual data key (`archetypes` / `canonicals` / `rules` / `conventions`), preserves metadata, takes the newer profile.json wholesale instead of zeroing the count, and fails (so git leaves conflict markers) on an unrecognized shape.
+- **Crash cluster: an over-NAME_MAX path component raised an uncaught `ENAMETOOLONG` (errno 63).** A filename longer than 255 bytes passed the total-length check, then `is_file()` / `lstat()` / `resolve()` threw and escaped the guards in `find_repo_root` and `_content_signal_for_path`, surfacing as a tool error and (via the hook stderr capture) writing 100 KB lines into `.hook_errors.log`. `_validate_file_path_arg` now rejects any component over 255 bytes up front, and the two `is_file()` calls are wrapped so they fail closed to `None`.
+- **Security: canonical-ref materialize skipped the poisoning scanner and failed open.** A branch-pinned profile was served to the model after only injection + secret scans, never `scan_for_dangerous_patterns`, so a poisoned `idioms.md` steering toward `eval()`/`exec()` materialized clean; and a scanner import failure returned "safe". Materialize now runs the dangerous-pattern scan too, includes `conventions.json` in the scan set (its values surface in lint messages), and fails closed on a scanner import error.
+- **Security: the sanitizer missed fullwidth / small-form angle brackets.** NFC does not fold `＜ ＞` (U+FF1C/E) or `﹤ ﹥` (U+FE64/5), so a spoofed `＜/chameleon-context＞` slipped past the ASCII-only dangerous-token match. They are now folded to `<`/`>` before the match.
+- **Security: the status line emitted attacker-controllable cache values verbatim.** The repo-relative status-line cache flowed through `jq -r` (which decodes `` to a real ESC) into `printf`, allowing ANSI/OSC escape injection and a spoofed `trusted` segment. Both the jq and Python paths now strip control chars and whitelist the trust state against its enum.
+- **`detect_repo`'s documented `content_signal_match` type was wrong** (`bool` → `str`).
+
 ## [1.5.9] - 2026-06-01
 
 ### Changed

@@ -68,7 +68,7 @@ def get_pattern_context(file_path: str) -> dict:
           "data": {
             "repo": {"id": str, "profile_status": str, "trust_state": str},
             "archetype": {"archetype": str, "alternatives": [str], "confidence_band": str,
-                          "content_signal_match": bool, "match_quality": str, "sub_buckets_count": int},
+                          "content_signal_match": str, "match_quality": str, "sub_buckets_count": int},
             "canonical_excerpt": {"content": str, "witness_path": str, "truncated": bool, "sha_hint": str},
             "rules": [(source_key, config_dict), ...],
             "idioms": str | None,

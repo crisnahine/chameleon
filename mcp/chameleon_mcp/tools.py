@@ -181,6 +181,9 @@ def _resolve_repo_arg(repo: str) -> tuple[Path | None, str | None]:
 
 
 _MAX_PATH_LEN = 4096
+# NAME_MAX: the kernel raises ENAMETOOLONG on a single path component over this
+# many bytes, independent of the total length. macOS and Linux both use 255.
+_NAME_MAX_BYTES = 255
 
 
 def _validate_file_path_arg(file_path: object) -> bool:
@@ -191,7 +194,11 @@ def _validate_file_path_arg(file_path: object) -> bool:
     - non-str (None, int, dict, etc.)
     - empty string
     - null-byte (lstat raises ValueError mid-resolution)
-    - over-length (kernel ENAMETOOLONG before resolution completes)
+    - over-length total path (kernel ENAMETOOLONG before resolution completes)
+    - over-length single component (>255 bytes): ENAMETOOLONG fires per
+      component too, so a 300-byte filename in a short dir passes the total
+      check then raises errno 63 in the FS walk (is_file/lstat/resolve). Reject
+      it up front so the downstream guards never see the uncaught OSError.
     """
     if not isinstance(file_path, str):
         return False
@@ -201,6 +208,9 @@ def _validate_file_path_arg(file_path: object) -> bool:
         return False
     if len(file_path) > _MAX_PATH_LEN:
         return False
+    for component in file_path.split("/"):
+        if len(component.encode("utf-8", "surrogatepass")) > _NAME_MAX_BYTES:
+            return False
     return True
 
 
@@ -678,11 +688,13 @@ def _content_signal_for_path(p: Path) -> str:
     from chameleon_mcp.signatures import content_signal_match_for
 
     file_head: str | None = None
-    if p.is_file():
-        try:
+    try:
+        if p.is_file():
             file_head = p.read_bytes()[:200].decode("utf-8", errors="replace")
-        except OSError:
-            file_head = None
+    except OSError:
+        # includes ENAMETOOLONG (errno 63) on an over-NAME_MAX component, which
+        # is_file() raises before read_bytes() is even reached.
+        file_head = None
     value = content_signal_match_for(file_head) if file_head is not None else "none"
     return value if value is not None else "none"
 
@@ -3576,32 +3588,90 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
             }
         )
 
-    ours_archs = ours_data.get("archetypes", {}) or {}
-    theirs_archs = theirs_data.get("archetypes", {}) or {}
+    # The merge driver runs per-file over profile.json / archetypes.json /
+    # rules.json / canonicals.json (each a different shape). Branch on the data
+    # key the file actually carries instead of assuming "archetypes" — otherwise
+    # a canonicals.json/rules.json conflict gets filtered to _SAFE_TOP_LEVEL_KEYS
+    # (which lacks 'canonicals'/'rules'), wiping the real payload, and a
+    # profile.json conflict gets its archetype_count zeroed.
+    data_key = None
+    for key in ("archetypes", "canonicals", "rules", "conventions"):
+        if isinstance(ours_data.get(key), dict) or isinstance(theirs_data.get(key), dict):
+            data_key = key
+            break
 
-    merged: dict[str, dict] = dict(ours_archs)
-    for name, arch in theirs_archs.items():
-        if name not in merged:
-            merged[name] = arch
-            continue
-        ours_size = (merged[name] or {}).get("cluster_size", 0)
-        theirs_size = (arch or {}).get("cluster_size", 0)
-        if theirs_size > ours_size:
-            merged[name] = arch
-        elif theirs_size == ours_size:
-            ours_witness = (merged[name] or {}).get("canonical_witness", "")
-            theirs_witness = (arch or {}).get("canonical_witness", "")
-            if theirs_witness < ours_witness:
+    if data_key == "archetypes":
+        ours_archs = ours_data.get("archetypes", {}) or {}
+        theirs_archs = theirs_data.get("archetypes", {}) or {}
+
+        merged: dict[str, dict] = dict(ours_archs)
+        for name, arch in theirs_archs.items():
+            if name not in merged:
                 merged[name] = arch
+                continue
+            ours_size = (merged[name] or {}).get("cluster_size", 0)
+            theirs_size = (arch or {}).get("cluster_size", 0)
+            if theirs_size > ours_size:
+                merged[name] = arch
+            elif theirs_size == ours_size:
+                ours_witness = (merged[name] or {}).get("canonical_witness", "")
+                theirs_witness = (arch or {}).get("canonical_witness", "")
+                if theirs_witness < ours_witness:
+                    merged[name] = arch
 
-    unioned = {**ours_data, **theirs_data}
-    merged_data = {
-        k: v for k, v in unioned.items() if k in _SAFE_TOP_LEVEL_KEYS or k.startswith("_")
-    }
-    merged_data["archetypes"] = merged
-    # Keep the denormalized counts consistent with the merged set.
-    merged_data["archetype_count"] = len(merged)
-    merged_data["archetypes_detected"] = len(merged)
+        unioned = {**ours_data, **theirs_data}
+        merged_data = {
+            k: v for k, v in unioned.items() if k in _SAFE_TOP_LEVEL_KEYS or k.startswith("_")
+        }
+        merged_data["archetypes"] = merged
+        # Keep the denormalized counts consistent with the merged set.
+        merged_data["archetype_count"] = len(merged)
+        merged_data["archetypes_detected"] = len(merged)
+        payload_count = len(merged)
+        ours_count = len(ours_archs)
+        theirs_count = len(theirs_archs)
+    elif data_key in ("canonicals", "rules", "conventions"):
+        # Union the keyed payload (ours wins on key conflict) and preserve ALL
+        # of the file's own metadata; never drop the payload key.
+        ours_payload = ours_data.get(data_key) or {}
+        theirs_payload = theirs_data.get(data_key) or {}
+        merged_payload = {**theirs_payload, **ours_payload}
+        # Carry forward the metadata of whichever side is newer (higher
+        # generation) so counts/timestamps stay self-consistent.
+        if theirs_data.get("generation", 0) > ours_data.get("generation", 0):
+            merged_data = dict(theirs_data)
+        else:
+            merged_data = dict(ours_data)
+        merged_data[data_key] = merged_payload
+        payload_count = len(merged_payload)
+        ours_count = len(ours_payload)
+        theirs_count = len(theirs_payload)
+    else:
+        # profile.json (metadata only — no data-payload key) or an unrecognized
+        # shape. Take the newer profile wholesale rather than synthesizing
+        # archetypes={}/count=0; if neither side has a generation we can compare,
+        # fail so the driver exits non-zero and git leaves conflict markers.
+        ours_gen = ours_data.get("generation")
+        theirs_gen = theirs_data.get("generation")
+        if not isinstance(ours_gen, int) and not isinstance(theirs_gen, int):
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        "unrecognized profile shape (no archetypes/canonicals/rules/"
+                        "conventions key and no generation to compare); leaving the "
+                        "conflict for manual resolution"
+                    ),
+                    "merged_profile_path": None,
+                }
+            )
+        if (theirs_gen or 0) > (ours_gen or 0):
+            merged_data = dict(theirs_data)
+        else:
+            merged_data = dict(ours_data)
+        payload_count = merged_data.get("archetype_count", 0)
+        ours_count = ours_data.get("archetype_count", 0)
+        theirs_count = theirs_data.get("archetype_count", 0)
 
     ours_path.write_text(json.dumps(merged_data, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -3609,11 +3679,12 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
         {
             "status": "success",
             "merged_profile_path": str(ours_path),
-            "merged_archetype_count": len(merged),
-            "ours_archetype_count": len(ours_archs),
-            "theirs_archetype_count": len(theirs_archs),
+            "merged_data_key": data_key or "profile",
+            "merged_archetype_count": payload_count,
+            "ours_archetype_count": ours_count,
+            "theirs_archetype_count": theirs_count,
             "note": (
-                "merged by archetype-name union; run /chameleon-refresh after accepting "
+                "merged by key union; run /chameleon-refresh after accepting "
                 "the merge to re-cluster from the actual merged repo state"
             ),
         }
