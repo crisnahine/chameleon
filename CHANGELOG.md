@@ -4,6 +4,17 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.8] - 2026-06-01
+
+### Fixed
+
+- **Stale text that misdescribed the auto-trust default.** After 1.5.7 made `trust.auto_preserve_when="always"` the default, several user-facing and in-code strings still described the old `null` behavior, so `/chameleon-status` could print "trust.auto_preserve_when: OFF (opt-in)" and a comment in `config.py` still marked `null` as the default:
+  - `config.py`: the `_VALID_AUTO_PRESERVE` comment marked `null` as "(default)" while the code defaults to `"always"`; the module and `load_config` docstrings still said an absent config means "v0.5.x behavior". Now they state the real defaults (auto_refresh on, auto_rename on, `auto_preserve_when="always"`).
+  - `/chameleon-status` skill: relabeled the "v0.6.0 config" section to "Config", told it to echo `doctor`'s `config_json` detail verbatim instead of improvising the defaults, spelled out the no-config defaults (including `auto_preserve_when="always"`), and dropped the hard-coded `Schema: 7 (engine min: 0.5.7)` from the example. "v0.6.0" is the release that introduced config.json, not the current version.
+  - `/chameleon-trust` skill: added that the default config auto-re-grants trust on refresh (no re-prompt), so the stale→re-prompt path is what a user opts into with `auto_preserve_when: null`.
+  - `/chameleon-init` skill: dropped the "v0.6.0 default" / "v0.5.x flow" version labels from the auto-rename section.
+  - `doctor`: the malformed-config error now says "config.json features are inactive" instead of "v0.6.0 features".
+
 ## [1.5.7] - 2026-06-01
 
 ### Changed

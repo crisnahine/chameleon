@@ -24,7 +24,8 @@ Schema (all fields optional, all have safe defaults):
 }
 ```
 
-Absent file → all defaults (current v0.5.x behavior). The loader never
+Absent file → all defaults (auto_refresh on, auto_rename on,
+trust.auto_preserve_when="always"). The loader never
 raises on a missing file; it raises ``ChameleonConfigError`` only when
 a present file is malformed (unrecognized type, unknown key under a
 strict section).
@@ -73,10 +74,10 @@ class ChameleonConfig:
         return bool(self.canonical_ref)
 
 
-# null  -> re-prompt for trust on any non-structurally-identical refresh (default)
+# "always" (default) -> re-grant trust after ANY refresh (manual or auto), so the user
+#             is not re-prompted on their own repo.
 # "pulled_from_remote" -> re-grant only when the change came from a teammate's git pull
-# "always" -> re-grant trust after ANY refresh (manual or auto); opt-in for users who
-#             don't want to re-trust their own repo on every refresh.
+# null  -> opt out: re-prompt for trust on any non-structurally-identical refresh
 _VALID_AUTO_PRESERVE = frozenset({None, "pulled_from_remote", "always"})
 
 
@@ -142,8 +143,9 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
     """Return the parsed config for ``<profile_dir>/config.json``.
 
     Returns a default ``ChameleonConfig`` when the file is missing
-    (v0.5.x compatibility — repos without a config keep v0.5.x
-    behavior). Raises ``ChameleonConfigError`` only when a present
+    (repos without a config get the built-in defaults: auto_refresh
+    on, auto_rename on, trust.auto_preserve_when="always"). Raises
+    ``ChameleonConfigError`` only when a present
     file is malformed; never crashes on a missing file.
     """
     path = profile_dir / CONFIG_FILENAME

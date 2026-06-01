@@ -34,12 +34,12 @@ running init twice would overwrite the existing profile.
 6. Suggest the user run `/chameleon-trust` to approve the profile for
    their session.
 
-## v0.6.0 default: auto-apply renames (no user interview)
+## Default: auto-apply renames (no user interview)
 
 Renames are purely cosmetic — they just rekey archetypes.json /
 canonicals.json / rules.json / idioms.md. Pattern quality, witness
-selection, and lint behavior are unaffected. So v0.6.0 makes
-auto-rename the default: the skill picks the best candidate per
+selection, and lint behavior are unaffected. So auto-rename is the
+default: the skill picks the best candidate per
 archetype from `propose_archetype_renames` and applies them without
 asking.
 
@@ -80,7 +80,7 @@ asking.
 ### Legacy ≤3-prompt interview (only when `auto_rename: false`)
 
 If `.chameleon/config.json` is present AND sets `auto_rename: false`,
-run the interactive interview from the v0.5.x flow:
+run the interactive interview:
 
 - Prompt 1: list top-8 archetypes, ask "any to override?"
 - Prompt 2: per picked archetype, show `suggested_alternatives` and
@@ -94,7 +94,7 @@ Invalid names get one re-ask with the regex hint
 
 > chameleon will scan your repo's source files, cluster them into archetypes
 > (e.g. "next-server-component", "service", "controller", "rails-controller"),
-> and pick a canonical example for each. After bootstrap, archetype renames are applied automatically (v0.6.0+).
+> and pick a canonical example for each. After bootstrap, archetype renames are applied automatically.
 > It will write a
 > `.chameleon/` directory you should commit. This usually takes under 10
 > seconds for repos under 5,000 files; under 1 minute for repos up to

@@ -5748,8 +5748,8 @@ def doctor() -> dict:
                     "status": "error",
                     "detail": (
                         f"{cwd_config} is present but malformed: "
-                        f"{type(cfg_exc).__name__}: {cfg_exc}. v0.6.0 features "
-                        "are inactive until fixed."
+                        f"{type(cfg_exc).__name__}: {cfg_exc}. config.json "
+                        "features are inactive until fixed (built-in defaults apply)."
                     ),
                 }
             )

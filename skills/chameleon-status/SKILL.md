@@ -16,12 +16,13 @@ What's plumbed today (read straight from `.chameleon/` and `drift.db`):
 3. **Drift** — `days_since_refresh`, `observed_drift_score`, and a `recommended_action` string from `get_drift_status`.
 4. **Language hint** — when a Rails-with-frontend (or TS-with-Ruby-sidecar) was detected, name the secondary tree so the user can bootstrap it separately.
 5. **Version coherence** (v0.5.7) — call `daemon_status` to get `running_version` (also returns `alive`, `pid`, `socket`, `uptime_s`, `last_request_at`). If the running version differs from the installed plugin version, surface "Running v<X>, installed v<Y> — restart Claude Code to pick up the new MCP."
-6. **v0.6.0 config** — when `.chameleon/config.json` exists, surface the active settings so the user can see at a glance whether their v0.6.0 features are on:
+6. **Config** — surface the active config.json settings (or the built-in defaults when there is no file):
    - `canonical_ref` (and whether materialize is currently working, via `branch_pinning_enabled`)
    - `auto_refresh.enabled` + `drift_threshold` + `max_age_hours`
    - `trust.auto_preserve_when`
    - `auto_rename`
-   Read these via `chameleon-mcp::doctor` — its `config_json` check returns the parsed config. When the file is malformed, doctor surfaces a clear error and v0.6.0 features silently fall back to v0.5.x behavior; show the error prominently so the user can fix the typo.
+
+   Read these via `chameleon-mcp::doctor` — its `config_json` check returns the parsed config, **and echo its `detail` string verbatim rather than improvising the defaults.** When there is no `.chameleon/config.json`, the built-in defaults are: `auto_refresh` ON (drift_threshold=0.2, max_age_hours=168), `auto_rename` ON, `trust.auto_preserve_when="always"` (a refresh — manual or auto — re-grants trust, so the user is **not** re-prompted on their own repo), `canonical_ref` OFF (opt-in). Do **not** label this block with a version number ("v0.6.0" is the release that introduced config.json, not the current version — read the real version from `daemon_status`). When the file is malformed, doctor surfaces a clear error and config.json features fall back to those defaults; show the error prominently so the user can fix the typo.
 
 ## The flow
 
@@ -35,7 +36,7 @@ What's plumbed today (read straight from `.chameleon/` and `drift.db`):
 ```
 chameleon profile: <repo-name>
   Language:        typescript
-  Schema:          7 (engine min: 0.5.7)
+  Schema:          <schema-version> (engine min: <engine-min>)
   Last bootstrap:  47 days ago
   Trust state:     trusted (granted 2026-05-10 by <user>)
   Drift score:     0.12 (recommended: refresh)
