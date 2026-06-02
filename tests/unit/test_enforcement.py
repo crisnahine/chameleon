@@ -261,3 +261,41 @@ def test_eviction_with_none_last_verified_at(tmp_path):
     loaded = load_state(repo_dir, "session-evict-none")
     assert len(loaded.files) == 200
     assert "/none_file.ts" not in loaded.files
+
+
+def test_hard_class_sets_blockable_unresolved():
+    from chameleon_mcp.enforcement import FileState, record_violation
+
+    fs = FileState()
+    record_violation(fs, now=time.time(), archetype="component", hard_class=True)
+    assert fs.blockable_unresolved is True
+
+
+def test_soft_class_does_not_set_blockable():
+    from chameleon_mcp.enforcement import FileState, record_violation
+
+    fs = FileState()
+    record_violation(fs, now=time.time(), archetype="component", hard_class=False)
+    assert fs.blockable_unresolved is False
+
+
+def test_record_clean_clears_blockable():
+    from chameleon_mcp.enforcement import FileState, record_clean, record_violation
+
+    fs = FileState()
+    record_violation(fs, now=time.time(), archetype="component", hard_class=True)
+    record_clean(fs, now=time.time())
+    assert fs.blockable_unresolved is False
+
+
+def test_stop_hook_blocks_roundtrip_and_merge_max():
+    from chameleon_mcp.enforcement import EnforcementState, _merge_states
+
+    s = EnforcementState()
+    s.stop_hook_blocks = 2
+    restored = EnforcementState.from_dict(s.to_dict())
+    assert restored.stop_hook_blocks == 2
+    disk = EnforcementState()
+    disk.stop_hook_blocks = 5
+    merged = _merge_states(disk, s)
+    assert merged.stop_hook_blocks == 5

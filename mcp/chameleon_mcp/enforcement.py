@@ -32,6 +32,7 @@ class FileState:
     last_verified_at: float | None = None
     last_clean_at: float | None = None
     consecutive_l2: int = 0
+    blockable_unresolved: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -42,6 +43,7 @@ class FileState:
             "last_verified_at": self.last_verified_at,
             "last_clean_at": self.last_clean_at,
             "consecutive_l2": self.consecutive_l2,
+            "blockable_unresolved": self.blockable_unresolved,
         }
 
     @classmethod
@@ -54,6 +56,7 @@ class FileState:
             last_verified_at=d.get("last_verified_at"),
             last_clean_at=d.get("last_clean_at"),
             consecutive_l2=d.get("consecutive_l2", 0),
+            blockable_unresolved=d.get("blockable_unresolved", False),
         )
 
 
@@ -62,12 +65,14 @@ class EnforcementState:
     archetypes_seen: set[str] = field(default_factory=set)
     archetypes_with_violations: set[str] = field(default_factory=set)
     files: dict[str, FileState] = field(default_factory=dict)
+    stop_hook_blocks: int = 0
 
     def to_dict(self) -> dict:
         return {
             "archetypes_seen": sorted(self.archetypes_seen),
             "archetypes_with_violations": sorted(self.archetypes_with_violations),
             "files": {k: v.to_dict() for k, v in self.files.items()},
+            "stop_hook_blocks": self.stop_hook_blocks,
         }
 
     @classmethod
@@ -76,6 +81,7 @@ class EnforcementState:
             archetypes_seen=set(d.get("archetypes_seen", [])),
             archetypes_with_violations=set(d.get("archetypes_with_violations", [])),
             files={k: FileState.from_dict(v) for k, v in d.get("files", {}).items()},
+            stop_hook_blocks=d.get("stop_hook_blocks", 0),
         )
 
 
@@ -120,6 +126,7 @@ def _merge_states(disk: EnforcementState, mem: EnforcementState) -> EnforcementS
         dfs = merged.files.get(key)
         if dfs is None or (mfs.last_verified_at or 0) >= (dfs.last_verified_at or 0):
             merged.files[key] = mfs
+    merged.stop_hook_blocks = max(disk.stop_hook_blocks, mem.stop_hook_blocks)
     return merged
 
 
@@ -201,12 +208,15 @@ def record_violation(
     *,
     now: float,
     archetype: str,
+    hard_class: bool = False,
 ) -> None:
     fs.violation_count += 1
     fs.correction_count += 1
     self_corr = is_self_correction(fs, now)
     fs.last_violation_at = now
     fs.last_verified_at = now
+    if hard_class:
+        fs.blockable_unresolved = True
 
     if fs.level == LEVEL_NONE:
         fs.level = LEVEL_L0
@@ -218,6 +228,7 @@ def record_violation(
 
 
 def record_clean(fs: FileState, *, now: float) -> None:
+    fs.blockable_unresolved = False
     fs.correction_count = 0
     fs.consecutive_l2 = 0
     fs.last_clean_at = now
