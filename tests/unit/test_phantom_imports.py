@@ -567,3 +567,51 @@ def test_returns_violation_instances(tmp_path):
         rules={},
     )
     assert len(out) == 1 and isinstance(out[0], Violation)
+
+
+def _run(repo: Path, rel: str, content: str):
+    return lint_phantom_imports(
+        content, file_path=rel, repo_root=repo, language="typescript", rules={}
+    )
+
+
+def test_relative_dangling_is_flagged(tmp_path):
+    (tmp_path / "src").mkdir(parents=True)
+    out = _run(tmp_path, "src/a.ts", "import x from './nope'\n")
+    assert any(v.rule == "phantom-import" for v in out)
+
+
+def test_tsconfig_alias_not_flagged(tmp_path):
+    (tmp_path / "tsconfig.json").write_text(
+        '{"compilerOptions":{"baseUrl":".","paths":{"@app/*":["src/*"]}}}', encoding="utf-8"
+    )
+    (tmp_path / "src").mkdir(parents=True)
+    (tmp_path / "src" / "thing.ts").write_text("export const t = 1\n", encoding="utf-8")
+    out = _run(tmp_path, "src/a.ts", "import { t } from '@app/thing'\n")
+    assert not any(v.rule == "phantom-import" for v in out)
+
+
+def test_unknown_bare_alias_not_flagged(tmp_path):
+    (tmp_path / "src").mkdir(parents=True)
+    out = _run(tmp_path, "src/a.ts", "import x from '@unmapped/thing'\n")
+    assert not any(v.rule == "phantom-import" for v in out)
+
+
+def test_declared_alias_unresolved_target_not_flagged(tmp_path):
+    """Declared alias whose mapped target dir exists but the specific file is
+    missing is ambiguous (generated output, build artifact) -> suppressed, not
+    flagged. Profile rules carry the alias so a regression in the alias resolver
+    surfaces here rather than passing on the empty-rules fallback path."""
+    (tmp_path / "tsconfig.json").write_text(
+        '{"compilerOptions":{"baseUrl":".","paths":{"@app/*":["src/*"]}}}', encoding="utf-8"
+    )
+    (tmp_path / "src").mkdir(parents=True)
+    rules = {"rules": {"typescript": {"paths": {"@app/*": ["src/*"]}, "source": "tsconfig.json"}}}
+    out = lint_phantom_imports(
+        "import { g } from '@app/ghost'\n",
+        file_path=str(tmp_path / "src" / "a.ts"),
+        repo_root=str(tmp_path),
+        language="typescript",
+        rules=rules,
+    )
+    assert not any(v.rule == "phantom-import" for v in out)

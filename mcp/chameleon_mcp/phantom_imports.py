@@ -13,6 +13,7 @@ edit.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -156,11 +157,13 @@ def _violation(spec: str, search_dir: Path, root: Path | None) -> Violation:
     )
 
 
-def _ts_resolves(base: Path) -> bool:
-    """True if `base` (path without assumed extension) resolves to a real file
-    via a standard TS/JS candidate suffix or index file, or is a directory.
+def _exists_with_suffix(base: Path) -> bool:
+    """True if `base` (a path without an assumed extension) resolves to a real
+    file via a standard TS/JS candidate suffix or index file, or is a directory.
 
-    On any OSError, returns True (treat ambiguity as resolved, no flag)."""
+    On any OSError, returns True (treat ambiguity as resolved, no flag). This is
+    the shared suffix-probing used both for relative specifiers and for resolved
+    tsconfig path-alias targets, so the two paths can't disagree."""
     try:
         s = str(base)
         # NodeNext/ESM: a .js-family specifier may map to a .ts source on disk.
@@ -182,6 +185,59 @@ def _ts_resolves(base: Path) -> bool:
         return base.is_dir()
     except OSError:
         return True
+
+
+def _load_tsconfig_paths(repo_root_str: str) -> tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]:
+    """(baseUrl, ((pattern, (targets,...)),...)) from tsconfig/jsconfig.
+
+    Reads the repo-root tsconfig directly so alias resolution works even when the
+    caller's profile rules carry no `paths` (e.g. calibration runs against a
+    fresh checkout). Returns the empty default when no config or no paths.
+
+    Read fresh each call (no cache) so a tsconfig edited mid-session is picked up
+    immediately, matching the cache-free filesystem walk in _nearest_tsconfig_dir.
+    """
+    root = Path(repo_root_str)
+    for name in ("tsconfig.json", "jsconfig.json"):
+        p = root / name
+        try:
+            if not p.is_file():
+                continue
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        co = data.get("compilerOptions")
+        co = co if isinstance(co, dict) else {}
+        base = co.get("baseUrl") or "."
+        paths = co.get("paths")
+        paths = paths if isinstance(paths, dict) else {}
+        norm = tuple((k, tuple(v)) for k, v in paths.items() if isinstance(v, list))
+        return base, norm
+    return ".", ()
+
+
+def _resolves_via_alias(spec: str, repo_root: Path) -> bool:
+    """True if `spec` matches a tsconfig/jsconfig `paths` alias at the repo root,
+    whether or not the mapped target resolves to a real file.
+
+    A specifier that matches a declared alias pattern but resolves to nothing is
+    ambiguous (generated output dir, build artifact, etc.), so it is treated as
+    resolved rather than flagged as phantom. Only the pattern match matters; the
+    mapped target need not exist on disk."""
+    _, paths = _load_tsconfig_paths(str(repo_root))
+    for pattern, _ in paths:
+        if pattern.endswith("/*"):
+            # Wildcard: the trailing slash anchors the prefix so `@app/*` matches
+            # `@app/x` but not `@apple/x`.
+            if spec.startswith(pattern[:-1]):
+                return True
+        elif spec == pattern:
+            # Exact alias: match only the bare specifier, not `@application/foo`
+            # for an `@app` alias.
+            return True
+    return False
 
 
 def _ruby_resolves(base: Path) -> bool:
@@ -274,13 +330,17 @@ def lint_phantom_imports(
     target resolves to no file on disk. Returns `[]` on any ambiguity."""
     if not file_path or not language:
         return []
-    fp = Path(file_path)
-    if not fp.is_absolute():
-        return []
     try:
         root = Path(repo_root).resolve() if repo_root else None
     except OSError:
         return []
+    fp = Path(file_path)
+    if not fp.is_absolute():
+        # Accept a repo-relative path by anchoring it to repo_root; without a
+        # root there is no anchor and the location can't be resolved -> skip.
+        if root is None:
+            return []
+        fp = root / fp
     if not _under_repo(fp, root):
         return []
     file_dir = fp.parent
@@ -323,18 +383,24 @@ def lint_phantom_imports(
                 base = file_dir / spec
                 if not _under_repo(base, root):
                     continue  # escapes the repo -> don't stat outside, don't flag
-                if not _ts_resolves(base):
+                if not _exists_with_suffix(base):
                     violations.append(_violation(spec, base.parent, root))
                 continue
             # tsconfig path alias?
             if root is None:
+                continue
+            # Consult the on-disk tsconfig/jsconfig directly: an aliased import
+            # whose pattern is declared there must never be flagged, even when
+            # the caller's profile rules carry no `paths` (e.g. calibration on a
+            # fresh checkout).
+            if _resolves_via_alias(spec, root):
                 continue
             targets = [
                 t for t in _alias_targets(spec, paths, ts_config_dir) if _under_repo(t, root)
             ]
             if not targets:
                 continue  # bare package, unmapped alias, or out-of-repo -> skip
-            if any(_ts_resolves(t) for t in targets):
+            if any(_exists_with_suffix(t) for t in targets):
                 continue
             # baseUrl uncertainty guard: only flag when a resolved parent dir
             # actually exists (typo within a real dir); else skip.
