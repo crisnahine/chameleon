@@ -55,9 +55,11 @@ class TestDefaults:
         assert d["DRIFT_BANNER_THRESHOLD"] == 0.4
         assert d["DRIFT_BANNER_MIN_OBSERVATIONS"] == 10
         assert d["DRIFT_BANNER_TTL_SECONDS"] == 7 * 24 * 3600  # 604800
+        assert d["CALIBRATION_MAX_FILES"] == 600
+        assert d["CALIBRATION_FP_EPSILON"] == 0.001
 
-    def test_default_count_is_seventeen(self):
-        assert len(_thresholds.DEFAULTS) == 17
+    def test_default_count_is_nineteen(self):
+        assert len(_thresholds.DEFAULTS) == 19
 
     def test_default_keys_are_exactly_the_documented_set(self):
         assert set(_thresholds.DEFAULTS) == {
@@ -78,14 +80,17 @@ class TestDefaults:
             "DRIFT_BANNER_THRESHOLD",
             "DRIFT_BANNER_MIN_OBSERVATIONS",
             "DRIFT_BANNER_TTL_SECONDS",
+            "CALIBRATION_MAX_FILES",
+            "CALIBRATION_FP_EPSILON",
         }
 
-    def test_float_defaults_are_exactly_three(self):
+    def test_float_defaults_are_exactly_four(self):
         floats = {k for k, v in _thresholds.DEFAULTS.items() if isinstance(v, float)}
         assert floats == {
             "SPAWN_WAIT_SECONDS",
             "CLUSTER_SHAPE_JACCARD_THRESHOLD",
             "DRIFT_BANNER_THRESHOLD",
+            "CALIBRATION_FP_EPSILON",
         }
 
     def test_int_defaults_are_genuine_ints_not_bools(self):
