@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from chameleon_mcp.enforcement_calibration import (
@@ -196,3 +197,104 @@ def test_import_preference_active_when_witness_uses_preferred(tmp_path):
     result = calibrate_block_rules(repo, _Loaded())
     assert result["import-preference-violation"]["active"] is True
     assert result["import-preference-violation"]["flagged"] == 0
+
+
+def test_bootstrap_writes_enforcement_json(tmp_path, monkeypatch):
+    # Lightweight: exercise the calibrate->write->read path the orchestrator
+    # wiring uses. The full bootstrap_repo wiring is covered by the QA battery.
+    from chameleon_mcp.enforcement_calibration import (
+        active_block_rules,
+        calibrate_block_rules,
+        write_block_rules,
+    )
+
+    repo = tmp_path
+    (repo / ".chameleon").mkdir(parents=True)
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("export const a = 1\n", encoding="utf-8")
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+            }
+        }
+        conventions = {"conventions": {}}
+        rules = {}
+
+    write_block_rules(repo / ".chameleon", calibrate_block_rules(repo, _Loaded()))
+    assert "phantom-import" in active_block_rules(repo / ".chameleon")
+
+
+def test_partial_refresh_recalibrates_block_rules(tmp_path, monkeypatch):
+    # The partial-refresh path rewrites canonicals.json (the witness set) in place
+    # without re-deriving the whole profile, so it must re-run calibration itself;
+    # otherwise enforcement.json stays pinned to the pre-refresh witnesses.
+    from chameleon_mcp import index_db
+    from chameleon_mcp import tools as t
+
+    repo_root = (tmp_path / "repo").resolve()
+    profile_dir = repo_root / ".chameleon"
+    profile_dir.mkdir(parents=True)
+
+    src = repo_root / "src"
+    src.mkdir()
+    cluster_id = "cluster-util"
+
+    # One modified file in a large, otherwise-unchanged corpus so the change ratio
+    # stays under the partial-refresh ceiling and the path commits instead of
+    # falling back to a full rebuild. The modified file re-parses into the same
+    # existing cluster, which the partial path accepts.
+    candidates = []
+    prev_state = {}
+    for i in range(20):
+        rel = f"src/comp{i}.ts"
+        path = repo_root / rel
+        path.write_text(f"export const c{i} = {i}\n", encoding="utf-8")
+        candidates.append(path)
+        prev_state[rel] = {"cluster_id": cluster_id, "sha_hint": f"hint-{i}"}
+    changed_rel = "src/comp0.ts"
+
+    (profile_dir / "archetypes.json").write_text(
+        json.dumps({"schema_version": 8, "archetypes": {"util": {"cluster_id": cluster_id}}}),
+        encoding="utf-8",
+    )
+    (profile_dir / "canonicals.json").write_text(
+        json.dumps({"schema_version": 8, "canonicals": {"util": []}}),
+        encoding="utf-8",
+    )
+    (profile_dir / "profile.json").write_text(
+        json.dumps({"schema_version": 8, "archetype_count": 1}), encoding="utf-8"
+    )
+    (profile_dir / "rules.json").write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+
+    # Only the first file's content sha drifts from prev_state; the rest match, so
+    # exactly one file is "modified" (5% change ratio).
+    def _sha(p: Path) -> str:
+        rel = str(p.relative_to(repo_root))
+        idx = int(rel.removeprefix("src/comp").removesuffix(".ts"))
+        return "changed" if rel == changed_rel else f"hint-{idx}"
+
+    monkeypatch.setattr(t, "_content_sha_hint", _sha)
+    monkeypatch.setattr(
+        t, "_reparse_changed_files", lambda _root, _paths: {changed_rel: (cluster_id, "changed")}
+    )
+    monkeypatch.setattr(index_db, "upsert_file_clusters", lambda *a, **k: None)
+    monkeypatch.setattr(index_db, "delete_file_clusters_for_paths", lambda *a, **k: None)
+    monkeypatch.setattr(index_db, "upsert_repo", lambda *a, **k: None)
+
+    calibrated: list[Path] = []
+    monkeypatch.setattr(t, "_calibrate_block_rules_for_repo", lambda root: calibrated.append(root))
+
+    envelope = t._attempt_partial_refresh(
+        repo_root,
+        "repo-id",
+        profile_dir,
+        candidates,
+        prev_state,
+        started_at=0.0,
+    )
+
+    assert envelope is not None
+    assert envelope["data"]["status"] == "partial_refresh"
+    assert calibrated == [repo_root]

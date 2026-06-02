@@ -2428,6 +2428,11 @@ def _attempt_partial_refresh(
         bootstrap_ms=duration_ms,
     )
 
+    # The partial path rewrites canonicals.json (the witness set), so the
+    # block-rule verdict in enforcement.json must be re-measured against the
+    # new profile; otherwise it stays pinned to the pre-refresh witnesses.
+    _calibrate_block_rules_for_repo(repo_root)
+
     return _envelope(
         {
             "status": "partial_refresh",
@@ -3153,6 +3158,28 @@ def bootstrap_repo(
         )
 
 
+def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
+    """Measure block-eligible rules against the repo's own files and persist the
+    verdict to ``.chameleon/enforcement.json``.
+
+    Best-effort: a calibration failure must never fail bootstrap/refresh. When
+    the artifact is absent or empty no rule is allowed to block (advisory only),
+    which is the safe default.
+    """
+    try:
+        from chameleon_mcp.enforcement_calibration import (
+            calibrate_block_rules,
+            write_block_rules,
+        )
+        from chameleon_mcp.profile.loader import load_profile_dir
+
+        profile_dir = repo_root / ".chameleon"
+        loaded = load_profile_dir(profile_dir)
+        write_block_rules(profile_dir, calibrate_block_rules(repo_root, loaded))
+    except Exception:
+        pass
+
+
 def _bootstrap_repo_unlocked(
     path: str,
     paths_glob: str | None = None,
@@ -3291,6 +3318,7 @@ def _bootstrap_repo_unlocked(
             index_db.delete_all_file_clusters(repo_id)
             if file_cluster_rows:
                 index_db.upsert_file_clusters(repo_id, file_cluster_rows)
+        _calibrate_block_rules_for_repo(repo_root)
     # Index successfully-bootstrapped workspaces regardless of the root's
     # status: a coordinator-only root (non-standard package dir, no own
     # language) still produces working workspace profiles above.
@@ -3318,6 +3346,7 @@ def _bootstrap_repo_unlocked(
             index_db.delete_all_file_clusters(ws_repo_id)
             if ws_rows:
                 index_db.upsert_file_clusters(ws_repo_id, ws_rows)
+        _calibrate_block_rules_for_repo(ws_root)
 
     _notify_daemon_cache_invalidation()
     return _envelope(report.to_dict())
