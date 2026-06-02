@@ -9,7 +9,7 @@ Schema (all fields optional, all have safe defaults):
 
 ```jsonc
 {
-  "$schema": "chameleon-config-0.6.0",
+  "$schema": "chameleon-config-0.7.0",
   "canonical_ref": "origin/main",          // branch pinning
   "auto_refresh": {                         // drift-triggered refresh
     "enabled": true,
@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 CONFIG_FILENAME = "config.json"
-CURRENT_SCHEMA = "chameleon-config-0.6.0"
+CURRENT_SCHEMA = "chameleon-config-0.7.0"
 
 
 class ChameleonConfigError(ValueError):
@@ -62,11 +62,22 @@ class TrustConfig:
 
 
 @dataclass(frozen=True)
+class EnforcementConfig:
+    # mode master switch: "off" = advisory only; "shadow" = log would-have-blocked
+    # but never block; "enforce" = real deny/block. Default shadow so a newly
+    # enabled repo measures before it enforces.
+    mode: str = "shadow"
+    stop_backstop: bool = True
+    stop_block_cap: int = 3
+
+
+@dataclass(frozen=True)
 class ChameleonConfig:
     schema_version: str = CURRENT_SCHEMA
     canonical_ref: str | None = None
     auto_refresh: AutoRefreshConfig = field(default_factory=AutoRefreshConfig)
     trust: TrustConfig = field(default_factory=TrustConfig)
+    enforcement: EnforcementConfig = field(default_factory=EnforcementConfig)
     auto_rename: bool = True
 
     @property
@@ -79,6 +90,37 @@ class ChameleonConfig:
 # "pulled_from_remote" -> re-grant only when the change came from a teammate's git pull
 # null  -> opt out: re-prompt for trust on any non-structurally-identical refresh
 _VALID_AUTO_PRESERVE = frozenset({None, "pulled_from_remote", "always"})
+
+_VALID_ENFORCE_MODES = frozenset({"off", "shadow", "enforce"})
+
+
+def _coerce_enforcement(raw: Any) -> EnforcementConfig:
+    if raw is None:
+        return EnforcementConfig()
+    if not isinstance(raw, dict):
+        raise ChameleonConfigError(f"`enforcement` must be an object, got {type(raw).__name__}")
+    allowed = {"mode", "stop_backstop", "stop_block_cap"}
+    unknown = set(raw.keys()) - allowed
+    if unknown:
+        raise ChameleonConfigError(
+            f"unknown key(s) under enforcement: {sorted(unknown)!r}; allowed: {sorted(allowed)!r}"
+        )
+    mode = raw.get("mode", "shadow")
+    if mode not in _VALID_ENFORCE_MODES:
+        raise ChameleonConfigError(
+            f"`enforcement.mode` must be one of {sorted(_VALID_ENFORCE_MODES)}, got {mode!r}"
+        )
+    stop_backstop = raw.get("stop_backstop", True)
+    if not isinstance(stop_backstop, bool):
+        raise ChameleonConfigError(
+            f"`enforcement.stop_backstop` must be bool, got {type(stop_backstop).__name__}"
+        )
+    cap = raw.get("stop_block_cap", 3)
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap < 0:
+        raise ChameleonConfigError(
+            f"`enforcement.stop_block_cap` must be a non-negative int, got {cap!r}"
+        )
+    return EnforcementConfig(mode=mode, stop_backstop=stop_backstop, stop_block_cap=cap)
 
 
 def _coerce_auto_refresh(raw: Any) -> AutoRefreshConfig:
@@ -175,6 +217,7 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
         "canonical_ref",
         "auto_refresh",
         "trust",
+        "enforcement",
         "auto_rename",
     }
     unknown_top = set(raw.keys()) - allowed_top
@@ -203,5 +246,6 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
         canonical_ref=canonical_ref.strip() if canonical_ref else None,
         auto_refresh=_coerce_auto_refresh(raw.get("auto_refresh")),
         trust=_coerce_trust(raw.get("trust")),
+        enforcement=_coerce_enforcement(raw.get("enforcement")),
         auto_rename=auto_rename,
     )
