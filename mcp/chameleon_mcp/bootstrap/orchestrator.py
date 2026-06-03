@@ -964,6 +964,10 @@ def bootstrap_repo(
     # fails its own language detection, but detect_workspace still located the
     # bootstrappable workspaces — fan out to them anyway (coordinator-only root).
 
+    from chameleon_mcp.tools import _compute_repo_id as _id
+
+    root_repo_id = _id(repo_root)
+
     workspace_reports: list[dict] = []
     workspace_skipped: list[str] = []
     for ws_path in workspace.workspace_paths:
@@ -981,13 +985,18 @@ def bootstrap_repo(
                 skipped_label = str(ws_path)
             workspace_skipped.append(skipped_label)
             continue
+        try:
+            parent_ws_path = ws_root.relative_to(repo_root.resolve()).as_posix()
+        except ValueError:
+            parent_ws_path = str(ws_path)
         ws_report = _bootstrap_single(
             ws_root,
             paths_glob=paths_glob,
             profile_dir_name=profile_dir_name,
             now=now,
+            parent_repo_id=root_repo_id,
+            parent_workspace_path=parent_ws_path,
         )
-        from chameleon_mcp.tools import _compute_repo_id as _id
 
         workspace_reports.append(
             {
@@ -1151,6 +1160,8 @@ def _bootstrap_single(
     paths_glob: str | None = None,
     profile_dir_name: str = ".chameleon",
     now: float | None = None,
+    parent_repo_id: str | None = None,
+    parent_workspace_path: str | None = None,
 ) -> BootstrapReport:
     """The original single-target bootstrap pipeline.
 
@@ -1158,6 +1169,12 @@ def _bootstrap_single(
     without duplicating the discovery → cluster → canonical → commit
     plumbing. Behavior on a non-monorepo repo is byte-identical to the
     An earlier implementation.
+
+    ``parent_repo_id`` / ``parent_workspace_path`` are set only when this
+    runs as a per-workspace fan-out under a monorepo root. They are
+    persisted in ``profile.json.workspace.parent`` so a workspace profile
+    back-references the catalog the root holds in ``profile.json.workspaces``;
+    downstream tools can then walk either direction of the tree.
     """
     started_at = time.time()
     profile_dir = repo_root / profile_dir_name
@@ -1566,6 +1583,14 @@ def _bootstrap_single(
             },
         },
     }
+    if parent_repo_id is not None or parent_workspace_path is not None:
+        # Back-reference to the monorepo root this workspace was fanned out
+        # from. The root profile catalogs its children in
+        # profile.json.workspaces; this lets a child point back at the root.
+        profile_data["workspace"]["parent"] = {
+            "repo_id": parent_repo_id,
+            "workspace_path": parent_workspace_path,
+        }
     if language_hint is not None:
         profile_data["language_hint"] = language_hint
 

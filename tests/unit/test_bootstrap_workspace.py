@@ -633,3 +633,51 @@ class TestWorkspaceRootsPersistence:
 
         profile_json = json.loads((repo / ".chameleon" / "profile.json").read_text())
         assert profile_json["workspace"]["workspace_roots"] == ["apps/api", "apps/web"]
+
+
+# --------------------------------------------------------------------------- #
+# Per-workspace profiles back-reference the monorepo root
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+class TestWorkspaceParentBackReference:
+    def test_workspace_profiles_carry_parent_repo_id_and_path(self, tmp_path: Path, monkeypatch):
+        from chameleon_mcp.tools import _compute_repo_id
+
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        # yarn-style workspaces: the root declares "workspaces" and each
+        # package under apps/ is a real TS workspace. bootstrap_repo fans out
+        # to each and writes a .chameleon/ there.
+        (repo / "package.json").write_text(json.dumps({"workspaces": ["apps/*"]}))
+        for name in ("web", "api"):
+            ws = repo / "apps" / name
+            ws.mkdir(parents=True)
+            (ws / "package.json").write_text(json.dumps({"devDependencies": {"typescript": "5"}}))
+            (ws / "tsconfig.json").write_text("{}")
+            (ws / "main.ts").write_text("export const x = 1;\n")
+
+        orch.bootstrap_repo(repo)
+
+        root_repo_id = _compute_repo_id(repo)
+        for name in ("web", "api"):
+            ws_profile = repo / "apps" / name / ".chameleon" / "profile.json"
+            assert ws_profile.is_file(), f"{name} workspace was not bootstrapped"
+            parent = json.loads(ws_profile.read_text())["workspace"]["parent"]
+            assert parent["repo_id"] == root_repo_id
+            assert parent["workspace_path"] == f"apps/{name}"
+
+    def test_non_workspace_repo_omits_parent_block(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        repo = tmp_path / "solo"
+        repo.mkdir()
+        (repo / "package.json").write_text(json.dumps({"devDependencies": {"typescript": "5"}}))
+        (repo / "tsconfig.json").write_text("{}")
+        (repo / "main.ts").write_text("export const x = 1;\n")
+
+        orch.bootstrap_repo(repo)
+
+        profile_json = json.loads((repo / ".chameleon" / "profile.json").read_text())
+        assert "parent" not in profile_json["workspace"]
