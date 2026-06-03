@@ -21,6 +21,7 @@ import hmac
 import json
 import os
 import secrets
+import tempfile
 import time
 from pathlib import Path
 
@@ -126,7 +127,7 @@ def _exec_log_dir(repo_id: str) -> Path:
 
     Mode 0700 enforced; owner-checked on every read.
     """
-    tmpdir = Path(os.environ.get("TMPDIR") or "/tmp")
+    tmpdir = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
     base = tmpdir / ".chameleon_exec_log"
     base.mkdir(mode=0o700, parents=True, exist_ok=True)
     repo_dir = base / repo_id

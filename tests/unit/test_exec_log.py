@@ -179,6 +179,37 @@ def test_command_body_not_stored(tmp_path: Path):
         assert len(record["command_sha256"]) == 64
 
 
+def test_exec_log_dir_fallback_uses_platform_temp(monkeypatch):
+    """When TMPDIR is unset the base dir falls back to the platform temp dir.
+
+    The fallback must not hardcode the POSIX /tmp path. Windows has no /tmp,
+    so the fallback has to route through tempfile.gettempdir() to stay portable.
+    """
+    import tempfile
+
+    from chameleon_mcp import exec_log
+
+    monkeypatch.delenv("TMPDIR", raising=False)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: "/sentinel-platform-temp")
+
+    captured: dict[str, Path] = {}
+
+    real_mkdir = Path.mkdir
+
+    def fake_mkdir(self, *args, **kwargs):
+        captured.setdefault("first", self)
+        return None
+
+    monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+    try:
+        result = exec_log._exec_log_dir("repo-x")
+    finally:
+        monkeypatch.setattr(Path, "mkdir", real_mkdir)
+
+    assert str(result).startswith("/sentinel-platform-temp/")
+    assert ".chameleon_exec_log" in str(result)
+
+
 def test_gc_purges_old_session_logs(tmp_path: Path):
     """A new session's first append purges session logs older than RETENTION_DAYS."""
     import time

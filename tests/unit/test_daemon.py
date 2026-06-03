@@ -13,7 +13,9 @@ from chameleon_mcp.daemon import (
     _LEN_STRUCT,
     DEFAULT_IDLE_TIMEOUT_S,
     MAX_FRAME_BYTES,
+    _AcceptBackoff,
     _af_unix_available,
+    _code_fingerprint,
     _DaemonState,
     _flock_reliable,
     _idle_timeout_from_env,
@@ -24,6 +26,7 @@ from chameleon_mcp.daemon import (
     recv_frame,
     run_daemon,
     send_frame,
+    serve_forever,
     socket_path,
     start_daemon,
 )
@@ -384,6 +387,134 @@ def test_version_tag_is_filesystem_safe():
     assert tag
     assert "/" not in tag
     assert all(c.isalnum() or c in "._-" for c in tag)
+
+
+def test_code_fingerprint_differs_on_content_not_mtime(tmp_path: Path):
+    # Two source trees with byte-for-byte different content but identical file
+    # mtimes must produce different fingerprints. Hashing mtimes alone collides
+    # in frozen-timestamp environments (Docker layers, git checkouts), which
+    # would let a new-code daemon reuse a stale old-code socket.
+    frozen = 1_700_000_000
+
+    tree_a = tmp_path / "a"
+    tree_a.mkdir()
+    (tree_a / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    os.utime(tree_a / "mod.py", (frozen, frozen))
+
+    tree_b = tmp_path / "b"
+    tree_b.mkdir()
+    (tree_b / "mod.py").write_text("VALUE = 2\n", encoding="utf-8")
+    os.utime(tree_b / "mod.py", (frozen, frozen))
+
+    fp_a = _code_fingerprint(tree_a)
+    fp_b = _code_fingerprint(tree_b)
+
+    assert fp_a != "0"
+    assert fp_b != "0"
+    assert fp_a != fp_b
+
+
+def test_code_fingerprint_stable_when_mtime_changes(tmp_path: Path):
+    # Touching a file (changing its mtime) without changing content must NOT
+    # rotate the fingerprint: content is the identity, not the timestamp.
+    tree = tmp_path / "t"
+    tree.mkdir()
+    f = tree / "mod.py"
+    f.write_text("VALUE = 1\n", encoding="utf-8")
+    os.utime(f, (1_700_000_000, 1_700_000_000))
+    fp_before = _code_fingerprint(tree)
+    os.utime(f, (1_800_000_000, 1_800_000_000))
+    fp_after = _code_fingerprint(tree)
+    assert fp_before == fp_after
+
+
+def test_code_fingerprint_empty_tree_returns_zero(tmp_path: Path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert _code_fingerprint(empty) == "0"
+
+
+# ---------------------------------------------------------------------------
+# accept-loop backoff: a persistent accept() error (e.g. EMFILE fd pressure)
+# must not hot-spin the loop or flood the daemon log. Sleep grows with an
+# exponential cap; stderr logging is rate limited per error type.
+# ---------------------------------------------------------------------------
+
+
+def test_accept_backoff_sleep_grows_then_caps():
+    bo = _AcceptBackoff()
+    sleeps = [bo.observe("err") for _ in range(12)]
+    # Strictly non-decreasing up to the cap.
+    for a, b in zip(sleeps, sleeps[1:], strict=False):
+        assert b >= a
+    # First wait is small; the cap bounds the longest wait.
+    assert sleeps[0] <= 0.2
+    assert max(sleeps) <= _AcceptBackoff.MAX_SLEEP_S + 1e-9
+    assert sleeps[-1] == _AcceptBackoff.MAX_SLEEP_S
+
+
+def test_accept_backoff_resets_after_success():
+    bo = _AcceptBackoff()
+    for _ in range(5):
+        bo.observe("err")
+    grown = bo.observe("err")
+    bo.reset()
+    first_again = bo.observe("err")
+    assert first_again < grown
+    assert first_again <= 0.2
+
+
+def test_serve_forever_backs_off_and_throttles_persistent_accept_error(monkeypatch):
+    # A socket whose accept() always raises EMFILE must not hot-spin or flood
+    # stderr. The loop should sleep (bounded) between tries and log far fewer
+    # times than it retries.
+    import errno as _errno
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("chameleon_mcp.daemon.time.sleep", lambda s: sleeps.append(s))
+
+    log_lines: list[str] = []
+    monkeypatch.setattr(
+        "chameleon_mcp.daemon.sys.stderr",
+        type("W", (), {"write": lambda _self, s: log_lines.append(s)})(),
+    )
+
+    class _EmfileSock:
+        def settimeout(self, _t):  # noqa: D401 - test stub
+            return None
+
+        def accept(self):
+            # Stop the loop after enough iterations to observe backoff.
+            if len(sleeps) >= 8:
+                state.shutdown_requested = True
+                raise TimeoutError
+            raise OSError(_errno.EMFILE, "Too many open files")
+
+    state = _DaemonState(idle_timeout_s=10_000.0)
+    serve_forever(_EmfileSock(), state, lambda m, p: {"ok": True})
+
+    assert len(sleeps) >= 8, "loop should have backed off on each accept error"
+    # Bounded: no sleep exceeds the cap.
+    assert max(sleeps) <= _AcceptBackoff.MAX_SLEEP_S + 1e-9
+    # Throttled: one EMFILE log line, not one per retry.
+    emfile_logs = [line for line in log_lines if "accept error" in line]
+    assert len(emfile_logs) == 1, f"expected a single throttled log line, got {len(emfile_logs)}"
+
+
+def test_accept_backoff_logs_first_then_suppresses(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr("chameleon_mcp.daemon.time.monotonic", lambda: now[0])
+    bo = _AcceptBackoff()
+    # First occurrence of an error type always logs.
+    assert bo.should_log("emfile") is True
+    # Immediate repeats of the SAME type are suppressed.
+    assert bo.should_log("emfile") is False
+    assert bo.should_log("emfile") is False
+    # A different error type logs immediately even within the window.
+    assert bo.should_log("econnaborted") is True
+    # After the rate-limit window elapses, the same type logs again.
+    now[0] += _AcceptBackoff.LOG_INTERVAL_S + 0.01
+    assert bo.should_log("emfile") is True
 
 
 # ---------------------------------------------------------------------------

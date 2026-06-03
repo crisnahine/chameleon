@@ -119,42 +119,57 @@ def _plugin_data() -> Path:
 _CODE_FINGERPRINT_CACHE: str | None = None
 
 
-def _code_fingerprint() -> str:
-    """Short hash of the chameleon_mcp source tree's mtimes.
+def _code_fingerprint(pkg_dir: Path | None = None) -> str:
+    """Short content hash of the chameleon_mcp source tree.
 
     Folded into the version tag so a code-only upgrade (git pull, cherry-pick,
     /plugin update) that forgot to bump the version string still produces a
     distinct daemon identity. Without this, two builds with the same declared
     version share one socket name and a new-code hook would reuse the stale
-    old-code daemon for up to one idle window. We hash mtimes (cheap, no file
-    reads) of the package's .py files; any edit moves the mtime and changes the
-    tag. Returns "0" on any error so the tag computation never fails.
+    old-code daemon for up to one idle window.
 
-    Memoized per process: a running interpreter's own source can't change under
-    it, so the rglob runs once. A NEW process started after an upgrade computes
-    a fresh fingerprint from the new mtimes, which is exactly the rotation we
-    want. Kept off the hot path's repeat cost (socket_path is called several
-    times per hook).
+    Identity is the bytes of each .py file, not its mtime. Hashing mtimes
+    collides in frozen-timestamp environments (Docker image layers, cached
+    filesystems, `git checkout` and `--recurse-submodules` which do not
+    preserve commit times): two genuinely different code versions can carry
+    identical mtimes and would then share a socket. Content hashing rotates the
+    tag whenever a byte changes and stays stable across a pure `touch`.
+    Returns "0" on any error so the tag computation never fails.
+
+    Memoized per process for the real package dir: a running interpreter's own
+    source can't change under it, so the read+hash runs once. A NEW process
+    started after an upgrade computes a fresh fingerprint from the new bytes,
+    which is exactly the rotation we want. Kept off the hot path's repeat cost
+    (socket_path is called several times per hook). An explicit pkg_dir (tests)
+    bypasses the cache so it neither reads nor pollutes the memoized value.
     """
     global _CODE_FINGERPRINT_CACHE
-    if _CODE_FINGERPRINT_CACHE is not None:
+    use_cache = pkg_dir is None
+    if use_cache and _CODE_FINGERPRINT_CACHE is not None:
         return _CODE_FINGERPRINT_CACHE
     try:
-        pkg_dir = Path(__file__).resolve().parent
-        entries: list[str] = []
-        for p in sorted(pkg_dir.rglob("*.py")):
+        root = pkg_dir if pkg_dir is not None else Path(__file__).resolve().parent
+        hasher = hashlib.sha256()
+        count = 0
+        for p in sorted(root.rglob("*.py")):
             try:
-                entries.append(f"{p.name}:{int(p.stat().st_mtime)}")
+                data = p.read_bytes()
             except OSError:
                 continue
-        if not entries:
-            _CODE_FINGERPRINT_CACHE = "0"
-        else:
-            digest = hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
-            _CODE_FINGERPRINT_CACHE = digest[:8]
+            # Name + size + content so a rename or split is also a rotation,
+            # and the per-file boundary can't be forged by concatenation.
+            hasher.update(p.name.encode("utf-8"))
+            hasher.update(b"\0")
+            hasher.update(str(len(data)).encode("ascii"))
+            hasher.update(b"\0")
+            hasher.update(data)
+            count += 1
+        result = "0" if count == 0 else hasher.hexdigest()[:8]
     except Exception:  # noqa: BLE001 - fingerprint must never break daemon paths
-        _CODE_FINGERPRINT_CACHE = "0"
-    return _CODE_FINGERPRINT_CACHE
+        result = "0"
+    if use_cache:
+        _CODE_FINGERPRINT_CACHE = result
+    return result
 
 
 def _version_tag() -> str:
@@ -454,6 +469,59 @@ def _dispatch(method: str, payload: dict) -> dict:
     return {"error": f"unknown method {method!r}"}
 
 
+class _AcceptBackoff:
+    """Bounded backoff and rate-limited logging for accept() errors.
+
+    A persistent accept() failure (classically EMFILE from fd exhaustion, but
+    also EINTR storms or a transient OS resource limit) would otherwise hot-spin
+    the single accept loop: a fixed 0.1s sleep still burns ~10 stderr lines per
+    second, which fills the daemon log and any /tmp budget within minutes.
+
+    Two independent bounds:
+    - Sleep grows geometrically from BASE_SLEEP_S and caps at MAX_SLEEP_S, so a
+      stuck condition costs at most one wake per MAX_SLEEP_S while a one-off
+      error still recovers within a few hundred ms. reset() is called after any
+      successful accept so a later isolated error starts fresh.
+    - should_log() emits at most one line per error type per LOG_INTERVAL_S, and
+      always logs the first sighting of a new error type so a changing failure
+      mode is never hidden.
+    """
+
+    BASE_SLEEP_S = 0.05
+    MAX_SLEEP_S = 2.0
+    LOG_INTERVAL_S = 5.0
+
+    def __init__(self) -> None:
+        self._consecutive = 0
+        self._last_log_mono: dict[str, float] = {}
+
+    def observe(self, _error_key: str) -> float:
+        """Record an error and return how long to sleep before retrying."""
+        sleep_s = self.BASE_SLEEP_S * (2**self._consecutive)
+        if sleep_s >= self.MAX_SLEEP_S:
+            sleep_s = self.MAX_SLEEP_S
+        else:
+            self._consecutive += 1
+        return sleep_s
+
+    def reset(self) -> None:
+        """Clear the run of consecutive errors after a successful accept."""
+        self._consecutive = 0
+
+    def should_log(self, error_key: str) -> bool:
+        """True iff this error type should be written to stderr now.
+
+        Logs the first sighting of an error type immediately, then suppresses
+        repeats of that type until LOG_INTERVAL_S has elapsed.
+        """
+        now = time.monotonic()
+        last = self._last_log_mono.get(error_key)
+        if last is not None and (now - last) < self.LOG_INTERVAL_S:
+            return False
+        self._last_log_mono[error_key] = now
+        return True
+
+
 class _DaemonState:
     """Mutable state held by the main loop.
 
@@ -559,6 +627,7 @@ def serve_forever(
     so the idle-shutdown check runs even when no clients connect.
     """
     sock.settimeout(1.0)
+    backoff = _AcceptBackoff()
     while not state.shutdown_requested:
         if (time.monotonic() - state.last_request_mono) > state.idle_timeout_s:
             sys.stderr.write(
@@ -572,11 +641,15 @@ def serve_forever(
         except OSError as e:
             if e.errno in (errno.EBADF, errno.EINVAL):
                 return
-            sys.stderr.write(f"[chameleon-daemon] accept error: {e}\n")
-            # Back off so a persistent error (e.g. EMFILE fd pressure) can't
-            # hot-spin the loop at 100% CPU and flood the log.
-            time.sleep(0.1)
+            # A persistent error (e.g. EMFILE fd pressure) must not hot-spin the
+            # loop or flood the log. Sleep grows and caps; logging is throttled
+            # per error type so a changing failure mode still surfaces.
+            error_key = errno.errorcode.get(e.errno, str(e.errno))
+            if backoff.should_log(error_key):
+                sys.stderr.write(f"[chameleon-daemon] accept error: {e}\n")
+            time.sleep(backoff.observe(error_key))
             continue
+        backoff.reset()
         # Accepted sockets are blocking by default; bound recv/send so one
         # stalled client can't wedge the loop for the rest of the session.
         try:
