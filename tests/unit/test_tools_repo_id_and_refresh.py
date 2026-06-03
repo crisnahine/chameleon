@@ -308,3 +308,35 @@ def test_bootstrap_warns_on_nongit_parent_with_git_children(tmp_path):
     blob = json.dumps(res).lower()
     assert "git" in blob and ("child" in blob or "subdirector" in blob or "nested" in blob), res
     assert warnings is not None or "nongit_parent" in blob
+
+
+def test_repo_id_path_case_folding_only_on_case_insensitive_fs(monkeypatch, tmp_path):
+    """Path fallback lowercases only on case-insensitive FS; distinct repos on a
+    case-sensitive FS (Linux) keep separate ids."""
+    from chameleon_mcp import tools
+
+    foo = tmp_path / "RepoFoo"
+    foofold = tmp_path / "repofoo"
+
+    monkeypatch.setattr(tools, "_fs_is_case_insensitive", lambda p: True)
+    tools._REPO_ID_CACHE.clear()
+    id1 = tools._compute_repo_id(foo)
+    tools._REPO_ID_CACHE.clear()
+    id2 = tools._compute_repo_id(foofold)
+    assert id1 == id2  # case-insensitive -> same id
+
+    monkeypatch.setattr(tools, "_fs_is_case_insensitive", lambda p: False)
+    tools._REPO_ID_CACHE.clear()
+    id3 = tools._compute_repo_id(foo)
+    tools._REPO_ID_CACHE.clear()
+    id4 = tools._compute_repo_id(foofold)
+    assert id3 != id4  # case-sensitive -> distinct ids
+
+
+def test_fs_case_insensitive_probe_returns_bool(tmp_path):
+    from chameleon_mcp.tools import _fs_is_case_insensitive
+
+    d = tmp_path / "Probe"
+    d.mkdir()
+    assert isinstance(_fs_is_case_insensitive(d), bool)
+    assert _fs_is_case_insensitive(tmp_path / "does-not-exist") is False

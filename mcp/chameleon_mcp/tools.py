@@ -455,6 +455,27 @@ def _persist_repo_uuid_if_no_remote(repo_root: Path) -> None:
         pass
 
 
+def _fs_is_case_insensitive(path: Path) -> bool:
+    """True when ``path``'s filesystem matches names case-insensitively.
+
+    Probes the real filesystem: the repo dir reached through a case-swapped
+    variant of its own name must point at the same inode+device. Defaults to
+    False (case-sensitive) on any ambiguity, so two genuinely distinct repos on
+    a case-sensitive filesystem (e.g. ``/srv/Foo`` and ``/srv/foo`` on Linux)
+    never collapse to one id. macOS/Windows default volumes probe True.
+    """
+    try:
+        name = path.name
+        swapped_name = name.swapcase()
+        if swapped_name == name:
+            return False  # no letters to swap, cannot tell; assume case-sensitive
+        st = path.stat()
+        sst = path.with_name(swapped_name).stat()
+        return st.st_ino == sst.st_ino and st.st_dev == sst.st_dev
+    except OSError:
+        return False
+
+
 def _compute_repo_id(repo_root: Path) -> str:
     """Canonical repo_id.
 
@@ -464,14 +485,15 @@ def _compute_repo_id(repo_root: Path) -> str:
          without a remote (fresh `git init`, vendored snapshots, archive
          extracts), this travels with the committed profile so a moved working
          tree keeps its identity.
-      3. the case-normalized resolved absolute path, the final fallback.
+      3. the resolved absolute path, the final fallback.
 
-    The path fallback lower-cases the resolved path string before hashing so a
-    repo reached through a path that differs only in letter case (common on
-    case-preserving-but-insensitive filesystems like default macOS/Windows)
-    maps to one id. The pre-fix path id (non-lowercased) stays reachable via
-    `_legacy_path_repo_id`, which `detect_repo` uses to surface a re-trust hint
-    for grants made by earlier engines, so the change is migration-safe.
+    The path fallback lower-cases the resolved path ONLY when the repo lives on a
+    case-insensitive filesystem (default macOS/Windows), so a repo reached through
+    a path that differs only in letter case maps to one id there, while two
+    distinct repos on a case-sensitive filesystem (Linux) keep separate ids. The
+    pre-fix path id stays reachable via `_legacy_path_repo_id`, which
+    `detect_repo` uses to surface a re-trust hint for grants made by earlier
+    engines, so the change is migration-safe.
     """
     key = str(repo_root.resolve())
     cached = _REPO_ID_CACHE.get(key)
@@ -494,7 +516,8 @@ def _compute_repo_id(repo_root: Path) -> str:
         _REPO_ID_CACHE[key] = (time.monotonic(), repo_id)
         return repo_id
 
-    repo_id = hashlib.sha256(key.lower().encode("utf-8")).hexdigest()
+    path_key = key.lower() if _fs_is_case_insensitive(repo_root) else key
+    repo_id = hashlib.sha256(path_key.encode("utf-8")).hexdigest()
     _REPO_ID_CACHE[key] = (time.monotonic(), repo_id)
     return repo_id
 
