@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 
 from tests.journey.acts.act_base import ActResult, build_act_prompt
 from tests.journey.harness import expect
@@ -536,24 +538,80 @@ def run(ctx: JourneyContext) -> ActResult:
                 "no merge driver signal found in transcript; "
                 "3-way merge test may not have been exercised"
             )
+
+        # Assert on the actual MERGED FILE, not the transcript. The phase prompt
+        # itself embeds "<<<<", "====", ">>>>" while telling the agent what to
+        # look for, so grepping the conversational transcript false-positives on
+        # the prompt's own example markers. merge_profiles writes structured
+        # json.dumps output and provably never emits git conflict markers, so we
+        # read the path it reports in its success envelope (merged_profile_path,
+        # which is the OURS file the driver stages) and grep THAT instead.
+        # Transcript JSON is backslash-escaped, so the quote after the key may be
+        # \" or "; tolerate both and ignore null (failed-merge) values.
+        merged_paths = {
+            m.group(1)
+            for m in re.finditer(
+                r'merged_profile_path\\?"\s*:\s*\\?"([^"\\]+)\\?"', transcript_text
+            )
+        }
         conflict_markers = ["<<<<<<<", "=======", ">>>>>>>"]
-        for marker in conflict_markers:
-            if marker in transcript_text:
-                existing = notes_extra.get(31, "")
+        checked_a_merged_file = False
+        for raw_path in merged_paths:
+            merged_file = Path(raw_path)
+            if not merged_file.is_file():
+                # The OURS path can be an ephemeral /tmp file the agent created
+                # and later removed, or ts_basic's profile.json restored to main
+                # by Step 3's `git checkout`. Skip what's gone; only assert on a
+                # merged file still present on disk.
+                continue
+            checked_a_merged_file = True
+            merged_text = merged_file.read_text(encoding="utf-8")
+            hit = next((mk for mk in conflict_markers if mk in merged_text), None)
+            if hit is not None:
                 notes_extra[31] = (
-                    (existing + "; " if existing else "")
-                    + f"conflict marker {marker!r} found in transcript; "
-                    "3-way merge may have produced unresolved conflicts"
-                ).strip("; ")
+                    f"conflict marker {hit!r} found in merged file {merged_file}; "
+                    "3-way merge produced unresolved conflicts"
+                )
                 break
+            try:
+                json.loads(merged_text)
+            except json.JSONDecodeError as je:
+                notes_extra[31] = (
+                    f"merged file {merged_file} did not parse as JSON: {je}; "
+                    "merge_profiles must emit a clean union"
+                )
+                break
+        if not checked_a_merged_file and 31 not in notes_extra:
+            notes_extra[31] = (
+                "no merge_profiles success envelope with an on-disk "
+                "merged_profile_path found; 3-way merge result not verifiable"
+            )
     except Exception as exc:
         notes_extra[31] = f"transcript scan error for phase 31: {exc}"
     cross_check_passed[31] = 31 not in notes_extra
 
-    ts_monorepo_profile = ctx.fixture("ts_monorepo") / ".chameleon" / "profile.json"
+    # The monorepo fixture root is a coordinator-only package (package.json with
+    # `workspaces` but no language source files at the root), so bootstrap returns
+    # `success_workspaces_only` and intentionally writes NO root profile.json --
+    # the profiles live under packages/*. Asserting a root profile.json therefore
+    # false-fails on correct behavior. Assert the per-workspace profiles instead,
+    # and confirm the root reported the coordinator-only status.
+    ts_monorepo = ctx.fixture("ts_monorepo")
+    api_profile = ts_monorepo / "packages" / "api" / ".chameleon" / "profile.json"
+    web_profile = ts_monorepo / "packages" / "web" / ".chameleon" / "profile.json"
     try:
-        expect.path_exists(32, ts_monorepo_profile)
+        transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
+        expect.path_exists(32, api_profile)
+        expect.path_exists(32, web_profile)
         cross_check_passed[32] = True
+        # Surface, but don't fail on, the absence of the coordinator-only signal:
+        # the workspace profiles existing is the load-bearing assertion. A repeat
+        # /chameleon-refresh on an already-bootstrapped root may not re-emit it.
+        if "success_workspaces_only" not in transcript_text:
+            notes_extra[32] = (
+                "coordinator-only root status 'success_workspaces_only' not seen in "
+                "transcript; per-workspace profiles present so phase still passes"
+            )
     except expect.PhaseAssertionError as e:
         notes_extra[32] = str(e)
         cross_check_passed[32] = False

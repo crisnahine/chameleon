@@ -314,10 +314,13 @@ def run(ctx: JourneyContext) -> ActResult:
     # needed. The off-archetype in-place edit of format_date.ts should trip
     # posttool-verify. This is SOFT: a miss becomes a CONCERN note, never a FAIL.
     try:
+        # The CLI tags PostToolUse hook events per matcher
+        # ("PostToolUse:Write" / "PostToolUse:Edit" / "PostToolUse:NotebookEdit"),
+        # never the bare "PostToolUse", so match on the prefix.
         posttool_events = [
             e
             for e in session.hook_events
-            if e.hook_name == "PostToolUse" and "<chameleon-context>" in e.stdout
+            if e.hook_name.startswith("PostToolUse") and "<chameleon-context>" in e.stdout
         ]
         verify_deviation = [
             e
@@ -327,9 +330,12 @@ def run(ctx: JourneyContext) -> ActResult:
         # Fall back to a transcript scan if hook_name attribution is unavailable
         # in this stream-json build (older CLIs surface PostToolUse text only in
         # the assistant context, not as a tagged hook_response event).
-        transcript_has_verify = bool(
-            re.search(r"\U0001f98e\s*chameleon:.*violation", transcript_text)
-        )
+        # The deviation block's leading lizard emoji is persisted in stream-json
+        # as a literal surrogate-pair escape string, not the codepoint, so a
+        # regex anchored on the emoji codepoint never matches. Anchor on the
+        # "chameleon: N violation" text instead; it is present in both the
+        # decoded and escaped serializations of the deviation block.
+        transcript_has_verify = bool(re.search(r"chameleon:\s*\d+\s*violation", transcript_text))
         if not verify_deviation and not transcript_has_verify:
             concern = (
                 "posttool-verify deviation block not observed for the off-archetype edit "

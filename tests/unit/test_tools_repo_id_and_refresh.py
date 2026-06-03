@@ -402,3 +402,39 @@ def test_git_remote_url_timeout_does_not_change_repo_id(tmp_path, monkeypatch):
     )
     expected = hashlib.sha256(path_key.encode("utf-8")).hexdigest()
     assert got == expected
+
+
+# ---- refresh re-baselines the observed-drift window -----------------------
+
+
+def test_refresh_force_resets_observed_drift(tmp_path):
+    import subprocess
+    import time
+
+    from chameleon_mcp.drift import observations as obs
+
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    for i in range(6):
+        (repo / "src" / f"comp{i}.ts").write_text(
+            f"export const Comp{i} = () => {{ return {i}; }};\n", encoding="utf-8"
+        )
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+
+    assert tools.bootstrap_repo(str(repo))["data"]["status"] == "success"
+
+    # Key observations on the same id get_drift_status resolves the path to.
+    _path, repo_id = tools._resolve_repo_arg(str(repo))
+    now = int(time.time())
+    for i in range(40):
+        obs.record_edit_observation(
+            repo_id, f"f{i}.ts", "component", "low", matched_canonical=False, observed_at=now
+        )
+
+    before = tools.get_drift_status(str(repo))["data"]["observed_drift_score"]
+    assert before is not None and before > 0.5
+
+    assert tools.refresh_repo(str(repo), force=True)["data"]["status"] == "success"
+
+    after = tools.get_drift_status(str(repo))["data"]["observed_drift_score"]
+    assert after is None or after <= 0.5

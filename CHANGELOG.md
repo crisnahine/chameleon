@@ -4,6 +4,28 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.2] - 2026-06-03
+
+Hardening fixes found by an exhaustive QA sweep across the MCP tools, hooks, daemon, statusline, merge driver, and a full destructive lifecycle, plus the end-to-end journey harness. None change normal advisory behavior; each closes a crash, a security hole, or a wrong-status report on a degraded or hostile input.
+
+### Fixed
+
+- **Code injection in the git merge driver.** `chameleon-merge-driver.sh` interpolated the BASE/OURS/THEIRS paths straight into a `python -c` string literal, so a path containing a single quote broke the literal and a crafted path could execute arbitrary Python. The paths pass through the environment now and the Python body is fully single-quoted, so no path value is interpolated into source.
+- **`lint_file` crashed on a hostile `repo` argument.** It resolved `repo` through `_resolve_repo_root_by_id` directly, so a nonexistent absolute path, an embedded NUL byte, or a `../` traversal reached `repo_data_dir`'s mkdir and raised instead of returning the stub envelope every other read tool returns. It routes through `_resolve_repo_arg` with guarded directory checks now and fails open.
+- **The observed-drift signal never cleared after a refresh.** `get_drift_status` recommended `/chameleon-refresh` while drift was high, but neither a full nor a partial refresh re-baselined the edit observations, so the recommendation persisted after the user ran it. A successful re-derive (bootstrap, full, or partial refresh) now resets the drift window.
+- **`doctor` reported a corrupt committed profile as healthy.** The `known_repos` check only verified the COMMITTED sentinel, so a committed-but-unparseable profile (rejected by the loader on every edit) showed `profile_present`. doctor loads each committed profile now and reports `profile_corrupt` with a warn status.
+- **`get_pattern_context` mislabeled an unsupported-schema profile.** A profile written by a newer engine (schema_version above the supported max) was reported as `profile_corrupted` instead of `profile_unsupported_schema_version`, the status `detect_repo` already returns. The two tools agree now.
+- **`merge_profiles` crashed when one side's `archetypes` was a JSON array** instead of an object; it returns a clean failed envelope now, matching the JSON-parse-error path.
+
+### Docs
+
+- **`chameleon-trust` skill** listed 9 hashed trust artifacts and omitted `enforcement.json`; it lists all 10 now, so the doc matches what actually re-stales trust.
+
+### Tests
+
+- Added regression coverage for every fix above (`lint_file` fail-open, merge-driver injection, drift re-baseline, doctor corruption detection, schema-version labelling, `merge_profiles` array guard, trust-doc sync).
+- Corrected six journey-harness act checkers that emitted false concerns: a sanitizer payload planted on a field the loader never reads, a size-cap fixture mislabeled as over-cap when it was under, a top-level `rubocop` lookup for a key that is nested under `rules`, a foreign-daemon cleanup race, a transcript grep for merge conflict markers, and a hook-event name and emoji-regex mismatch. The underlying runtime behavior was already correct in each case.
+
 ## [2.1.1] - 2026-06-03
 
 Windows runtime fixes found by driving the hook stack and a full bootstrap on a real windows-latest runner. 2.1.0 made the package import on Windows; these make it actually run there.

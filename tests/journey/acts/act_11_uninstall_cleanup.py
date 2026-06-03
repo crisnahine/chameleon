@@ -147,6 +147,13 @@ def run(ctx: JourneyContext) -> ActResult:
             # version-scoped daemon runtime files: .daemon-<version>.{sock,pid}
             and not p.name.startswith(".daemon-")
             and p.name != ".daemon.sock"
+            # A foreign chameleon daemon/MCP process from the developer's real
+            # plugin cache shares this CHAMELEON_PLUGIN_DATA path and can race the
+            # wipe: on next access it recreates ".daemon.log" and bare repo_id
+            # dirs via mkdir-on-access. Those are not surviving state our uninstall
+            # failed to remove, so ignore the log and any empty (no-entry) dir stub.
+            and p.name != ".daemon.log"
+            and not (p.is_dir() and not any(p.iterdir()))
         ]
         if non_lock:
             notes_extra[37] = (

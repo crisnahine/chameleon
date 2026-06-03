@@ -383,3 +383,34 @@ class TestConnectionCache:
         c2 = obs._get_drift_conn(REPO_A)
         assert c2 is not c1
         assert c2.execute("SELECT 1").fetchone()[0] == 1
+
+
+class TestResetDriftBaseline:
+    """Re-deriving the profile must re-baseline drift, else the drift banner's
+    own recommended remediation (/chameleon-refresh) never clears the signal."""
+
+    def test_reset_drift_baseline_clears_all_observations(self, tmp_path: Path):
+        ts = 1_700_000_000
+        for i in range(20):
+            record_edit_observation(
+                REPO_A, f"f{i}.ts", "component", "low", matched_canonical=False, observed_at=ts
+            )
+        assert len(_read_rows(REPO_A)) == 20
+
+        deleted = obs.reset_drift_baseline(REPO_A)
+
+        assert deleted == 20
+        assert _read_rows(REPO_A) == []
+
+    def test_reset_drift_baseline_is_scoped_to_one_repo(self, tmp_path: Path):
+        ts = 1_700_000_000
+        record_edit_observation(REPO_A, "a.ts", "component", "low", observed_at=ts)
+        record_edit_observation(REPO_B, "b.ts", "component", "low", observed_at=ts)
+
+        obs.reset_drift_baseline(REPO_A)
+
+        assert _read_rows(REPO_A) == []
+        assert len(_read_rows(REPO_B)) == 1
+
+    def test_reset_drift_baseline_on_empty_db_returns_zero(self, tmp_path: Path):
+        assert obs.reset_drift_baseline(REPO_A) == 0

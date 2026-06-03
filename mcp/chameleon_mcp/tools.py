@@ -1161,6 +1161,29 @@ def _empty_pattern_envelope(
     }
 
 
+def _classify_profile_load_failure(profile_file: Path) -> str:
+    """Decide the profile_status when load_profile_dir raises.
+
+    A profile written by a newer engine (schema_version above the supported
+    max) is a version mismatch, not data corruption. Peek at schema_version
+    the same way detect_repo does so both tools report the same status; fall
+    back to "profile_corrupted" for an unparseable file or any lower version.
+    """
+    try:
+        import json as _json
+
+        with profile_file.open("r", encoding="utf-8") as fh:
+            peek = _json.load(fh)
+    except (OSError, ValueError):
+        return "profile_corrupted"
+    from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
+
+    schema = peek.get("schema_version") if isinstance(peek, dict) else None
+    if isinstance(schema, int) and schema > MAX_SUPPORTED_SCHEMA_VERSION:
+        return "profile_unsupported_schema_version"
+    return "profile_corrupted"
+
+
 def get_pattern_context(file_path: str) -> dict:
     """Collapsed call: archetype + canonical + rules + meta in one round trip.
 
@@ -1197,7 +1220,9 @@ def get_pattern_context(file_path: str) -> dict:
     try:
         loaded = load_profile_dir(profile_dir)
     except Exception:
-        return _envelope(_empty_pattern_envelope(repo_id, "profile_corrupted", "n/a"))
+        return _envelope(
+            _empty_pattern_envelope(repo_id, _classify_profile_load_failure(profile_file), "n/a")
+        )
 
     content_signal_value = _content_signal_for_path(p)
     arch_response = _get_archetype_with_loaded(p, repo_root, loaded, content_signal_value)
@@ -1831,16 +1856,30 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
 
     secret_violations = [v.to_dict() for v in _scan_secrets(working_content)]
 
-    repo_root = _resolve_repo_root_by_id(repo)
+    # Resolve `repo` through the shape-detecting resolver every other read tool
+    # uses. Calling `_resolve_repo_root_by_id` directly let a hostile path
+    # (nonexistent absolute path, embedded NUL, `../` traversal) reach
+    # `repo_data_dir`'s mkdir and crash instead of failing open with the stub
+    # envelope below.
+    resolved_path, _resolved_repo_id = _resolve_repo_arg(repo)
+    repo_root = resolved_path
+    try:
+        if repo_root is not None and not repo_root.is_dir():
+            repo_root = None
+    except (OSError, ValueError):
+        repo_root = None
     if repo_root is None:
         candidate = Path(repo) if isinstance(repo, str) and repo else None
-        if (
-            candidate is not None
-            and candidate.is_absolute()
-            and candidate.is_dir()
-            and (candidate / ".chameleon" / "profile.json").is_file()
-        ):
-            repo_root = candidate
+        try:
+            if (
+                candidate is not None
+                and candidate.is_absolute()
+                and candidate.is_dir()
+                and (candidate / ".chameleon" / "profile.json").is_file()
+            ):
+                repo_root = candidate
+        except (OSError, ValueError):
+            repo_root = None
 
     if repo_root is None:
         return _envelope(
@@ -3347,6 +3386,17 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
             started_at,
         )
         if partial_envelope is not None:
+            # A partial refresh amends the profile in place, so re-baseline the
+            # drift window just like the full re-derive path (which resets
+            # inside bootstrap_repo). Partial success reports "partial_refresh",
+            # not "success". See reset_drift_baseline for why.
+            if partial_envelope.get("data", {}).get("status") in ("success", "partial_refresh"):
+                from chameleon_mcp.drift.observations import reset_drift_baseline
+
+                try:
+                    reset_drift_baseline(repo_id)
+                except Exception:
+                    pass
             return partial_envelope
 
     return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
@@ -3406,11 +3456,23 @@ def bootstrap_repo(
         repo_root = resolved_path
     from chameleon_mcp.profile.trust import repo_data_dir
 
-    lock_dir = repo_data_dir(_compute_repo_id(repo_root))
+    repo_id = _compute_repo_id(repo_root)
+    lock_dir = repo_data_dir(repo_id)
     lock_dir.mkdir(parents=True, exist_ok=True)
     try:
         with acquire_advisory_lock(lock_dir / ".bootstrap.lock"):
-            return _bootstrap_repo_unlocked(path, paths_glob, force, now)
+            result = _bootstrap_repo_unlocked(path, paths_glob, force, now)
+        # A successful (re-)derive re-baselines drift: observations were scored
+        # against the now-superseded profile, so the drift window resets to
+        # empty. Harmless on a first bootstrap (no observations exist yet).
+        if result.get("data", {}).get("status") == "success":
+            from chameleon_mcp.drift.observations import reset_drift_baseline
+
+            try:
+                reset_drift_baseline(repo_id)
+            except Exception:
+                pass
+        return result
     except LockHeldError as e:
         return _envelope(
             {
@@ -3962,6 +4024,21 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     if data_key == "archetypes":
         ours_archs = ours_data.get("archetypes", {}) or {}
         theirs_archs = theirs_data.get("archetypes", {}) or {}
+
+        # data_key fires when EITHER side is a dict; the merge loop assumes both
+        # are. A side carrying a JSON array would crash on `.items()`, so fail
+        # open with a clean envelope like the JSON-parse path does.
+        if not isinstance(ours_archs, dict) or not isinstance(theirs_archs, dict):
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        "archetypes payload is not an object on one side; "
+                        "leaving the conflict for manual resolution"
+                    ),
+                    "merged_profile_path": None,
+                }
+            )
 
         merged: dict[str, dict] = dict(ours_archs)
         for name, arch in theirs_archs.items():
@@ -6238,14 +6315,24 @@ def doctor() -> dict:
 
     try:
         from chameleon_mcp.bootstrap.transaction import is_committed
+        from chameleon_mcp.profile.loader import load_profile_dir
 
         lp = list_profiles(limit=20)
         profiles = lp.get("data", {}).get("profiles", [])
         repo_states = []
+        any_corrupt = False
         for r in profiles:
             root = r.get("repo_root")
             if root and is_committed(Path(root) / ".chameleon"):
-                status = "profile_present"
+                # A committed profile can still be unloadable (corrupt or
+                # incomplete JSON); load_profile_dir rejects it on every edit,
+                # so report it as corrupt rather than a healthy profile_present.
+                try:
+                    load_profile_dir(Path(root) / ".chameleon")
+                    status = "profile_present"
+                except Exception:
+                    status = "profile_corrupt"
+                    any_corrupt = True
             elif root:
                 status = "no_profile"
             else:
@@ -6257,7 +6344,13 @@ def doctor() -> dict:
                     "trust_state": r.get("trust_state"),
                 }
             )
-        checks.append({"name": "known_repos", "status": "ok", "detail": repo_states})
+        checks.append(
+            {
+                "name": "known_repos",
+                "status": "warn" if any_corrupt else "ok",
+                "detail": repo_states,
+            }
+        )
     except Exception as exc:
         checks.append(
             {"name": "known_repos", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"}

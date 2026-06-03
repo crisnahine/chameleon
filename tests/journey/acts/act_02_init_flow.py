@@ -183,9 +183,15 @@ def run(ctx: JourneyContext) -> ActResult:
         notes_extra[5] = str(e)
         cross_check_passed[5] = False
 
-    ts_monorepo_chameleon = ctx.fixture("ts_monorepo") / ".chameleon"
+    ts_monorepo_root = ctx.fixture("ts_monorepo")
+    ts_monorepo_chameleon = ts_monorepo_root / ".chameleon"
     try:
-        expect.path_exists(6, ts_monorepo_chameleon / "profile.json")
+        # ts_monorepo is a coordinator-only root: the root package.json declares
+        # workspaces but carries no root-level language signals, so bootstrap
+        # returns success_workspaces_only and writes NO root profile.json. The
+        # actual profiles land per-workspace under packages/*, so assert those.
+        expect.path_exists(6, ts_monorepo_root / "packages" / "api" / ".chameleon" / "profile.json")
+        expect.path_exists(6, ts_monorepo_root / "packages" / "web" / ".chameleon" / "profile.json")
         cross_check_passed[6] = True
     except expect.PhaseAssertionError as e:
         notes_extra[6] = str(e)

@@ -145,10 +145,20 @@ def run(ctx: JourneyContext) -> ActResult:
         try:
             expect.path_exists(21, rules_json)
             rules_data = json.loads(rules_json.read_text(encoding="utf-8"))
-            if "rubocop" not in rules_data:
+            # rules.json nests tool configs under a top-level "rules" map
+            # ({"rules": {"rubocop": {...}}, "generation", "schema_version", ...}),
+            # so the rubocop block lives there, not at the document root.
+            rules_section = rules_data.get("rules", {})
+            if "rubocop" not in rules_section:
                 notes_extra[21] = (
-                    f"rules.json missing 'rubocop' key; keys found: {list(rules_data)!r}"
+                    f"rules.json missing 'rubocop' key under 'rules'; "
+                    f"keys found: {list(rules_section)!r}"
                 )
+            elif not (
+                isinstance(rules_section["rubocop"].get("rules"), dict)
+                and rules_section["rubocop"]["rules"]
+            ):
+                notes_extra[21] = "rules.json 'rubocop' present but no cops were extracted"
         except expect.PhaseAssertionError as e:
             notes_extra[21] = str(e)
         except (json.JSONDecodeError, OSError) as e:

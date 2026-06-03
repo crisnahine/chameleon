@@ -24,15 +24,25 @@ else
     exit 1
 fi
 
+# Pass the three paths through the environment, never interpolated into the
+# Python source. Git-supplied merge paths (and repo checkouts) can contain
+# single quotes or other metacharacters; inlining them into a `python -c`
+# string literal broke the literal and was a code-injection sink.
+CH_MERGE_BASE="${BASE}" CH_MERGE_OURS="${OURS}" CH_MERGE_THEIRS="${THEIRS}" \
 PYTHONPATH="${MCP_DIR}${PYTHONPATH:+:${PYTHONPATH}}" \
-    "${PYTHON}" -c "
-import json, sys
+    "${PYTHON}" -c '
+import os, sys
 from chameleon_mcp.tools import merge_profiles
-result = merge_profiles(repo='', base='$BASE', ours='$OURS', theirs='$THEIRS')
-data = result.get('data', {})
-status = data.get('status')
-if status == 'success':
+result = merge_profiles(
+    repo="",
+    base=os.environ["CH_MERGE_BASE"],
+    ours=os.environ["CH_MERGE_OURS"],
+    theirs=os.environ["CH_MERGE_THEIRS"],
+)
+data = result.get("data", {})
+status = data.get("status")
+if status == "success":
     sys.exit(0)
-print(f'chameleon-merge-driver failed: {data.get(\"error\", status)}', file=sys.stderr)
+print("chameleon-merge-driver failed: {}".format(data.get("error", status)), file=sys.stderr)
 sys.exit(1)
-"
+'

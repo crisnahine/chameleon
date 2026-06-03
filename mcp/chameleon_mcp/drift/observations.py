@@ -149,6 +149,34 @@ def record_bootstrap_baseline(
     return 0
 
 
+def reset_drift_baseline(repo_id: str) -> int:
+    """Clear all edit observations for a repo, re-baselining the drift window.
+
+    The drift score is ``1 - mean(confidence_observed)`` over edits made since
+    the profile was last derived. Once the profile is re-derived (a refresh /
+    re-bootstrap), those observations were scored against the superseded
+    profile, so the signal must reset -- otherwise ``get_drift_status`` keeps
+    recommending ``/chameleon-refresh`` after a refresh already ran. Returns the
+    number of rows deleted. Fail-open: any sqlite/OS error returns 0.
+    """
+    if not repo_id:
+        return 0
+    db_path = _drift_db_path(repo_id)
+    if not db_path.is_file():
+        return 0
+    try:
+        conn = _get_drift_conn(repo_id)
+    except (sqlite3.Error, OSError):
+        return 0
+    try:
+        with conn:
+            (before,) = conn.execute("SELECT COUNT(*) FROM edit_observations").fetchone()
+            conn.execute("DELETE FROM edit_observations")
+        return int(before or 0)
+    except sqlite3.Error:
+        return 0
+
+
 def compute_drift_score(repo_id: str, *, window_days: int = 14) -> float | None:
     """Compute observed_drift_score from recent edit_observations.
 
