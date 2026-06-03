@@ -1403,6 +1403,8 @@ Bootstrap and refresh write to a transaction directory:
 
 **Stale lock detection:** if PID dead OR started >1 hour ago → break lock with warning.
 
+**Cross-platform:** `locks.py` is the single locking layer. POSIX uses `fcntl.flock`; Windows (no `fcntl`) uses `msvcrt.locking` over a fixed one-byte region, with a held lock normalized to `BlockingIOError(EAGAIN)` so callers behave the same on both. The directory-handle rename lock in `transaction.py` has no Windows equivalent, so on Windows it falls back to a sidecar `.chameleon.winlock` file. Liveness checks never use `os.kill` on Windows (it would call `TerminateProcess`); they query `OpenProcess` instead, degrading to the timestamp staleness ceiling if unavailable.
+
 ### SQLite hardening
 
 Every connection to drift.db and index.db sets:

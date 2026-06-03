@@ -134,7 +134,9 @@ def _open_profile_artifact_fd(path: Path, max_bytes: int) -> tuple[int, os.stat_
     teammate could exploit by swapping a committed renames.json for a
     symlink between checks.
     """
-    flags = os.O_RDONLY | os.O_NOFOLLOW
+    # O_NOFOLLOW is POSIX-only (absent on Windows -> 0). The lstat symlink check
+    # still rejects symlinks there; only the open()-level TOCTOU close is lost.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     cloexec = getattr(os, "O_CLOEXEC", 0)
     flags |= cloexec
     try:
@@ -257,7 +259,9 @@ def safe_open_fd(
             f"path escapes repo boundary: {candidate} not under {repo_resolved}"
         ) from e
 
-    flags = os.O_RDONLY | os.O_NOFOLLOW
+    # O_NOFOLLOW is POSIX-only (absent on Windows -> 0). The lstat symlink check
+    # still rejects symlinks there; only the open()-level TOCTOU close is lost.
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     cloexec = getattr(os, "O_CLOEXEC", 0)
     flags |= cloexec
     try:

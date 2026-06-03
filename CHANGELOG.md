@@ -4,6 +4,21 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-06-03
+
+Native Windows. chameleon's Python no longer hard-depends on POSIX `fcntl`: it imports and locks on native Windows, run through Git for Windows (which provides the `bash` the hooks use), so WSL is no longer required. The locking layer is now cross-platform and the change is byte-identical on POSIX.
+
+### Added
+
+- **Cross-platform file locking.** `locks.py` is the single locking layer for the whole package. POSIX keeps `fcntl.flock`; Windows uses `msvcrt.locking` over a fixed one-byte region, presenting a held lock as `BlockingIOError(EAGAIN)` so every caller's non-blocking path is unchanged. `transaction.py`, `canonical_loader.py`, and `trust.py` route through it instead of importing `fcntl` directly. The atomic-commit rename lock, which on POSIX locks a directory handle, falls back to a `.chameleon.winlock` sidecar file on Windows.
+- **windows-latest CI job.** A native-Windows matrix (Python 3.11 to 3.13) runs the import smoke and the cross-platform locking tests, including the win32-only paths (real `msvcrt`, `OpenProcess` liveness) that cannot execute on other platforms.
+
+### Fixed
+
+- **Import crash on native Windows.** Four core modules imported `fcntl` at top level, so the package could not be imported on Windows at all. The import is guarded now and the lock primitives are cross-platform.
+- **`os.O_NOFOLLOW` AttributeError on Windows** in the hot-path file reader (`safe_open.py`). It is resolved via `getattr(os, "O_NOFOLLOW", 0)`, matching the adjacent `O_CLOEXEC` handling; the lstat symlink check still rejects symlinks there.
+- **Process-liveness could terminate a process on Windows.** The stale-lock probe used `os.kill(pid, 0)`, which on Windows calls `TerminateProcess`. It queries `OpenProcess` now and never signals the target.
+
 ## [2.0.0] - 2026-06-03
 
 The enforcement release. chameleon stops being advisory-only and starts actually enforcing conventions: it can deny a banned import before it lands, block a clear violation after a write, and refuse to end a turn while a hard violation or an unreviewed team idiom/principle remains. Enforcement is off by default (shadow mode), gated so it only fires when chameleon is certain, and protected by per-repo self-calibration so it never blocks the repo's own code. This release also folds in a full architecture audit: ~70 verified findings fixed across monorepo support, security, concurrency, cross-platform, and migration.

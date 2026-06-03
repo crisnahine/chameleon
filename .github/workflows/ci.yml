@@ -8,6 +8,9 @@
 # Jobs:
 #   - test-python:      matrix on Python 3.11-3.13 across Ubuntu + macOS.
 #                        Runs unit tests + harness library tests.
+#   - test-windows:     native Windows import smoke + the cross-platform locking
+#                        tests (validates the fcntl/msvcrt + O_NOFOLLOW guards on
+#                        the one platform where the no-fcntl branch actually runs).
 #   - lint:             ruff check + ruff format --check on MCP package +
 #                        unit tests + journey tests.
 #   - version-sync:     bash scripts/bump-version.sh --check (fails CI on drift).
@@ -89,6 +92,49 @@ jobs:
         env:
           PYTHONPATH: '.:..'
         run: .venv/bin/python -m pytest ../tests/unit/ ../tests/journey/harness/tests/ -v
+
+  test-windows:
+    name: test-windows (py${{ matrix.python-version }})
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: 'mcp/uv.lock'
+
+      - name: Install Python dependencies (uv sync)
+        working-directory: mcp
+        run: uv sync --frozen --extra dev
+
+      # The whole point of this job: native Windows has no fcntl, so this import
+      # would crash before the cross-platform locking layer landed. No Node/Ruby
+      # here -- the extractors aren't exercised by the import smoke or lock tests.
+      - name: Import smoke (no fcntl on this platform)
+        working-directory: mcp
+        run: uv run python -c "from chameleon_mcp.server import mcp; print('mcp imports on Windows')"
+
+      # Runs the simulated branch tests AND the win32-only tests that exercise the
+      # real msvcrt / ctypes OpenProcess paths (skipped everywhere else).
+      - name: Cross-platform locking tests
+        working-directory: mcp
+        env:
+          PYTHONPATH: '.;..'
+        run: uv run python -m pytest ../tests/unit/test_locks_cross_platform.py -v
 
   lint:
     name: lint (ruff)

@@ -8,7 +8,6 @@ Trust is per-user, per-repo. Stored at `${PLUGIN_DATA}/<repo_id>/.trust`.
 
 from __future__ import annotations
 
-import fcntl
 import getpass
 import hashlib
 import json
@@ -17,6 +16,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from chameleon_mcp.locks import portable_flock, portable_funlock
 from chameleon_mcp.safe_open import (
     UnsafeFileError,
     safe_read_profile_artifact_bytes,
@@ -311,7 +311,7 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
     lock_path = trust_path.with_suffix(".lock")
     lock_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        portable_flock(lock_fd, nonblocking=False)
 
         existing = trust_state_for(repo_id)
         if existing is None:
@@ -352,6 +352,7 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
             os.close(fd)
         os.replace(tmp_path, trust_path)
     finally:
+        portable_funlock(lock_fd)
         os.close(lock_fd)
     return record
 

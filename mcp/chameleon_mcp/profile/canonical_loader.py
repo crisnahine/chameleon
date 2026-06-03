@@ -27,11 +27,12 @@ concurrent sessions from racing on the same cache dir.
 
 from __future__ import annotations
 
-import fcntl
 import os
 import subprocess
 import time
 from pathlib import Path
+
+from chameleon_mcp.locks import portable_flock, portable_funlock
 
 _REQUIRED_ARTIFACTS: tuple[str, ...] = (
     "profile.json",
@@ -152,17 +153,20 @@ def materialize_canonical(repo_root: Path, repo_id: str, canonical_ref: str) -> 
     except OSError:
         pass
     lock_path = cache_dir / _LOCK_FILENAME
+    # O_NOFOLLOW is POSIX-only; on Windows it is absent (0) and the platform's own
+    # symlink handling applies.
+    o_nofollow = getattr(os, "O_NOFOLLOW", 0)
     try:
         lock_fd = os.open(
             str(lock_path),
-            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+            os.O_RDWR | os.O_CREAT | o_nofollow,
             0o600,
         )
     except OSError:
         return None
 
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        portable_flock(lock_fd, nonblocking=False)
         if _is_cache_valid(cache_dir):
             return cache_dir
 
@@ -198,10 +202,7 @@ def materialize_canonical(repo_root: Path, repo_id: str, canonical_ref: str) -> 
             pass
         return cache_dir
     finally:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
+        portable_funlock(lock_fd)
         os.close(lock_fd)
 
 

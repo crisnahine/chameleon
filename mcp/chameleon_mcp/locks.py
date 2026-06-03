@@ -7,16 +7,145 @@ POSIX `flock(2)` semantics:
 - LOCK_EX | LOCK_NB: exclusive non-blocking; returns immediately if held
 - Lock auto-releases when file descriptor is closed
 - Stale lock detection: check PID in lock file is still alive
+
+This module is the single cross-platform locking layer. On POSIX it uses
+`fcntl.flock`. On Windows (no `fcntl`) it falls back to `msvcrt.locking` over a
+fixed one-byte region, normalizing a held lock to `BlockingIOError(EAGAIN)` so
+every caller's non-blocking handler behaves identically on both platforms. The
+other modules that need a lock import the helpers here rather than touching
+`fcntl` directly.
 """
 
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows has no fcntl
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - POSIX has no msvcrt
+    msvcrt = None  # type: ignore[assignment]
+
+# msvcrt.locking() locks a byte range from the current file position; one byte
+# at offset 0 is enough for whole-file mutual exclusion as long as every process
+# locks the same region.
+_MSVCRT_REGION = 1
+
+# msvcrt.locking() signals a blocked LK_LOCK with EDEADLOCK on Windows. That name
+# only exists in `errno` on Windows, so resolve it portably (falling back to the
+# POSIX EDEADLK alias / its numeric value) — the constant must be evaluatable on
+# every platform even though the branch using it only runs under msvcrt.
+_EDEADLOCK = getattr(errno, "EDEADLOCK", getattr(errno, "EDEADLK", 36))
+
+
+def portable_flock(fd: int, *, nonblocking: bool) -> None:
+    """Acquire an exclusive lock on ``fd``.
+
+    POSIX: ``fcntl.flock``. Windows: ``msvcrt.locking`` over a fixed one-byte
+    region. When ``nonblocking`` and the lock is already held, raises
+    ``BlockingIOError`` with ``errno.EAGAIN`` on both platforms so existing
+    ``EAGAIN``/``EWOULDBLOCK`` handlers fire uniformly. Other failures raise the
+    underlying ``OSError``. If neither primitive exists the call is a best-effort
+    no-op (single-process use stays safe).
+    """
+    if fcntl is not None:
+        flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0)
+        fcntl.flock(fd, flags)
+        return
+    if msvcrt is not None:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if nonblocking:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, _MSVCRT_REGION)
+            except OSError as e:
+                # msvcrt raises EACCES/EDEADLOCK when the region is held; present
+                # it as EAGAIN so callers don't branch on platform-specific errno.
+                raise BlockingIOError(errno.EAGAIN, "lock held") from e
+            return
+        # Blocking: LK_LOCK blocks ~10s per attempt then raises EDEADLOCK; retry
+        # so the wait is honored without a hard cap that a long holder would hit.
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_LOCK, _MSVCRT_REGION)
+                return
+            except OSError as e:
+                if e.errno != _EDEADLOCK:
+                    raise
+                time.sleep(0.05)
+
+
+def portable_funlock(fd: int) -> None:
+    """Release a lock taken with :func:`portable_flock`. Failures are swallowed."""
+    if fcntl is not None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        return
+    if msvcrt is not None:
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, _MSVCRT_REGION)
+        except OSError:
+            pass
+
+
+def open_dir_lock_fd(lock_dir: Path) -> int:
+    """Open an fd to contend on for a directory-scoped lock.
+
+    POSIX: the directory's own fd — a stable inode that is never created or
+    unlinked, so contenders share it without leaving a lock file. Windows cannot
+    open a directory as a lockable fd, so a sidecar ``<name>.winlock`` file is
+    created inside the directory and contended on instead. The caller closes the
+    returned fd to release.
+    """
+    if fcntl is not None:
+        return os.open(str(lock_dir), os.O_RDONLY)
+    sidecar = lock_dir / ".chameleon.winlock"
+    return os.open(str(sidecar), os.O_RDWR | os.O_CREAT, 0o600)
+
+
+def pid_alive(pid: int) -> bool:
+    """True iff ``pid`` is a running process, without ever signalling it.
+
+    POSIX: ``os.kill(pid, 0)`` (EPERM counts as alive — different user). Windows:
+    ``os.kill`` with a non-CTRL signal calls ``TerminateProcess``, so it must
+    never be used for a liveness probe; query via ``OpenProcess`` instead and, if
+    that is unavailable, assume alive so a live holder's lock is never broken (a
+    truly dead one still expires via the timestamp staleness ceiling).
+    """
+    if fcntl is not None:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError as e:
+            return e.errno != errno.ESRCH
+    try:
+        import ctypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return code.value == still_active
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:  # noqa: BLE001 - any failure degrades to "assume alive"
+        return True
 
 
 class LockHeldError(Exception):
@@ -44,12 +173,8 @@ def _read_lock_metadata(lock_path: Path) -> tuple[int | None, float | None]:
 
 
 def _is_pid_alive(pid: int) -> bool:
-    """Check if a PID is still running (POSIX). EPERM means alive but different user."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError as e:
-        return e.errno != errno.ESRCH
+    """Whether a PID is still running. Delegates to the cross-platform probe."""
+    return pid_alive(pid)
 
 
 @contextmanager
@@ -83,7 +208,7 @@ def acquire_advisory_lock(
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            portable_flock(fd, nonblocking=True)
         except OSError as e:
             if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
                 raise
@@ -96,7 +221,7 @@ def acquire_advisory_lock(
             )
             if stale:
                 try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    portable_flock(fd, nonblocking=True)
                 except OSError as e2:
                     if e2.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
                         raise
@@ -123,10 +248,7 @@ def acquire_advisory_lock(
             except OSError:
                 pass
     finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
+        portable_funlock(fd)
         os.close(fd)
 
 
@@ -143,7 +265,7 @@ def _acquire_blocking(fd: int, lock_path: Path, blocking_timeout: float | None) 
     deadline = time.time() + blocking_timeout
     while True:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            portable_flock(fd, nonblocking=True)
             return True
         except OSError as e:
             if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):

@@ -16,7 +16,6 @@ Round 4 distributed-systems hardening — addresses one of the 6 BLOCKING items.
 from __future__ import annotations
 
 import errno
-import fcntl
 import os
 import random
 import shutil
@@ -24,6 +23,13 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+
+from chameleon_mcp.locks import (
+    open_dir_lock_fd,
+    pid_alive,
+    portable_flock,
+    portable_funlock,
+)
 
 COMMITTED_SENTINEL = "COMMITTED"
 
@@ -49,7 +55,7 @@ _PROTOCOL_FILES = frozenset(
 
 
 def _open_rename_lock_fd(lock_dir: Path) -> int:
-    return os.open(str(lock_dir), os.O_RDONLY)
+    return open_dir_lock_fd(lock_dir)
 
 
 def _fsync_dir(path: Path) -> None:
@@ -79,7 +85,7 @@ def _acquire_rename_lock(lock_dir: Path, *, timeout_seconds: float = 30.0) -> in
     deadline = time.time() + timeout_seconds
     while True:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            portable_flock(fd, nonblocking=True)
             return fd
         except OSError as e:
             if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
@@ -176,10 +182,7 @@ def atomic_profile_commit(target_dir: Path):
                 else:
                     shutil.rmtree(backup_dir, ignore_errors=True)
         finally:
-            try:
-                fcntl.flock(rename_lock_fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
+            portable_funlock(rename_lock_fd)
             os.close(rename_lock_fd)
             try:
                 tmp_root.rmdir()
@@ -216,15 +219,8 @@ def _txn_dir_pid(txn_dir: Path) -> int | None:
 
 
 def _pid_alive(pid: int) -> bool:
-    """POSIX liveness check. Permission errors count as 'alive' (conservative)."""
-    import errno
-    import os
-
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError as e:
-        return e.errno != errno.ESRCH
+    """Whether a writer PID is still running. Delegates to the cross-platform probe."""
+    return pid_alive(pid)
 
 
 def _acquire_recovery_lock(
@@ -246,7 +242,7 @@ def _acquire_recovery_lock(
     deadline = time.time() + timeout_seconds
     while True:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            portable_flock(fd, nonblocking=True)
             return fd, True
         except OSError as e:
             if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
@@ -372,10 +368,7 @@ def cleanup_orphan_tmp_dirs(target_parent: Path, profile_dir_name: str = "chamel
     finally:
         if lock_fd is not None:
             if holds_lock:
-                try:
-                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                except OSError:
-                    pass
+                portable_funlock(lock_fd)
             os.close(lock_fd)
 
     for tmp_root in (
@@ -399,8 +392,9 @@ def cleanup_orphan_tmp_dirs(target_parent: Path, profile_dir_name: str = "chamel
         except OSError:
             pass
 
-    # The commit path flocks the parent-directory fd and creates no lock file,
-    # so any *.rename.lock is legacy debris from chameleon <= 1.2.0; sweep it.
+    # On POSIX the commit path flocks the parent-directory fd and creates no lock
+    # file, so any *.rename.lock is legacy debris from chameleon <= 1.2.0; sweep
+    # it. (The Windows sidecar is named .winlock and is left alone here.)
     for lock_name in (
         f".{profile_dir_name}.rename.lock",
         f"..{profile_dir_name}.rename.lock",

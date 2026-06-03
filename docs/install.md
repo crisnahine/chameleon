@@ -100,7 +100,9 @@ If `ruby --version` reports older than 3.3, also run `gem install prism` (Ruby 3
 
 ### Windows
 
-chameleon's hooks run through `bash`, so install **Git for Windows** first (it provides Git Bash): https://git-scm.com/download/win . Run Claude Code from a shell where `bash` works. WSL2 also works and is smoother if you have it.
+chameleon runs on native Windows through **Git for Windows**, which provides the `bash` its hooks use; the Python server locks and runs cross-platform. WSL2 also works and some people prefer it.
+
+Install Git for Windows (provides Git Bash): https://git-scm.com/download/win . Run Claude Code from a shell where `bash` is on `PATH`.
 
 `uv` (PowerShell):
 
@@ -111,6 +113,8 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 Node.js 20+: download the LTS installer from https://nodejs.org (or `winget install OpenJS.NodeJS.LTS`).
 
 Ruby (only if you edit Rails repos): use [RubyInstaller](https://rubyinstaller.org), pick 3.3+ so `prism` is bundled.
+
+On Windows, chameleon serializes its profile writes with a small `.chameleon.winlock` file in the repo root (POSIX locks a directory handle instead and leaves no file). It is safe to ignore or add to `.gitignore`.
 
 ### Verify your prerequisites
 

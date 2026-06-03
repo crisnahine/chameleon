@@ -26,7 +26,7 @@ writing code — see [Architecture changes](#architecture-changes) below.
 
 ## Dev prerequisites
 
-- macOS or Linux. Windows via Git Bash.
+- macOS or Linux. Windows via Git for Windows or WSL2 (the lock layer is cross-platform; `bash` is required for the hooks).
 - Python ≥ 3.11
 - Node ≥ 20
 - Ruby ≥ 3.0 with the `prism` gem (ships by default in Ruby ≥ 3.3)
