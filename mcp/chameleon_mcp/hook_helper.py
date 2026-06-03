@@ -224,13 +224,21 @@ def _should_emit_untrusted_prompt(repo_id: str, session_id: str | None) -> bool:
         from chameleon_mcp.optouts import _safe_session_marker
 
         marker_dir = _plugin_data_dir() / repo_id
-        marker_dir.mkdir(parents=True, exist_ok=True)
+        marker_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(marker_dir, 0o700)
+        except OSError:
+            pass
         marker = marker_dir / _TRUST_PROMPT_FILENAME.format(
             session=_safe_session_marker(session_id)
         )
         if _marker_is_fresh(marker):
             return False
         marker.touch(exist_ok=True)
+        try:
+            os.chmod(marker, 0o600)
+        except OSError:
+            pass
         return True
     except (OSError, PermissionError):
         return True
@@ -307,7 +315,7 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
                     os.chmod(emarker.parent, 0o700)
                 except OSError:
                     pass
-                emarker.write_text(str(int(time.time())), encoding="utf-8")
+                _atomic_write_text(emarker, str(int(time.time())))
                 try:
                     os.chmod(emarker, 0o600)
                 except OSError:
@@ -339,7 +347,7 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
             os.chmod(marker.parent, 0o700)
         except OSError:
             pass
-        marker.write_text(str(int(time.time())), encoding="utf-8")
+        _atomic_write_text(marker, str(int(time.time())))
         try:
             os.chmod(marker, 0o600)
         except OSError:
@@ -468,7 +476,7 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
             os.chmod(cooldown_marker.parent, 0o700)
         except OSError:
             pass
-        cooldown_marker.write_text(str(int(time.time())), encoding="utf-8")
+        _atomic_write_text(cooldown_marker, str(int(time.time())))
         try:
             os.chmod(cooldown_marker, 0o600)
         except OSError:
@@ -518,6 +526,91 @@ def _sanitize_profile_obj(obj: object) -> object:
     if isinstance(obj, list):
         return [_sanitize_profile_obj(v) for v in obj]
     return obj
+
+
+def _wire_statusline_settings(project_dir: Path, plugin_root: str | None) -> None:
+    """Point the project's settings.local.json at the chameleon statusline script.
+
+    Skips the write when the project already declares a statusLine (in
+    settings.json) or when the user pinned a global statusLine in
+    ~/.claude/settings.json, since settings.local.json would silently override
+    that choice. Fails open: any error leaves the project's settings untouched.
+    """
+    try:
+        if not plugin_root:
+            return
+        script_path = Path(plugin_root) / "bin" / "chameleon-statusline.sh"
+        if not script_path.is_file():
+            return
+
+        local_settings = project_dir / ".claude" / "settings.local.json"
+        project_settings = project_dir / ".claude" / "settings.json"
+        current_cmd: str | None = str(script_path)
+        needs_write = False
+
+        if project_settings.is_file():
+            try:
+                d = json.loads(project_settings.read_text(encoding="utf-8"))
+                if "statusLine" in d:
+                    current_cmd = None
+            except Exception:
+                pass
+
+        if current_cmd is not None:
+            user_settings = Path.home() / ".claude" / "settings.json"
+            if user_settings.is_file():
+                try:
+                    ud = json.loads(user_settings.read_text(encoding="utf-8"))
+                    if "statusLine" in ud:
+                        current_cmd = None
+                except Exception:
+                    pass
+
+        existing: dict = {}
+        if current_cmd is not None:
+            if local_settings.is_file():
+                try:
+                    existing = json.loads(local_settings.read_text(encoding="utf-8"))
+                except Exception:
+                    existing = {}
+            old_cmd = (existing.get("statusLine") or {}).get("command", "")
+            if "statusLine" not in existing:
+                needs_write = True
+            elif old_cmd != current_cmd and "chameleon" in old_cmd:
+                needs_write = True
+
+        if needs_write and current_cmd is not None:
+            existing["statusLine"] = {
+                "type": "command",
+                "command": current_cmd,
+            }
+            local_settings.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            _atomic_write_text(local_settings, json.dumps(existing, indent=2) + "\n")
+    except Exception:
+        pass
+
+
+def _seed_archetype_seen(repo_id: str | None, session_id: str | None, archetype: str) -> None:
+    """Record an archetype in the enforcement state without other side effects.
+
+    The PreToolUse deny path returns before the normal advisory flow seeds
+    ``archetypes_seen``, so a denied edit would leave the archetype unseen and a
+    later successful edit to it would re-trigger the verbose first-in-archetype
+    advisory. Seeding here keeps the seen-set accurate across a deny. Fails open.
+    """
+    try:
+        if not repo_id or not session_id or not archetype:
+            return
+        from chameleon_mcp import enforcement
+
+        repo_data = _plugin_data_dir() / repo_id
+        state = enforcement.load_state(repo_data, session_id)
+        if archetype in state.archetypes_seen:
+            return
+        state.archetypes_seen.add(archetype)
+        enforcement.save_state(state, repo_data, session_id)
+    except Exception:
+        pass
 
 
 def session_start() -> int:
@@ -676,67 +769,15 @@ def session_start() -> int:
             cache_data: dict = {"profiles": profiles}
             if upgrade_badge:
                 cache_data["update"] = upgrade_badge
-            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
             _atomic_write_text(sl_cache, json.dumps(cache_data))
     except Exception:
         pass
 
-    try:
-        # Wire the statusline command into the repo root's settings, matching the
-        # cache placement above: Claude resolves project settings at the workspace
-        # root, so a subdir-launched session must not split them into the subdir.
-        project_dir = repo_root if repo_root else Path.cwd()
-        script_path = Path(plugin_root) / "bin" / "chameleon-statusline.sh"
-        if script_path.is_file():
-            local_settings = project_dir / ".claude" / "settings.local.json"
-            project_settings = project_dir / ".claude" / "settings.json"
-            current_cmd = str(script_path)
-            needs_write = False
-
-            if project_settings.is_file():
-                try:
-                    d = json.loads(project_settings.read_text(encoding="utf-8"))
-                    if "statusLine" in d:
-                        needs_write = False
-                        current_cmd = None
-                except Exception:
-                    pass
-
-            if current_cmd is not None:
-                # Defer to a user-global statusLine too: settings.local.json
-                # outranks ~/.claude/settings.json, so writing here would
-                # silently override the user's explicit global choice.
-                user_settings = Path.home() / ".claude" / "settings.json"
-                if user_settings.is_file():
-                    try:
-                        ud = json.loads(user_settings.read_text(encoding="utf-8"))
-                        if "statusLine" in ud:
-                            current_cmd = None
-                    except Exception:
-                        pass
-
-            if current_cmd is not None:
-                existing = {}
-                if local_settings.is_file():
-                    try:
-                        existing = json.loads(local_settings.read_text(encoding="utf-8"))
-                    except Exception:
-                        existing = {}
-                old_cmd = (existing.get("statusLine") or {}).get("command", "")
-                if "statusLine" not in existing:
-                    needs_write = True
-                elif old_cmd != current_cmd and "chameleon" in old_cmd:
-                    needs_write = True
-
-            if needs_write:
-                existing["statusLine"] = {
-                    "type": "command",
-                    "command": current_cmd,
-                }
-                local_settings.parent.mkdir(parents=True, exist_ok=True)
-                local_settings.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
-    except Exception:
-        pass
+    # Wire the statusline command into the repo root's settings, matching the
+    # cache placement above: Claude resolves project settings at the workspace
+    # root, so a subdir-launched session must not split them into the subdir.
+    _wire_statusline_settings(repo_root if repo_root else Path.cwd(), plugin_root)
 
     conventions_block = ""
     try:
@@ -795,7 +836,9 @@ def session_start() -> int:
 
     _emit_session_context(wrapped)
 
-    _maybe_auto_refresh(Path.cwd())
+    # Reuse the repo root already resolved above instead of re-deriving it from
+    # cwd inside the helper.
+    _maybe_auto_refresh(repo_root or Path.cwd())
 
     return 0
 
@@ -1069,6 +1112,12 @@ def preflight_and_advise() -> int:
                             msg = sanitize_for_chameleon_context(
                                 banned[0].get("message", "banned import")
                             )
+                            # Record the archetype as seen even though we deny:
+                            # the normal seen-set seeding below is skipped by this
+                            # early return, and without it a later successful edit
+                            # to the same archetype would re-show the verbose
+                            # first-in-archetype advisory.
+                            _seed_archetype_seen(repo_id, session_id, archetype_name)
                             _emit_pretool_deny(
                                 f"chameleon: {msg}. Use the preferred import, or add "
                                 "`// chameleon-ignore import-preference-violation` "
@@ -1877,7 +1926,9 @@ def callout_detector() -> int:
     return 0
 
 
-def _stop_file_still_blockable(repo_root: Path, file_path: str, loaded=None) -> bool:
+def _stop_file_still_blockable(
+    repo_root: Path, file_path: str, loaded=None, active=None, daemon_state=None
+) -> bool:
     """Re-lint a candidate file live and report whether an enforceable hard-class
     violation still stands.
 
@@ -1897,7 +1948,13 @@ def _stop_file_still_blockable(repo_root: Path, file_path: str, loaded=None) -> 
     not block).
 
     ``loaded`` is the once-per-pass profile the backstop preloads so the per-file
-    re-lint does not re-read the profile for every candidate.
+    re-lint does not re-read the profile for every candidate. ``active`` is the
+    once-per-pass set of active block rules; when None it is read from disk (the
+    per-edit callers pass nothing). ``daemon_state`` is a shared ``{"available":
+    bool}`` flag the backstop threads through the candidate loop: once a daemon
+    call comes back empty, every later file skips the daemon and goes straight to
+    the in-process archetype resolve, so a hung daemon cannot stack per-file
+    timeouts past the hook's hard deadline.
     """
     try:
         p = Path(file_path)
@@ -1908,19 +1965,26 @@ def _stop_file_still_blockable(repo_root: Path, file_path: str, loaded=None) -> 
         archetype_name: str | None = None
         confidence_band: str | None = None
         match_quality: str | None = None
-        try:
-            from chameleon_mcp import daemon_client
+        daemon_usable = daemon_state is None or daemon_state.get("available", True)
+        if daemon_usable:
+            try:
+                from chameleon_mcp import daemon_client
 
-            arch_result = daemon_client.call(
-                "get_archetype", {"repo": str(repo_root), "file_path": file_path}
-            )
-            if arch_result:
-                data = arch_result.get("data") or {}
-                archetype_name = data.get("archetype")
-                confidence_band = data.get("confidence_band")
-                match_quality = data.get("match_quality")
-        except Exception:
-            pass
+                arch_result = daemon_client.call(
+                    "get_archetype", {"repo": str(repo_root), "file_path": file_path}
+                )
+                if arch_result:
+                    data = arch_result.get("data") or {}
+                    archetype_name = data.get("archetype")
+                    confidence_band = data.get("confidence_band")
+                    match_quality = data.get("match_quality")
+                elif daemon_state is not None:
+                    # Daemon unreachable or timed out: skip it for the rest of the
+                    # pass so the remaining files don't each eat a full timeout.
+                    daemon_state["available"] = False
+            except Exception:
+                if daemon_state is not None:
+                    daemon_state["available"] = False
         if not archetype_name:
             from chameleon_mcp.tools import get_archetype
 
@@ -1937,14 +2001,16 @@ def _stop_file_still_blockable(repo_root: Path, file_path: str, loaded=None) -> 
         if not violations:
             return False
 
-        from chameleon_mcp.enforcement_calibration import active_block_rules
         from chameleon_mcp.violation_class import (
             hard_class_violations,
             ignored_rules,
             is_archetype_independent,
         )
 
-        active = active_block_rules(repo_root / ".chameleon")
+        if active is None:
+            from chameleon_mcp.enforcement_calibration import active_block_rules
+
+            active = active_block_rules(repo_root / ".chameleon")
         hard = hard_class_violations(violations, active)
         ign = ignored_rules(content) or set()
         if ign:
@@ -2208,15 +2274,37 @@ def stop_backstop() -> int:
         except Exception:
             preloaded = None
 
+        # Read the active block rules once for the whole pass. Each candidate
+        # re-lint consults the same set, so reading enforcement.json per file just
+        # multiplies the disk I/O across the candidate set.
+        active_rules: set[str] | None = None
+        try:
+            from chameleon_mcp.enforcement_calibration import active_block_rules
+
+            active_rules = active_block_rules(repo_root / ".chameleon")
+        except Exception:
+            active_rules = None
+
+        # Shared liveness flag for the per-file daemon fallback: once a daemon
+        # call comes back empty, every later file skips the daemon and resolves
+        # the archetype in-process, so a hung daemon cannot stack timeouts.
+        daemon_state = {"available": True}
+
         unresolved: list[str] = []
         cleared_any = False
-        for path, fs in state.files.items():
+        for path, fs in list(state.files.items()):
             p = Path(path)
             if not p.is_file():
+                # The file was deleted since it was recorded; drop its entry so
+                # state does not accumulate phantom paths across the session.
+                del state.files[path]
+                cleared_any = True
                 continue
             if not (fs.level >= LEVEL_L2 and fs.blockable_unresolved):
                 continue
-            if _stop_file_still_blockable(repo_root, path, loaded=preloaded):
+            if _stop_file_still_blockable(
+                repo_root, path, loaded=preloaded, active=active_rules, daemon_state=daemon_state
+            ):
                 unresolved.append(path)
             else:
                 fs.blockable_unresolved = False
@@ -2224,7 +2312,7 @@ def stop_backstop() -> int:
 
         if cleared_any:
             try:
-                save_state(state, repo_data, session_id or "")
+                save_state(state, repo_data, session_id or "", prune_missing=True)
             except Exception:
                 pass
 

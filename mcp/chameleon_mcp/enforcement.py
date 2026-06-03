@@ -135,7 +135,22 @@ def _merge_states(disk: EnforcementState, mem: EnforcementState) -> EnforcementS
     return merged
 
 
-def save_state(state: EnforcementState, repo_dir: Path, session_id: str) -> None:
+def save_state(
+    state: EnforcementState,
+    repo_dir: Path,
+    session_id: str,
+    *,
+    prune_missing: bool = False,
+) -> None:
+    """Persist enforcement state, merging with whatever a concurrent writer left.
+
+    ``prune_missing`` drops file entries whose absolute path no longer exists on
+    disk. The merge is otherwise additive (it never removes a disk-only entry, so
+    parallel agents sharing a session don't lose each other's files), which means
+    a deleted file's entry would otherwise live until eviction. The Stop backstop
+    sets this once per turn end to keep state from accumulating phantom paths; the
+    per-edit callers leave it off so they don't pay a stat per file on every save.
+    """
     path = _state_path(repo_dir, session_id)
     lock = _lock_path(repo_dir, session_id)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -146,6 +161,13 @@ def save_state(state: EnforcementState, repo_dir: Path, session_id: str) -> None
 
     def _merge_and_write() -> None:
         merged = _merge_states(load_state(repo_dir, session_id), state)
+        if prune_missing:
+            for fpath in list(merged.files):
+                try:
+                    if not Path(fpath).is_file():
+                        del merged.files[fpath]
+                except OSError:
+                    pass
         _evict_if_needed(merged)
         # Per-write tmp name so two writers never collide on the same tmp file,
         # even on the degraded path below where the lock could not be held.
