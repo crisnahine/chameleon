@@ -4,6 +4,14 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.4] - 2026-06-04
+
+Test-only release: unblocks CI on macOS runners and ships what 2.1.3 could not (its release run failed before publishing, so 2.1.3 was never released).
+
+### Fixed
+
+- **The daemon alive-probe tests failed on macOS CI with `OSError: AF_UNIX path too long`.** pytest's `tmp_path` on GitHub macOS runners exceeds the ~104-byte `sun_path` cap, so binding the test listener there failed before the probe ran. Socket paths now live in a short `/tmp` dir (the same `sock_dir` pattern the daemon-client tests already use); pidfiles stay under `tmp_path`. No runtime code changed.
+
 ## [2.1.3] - 2026-06-04
 
 A 10-tester exploratory QA pass (security, chaos, boundary, i18n, integration, performance, compatibility, lifecycle, regression) against real apps, with every finding independently reproduced before acceptance. Twenty-three confirmed defects, none on the happy path; all live in degraded, hostile, or cross-feature state. Each fix ships with a regression test.
