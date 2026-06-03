@@ -16,7 +16,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HOOKS = REPO_ROOT / "hooks"
-PAYLOAD = '{"tool_name":"Edit","tool_input":{"file_path":"/tmp/x.ts"},"session_id":"s"}'
+PAYLOAD = (
+    '{"tool_name":"Edit","tool_input":{"file_path":"/tmp/x.ts"},"session_id":"s","cwd":"/tmp"}'
+)
 
 ALL_WRAPPERS = [
     "preflight-and-advise",
@@ -57,5 +59,11 @@ def test_disable_short_circuits_every_wrapper(wrapper, tmp_path):
 
 def test_verify_off_short_circuits_posttool_verify(tmp_path):
     proc = _run("posttool-verify", {"CHAMELEON_VERIFY": "0"}, tmp_path)
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == "{}"
+
+
+def test_stop_backstop_wrapper_disable_short_circuits(tmp_path):
+    proc = _run("stop-backstop", {"CHAMELEON_DISABLE": "1"}, tmp_path)
     assert proc.returncode == 0
     assert proc.stdout.strip() == "{}"
