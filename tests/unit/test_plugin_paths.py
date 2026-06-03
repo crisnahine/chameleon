@@ -266,6 +266,13 @@ class TestSecureChmod:
         # On non-POSIX platforms the POSIX mode is meaningless; the helper skips
         # the chmod and reports that the mode was not enforced, rather than
         # silently pretending it applied.
+        #
+        # Swap plugin_paths' own `os` reference for a fake with name="nt" instead
+        # of flipping the real global os.name: a global os.name="nt" makes
+        # CPython 3.11 instantiate WindowsPath inside pytest's own path handling
+        # and crash the session on a POSIX host.
+        import types
+
         target = tmp_path / "f"
         target.write_text("x")
         called = {"n": 0}
@@ -273,8 +280,7 @@ class TestSecureChmod:
         def _spy(*_a, **_k):
             called["n"] += 1
 
-        monkeypatch.setattr(pp.os, "name", "nt")
-        monkeypatch.setattr(pp.os, "chmod", _spy)
+        monkeypatch.setattr(pp, "os", types.SimpleNamespace(name="nt", chmod=_spy))
         assert pp.secure_chmod(target, 0o600) is False
         assert called["n"] == 0
 
