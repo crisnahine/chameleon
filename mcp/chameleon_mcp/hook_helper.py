@@ -1030,7 +1030,10 @@ def preflight_and_advise() -> int:
                         archetype=archetype_name,
                         conventions=conv,
                     )
-                    if banned:
+                    from chameleon_mcp.violation_class import ignored_rules
+
+                    ign = ignored_rules(proposed) or set()
+                    if banned and not ("" in ign or "import-preference-violation" in ign):
                         mode = load_config(profile_dir).enforcement.mode
                         if mode == "enforce":
                             msg = banned[0].get("message", "banned import")
@@ -1533,6 +1536,15 @@ def posttool_verify() -> int:
                 # phantom imports are a filesystem fact handled at turn end
                 # (Stop backstop), never blocked inline here.
                 blockable_now = [v for v in hard if not is_archetype_independent(v.get("rule"))]
+                # An inline `chameleon-ignore <rule>` directive (or a bare one)
+                # downgrades the matching block to advisory. The lint layer
+                # already suppresses some rules on the directive, but the
+                # AST-query rules (e.g. jsx-presence-mismatch) reach here intact.
+                from chameleon_mcp.violation_class import ignored_rules
+
+                ign = ignored_rules(content) or set()
+                if ign:
+                    blockable_now = [v for v in blockable_now if not ({"", v.get("rule")} & ign)]
             except Exception:
                 hard = []
                 blockable_now = []

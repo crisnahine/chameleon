@@ -53,6 +53,13 @@ CLEAN_SHAPE_SRC = "export default function widget() {}\n"
 # heuristic) that is NOT in any active block set.
 SHAPE_VIOLATION_SRC = "export default class Widget {}\n"
 
+# JSX in a non-JSX archetype produces a jsx-presence-mismatch error. Unlike the
+# competing-import rule, the AST-query lint path emits this even with a
+# chameleon-ignore directive present, so it reaches the block site untouched and
+# exercises the block-site ignore check directly.
+JSX_SRC = "const x = <div />\nexport default function widget() { return null }\n"
+JSX_IGNORE_SRC = "// chameleon-ignore jsx-presence-mismatch\n" + JSX_SRC
+
 
 def _build_repo(
     tmp_path: Path,
@@ -308,6 +315,61 @@ def test_gate_fails_when_match_quality_not_ast(tmp_path: Path):
         session_id=sid,
         env={"CHAMELEON_ENFORCE": "1"},
         match_quality="heuristic",
+    )
+    assert out.get("decision") != "block"
+
+
+def test_jsx_mismatch_blocks_without_ignore(tmp_path: Path):
+    # Baseline: a jsx-presence-mismatch error, with the rule in the active block
+    # set, at L2 in enforce mode, blocks. The AST-query lint path emits this even
+    # though no chameleon-ignore directive is present.
+    repo, repo_id, loaded = _build_repo(tmp_path, mode="enforce", with_competing_import=False)
+    profile_dir = repo / ".chameleon"
+    write_block_rules(
+        profile_dir,
+        {"jsx-presence-mismatch": {"active": True, "fp_rate": 0.0, "sampled": 3}},
+    )
+    cand = repo / "src/Jsx.tsx"
+    cand.write_text(JSX_SRC, encoding="utf-8")
+    sid = "s-jsx"
+    _seed_level(tmp_path, repo_id, sid, str(cand), level=LEVEL_L2)
+
+    out = _run_verify(
+        repo=repo,
+        repo_id=repo_id,
+        loaded=loaded,
+        tmp_path=tmp_path,
+        file_path=str(cand),
+        session_id=sid,
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("decision") == "block"
+
+
+def test_inline_ignore_downgrades_block(tmp_path: Path):
+    # A `// chameleon-ignore jsx-presence-mismatch` directive in the file
+    # downgrades the same hard-class block to advisory, even at L2 in enforce
+    # mode. The AST-query lint path still emits the violation, so this exercises
+    # the block-site ignore check rather than upstream lint suppression.
+    repo, repo_id, loaded = _build_repo(tmp_path, mode="enforce", with_competing_import=False)
+    profile_dir = repo / ".chameleon"
+    write_block_rules(
+        profile_dir,
+        {"jsx-presence-mismatch": {"active": True, "fp_rate": 0.0, "sampled": 3}},
+    )
+    cand = repo / "src/Ignored.tsx"
+    cand.write_text(JSX_IGNORE_SRC, encoding="utf-8")
+    sid = "s-ignore"
+    _seed_level(tmp_path, repo_id, sid, str(cand), level=LEVEL_L2)
+
+    out = _run_verify(
+        repo=repo,
+        repo_id=repo_id,
+        loaded=loaded,
+        tmp_path=tmp_path,
+        file_path=str(cand),
+        session_id=sid,
+        env={"CHAMELEON_ENFORCE": "1"},
     )
     assert out.get("decision") != "block"
 

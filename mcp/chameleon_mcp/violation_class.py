@@ -8,6 +8,30 @@ the only archetype-independent rule (it is a filesystem fact).
 
 from __future__ import annotations
 
+import re
+
+# Matches a `// chameleon-ignore <rule>` (TypeScript) or `# chameleon-ignore
+# <rule>` (Ruby) directive. The optional `-file` suffix and the bare form (no
+# rule) both parse; a bare directive means "ignore every block-eligible rule".
+# The rule name must sit on the same line as the directive: the inter-token
+# whitespace excludes newlines so a bare directive on its own line does not
+# capture the first word of the following line as a rule.
+_IGNORE_RE = re.compile(r"(?:#|//)[^\S\n]*chameleon-ignore(?:-file)?(?:[^\S\n]+([\w-]+))?")
+
+
+def ignored_rules(content: str) -> set[str] | None:
+    """Return the set of explicitly-ignored rule names, or None if there are none.
+
+    A bare ``chameleon-ignore`` (no rule) contributes the empty string, which
+    callers read as "ignore everything": membership of ``""`` downgrades any
+    block-eligible rule on this file.
+    """
+    found: set[str] = set()
+    for m in _IGNORE_RE.finditer(content):
+        found.add(m.group(1) or "")
+    return found or None
+
+
 # Rules that MAY block, before per-repo self-calibration narrows the set.
 BLOCK_ELIGIBLE_RULES: frozenset[str] = frozenset(
     {"phantom-import", "import-preference-violation", "jsx-presence-mismatch"}
