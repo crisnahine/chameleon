@@ -7,10 +7,15 @@ set -euo pipefail
 if [ "${CHAMELEON_DISABLE:-}" = "1" ]; then printf '{}\n'; exit 0; fi
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}"
+# Git Bash receives a Windows path (C:\...) from run-hook.cmd; normalize the
+# backslashes so the filesystem checks below resolve.
+PLUGIN_ROOT="${PLUGIN_ROOT//\\//}"
 MCP_DIR="${PLUGIN_ROOT}/mcp"
 
-if [ -d "${MCP_DIR}/.venv" ]; then
+if [ -x "${MCP_DIR}/.venv/bin/python" ]; then
     PYTHON="${MCP_DIR}/.venv/bin/python"
+elif [ -x "${MCP_DIR}/.venv/Scripts/python.exe" ]; then
+    PYTHON="${MCP_DIR}/.venv/Scripts/python.exe"
 elif command -v python3.13 >/dev/null 2>&1; then
     PYTHON="$(command -v python3.13)"
 elif command -v python3.12 >/dev/null 2>&1; then
@@ -39,7 +44,13 @@ mkdir -p "${LOG_DIR}" 2>/dev/null || true
 # timeout(1) caps a stuck python; degrade to uncapped if neither timeout nor
 # gtimeout (Homebrew coreutils on macOS) is present, rather than failing the
 # whole hook on exit 127. In-process code self-limits (git 2s, busy_timeout).
-TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+# On Git Bash / MSYS the `timeout` on PATH is Windows' timeout.exe, which
+# takes no command and would break the wrapper; skip it there (in-process
+# code self-limits regardless).
+case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) TIMEOUT_BIN="" ;;
+    *) TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)" ;;
+esac
 PYTHONPATH="${MCP_DIR}" \
     ${TIMEOUT_BIN:+"${TIMEOUT_BIN}" 3} "${PYTHON}" -m chameleon_mcp.hook_helper stop-backstop \
     2>>"${LOG_FILE}" \
