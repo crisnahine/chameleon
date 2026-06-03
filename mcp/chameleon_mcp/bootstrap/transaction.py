@@ -72,6 +72,26 @@ def _fsync_dir(path: Path) -> None:
         os.close(dfd)
 
 
+def _fsync_file(path: Path) -> None:
+    """fsync a file's data to disk, portably.
+
+    Windows ``os.fsync`` maps to ``_commit`` and requires a writable fd, so the
+    file is reopened ``O_RDWR`` rather than read-only (a read-only fd raises
+    EBADF there). Failures are swallowed: durability is best-effort and must
+    never abort the commit.
+    """
+    try:
+        fd = os.open(str(path), os.O_RDWR)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _acquire_rename_lock(lock_dir: Path, *, timeout_seconds: float = 30.0) -> int:
     """Block-and-retry until an exclusive flock on ``lock_dir`` is held.
 
@@ -148,15 +168,14 @@ def atomic_profile_commit(target_dir: Path):
         # surface a COMMITTED profile whose data artifacts are truncated.
         for artifact in txn_dir.iterdir():
             if artifact.is_file():
-                try:
-                    with open(artifact, "rb") as af:
-                        os.fsync(af.fileno())
-                except OSError:
-                    pass
+                _fsync_file(artifact)
 
         sentinel = txn_dir / COMMITTED_SENTINEL
-        sentinel.write_text(f"committed-at={time.time()}\npid={os.getpid()}\n")
-        with open(sentinel, "rb") as f:
+        # Write and fsync through one writable handle: a read-only fd cannot be
+        # fsync'd on Windows.
+        with open(sentinel, "w", encoding="utf-8") as f:
+            f.write(f"committed-at={time.time()}\npid={os.getpid()}\n")
+            f.flush()
             os.fsync(f.fileno())
         _fsync_dir(txn_dir)
 
