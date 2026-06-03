@@ -269,6 +269,29 @@ def scan_profile_artifacts(cache_dir: Path) -> bool:
             content = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        if artifact == "idioms.md":
+            # idioms.md is user-authored prose captured via /chameleon-teach, where
+            # imperative guidance ("always use the apiClient wrapper") is legitimate.
+            # Run the SAME narrow injection check the teach gate uses, so the teach
+            # gate and the trust gate agree and a benign taught idiom can never later
+            # fail trust, plus the secret and dangerous-code scans. The broad
+            # instruction-pattern scan that flags ordinary "you must/should" prose is
+            # intentionally not applied to this artifact.
+            from chameleon_mcp.bootstrap.canonical_scanner import scan_for_secrets_in_canonical
+            from chameleon_mcp.tools import _looks_suspicious
+
+            if (
+                _looks_suspicious(content)[0]
+                or scan_for_secrets_in_canonical(content)
+                or scan_for_dangerous_patterns(content)
+            ):
+                print(
+                    f"chameleon: canonical-ref materialize aborted: "
+                    f"{artifact} contains prompt-injection, secret, or dangerous pattern",
+                    file=_sys.stderr,
+                )
+                return False
+            continue
         if not is_safe_canonical(content) or scan_for_dangerous_patterns(content):
             print(
                 f"chameleon: canonical-ref materialize aborted: "

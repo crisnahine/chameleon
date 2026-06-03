@@ -4596,7 +4596,10 @@ def _sanitize_user_input(text: str) -> str:
 _SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "ignore previous instructions",
-        re.compile(r"ignore\s+(all\s+)?previous\s+instructions", re.IGNORECASE),
+        re.compile(
+            r"ignore\s+(all\s+)?previous\s+(instructions|directives|rules|guidance|prompts?)",
+            re.IGNORECASE,
+        ),
     ),
     ("disregard above/prior", re.compile(r"disregard\s+(the\s+)?(above|prior)", re.IGNORECASE)),
     (
