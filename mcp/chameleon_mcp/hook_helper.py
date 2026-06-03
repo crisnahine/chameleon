@@ -410,12 +410,30 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
             return
 
         should_fire = False
+        # Migration trigger: an engine upgrade or a profile missing enforcement.json
+        # (an existing user's pre-upgrade profile, built before calibration existed)
+        # must auto-upgrade on the next session rather than waiting for drift or age
+        # to accumulate. The refresh re-derives the profile, regenerates the
+        # calibration, and re-stamps the engine version, so the trigger self-clears
+        # and the cooldown marker below prevents a re-fire while it runs.
         try:
-            stats = compute_drift_stats(repo_id)
-            if stats and stats.get("score", 0.0) >= cfg.auto_refresh.drift_threshold:
+            from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
+            from chameleon_mcp.tools import _engine_version_changed
+
+            if (
+                _engine_version_changed(profile_dir, ENGINE_MIN_VERSION)
+                or not (profile_dir / "enforcement.json").is_file()
+            ):
                 should_fire = True
         except Exception:  # noqa: BLE001
             pass
+        if not should_fire:
+            try:
+                stats = compute_drift_stats(repo_id)
+                if stats and stats.get("score", 0.0) >= cfg.auto_refresh.drift_threshold:
+                    should_fire = True
+            except Exception:  # noqa: BLE001
+                pass
         if not should_fire:
             profile_json = profile_dir / "profile.json"
             if profile_json.is_file():

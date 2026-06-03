@@ -365,6 +365,7 @@ def _run_auto_refresh(
     stats,
     repo_id,
     profile_age_hours: float | None = 0.0,
+    with_enforcement: bool = True,
 ):
     """Drive _maybe_auto_refresh with a real .chameleon/profile.json and a
     mocked subprocess.Popen; return the Popen mock for inspection."""
@@ -372,6 +373,12 @@ def _run_auto_refresh(
     (repo / ".chameleon").mkdir(parents=True, exist_ok=True)
     profile_json = repo / ".chameleon" / "profile.json"
     profile_json.write_text("{}", encoding="utf-8")
+    # A migration-complete profile (calibration present) so the engine/enforcement
+    # migration trigger stays inert and these tests isolate the drift/age gates.
+    if with_enforcement:
+        (repo / ".chameleon" / "enforcement.json").write_text(
+            '{"block_rules": {}}', encoding="utf-8"
+        )
     if profile_age_hours is not None:
         when = time.time() - profile_age_hours * 3600
         os.utime(profile_json, (when, when))
@@ -457,6 +464,23 @@ def test_auto_refresh_skips_when_no_drift_and_young_profile(tmp_path, monkeypatc
         profile_age_hours=1,  # well under 168
     )
     assert not popen.called
+
+
+def test_auto_refresh_migration_fires_on_missing_enforcement(tmp_path, monkeypatch):
+    """An existing user's pre-upgrade profile (no enforcement.json) auto-upgrades
+    on the next session even with no drift and a young profile."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    _reset_drift_conn_cache()
+    popen, _ = _run_auto_refresh(
+        tmp_path,
+        config=_make_config(drift_threshold=0.9, max_age_hours=168),
+        stats={"score": 0.1, "count": 99},
+        repo_id="rid_ar_migrate",
+        profile_age_hours=1,
+        with_enforcement=False,
+    )
+    assert popen.called
+    _reset_drift_conn_cache()
     _reset_drift_conn_cache()
 
 
