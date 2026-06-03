@@ -74,6 +74,85 @@ def test_phantom_demoted_when_witness_has_dangling_import(tmp_path):
     assert result["phantom-import"]["active"] is False
 
 
+def test_phantom_demoted_when_sibling_has_dangling_import(tmp_path):
+    # The witness is clean, but an ordinary sibling file (same dir, same ext) has
+    # a phantom import. Witnesses are the most-canonical files, so calibration that
+    # samples witnesses only would wrongly mark phantom-import active. Sampling
+    # siblings catches it.
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text(
+        "import { b } from './b'\nexport const a = 1\n", encoding="utf-8"
+    )
+    (repo / "src" / "b.ts").write_text("export const b = 2\n", encoding="utf-8")
+    # Ordinary sibling of the witness, not a witness itself, with a dangling import.
+    (repo / "src" / "sibling.ts").write_text(
+        "import { x } from './nope'\nexport const s = 1\n", encoding="utf-8"
+    )
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+            }
+        }
+        conventions = {"conventions": {}}
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    # Sibling trips the rule -> phantom-import must NOT be allowed to block.
+    assert result["phantom-import"]["active"] is False
+    assert result["phantom-import"]["flagged"] >= 1
+
+
+def test_witness_only_no_siblings_keeps_rule_active(tmp_path):
+    # The witness is the only file of its extension in the directory; with no
+    # sibling to sample, behavior is unchanged: a clean witness keeps the rule active.
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text(
+        "import { b } from './b'\nexport const a = 1\n", encoding="utf-8"
+    )
+    # ./b is a .tsx, so it's not a same-extension sibling of a.ts.
+    (repo / "src" / "b.tsx").write_text("export const b = 2\n", encoding="utf-8")
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+            }
+        }
+        conventions = {"conventions": {}}
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    assert result["phantom-import"]["sampled"] == 1
+    assert result["phantom-import"]["active"] is True
+
+
+def test_sibling_sample_is_bounded(tmp_path, monkeypatch):
+    # Many siblings exist, but the per-archetype cap bounds how many are sampled.
+    monkeypatch.setenv("CHAMELEON_CALIBRATION_MAX_SIBLINGS", "3")
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("export const a = 1\n", encoding="utf-8")
+    for i in range(20):
+        (repo / "src" / f"sib{i}.ts").write_text(f"export const s{i} = {i}\n", encoding="utf-8")
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+            }
+        }
+        conventions = {"conventions": {}}
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    # 1 witness + at most 3 siblings sampled.
+    assert result["phantom-import"]["sampled"] == 4
+
+
 def test_no_witnesses_keeps_all_rules_inactive(tmp_path):
     # Empty/unbootstrapped profile: zero evidence must NOT greenlight blockers.
     class _Loaded:

@@ -56,10 +56,11 @@ class TestDefaults:
         assert d["DRIFT_BANNER_MIN_OBSERVATIONS"] == 10
         assert d["DRIFT_BANNER_TTL_SECONDS"] == 7 * 24 * 3600  # 604800
         assert d["CALIBRATION_MAX_FILES"] == 600
+        assert d["CALIBRATION_MAX_SIBLINGS"] == 10
         assert d["CALIBRATION_FP_EPSILON"] == 0.001
 
-    def test_default_count_is_nineteen(self):
-        assert len(_thresholds.DEFAULTS) == 19
+    def test_default_count_is_twenty(self):
+        assert len(_thresholds.DEFAULTS) == 20
 
     def test_default_keys_are_exactly_the_documented_set(self):
         assert set(_thresholds.DEFAULTS) == {
@@ -81,6 +82,7 @@ class TestDefaults:
             "DRIFT_BANNER_MIN_OBSERVATIONS",
             "DRIFT_BANNER_TTL_SECONDS",
             "CALIBRATION_MAX_FILES",
+            "CALIBRATION_MAX_SIBLINGS",
             "CALIBRATION_FP_EPSILON",
         }
 

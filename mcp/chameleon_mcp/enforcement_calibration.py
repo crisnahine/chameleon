@@ -18,6 +18,8 @@ ARTIFACT = "enforcement.json"
 
 # Upper bound on sampled witnesses; protects huge repos from scanning every file.
 _MAX_FILES_SAMPLED = threshold_int("CALIBRATION_MAX_FILES")
+# Per-archetype cap on ordinary sibling files added beyond the witnesses. Read at
+# call time (not import) so tests and operators can override via the env var.
 # A rule is demoted if it flags more than this fraction of sampled committed
 # files. With the default cap (600) below 1/epsilon (1000), a single hit already
 # exceeds the tolerance, so in practice this is a "zero false positives" gate;
@@ -53,19 +55,66 @@ def active_block_rules(profile_dir: Path) -> set[str]:
     return out
 
 
-def _sample_files(loaded) -> list[tuple[str, str]]:
-    """Repo-relative path + archetype for each witness (deduped, bounded)."""
+def _sample_files(repo_root: Path, loaded) -> list[tuple[str, str]]:
+    """Repo-relative path + archetype for the calibration corpus (deduped, bounded).
+
+    Includes every archetype's witnesses PLUS a bounded sample of ordinary sibling
+    files: real, same-extension files in each witness's own directory, excluding
+    the witnesses themselves. Witnesses are the most-canonical files and are the
+    least likely to trip a rule; a rule that is clean on witnesses but flags plain
+    sibling files would otherwise pass calibration and wrongly block, so siblings
+    are sampled to close that hole in the zero-false-positive gate.
+    """
+    from chameleon_mcp.lint_engine import detect_language
+
+    max_siblings = threshold_int("CALIBRATION_MAX_SIBLINGS")
     seen: set[str] = set()
     out: list[tuple[str, str]] = []
+
     canon = (getattr(loaded, "canonicals", {}) or {}).get("canonicals", {}) or {}
+
+    # First pass: every witness, tagged with its archetype. Deduped so a file that
+    # is a witness of two archetypes counts once (and is never re-added as a sibling).
+    witness_dirs: list[tuple[str, str]] = []  # (witness rel path, archetype)
     for archetype, entries in canon.items():
         for entry in entries or []:
             rel = ((entry or {}).get("witness") or {}).get("path")
-            if rel and rel not in seen:
-                seen.add(rel)
-                out.append((rel, archetype))
+            if not rel or rel in seen:
+                continue
+            seen.add(rel)
+            out.append((rel, archetype))
+            witness_dirs.append((rel, archetype))
             if len(out) >= _MAX_FILES_SAMPLED:
                 return out
+
+    # Second pass: bounded siblings per archetype. A sibling is a real, readable,
+    # same-extension file in the witness's directory that is not itself a witness.
+    for witness_rel, archetype in witness_dirs:
+        if len(out) >= _MAX_FILES_SAMPLED:
+            break
+        wpath = Path(witness_rel)
+        ext = wpath.suffix
+        if not ext:
+            continue
+        wdir_full = repo_root / wpath.parent
+        try:
+            names = sorted(p.name for p in wdir_full.iterdir() if p.is_file())
+        except OSError:
+            continue
+        taken = 0
+        for name in names:
+            if taken >= max_siblings or len(out) >= _MAX_FILES_SAMPLED:
+                break
+            if not name.endswith(ext):
+                continue
+            sib_rel = str(wpath.parent / name)
+            if sib_rel in seen:
+                continue
+            if detect_language(sib_rel) is None:
+                continue
+            seen.add(sib_rel)
+            out.append((sib_rel, archetype))
+            taken += 1
     return out
 
 
@@ -165,7 +214,7 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
     unbootstrapped profile) every block-eligible rule stays inactive rather than
     greenlighting blockers no file vouched for.
     """
-    sample = _sample_files(loaded)
+    sample = _sample_files(repo_root, loaded)
     n = len(sample)
     baselines = _archetype_baselines(repo_root, loaded)
     flagged: dict[str, set[str]] = {r: set() for r in BLOCK_ELIGIBLE_RULES}
