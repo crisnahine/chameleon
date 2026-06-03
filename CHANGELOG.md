@@ -4,6 +4,36 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-06-03
+
+The enforcement release. chameleon stops being advisory-only and starts actually enforcing conventions: it can deny a banned import before it lands, block a clear violation after a write, and refuse to end a turn while a hard violation or an unreviewed team idiom/principle remains. Enforcement is off by default (shadow mode), gated so it only fires when chameleon is certain, and protected by per-repo self-calibration so it never blocks the repo's own code. This release also folds in a full architecture audit: ~70 verified findings fixed across monorepo support, security, concurrency, cross-platform, and migration.
+
+### Added
+
+- **Enforcement (deny / block / stop).** A hard-enforcement path on top of the existing advisory injection. PreToolUse denies a banned import before the write; PostToolUse blocks a clear violation that has escalated to L2; a new Stop backstop refuses to end the turn while an unresolved hard-class violation remains, and runs a once-per-session reflexive review of the turn's edits against team idioms/principles. Opt in per repo via `.chameleon/config.json` `enforcement.mode` ("off" | "shadow" | "enforce", default "shadow"); kill switch `CHAMELEON_ENFORCE=0`.
+- **Block-eligible rules + per-repo self-calibration.** Only objective or explicitly-taught rules can block: phantom-import, banned imports (`import-preference-violation`), jsx-presence (error severity), and the learned naming / inheritance conventions. At bootstrap and refresh each rule is measured against the repo's own committed files (witnesses + a bounded sibling sample) and is only allowed to block if it produces zero violations there, so a rule that would flag healthy code is auto-demoted to advisory. The verdict lives in `.chameleon/enforcement.json` and is part of the trust hash.
+- **Escape hatch.** `// chameleon-ignore <rule>` (and the bare form) downgrades a block to advisory at every enforcement point.
+- **Gating.** Archetype-dependent blocks (naming / inheritance / banned-import / jsx) require an AST-verified archetype match at high or medium confidence and L2 escalation. phantom-import is archetype-independent and timed to turn-end, so a mid-refactor import whose target is about to be created never blocks.
+
+### Fixed
+
+- **Monorepo / parent-folder: child repos were silently misidentified as the parent.** `find_repo_root` could walk up past a child repo's `.git` into a parent that happened to carry a `.chameleon`, so files in a sub-repo got the parent's profile, archetypes, and enforcement with no warning. A `.git` directory is now a hard repo boundary: the nearest repo root to the file wins and the walk never crosses it upward. This is the "doesn't work when all my repos live under one parent folder" report.
+- **repo_id stability.** The path-fallback id case-folds only on case-insensitive filesystems (the same repo reached via different-case paths maps to one id on macOS/Windows, while two distinct repos on Linux stay separate), and git-URL normalization lowercases host and path.
+- **Data loss: a partial refresh dropped taught banned imports and principles.** `_attempt_partial_refresh` did not carry `conventions.json` / `principles.md` into the atomic commit, so a successful partial refresh wiped `/chameleon-teach` banned-import rules. Both are preserved now, and a full refresh merges taught `competing` imports back into the re-derived conventions.
+- **Concurrency: enforcement state lost updates under parallel writers.** `save_state`'s fallback wrote without the lock when acquisition failed; it now serializes the full load-merge-write. The lock stale-PID TOCTOU and atomic-commit recovery being blocked by a held rename lock are fixed too.
+- **Cross-platform.** Witness paths are normalized to forward slashes at write time (a Windows backslash no longer breaks dedup / compare); POSIX-only calls (`os.geteuid`, `AF_UNIX`) are guarded so a Windows host degrades instead of crashing.
+- **Daemon: a stale old-version daemon could serve new hooks after a code upgrade**, even when the workspace root had no profile. The upgrade stops the daemon regardless now, and a code-only upgrade that did not bump the version tag is covered.
+- **Statusline / session-start used `cwd` instead of the file's repo root**, losing the profile and statusline when Claude was launched from a subdirectory.
+
+### Changed
+
+- **Existing users auto-upgrade on the engine bump.** Auto-refresh now fires when the profile was built by an older engine or is missing `enforcement.json`, so a pre-2.0.0 profile re-derives in the background on the next session: it regenerates calibration, re-stamps the engine version, and preserves taught idioms and imports. Manual `/chameleon-refresh` does the same, and the drift banner prompts it.
+
+### Security
+
+- **Prompt-injection in the enforcement deny / block reasons.** The PreToolUse deny reason and PostToolUse block reason interpolated unsanitized violation messages (derived from attacker-controllable `conventions.json`) into text fed back to the model. They run through `sanitize_for_chameleon_context` now, matching the advisory channel.
+- **Trust-grant scan scoped to prose.** The grant-time injection scan runs only on the prose artifacts (`idioms.md`, `principles.md`) with the narrow teach-gate check, instead of the broad scan on `canonicals.json`. That broad scan false-failed trust on healthy repos, because real witness code legitimately contains `eval()`, secret-looking literals, and "you must" comments. The narrow "ignore previous instructions" pattern also catches "directives" / "rules". All profile content stays sanitized at every render site.
+
 ## [1.6.0] - 2026-06-01
 
 First batch of fixes from the 2026-06-01 plugin audit (security + data loss + a crash cluster). More batches to follow.
