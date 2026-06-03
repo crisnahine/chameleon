@@ -120,6 +120,70 @@ def test_lint_file(trusted_repo):
     _assert_envelope(res)
 
 
+def _seed_competing_import_profile(cham):
+    """Give the service witness a non-empty ast_query (so lint_file's convention
+    scan runs) plus a competing-import rule, and return the conventions dict."""
+    (cham / "canonicals.json").write_text(
+        json.dumps(
+            {
+                "generation": 1,
+                "canonicals": {
+                    ARCH: [
+                        {
+                            "witness": {"path": WITNESS, "sha_hint": "deadbeef"},
+                            "normative_shape": {"ast_query": {"jsx_present": False}},
+                        }
+                    ]
+                },
+            }
+        )
+    )
+    conv = {
+        "generation": 1,
+        "conventions": {
+            "imports": {
+                ARCH: {"competing": [{"over": "lodash", "preferred": "lodash-es"}]},
+            }
+        },
+    }
+    (cham / "conventions.json").write_text(json.dumps(conv))
+    return conv
+
+
+def test_lint_file_agrees_with_prewrite_on_string_embedded_import(trusted_repo):
+    """The lint_file MCP tool (PostToolUse / daemon path) and the PreToolUse
+    pre-write scan must agree: a competing import that only appears inside a
+    string literal is not a real import, so neither path flags it."""
+    from chameleon_mcp.prewrite_lint import banned_imports_in_content
+
+    conv = _seed_competing_import_profile(trusted_repo / ".chameleon")
+    content = "const code = \"import _ from 'lodash';\";\n"
+
+    pre = banned_imports_in_content(
+        content,
+        language="typescript",
+        archetype=ARCH,
+        conventions=conv["conventions"],
+    )
+    assert pre == []
+
+    res = tools.lint_file(str(trusted_repo), ARCH, content, file_path="x.ts")
+    _assert_envelope(res)
+    viols = res["data"].get("violations") or []
+    assert not any(v.get("rule") == "import-preference-violation" for v in viols)
+
+
+def test_lint_file_flags_real_competing_import(trusted_repo):
+    """Guardrail for the convergence fix: a genuine competing import must still
+    surface via the lint_file MCP tool."""
+    _seed_competing_import_profile(trusted_repo / ".chameleon")
+
+    res = tools.lint_file(str(trusted_repo), ARCH, "import _ from 'lodash';\n", file_path="x.ts")
+    _assert_envelope(res)
+    viols = res["data"].get("violations") or []
+    assert any(v.get("rule") == "import-preference-violation" for v in viols)
+
+
 def test_rename_preserves_and_renames_conventions_and_principles(trusted_repo):
     """Regression: apply_archetype_renames used to silently DROP conventions.json
     and principles.md (atomic_profile_commit replaces the whole dir and doesn't

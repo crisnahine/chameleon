@@ -649,10 +649,9 @@ def run_daemon() -> int:
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.bind(str(sock_path))
-    try:
-        os.chmod(sock_path, 0o600)
-    except OSError:
-        pass
+    from chameleon_mcp.plugin_paths import secure_chmod
+
+    secure_chmod(sock_path, 0o600)
     sock.listen(_LISTEN_BACKLOG)
 
     state = _DaemonState(idle_timeout_s=_idle_timeout_from_env())

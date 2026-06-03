@@ -678,6 +678,49 @@ class TestConventionLint:
         violations = lint_conventions(content, conventions, language="typescript")
         assert len(violations) == 0
 
+    def test_import_preference_ignores_string_embedded_import(self):
+        # A competing import that lives entirely inside a string literal is not a
+        # real import; the PreToolUse path already blanks these, so the shared
+        # convention scan must agree (PreToolUse and PostToolUse must converge).
+        content = "const code = \"import { useQuery } from '@tanstack/react-query';\";\n"
+        conventions = {
+            "imports": {
+                "competing": [
+                    {
+                        "preferred": "useCustomQuery",
+                        "over": "useQuery",
+                        "preferred_count": 47,
+                        "over_count": 0,
+                    }
+                ],
+            },
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        assert violations == []
+
+    def test_import_preference_real_import_still_flagged_alongside_string(self):
+        # A real banned import must still be flagged even when an unrelated
+        # string literal also contains an import-looking snippet.
+        content = (
+            "const code = \"import { x } from 'lodash';\";\n"
+            'import { useQuery } from "@tanstack/react-query";\n'
+        )
+        conventions = {
+            "imports": {
+                "competing": [
+                    {
+                        "preferred": "useCustomQuery",
+                        "over": "useQuery",
+                        "preferred_count": 47,
+                        "over_count": 0,
+                    }
+                ],
+            },
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        assert len(violations) == 1
+        assert violations[0].rule == "import-preference-violation"
+
     def test_ruby_no_ts_naming_violations(self):
         content = "class User < ApplicationRecord\nend\n"
         conventions = {

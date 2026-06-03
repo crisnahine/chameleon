@@ -886,6 +886,35 @@ _TS_IMPORT_FROM_RE = re.compile(r"import\s+.*?\bfrom\s+['\"]([^'\"]+)['\"]", re.
 _TS_INTERFACE_DECL_RE = re.compile(r"\binterface\s+([A-Z]\w*)")
 
 
+def _blank_string_embedded_imports(content: str) -> str:
+    """Blank `import ... from ...` runs that live entirely inside a string
+    literal, so a code snippet stored as a string value is not mistaken for a
+    real import.
+
+    The import-preference scan runs on RAW content because it needs the literal
+    `from "<module>"` specifier (the strings/comments strip blanks it). A real
+    import keeps its `import`/`from` keywords in unmasked code; a string-embedded
+    fake has the `import` keyword itself sitting inside a quoted run. We compare
+    against the strings/comments-stripped copy: an import whose keyword position
+    is blanked there lived inside a literal, so we blank that run in the working
+    copy while leaving real imports (and their module specifiers) intact.
+
+    Shared by the PreToolUse pre-write scan and the convention scan so both
+    enforcement surfaces agree on string-embedded imports.
+    """
+    stripped = _strip_ts_strings_and_comments(content)
+    chars = list(content)
+    for m in _TS_IMPORT_FROM_RE.finditer(content):
+        start = m.start()
+        # The keyword position is blanked in `stripped` only when it lived inside
+        # a string/comment. A genuine top-level import keeps its keyword visible.
+        if start < len(stripped) and stripped[start] == " " and content[start] != " ":
+            for i in range(m.start(), m.end()):
+                if i < len(chars) and chars[i] != "\n":
+                    chars[i] = " "
+    return "".join(chars)
+
+
 def lint_conventions(
     content: str,
     conventions: dict | None,
@@ -914,6 +943,15 @@ def lint_conventions(
     else:
         scan_content = content
 
+    # The import-preference scan needs raw content (it reads the `from "<module>"`
+    # specifier, which the strip blanks), but a competing import sitting inside a
+    # string literal is a code snippet, not a real import. Blank only those runs
+    # so PreToolUse and PostToolUse / lint_file / calibration converge.
+    if language == "typescript":
+        import_scan_content = _blank_string_embedded_imports(content)
+    else:
+        import_scan_content = content
+
     violations: list[Violation] = []
 
     # Accept both the short directive token and the full emitted rule name. The
@@ -936,7 +974,7 @@ def lint_conventions(
             preferred_re = re.compile(r"\b" + re.escape(preferred_mod) + r"\b")
             if preferred_re.search(content):
                 continue
-            for m in _TS_IMPORT_FROM_RE.finditer(content):
+            for m in _TS_IMPORT_FROM_RE.finditer(import_scan_content):
                 if over_re.search(m.group(0)):
                     violations.append(
                         Violation(

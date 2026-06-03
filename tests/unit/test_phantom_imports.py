@@ -615,3 +615,38 @@ def test_declared_alias_unresolved_target_not_flagged(tmp_path):
         rules=rules,
     )
     assert not any(v.rule == "phantom-import" for v in out)
+
+
+def test_tsconfig_read_once_per_call_for_many_aliases(tmp_path, monkeypatch):
+    """A file with many non-relative specifiers must read the repo tsconfig at
+    most once per lint_phantom_imports call, not once per specifier. The alias
+    resolver previously re-read tsconfig from disk for every specifier, making
+    calibration O(N*M) in tsconfig reads."""
+    import chameleon_mcp.phantom_imports as pi
+
+    (tmp_path / "tsconfig.json").write_text(
+        '{"compilerOptions":{"baseUrl":".","paths":{"@app/*":["src/*"]}}}', encoding="utf-8"
+    )
+    (tmp_path / "src").mkdir(parents=True)
+
+    calls = {"n": 0}
+    orig = pi._load_tsconfig_paths
+
+    def counting(repo_root_str):
+        calls["n"] += 1
+        return orig(repo_root_str)
+
+    monkeypatch.setattr(pi, "_load_tsconfig_paths", counting)
+
+    # 20 distinct bare/aliased specifiers, all non-relative so each one reaches
+    # the alias-resolution branch.
+    lines = "".join(f"import x{i} from 'pkg-{i}'\n" for i in range(20))
+    rules = {"rules": {"typescript": {"paths": {"@app/*": ["src/*"]}, "source": "tsconfig.json"}}}
+    pi.lint_phantom_imports(
+        lines,
+        file_path=str(tmp_path / "src" / "a.ts"),
+        repo_root=str(tmp_path),
+        language="typescript",
+        rules=rules,
+    )
+    assert calls["n"] <= 1, f"tsconfig read {calls['n']} times for one call; expected <= 1"

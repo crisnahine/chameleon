@@ -24,6 +24,8 @@ import secrets
 import time
 from pathlib import Path
 
+from chameleon_mcp.plugin_paths import secure_chmod
+
 _DEFAULT_HMAC_KEY_PATH = Path.home() / ".claude" / "hooks" / ".exec_hmac.key"
 
 
@@ -63,14 +65,11 @@ def _ensure_hmac_key() -> bytes:
             if getattr(st, "st_uid", euid) != euid:
                 raise HMACKeyError(f"HMAC key {key_path} owned by uid {st.st_uid}, expected {euid}")
         if st.st_mode & 0o077:
-            os.chmod(key_path, 0o600)
+            secure_chmod(key_path, 0o600)
         return key_path.read_bytes()
 
     key_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(key_path.parent, 0o700)
-    except OSError:
-        pass
+    secure_chmod(key_path.parent, 0o700)
     try:
         key = secrets.token_bytes(32)
     except Exception as e:

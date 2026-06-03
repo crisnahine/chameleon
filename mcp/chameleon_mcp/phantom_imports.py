@@ -218,16 +218,25 @@ def _load_tsconfig_paths(repo_root_str: str) -> tuple[str, tuple[tuple[str, tupl
     return ".", ()
 
 
-def _resolves_via_alias(spec: str, repo_root: Path) -> bool:
+def _resolves_via_alias(
+    spec: str,
+    repo_root: Path,
+    tsconfig_paths: tuple[tuple[str, tuple[str, ...]], ...] | None = None,
+) -> bool:
     """True if `spec` matches a tsconfig/jsconfig `paths` alias at the repo root,
     whether or not the mapped target resolves to a real file.
 
     A specifier that matches a declared alias pattern but resolves to nothing is
     ambiguous (generated output dir, build artifact, etc.), so it is treated as
     resolved rather than flagged as phantom. Only the pattern match matters; the
-    mapped target need not exist on disk."""
-    _, paths = _load_tsconfig_paths(str(repo_root))
-    for pattern, _ in paths:
+    mapped target need not exist on disk.
+
+    `tsconfig_paths` lets a caller that scans many specifiers in one pass load
+    the tsconfig once and reuse it, avoiding a per-specifier disk read. When
+    omitted the config is read here so the function stays usable standalone."""
+    if tsconfig_paths is None:
+        _, tsconfig_paths = _load_tsconfig_paths(str(repo_root))
+    for pattern, _ in tsconfig_paths:
         if pattern.endswith("/*"):
             # Wildcard: the trailing slash anchors the prefix so `@app/*` matches
             # `@app/x` but not `@apple/x`.
@@ -357,6 +366,23 @@ def lint_phantom_imports(
         ts_config_dir = _nearest_tsconfig_dir(file_dir, root) or (
             (root / source).parent if root else file_dir
         )
+        # Read the on-disk tsconfig/jsconfig alias map once per call. The alias
+        # branch below consults it for every non-relative specifier; re-reading
+        # per specifier made calibration O(N*M) in tsconfig reads.
+        tsconfig_alias_paths: tuple[tuple[str, tuple[str, ...]], ...] = ()
+        if root is not None:
+            _, tsconfig_alias_paths = _load_tsconfig_paths(str(root))
+
+        # Memoize suffix probes within this call so a path probed for one
+        # specifier (relative base or alias target) is not re-stat'd for another.
+        _exists_memo: dict[str, bool] = {}
+
+        def _exists_cached(p: Path) -> bool:
+            key = str(p)
+            if key not in _exists_memo:
+                _exists_memo[key] = _exists_with_suffix(p)
+            return _exists_memo[key]
+
         stripped, str_mask = _strip_ts_noise(content)
         seen: set[str] = set()
         for m in _TS_IMPORT_SPEC_RE.finditer(stripped):
@@ -383,7 +409,7 @@ def lint_phantom_imports(
                 base = file_dir / spec
                 if not _under_repo(base, root):
                     continue  # escapes the repo -> don't stat outside, don't flag
-                if not _exists_with_suffix(base):
+                if not _exists_cached(base):
                     violations.append(_violation(spec, base.parent, root))
                 continue
             # tsconfig path alias?
@@ -393,14 +419,14 @@ def lint_phantom_imports(
             # whose pattern is declared there must never be flagged, even when
             # the caller's profile rules carry no `paths` (e.g. calibration on a
             # fresh checkout).
-            if _resolves_via_alias(spec, root):
+            if _resolves_via_alias(spec, root, tsconfig_alias_paths):
                 continue
             targets = [
                 t for t in _alias_targets(spec, paths, ts_config_dir) if _under_repo(t, root)
             ]
             if not targets:
                 continue  # bare package, unmapped alias, or out-of-repo -> skip
-            if any(_exists_with_suffix(t) for t in targets):
+            if any(_exists_cached(t) for t in targets):
                 continue
             # baseUrl uncertainty guard: only flag when a resolved parent dir
             # actually exists (typo within a real dir); else skip.

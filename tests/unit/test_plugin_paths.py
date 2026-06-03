@@ -251,3 +251,40 @@ class TestEnsurePluginDataDir:
         ret = ensure_plugin_data_dir()
         assert ret == target
         assert target.is_dir()
+
+
+class TestSecureChmod:
+    def test_applies_mode_on_posix(self, tmp_path: Path, monkeypatch):
+        target = tmp_path / "f"
+        target.write_text("x")
+        os.chmod(target, 0o644)
+        monkeypatch.setattr(pp.os, "name", "posix")
+        assert pp.secure_chmod(target, 0o600) is True
+        assert stat.S_IMODE(os.stat(target).st_mode) == 0o600
+
+    def test_noop_on_windows(self, tmp_path: Path, monkeypatch):
+        # On non-POSIX platforms the POSIX mode is meaningless; the helper skips
+        # the chmod and reports that the mode was not enforced, rather than
+        # silently pretending it applied.
+        target = tmp_path / "f"
+        target.write_text("x")
+        called = {"n": 0}
+
+        def _spy(*_a, **_k):
+            called["n"] += 1
+
+        monkeypatch.setattr(pp.os, "name", "nt")
+        monkeypatch.setattr(pp.os, "chmod", _spy)
+        assert pp.secure_chmod(target, 0o600) is False
+        assert called["n"] == 0
+
+    def test_oserror_swallowed_returns_false(self, tmp_path: Path, monkeypatch):
+        target = tmp_path / "f"
+        target.write_text("x")
+        monkeypatch.setattr(pp.os, "name", "posix")
+
+        def _boom(*_a, **_k):
+            raise OSError("read-only fs")
+
+        monkeypatch.setattr(pp.os, "chmod", _boom)
+        assert pp.secure_chmod(target, 0o600) is False

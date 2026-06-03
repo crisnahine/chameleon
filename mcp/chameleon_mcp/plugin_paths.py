@@ -21,6 +21,25 @@ import os
 from pathlib import Path
 
 
+def secure_chmod(path: Path, mode: int) -> bool:
+    """Apply a POSIX permission mode, no-op on platforms without POSIX semantics.
+
+    Returns True when the mode was applied, False when it was skipped (non-POSIX
+    platform) or failed (OSError). The boolean makes the platform difference
+    explicit to callers instead of silently masking it: on Windows the POSIX
+    `mode` is largely meaningless and `os.chmod` cannot enforce 0700/0600-style
+    restrictions, so security-sensitive dirs there rely on filesystem ACLs, not
+    this call. Never raises, so the create/secure paths stay fail-open.
+    """
+    if os.name != "posix":
+        return False
+    try:
+        os.chmod(path, mode)
+        return True
+    except OSError:
+        return False
+
+
 def plugin_root() -> Path:
     """Return the absolute path to the chameleon plugin's install directory.
 
@@ -61,8 +80,5 @@ def ensure_plugin_data_dir() -> Path:
     """
     d = plugin_data_dir()
     d.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(d, 0o700)
-    except OSError:
-        pass
+    secure_chmod(d, 0o700)
     return d
