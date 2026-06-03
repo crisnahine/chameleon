@@ -4,6 +4,19 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] - 2026-06-03
+
+Windows runtime fixes found by driving the hook stack and a full bootstrap on a real windows-latest runner. 2.1.0 made the package import on Windows; these make it actually run there.
+
+### Fixed
+
+- **Hooks never ran python on Windows.** Each hook resolved python as `${MCP_DIR}/.venv/bin/python` guarded only by `[ -d .venv ]`; on Windows the venv interpreter is `.venv/Scripts/python.exe`, so every hook fell into its fail-open branch and chameleon did nothing. A fail-open hook still emits valid JSON, so the import and unit tests could not catch it. The hooks detect `.venv/Scripts/python.exe` now, skip Windows' `timeout.exe` (wrong semantics) on MSYS/MinGW, and normalize the backslash plugin root from run-hook.cmd.
+- **Atomic profile writes crashed on Windows.** `atomic_profile_commit` fsync'd the COMMITTED sentinel through a read-only fd; Windows `os.fsync` requires a writable fd and raised EBADF, so every bootstrap and refresh failed. The sentinel and artifact fsyncs use writable fds now.
+
+### Added
+
+- **runtime-windows CI job.** Drives every hook through run-hook.cmd on real Windows (asserting the error log records no python-spawn failure) plus a bootstrap/trust/refresh lifecycle, so the native Windows runtime is exercised, not just imports.
+
 ## [2.1.0] - 2026-06-03
 
 Native Windows. chameleon's Python no longer hard-depends on POSIX `fcntl`: it imports and locks on native Windows, run through Git for Windows (which provides the `bash` the hooks use), so WSL is no longer required. The locking layer is now cross-platform and the change is byte-identical on POSIX.
