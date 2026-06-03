@@ -4481,7 +4481,7 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     absolute" even though every other tool documented repo_id as the
     canonical handle.
     """
-    from chameleon_mcp.profile.trust import grant_trust
+    from chameleon_mcp.profile.trust import ProfileInjectionError, grant_trust
 
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
     if resolved_path is None:
@@ -4539,7 +4539,18 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
             }
         )
 
-    record = grant_trust(repo_id, profile_dir)
+    try:
+        record = grant_trust(repo_id, profile_dir)
+    except ProfileInjectionError as exc:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    "profile failed the injection/secret scan and was NOT trusted; "
+                    f"review .chameleon/ for poisoned content: {exc}"
+                ),
+            }
+        )
     # Reflect the new trust state in the status line immediately (it reads a
     # SessionStart-written cache that /chameleon-trust did not update, so it kept
     # showing `(stale)` until the next session).
@@ -5251,6 +5262,13 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
                 )
     except Exception as e:
         return _envelope({"status": "failed", "error": f"atomic commit failed: {e}"})
+
+    # The rename rewrites canonicals.json (the witness set), so the block-rule
+    # verdict in enforcement.json must be re-measured against the renamed profile;
+    # otherwise it stays pinned to the pre-rename witnesses. Calibrate before the
+    # hash snapshot so enforcement.json (part of the trust-hashed surface) is
+    # reflected in new_profile_sha256 and the index.db mirror.
+    _calibrate_block_rules_for_repo(repo_root)
 
     repo_id = _compute_repo_id(repo_root)
     new_hash = hash_profile(profile_dir)

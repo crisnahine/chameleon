@@ -23,6 +23,16 @@ from chameleon_mcp.safe_open import (
 )
 
 
+class ProfileInjectionError(Exception):
+    """A profile_dir failed the canonical-artifacts injection/secret scan.
+
+    Raised by :func:`grant_trust` when a committed profile's prose artifacts
+    (conventions.json, idioms.md, principles.md, canonicals.json) carry a
+    prompt-injection signal, a hardcoded secret, or a dangerous code pattern.
+    Callers treat it as "refuse to trust this profile" rather than a crash.
+    """
+
+
 def plugin_data_dir() -> Path:
     """Resolve where chameleon stores per-user state (trust DB, drift.db).
 
@@ -264,6 +274,36 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
         repo_root_str = str(repo_root.resolve())
     except OSError:
         repo_root_str = str(repo_root)
+
+    # Defense-in-depth: a committed profile is attacker-controlled until trusted.
+    # Run the same injection/secret/dangerous-pattern scan bootstrap and
+    # canonical-ref materialization use, so a poisoned conventions.json /
+    # idioms.md / principles.md / canonicals.json is caught at grant time rather
+    # than reaching model context (on top of the per-injection-site sanitization
+    # downstream).
+    #
+    # Fail OPEN on a scanner *import* failure: the user is trusting their own
+    # repo, and an unrelated import bug must not wedge /chameleon-trust. A clean
+    # import that REPORTS injection still blocks. (canonical_loader's own scan
+    # fails CLOSED instead, because it serves pinned content the user never saw.)
+    scanner_importable = True
+    try:
+        import chameleon_mcp.bootstrap.canonical_scanner  # noqa: F401
+        import chameleon_mcp.profile.poisoning_scanner  # noqa: F401
+    except Exception:  # noqa: BLE001
+        scanner_importable = False
+    if scanner_importable:
+        from chameleon_mcp.profile.canonical_loader import scan_profile_artifacts
+
+        try:
+            scan_clean = scan_profile_artifacts(profile_dir)
+        except Exception:  # noqa: BLE001
+            scan_clean = True
+        if not scan_clean:
+            raise ProfileInjectionError(
+                f"profile at {profile_dir} failed the injection/secret scan; refusing trust"
+            )
+
     new_hash = hash_profile(profile_dir)
 
     trust_path = repo_data_dir(repo_id) / ".trust"

@@ -511,3 +511,71 @@ def test_partial_refresh_recalibrates_block_rules(tmp_path, monkeypatch):
     assert envelope is not None
     assert envelope["data"]["status"] == "partial_refresh"
     assert calibrated == [repo_root]
+
+
+# --------------------------------------------------------------------------
+# load_block_rules: process-level mtime-invalidated cache
+# --------------------------------------------------------------------------
+
+
+def test_load_block_rules_caches_across_calls(tmp_path, monkeypatch):
+    import chameleon_mcp.enforcement_calibration as ec
+
+    ec._clear_block_rules_cache()
+    write_block_rules(tmp_path, {"phantom-import": {"active": True}})
+
+    reads = {"n": 0}
+    real_read = Path.read_text
+
+    def _counting_read(self, *a, **k):
+        if self.name == "enforcement.json":
+            reads["n"] += 1
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", _counting_read)
+    for _ in range(5):
+        assert load_block_rules(tmp_path) == {"phantom-import": {"active": True}}
+    # Only the first call hits disk; the rest are served from cache.
+    assert reads["n"] == 1
+
+
+def test_load_block_rules_cache_invalidates_on_change(tmp_path):
+    import chameleon_mcp.enforcement_calibration as ec
+
+    ec._clear_block_rules_cache()
+    write_block_rules(tmp_path, {"phantom-import": {"active": True}})
+    assert load_block_rules(tmp_path)["phantom-import"]["active"] is True
+    # Rewrite with different content; write_block_rules bumps mtime via rename.
+    write_block_rules(tmp_path, {"phantom-import": {"active": False}})
+    assert load_block_rules(tmp_path)["phantom-import"]["active"] is False
+
+
+def test_load_block_rules_rejects_oversized_file(tmp_path):
+    import chameleon_mcp.enforcement_calibration as ec
+
+    ec._clear_block_rules_cache()
+    # A committed profile is attacker-controlled; an absurdly large enforcement.json
+    # must not be slurped into memory. Fail-open: treat as no rules.
+    oversized = '{"block_rules": {"phantom-import": {"active": true, "pad": "'
+    oversized += "x" * (ec._MAX_ENFORCEMENT_BYTES + 1)
+    oversized += '"}}}'
+    (tmp_path / "enforcement.json").write_text(oversized, encoding="utf-8")
+    assert load_block_rules(tmp_path) == {}
+    assert active_block_rules(tmp_path) == set()
+
+
+def test_active_block_rules_filters_to_block_eligible(tmp_path):
+    import chameleon_mcp.enforcement_calibration as ec
+
+    ec._clear_block_rules_cache()
+    # A poisoned enforcement.json marks a rule that is not block-eligible "active".
+    # active_block_rules must drop it so it can never reach the block gate.
+    write_block_rules(
+        tmp_path,
+        {
+            "phantom-import": {"active": True},
+            "secret-detected-in-content": {"active": True},
+            "made-up-rule": {"active": True},
+        },
+    )
+    assert active_block_rules(tmp_path) == {"phantom-import"}

@@ -209,7 +209,17 @@ _PROSE_SCAN_ARTIFACTS = ("canonicals.json", "conventions.json", "idioms.md", "pr
 
 
 def _canonical_artifacts_pass_scans(cache_dir: Path) -> bool:
-    """Validate every materialized artifact against attacker-injection patterns.
+    """Back-compat alias for :func:`scan_profile_artifacts`.
+
+    The materialize path called this name before the scan was generalized to
+    cover the plain trust-grant path too; kept so existing call sites and tests
+    don't churn.
+    """
+    return scan_profile_artifacts(cache_dir)
+
+
+def scan_profile_artifacts(cache_dir: Path) -> bool:
+    """Validate every profile artifact in ``cache_dir`` against attacker-injection patterns.
 
     Returns True when all artifacts pass. Logs the first failure to
     stderr so the bash hook wrapper's ``2>>`` redirect captures it

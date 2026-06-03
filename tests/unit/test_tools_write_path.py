@@ -26,6 +26,7 @@ test_mcp_tools.py pattern.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -405,6 +406,38 @@ def test_apply_archetype_renames_round_trip_preserves_protocol_files(tmp_path):
     # rename overlay persisted
     overlay = json.loads((cham / "renames.json").read_text())
     assert overlay["renames"] == {"svc-old": "payment-service"}
+
+
+def test_apply_archetype_renames_recalibrates_block_rules(tmp_path, monkeypatch):
+    """A rename rewrites the witness set, so enforcement.json must be re-measured
+    against the new profile, mirroring the partial-refresh path."""
+    repo, _ = _make_profile_repo(tmp_path)
+    calibrated: list[Path] = []
+    monkeypatch.setattr(
+        tools, "_calibrate_block_rules_for_repo", lambda root: calibrated.append(root)
+    )
+    res = tools.apply_archetype_renames(str(repo), {"svc-old": "payment-service"})["data"]
+    assert res["status"] == "success"
+    assert calibrated == [repo]
+
+
+def test_apply_archetype_renames_hash_reflects_recalibrated_enforcement(tmp_path, monkeypatch):
+    """The returned new_profile_sha256 must include the recalibrated enforcement.json,
+    so the trust-hashed surface and the reported hash agree."""
+    repo, cham = _make_profile_repo(tmp_path)
+
+    def _fake_calibrate(root: Path) -> None:
+        (root / ".chameleon" / "enforcement.json").write_text(
+            json.dumps({"block_rules": {"phantom-import": {"active": True}}}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(tools, "_calibrate_block_rules_for_repo", _fake_calibrate)
+    res = tools.apply_archetype_renames(str(repo), {"svc-old": "payment-service"})["data"]
+    assert res["status"] == "success"
+    from chameleon_mcp.profile.trust import hash_profile
+
+    assert res["new_profile_sha256"] == hash_profile(cham)
 
 
 def test_apply_archetype_renames_unknown_source(tmp_path):

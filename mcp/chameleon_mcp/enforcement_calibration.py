@@ -9,12 +9,33 @@ Fail-open: a missing/corrupt artifact means no rule is active (advisory only).
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_float, threshold_int
 from chameleon_mcp.violation_class import BLOCK_ELIGIBLE_RULES
 
 ARTIFACT = "enforcement.json"
+
+# Upper bound on the on-disk artifact we will read. enforcement.json is a tiny
+# per-rule verdict (a handful of small entries) in normal operation. A committed
+# profile is attacker-controlled, so a planted multi-megabyte file must not be
+# slurped into memory; over the cap we fail open (no rule active = advisory only).
+_MAX_ENFORCEMENT_BYTES = 256 * 1024
+
+# Process-level cache of the parsed block_rules, keyed by resolved profile_dir and
+# invalidated by the artifact's mtime+size token. The Stop backstop re-lints every
+# candidate file against the same set, so without this each candidate re-read and
+# re-parsed enforcement.json from disk. Mirrors the load_profile_dir cache pattern.
+_CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def _clear_block_rules_cache() -> None:
+    """Drop the in-process block_rules cache (tests; mutation paths after a write)."""
+    with _CACHE_LOCK:
+        _CACHE.clear()
+
 
 # Upper bound on sampled witnesses; protects huge repos from scanning every file.
 _MAX_FILES_SAMPLED = threshold_int("CALIBRATION_MAX_FILES")
@@ -33,23 +54,62 @@ def write_block_rules(profile_dir: Path, data: dict) -> None:
     tmp = profile_dir / (ARTIFACT + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.rename(profile_dir / ARTIFACT)
+    # Drop any cached parse so the next read reflects the new verdict immediately
+    # even if the rename landed within the same mtime granularity as the prior write.
+    _clear_block_rules_cache()
+
+
+def _cache_token(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
 
 
 def load_block_rules(profile_dir: Path) -> dict:
     path = profile_dir / ARTIFACT
+    token = _cache_token(path)
+    if token is None:
+        return {}
+    try:
+        key = str(profile_dir.resolve())
+    except OSError:
+        key = str(profile_dir)
+
+    with _CACHE_LOCK:
+        cached = _CACHE.get(key)
+        if cached is not None and cached[0] == token:
+            return cached[1]
+
+    # Bound the read: a tampered, oversized artifact must not be loaded into memory.
+    if token[1] > _MAX_ENFORCEMENT_BYTES:
+        with _CACHE_LOCK:
+            _CACHE[key] = (token, {})
+        return {}
+
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
         return {}
     if not isinstance(raw, dict):
-        return {}
-    rules = raw.get("block_rules")
-    return rules if isinstance(rules, dict) else {}
+        rules: dict = {}
+    else:
+        candidate = raw.get("block_rules")
+        rules = candidate if isinstance(candidate, dict) else {}
+
+    with _CACHE_LOCK:
+        _CACHE[key] = (token, rules)
+    return rules
 
 
 def active_block_rules(profile_dir: Path) -> set[str]:
     out = set()
     for rule, meta in load_block_rules(profile_dir).items():
+        # Only block-eligible rules can ever block; a committed profile that marks
+        # some other rule "active" (tampering or schema drift) must not promote it.
+        if rule not in BLOCK_ELIGIBLE_RULES:
+            continue
         if isinstance(meta, dict) and meta.get("active") is True:
             out.add(rule)
     return out
