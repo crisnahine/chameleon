@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ import pytest
 from chameleon_mcp.profile.loader import (
     LoadedProfile,
     ProfileLoadError,
+    _is_unsafe_repo_root,
     clear_profile_cache,
     clear_repo_root_cache,
     find_repo_root,
@@ -94,6 +96,58 @@ class TestFindRepoRoot:
         r2 = find_repo_root(repo / "f.ts")
         assert r1 == r2
         assert r1 is not r2
+
+
+class TestUnsafeRepoRootGuard:
+    """The temp-dir / world-writable repo-root refusal is a security boundary.
+
+    A repo root resolved inside /tmp, $TMPDIR, or a world-writable directory is
+    refused so a foreign profile planted in a shared-writable location cannot be
+    loaded. CHAMELEON_ALLOW_TMP_REPO=1 is the deliberate per-invocation opt-in
+    (audit recommendation b): tests set it explicitly, and CI exports it. The
+    guard is NOT auto-disabled by sniffing PYTEST_CURRENT_TEST, because that
+    would silently drop the boundary for any pip-installed test running from a
+    temp checkout. These tests pin both halves of that contract.
+    """
+
+    def setup_method(self):
+        clear_repo_root_cache()
+
+    def _make_tmp_repo(self) -> Path:
+        """A .chameleon repo physically under the system temp dir."""
+        repo = Path(tempfile.mkdtemp()) / "repo"
+        (repo / ".chameleon").mkdir(parents=True)
+        (repo / "app.ts").write_text("export const x = 1;", encoding="utf-8")
+        return repo
+
+    def test_temp_dir_repo_root_refused_without_opt_in(self, monkeypatch):
+        monkeypatch.delenv("CHAMELEON_ALLOW_TMP_REPO", raising=False)
+        repo = self._make_tmp_repo()
+        assert _is_unsafe_repo_root(repo) is not None
+        assert find_repo_root(repo / "app.ts") is None
+
+    def test_temp_dir_repo_root_allowed_with_opt_in(self, monkeypatch):
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        repo = self._make_tmp_repo()
+        assert _is_unsafe_repo_root(repo) is None
+        clear_repo_root_cache()
+        result = find_repo_root(repo / "app.ts")
+        assert result is not None
+        assert result.resolve() == repo.resolve()
+
+    def test_opt_in_only_recognizes_exact_one(self, monkeypatch):
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "true")
+        repo = self._make_tmp_repo()
+        assert _is_unsafe_repo_root(repo) is not None
+
+    def test_pytest_current_test_does_not_disable_guard(self, monkeypatch):
+        # Auto-detecting the test runner is intentionally NOT implemented: the
+        # guard must hold even when PYTEST_CURRENT_TEST is set, so a foreign
+        # temp-checkout test run cannot silently bypass it.
+        monkeypatch.delenv("CHAMELEON_ALLOW_TMP_REPO", raising=False)
+        monkeypatch.setenv("PYTEST_CURRENT_TEST", "test_x (call)")
+        repo = self._make_tmp_repo()
+        assert _is_unsafe_repo_root(repo) is not None
 
 
 class TestFindRepoRootMonorepoBoundary:

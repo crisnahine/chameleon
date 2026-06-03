@@ -132,6 +132,19 @@ def _is_unsafe_repo_root(root: Path) -> str | None:
     Refuses: /tmp, $TMPDIR (and subdirs of either), and world-writable
     directories. The home-ancestor guard lives separately in tools.py
     detect_repo.
+
+    A profile under a shared-writable location can be planted by another local
+    user, so loading one would let them inject conventions, banned imports, and
+    canonical excerpts into this session. The refusal closes that path.
+
+    ``CHAMELEON_ALLOW_TMP_REPO=1`` is the single, explicit opt-out: a test fixture
+    or a CI job that builds repos under a temp dir sets it for that invocation.
+    The check requires the exact string ``"1"`` so a stray truthy value cannot
+    relax the boundary by accident. Auto-detecting the test runner (e.g.
+    ``PYTEST_CURRENT_TEST``) is deliberately NOT done: that env var is present
+    for any pip-installed package's test run from a temp checkout, so honoring it
+    would silently drop the guard outside the operator's control. Opting out must
+    stay an explicit per-invocation choice.
     """
     if os.environ.get("CHAMELEON_ALLOW_TMP_REPO") == "1":
         return None

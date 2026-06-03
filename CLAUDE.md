@@ -175,7 +175,7 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 - `CHAMELEON_<THRESHOLD>` — operator override for any tuning threshold in `mcp/chameleon_mcp/_thresholds.py` (e.g. `CHAMELEON_WORKSPACE_FANOUT_CAP`, `CHAMELEON_EDIT_OBS_HARD_CAP`, `CHAMELEON_DRIFT_BANNER_THRESHOLD`); see that module's `DEFAULTS` for the full list and defaults.
 - `CHAMELEON_PLUGIN_DATA` — override `~/.local/share/chameleon/` (tests only)
 - `CHAMELEON_HMAC_KEY_PATH` — override the HMAC key location (tests only)
-- `CHAMELEON_ALLOW_TMP_REPO=1` — allow bootstrapping a repo under a temp dir (tests only)
+- `CHAMELEON_ALLOW_TMP_REPO=1` — opt out of the temp-dir / world-writable repo-root refusal so a repo built under `/tmp` or `$TMPDIR` resolves normally. By default chameleon refuses such roots because a foreign profile planted in a shared-writable dir could inject conventions into the session. This is the explicit per-invocation opt-out (the guard is never auto-disabled by sniffing the test runner). Set it for the test suite and in any CI job that bootstraps fixtures under a temp dir; leave it unset in normal use.
 - `CHAMELEON_PLUGIN_ROOT` — override plugin root path resolution (tests only)
 - `CHAMELEON_HOOK_ERROR_LOG` — override hook error log path
 - `CLAUDE_PLUGIN_ROOT` — set by Claude Code; path to installed plugin
