@@ -2040,6 +2040,77 @@ def get_drift_status(repo: str) -> dict:
     )
 
 
+def get_status(repo: str) -> dict:
+    """Report enforcement state for a repo's chameleon profile.
+
+    Surfaces the three things the user needs to reason about blocking:
+    - ``mode`` — the configured enforcement master switch
+      (``off`` advisory only / ``shadow`` log-but-never-block / ``enforce``).
+    - ``active`` — block rules that calibration kept active against this
+      repo's own committed files (zero / near-zero false positives).
+    - ``demoted`` — block rules calibration kept advisory, each with the
+      false-positive rate that demoted it, so a user can see *why* a rule
+      that blocks elsewhere is silent here.
+
+    Fail-open: a missing/corrupt config or enforcement.json degrades to the
+    safest default (advisory mode, no active rules) rather than raising. The
+    richer profile/trust/drift surface stays in the dedicated tools the
+    /chameleon-status skill already calls; this returns only the enforcement
+    section those tools do not cover.
+    """
+    from chameleon_mcp.enforcement_calibration import load_block_rules
+    from chameleon_mcp.profile.loader import find_repo_root
+
+    if not isinstance(repo, str) or not repo:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected repo path or repo_id hex digest",
+            }
+        )
+
+    try:
+        repo_root = find_repo_root(Path(repo).expanduser())
+    except (OSError, ValueError):
+        repo_root = None
+    if repo_root is None:
+        return _envelope({"status": "no_repo"})
+
+    profile_dir = _effective_profile_dir(repo_root)
+
+    mode = "off"
+    try:
+        from chameleon_mcp.profile.config import load_config
+
+        mode = load_config(profile_dir).enforcement.mode
+    except Exception:
+        # Malformed config.json: enforcement features are inactive until
+        # fixed. Report the safest mode rather than crashing the status call.
+        mode = "off"
+
+    active: list[str] = []
+    demoted: list[dict] = []
+    for rule, meta in load_block_rules(profile_dir).items():
+        if not isinstance(meta, dict):
+            continue
+        if meta.get("active") is True:
+            active.append(rule)
+        else:
+            demoted.append({"rule": rule, "fp_rate": meta.get("fp_rate")})
+    active.sort()
+    demoted.sort(key=lambda d: d["rule"])
+
+    return _envelope(
+        {
+            "enforcement": {
+                "mode": mode,
+                "active": active,
+                "demoted": demoted,
+            }
+        }
+    )
+
+
 PARTIAL_REFRESH_CHANGE_RATIO_CEILING = 0.10
 
 

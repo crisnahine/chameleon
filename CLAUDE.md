@@ -164,6 +164,7 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 
 - `CHAMELEON_DISABLE=1` — disable plugin globally for this session
 - `CHAMELEON_VERIFY=0` — disable PostToolUse archetype verification (default ON)
+- `CHAMELEON_ENFORCE=0` — kill switch for all blocking enforcement (PreToolUse deny, PostToolUse block, Stop backstop). Forces advisory-only regardless of `enforcement.mode`. Blocking otherwise follows `.chameleon/config.json` `enforcement.mode`: `off` = advisory only, `shadow` = log would-have-blocked but never block (default), `enforce` = real deny/block on calibrated rules. A blocked edit is overridable inline with `// chameleon-ignore <rule>` (`# chameleon-ignore <rule>` in Ruby).
 - `CHAMELEON_ALLOW_ESLINT_EVAL=1` — opt into loading JS ESLint configs via Node `require()`/`import()` during bootstrap (default OFF; off uses a static parser that never executes repo code). Enable only for repos you trust.
 - `CHAMELEON_MAX_CONVENTION_ITEMS` — cap on each repo-size-scaling section of the SessionStart convention block (preferred imports, DSL calls, key-export union); default 60, over-cap shows a "+N more" tail. Raise to surface more, lower to shrink the block. Read at import time.
 - `CHAMELEON_MAX_KEY_EXPORTS` — cap on stored key exports per archetype (default 200). Read at import time.

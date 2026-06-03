@@ -117,6 +117,12 @@ def get_drift_status(repo: str) -> dict:
 
 
 @mcp.tool()
+def get_status(repo: str) -> dict:
+    """Report enforcement mode + active/demoted block rules for a repo."""
+    return tools.get_status(repo)
+
+
+@mcp.tool()
 def refresh_repo(repo: str, force: bool = False) -> dict:
     """Re-analyze repo, detect drift, update profile. OS-level locked via flock."""
     return tools.refresh_repo(repo, force)

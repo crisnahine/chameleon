@@ -24,6 +24,11 @@ What's plumbed today (read straight from `.chameleon/` and `drift.db`):
 
    Read these via `chameleon-mcp::doctor` — its `config_json` check returns the parsed config, **and echo its `detail` string verbatim rather than improvising the defaults.** When there is no `.chameleon/config.json`, the built-in defaults are: `auto_refresh` ON (drift_threshold=0.2, max_age_hours=168), `auto_rename` ON, `trust.auto_preserve_when="always"` (a refresh — manual or auto — re-grants trust, so the user is **not** re-prompted on their own repo), `canonical_ref` OFF (opt-in). Do **not** label this block with a version number ("v0.6.0" is the release that introduced config.json, not the current version — read the real version from `daemon_status`). When the file is malformed, doctor surfaces a clear error and config.json features fall back to those defaults; show the error prominently so the user can fix the typo.
 
+7. **Enforcement** — call `chameleon-mcp::get_status(repo)` and surface its `enforcement` block:
+   - `mode` — `off | shadow | enforce`. `shadow` (default) logs would-have-blocked events but never blocks; `enforce` blocks on calibrated rules. A repo runs in shadow first to measure, then is promoted to `enforce` after a clean shadow window (zero would-blocks on committed files). Suggest the promotion when a repo has run shadow with no would-blocks.
+   - `active` — block rules calibration kept active for this repo (near-zero false positives against its own committed files).
+   - `demoted` — block rules calibration kept advisory, each with the `fp_rate` that demoted it. Surface these so the user can see why a rule that blocks elsewhere is silent here.
+
 ## The flow
 
 1. Call `chameleon-mcp::detect_repo(<file-path>)` to get the current repo_id and trust_state.

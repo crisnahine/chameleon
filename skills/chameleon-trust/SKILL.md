@@ -33,6 +33,10 @@ The MCP `detect_repo` tool returns `trust_state: "stale"` after a material chang
 
 **Default config auto-re-grants trust on refresh.** With the built-in default (`trust.auto_preserve_when="always"`), a `/chameleon-refresh` (manual or auto) re-stamps and re-grants trust, so the user is **not** re-prompted on their own repo — `trust_state` returns to `trusted` without a `/chameleon-trust` step. The stale → re-prompt path above is what a user opts into by setting `trust.auto_preserve_when: null` in `config.json`. So if a user reports "it keeps asking me to trust after every refresh," check whether their `config.json` set `auto_preserve_when` to `null` or `"pulled_from_remote"`, or whether they are on an older engine that predates the `"always"` default.
 
+## Enforcement starts in shadow
+
+A freshly trusted (or refreshed) profile runs enforcement in `shadow` mode by default: would-have-blocked events are logged but nothing blocks. This lets the repo measure its own false-positive rate before any edit is denied. Promote to `enforce` (set `enforcement.mode: "enforce"` in `config.json`) only after a clean shadow window — zero would-blocks on committed files, which `/chameleon-status` reports. Until then, blocking stays off and chameleon is purely advisory.
+
 ## What to tell the user before running
 
 > Trust is per-user, per-repo. Granting trust means you've reviewed `profile.summary.md` and accept the canonical patterns it suggests. If a teammate later modifies the profile, you'll be re-prompted before chameleon resumes injecting context for you.

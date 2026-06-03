@@ -769,6 +769,30 @@ When violations recur in one file, `should_surface_to_user` adds a one-line `/ch
 
 Principle: safety failures block, everything else degrades. An edit never fails because chameleon's advisory layer broke.
 
+#### Enforcement
+
+Most feedback is advisory. A narrow gate stack lets a small set of high-confidence violations actually block, calibrated per-repo so a block only fires where it will not produce false positives.
+
+**Gate stack (three block points):**
+
+| Point | Hook | Trigger |
+|-------|------|---------|
+| PreToolUse deny | `preflight-and-advise` | A banned/competing import in the *proposed* content (`import-preference-violation`) — denied before the write runs. |
+| PostToolUse block | `posttool-verify` | A hard-class violation (e.g. `phantom-import`) on a file at L2, when the archetype match is `confidence=high` + `match_quality=ast`. |
+| Stop backstop | `stop_backstop` (Stop / SubagentStop) | An unresolved hard-class violation on a touched file refuses to end the turn, bounded by `enforcement.stop_block_cap`. |
+
+**Mode gate.** `.chameleon/config.json` `enforcement.mode`:
+
+- `off` — advisory only; no block point fires.
+- `shadow` (default) — every gate computes its decision and logs a `would_block` metric, but the edit/turn proceeds. A repo runs shadow first so its false-positive rate is measured before any block.
+- `enforce` — the gates above block for real.
+
+**Per-rule calibration.** `enforcement_calibration.py` measures each block-eligible rule against the repo's own committed files at bootstrap/refresh and writes `enforcement.json` (`{rule: {active, fp_rate, sampled}}`). Only rules with a near-zero `fp_rate` stay `active`; the rest are demoted to advisory regardless of mode. `/chameleon-status` (`get_status`) reports `mode`, the active set, and each demoted rule with its `fp_rate`.
+
+**Classification.** `violation_class.is_hard_class` distinguishes hard (deterministic, archetype-independent — e.g. a phantom import that cannot resolve) from soft (style/archetype-fit) violations. Only hard-class rules in the active set are block-eligible; soft violations always stay advisory.
+
+**Escape hatch and kill switch.** Any block is overridable inline with `// chameleon-ignore <rule>` (`# chameleon-ignore <rule>` in Ruby), or a bare `// chameleon-ignore` to suppress all chameleon blocks on that line. `CHAMELEON_ENFORCE=0` forces advisory-only for the whole session regardless of mode. Every gate fails open: a missing/corrupt config or calibration artifact degrades to advisory, never an erroneous block.
+
 **Cache_control discipline:** lstat output, drift.db queries, HMAC log entries, posttool exit codes, dynamic timestamps, MCP tool results - all flow as ephemeral input. NEVER in cached prefix.
 
 #### Token budget

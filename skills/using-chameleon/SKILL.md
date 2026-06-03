@@ -34,6 +34,28 @@ Chameleon enforces codebase conventions through hooks. You don't call MCP tools 
 - **stale**: content injects with a warning that already suggests `/chameleon-trust`. Don't repeat the suggestion.
 - **untrusted**: no canonical injection. A trust prompt fires once per session suggesting `/chameleon-trust`. Edits proceed without guidance until trust is granted.
 
+## Enforcement
+
+Most chameleon feedback is advisory - it shapes the code you write but never blocks. A small set of high-confidence violations can block, gated so they only fire when they will not produce false positives.
+
+**Three block points:**
+
+- **PreToolUse deny** — a banned/competing import in the *proposed* content of an Edit/Write blocks the call before it runs (`import-preference-violation`).
+- **PostToolUse block** — a hard-class violation (e.g. `phantom-import`) on a file already escalated to L2, when the archetype match is high-confidence AST, blocks the edit.
+- **Stop backstop** — at turn end, an unresolved hard-class violation on a touched file refuses to end the turn (bounded by a per-session cap).
+
+**Modes** (from `.chameleon/config.json` `enforcement.mode`):
+
+- `off` — advisory only, nothing blocks.
+- `shadow` — default; logs would-have-blocked events but never blocks. A repo runs in shadow first so it measures before it enforces.
+- `enforce` — real deny/block on rules calibration kept active for this repo.
+
+Only block rules with a near-zero false-positive rate against the repo's own committed files stay active; the rest are demoted to advisory. `/chameleon-status` shows the active set and any demoted rule with its measured fp_rate.
+
+**Escape hatch:** a blocked edit is overridable inline with `// chameleon-ignore <rule>` (`# chameleon-ignore <rule>` in Ruby), or a bare `// chameleon-ignore` to suppress all chameleon blocks on that line. `CHAMELEON_ENFORCE=0` disables all blocking for the session regardless of mode.
+
+When you hit a block, fix the violation or add the ignore directive if it is intentional - don't silently work around it.
+
 ## Canonical as witness
 
 The canonical excerpt is a witness, not a template. Use its normative shape and idioms (naming, structure, import style) but not its specific business logic or idiosyncrasies. It shows how the codebase does things - match the pattern, not the content.
