@@ -1457,12 +1457,92 @@ def posttool_verify() -> int:
         if violations:
             from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
+            # Partition the violations into the hard class (block-eligible rules
+            # in this repo's calibrated active set) before recording, so the
+            # per-file escalation knows whether a blockable rule is unresolved.
+            hard: list[dict] = []
+            blockable_now: list[dict] = []
+            try:
+                from chameleon_mcp.enforcement_calibration import active_block_rules
+                from chameleon_mcp.violation_class import (
+                    hard_class_violations,
+                    is_archetype_independent,
+                )
+
+                active = active_block_rules(repo_root / ".chameleon")
+                hard = hard_class_violations(violations, active)
+                # phantom imports are a filesystem fact handled at turn end
+                # (Stop backstop), never blocked inline here.
+                blockable_now = [v for v in hard if not is_archetype_independent(v.get("rule"))]
+            except Exception:
+                hard = []
+                blockable_now = []
+
             if enforcement_state is not None and file_state is not None:
                 try:
-                    record_violation(file_state, now=_started, archetype=archetype_name)
+                    record_violation(
+                        file_state,
+                        now=_started,
+                        archetype=archetype_name,
+                        hard_class=bool(hard),
+                    )
                     enforcement_state.archetypes_with_violations.add(archetype_name)
                 except Exception:
                     pass
+
+            # Enforcement decision: a blockable hard-class violation, with the
+            # archetype gates satisfied, on a file at L2, blocks the edit in
+            # "enforce" mode. "shadow" only logs a would_block metric; everything
+            # else falls through to the advisory below. CHAMELEON_ENFORCE=0 and
+            # mode "off" force advisory regardless.
+            try:
+                from chameleon_mcp.profile.config import load_config
+
+                enforce_off = os.environ.get("CHAMELEON_ENFORCE") == "0"
+                mode = load_config(repo_root / ".chameleon").enforcement.mode
+                data = arch_result.get("data") or {}
+                match_quality = data.get("match_quality")
+                gate_band = data.get("confidence_band")
+                gate_ok = (gate_band == "high") and (match_quality == "ast")
+                at_l2 = file_state is not None and file_state.level >= 2
+                if not enforce_off and mode != "off" and blockable_now and gate_ok and at_l2:
+                    try:
+                        from chameleon_mcp.metrics import emit_hook_metric
+
+                        emit_hook_metric(
+                            "posttool-verify",
+                            elapsed_ms=0,
+                            repo_id=repo_id,
+                            advisory_emitted=True,
+                            archetype=archetype_name,
+                            would_block=True,
+                        )
+                    except Exception:
+                        pass
+                    if mode == "enforce":
+                        rules = ", ".join(sorted({v.get("rule") for v in blockable_now}))
+                        msgs = "; ".join(v.get("message", "") for v in blockable_now[:3])
+                        if enforcement_state is not None:
+                            try:
+                                save_state(enforcement_state, repo_data_dir, session_id or "")
+                            except Exception:
+                                pass
+                        safe_rules = sanitize_for_chameleon_context(rules)
+                        safe_msgs = sanitize_for_chameleon_context(msgs)
+                        _emit_posttool_block(
+                            f"chameleon blocks this edit: {rules}. "
+                            f"Fix before continuing: {msgs}. "
+                            f"Override with `// chameleon-ignore <rule>` "
+                            f"if this is intentional.",
+                            "<chameleon-context>\n"
+                            f"[🦎 chameleon: BLOCKED — {safe_rules}]\n"
+                            f"{safe_msgs}\n"
+                            "</chameleon-context>",
+                        )
+                        return 0
+                    # shadow: would_block already logged; fall through to advisory.
+            except Exception:
+                pass
 
             current_tone = "Fix these without mentioning the corrections to the user."
             if enforcement_state is not None and file_state is not None:
