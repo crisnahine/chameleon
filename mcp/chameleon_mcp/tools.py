@@ -21,6 +21,11 @@ if TYPE_CHECKING:
     from chameleon_mcp.profile.loader import LoadedProfile
 
 
+# Process-local memo of resolved repo ids, keyed by resolved path. The TTL bounds
+# how long a moved checkout or a changed git remote can serve a stale id within a
+# single MCP process; mutating tools (bootstrap_repo, refresh_repo) call
+# _clear_repo_id_cache() so a re-identified repo is picked up immediately, and the
+# cache never crosses process boundaries.
 _REPO_ID_CACHE: dict[str, tuple[float, str]] = {}
 _REPO_ID_CACHE_TTL = 300
 
@@ -286,9 +291,12 @@ def _normalize_git_url(url: str) -> str:
 def _git_remote_url(repo_root: Path) -> str | None:
     """Return the `origin` remote URL, or None if not a git repo / no remote.
 
-    Bounded by a 2 second timeout — if git takes longer than that to answer
-    a config lookup something is wrong with the workspace, and the path-based
-    fallback is the safer choice than blocking bootstrap.
+    Bounded by a 2 second timeout. If git takes longer than that to answer a
+    config lookup something is wrong with the workspace, and the path-based
+    fallback is the safer choice than blocking bootstrap. A timeout is the one
+    failure mode worth surfacing: it silently degrades repo identity to the
+    working-tree path, so it gets a one-line stderr warning. A missing git or a
+    repo with no remote is normal and stays quiet.
     """
     try:
         result = subprocess.run(
@@ -298,7 +306,19 @@ def _git_remote_url(repo_root: Path) -> str | None:
             timeout=2,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired, FileNotFoundError):
+    except subprocess.TimeoutExpired:
+        try:
+            import sys as _sys
+
+            print(
+                "chameleon: git remote URL lookup timed out after 2s "
+                f"(repo={str(repo_root)!r}); using path-based repo identity",
+                file=_sys.stderr,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+    except OSError:
         return None
     if result.returncode != 0:
         return None
@@ -5375,7 +5395,7 @@ def teach_competing_import(
 
     return _envelope(
         {
-            "status": "ok",
+            "status": "success",
             "archetype": archetype,
             "competing": {"preferred": preferred, "over": over},
             "already_present": already,

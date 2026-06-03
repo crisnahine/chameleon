@@ -35,7 +35,9 @@ def test_teach_competing_import_writes_and_is_idempotent(tmp_path, monkeypatch):
     res = tools.teach_competing_import(
         str(repo), archetype="httpclient", preferred="@/lib/http", over="axios"
     )
-    assert _data(res)["status"] == "ok"
+    # Mutation tools report success with status "success" (matches teach_profile,
+    # teach_profile_structured, apply_archetype_renames).
+    assert _data(res)["status"] == "success"
 
     conv = json.loads((repo / ".chameleon" / "conventions.json").read_text())
     competing = conv["conventions"]["imports"]["httpclient"]["competing"]

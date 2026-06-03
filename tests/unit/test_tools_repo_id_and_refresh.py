@@ -340,3 +340,63 @@ def test_fs_case_insensitive_probe_returns_bool(tmp_path):
     d.mkdir()
     assert isinstance(_fs_is_case_insensitive(d), bool)
     assert _fs_is_case_insensitive(tmp_path / "does-not-exist") is False
+
+
+# ---- _git_remote_url: warn on timeout, stay fail-open ----
+
+
+def test_git_remote_url_warns_on_timeout(tmp_path, monkeypatch, capsys):
+    """A git config lookup that times out must log a one-line stderr warning so
+    the user can see why repo_id fell back to the path, then return None."""
+    import subprocess
+
+    def _boom(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="git", timeout=2)
+
+    monkeypatch.setattr(tools.subprocess, "run", _boom)
+    repo = tmp_path / "slowrepo"
+    repo.mkdir()
+
+    assert tools._git_remote_url(repo) is None
+
+    err = capsys.readouterr().err
+    assert "timed out" in err.lower()
+    assert "path-based" in err.lower()
+    # Single line, no traceback.
+    assert err.count("\n") == 1
+
+
+def test_git_remote_url_silent_on_non_timeout_errors(tmp_path, monkeypatch, capsys):
+    """A missing-git / OSError path must stay quiet (no remote is normal); only a
+    timeout warrants a warning."""
+
+    def _boom(*_a, **_k):
+        raise FileNotFoundError("git not installed")
+
+    monkeypatch.setattr(tools.subprocess, "run", _boom)
+    repo = tmp_path / "nogit"
+    repo.mkdir()
+
+    assert tools._git_remote_url(repo) is None
+    assert capsys.readouterr().err == ""
+
+
+def test_git_remote_url_timeout_does_not_change_repo_id(tmp_path, monkeypatch):
+    """The timeout warning must not alter the fallback identity: a timed-out
+    remote lookup still yields the path-based repo_id."""
+    import subprocess
+
+    def _boom(*_a, **_k):
+        raise subprocess.TimeoutExpired(cmd="git", timeout=2)
+
+    monkeypatch.setattr(tools.subprocess, "run", _boom)
+    monkeypatch.setattr(tools, "_persisted_repo_uuid", lambda _root: None)
+    repo = tmp_path / "TimeoutRepo"
+    repo.mkdir()
+
+    got = tools._compute_repo_id(repo)
+    path_key = (
+        str(repo.resolve()).lower() if tools._fs_is_case_insensitive(repo) else str(repo.resolve())
+    )
+    expected = hashlib.sha256(path_key.encode("utf-8")).hexdigest()
+    assert got == expected
