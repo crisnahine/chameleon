@@ -1904,10 +1904,176 @@ def _stop_file_still_blockable(repo_root: Path, file_path: str) -> bool:
         return False
 
 
+_IDIOM_REVIEWED_FILENAME = ".idiom_reviewed.{session}"
+_IDIOM_CONTEXT_CHAR_CAP = 1500
+
+
+def _idiom_review_gate(
+    *,
+    repo_root: Path,
+    repo_id: str,
+    session_id: str | None,
+    state,
+    cfg,
+    repo_data: Path,
+) -> dict | None:
+    """Reflexive idiom/principle review at turn end.
+
+    Reached only after the lint-unresolved decision came back with no block: a
+    turn that edited files governed by team idioms/principles must self-review
+    those changes before ending. Fires AT MOST ONCE per session (a per-session
+    marker gates it) so the model is not re-nagged every turn; stop_hook_active
+    already prevents the immediate re-block loop.
+
+    Returns the hook output dict to emit, or None to defer to the caller's
+    default allow. In enforce mode a fresh review fires a Stop ``block`` whose
+    reason lists the edited files and the relevant idioms/principles. In shadow
+    mode it records a would_block metric and allows the stop, still writing the
+    marker so shadow reflects the real once-per-session frequency. Fails open:
+    any error returns None (the caller allows the stop).
+
+    The ``idiom_judge`` flag only strengthens the directive for now; the
+    independent-judge spawn (claude -p) is intentionally out of scope here, so no
+    LLM is invoked from the hook.
+    """
+    try:
+        if cfg.mode == "off" or not cfg.idiom_review:
+            return None
+
+        # Gather idioms/principles text; the gate needs at least one non-empty.
+        profile_dir = repo_root / ".chameleon"
+        idioms_text = ""
+        principles_text = ""
+        try:
+            ip = profile_dir / "idioms.md"
+            if ip.is_file():
+                idioms_text = ip.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            idioms_text = ""
+        try:
+            pp = profile_dir / "principles.md"
+            if pp.is_file():
+                principles_text = pp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            principles_text = ""
+        if not idioms_text.strip() and not principles_text.strip():
+            return None
+
+        # An edited file that still exists this session, and is not opted out via
+        # an inline `// chameleon-ignore idioms` (or bare ignore) directive.
+        from chameleon_mcp.violation_class import ignored_rules
+
+        edited: list[str] = []
+        for path in state.files:
+            p = Path(path)
+            if not p.is_file():
+                continue
+            try:
+                content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            ign = ignored_rules(content) or set()
+            if "" in ign or "idioms" in ign:
+                continue
+            edited.append(path)
+        if not edited:
+            return None
+
+        # Once-per-session marker: fire only the first time. Writing the marker
+        # before the decision keeps shadow's frequency honest and prevents the
+        # next turn from re-blocking.
+        from chameleon_mcp.optouts import _safe_session_marker
+
+        marker = repo_data / _IDIOM_REVIEWED_FILENAME.format(
+            session=_safe_session_marker(session_id)
+        )
+        if marker.exists():
+            return None
+
+        # Respect the shared stop cap so an idiom block cannot exceed the budget.
+        if state.stop_hook_blocks >= cfg.stop_block_cap:
+            return None
+
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(marker.parent, 0o700)
+        except OSError:
+            pass
+        marker.touch(exist_ok=True)
+        try:
+            os.chmod(marker, 0o600)
+        except OSError:
+            pass
+
+        if cfg.mode != "enforce":
+            # Shadow: record the would-have-blocked signal and allow the stop.
+            try:
+                from chameleon_mcp.metrics import emit_hook_metric
+
+                emit_hook_metric(
+                    "stop-backstop",
+                    elapsed_ms=0,
+                    repo_id=repo_id,
+                    advisory_emitted=True,
+                    would_block=True,
+                )
+            except Exception:
+                pass
+            return None
+
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in edited[:5])
+        idioms_block = sanitize_for_chameleon_context(idioms_text.strip())[:_IDIOM_CONTEXT_CHAR_CAP]
+        principles_block = sanitize_for_chameleon_context(principles_text.strip())[
+            :_IDIOM_CONTEXT_CHAR_CAP
+        ]
+
+        parts = [
+            f"chameleon: you edited {names} this turn. Before ending, verify those "
+            "changes comply with the team idioms/principles below. Fix any clear "
+            "violation; otherwise you may end.",
+        ]
+        if idioms_block:
+            parts.append("")
+            parts.append("Team idioms:")
+            parts.append(idioms_block)
+        if principles_block:
+            parts.append("")
+            parts.append("Principles:")
+            parts.append(principles_block)
+        if cfg.idiom_judge:
+            parts.append("")
+            parts.append(
+                "An independent judge is enabled (idiom_judge): make this review "
+                "thorough, not a rubber stamp."
+            )
+        parts.append("")
+        parts.append(
+            "Ending again confirms the review is done. To skip this check, add "
+            "`// chameleon-ignore idioms` (`# chameleon-ignore idioms` in Ruby) in "
+            "a file you touched."
+        )
+
+        state.stop_hook_blocks += 1
+        try:
+            from chameleon_mcp.enforcement import save_state
+
+            save_state(state, repo_data, session_id or "")
+        except Exception:
+            pass
+
+        return {"decision": "block", "reason": "\n".join(parts)}
+    except Exception:
+        return None
+
+
 def stop_backstop() -> int:
     """Stop / SubagentStop: refuse to end the turn while a touched file holds an
-    unresolved hard-class violation. Fails open; bounded by a per-session cap and
-    the stop_hook_active flag so it can never trap the user in a loop.
+    unresolved hard-class violation, then run a once-per-session reflexive
+    idiom/principle review of the turn's edits. Fails open; bounded by a
+    per-session cap and the stop_hook_active flag so it can never trap the user
+    in a loop.
     """
     payload = _read_payload_dict()
     if payload is None:
@@ -1996,7 +2162,18 @@ def stop_backstop() -> int:
                 pass
 
         if not unresolved:
-            _emit({})
+            # No lint block this stop: run the reflexive idiom/principle review
+            # gate. It blocks once per session (enforce) to force a self-review of
+            # the turn's edits, else allows the stop.
+            gate = _idiom_review_gate(
+                repo_root=repo_root,
+                repo_id=repo_id,
+                session_id=session_id,
+                state=state,
+                cfg=cfg,
+                repo_data=repo_data,
+            )
+            _emit(gate if gate is not None else {})
             return 0
 
         # Shadow mode records the would-have-blocked signal and allows the stop.

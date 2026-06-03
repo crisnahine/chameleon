@@ -43,6 +43,7 @@ Most chameleon feedback is advisory - it shapes the code you write but never blo
 - **PreToolUse deny** — a banned/competing import in the *proposed* content of an Edit/Write blocks the call before it runs (`import-preference-violation`).
 - **PostToolUse block** — a hard-class violation (`phantom-import`, `naming-convention-violation`, `inheritance-convention-violation`, and other calibrated rules) on a file already escalated to L2, when the archetype match is high-confidence AST, blocks the edit.
 - **Stop backstop** — at turn end, an unresolved hard-class violation on a touched file refuses to end the turn (bounded by a per-session cap).
+- **Idiom review** — `enforcement.idiom_review` (default on). When a turn edited files governed by team idioms/principles and no lint block fired, the Stop hook blocks ONCE per session to make you self-review those changes against the idioms (`idioms.md`) and principles (`principles.md`). Fix any clear violation, then end again to confirm. To skip the check, add `// chameleon-ignore idioms` (`# chameleon-ignore idioms` in Ruby) in a file you touched. `enforcement.idiom_judge` (opt-in, default off) strengthens the directive to demand a thorough review; it does not yet spawn an independent judge.
 
 **Modes** (from `.chameleon/config.json` `enforcement.mode`):
 

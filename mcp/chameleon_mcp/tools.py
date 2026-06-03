@@ -2051,6 +2051,9 @@ def get_status(repo: str) -> dict:
     - ``demoted`` — block rules calibration kept advisory, each with the
       false-positive rate that demoted it, so a user can see *why* a rule
       that blocks elsewhere is silent here.
+    - ``idiom_review`` — whether the once-per-session Stop-hook idiom/principle
+      self-review fires (default on in enforce mode).
+    - ``idiom_judge`` — opt-in flag that strengthens the idiom-review directive.
 
     Fail-open: a missing/corrupt config or enforcement.json degrades to the
     safest default (advisory mode, no active rules) rather than raising. The
@@ -2079,10 +2082,15 @@ def get_status(repo: str) -> dict:
     profile_dir = _effective_profile_dir(repo_root)
 
     mode = "off"
+    idiom_review = True
+    idiom_judge = False
     try:
         from chameleon_mcp.profile.config import load_config
 
-        mode = load_config(profile_dir).enforcement.mode
+        _enf = load_config(profile_dir).enforcement
+        mode = _enf.mode
+        idiom_review = _enf.idiom_review
+        idiom_judge = _enf.idiom_judge
     except Exception:
         # Malformed config.json: enforcement features are inactive until
         # fixed. Report the safest mode rather than crashing the status call.
@@ -2106,6 +2114,8 @@ def get_status(repo: str) -> dict:
                 "mode": mode,
                 "active": active,
                 "demoted": demoted,
+                "idiom_review": idiom_review,
+                "idiom_judge": idiom_judge,
             }
         }
     )

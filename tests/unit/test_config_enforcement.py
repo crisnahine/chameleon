@@ -36,3 +36,31 @@ def test_unknown_enforcement_key_rejected(tmp_path):
     d = _write(tmp_path, {"enforcement": {"mode": "off", "wat": 1}})
     with pytest.raises(ChameleonConfigError):
         load_config(d)
+
+
+def test_idiom_review_defaults_on_judge_off(tmp_path):
+    cfg = load_config(tmp_path)  # no file
+    assert cfg.enforcement.idiom_review is True
+    assert cfg.enforcement.idiom_judge is False
+
+
+def test_idiom_flags_parsed(tmp_path):
+    d = _write(
+        tmp_path,
+        {"enforcement": {"mode": "enforce", "idiom_review": False, "idiom_judge": True}},
+    )
+    cfg = load_config(d)
+    assert cfg.enforcement.idiom_review is False
+    assert cfg.enforcement.idiom_judge is True
+
+
+def test_idiom_review_must_be_bool(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"idiom_review": "yes"}})
+    with pytest.raises(ChameleonConfigError):
+        load_config(d)
+
+
+def test_idiom_judge_must_be_bool(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"idiom_judge": 1}})
+    with pytest.raises(ChameleonConfigError):
+        load_config(d)

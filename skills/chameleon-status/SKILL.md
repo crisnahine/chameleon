@@ -28,6 +28,8 @@ What's plumbed today (read straight from `.chameleon/` and `drift.db`):
    - `mode` — `off | shadow | enforce`. `shadow` (default) logs would-have-blocked events but never blocks; `enforce` blocks on calibrated rules. A repo runs in shadow first to measure, then is promoted to `enforce` after a clean shadow window (zero would-blocks on committed files). Suggest the promotion when a repo has run shadow with no would-blocks.
    - `active` — block rules calibration kept active for this repo (near-zero false positives against its own committed files).
    - `demoted` — block rules calibration kept advisory, each with the `fp_rate` that demoted it. Surface these so the user can see why a rule that blocks elsewhere is silent here.
+   - `idiom_review` — default on in enforce mode. At turn end, when the turn edited files governed by team idioms/principles, the Stop hook blocks once per session to force a self-review of those changes against the idioms/principles.
+   - `idiom_judge` — opt-in (default off). Strengthens the idiom-review directive to demand a thorough review.
 
 ## The flow
 

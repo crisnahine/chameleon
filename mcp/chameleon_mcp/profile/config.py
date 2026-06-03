@@ -9,7 +9,7 @@ Schema (all fields optional, all have safe defaults):
 
 ```jsonc
 {
-  "$schema": "chameleon-config-0.7.0",
+  "$schema": "chameleon-config-0.8.0",
   "canonical_ref": "origin/main",          // branch pinning
   "auto_refresh": {                         // drift-triggered refresh
     "enabled": true,
@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any
 
 CONFIG_FILENAME = "config.json"
-CURRENT_SCHEMA = "chameleon-config-0.7.0"
+CURRENT_SCHEMA = "chameleon-config-0.8.0"
 
 
 class ChameleonConfigError(ValueError):
@@ -69,6 +69,15 @@ class EnforcementConfig:
     mode: str = "shadow"
     stop_backstop: bool = True
     stop_block_cap: int = 3
+    # idiom_review: at turn end, when the session edited files governed by team
+    # idioms/principles, block once (enforce) to force a self-review of the
+    # changes against those idioms/principles. On by default so enforce repos get
+    # the reflexive check; the once-per-session marker keeps it from nagging.
+    idiom_review: bool = True
+    # idiom_judge: opt-in. When True, the idiom-review directive is strengthened
+    # to demand a thorough review (an independent judge is enabled). The judge
+    # spawn itself is not wired into the hook; the flag only hardens the directive.
+    idiom_judge: bool = False
 
 
 @dataclass(frozen=True)
@@ -99,7 +108,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         return EnforcementConfig()
     if not isinstance(raw, dict):
         raise ChameleonConfigError(f"`enforcement` must be an object, got {type(raw).__name__}")
-    allowed = {"mode", "stop_backstop", "stop_block_cap"}
+    allowed = {"mode", "stop_backstop", "stop_block_cap", "idiom_review", "idiom_judge"}
     unknown = set(raw.keys()) - allowed
     if unknown:
         raise ChameleonConfigError(
@@ -120,7 +129,23 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         raise ChameleonConfigError(
             f"`enforcement.stop_block_cap` must be a non-negative int, got {cap!r}"
         )
-    return EnforcementConfig(mode=mode, stop_backstop=stop_backstop, stop_block_cap=cap)
+    idiom_review = raw.get("idiom_review", True)
+    if not isinstance(idiom_review, bool):
+        raise ChameleonConfigError(
+            f"`enforcement.idiom_review` must be bool, got {type(idiom_review).__name__}"
+        )
+    idiom_judge = raw.get("idiom_judge", False)
+    if not isinstance(idiom_judge, bool):
+        raise ChameleonConfigError(
+            f"`enforcement.idiom_judge` must be bool, got {type(idiom_judge).__name__}"
+        )
+    return EnforcementConfig(
+        mode=mode,
+        stop_backstop=stop_backstop,
+        stop_block_cap=cap,
+        idiom_review=idiom_review,
+        idiom_judge=idiom_judge,
+    )
 
 
 def _coerce_auto_refresh(raw: Any) -> AutoRefreshConfig:
