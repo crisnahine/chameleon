@@ -179,51 +179,53 @@ def _strip_ts_strings_and_comments(content: str) -> str:
     return out
 
 
-_TS_DEFAULT_FUNCTION = re.compile(r"^\s*export\s+default\s+(?:async\s+)?function\b", re.MULTILINE)
-_TS_DEFAULT_CLASS = re.compile(r"^\s*export\s+default\s+class\b", re.MULTILINE)
-_TS_DEFAULT_ARROW = re.compile(
-    r"^\s*export\s+default\s*\(?\s*(?:async\s*)?\(.*?\)\s*=>", re.MULTILINE | re.DOTALL
+_TS_DEFAULT_FUNCTION = re.compile(
+    r"^[ \t]*export\s+default\s+(?:async\s+)?function\b", re.MULTILINE
 )
-_TS_DEFAULT_OBJECT = re.compile(r"^\s*export\s+default\s*\{", re.MULTILINE)
-_TS_DEFAULT_ARRAY = re.compile(r"^\s*export\s+default\s*\[", re.MULTILINE)
-_TS_DEFAULT_IDENT = re.compile(r"^\s*export\s+default\s+\w", re.MULTILINE)
+_TS_DEFAULT_CLASS = re.compile(r"^[ \t]*export\s+default\s+class\b", re.MULTILINE)
+_TS_DEFAULT_ARROW = re.compile(
+    r"^[ \t]*export\s+default\s*\(?\s*(?:async\s*)?\(.*?\)\s*=>", re.MULTILINE | re.DOTALL
+)
+_TS_DEFAULT_OBJECT = re.compile(r"^[ \t]*export\s+default\s*\{", re.MULTILINE)
+_TS_DEFAULT_ARRAY = re.compile(r"^[ \t]*export\s+default\s*\[", re.MULTILINE)
+_TS_DEFAULT_IDENT = re.compile(r"^[ \t]*export\s+default\s+\w", re.MULTILINE)
 
 _TS_NAMED_EXPORTS = [
-    re.compile(r"^\s*export\s+(?:const|let|var)\s+(\w+)\s*[=:]", re.MULTILINE),
-    re.compile(r"^\s*export\s+(?:async\s+)?function\s+(\w+)", re.MULTILINE),
-    re.compile(r"^\s*export\s+class\s+(\w+)", re.MULTILINE),
-    re.compile(r"^\s*export\s+interface\s+(\w+)", re.MULTILINE),
-    re.compile(r"^\s*export\s+type\s+(\w+)", re.MULTILINE),
-    re.compile(r"^\s*export\s+enum\s+(\w+)", re.MULTILINE),
+    re.compile(r"^[ \t]*export\s+(?:const|let|var)\s+(\w+)\s*[=:]", re.MULTILINE),
+    re.compile(r"^[ \t]*export\s+(?:async\s+)?function\s+(\w+)", re.MULTILINE),
+    re.compile(r"^[ \t]*export\s+class\s+(\w+)", re.MULTILINE),
+    re.compile(r"^[ \t]*export\s+interface\s+(\w+)", re.MULTILINE),
+    re.compile(r"^[ \t]*export\s+type\s+(\w+)", re.MULTILINE),
+    re.compile(r"^[ \t]*export\s+enum\s+(\w+)", re.MULTILINE),
 ]
-_TS_EXPORT_LIST = re.compile(r"^\s*export\s*\{\s*([^}]*)\s*\}\s*;?\s*$", re.MULTILINE)
+_TS_EXPORT_LIST = re.compile(r"^[ \t]*export\s*\{\s*([^}]*)\s*\}\s*;?\s*$", re.MULTILINE)
 
 _TS_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"^\s*import\s", re.MULTILINE), "ImportDeclaration"),
+    (re.compile(r"^[ \t]*import\s", re.MULTILINE), "ImportDeclaration"),
     (
-        re.compile(r"^\s*export\s+default\s+(?:async\s+)?function\b", re.MULTILINE),
+        re.compile(r"^[ \t]*export\s+default\s+(?:async\s+)?function\b", re.MULTILINE),
         "FunctionDeclaration",
     ),
-    (re.compile(r"^\s*export\s+default\s+class\b", re.MULTILINE), "ClassDeclaration"),
-    (re.compile(r"^\s*export\s+default\s", re.MULTILINE), "ExportAssignment"),
+    (re.compile(r"^[ \t]*export\s+default\s+class\b", re.MULTILINE), "ClassDeclaration"),
+    (re.compile(r"^[ \t]*export\s+default\s", re.MULTILINE), "ExportAssignment"),
     (
         re.compile(
-            r"^\s*export\s*\{[^}]*\}\s*(?:from\s+[\"'][^\"']*[\"'])?\s*;?\s*$", re.MULTILINE
+            r"^[ \t]*export\s*\{[^}]*\}\s*(?:from\s+[\"'][^\"']*[\"'])?\s*;?\s*$", re.MULTILINE
         ),
         "ExportDeclaration",
     ),
-    (re.compile(r"^\s*export\s+(?:async\s+)?function\s", re.MULTILINE), "FunctionDeclaration"),
-    (re.compile(r"^\s*export\s+class\s", re.MULTILINE), "ClassDeclaration"),
-    (re.compile(r"^\s*export\s+interface\s", re.MULTILINE), "InterfaceDeclaration"),
-    (re.compile(r"^\s*export\s+type\s", re.MULTILINE), "TypeAliasDeclaration"),
-    (re.compile(r"^\s*export\s+enum\s", re.MULTILINE), "EnumDeclaration"),
-    (re.compile(r"^\s*export\s+(?:const|let|var)\s", re.MULTILINE), "FirstStatement"),
-    (re.compile(r"^\s*(?:async\s+)?function\s+\w", re.MULTILINE), "FunctionDeclaration"),
-    (re.compile(r"^\s*class\s+\w", re.MULTILINE), "ClassDeclaration"),
-    (re.compile(r"^\s*interface\s+\w", re.MULTILINE), "InterfaceDeclaration"),
-    (re.compile(r"^\s*type\s+\w+\s*=", re.MULTILINE), "TypeAliasDeclaration"),
-    (re.compile(r"^\s*enum\s+\w", re.MULTILINE), "EnumDeclaration"),
-    (re.compile(r"^\s*(?:const|let|var)\s+\w", re.MULTILINE), "FirstStatement"),
+    (re.compile(r"^[ \t]*export\s+(?:async\s+)?function\s", re.MULTILINE), "FunctionDeclaration"),
+    (re.compile(r"^[ \t]*export\s+class\s", re.MULTILINE), "ClassDeclaration"),
+    (re.compile(r"^[ \t]*export\s+interface\s", re.MULTILINE), "InterfaceDeclaration"),
+    (re.compile(r"^[ \t]*export\s+type\s", re.MULTILINE), "TypeAliasDeclaration"),
+    (re.compile(r"^[ \t]*export\s+enum\s", re.MULTILINE), "EnumDeclaration"),
+    (re.compile(r"^[ \t]*export\s+(?:const|let|var)\s", re.MULTILINE), "FirstStatement"),
+    (re.compile(r"^[ \t]*(?:async\s+)?function\s+\w", re.MULTILINE), "FunctionDeclaration"),
+    (re.compile(r"^[ \t]*class\s+\w", re.MULTILINE), "ClassDeclaration"),
+    (re.compile(r"^[ \t]*interface\s+\w", re.MULTILINE), "InterfaceDeclaration"),
+    (re.compile(r"^[ \t]*type\s+\w+\s*=", re.MULTILINE), "TypeAliasDeclaration"),
+    (re.compile(r"^[ \t]*enum\s+\w", re.MULTILINE), "EnumDeclaration"),
+    (re.compile(r"^[ \t]*(?:const|let|var)\s+\w", re.MULTILINE), "FirstStatement"),
 )
 
 _JSX_CLOSING = re.compile(r"</[A-Za-z][\w.-]*\s*>")
@@ -330,7 +332,7 @@ _RUBY_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 _RUBY_SUPERCLASS_RE = re.compile(r"^class\s+\w[\w:]*\s*<\s*([\w:]+)", re.MULTILINE)
-_RUBY_INCLUDE_RE = re.compile(r"^\s+include\s+([\w:]+)", re.MULTILINE)
+_RUBY_INCLUDE_RE = re.compile(r"^[ \t]+include\s+([\w:]+)", re.MULTILINE)
 _RUBY_DSL_CALLS = frozenset(
     {
         "validates",
@@ -351,7 +353,7 @@ _RUBY_DSL_CALLS = frozenset(
         "attr_reader",
     }
 )
-_RUBY_DSL_RE = re.compile(r"^\s+(" + "|".join(_RUBY_DSL_CALLS) + r")\b", re.MULTILINE)
+_RUBY_DSL_RE = re.compile(r"^[ \t]+(" + "|".join(_RUBY_DSL_CALLS) + r")\b", re.MULTILINE)
 
 
 def _extract_ruby(content: str) -> DimensionSnapshot:

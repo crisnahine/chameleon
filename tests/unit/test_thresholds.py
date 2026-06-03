@@ -183,11 +183,11 @@ class TestThresholdValidOverride:
         monkeypatch.setenv("CHAMELEON_MAX_EXTENDS_HOPS", "0")
         assert _thresholds.threshold("MAX_EXTENDS_HOPS") == 0
 
-    def test_inf_into_float_default_passes_through(self, monkeypatch):
-        # float("inf") is a valid float; no validation rejects it.
+    def test_inf_into_float_default_falls_back(self, monkeypatch):
+        # A non-finite float override is rejected; the default applies instead.
         monkeypatch.setenv("CHAMELEON_SPAWN_WAIT_SECONDS", "inf")
         got = _thresholds.threshold("SPAWN_WAIT_SECONDS")
-        assert got == float("inf")
+        assert got == 3.0
 
 
 # --- threshold(): invalid override falls back to default --------------------

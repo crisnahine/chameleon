@@ -4,9 +4,28 @@ set -euo pipefail
 [[ "${CHAMELEON_DISABLE:-}" == "1" ]] && exit 0
 
 # The statusline cache lives in a repo-relative path (.claude/), so its values
-# are attacker-controllable. Strip control chars (ANSI/OSC escape injection,
-# terminal-title rewrite) before emitting anything to the terminal.
-strip_ctrl() { tr -d '[:cntrl:]'; }
+# are attacker-controllable. Strip control chars before emitting to the
+# terminal: ANSI/OSC escape injection, terminal-title rewrite, plus the
+# multibyte controls `tr -d '[:cntrl:]'` misses under a non-UTF-8 locale -
+# C1 (U+0080..U+009F), bidi overrides, and zero-width chars that can spoof
+# the rendered profile name. A single python pass over the whole field stream
+# keeps this locale-independent and O(1) in process spawns. Tab (U+0009) and
+# newline (U+000A) are preserved because the caller uses them as the field /
+# record framing; the per-field contents have already had both gsub'd out.
+strip_ctrl() {
+  python3 -c "
+import sys, re
+_CTRL = re.compile(
+    '[\\x00-\\x08\\x0b-\\x1f\\x7f'  # C0 minus tab/newline, plus DEL
+    '\\x80-\\x9f'                   # C1
+    '\\u200b-\\u200d\\ufeff'        # zero-width + BOM
+    '\\u200e\\u200f'                # LRM / RLM
+    '\\u202a-\\u202e'               # bidi embeddings + overrides
+    '\\u2066-\\u2069]'              # bidi isolates
+)
+sys.stdout.write(_CTRL.sub('', sys.stdin.read()))
+" 2>/dev/null || tr -d '\000-\010\013-\037\177'
+}
 
 input=$(cat)
 project_dir=""
@@ -21,19 +40,39 @@ fi
 cache_file="$project_dir/.claude/.chameleon-statusline-cache"
 if [[ -f "$cache_file" ]]; then
   if command -v jq &>/dev/null; then
-    count=$(jq -r '.profiles | length' "$cache_file" 2>/dev/null || echo 0)
-    if [[ "$count" -gt 0 ]]; then
+    # One jq pass emits every field as a tagged, tab-separated record so the
+    # process spawn count stays constant regardless of profile count (the
+    # former per-field/per-profile loop spawned 2N+3 jq processes and broke
+    # the <100ms budget past ~12 profiles). Embedded tabs/newlines in a name
+    # are dropped here so they cannot corrupt the line protocol; the shared
+    # strip_ctrl pass then removes the remaining control chars in one go.
+    records=$(jq -r '
+      (.profiles // [])[] as $p
+        | "P\t" + (($p.name // "") | gsub("[\t\n]"; "")) + "\t" + ($p.trust // ""),
+      "A\t" + ((.activity // "") | tostring | gsub("[\t\n]"; "")),
+      "U\t" + ((.update // "") | tostring | gsub("[\t\n]"; ""))
+    ' "$cache_file" 2>/dev/null | strip_ctrl || true)
+    if [[ -n "$records" ]]; then
       parts=""
-      for i in $(seq 0 $((count - 1))); do
-        name=$(jq -r ".profiles[$i].name" "$cache_file" 2>/dev/null | strip_ctrl)
-        trust=$(jq -r ".profiles[$i].trust" "$cache_file" 2>/dev/null | strip_ctrl)
-        case "$trust" in trusted|untrusted|stale|n/a) ;; *) trust="?" ;; esac
-        if [[ -n "$parts" ]]; then
-          parts="$parts │ "
-        fi
-        parts="$parts$name ($trust)"
-      done
-      activity=$(jq -r '.activity // empty' "$cache_file" 2>/dev/null | strip_ctrl)
+      activity=""
+      update=""
+      while IFS=$'\t' read -r tag f1 f2; do
+        case "$tag" in
+          P)
+            name="$f1"
+            trust="$f2"
+            case "$trust" in trusted|untrusted|stale|n/a) ;; *) trust="?" ;; esac
+            if [[ -n "$parts" ]]; then
+              parts="$parts │ "
+            fi
+            parts="$parts$name ($trust)"
+            ;;
+          A) activity="$f1" ;;
+          U) update="$f1" ;;
+        esac
+      done <<<"$records"
+    fi
+    if [[ -n "${parts:-}" ]]; then
       if [[ -n "$activity" ]]; then
         cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0)
         cache_age=$(( $(date +%s) - cache_mtime ))
@@ -41,7 +80,6 @@ if [[ -f "$cache_file" ]]; then
           parts="$parts │ $activity"
         fi
       fi
-      update=$(jq -r '.update // empty' "$cache_file" 2>/dev/null | strip_ctrl)
       if [[ -n "$update" ]]; then
         plugin_init="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}/mcp/chameleon_mcp/__init__.py"
         cur_ver=""
@@ -60,7 +98,8 @@ if [[ -f "$cache_file" ]]; then
 import json, os, re
 d=json.load(open(os.environ['CACHE_PATH']))
 ps=d.get('profiles',[])
-def _s(v): return re.sub(r'[\x00-\x1f\x7f]','',str(v))
+_CTRL=re.compile(r'[\x00-\x1f\x7f\x80-\x9f\u200b-\u200d\ufeff\u200e\u200f\u202a-\u202e\u2066-\u2069]')
+def _s(v): return _CTRL.sub('',str(v))
 def _t(v):
     v=_s(v)
     return v if v in ('trusted','untrusted','stale','n/a') else '?'

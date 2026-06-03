@@ -9,6 +9,7 @@ import pytest
 
 from chameleon_mcp.bootstrap.transaction import (
     COMMITTED_SENTINEL,
+    ProfileCommitError,
     _pid_alive,
     _txn_dir_pid,
     atomic_profile_commit,
@@ -392,6 +393,52 @@ def test_cleanup_sweeps_stray_rename_locks(tmp_path: Path):
     assert handled >= 2
     assert not single.exists()
     assert not legacy.exists()
+
+
+def test_commit_on_readonly_parent_raises_typed_error(tmp_path: Path):
+    """A read-only repo root surfaces the typed commit error, not a bare OSError.
+
+    Callers translate ProfileCommitError into a clean failed envelope. A raw
+    PermissionError from the tmp-dir mkdir would escape that channel and break
+    the fail-open contract of bootstrap/refresh.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / ".chameleon"
+
+    os.chmod(repo, 0o500)
+    try:
+        with pytest.raises(ProfileCommitError):
+            with atomic_profile_commit(target) as txn:
+                (txn / "profile.json").write_text("{}")
+    finally:
+        os.chmod(repo, 0o700)
+
+
+def test_profile_commit_error_is_not_bare_oserror_for_callers(tmp_path: Path):
+    """The typed error is distinct from a bare PermissionError/OSError.
+
+    The orchestrator catches ProfileCommitError explicitly (mirroring the
+    TooManyFilesError channel); a bare PermissionError would not be caught
+    there and would propagate as a traceback.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    target = repo / ".chameleon"
+
+    os.chmod(repo, 0o500)
+    try:
+        raised: Exception | None = None
+        try:
+            with atomic_profile_commit(target) as txn:
+                (txn / "profile.json").write_text("{}")
+        except Exception as exc:  # noqa: BLE001
+            raised = exc
+    finally:
+        os.chmod(repo, 0o700)
+
+    assert isinstance(raised, ProfileCommitError)
+    assert type(raised) is not PermissionError
 
 
 def test_recover_legacy_double_dot_tmp(tmp_path: Path):

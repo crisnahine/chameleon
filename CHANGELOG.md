@@ -4,6 +4,44 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.3] - 2026-06-04
+
+A 10-tester exploratory QA pass (security, chaos, boundary, i18n, integration, performance, compatibility, lifecycle, regression) against real apps, with every finding independently reproduced before acceptance. Twenty-three confirmed defects, none on the happy path; all live in degraded, hostile, or cross-feature state. Each fix ships with a regression test.
+
+### Security
+
+- **Sanitizer missed the directional-mark Cf trio** (U+200E LRM, U+200F RLM, U+061C ALM). They survive NFC and let an attacker hide a tag-boundary close-tag or a spoofed header inside trusted/stale profile prose. They are stripped now.
+- **The spoofed-`[🦎]`-header neutralizer was bypassable** with fullwidth brackets (`［🦎...］`) or no leading bracket. It keys on the lizard emoji itself now, regardless of bracket form.
+- **The statusline's control-char stripper missed multibyte Unicode** (bidi, zero-width, C1). It relied on `tr [:cntrl:]`, which only catches them in a UTF-8 locale; it uses a locale-independent pass now, so an attacker-controlled cache cannot smuggle terminal escapes through.
+
+### Fixed
+
+- **`refresh`/`bootstrap` crashed instead of failing open on a read-only repo root.** The atomic commit's `mkdir` raised `PermissionError` straight out of the public API. The commit raises a typed error now and the public entry points return a clean failed envelope.
+- **`refresh` orphaned trust on a remote-less repo with no committed `config.json`.** Refresh persists a `repo_uuid`, flipping the repo_id from path-derived to uuid-derived; trust was re-granted under the stale id, leaving the repo untrusted. It grants under the current id now.
+- **`detect_repo` ignored the COMMITTED sentinel**, reporting `profile_present`/`trusted` for a profile the read path refuses. It respects COMMITTED now and agrees with the read path.
+- **`refresh` crashed with `UnicodeDecodeError` on a non-UTF8 `idioms.md`** during the preserve step (`except OSError` cannot catch a `ValueError` subclass). Caught now.
+- **`merge_profiles` crashed on a top-level non-object JSON side** (array/scalar/null); the 2.1.2 guard only covered the nested `archetypes:[array]` shape. Both shapes fail open now.
+- **All six shell hooks crashed (`exit 1`, no JSON) when `HOME` was unset** (`set -u` plus a bare `${HOME}`). They fall back to `$TMPDIR`/`/tmp` and still fail open now.
+- **`apply_archetype_renames` left `idioms.md` pointing at the old archetype.** It rewrites the `Archetype:` references now.
+- **`teach` de-trusted the user's own profile** (idioms.md is hashed) and the stale banner misattributed the cause. Teach preserves trust across the user's own change now, and the banner is cause-agnostic.
+- **A user-supplied lone-surrogate `file_path`** slipped past validation and raised `UnicodeEncodeError` in repo detection. Rejected up front now.
+- **`get_drift_status` crashed on an over-`NAME_MAX` opaque repo_id** and recommended `/chameleon-trust` for a repo with no profile (now `/chameleon-init`).
+- **An unhashable committed `config.json` value** (a list/dict where a string was expected) raised a raw `TypeError` instead of the documented `ChameleonConfigError`.
+- **A malformed `drift.db` never self-healed.** It is dropped and recreated on a corruption error now (drift is advisory).
+- **`is_daemon_alive` misreported a recycled PID as a live daemon.** It requires an actual socket connect now.
+- **A workspaces-only monorepo bootstrap carried a failure-sounding `error` string** on a success status; cleared now.
+- **`CHAMELEON_*` float thresholds accepted `nan`/`inf`/negative** (a `nan` drift threshold silently disabled the banner). Non-finite/negative values fall back to the default now.
+
+### Performance
+
+- **O(n^2) regex blowup in the lint extractor** on whitespace-heavy files (`^\s*`/`^\s+` under `re.MULTILINE`, where `\s` matches `\n`): ~20s on a 100KB file, stalling the hook and `lint_file`. The line-start anchors match in-line indentation only now; the same file lints in milliseconds.
+- **Cold `drift.db` path could block up to 30s.** The 200ms busy-timeout was applied only after the schema-init write, which ran under the 30s hardened default; every fresh hook process hit the cold path. The init write uses the short timeout now.
+- **The statusline spawned `2N+3` jq processes** for N profiles, breaching the <100ms budget past ~12 profiles. It uses a single jq pass now (constant spawns).
+
+### Tests
+
+- Added regression coverage for every fix above, including a public-API fail-open test for the read-only-repo path and a linear-time assertion for the lint extractor.
+
 ## [2.1.2] - 2026-06-03
 
 Hardening fixes found by an exhaustive QA sweep across the MCP tools, hooks, daemon, statusline, merge driver, and a full destructive lifecycle, plus the end-to-end journey harness. None change normal advisory behavior; each closes a crash, a security hole, or a wrong-status report on a degraded or hostile input.

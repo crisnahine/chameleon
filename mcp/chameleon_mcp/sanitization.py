@@ -39,11 +39,13 @@ _BIDI_RE = re.compile(f"[{_BIDI_CONTROLS}]")
 
 # Forged chameleon status header, e.g. `[🦎 chameleon: ...]` or the
 # `[🦎 archetype: clean]` verdict form. The lizard emoji is chameleon's marker
-# signature and never appears in real source, so breaking ANY `[🦎` opener is
-# the robust neutralizer: anchoring on the literal word "chameleon" was bypassed
-# by a variation selector / combining mark after the emoji, a homoglyph keyword,
-# or the second `[🦎 archetype: ...]` voice form.
-_SPOOFED_HEADER_RE = re.compile(r"\[\s*\U0001f98e")
+# signature and never appears in real source, so keying the neutralizer on the
+# emoji itself is the robust strategy: anchoring on the literal word "chameleon"
+# was bypassed by a variation selector / combining mark after the emoji, a
+# homoglyph keyword, or the second `[🦎 archetype: ...]` voice form. An optional
+# leading bracket of any common width (ASCII `[`, fullwidth U+FF3B, halfwidth
+# U+FF62) is consumed too so a fullwidth- or bracket-less forgery is caught.
+_SPOOFED_HEADER_RE = re.compile(r"[\[［｢]?\s*\U0001f98e")
 
 
 def sanitize_for_chameleon_context(content: str) -> str:
@@ -57,7 +59,8 @@ def sanitize_for_chameleon_context(content: str) -> str:
     literal tag-boundary replacement.
 
     Defensive transformations:
-    1. Strip zero-width unicode (U+200B–U+200D, U+FEFF, U+2060) — must be first.
+    1. Strip zero-width / invisible-format unicode (U+200B–U+200D, U+FEFF,
+       U+2060, and the directional marks U+200E/U+200F/U+061C) — must be first.
     2. Strip bidi formatting controls (U+202A–U+202E + U+2066–U+2069) — the
        Trojan Source / CVE-2021-42574 character set. Removed byte-for-byte
        (no replacement marker) so the underlying logical order is restored.
@@ -69,7 +72,7 @@ def sanitize_for_chameleon_context(content: str) -> str:
     6. Replace each dangerous token with a `[chameleon-sanitized: <text>]`
        annotation so the meaning is preserved but the structure is broken.
     """
-    cleaned = re.sub(r"[​-‍﻿⁠]", "", content)
+    cleaned = re.sub(r"[​-‍﻿⁠‎‏؜]", "", content)
     cleaned = _BIDI_RE.sub("", cleaned)
     cleaned = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", cleaned)
     cleaned = re.sub(r"\x1b\][^\x07]*\x07?", "", cleaned)

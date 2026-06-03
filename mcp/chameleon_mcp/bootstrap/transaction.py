@@ -33,6 +33,17 @@ from chameleon_mcp.locks import (
 
 COMMITTED_SENTINEL = "COMMITTED"
 
+
+class ProfileCommitError(Exception):
+    """Raised when an atomic commit cannot write or swap the profile dir.
+
+    Surfaces a filesystem failure (read-only repo root, out of disk, revoked
+    permission) as a typed error the bootstrap/refresh callers translate into a
+    clean failed result, instead of letting a raw OSError escape and break the
+    fail-open contract. The triggering OSError is chained as ``__cause__``.
+    """
+
+
 # How long recovery blocks for the rename lock before falling back to a guarded
 # restore. Long enough to outlast a normal commit's swap, short enough not to
 # stall a bootstrap/refresh if a writer wedges the lock.
@@ -134,13 +145,18 @@ def atomic_profile_commit(target_dir: Path):
     Args:
         target_dir: the .chameleon/ directory to atomically replace.
     """
-    target_dir.parent.mkdir(parents=True, exist_ok=True)
-
     txn_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}-{int(time.time())}"
     tmp_root = target_dir.parent / f"{target_dir.name}.tmp"
-    tmp_root.mkdir(exist_ok=True)
     txn_dir = tmp_root / txn_id
-    txn_dir.mkdir()
+    # A read-only repo root (or full disk / revoked permission) fails the
+    # transaction-dir mkdir with a raw OSError. Surface it as the typed error so
+    # bootstrap/refresh return a clean failed result rather than a traceback.
+    try:
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        tmp_root.mkdir(exist_ok=True)
+        txn_dir.mkdir()
+    except OSError as e:
+        raise ProfileCommitError(f"could not create transaction dir under {tmp_root}: {e}") from e
 
     try:
         yield txn_dir
@@ -207,6 +223,13 @@ def atomic_profile_commit(target_dir: Path):
                 tmp_root.rmdir()
             except OSError:
                 pass
+    except OSError as e:
+        if txn_dir.exists():
+            shutil.rmtree(txn_dir, ignore_errors=True)
+        # A write-side failure during the commit (sentinel write, the swap
+        # rename, an fsync) surfaces as the typed error too, on the same channel
+        # callers translate into a failed result.
+        raise ProfileCommitError(f"profile commit failed for {target_dir}: {e}") from e
     except Exception:
         if txn_dir.exists():
             shutil.rmtree(txn_dir, ignore_errors=True)

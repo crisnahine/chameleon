@@ -331,6 +331,39 @@ class TestRangeAndEnum:
 
 
 # --------------------------------------------------------------------------
+# Unhashable enum values -> ChameleonConfigError, not raw TypeError
+# --------------------------------------------------------------------------
+class TestUnhashableEnumValues:
+    """A list/dict value reaches the `value in frozenset` membership test and,
+    being unhashable, raised a raw TypeError before the intended
+    ChameleonConfigError. The coercers guard the type first."""
+
+    def test_enforcement_mode_list_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"enforcement": {"mode": ["enforce"]}})
+        with pytest.raises(ChameleonConfigError, match="enforcement.mode"):
+            load_config(d)
+
+    def test_enforcement_mode_dict_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"enforcement": {"mode": {"x": 1}}})
+        with pytest.raises(ChameleonConfigError, match="enforcement.mode"):
+            load_config(d)
+
+    def test_auto_preserve_when_dict_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"trust": {"auto_preserve_when": {"x": 1}}})
+        with pytest.raises(ChameleonConfigError, match="auto_preserve_when"):
+            load_config(d)
+
+    def test_auto_preserve_when_list_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"trust": {"auto_preserve_when": ["always"]}})
+        with pytest.raises(ChameleonConfigError, match="auto_preserve_when"):
+            load_config(d)
+
+
+# --------------------------------------------------------------------------
 # Unsafe-read path (symlink) -> ChameleonConfigError
 # --------------------------------------------------------------------------
 class TestUnsafeRead:

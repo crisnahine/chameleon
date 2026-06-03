@@ -218,6 +218,12 @@ def _validate_file_path_arg(file_path: object) -> bool:
         return False
     if "\x00" in file_path:
         return False
+    # A lone surrogate passes the surrogatepass component check below but makes
+    # find_repo_root's filesystem calls raise an uncaught UnicodeEncodeError.
+    try:
+        file_path.encode("utf-8")
+    except UnicodeError:
+        return False
     if len(file_path) > _MAX_PATH_LEN:
         return False
     for component in file_path.split("/"):
@@ -638,6 +644,14 @@ def detect_repo(file_path: str) -> dict:
     profile_corrupted = False
     profile_unsupported_schema = False
     if profile_present:
+        from chameleon_mcp.bootstrap.transaction import is_committed
+
+        if not is_committed(profile_dir):
+            # profile.json exists but the COMMITTED sentinel is missing: the read
+            # path (load_profile_dir) refuses it and reports profile_corrupted, so
+            # detect_repo must agree instead of claiming profile_present/trusted.
+            profile_corrupted = True
+    if profile_present and not profile_corrupted:
         try:
             import json as _json
 
@@ -2177,6 +2191,12 @@ def get_drift_status(repo: str) -> dict:
                 }
             )
         repo_id = repo
+        # An opaque id whose single component exceeds NAME_MAX makes the
+        # plugin_data_dir()/repo_id is_dir() probe below raise ENAMETOOLONG.
+        if len(repo_id.encode("utf-8", "surrogatepass")) > _NAME_MAX_BYTES:
+            return _envelope(
+                {"status": "failed", "error": "expected repo path or repo_id hex digest"}
+            )
 
     repo_data = plugin_data_dir() / repo_id
     trust = trust_state_for(repo_id) if repo_data.is_dir() else None
@@ -2208,7 +2228,17 @@ def get_drift_status(repo: str) -> dict:
     if engine_version_mismatch:
         recommended = "engine upgraded since this profile was built; run /chameleon-refresh"
     elif days_since_refresh is None:
-        recommended = "no trust grant found; run /chameleon-trust first"
+        # Only a resolvable path lets us distinguish "no profile" (run init) from
+        # "untrusted profile" (run trust). A bare repo_id has no path to inspect
+        # and was seen before, so keep the trust wording.
+        profile_absent = (
+            resolved_path is not None
+            and not (resolved_path / ".chameleon" / "profile.json").is_file()
+        )
+        if profile_absent:
+            recommended = "no profile found; run /chameleon-init first"
+        else:
+            recommended = "no trust grant found; run /chameleon-trust first"
     elif drift_score is not None and drift_score > 0.5:
         recommended = f"observed drift is high ({drift_score:.2f}); run /chameleon-refresh"
     elif days_since_refresh > 90:
@@ -3010,7 +3040,17 @@ def _maybe_preserve_trust_across_refresh(
     try:
         from chameleon_mcp.profile.trust import grant_trust
 
-        grant_trust(pre_state["repo_id"], profile_dir)
+        # Grant under the CURRENT repo_id, not the pre-refresh one. A remote-less
+        # repo whose committed profile shipped without config.json resolves by
+        # path hash before refresh; refresh persists a repo_uuid into config.json,
+        # flipping the id to the uuid form. Granting under the stale pre-refresh
+        # id would leave the repo (now uuid-keyed) orphaned and untrusted.
+        current_repo_id = _compute_repo_id(repo_path)
+        grant_trust(current_repo_id, profile_dir)
+        if current_repo_id != pre_state.get("repo_id"):
+            # Keep the old-id grant too so a tool still holding the pre-refresh id
+            # resolves consistently during the same session.
+            grant_trust(pre_state["repo_id"], profile_dir)
         data["trust_preserved"] = True
         data["trust_preserve_reason"] = preserve_reason
     except Exception:
@@ -3444,6 +3484,7 @@ def bootstrap_repo(
     its own lock, so the two distinct locks nest without re-entering the same
     flock (no deadlock). The actual work lives in ``_bootstrap_repo_unlocked``.
     """
+    from chameleon_mcp.bootstrap.transaction import ProfileCommitError
     from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
 
     resolved_path, _ = _resolve_repo_arg(path)
@@ -3483,6 +3524,10 @@ def bootstrap_repo(
                 ),
             }
         )
+    except ProfileCommitError as e:
+        # Read-only repo root / full disk / revoked permission: fail open with a
+        # clean envelope instead of letting the typed commit error escape.
+        return _envelope({"status": "failed", "error": f"could not write profile: {e}"})
 
 
 def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
@@ -4009,6 +4054,17 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
             }
         )
 
+    # A valid-JSON but non-object document (array / scalar / null) would crash
+    # the data_key probe below on .get(); fail open like the parse-error path.
+    if not isinstance(ours_data, dict) or not isinstance(theirs_data, dict):
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "profile JSON must be a top-level object",
+                "merged_profile_path": None,
+            }
+        )
+
     # The merge driver runs per-file over profile.json / archetypes.json /
     # rules.json / canonicals.json (each a different shape). Branch on the data
     # key the file actually carries instead of assuming "archetypes" — otherwise
@@ -4184,6 +4240,22 @@ def teach_profile(repo: str, feedback: str) -> dict:
             {"status": "failed", "error": "no profile in this repo (run /chameleon-init)"}
         )
 
+    # A user-initiated teach edits idioms.md, a hashed trust artifact, which would
+    # otherwise stale the trust grant and bounce the user to re-confirm their own
+    # change. Capture whether the profile was trusted so we can re-grant after the
+    # write (mirrors refresh's trust preservation for the user's own edits).
+    _profile_dir = repo_path / ".chameleon"
+    _was_trusted = False
+    if _repo_id:
+        from chameleon_mcp.profile.trust import is_material_change, trust_state_for
+
+        _t = trust_state_for(_repo_id)
+        _was_trusted = (
+            _t is not None
+            and _t.grants_root(_profile_dir.parent)
+            and not is_material_change(_repo_id, _profile_dir)
+        )
+
     suspicious, suspicious_pattern = _looks_suspicious(feedback)
 
     sanitized = _sanitize_user_input(feedback)
@@ -4294,6 +4366,14 @@ def teach_profile(repo: str, feedback: str) -> dict:
                 ),
             }
         )
+
+    if _was_trusted:
+        try:
+            from chameleon_mcp.profile.trust import grant_trust
+
+            grant_trust(_repo_id, _profile_dir)
+        except Exception:
+            pass
 
     _notify_daemon_cache_invalidation()
 
@@ -5278,6 +5358,15 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
 
     idioms_path = profile_dir / "idioms.md"
     idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
+
+    # Rewrite taught-idiom archetype references so a rename does not leave a
+    # dangling "Archetype: <old>" pointing at an archetype that no longer exists.
+    for _old, _new in effective.items():
+        idioms_text = re.sub(
+            rf"(?m)^Archetype: {re.escape(_old)}$",
+            f"Archetype: {_new}",
+            idioms_text,
+        )
 
     summary_md = _rewrite_summary_md(
         profile_data,

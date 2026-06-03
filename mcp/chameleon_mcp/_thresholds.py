@@ -14,6 +14,7 @@ readers should use ``threshold('NAME')`` to pick up env overrides.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Final
 
@@ -59,7 +60,12 @@ def threshold(name: str) -> int | float:
         return default
     try:
         if isinstance(default, float):
-            return float(raw)
+            value = float(raw)
+            # NaN/inf would make every threshold comparison meaningless, and a
+            # negative threshold is never a sensible cap; reject all three.
+            if not math.isfinite(value) or value < 0:
+                return default
+            return value
         return int(raw)
     except ValueError:
         return default

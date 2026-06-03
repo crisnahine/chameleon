@@ -34,8 +34,9 @@ Lifecycle:
     stale socket + pidfile are cleaned up before respawn.
   - `stop_daemon()` sends SIGTERM, waits up to 5s, removes the socket
     + pidfile. Sends SIGKILL if the process is still alive at the deadline.
-  - `is_daemon_alive()` reads the pidfile and probes the PID with
-    `os.kill(pid, 0)`.
+  - `is_daemon_alive()` reads the pidfile, probes the PID with
+    `os.kill(pid, 0)`, and requires the recorded socket to accept a
+    connection (a live PID alone can be a recycled, unrelated process).
   - The daemon's main loop tracks `last_request_at` and shuts itself
     down after `IDLE_TIMEOUT_S` seconds of no activity. Configurable
     via the `CHAMELEON_DAEMON_IDLE_TIMEOUT` env var (tests use a low
@@ -293,16 +294,43 @@ def _read_pidfile() -> tuple[int | None, str | None]:
     return pid, sock
 
 
+def _socket_connectable(sock_path: str) -> bool:
+    """True iff a short-timeout AF_UNIX connect to ``sock_path`` succeeds.
+
+    A bound, listening daemon accepts the connect; a leftover socket file with
+    no listener, a wrong-type path, or a missing AF_UNIX family all fail. Any
+    error means not connectable, so callers can treat a False as "no daemon
+    here". Fail-safe: never raises."""
+    if not _af_unix_available():
+        return False
+    try:
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(0.5)
+        try:
+            probe.connect(sock_path)
+            return True
+        finally:
+            probe.close()
+    except OSError:
+        return False
+
+
 def is_daemon_alive() -> bool:
-    """True iff the pidfile points at a running process AND its socket exists."""
+    """True iff the pidfile points at a running process AND its recorded socket
+    accepts a connection.
+
+    A live PID alone is not enough: PIDs are recycled, so an unrelated live
+    process can inherit a dead daemon's PID. A real daemon always records its
+    socket and keeps it bound, so we require an actual connect to that socket.
+    A pidfile with no socket line therefore cannot be our daemon."""
     pid, sock = _read_pidfile()
     if pid is None:
         return False
     if not _pid_alive(pid):
         return False
-    if sock and not Path(sock).exists():
+    if not sock:
         return False
-    return True
+    return _socket_connectable(sock)
 
 
 def _cleanup_stale() -> None:
@@ -760,15 +788,8 @@ def run_daemon() -> int:
 def _wait_for_socket(sock_path: Path, deadline: float) -> bool:
     """Poll until the socket accepts a connection or the deadline passes."""
     while time.monotonic() < deadline:
-        if sock_path.exists():
-            try:
-                probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                probe.settimeout(0.5)
-                probe.connect(str(sock_path))
-                probe.close()
-                return True
-            except OSError:
-                pass
+        if sock_path.exists() and _socket_connectable(str(sock_path)):
+            return True
         time.sleep(0.05)
     return False
 

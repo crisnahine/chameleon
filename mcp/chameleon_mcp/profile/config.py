@@ -119,7 +119,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
             f"unknown key(s) under enforcement: {sorted(unknown)!r}; allowed: {sorted(allowed)!r}"
         )
     mode = raw.get("mode", "shadow")
-    if mode not in _VALID_ENFORCE_MODES:
+    if not isinstance(mode, str) or mode not in _VALID_ENFORCE_MODES:
         raise ChameleonConfigError(
             f"`enforcement.mode` must be one of {sorted(_VALID_ENFORCE_MODES)}, got {mode!r}"
         )
@@ -203,7 +203,7 @@ def _coerce_trust(raw: Any) -> TrustConfig:
     # Absent key defaults to "always" (auto-trust on refresh); an explicit null
     # opts back into re-prompting.
     apw = raw.get("auto_preserve_when", "always")
-    if apw not in _VALID_AUTO_PRESERVE:
+    if not (apw is None or isinstance(apw, str)) or apw not in _VALID_AUTO_PRESERVE:
         raise ChameleonConfigError(
             f"`trust.auto_preserve_when` must be one of {sorted(s for s in _VALID_AUTO_PRESERVE if s)} or null, got {apw!r}"
         )

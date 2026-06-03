@@ -1238,11 +1238,11 @@ def preflight_and_advise() -> int:
     )
     if trust_state == "stale":
         block += (
-            "**Trust is stale**: a recent /chameleon-refresh (or manual edit) "
-            "changed `.chameleon/profile.json` after the trust grant. Trust is "
-            "tied to the profile sha, so the grant no longer covers the current "
-            "profile. Suggest /chameleon-trust to re-confirm. Do not block the "
-            "edit; chameleon advisory is provided below for reference only.\n\n"
+            "**Trust is stale**: a recent /chameleon-refresh, /chameleon-teach, "
+            "or manual edit changed the committed profile after the trust grant. "
+            "Trust is tied to the profile sha, so the grant no longer covers the "
+            "current profile. Suggest /chameleon-trust to re-confirm. Do not block "
+            "the edit; chameleon advisory is provided below for reference only.\n\n"
         )
     if excerpt_content:
         block += "Canonical witness:\n```\n"
@@ -1256,9 +1256,12 @@ def preflight_and_advise() -> int:
         block += idioms_text.rstrip() + "\n\n"
     if rules_count:
         # Rules are verbose lint/formatter config; keep the pointer rather than
-        # flooding the block, but inline the idioms above.
+        # flooding the block, but inline the idioms above. Rules are repo-global
+        # (scoped by source, not by archetype), so the pointer names the repo,
+        # not the archetype, to avoid a failed lookup.
         block += (
-            f"Rules: {rules_count} apply — call get_rules({archetype_name!r}) for the config.\n"
+            f"Rules: {rules_count} repo-wide lint/format rules apply — "
+            "call get_rules with this repo's path or id for the config.\n"
         )
     try:
         from chameleon_mcp.conventions import format_directory_listing
@@ -1771,7 +1774,8 @@ def posttool_verify() -> int:
                 violation_lines.append(f"{i + 1}. {msg}")
 
             block = (
-                f"[🦎 chameleon: {len(violations)} violations]\n"
+                f"[🦎 chameleon: {len(violations)} "
+                f"violation{'s' if len(violations) != 1 else ''}]\n"
                 + "\n".join(violation_lines)
                 + "\n"
                 + current_tone

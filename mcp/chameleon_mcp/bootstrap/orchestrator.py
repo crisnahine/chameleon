@@ -1025,8 +1025,11 @@ def bootstrap_repo(
         elif any(w.get("status") == "success" for w in workspace_reports):
             # Coordinator-only root (no own language) but >=1 workspace
             # bootstrapped — report partial success so the envelope doesn't
-            # claim init failed when profiles were actually created.
+            # claim init failed when profiles were actually created. Clear the
+            # root's "no language signals" error so a success envelope doesn't
+            # also carry a failure-sounding string.
             report.status = "success_workspaces_only"
+            report.error = None
 
     return report
 
@@ -1650,7 +1653,9 @@ def _bootstrap_single(
     if existing_idioms_path.is_file():
         try:
             idioms_content = existing_idioms_path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
+            # UnicodeDecodeError is a ValueError, not an OSError, so a non-UTF8
+            # idioms.md must be caught explicitly or refresh crashes mid-preserve.
             idioms_content = _EMPTY_IDIOMS_TEMPLATE
     else:
         idioms_content = _EMPTY_IDIOMS_TEMPLATE
