@@ -810,6 +810,7 @@ def preflight_and_advise() -> int:
         trust_state: str | None = None,
         archetype: str | None = None,
         confidence: str | None = None,
+        would_block: bool = False,
     ) -> None:
         try:
             from chameleon_mcp.metrics import emit_hook_metric
@@ -824,6 +825,7 @@ def preflight_and_advise() -> int:
                 trust_state=trust_state,
                 archetype=archetype,
                 confidence=confidence,
+                would_block=would_block,
             )
         except Exception:
             pass
@@ -994,6 +996,63 @@ def preflight_and_advise() -> int:
     safe_name = sanitize_for_chameleon_context(archetype_name or "")
     safe_band = sanitize_for_chameleon_context(confidence_band or "unknown")
     safe_match = sanitize_for_chameleon_context(str(match_quality))
+
+    # PreToolUse deny: a banned import in the PROPOSED content blocks the write
+    # before it lands, but only when the repo opted into enforcement, calibration
+    # marked the rule safe to block here, and the archetype was AST-confirmed at
+    # high confidence. Untrusted repos already returned above. Shadow mode records
+    # a would_block metric and falls through to the advisory. Fail-open: any error
+    # leaves the advisory path untouched.
+    try:
+        if (
+            os.environ.get("CHAMELEON_ENFORCE") != "0"
+            and trust_state in ("trusted", "stale")
+            and repo_root_path is not None
+        ):
+            from chameleon_mcp.enforcement_calibration import active_block_rules
+            from chameleon_mcp.lint_engine import detect_language
+            from chameleon_mcp.prewrite_lint import banned_imports_in_content
+            from chameleon_mcp.profile.config import load_config
+
+            profile_dir = repo_root_path / ".chameleon"
+            if "import-preference-violation" in active_block_rules(profile_dir):
+                proposed = tool_input.get("new_string") or tool_input.get("content") or ""
+                if proposed and match_quality == "ast" and confidence_band == "high":
+                    conv_path = profile_dir / "conventions.json"
+                    conv = (
+                        json.loads(conv_path.read_text(encoding="utf-8")).get("conventions", {})
+                        if conv_path.is_file()
+                        else {}
+                    )
+                    banned = banned_imports_in_content(
+                        proposed,
+                        language=detect_language(file_path),
+                        archetype=archetype_name,
+                        conventions=conv,
+                    )
+                    if banned:
+                        mode = load_config(profile_dir).enforcement.mode
+                        if mode == "enforce":
+                            msg = banned[0].get("message", "banned import")
+                            _emit_pretool_deny(
+                                f"chameleon: {msg}. Use the preferred import, or add "
+                                "`// chameleon-ignore import-preference-violation` "
+                                "if intentional."
+                            )
+                            return 0
+                        if mode == "shadow":
+                            # Record the would-block counter, then fall through to
+                            # the advisory path. The advisory emits its own metric;
+                            # this would_block row is a distinct counter, so a shadow
+                            # would-block edit produces two rows by design.
+                            _metric(
+                                advisory_emitted=True,
+                                repo_id=repo_id,
+                                archetype=archetype_name,
+                                would_block=True,
+                            )
+    except Exception:
+        pass
 
     enforcement_state = None
     try:

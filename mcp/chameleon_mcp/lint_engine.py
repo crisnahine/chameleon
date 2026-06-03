@@ -916,7 +916,12 @@ def lint_conventions(
 
     violations: list[Violation] = []
 
-    if "import-preference" not in ignored_rules:
+    # Accept both the short directive token and the full emitted rule name. The
+    # PreToolUse deny message tells users to add the rule name
+    # (`import-preference-violation`); the short `import-preference` token
+    # predates it. Honor either so the advertised escape hatch actually clears
+    # the scan.
+    if not ignored_rules & {"import-preference", "import-preference-violation"}:
         for competing in (conventions.get("imports") or {}).get("competing", []):
             if not isinstance(competing, dict):
                 continue
