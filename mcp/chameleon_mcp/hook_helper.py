@@ -154,10 +154,17 @@ def _update_statusline(
     activity: str,
     repo_name: str | None = None,
     trust_state: str | None = None,
+    repo_root: Path | None = None,
 ) -> None:
-    """Update the statusline cache with live activity + trust state. Fail-open."""
+    """Update the statusline cache with live activity + trust state. Fail-open.
+
+    ``repo_root`` places the cache under the repo root's ``.claude/`` so a
+    subdir-launched session updates the same file SessionStart wrote and the
+    statusline script reads. Falls back to cwd when the root is unknown.
+    """
     try:
-        cache = Path.cwd() / ".claude" / ".chameleon-statusline-cache"
+        base = repo_root if repo_root else Path.cwd()
+        cache = base / ".claude" / ".chameleon-statusline-cache"
         if cache.is_file():
             data = json.loads(cache.read_text(encoding="utf-8"))
             data["activity"] = activity
@@ -585,10 +592,44 @@ def session_start() -> int:
     except Exception:
         pass
 
+    # Detect a code upgrade (the running package path differs from the installed
+    # one) and stop the stale daemon. This runs unconditionally: a workspace whose
+    # root has no profile still launched the old daemon, and leaving it alive lets
+    # the new hooks connect back to stale linting/clustering logic for up to the
+    # idle timeout. The detected version is reused for the statusline "update"
+    # badge below when a profile exists.
+    upgrade_badge: str | None = None
+    try:
+        import chameleon_mcp as _cm
+
+        running_pkg = Path(_cm.__file__).resolve().parent
+        installed_pkg = (Path(plugin_root) / "mcp" / "chameleon_mcp").resolve()
+        if running_pkg != installed_pkg:
+            installed_init = installed_pkg / "__init__.py"
+            installed_version = ""
+            if installed_init.is_file():
+                for line in installed_init.read_text(encoding="utf-8").splitlines():
+                    if line.startswith("__version__"):
+                        installed_version = line.split("=", 1)[1].strip().strip("\"'")
+                        break
+            upgrade_badge = installed_version or "new"
+            try:
+                from chameleon_mcp.daemon import stop_daemon
+
+                stop_daemon(timeout=2.0)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     try:
         from chameleon_mcp.profile.trust import hash_profile, trust_state_for
 
-        cache_dir = Path.cwd() / ".claude"
+        # Place the statusline cache under the repo root, not the launch cwd. The
+        # statusline script reads it at the repo root, so a subdir-launched session
+        # (e.g. claude started from repo/tests) must still write there.
+        sl_base = repo_root if repo_root else Path.cwd()
+        cache_dir = sl_base / ".claude"
         sl_cache = cache_dir / ".chameleon-statusline-cache"
         profiles: list[dict] = []
 
@@ -610,9 +651,11 @@ def session_start() -> int:
         if has_own_profile:
             profiles.append({"name": repo_root.name, "trust": _trust_for(repo_root)})
         else:
-            cwd = Path.cwd()
+            # Scan from the repo root, not the launch cwd, so sibling-workspace
+            # profiles are discovered when Claude is launched from a subdirectory.
+            scan_dir = repo_root if repo_root else Path.cwd()
             try:
-                children = sorted(cwd.iterdir())
+                children = sorted(scan_dir.iterdir())
             except OSError:
                 children = []
             for child in children:
@@ -631,37 +674,18 @@ def session_start() -> int:
 
         if profiles:
             cache_data: dict = {"profiles": profiles}
-
-            try:
-                import chameleon_mcp as _cm
-
-                running_pkg = Path(_cm.__file__).resolve().parent
-                installed_pkg = (Path(plugin_root) / "mcp" / "chameleon_mcp").resolve()
-                if running_pkg != installed_pkg:
-                    installed_init = installed_pkg / "__init__.py"
-                    installed_version = ""
-                    if installed_init.is_file():
-                        for line in installed_init.read_text(encoding="utf-8").splitlines():
-                            if line.startswith("__version__"):
-                                installed_version = line.split("=", 1)[1].strip().strip("\"'")
-                                break
-                    cache_data["update"] = installed_version or "new"
-                    try:
-                        from chameleon_mcp.daemon import stop_daemon
-
-                        stop_daemon(timeout=2.0)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
+            if upgrade_badge:
+                cache_data["update"] = upgrade_badge
             cache_dir.mkdir(parents=True, exist_ok=True)
             _atomic_write_text(sl_cache, json.dumps(cache_data))
     except Exception:
         pass
 
     try:
-        project_dir = Path.cwd()
+        # Wire the statusline command into the repo root's settings, matching the
+        # cache placement above: Claude resolves project settings at the workspace
+        # root, so a subdir-launched session must not split them into the subdir.
+        project_dir = repo_root if repo_root else Path.cwd()
         script_path = Path(plugin_root) / "bin" / "chameleon-statusline.sh"
         if script_path.is_file():
             local_settings = project_dir / ".claude" / "settings.local.json"
@@ -1038,7 +1062,13 @@ def preflight_and_advise() -> int:
                     if banned and not ("" in ign or "import-preference-violation" in ign):
                         mode = load_config(profile_dir).enforcement.mode
                         if mode == "enforce":
-                            msg = banned[0].get("message", "banned import")
+                            # The message is built from attacker-controllable
+                            # conventions.json values, so sanitize it before it
+                            # lands in the deny reason fed back to the model
+                            # (parity with the advisory additionalContext path).
+                            msg = sanitize_for_chameleon_context(
+                                banned[0].get("message", "banned import")
+                            )
                             _emit_pretool_deny(
                                 f"chameleon: {msg}. Use the preferred import, or add "
                                 "`// chameleon-ignore import-preference-violation` "
@@ -1128,6 +1158,7 @@ def preflight_and_advise() -> int:
             f"{safe_name} ({safe_band})",
             repo_name=repo_root_path.name if repo_root_path else None,
             trust_state=trust_state,
+            repo_root=repo_root_path,
         )
         return 0
 
@@ -1184,6 +1215,7 @@ def preflight_and_advise() -> int:
         f"{safe_name} ({safe_band})",
         repo_name=repo_root_path.name if repo_root_path else None,
         trust_state=trust_state,
+        repo_root=repo_root_path,
     )
     return 0
 
@@ -1235,7 +1267,11 @@ _VERIFY_SEEN_TTL_SECONDS = 30
 
 
 def _lint_file_in_process(
-    repo_root: Path, archetype_name: str, content: str, file_path: str
+    repo_root: Path,
+    archetype_name: str,
+    content: str,
+    file_path: str,
+    loaded=None,
 ) -> list[dict]:
     """Run the archetype AST-shape, convention, and phantom-import lints against
     ``content`` in-process and return the merged violation dicts.
@@ -1244,6 +1280,10 @@ def _lint_file_in_process(
     factored out so the Stop backstop can re-lint a file live without the daemon
     dependency. Each sub-lint fails open: a sub-lint that raises contributes no
     violations rather than aborting the whole re-check.
+
+    ``loaded`` lets a caller that re-checks many files in one pass (the Stop
+    backstop) load the profile once and reuse it, avoiding a per-file profile
+    re-read for every candidate.
     """
     from chameleon_mcp.lint_engine import (
         detect_language,
@@ -1252,10 +1292,12 @@ def _lint_file_in_process(
         lint_conventions,
         recalibrate_ast_query,
     )
-    from chameleon_mcp.profile.loader import load_profile_dir
-    from chameleon_mcp.tools import _effective_profile_dir
 
-    loaded = load_profile_dir(_effective_profile_dir(repo_root))
+    if loaded is None:
+        from chameleon_mcp.profile.loader import load_profile_dir
+        from chameleon_mcp.tools import _effective_profile_dir
+
+        loaded = load_profile_dir(_effective_profile_dir(repo_root))
     canonicals = (loaded.canonicals.get("canonicals") or {}).get(archetype_name) or []
     ast_query: dict | None = None
     if canonicals:
@@ -1628,11 +1670,15 @@ def posttool_verify() -> int:
                                 save_state(enforcement_state, repo_data_dir, session_id or "")
                             except Exception:
                                 pass
+                        # Rule names and messages derive from attacker-controllable
+                        # conventions.json, so sanitize them before they reach the
+                        # block reason fed back to the model, not just the advisory
+                        # additionalContext channel.
                         safe_rules = sanitize_for_chameleon_context(rules)
                         safe_msgs = sanitize_for_chameleon_context(msgs)
                         _emit_posttool_block(
-                            f"chameleon blocks this edit: {rules}. "
-                            f"Fix before continuing: {msgs}. "
+                            f"chameleon blocks this edit: {safe_rules}. "
+                            f"Fix before continuing: {safe_msgs}. "
                             f"Override with `// chameleon-ignore <rule>` "
                             f"if this is intentional.",
                             "<chameleon-context>\n"
@@ -1677,7 +1723,10 @@ def posttool_verify() -> int:
                     pass
 
             _emit_posttool_context(f"<chameleon-context>\n{block}\n</chameleon-context>")
-            _update_statusline(f"{len(violations)} violation{'s' if len(violations) != 1 else ''}")
+            _update_statusline(
+                f"{len(violations)} violation{'s' if len(violations) != 1 else ''}",
+                repo_root=repo_root,
+            )
 
             if enforcement_state is not None:
                 try:
@@ -1713,10 +1762,10 @@ def posttool_verify() -> int:
             _emit_posttool_context(
                 "<chameleon-context>\n[🦎 archetype: clean]\n</chameleon-context>"
             )
-            _update_statusline("clean")
+            _update_statusline("clean", repo_root=repo_root)
         else:
             _emit({})
-            _update_statusline("clean")
+            _update_statusline("clean", repo_root=repo_root)
 
         if enforcement_state is not None:
             try:
@@ -1828,7 +1877,7 @@ def callout_detector() -> int:
     return 0
 
 
-def _stop_file_still_blockable(repo_root: Path, file_path: str) -> bool:
+def _stop_file_still_blockable(repo_root: Path, file_path: str, loaded=None) -> bool:
     """Re-lint a candidate file live and report whether an enforceable hard-class
     violation still stands.
 
@@ -1846,6 +1895,9 @@ def _stop_file_still_blockable(repo_root: Path, file_path: str) -> bool:
     high or medium confidence, matching the per-edit block gate. Inline-ignored rules never
     count. Returns False on any error (fail-open: a re-check that can't run does
     not block).
+
+    ``loaded`` is the once-per-pass profile the backstop preloads so the per-file
+    re-lint does not re-read the profile for every candidate.
     """
     try:
         p = Path(file_path)
@@ -1879,7 +1931,9 @@ def _stop_file_still_blockable(repo_root: Path, file_path: str) -> bool:
         if not archetype_name:
             return False
 
-        violations = _lint_file_in_process(repo_root, archetype_name, content, file_path)
+        violations = _lint_file_in_process(
+            repo_root, archetype_name, content, file_path, loaded=loaded
+        )
         if not violations:
             return False
 
@@ -2141,6 +2195,19 @@ def stop_backstop() -> int:
         # to the import target, leaving the importing file un-reverified). Files
         # that re-verify clean have their flag cleared and the state persisted, so
         # the heal sticks and they aren't re-checked next turn.
+        #
+        # Load the profile once for the whole pass: every candidate re-lints
+        # against the same profile, so re-reading it per file just multiplies the
+        # stat + witness recalibration cost across the candidate set.
+        preloaded = None
+        try:
+            from chameleon_mcp.profile.loader import load_profile_dir
+            from chameleon_mcp.tools import _effective_profile_dir
+
+            preloaded = load_profile_dir(_effective_profile_dir(repo_root))
+        except Exception:
+            preloaded = None
+
         unresolved: list[str] = []
         cleared_any = False
         for path, fs in state.files.items():
@@ -2149,7 +2216,7 @@ def stop_backstop() -> int:
                 continue
             if not (fs.level >= LEVEL_L2 and fs.blockable_unresolved):
                 continue
-            if _stop_file_still_blockable(repo_root, path):
+            if _stop_file_still_blockable(repo_root, path, loaded=preloaded):
                 unresolved.append(path)
             else:
                 fs.blockable_unresolved = False
