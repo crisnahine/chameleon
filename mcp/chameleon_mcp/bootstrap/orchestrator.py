@@ -1461,6 +1461,20 @@ def _bootstrap_single(
         language=extractor.language,
     )
 
+    # Carry user-taught banned imports (conventions.imports.<arch>.competing) across
+    # the re-derive. extract_all_conventions only produces the derived `preferred`
+    # lists, so without this a refresh drops every /chameleon-teach banned import and
+    # silently disables banned-import enforcement.
+    try:
+        prior_conv_path = profile_dir / "conventions.json"
+        if prior_conv_path.is_file():
+            from chameleon_mcp.conventions import merge_taught_competing
+
+            prior_conv = json.loads(prior_conv_path.read_text(encoding="utf-8"))
+            merge_taught_competing(prior_conv, conventions_data)
+    except Exception:
+        pass
+
     profile_data: dict = {
         "schema_version": PROFILE_SCHEMA_VERSION,
         "engine_min_version": ENGINE_MIN_VERSION,

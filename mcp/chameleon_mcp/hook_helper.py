@@ -1000,7 +1000,7 @@ def preflight_and_advise() -> int:
     # PreToolUse deny: a banned import in the PROPOSED content blocks the write
     # before it lands, but only when the repo opted into enforcement, calibration
     # marked the rule safe to block here, and the archetype was AST-confirmed at
-    # high confidence. Only a "trusted" grant denies; a "stale" profile (its hash
+    # high or medium confidence. Only a "trusted" grant denies; a "stale" profile (its hash
     # drifted from the granted one) stays advisory, since the conventions it would
     # enforce were never re-reviewed. Untrusted repos already returned above.
     # Shadow mode records a would_block metric and falls through to the advisory.
@@ -1019,7 +1019,7 @@ def preflight_and_advise() -> int:
             profile_dir = repo_root_path / ".chameleon"
             if "import-preference-violation" in active_block_rules(profile_dir):
                 proposed = tool_input.get("new_string") or tool_input.get("content") or ""
-                if proposed and match_quality == "ast" and confidence_band == "high":
+                if proposed and match_quality == "ast" and confidence_band in ("high", "medium"):
                     conv_path = profile_dir / "conventions.json"
                     conv = (
                         json.loads(conv_path.read_text(encoding="utf-8")).get("conventions", {})
@@ -1594,7 +1594,7 @@ def posttool_verify() -> int:
                 data = arch_result.get("data") or {}
                 match_quality = data.get("match_quality")
                 gate_band = data.get("confidence_band")
-                gate_ok = (gate_band == "high") and (match_quality == "ast")
+                gate_ok = (match_quality == "ast") and (gate_band in ("high", "medium"))
                 at_l2 = file_state is not None and file_state.level >= 2
                 trusted_not_stale = _gate_rec.hash_for_root(repo_root) == hash_profile(
                     repo_root / ".chameleon"
@@ -1843,7 +1843,7 @@ def _stop_file_still_blockable(repo_root: Path, file_path: str) -> bool:
     A hard violation counts only if it is enforceable on the live file: an
     archetype-independent rule (a filesystem fact) always counts; an
     archetype-dependent rule counts only when the archetype is AST-confirmed at
-    high confidence, matching the per-edit block gate. Inline-ignored rules never
+    high or medium confidence, matching the per-edit block gate. Inline-ignored rules never
     count. Returns False on any error (fail-open: a re-check that can't run does
     not block).
     """
@@ -1895,7 +1895,7 @@ def _stop_file_still_blockable(repo_root: Path, file_path: str) -> bool:
         ign = ignored_rules(content) or set()
         if ign:
             hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
-        gate_ok = (confidence_band == "high") and (match_quality == "ast")
+        gate_ok = (match_quality == "ast") and (confidence_band in ("high", "medium"))
         for v in hard:
             if is_archetype_independent(v.get("rule")) or gate_ok:
                 return True

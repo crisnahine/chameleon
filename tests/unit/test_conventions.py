@@ -798,3 +798,60 @@ class TestEchoProtocolReminder:
             empty_conventions(generation=1), archetype="service", principles_text=""
         )
         assert "Verify symbols/imports/paths exist" in out
+
+
+def test_merge_taught_competing_preserves_across_rederive():
+    from chameleon_mcp.conventions import merge_taught_competing
+
+    prior = {
+        "conventions": {
+            "imports": {
+                "component": {
+                    "preferred": [{"module": "react"}],
+                    "competing": [{"over": "moment", "preferred": "date-fns"}],
+                }
+            }
+        }
+    }
+    # A freshly derived profile only has the derived `preferred`, no competing.
+    new = {
+        "conventions": {
+            "imports": {"component": {"preferred": [{"module": "react"}], "competing": []}}
+        }
+    }
+    merge_taught_competing(prior, new)
+    comp = new["conventions"]["imports"]["component"]["competing"]
+    assert {"over": "moment", "preferred": "date-fns"} in comp
+
+
+def test_merge_taught_competing_dedupes_and_handles_missing_archetype():
+    from chameleon_mcp.conventions import merge_taught_competing
+
+    prior = {
+        "conventions": {
+            "imports": {
+                "gone-archetype": {"competing": [{"over": "x", "preferred": "y"}]},
+                "kept": {"competing": [{"over": "a", "preferred": "b"}]},
+            }
+        }
+    }
+    new = {
+        "conventions": {
+            "imports": {"kept": {"preferred": [], "competing": [{"over": "a", "preferred": "b"}]}}
+        }
+    }
+    merge_taught_competing(prior, new)
+    # dedupe: 'a'->'b' not duplicated
+    assert new["conventions"]["imports"]["kept"]["competing"] == [{"over": "a", "preferred": "b"}]
+    # orphaned archetype's taught rule is still carried (created)
+    assert new["conventions"]["imports"]["gone-archetype"]["competing"] == [
+        {"over": "x", "preferred": "y"}
+    ]
+
+
+def test_merge_taught_competing_noop_when_no_prior():
+    from chameleon_mcp.conventions import merge_taught_competing
+
+    new = {"conventions": {"imports": {"c": {"preferred": [], "competing": []}}}}
+    merge_taught_competing({}, new)
+    assert new["conventions"]["imports"]["c"]["competing"] == []

@@ -36,6 +36,37 @@ def serialize_conventions(conventions: dict) -> str:
     return json.dumps(conventions, indent=2, sort_keys=False, ensure_ascii=False)
 
 
+def merge_taught_competing(prior: dict, new: dict) -> None:
+    """Carry user-taught banned imports across a re-derive, mutating ``new``.
+
+    ``extract_all_conventions`` only derives the ``preferred`` import lists; the
+    ``competing`` entries under ``conventions.imports.<archetype>`` are added by
+    /chameleon-teach and have no derived source, so a refresh would otherwise drop
+    them and silently disable banned-import enforcement. Both args use the on-disk
+    shape ``{"conventions": {"imports": {<arch>: {"preferred", "competing"}}}}``.
+    Competing entries already present in ``new`` are kept; missing ones are
+    appended; duplicates (same over/preferred pair) are not re-added.
+    """
+    prior_imports = (prior or {}).get("conventions", {}).get("imports", {})
+    if not isinstance(prior_imports, dict) or not prior_imports:
+        return
+    new_imports = new.setdefault("conventions", {}).setdefault("imports", {})
+    for archetype, entry in prior_imports.items():
+        competing = (entry or {}).get("competing") or []
+        if not isinstance(competing, list) or not competing:
+            continue
+        dst = new_imports.setdefault(archetype, {"preferred": [], "competing": []})
+        if not isinstance(dst.get("competing"), list):
+            dst["competing"] = []
+        seen = {
+            (c.get("over"), c.get("preferred")) for c in dst["competing"] if isinstance(c, dict)
+        }
+        for c in competing:
+            if isinstance(c, dict) and (c.get("over"), c.get("preferred")) not in seen:
+                dst["competing"].append(c)
+                seen.add((c.get("over"), c.get("preferred")))
+
+
 _FRAMEWORK_THRESHOLD = 0.80
 _MIN_PREFERRED_COUNT = 10
 _MIN_COMPETING_COUNT = 5
