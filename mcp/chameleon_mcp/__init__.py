@@ -3,7 +3,7 @@
 See docs/architecture.md for the full design.
 """
 
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 
 try:
     from importlib.metadata import PackageNotFoundError as _PkgNotFound

@@ -45,6 +45,11 @@ def make_trusted_repo(tmp_path):
             json.dumps({"enforcement": {"mode": mode, "stop_block_cap": stop_block_cap}}),
             encoding="utf-8",
         )
+        # profile.json gives hash_profile() a non-empty hash; the trust record
+        # below mirrors it so the backstop's not-stale gate reads "trusted".
+        profile_dir.joinpath("profile.json").write_text(
+            json.dumps({"version": 1}), encoding="utf-8"
+        )
 
         data_dir = tmp_path / repo_id
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -54,8 +59,11 @@ def make_trusted_repo(tmp_path):
 
         session_id = "s-stop"
 
+        from chameleon_mcp.profile.trust import hash_profile
+
         trust_rec = MagicMock()
         trust_rec.grants_root.return_value = True
+        trust_rec.hash_for_root.return_value = hash_profile(profile_dir)
 
         stack.enter_context(patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo))
         stack.enter_context(patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id))
@@ -77,12 +85,20 @@ def make_trusted_repo(tmp_path):
         stack.close()
 
 
-def _run_stop(payload, env):
+def _run_stop(payload, env, *, still_blockable: bool = True):
+    """Drive stop_backstop. ``still_blockable`` stubs the cold-path live re-lint
+    so these tests stay focused on the backstop's decision logic (cap, mode,
+    stale gate) rather than the lint internals, which the false-positive battery
+    covers end-to-end."""
     cap = []
     with (
         patch("sys.stdin", io.StringIO(json.dumps(payload))),
         patch("sys.stdout") as out,
         patch.dict(os.environ, env, clear=False),
+        patch(
+            "chameleon_mcp.hook_helper._stop_file_still_blockable",
+            return_value=still_blockable,
+        ),
     ):
         out.write = cap.append
         from chameleon_mcp.hook_helper import stop_backstop
@@ -130,6 +146,44 @@ def test_cap_reached_allows_stop(make_trusted_repo):
         {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
         env={"CHAMELEON_ENFORCE": "1"},
     )
+    assert out.get("decision") != "block"
+
+
+def test_resolved_candidate_clears_flag_and_allows_stop(make_trusted_repo):
+    # A candidate whose live re-lint comes back clean must not block, and its
+    # stale blockable_unresolved flag must be cleared so it isn't re-checked.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    Path(file_path).write_text("export const C = 1\n", encoding="utf-8")
+    st = EnforcementState()
+    st.files[file_path] = FileState(level=2, blockable_unresolved=True)
+    save_state(st, data_dir, sid)
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+        still_blockable=False,
+    )
+    assert out.get("decision") != "block"
+    from chameleon_mcp.enforcement import load_state
+
+    healed = load_state(data_dir, sid).files[file_path]
+    assert healed.blockable_unresolved is False
+
+
+def test_stale_trust_does_not_block_stop(make_trusted_repo):
+    # A stale grant (granted hash no longer matches the live profile) must not
+    # block even with an unresolved blockable violation on a still-live file.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    Path(file_path).write_text("export const C = 1\n", encoding="utf-8")
+    st = EnforcementState()
+    st.files[file_path] = FileState(level=2, blockable_unresolved=True)
+    save_state(st, data_dir, sid)
+
+    # Override the fixture's matching hash so the not-stale gate reads "stale".
+    with patch("chameleon_mcp.profile.trust.hash_profile", return_value="DRIFTED-DOES-NOT-MATCH"):
+        out = _run_stop(
+            {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+            env={"CHAMELEON_ENFORCE": "1"},
+        )
     assert out.get("decision") != "block"
 
 

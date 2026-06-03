@@ -1000,13 +1000,15 @@ def preflight_and_advise() -> int:
     # PreToolUse deny: a banned import in the PROPOSED content blocks the write
     # before it lands, but only when the repo opted into enforcement, calibration
     # marked the rule safe to block here, and the archetype was AST-confirmed at
-    # high confidence. Untrusted repos already returned above. Shadow mode records
-    # a would_block metric and falls through to the advisory. Fail-open: any error
-    # leaves the advisory path untouched.
+    # high confidence. Only a "trusted" grant denies; a "stale" profile (its hash
+    # drifted from the granted one) stays advisory, since the conventions it would
+    # enforce were never re-reviewed. Untrusted repos already returned above.
+    # Shadow mode records a would_block metric and falls through to the advisory.
+    # Fail-open: any error leaves the advisory path untouched.
     try:
         if (
             os.environ.get("CHAMELEON_ENFORCE") != "0"
-            and trust_state in ("trusted", "stale")
+            and trust_state == "trusted"
             and repo_root_path is not None
         ):
             from chameleon_mcp.enforcement_calibration import active_block_rules
@@ -1232,6 +1234,85 @@ _EDIT_TOOLS: frozenset[str] = frozenset({"Edit", "Write", "NotebookEdit"})
 _VERIFY_SEEN_TTL_SECONDS = 30
 
 
+def _lint_file_in_process(
+    repo_root: Path, archetype_name: str, content: str, file_path: str
+) -> list[dict]:
+    """Run the archetype AST-shape, convention, and phantom-import lints against
+    ``content`` in-process and return the merged violation dicts.
+
+    This is the same orchestration posttool_verify uses on its non-daemon path,
+    factored out so the Stop backstop can re-lint a file live without the daemon
+    dependency. Each sub-lint fails open: a sub-lint that raises contributes no
+    violations rather than aborting the whole re-check.
+    """
+    from chameleon_mcp.lint_engine import (
+        detect_language,
+        extract_dimensions,
+        lint,
+        lint_conventions,
+        recalibrate_ast_query,
+    )
+    from chameleon_mcp.profile.loader import load_profile_dir
+    from chameleon_mcp.tools import _effective_profile_dir
+
+    loaded = load_profile_dir(_effective_profile_dir(repo_root))
+    canonicals = (loaded.canonicals.get("canonicals") or {}).get(archetype_name) or []
+    ast_query: dict | None = None
+    if canonicals:
+        first = canonicals[0] or {}
+        ast_query = (first.get("normative_shape") or {}).get("ast_query")
+        witness_rel = (first.get("witness") or {}).get("path")
+        if ast_query and witness_rel:
+            w_full = repo_root / witness_rel
+            if w_full.is_file():
+                w_raw = w_full.read_bytes()[:100_000].decode("utf-8", errors="replace")
+                w_lang = detect_language(witness_rel)
+                w_snap = extract_dimensions(w_raw, language=w_lang, file_path=witness_rel)
+                ast_query = recalibrate_ast_query(w_snap)
+    language = detect_language(file_path)
+    violations: list[dict] = []
+    if ast_query:
+        snapshot = extract_dimensions(content, language=language, file_path=file_path)
+        violations = [v.to_dict() for v in lint(snapshot, ast_query)]
+
+    try:
+        conv_data = (
+            loaded.conventions.get("conventions", {}) if hasattr(loaded, "conventions") else {}
+        )
+        arch_conv: dict = {}
+        if conv_data.get("imports", {}).get(archetype_name):
+            arch_conv["imports"] = conv_data["imports"][archetype_name]
+        if conv_data.get("naming", {}).get(archetype_name):
+            arch_conv["naming"] = conv_data["naming"][archetype_name]
+        if conv_data.get("inheritance", {}).get(archetype_name):
+            arch_conv["inheritance"] = conv_data["inheritance"][archetype_name]
+        if arch_conv:
+            conv_violations = lint_conventions(content, arch_conv, language=language)
+            violations.extend(
+                v.to_dict() for v in conv_violations if v.rule != "secret-detected-in-content"
+            )
+    except Exception:
+        pass
+
+    try:
+        from chameleon_mcp.phantom_imports import lint_phantom_imports
+
+        violations.extend(
+            v.to_dict()
+            for v in lint_phantom_imports(
+                content,
+                file_path=file_path,
+                repo_root=repo_root,
+                language=language,
+                rules=loaded.rules,
+            )
+        )
+    except Exception:
+        pass
+
+    return violations
+
+
 def posttool_verify() -> int:
     """PostToolUse Edit/Write/NotebookEdit: archetype conformance lint.
 
@@ -1434,73 +1515,7 @@ def posttool_verify() -> int:
             pass
 
         if not daemon_responded:
-            from chameleon_mcp.lint_engine import (
-                detect_language,
-                extract_dimensions,
-                lint,
-                lint_conventions,
-                recalibrate_ast_query,
-            )
-            from chameleon_mcp.profile.loader import load_profile_dir
-            from chameleon_mcp.tools import _effective_profile_dir
-
-            loaded = load_profile_dir(_effective_profile_dir(repo_root))
-            canonicals = (loaded.canonicals.get("canonicals") or {}).get(archetype_name) or []
-            ast_query: dict | None = None
-            if canonicals:
-                first = canonicals[0] or {}
-                ast_query = (first.get("normative_shape") or {}).get("ast_query")
-                witness_rel = (first.get("witness") or {}).get("path")
-                if ast_query and witness_rel:
-                    w_full = repo_root / witness_rel
-                    if w_full.is_file():
-                        w_raw = w_full.read_bytes()[:100_000].decode("utf-8", errors="replace")
-                        w_lang = detect_language(witness_rel)
-                        w_snap = extract_dimensions(w_raw, language=w_lang, file_path=witness_rel)
-                        ast_query = recalibrate_ast_query(w_snap)
-            language = detect_language(file_path)
-            if ast_query:
-                snapshot = extract_dimensions(content, language=language, file_path=file_path)
-                violations = [v.to_dict() for v in lint(snapshot, ast_query)]
-
-            try:
-                conv_data = (
-                    loaded.conventions.get("conventions", {})
-                    if hasattr(loaded, "conventions")
-                    else {}
-                )
-                arch_conv: dict = {}
-                if conv_data.get("imports", {}).get(archetype_name):
-                    arch_conv["imports"] = conv_data["imports"][archetype_name]
-                if conv_data.get("naming", {}).get(archetype_name):
-                    arch_conv["naming"] = conv_data["naming"][archetype_name]
-                if conv_data.get("inheritance", {}).get(archetype_name):
-                    arch_conv["inheritance"] = conv_data["inheritance"][archetype_name]
-                if arch_conv:
-                    conv_violations = lint_conventions(content, arch_conv, language=language)
-                    violations.extend(
-                        v.to_dict()
-                        for v in conv_violations
-                        if v.rule != "secret-detected-in-content"
-                    )
-            except Exception:
-                pass
-
-            try:
-                from chameleon_mcp.phantom_imports import lint_phantom_imports
-
-                violations.extend(
-                    v.to_dict()
-                    for v in lint_phantom_imports(
-                        content,
-                        file_path=file_path,
-                        repo_root=repo_root,
-                        language=language,
-                        rules=loaded.rules,
-                    )
-                )
-            except Exception:
-                pass
+            violations = _lint_file_in_process(repo_root, archetype_name, content, file_path)
 
         elapsed_ms = int((time.time() - _started) * 1000)
         try:
@@ -1528,23 +1543,25 @@ def posttool_verify() -> int:
                 from chameleon_mcp.enforcement_calibration import active_block_rules
                 from chameleon_mcp.violation_class import (
                     hard_class_violations,
+                    ignored_rules,
                     is_archetype_independent,
                 )
 
                 active = active_block_rules(repo_root / ".chameleon")
                 hard = hard_class_violations(violations, active)
+                # An inline `chameleon-ignore <rule>` directive (or a bare one)
+                # downgrades the matching rule to advisory. The lint layer already
+                # suppresses some rules on the directive, but the AST-query rules
+                # (e.g. jsx-presence-mismatch) reach here intact. Filter the hard
+                # set itself (not only blockable_now) so the cached
+                # blockable_unresolved flag the Stop backstop reads is cleared
+                # too; otherwise an inline-ignored rule still arms the backstop.
+                ign = ignored_rules(content) or set()
+                if ign:
+                    hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
                 # phantom imports are a filesystem fact handled at turn end
                 # (Stop backstop), never blocked inline here.
                 blockable_now = [v for v in hard if not is_archetype_independent(v.get("rule"))]
-                # An inline `chameleon-ignore <rule>` directive (or a bare one)
-                # downgrades the matching block to advisory. The lint layer
-                # already suppresses some rules on the directive, but the
-                # AST-query rules (e.g. jsx-presence-mismatch) reach here intact.
-                from chameleon_mcp.violation_class import ignored_rules
-
-                ign = ignored_rules(content) or set()
-                if ign:
-                    blockable_now = [v for v in blockable_now if not ({"", v.get("rule")} & ign)]
             except Exception:
                 hard = []
                 blockable_now = []
@@ -1565,9 +1582,12 @@ def posttool_verify() -> int:
             # archetype gates satisfied, on a file at L2, blocks the edit in
             # "enforce" mode. "shadow" only logs a would_block metric; everything
             # else falls through to the advisory below. CHAMELEON_ENFORCE=0 and
-            # mode "off" force advisory regardless.
+            # mode "off" force advisory regardless. A "stale" grant (the profile
+            # hash drifted from the one the user trusted) only verifies; it never
+            # blocks, because the conventions it would enforce were not re-reviewed.
             try:
                 from chameleon_mcp.profile.config import load_config
+                from chameleon_mcp.profile.trust import hash_profile
 
                 enforce_off = os.environ.get("CHAMELEON_ENFORCE") == "0"
                 mode = load_config(repo_root / ".chameleon").enforcement.mode
@@ -1576,7 +1596,17 @@ def posttool_verify() -> int:
                 gate_band = data.get("confidence_band")
                 gate_ok = (gate_band == "high") and (match_quality == "ast")
                 at_l2 = file_state is not None and file_state.level >= 2
-                if not enforce_off and mode != "off" and blockable_now and gate_ok and at_l2:
+                trusted_not_stale = _gate_rec.hash_for_root(repo_root) == hash_profile(
+                    repo_root / ".chameleon"
+                )
+                if (
+                    not enforce_off
+                    and mode != "off"
+                    and blockable_now
+                    and gate_ok
+                    and at_l2
+                    and trusted_not_stale
+                ):
                     try:
                         from chameleon_mcp.metrics import emit_hook_metric
 
@@ -1798,6 +1828,82 @@ def callout_detector() -> int:
     return 0
 
 
+def _stop_file_still_blockable(repo_root: Path, file_path: str) -> bool:
+    """Re-lint a candidate file live and report whether an enforceable hard-class
+    violation still stands.
+
+    The Stop backstop reads a cached blockable_unresolved flag that the per-edit
+    verify set. That flag can go stale: a phantom import that armed it may have
+    been resolved by a later edit to a *different* file (the import target was
+    created), so the importing file itself was never re-verified. This cold-path
+    re-check (only candidate files reach it) reads the live file, re-resolves the
+    archetype, and re-runs the same lints, so a resolved violation no longer
+    blocks the turn.
+
+    A hard violation counts only if it is enforceable on the live file: an
+    archetype-independent rule (a filesystem fact) always counts; an
+    archetype-dependent rule counts only when the archetype is AST-confirmed at
+    high confidence, matching the per-edit block gate. Inline-ignored rules never
+    count. Returns False on any error (fail-open: a re-check that can't run does
+    not block).
+    """
+    try:
+        p = Path(file_path)
+        if not p.is_file():
+            return False
+        content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+
+        archetype_name: str | None = None
+        confidence_band: str | None = None
+        match_quality: str | None = None
+        try:
+            from chameleon_mcp import daemon_client
+
+            arch_result = daemon_client.call(
+                "get_archetype", {"repo": str(repo_root), "file_path": file_path}
+            )
+            if arch_result:
+                data = arch_result.get("data") or {}
+                archetype_name = data.get("archetype")
+                confidence_band = data.get("confidence_band")
+                match_quality = data.get("match_quality")
+        except Exception:
+            pass
+        if not archetype_name:
+            from chameleon_mcp.tools import get_archetype
+
+            data = (get_archetype(str(repo_root), file_path).get("data")) or {}
+            archetype_name = data.get("archetype")
+            confidence_band = data.get("confidence_band")
+            match_quality = data.get("match_quality")
+        if not archetype_name:
+            return False
+
+        violations = _lint_file_in_process(repo_root, archetype_name, content, file_path)
+        if not violations:
+            return False
+
+        from chameleon_mcp.enforcement_calibration import active_block_rules
+        from chameleon_mcp.violation_class import (
+            hard_class_violations,
+            ignored_rules,
+            is_archetype_independent,
+        )
+
+        active = active_block_rules(repo_root / ".chameleon")
+        hard = hard_class_violations(violations, active)
+        ign = ignored_rules(content) or set()
+        if ign:
+            hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
+        gate_ok = (confidence_band == "high") and (match_quality == "ast")
+        for v in hard:
+            if is_archetype_independent(v.get("rule")) or gate_ok:
+                return True
+        return False
+    except Exception:
+        return False
+
+
 def stop_backstop() -> int:
     """Stop / SubagentStop: refuse to end the turn while a touched file holds an
     unresolved hard-class violation. Fails open; bounded by a per-session cap and
@@ -1827,7 +1933,7 @@ def stop_backstop() -> int:
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.config import load_config
         from chameleon_mcp.profile.loader import find_repo_root
-        from chameleon_mcp.profile.trust import trust_state_for
+        from chameleon_mcp.profile.trust import hash_profile, trust_state_for
         from chameleon_mcp.tools import _compute_repo_id
 
         repo_root = find_repo_root(cwd)
@@ -1840,6 +1946,12 @@ def stop_backstop() -> int:
             return 0
         rec = trust_state_for(repo_id)
         if rec is None or not rec.grants_root(repo_root):
+            _emit({})
+            return 0
+        # A "stale" grant (the profile hash drifted from the one the user trusted)
+        # only verifies; it never blocks the turn, mirroring the PreToolUse and
+        # PostToolUse gates.
+        if rec.hash_for_root(repo_root) != hash_profile(repo_root / ".chameleon"):
             _emit({})
             return 0
 
@@ -1857,13 +1969,31 @@ def stop_backstop() -> int:
             _emit({})
             return 0
 
+        # A candidate (L2 with the cached flag set) is only blocked after a LIVE
+        # re-lint confirms an enforceable hard violation still stands; the cached
+        # flag alone can be stale (e.g. a phantom import resolved by a later edit
+        # to the import target, leaving the importing file un-reverified). Files
+        # that re-verify clean have their flag cleared and the state persisted, so
+        # the heal sticks and they aren't re-checked next turn.
         unresolved: list[str] = []
+        cleared_any = False
         for path, fs in state.files.items():
             p = Path(path)
             if not p.is_file():
                 continue
-            if fs.level >= LEVEL_L2 and fs.blockable_unresolved:
+            if not (fs.level >= LEVEL_L2 and fs.blockable_unresolved):
+                continue
+            if _stop_file_still_blockable(repo_root, path):
                 unresolved.append(path)
+            else:
+                fs.blockable_unresolved = False
+                cleared_any = True
+
+        if cleared_any:
+            try:
+                save_state(state, repo_data, session_id or "")
+            except Exception:
+                pass
 
         if not unresolved:
             _emit({})

@@ -83,6 +83,10 @@ def _build_repo(
     (chameleon / "config.json").write_text(
         json.dumps({"enforcement": {"mode": mode}}), encoding="utf-8"
     )
+    # profile.json gives hash_profile() a non-empty hash; the trust record in
+    # _run_verify mirrors it so the PostToolUse block's not-stale gate reads
+    # "trusted" rather than "stale".
+    (chameleon / "profile.json").write_text(json.dumps({"version": 1}), encoding="utf-8")
 
     witness = repo / WITNESS_REL
     witness.parent.mkdir(parents=True, exist_ok=True)
@@ -149,15 +153,24 @@ def _run_verify(
     env: dict | None = None,
     confidence_band: str = "high",
     match_quality: str = "ast",
+    stale: bool = False,
 ) -> dict:
     """Drive posttool_verify() through the in-process lint fallback.
 
     The first daemon_client.call (get_archetype) returns the archetype plus the
     confidence_band/match_quality the enforcement gate reads; the second
     (lint_file) returns None, forcing the real in-process lint engine to run.
+
+    ``stale=True`` makes the trust record's granted hash diverge from the live
+    profile hash, so the not-stale block gate must fall through to advisory.
     """
+    from chameleon_mcp.profile.trust import hash_profile
+
     trust_rec = MagicMock()
     trust_rec.grants_root.return_value = True
+    trust_rec.hash_for_root.return_value = (
+        "STALE-DOES-NOT-MATCH" if stale else hash_profile(repo / ".chameleon")
+    )
 
     captured: list[str] = []
     payload = {
@@ -220,6 +233,33 @@ def test_hard_class_l2_blocks_in_enforce_mode(tmp_path: Path):
         env={"CHAMELEON_ENFORCE": "1"},
     )
     assert out.get("decision") == "block"
+
+
+def test_stale_trust_does_not_block_at_l2(tmp_path: Path):
+    # The same hard-class violation that blocks under a trusted grant must fall
+    # through to advisory when the grant is stale (granted hash drifted).
+    repo, repo_id, loaded = _build_repo(tmp_path, mode="enforce", with_competing_import=True)
+    profile_dir = repo / ".chameleon"
+    write_block_rules(
+        profile_dir,
+        {"import-preference-violation": {"active": True, "fp_rate": 0.0, "sampled": 3}},
+    )
+    cand = repo / "src/Stale.ts"
+    cand.write_text(LODASH_SRC, encoding="utf-8")
+    sid = "s-stale"
+    _seed_level(tmp_path, repo_id, sid, str(cand), level=LEVEL_L2)
+
+    out = _run_verify(
+        repo=repo,
+        repo_id=repo_id,
+        loaded=loaded,
+        tmp_path=tmp_path,
+        file_path=str(cand),
+        session_id=sid,
+        env={"CHAMELEON_ENFORCE": "1"},
+        stale=True,
+    )
+    assert out.get("decision") != "block"
 
 
 def test_shadow_mode_does_not_block(tmp_path: Path):
