@@ -90,6 +90,33 @@ def _emit_posttool_context(block: str) -> None:
     )
 
 
+def _emit_posttool_block(reason: str, additional_context: str) -> None:
+    """PostToolUse hard block: stops the loop and feeds ``reason`` back to Claude."""
+    _emit(
+        {
+            "decision": "block",
+            "reason": reason,
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": additional_context,
+            },
+        }
+    )
+
+
+def _emit_pretool_deny(reason: str) -> None:
+    """PreToolUse hard deny: blocks the tool call before it runs."""
+    _emit(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason,
+            }
+        }
+    )
+
+
 def _degraded_banner(reason: str, detail: str | None = None) -> str:
     """Tiny advisory block naming a degradation cause.
 

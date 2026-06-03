@@ -39,6 +39,7 @@ def emit_hook_metric(
     trust_state: str | None = None,
     archetype: str | None = None,
     confidence: str | None = None,
+    would_block: bool = False,
 ) -> None:
     """Append one metrics line. Best-effort; never raises."""
     try:
@@ -56,6 +57,7 @@ def emit_hook_metric(
             "trust_state": trust_state,
             "archetype": archetype,
             "confidence": confidence,
+            "would_block": bool(would_block),
         }
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
