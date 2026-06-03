@@ -324,3 +324,29 @@ class TestLoadProfileDir:
         clear_profile_cache()
         with pytest.raises(ProfileLoadError, match="generation mismatch"):
             load_profile_dir(profile_dir)
+
+    def test_committed_removed_after_cache_is_rejected(self, tmp_path: Path, monkeypatch):
+        # A profile cached as valid must not keep serving once its COMMITTED
+        # sentinel disappears (e.g. a refresh tore it down mid-flight). The
+        # quick mtime token only covers data artifacts, so the sentinel must be
+        # re-checked before a cache hit is honored.
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        profile_dir = _make_profile(tmp_path / "repo")
+        load_profile_dir(profile_dir)
+
+        (profile_dir / "COMMITTED").unlink()
+
+        with pytest.raises(ProfileLoadError, match="COMMITTED"):
+            load_profile_dir(profile_dir)
+
+    def test_path_variants_share_one_cache_entry(self, tmp_path: Path, monkeypatch):
+        # `repo/../repo/.chameleon` and `repo/.chameleon` name the same dir;
+        # both must hit a single normalized cache entry, not two stale copies.
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        profile_dir = _make_profile(tmp_path / "repo")
+        variant = tmp_path / "repo" / ".." / "repo" / ".chameleon"
+
+        l1 = load_profile_dir(profile_dir)
+        l2 = load_profile_dir(variant)
+
+        assert l1 is l2

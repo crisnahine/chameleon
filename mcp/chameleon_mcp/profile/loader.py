@@ -323,7 +323,25 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         ProfileLoadError: missing sentinel, malformed JSON, generation
                           mismatch across files, or mid-load mutation.
     """
-    cache_key = str(profile_dir)
+    # Normalize the key so `../` segments and symlink variants of the same
+    # directory collapse to one cache entry instead of accumulating stale
+    # duplicates. resolve(strict=False) tolerates a not-yet-created dir.
+    try:
+        cache_key = str(profile_dir.resolve(strict=False))
+    except OSError:
+        cache_key = str(profile_dir)
+
+    # An incomplete profile (no COMMITTED sentinel) must never be served from
+    # cache. The quick mtime token below only covers the data artifacts, so a
+    # sentinel removed after the entry was cached (e.g. a refresh torn down
+    # mid-flight) would otherwise still hit. Gate the cache lookup on the
+    # sentinel and refuse outright when it is gone.
+    if not is_committed(profile_dir):
+        _PROFILE_CACHE.pop(cache_key, None)
+        raise ProfileLoadError(
+            f"profile at {profile_dir} is missing COMMITTED sentinel "
+            "(incomplete or corrupted; run /chameleon-refresh)"
+        )
 
     try:
         quick_artifact_paths = [
@@ -341,12 +359,12 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
     except (FileNotFoundError, OSError):
         pass
 
-    if not is_committed(profile_dir):
-        raise ProfileLoadError(
-            f"profile at {profile_dir} is missing COMMITTED sentinel "
-            "(incomplete or corrupted; run /chameleon-refresh)"
-        )
-
+    # The 4 JSON artifacts below are required and drive the cache token.
+    # conventions.json and idioms.md are optional here (absence is not an
+    # error). enforcement.json is also optional and is loaded separately by
+    # enforcement_calibration.py, not here, but it still participates in the
+    # trust hash (see profile/trust.py:_HASHED_ARTIFACTS) so tampering with it
+    # de-trusts the profile.
     artifact_paths = [
         profile_dir / "profile.json",
         profile_dir / "archetypes.json",
@@ -447,6 +465,6 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         archetype_names=archetype_names,
     )
 
-    _PROFILE_CACHE[str(profile_dir)] = (mtime_token, loaded)
+    _PROFILE_CACHE[cache_key] = (mtime_token, loaded)
 
     return loaded
