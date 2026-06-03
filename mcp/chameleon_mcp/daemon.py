@@ -6,6 +6,12 @@ holds the Python interpreter + module cache alive between PreToolUse hook
 invocations so the dominant cost — `import chameleon_mcp.tools` and friends —
 amortizes across the whole session.
 
+POSIX-only: the IPC layer uses AF_UNIX sockets, which do not exist on Windows.
+Every entry point guards on `_af_unix_available()` and degrades gracefully when
+the socket family is missing: the daemon refuses to start, callers fall back to
+the in-process path, and nothing raises. The daemon is a performance layer, not
+a correctness layer, so Windows simply runs without it.
+
 Architecture (POSIX-only):
 
   hook subprocess (bash + tiny python launcher)
@@ -50,7 +56,7 @@ the protocol is stateless per connection so the change is local.
 from __future__ import annotations
 
 import errno
-import fcntl
+import hashlib
 import json
 import os
 import re
@@ -63,6 +69,14 @@ import time
 import traceback
 from collections.abc import Callable
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    # POSIX-only: Windows has no fcntl. The daemon is unavailable there anyway
+    # (AF_UNIX is also absent), so leave fcntl=None and let the AF_UNIX guards
+    # short-circuit before any flock call would run.
+    fcntl = None  # type: ignore[assignment]
 
 MAX_FRAME_BYTES = 1024 * 1024
 
@@ -84,12 +98,63 @@ _SPAWN_WAIT_SECONDS = 3.0
 _LISTEN_BACKLOG = 128
 
 
+def _af_unix_available() -> bool:
+    """True iff this platform supports AF_UNIX domain sockets.
+
+    Windows lacks `socket.AF_UNIX`. Every socket entry point checks this so the
+    daemon degrades to a no-op there instead of raising AttributeError. Wrapped
+    in a function so tests can simulate the Windows path with a single patch.
+    """
+    return hasattr(socket, "AF_UNIX")
+
+
 def _plugin_data() -> Path:
     """Resolve the plugin data dir. Importing locally avoids a circular
     import from chameleon_mcp.profile.trust at module load time."""
     from chameleon_mcp.profile.trust import plugin_data_dir
 
     return plugin_data_dir()
+
+
+_CODE_FINGERPRINT_CACHE: str | None = None
+
+
+def _code_fingerprint() -> str:
+    """Short hash of the chameleon_mcp source tree's mtimes.
+
+    Folded into the version tag so a code-only upgrade (git pull, cherry-pick,
+    /plugin update) that forgot to bump the version string still produces a
+    distinct daemon identity. Without this, two builds with the same declared
+    version share one socket name and a new-code hook would reuse the stale
+    old-code daemon for up to one idle window. We hash mtimes (cheap, no file
+    reads) of the package's .py files; any edit moves the mtime and changes the
+    tag. Returns "0" on any error so the tag computation never fails.
+
+    Memoized per process: a running interpreter's own source can't change under
+    it, so the rglob runs once. A NEW process started after an upgrade computes
+    a fresh fingerprint from the new mtimes, which is exactly the rotation we
+    want. Kept off the hot path's repeat cost (socket_path is called several
+    times per hook).
+    """
+    global _CODE_FINGERPRINT_CACHE
+    if _CODE_FINGERPRINT_CACHE is not None:
+        return _CODE_FINGERPRINT_CACHE
+    try:
+        pkg_dir = Path(__file__).resolve().parent
+        entries: list[str] = []
+        for p in sorted(pkg_dir.rglob("*.py")):
+            try:
+                entries.append(f"{p.name}:{int(p.stat().st_mtime)}")
+            except OSError:
+                continue
+        if not entries:
+            _CODE_FINGERPRINT_CACHE = "0"
+        else:
+            digest = hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+            _CODE_FINGERPRINT_CACHE = digest[:8]
+    except Exception:  # noqa: BLE001 - fingerprint must never break daemon paths
+        _CODE_FINGERPRINT_CACHE = "0"
+    return _CODE_FINGERPRINT_CACHE
 
 
 def _version_tag() -> str:
@@ -101,12 +166,19 @@ def _version_tag() -> str:
     would serve stale logic for up to one idle window after an upgrade. Each
     version gets its own socket; the prior version's daemon idle-exits on its
     own and removes its files.
+
+    The declared version is combined with a short source fingerprint so a
+    code-only change that did not bump the version still rotates the socket
+    name. This closes the gap where a forgotten version bump would let a
+    new-code hook reuse the stale old-code daemon.
     """
     try:
         from chameleon_mcp import __version__ as v
     except Exception:  # noqa: BLE001 - version lookup must never break daemon paths
         v = "0"
-    return re.sub(r"[^0-9A-Za-z._-]", "_", str(v)) or "0"
+    base = re.sub(r"[^0-9A-Za-z._-]", "_", str(v)) or "0"
+    fp = _code_fingerprint()
+    return f"{base}-{fp}" if fp and fp != "0" else base
 
 
 def socket_path() -> Path:
@@ -132,6 +204,50 @@ def log_path() -> Path:
     d = _plugin_data()
     d.mkdir(parents=True, exist_ok=True)
     return d / ".daemon.log"
+
+
+def _flock_reliable() -> bool:
+    """True iff `fcntl.flock` can be trusted for the stop-daemon recycle guard.
+
+    The guard concludes "no live daemon holds the pidfile" when it ACQUIRES the
+    flock. That conclusion is only safe where flock is advisory-but-honest:
+    POSIX local filesystems. On Windows there is no fcntl at all, and on some
+    NFS mounts flock can spuriously succeed even while another host holds the
+    lock. In those cases a successful acquire does NOT prove the daemon is dead,
+    so we must not act on it (acting would delete a live daemon's pidfile).
+
+    NFS detection is best-effort and intentionally conservative: when we cannot
+    tell, we keep the trustworthy POSIX-local fast path. The home/plugin-data
+    dir is local in the common case; operators on NFS can point
+    CHAMELEON_PLUGIN_DATA at a local dir.
+    """
+    if fcntl is None:
+        return False
+    try:
+        fstype = _plugin_data_fstype()
+    except Exception:  # noqa: BLE001 - never let a stat failure break stop_daemon
+        return True
+    return fstype not in _UNRELIABLE_FLOCK_FSTYPES
+
+
+_UNRELIABLE_FLOCK_FSTYPES = frozenset({"nfs", "nfs4", "smbfs", "cifs"})
+
+
+def _plugin_data_fstype() -> str | None:
+    """Best-effort filesystem type for the plugin data dir, lowercased.
+
+    Returns None when it cannot be determined (no statvfs f_fstypename, or any
+    error). Only used to decide whether flock is trustworthy, so an unknown type
+    is treated as the trustworthy local case by the caller.
+    """
+    try:
+        st = os.statvfs(str(_plugin_data()))
+    except (OSError, AttributeError):
+        return None
+    fstype = getattr(st, "f_fstypename", None)
+    if isinstance(fstype, bytes):
+        fstype = fstype.decode("utf-8", "ignore")
+    return fstype.lower() if isinstance(fstype, str) else None
 
 
 def _pid_alive(pid: int) -> bool:
@@ -510,6 +626,12 @@ def run_daemon() -> int:
     Called from inside the forked child by `start_daemon()`. The parent's
     role is to write the pidfile + verify the socket comes up.
     """
+    if not _af_unix_available():
+        sys.stderr.write(
+            "[chameleon-daemon] AF_UNIX unavailable on this platform; "
+            "daemon disabled (hooks use the in-process path)\n"
+        )
+        return 1
     sock_path = socket_path()
     try:
         from chameleon_mcp.plugin_paths import ensure_plugin_data_dir
@@ -596,6 +718,14 @@ def start_daemon(*, force: bool = False) -> dict:
     `start_daemon()` callers that just received a SIGTERM error from the
     existing daemon and want to respawn.
     """
+    if not _af_unix_available():
+        return {
+            "status": "failed",
+            "pid": None,
+            "socket": "",
+            "error": "AF_UNIX unavailable on this platform; daemon disabled",
+        }
+
     sock_path = socket_path()
 
     if not force and is_daemon_alive():
@@ -723,10 +853,17 @@ def stop_daemon(*, timeout: float = 5.0) -> dict:
     # (an unrelated process that inherited it). Don't SIGTERM that process.
     # (Re-reading the pidfile is useless here: its bytes don't change on a pid
     # recycle, so a content comparison can't detect it.)
-    try:
-        _probe_fd = os.open(str(pid_path()), os.O_RDWR)
-    except OSError:
-        _probe_fd = None
+    #
+    # Only run this probe where flock is trustworthy. On Windows (no fcntl) and
+    # on NFS/SMB mounts a successful acquire does NOT prove the daemon is dead,
+    # so trusting it would delete a live daemon's pidfile. There we skip the
+    # probe and signal the pid we already confirmed alive at the top.
+    _probe_fd = None
+    if _flock_reliable():
+        try:
+            _probe_fd = os.open(str(pid_path()), os.O_RDWR)
+        except OSError:
+            _probe_fd = None
     if _probe_fd is not None:
         try:
             fcntl.flock(_probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -831,6 +968,8 @@ def ensure_daemon_async() -> None:
     Subsequent hook calls in the same session will find the daemon ready
     and route through the socket.
     """
+    if not _af_unix_available():
+        return
     if is_daemon_alive():
         return
     try:

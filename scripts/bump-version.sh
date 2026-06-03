@@ -222,6 +222,62 @@ cmd_audit() {
   fi
 }
 
+# Read MAX_SUPPORTED_SCHEMA_VERSION from the profile loader so the check tracks
+# the engine without a second source of truth.
+engine_max_schema() {
+  local loader="$REPO_ROOT/mcp/chameleon_mcp/profile/loader.py"
+  [[ -f "$loader" ]] || return 1
+  awk '
+    /^MAX_SUPPORTED_SCHEMA_VERSION[[:space:]]*=/ {
+      sub(/^[^=]*=[[:space:]]*/, "")
+      sub(/[^0-9].*$/, "")
+      print; exit
+    }
+  ' "$loader"
+}
+
+cmd_validate_profiles() {
+  local scan_dir="${1:-$REPO_ROOT}"
+
+  local max_schema
+  max_schema=$(engine_max_schema)
+  if [[ -z "$max_schema" ]]; then
+    echo "WARN: could not read MAX_SUPPORTED_SCHEMA_VERSION from loader.py; skipping" >&2
+    return 0
+  fi
+
+  echo "Validating committed .chameleon profiles against engine schema <= $max_schema..."
+  echo ""
+
+  local found_incompatible=0
+  local scanned=0
+  while IFS= read -r profile; do
+    scanned=$((scanned + 1))
+    local sv
+    # jq returns "null" on a missing key and exits non-zero on malformed JSON.
+    sv=$(jq -r '.schema_version // empty' "$profile" 2>/dev/null) || sv=""
+    [[ -z "$sv" ]] && continue
+    [[ "$sv" =~ ^[0-9]+$ ]] || continue
+    if (( sv > max_schema )); then
+      if [[ "$found_incompatible" -eq 0 ]]; then
+        echo "INCOMPATIBLE profiles (schema newer than engine supports):"
+        found_incompatible=1
+      fi
+      local rel="${profile#"$scan_dir"/}"
+      echo "  $rel (schema_version=$sv > $max_schema)"
+    fi
+  done < <(find "$scan_dir" -type f -path '*/.chameleon/profile.json' 2>/dev/null)
+
+  if [[ "$found_incompatible" -eq 0 ]]; then
+    echo "All $scanned scanned profile(s) load under the current engine schema."
+    return 0
+  fi
+
+  echo ""
+  echo "These profiles must be regenerated with /chameleon-refresh after the bump."
+  return 0
+}
+
 cmd_bump() {
   local new_version="$1"
 
@@ -295,12 +351,17 @@ case "${1:-}" in
   --audit)
     cmd_audit
     ;;
+  --validate-profiles)
+    cmd_validate_profiles "${2:-}"
+    ;;
   --help|-h|"")
-    echo "Usage: bump-version.sh <new-version> | --check | --audit"
+    echo "Usage: bump-version.sh <new-version> | --check | --audit | --validate-profiles [dir]"
     echo ""
-    echo "  <new-version>  Bump all declared files to the given version"
-    echo "  --check        Show current versions, detect drift"
-    echo "  --audit        Check + scan repo for undeclared version references"
+    echo "  <new-version>         Bump all declared files to the given version"
+    echo "  --check               Show current versions, detect drift"
+    echo "  --audit               Check + scan repo for undeclared version references"
+    echo "  --validate-profiles   Warn if any committed .chameleon profile has a"
+    echo "                        schema_version newer than this engine supports"
     exit 0
     ;;
   --*)

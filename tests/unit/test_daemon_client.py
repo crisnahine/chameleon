@@ -196,6 +196,21 @@ def test_no_socket_file_returns_none(sock_dir):
     assert daemon_client.call("ping") is None
 
 
+def test_af_unix_missing_returns_none_without_socket(sock_dir, monkeypatch):
+    # Simulate Windows: no AF_UNIX. call() must degrade to None before any
+    # socket operation, never raising AttributeError.
+    fake = _FakeDaemon(str(daemon_mod.socket_path()))
+    try:
+        fake.serve_framed({"ok": True})  # should never be reached
+        monkeypatch.setattr("chameleon_mcp.daemon_client._af_unix_available", lambda: False)
+        result = daemon_client.call("ping")
+        assert result is None
+        time.sleep(0.05)
+        assert fake.accepts == 0
+    finally:
+        fake.close()
+
+
 def test_stale_socket_no_listener_returns_none(sock_dir):
     # A socket *file* exists but nothing is accepting on it (e.g. a crashed
     # daemon left the inode). connect() must fail and call() must degrade.

@@ -13,15 +13,19 @@ from chameleon_mcp.daemon import (
     _LEN_STRUCT,
     DEFAULT_IDLE_TIMEOUT_S,
     MAX_FRAME_BYTES,
+    _af_unix_available,
     _DaemonState,
+    _flock_reliable,
     _idle_timeout_from_env,
     _sweep_orphan_version_files,
     _version_tag,
     daemon_info,
     pid_path,
     recv_frame,
+    run_daemon,
     send_frame,
     socket_path,
+    start_daemon,
 )
 
 
@@ -321,3 +325,129 @@ def test_sweep_orphan_keeps_empty_pidfile_startup_window(tmp_path: Path):
         _sweep_orphan_version_files()
     assert empty_pid.exists()
     assert empty_sock.exists()
+
+
+# ---------------------------------------------------------------------------
+# Windows compatibility: AF_UNIX is POSIX-only. The daemon is an optional
+# performance layer, so its absence must degrade gracefully (no crash).
+# ---------------------------------------------------------------------------
+
+
+def test_af_unix_available_reflects_socket_module():
+    assert _af_unix_available() is hasattr(socket, "AF_UNIX")
+
+
+def test_run_daemon_degrades_when_af_unix_missing(tmp_path: Path):
+    # Simulate Windows where socket.AF_UNIX does not exist. run_daemon() must
+    # return a non-zero status and not raise AttributeError on socket.socket().
+    fake = tmp_path / "d"
+    fake.mkdir()
+    with (
+        patch("chameleon_mcp.daemon._plugin_data", return_value=fake),
+        patch("chameleon_mcp.daemon._af_unix_available", return_value=False),
+    ):
+        rc = run_daemon()
+    assert rc != 0
+
+
+def test_start_daemon_degrades_when_af_unix_missing(tmp_path: Path):
+    fake = tmp_path / "d"
+    fake.mkdir()
+    with (
+        patch("chameleon_mcp.daemon._plugin_data", return_value=fake),
+        patch("chameleon_mcp.daemon._af_unix_available", return_value=False),
+    ):
+        result = start_daemon()
+    assert result["status"] == "failed"
+    assert result["pid"] is None
+
+
+# ---------------------------------------------------------------------------
+# Code-only upgrade safety: a code change without a version bump must still
+# change the daemon identity so a new-code hook never reuses a stale daemon.
+# ---------------------------------------------------------------------------
+
+
+def test_version_tag_changes_when_source_changes(monkeypatch):
+    # Two different source fingerprints under the same declared version must
+    # yield different tags, so the socket/pidfile names differ and the old
+    # daemon is never reused after a code-only upgrade.
+    monkeypatch.setattr("chameleon_mcp.daemon._code_fingerprint", lambda: "aaaa")
+    tag_a = _version_tag()
+    monkeypatch.setattr("chameleon_mcp.daemon._code_fingerprint", lambda: "bbbb")
+    tag_b = _version_tag()
+    assert tag_a != tag_b
+
+
+def test_version_tag_is_filesystem_safe():
+    tag = _version_tag()
+    assert tag
+    assert "/" not in tag
+    assert all(c.isalnum() or c in "._-" for c in tag)
+
+
+# ---------------------------------------------------------------------------
+# stop_daemon flock guard: on platforms where flock is unreliable
+# (Windows/NFS) the recycle-TOCTOU probe must be skipped so a spuriously
+# acquired lock can't make stop_daemon delete a live daemon's pidfile.
+# ---------------------------------------------------------------------------
+
+
+def test_flock_reliable_false_without_fcntl(monkeypatch):
+    monkeypatch.setattr("chameleon_mcp.daemon.fcntl", None)
+    assert _flock_reliable() is False
+
+
+def test_flock_reliable_false_on_nfs(tmp_path, monkeypatch):
+    fake = tmp_path / "d"
+    fake.mkdir()
+    monkeypatch.setattr("chameleon_mcp.daemon._plugin_data", lambda: fake)
+    monkeypatch.setattr("chameleon_mcp.daemon._plugin_data_fstype", lambda: "nfs")
+    assert _flock_reliable() is False
+
+
+def test_flock_reliable_true_on_local_fs(tmp_path, monkeypatch):
+    fake = tmp_path / "d"
+    fake.mkdir()
+    monkeypatch.setattr("chameleon_mcp.daemon._plugin_data", lambda: fake)
+    monkeypatch.setattr("chameleon_mcp.daemon._plugin_data_fstype", lambda: "apfs")
+    assert _flock_reliable() is True
+
+
+def test_stop_daemon_skips_recycle_probe_when_flock_unreliable(tmp_path, monkeypatch):
+    # On an unreliable-flock platform, stop_daemon must NOT use the
+    # acquire-means-stale shortcut. It must signal the live pid instead of
+    # silently reporting not_running and deleting the pidfile.
+    import signal as _signal
+
+    fake = tmp_path / "d"
+    fake.mkdir()
+    sentinel_pid = 4242
+    pf = fake / f".daemon-{_version_tag()}.pid"
+    pf.write_text(f"{sentinel_pid}\n/tmp/x.sock\n")
+
+    killed: list[tuple[int, int]] = []
+    # alive=True until SIGTERM is delivered, then dead so the wait loop ends.
+    alive_state = {"alive": True}
+
+    def _fake_pid_alive(pid: int) -> bool:
+        return alive_state["alive"]
+
+    def _fake_kill(pid: int, sig: int) -> None:
+        killed.append((pid, sig))
+        if sig == _signal.SIGTERM:
+            alive_state["alive"] = False
+
+    from chameleon_mcp.daemon import stop_daemon
+
+    with (
+        patch("chameleon_mcp.daemon._plugin_data", return_value=fake),
+        patch("chameleon_mcp.daemon._pid_alive", side_effect=_fake_pid_alive),
+        patch("chameleon_mcp.daemon._flock_reliable", return_value=False),
+        patch("chameleon_mcp.daemon.os.kill", side_effect=_fake_kill),
+    ):
+        result = stop_daemon(timeout=1.0)
+
+    assert (sentinel_pid, _signal.SIGTERM) in killed
+    assert result["status"] == "stopped"
+    assert result["pid"] == sentinel_pid

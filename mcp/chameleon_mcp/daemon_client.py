@@ -4,6 +4,9 @@ Connects to the UNIX socket at ${PLUGIN_DATA}/.daemon.sock, sends a
 length-prefixed JSON request, reads a length-prefixed JSON response.
 One request per connection — same model as the daemon side.
 
+POSIX-only: AF_UNIX does not exist on Windows. `call()` returns None there
+before touching a socket, so the hook helper falls back to the in-process path.
+
 Contract:
 - `call()` returns the response `data` payload on success, or `None` on
   ANY failure (refused connection, oversize, timeout, parse error). The
@@ -21,6 +24,7 @@ from typing import Any
 
 from chameleon_mcp.daemon import (
     MAX_FRAME_BYTES,
+    _af_unix_available,
     recv_frame,
     send_frame,
     socket_path,
@@ -47,6 +51,10 @@ def call(
     if not isinstance(method, str) or not method:
         return None
     if payload is not None and not isinstance(payload, dict):
+        return None
+
+    # POSIX-only: no AF_UNIX on Windows. Degrade to the in-process path.
+    if not _af_unix_available():
         return None
 
     sock_path = socket_path()
