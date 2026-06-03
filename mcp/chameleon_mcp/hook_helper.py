@@ -1786,6 +1786,117 @@ def callout_detector() -> int:
     return 0
 
 
+def stop_backstop() -> int:
+    """Stop / SubagentStop: refuse to end the turn while a touched file holds an
+    unresolved hard-class violation. Fails open; bounded by a per-session cap and
+    the stop_hook_active flag so it can never trap the user in a loop.
+    """
+    payload = _read_payload_dict()
+    if payload is None:
+        _emit({})
+        return 0
+    # Never re-block while already continuing due to a prior stop block.
+    if payload.get("stop_hook_active") is True:
+        _emit({})
+        return 0
+    if os.environ.get("CHAMELEON_ENFORCE") == "0":
+        _emit({})
+        return 0
+
+    session_id = payload.get("session_id")
+    cwd_raw = payload.get("cwd")
+    try:
+        cwd = Path(cwd_raw).expanduser() if isinstance(cwd_raw, str) and cwd_raw else Path.cwd()
+    except (OSError, ValueError):
+        cwd = Path.cwd()
+
+    try:
+        from chameleon_mcp.enforcement import LEVEL_L2, load_state, save_state
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.profile.config import load_config
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.profile.trust import trust_state_for
+        from chameleon_mcp.tools import _compute_repo_id
+
+        repo_root = find_repo_root(cwd)
+        if repo_root is None:
+            _emit({})
+            return 0
+        repo_id = _compute_repo_id(repo_root)
+        if is_chameleon_suppressed(repo_root, repo_id, session_id) is not None:
+            _emit({})
+            return 0
+        rec = trust_state_for(repo_id)
+        if rec is None or not rec.grants_root(repo_root):
+            _emit({})
+            return 0
+
+        cfg = load_config(repo_root / ".chameleon").enforcement
+        if not cfg.stop_backstop:
+            _emit({})
+            return 0
+
+        repo_data = _plugin_data_dir() / repo_id
+        state = load_state(repo_data, session_id or "")
+
+        # Cap reached: stay advisory and never block again this session, so a
+        # violation the model can't resolve cannot trap the turn in a loop.
+        if state.stop_hook_blocks >= cfg.stop_block_cap:
+            _emit({})
+            return 0
+
+        unresolved: list[str] = []
+        for path, fs in state.files.items():
+            p = Path(path)
+            if not p.is_file():
+                continue
+            if fs.level >= LEVEL_L2 and fs.blockable_unresolved:
+                unresolved.append(path)
+
+        if not unresolved:
+            _emit({})
+            return 0
+
+        # Shadow mode records the would-have-blocked signal and allows the stop.
+        if cfg.mode != "enforce":
+            try:
+                from chameleon_mcp.metrics import emit_hook_metric
+
+                emit_hook_metric(
+                    "stop-backstop",
+                    elapsed_ms=0,
+                    repo_id=repo_id,
+                    advisory_emitted=True,
+                    would_block=True,
+                )
+            except Exception:
+                pass
+            _emit({})
+            return 0
+
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in unresolved[:5])
+        state.stop_hook_blocks += 1
+        try:
+            save_state(state, repo_data, session_id or "")
+        except Exception:
+            pass
+        _emit(
+            {
+                "decision": "block",
+                "reason": (
+                    f"chameleon: unresolved convention violations remain in {names}. "
+                    f"Fix them before ending, or add `// chameleon-ignore <rule>`."
+                ),
+            }
+        )
+        return 0
+    except Exception:
+        _emit({})
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
     if not args:
@@ -1802,6 +1913,8 @@ def main(argv: list[str] | None = None) -> int:
         return posttool_verify()
     if command == "callout-detector":
         return callout_detector()
+    if command == "stop-backstop":
+        return stop_backstop()
     sys.stderr.write(f"hook_helper.py: unknown command {command!r}\n")
     return 1
 
