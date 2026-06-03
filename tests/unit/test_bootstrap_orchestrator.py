@@ -701,6 +701,26 @@ class TestBootstrapNoSourceFiles:
         assert report.profile_path is None
         assert report.discovery_hints == []
 
+    def test_misconfigured_workspace_glob_surfaced_in_report(self, tmp_path: Path):
+        # A pnpm workspace whose only glob matches nothing must surface a
+        # diagnostic on the report instead of vanishing. The root has no TS
+        # signal so bootstrap returns early, but the glob warning still flows.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "pnpm-workspace.yaml").write_text("packages:\n  - 'packages/{ui,api}'\n")
+        report = o.bootstrap_repo(repo)
+        assert any("packages/{ui,api}" in w for w in report.workspace_glob_warnings)
+
+    def test_manifestless_workspace_dir_surfaced_as_potential(self, tmp_path: Path):
+        # A directory matching the glob but lacking package.json is reported as
+        # a potential workspace so the user can add the missing manifest.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n")
+        (repo / "apps" / "docs").mkdir(parents=True)
+        report = o.bootstrap_repo(repo)
+        assert "apps/docs" in report.workspace_potential_paths
+
 
 # --------------------------------------------------------------------------
 # BootstrapReport.to_dict
@@ -765,6 +785,20 @@ class TestBootstrapReportToDict:
         assert d["discovered_files_pre_exclusion"] == 12
         assert d["discovered_files_post_exclusion"] == 8
         assert d["sparse_dropped_files"] == 4
+
+    def test_workspace_glob_diagnostics_serialized(self):
+        rep = self._report(
+            workspace_glob_warnings=["'packages/{a,b}': matched no directories"],
+            workspace_potential_paths=["apps/docs"],
+        )
+        d = rep.to_dict()
+        assert d["workspace_glob_warnings"] == ["'packages/{a,b}': matched no directories"]
+        assert d["workspace_potential_paths"] == ["apps/docs"]
+
+    def test_workspace_glob_diagnostics_default_empty(self):
+        d = self._report().to_dict()
+        assert d["workspace_glob_warnings"] == []
+        assert d["workspace_potential_paths"] == []
 
 
 # --------------------------------------------------------------------------

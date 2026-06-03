@@ -399,6 +399,22 @@ class BootstrapReport:
     fan-out. Such packages are skipped and recorded here (relative to the
     repo root when possible) so the user knows a package was dropped and why.
     """
+    workspace_glob_warnings: list[str] = field(default_factory=list)
+    """Workspace globs that failed to expand or matched nothing usable.
+
+    pnpm/turbo configs allow brace expansion ("packages/{ui,api}") and a
+    typo'd or malformed glob would otherwise expand to zero packages with no
+    diagnostic. Each entry names the offending glob and why it produced no
+    package, so a misconfigured workspace pattern is visible instead of
+    silently dropping packages.
+    """
+    workspace_potential_paths: list[str] = field(default_factory=list)
+    """Repo-relative dirs that matched a workspace glob but had no package.json.
+
+    These look like intended workspace packages but were excluded for lacking
+    a manifest. Surfaced so the user can add the missing package.json rather
+    than wonder why a directory was ignored.
+    """
     language_hint: dict | None = None
     """Bug 2: hybrid-language detection envelope.
 
@@ -419,8 +435,10 @@ class BootstrapReport:
     workspace_roots: list[str] = field(default_factory=list)
     """Bug B: repo-relative workspace dirs found when the root
     package.json has no TS deps but TS lives one level down (Turborepo,
-    pnpm-workspaces, Nx). Empty for single-root TS repos. Envelope-only
-    today (not persisted to profile.json so the schema doesn't bump).
+    pnpm-workspaces, Nx). Empty for single-root TS repos. Persisted under
+    profile.json's ``workspace.workspace_roots`` so the coordination metadata
+    survives a reload (no schema bump; the key lives inside the existing
+    ``workspace`` object).
     """
     fanout_capped: bool = False
     """Bug B: True when the first-level workspace scan hit the
@@ -484,6 +502,8 @@ class BootstrapReport:
             "nested_profile_warnings": list(self.nested_profile_warnings),
             "workspaces": list(self.workspace_reports),
             "workspace_skipped_warnings": list(self.workspace_skipped_warnings),
+            "workspace_glob_warnings": list(self.workspace_glob_warnings),
+            "workspace_potential_paths": list(self.workspace_potential_paths),
         }
         out["language_hint"] = self.language_hint
         out["workspace_roots"] = list(self.workspace_roots)
@@ -929,6 +949,13 @@ def bootstrap_repo(
     )
 
     workspace = detect_workspace(repo_root)
+    # Surface glob-expansion diagnostics even when no packages resolved: a
+    # brace-typo or a manifest-less directory is exactly the case where
+    # has_workspaces is False, and dropping it silently is the bug.
+    if workspace.glob_warnings:
+        report.workspace_glob_warnings = list(workspace.glob_warnings)
+    if workspace.potential_workspace_paths:
+        report.workspace_potential_paths = list(workspace.potential_workspace_paths)
     if not workspace.has_workspaces:
         return report
 
@@ -1525,6 +1552,11 @@ def _bootstrap_single(
             "is_workspace": workspace.is_workspace,
             "manager": workspace.manager,
             "workspace_count": len(workspace.workspace_paths),
+            # Repo-relative TS-monorepo sub-roots found when the root carries no
+            # TS deps but workspaces live one level down. Persisted so this
+            # coordination metadata survives a profile reload instead of living
+            # only in the in-memory bootstrap envelope.
+            "workspace_roots": list(workspace_roots),
         },
         "tool_configs": {
             "sources": tool_configs.sources,

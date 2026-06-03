@@ -16,6 +16,7 @@ tmp_path) so a stray data write can never leak into the developer's real
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,9 @@ from chameleon_mcp.bootstrap.workspace import (
     _read_turbo_globs,
     detect_workspace,
 )
+
+_TS_NODE_MODULES = Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "typescript"
+_HAVE_TS = shutil.which("node") is not None and _TS_NODE_MODULES.is_dir()
 
 
 @pytest.fixture(autouse=True)
@@ -381,6 +385,107 @@ class TestExpandWorkspaceGlobs:
         out = _expand_workspace_globs(repo, ["packages/*"])
         assert [p.relative_to(repo).as_posix() for p in out] == ["packages/withpkg"]
 
+    def test_brace_expansion_matches_each_alternative(self, tmp_path: Path):
+        # pnpm/turbo accept shell-style brace expansion; Path.glob() does not.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _pkg(repo / "packages/a")
+        _pkg(repo / "packages/b")
+        _pkg(repo / "packages/c")
+        out = _expand_workspace_globs(repo, ["packages/{a,b,c}"])
+        assert [p.relative_to(repo).as_posix() for p in out] == [
+            "packages/a",
+            "packages/b",
+            "packages/c",
+        ]
+
+    def test_brace_expansion_with_trailing_wildcard(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _pkg(repo / "apps/web/client")
+        _pkg(repo / "services/api/server")
+        out = _expand_workspace_globs(repo, ["{apps,services}/*/*"])
+        assert [p.relative_to(repo).as_posix() for p in out] == [
+            "apps/web/client",
+            "services/api/server",
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# Glob diagnostics: surfaced failures + zero-match warnings
+# --------------------------------------------------------------------------- #
+
+
+class TestExpandWorkspaceGlobsDiagnostics:
+    def test_brace_expansion_flows_through_detect_workspace(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "pnpm-workspace.yaml").write_text("packages:\n  - 'packages/{a,b,c}'\n")
+        _pkg(repo / "packages/a")
+        _pkg(repo / "packages/b")
+        _pkg(repo / "packages/c")
+        info = detect_workspace(repo)
+        assert info.has_workspaces is True
+        assert _rel(repo, info) == ["packages/a", "packages/b", "packages/c"]
+
+
+class TestWorkspaceGlobWarnings:
+    def test_failed_glob_collected(self, tmp_path: Path):
+        from chameleon_mcp.bootstrap.workspace import expand_workspace_globs_with_diagnostics
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _pkg(repo / "apps/web")
+        # "apps/*" matches; the absolute glob raises inside Path.glob ->
+        # recorded as a failed-glob warning instead of vanishing.
+        result = expand_workspace_globs_with_diagnostics(repo, ["apps/*", "/abs/glob"])
+        assert [p.relative_to(repo).as_posix() for p in result.paths] == ["apps/web"]
+        assert any("/abs/glob" in w for w in result.glob_warnings)
+
+    def test_zero_match_glob_recorded(self, tmp_path: Path):
+        from chameleon_mcp.bootstrap.workspace import expand_workspace_globs_with_diagnostics
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        # "missing/*" matches nothing on disk -> a zero-match warning so a
+        # misconfigured workspace pattern is visible, not silent.
+        result = expand_workspace_globs_with_diagnostics(repo, ["missing/*"])
+        assert result.paths == []
+        assert any("missing/*" in w for w in result.glob_warnings)
+
+    def test_matched_dir_without_package_json_recorded(self, tmp_path: Path):
+        from chameleon_mcp.bootstrap.workspace import expand_workspace_globs_with_diagnostics
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "apps/docs").mkdir(parents=True)  # matches glob, no package.json
+        result = expand_workspace_globs_with_diagnostics(repo, ["apps/*"])
+        assert result.paths == []
+        # Directory matched but lacked a package.json -> surfaced so the user
+        # can fix the misconfigured package.
+        assert any("apps/docs" in p for p in result.potential_workspace_paths)
+
+    def test_clean_globs_produce_no_warnings(self, tmp_path: Path):
+        from chameleon_mcp.bootstrap.workspace import expand_workspace_globs_with_diagnostics
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _pkg(repo / "apps/web")
+        result = expand_workspace_globs_with_diagnostics(repo, ["apps/*"])
+        assert [p.relative_to(repo).as_posix() for p in result.paths] == ["apps/web"]
+        assert result.glob_warnings == []
+        assert result.potential_workspace_paths == []
+
+    def test_warnings_surfaced_on_workspace_info(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "pnpm-workspace.yaml").write_text("packages:\n  - 'apps/*'\n  - 'missing/*'\n")
+        _pkg(repo / "apps/web")
+        (repo / "missing").mkdir()  # exists but no children match missing/*
+        info = detect_workspace(repo)
+        assert _rel(repo, info) == ["apps/web"]
+        assert any("missing/*" in w for w in info.glob_warnings)
+
 
 # --------------------------------------------------------------------------- #
 # Orchestrator fanout cap (_WORKSPACE_FANOUT_CAP)
@@ -498,3 +603,33 @@ class TestIsTsWorkspace:
         d = tmp_path / "d"
         d.mkdir()
         assert orch._is_ts_workspace(d) is False
+
+
+# --------------------------------------------------------------------------- #
+# Persisted coordination metadata: workspace_roots survives a profile reload
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+class TestWorkspaceRootsPersistence:
+    def test_workspace_roots_written_to_profile_json(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        # Turborepo shape: the root package.json declares no TS dependency, and
+        # each workspace under apps/ carries its own package.json (so the root
+        # extractor defers to the per-workspace fan-out). The TS-monorepo scan
+        # then populates workspace_roots, which must persist for the reload path.
+        (repo / "package.json").write_text(json.dumps({"name": "root"}))
+        for name in ("web", "api"):
+            ws = repo / "apps" / name
+            ws.mkdir(parents=True)
+            (ws / "package.json").write_text(json.dumps({"devDependencies": {"typescript": "5"}}))
+            (ws / "tsconfig.json").write_text("{}")
+            (ws / "main.ts").write_text("export const x = 1;\n")
+
+        report = orch.bootstrap_repo(repo)
+        assert report.workspace_roots == ["apps/api", "apps/web"]
+
+        profile_json = json.loads((repo / ".chameleon" / "profile.json").read_text())
+        assert profile_json["workspace"]["workspace_roots"] == ["apps/api", "apps/web"]

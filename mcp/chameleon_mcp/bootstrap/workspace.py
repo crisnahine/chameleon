@@ -18,10 +18,28 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from chameleon_mcp.bootstrap.discovery import _expand_brace_groups
+
 try:
     import yaml as _yaml  # type: ignore[import-untyped]
 except ImportError:  # pragma: no cover — defensive; PyYAML is a hard dep.
     _yaml = None  # type: ignore[assignment]
+
+
+@dataclass
+class GlobExpansion:
+    """Result of expanding workspace globs, with diagnostics.
+
+    ``glob_warnings`` records globs that raised inside Path.glob or matched
+    nothing usable, so a misconfigured workspace pattern is visible instead
+    of silently dropping packages. ``potential_workspace_paths`` lists dirs
+    that matched a glob but lacked a package.json, so the user can fix a
+    package missing its manifest.
+    """
+
+    paths: list[Path] = field(default_factory=list)
+    glob_warnings: list[str] = field(default_factory=list)
+    potential_workspace_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -33,6 +51,21 @@ class WorkspaceInfo:
     workspace_paths: list[Path] = field(default_factory=list)
     """Sub-package roots (e.g., apps/web, packages/ui). Each is a candidate for
     its own per-workspace .chameleon/ profile."""
+
+    glob_warnings: list[str] = field(default_factory=list)
+    """Globs that raised during expansion or matched zero usable packages.
+
+    Surfaced so a misconfigured workspace pattern (brace syntax a glob engine
+    rejects, a typo'd directory, a package missing its manifest) is reported
+    instead of silently expanding to nothing.
+    """
+
+    potential_workspace_paths: list[str] = field(default_factory=list)
+    """Repo-relative dirs that matched a glob but had no package.json.
+
+    These look like intended workspace packages but were excluded for lacking
+    a manifest. Surfaced so the user can add the missing package.json.
+    """
 
     @property
     def has_workspaces(self) -> bool:
@@ -53,10 +86,13 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
     """
     pnpm_workspace = repo_root / "pnpm-workspace.yaml"
     if pnpm_workspace.exists():
+        exp = expand_workspace_globs_with_diagnostics(repo_root, _read_pnpm_globs(pnpm_workspace))
         return WorkspaceInfo(
             is_workspace=True,
             manager="pnpm",
-            workspace_paths=_expand_workspace_globs(repo_root, _read_pnpm_globs(pnpm_workspace)),
+            workspace_paths=exp.paths,
+            glob_warnings=exp.glob_warnings,
+            potential_workspace_paths=exp.potential_workspace_paths,
         )
 
     package_json = repo_root / "package.json"
@@ -75,10 +111,13 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
                 if isinstance(packages, list):
                     globs = [str(g) for g in packages]
             if globs:
+                exp = expand_workspace_globs_with_diagnostics(repo_root, globs)
                 return WorkspaceInfo(
                     is_workspace=True,
                     manager="yarn",
-                    workspace_paths=_expand_workspace_globs(repo_root, globs),
+                    workspace_paths=exp.paths,
+                    glob_warnings=exp.glob_warnings,
+                    potential_workspace_paths=exp.potential_workspace_paths,
                 )
 
     lerna_json = repo_root / "lerna.json"
@@ -89,10 +128,13 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
             lerna = {}
         packages = lerna.get("packages") or ["packages/*"]
         if isinstance(packages, list):
+            exp = expand_workspace_globs_with_diagnostics(repo_root, [str(p) for p in packages])
             return WorkspaceInfo(
                 is_workspace=True,
                 manager="lerna",
-                workspace_paths=_expand_workspace_globs(repo_root, [str(p) for p in packages]),
+                workspace_paths=exp.paths,
+                glob_warnings=exp.glob_warnings,
+                potential_workspace_paths=exp.potential_workspace_paths,
             )
 
     turbo_json = repo_root / "turbo.json"
@@ -103,9 +145,9 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
             turbo = {}
         if "pipeline" in turbo or "tasks" in turbo:
             turbo_globs = _read_turbo_globs(turbo)
-            ws_paths: list[Path] = []
+            exp = GlobExpansion()
             if turbo_globs:
-                ws_paths = _expand_workspace_globs(repo_root, turbo_globs)
+                exp = expand_workspace_globs_with_diagnostics(repo_root, turbo_globs)
             elif package_json.exists():
                 try:
                     pkg = json.loads(package_json.read_text(errors="replace"))
@@ -120,12 +162,14 @@ def detect_workspace(repo_root: Path) -> WorkspaceInfo:
                     if isinstance(packages, list):
                         pkg_globs = [str(g) for g in packages]
                 if pkg_globs:
-                    ws_paths = _expand_workspace_globs(repo_root, pkg_globs)
+                    exp = expand_workspace_globs_with_diagnostics(repo_root, pkg_globs)
 
             return WorkspaceInfo(
                 is_workspace=True,
                 manager="turbo",
-                workspace_paths=ws_paths,
+                workspace_paths=exp.paths,
+                glob_warnings=exp.glob_warnings,
+                potential_workspace_paths=exp.potential_workspace_paths,
             )
 
     nx_json = repo_root / "nx.json"
@@ -220,22 +264,86 @@ def _expand_workspace_globs(repo_root: Path, globs: list[str]) -> list[Path]:
     """Expand workspace globs to actual sub-package directory paths.
 
     Each glob like "apps/*" or "packages/*" expands to all immediate sub-dirs.
+    Shell-style brace expansion ("packages/{a,b,c}") is supported; Path.glob
+    does not understand braces, so they are expanded first.
+
+    Thin wrapper over expand_workspace_globs_with_diagnostics for callers that
+    only need the resolved paths.
+    """
+    return expand_workspace_globs_with_diagnostics(repo_root, globs).paths
+
+
+def expand_workspace_globs_with_diagnostics(repo_root: Path, globs: list[str]) -> GlobExpansion:
+    """Expand workspace globs and collect diagnostics about failures.
+
+    Returns a GlobExpansion carrying the resolved package paths plus two
+    diagnostic lists: globs that raised or matched nothing usable, and dirs
+    that matched a glob but lacked a package.json. Surfacing these prevents a
+    misconfigured workspace pattern from silently dropping packages.
     """
     paths: list[Path] = []
     seen: set[Path] = set()
-    for glob in globs:
-        if glob.startswith("!"):
+    warnings: list[str] = []
+    potential: list[str] = []
+    potential_seen: set[str] = set()
+
+    for raw_glob in globs:
+        if raw_glob.startswith("!"):
             continue
-        glob = glob.rstrip("/")
+        glob = raw_glob.rstrip("/")
         if not glob or glob in (".", ".."):
             continue
-        try:
-            matches = list(repo_root.glob(glob))
-        except (ValueError, IndexError):
-            continue
-        for p in matches:
-            if p.is_dir() and p not in seen:
+
+        # Brace expansion ("packages/{a,b}") is standard in pnpm/turbo configs
+        # but Path.glob treats braces as literal characters, so expand first.
+        expanded = _expand_brace_groups(glob)
+
+        glob_matched_any = False
+        glob_kept_any = False
+        glob_raised = False
+        for pattern in expanded:
+            try:
+                matches = list(repo_root.glob(pattern))
+            except (ValueError, IndexError, NotImplementedError, OSError) as exc:
+                # Absolute patterns raise NotImplementedError; malformed
+                # patterns raise ValueError/IndexError. Record and continue so
+                # one bad glob never aborts the whole workspace fan-out.
+                glob_raised = True
+                warnings.append(f"{raw_glob!r}: invalid glob ({exc})")
+                continue
+            for p in matches:
+                if not p.is_dir():
+                    continue
+                glob_matched_any = True
                 if (p / "package.json").exists():
-                    seen.add(p)
-                    paths.append(p)
-    return sorted(paths)
+                    if p not in seen:
+                        seen.add(p)
+                        paths.append(p)
+                    glob_kept_any = True
+                else:
+                    rel = _rel_label(p, repo_root)
+                    if rel not in potential_seen:
+                        potential_seen.add(rel)
+                        potential.append(rel)
+
+        if glob_raised:
+            # The invalid-glob warning above already explains the failure.
+            continue
+        if not glob_matched_any:
+            warnings.append(f"{raw_glob!r}: matched no directories")
+        elif not glob_kept_any:
+            warnings.append(f"{raw_glob!r}: matched directories but none had a package.json")
+
+    return GlobExpansion(
+        paths=sorted(paths),
+        glob_warnings=warnings,
+        potential_workspace_paths=sorted(potential),
+    )
+
+
+def _rel_label(p: Path, repo_root: Path) -> str:
+    """Repo-relative POSIX label for a path, falling back to the absolute path."""
+    try:
+        return p.relative_to(repo_root).as_posix()
+    except ValueError:
+        return str(p)
