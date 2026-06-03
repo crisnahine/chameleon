@@ -275,34 +275,35 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
     except OSError:
         repo_root_str = str(repo_root)
 
-    # Defense-in-depth: a committed profile is attacker-controlled until trusted.
-    # Run the same injection/secret/dangerous-pattern scan bootstrap and
-    # canonical-ref materialization use, so a poisoned conventions.json /
-    # idioms.md / principles.md / canonicals.json is caught at grant time rather
-    # than reaching model context (on top of the per-injection-site sanitization
-    # downstream).
-    #
-    # Fail OPEN on a scanner *import* failure: the user is trusting their own
-    # repo, and an unrelated import bug must not wedge /chameleon-trust. A clean
-    # import that REPORTS injection still blocks. (canonical_loader's own scan
-    # fails CLOSED instead, because it serves pinned content the user never saw.)
-    scanner_importable = True
+    # Defense-in-depth at grant time for the two PROSE artifacts a committed profile
+    # can poison: idioms.md (user-taught) and principles.md (derived). Scan them with
+    # the same narrow injection check the /chameleon-teach gate uses (ignore-previous,
+    # you-are-now-X, reveal-prompt, eval/exec/rm-rf), so a poisoned ref is refused at
+    # grant. canonicals.json / conventions.json are NOT scanned here: they carry real
+    # witness code where such tokens (eval(), secret-looking literals, "you must"
+    # comments) are legitimate, so a scan there false-positives and refuses trust on
+    # healthy repos. All profile content is additionally sanitized at every
+    # <chameleon-context> render site. Fail OPEN on a scanner error: trusting your own
+    # repo must not wedge on an unrelated bug.
     try:
-        import chameleon_mcp.bootstrap.canonical_scanner  # noqa: F401
-        import chameleon_mcp.profile.poisoning_scanner  # noqa: F401
-    except Exception:  # noqa: BLE001
-        scanner_importable = False
-    if scanner_importable:
-        from chameleon_mcp.profile.canonical_loader import scan_profile_artifacts
+        from chameleon_mcp.tools import _looks_suspicious
 
-        try:
-            scan_clean = scan_profile_artifacts(profile_dir)
-        except Exception:  # noqa: BLE001
-            scan_clean = True
-        if not scan_clean:
-            raise ProfileInjectionError(
-                f"profile at {profile_dir} failed the injection/secret scan; refusing trust"
-            )
+        for prose in ("idioms.md", "principles.md"):
+            prose_path = profile_dir / prose
+            if not prose_path.is_file():
+                continue
+            try:
+                prose_text = prose_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if _looks_suspicious(prose_text)[0]:
+                raise ProfileInjectionError(
+                    f"profile at {profile_dir}: {prose} contains an injection pattern; refusing trust"
+                )
+    except ProfileInjectionError:
+        raise
+    except Exception:  # noqa: BLE001
+        pass
 
     new_hash = hash_profile(profile_dir)
 
