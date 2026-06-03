@@ -2490,6 +2490,14 @@ def _attempt_partial_refresh(
 
     duration_ms = int((time.time() - started_at) * 1000)
     files_processed = len(unchanged) + len(modified) + len(added)
+
+    # The partial path rewrites canonicals.json (the witness set), so the
+    # block-rule verdict in enforcement.json must be re-measured against the
+    # new profile; otherwise it stays pinned to the pre-refresh witnesses.
+    # Calibrate before the hash snapshot so enforcement.json (part of the
+    # trust-hashed surface) is reflected in the index.db profile_sha256 mirror.
+    _calibrate_block_rules_for_repo(repo_root)
+
     index_db.upsert_repo(
         repo_id,
         str(repo_root),
@@ -2498,11 +2506,6 @@ def _attempt_partial_refresh(
         files_indexed=files_processed,
         bootstrap_ms=duration_ms,
     )
-
-    # The partial path rewrites canonicals.json (the witness set), so the
-    # block-rule verdict in enforcement.json must be re-measured against the
-    # new profile; otherwise it stays pinned to the pre-refresh witnesses.
-    _calibrate_block_rules_for_repo(repo_root)
 
     return _envelope(
         {
@@ -3373,6 +3376,11 @@ def _bootstrap_repo_unlocked(
 
     if report.status == "success":
         repo_id = _compute_repo_id(repo_root)
+        # Calibrate before the hash snapshot: enforcement.json is part of the
+        # trust-hashed surface, so writing it first keeps the index.db mirror
+        # of profile_sha256 consistent with the hash a later trust grant
+        # captures (otherwise the repo would read stale by one artifact).
+        _calibrate_block_rules_for_repo(repo_root)
         index_db.upsert_repo(
             repo_id,
             str(repo_root),
@@ -3389,7 +3397,6 @@ def _bootstrap_repo_unlocked(
             index_db.delete_all_file_clusters(repo_id)
             if file_cluster_rows:
                 index_db.upsert_file_clusters(repo_id, file_cluster_rows)
-        _calibrate_block_rules_for_repo(repo_root)
     # Index successfully-bootstrapped workspaces regardless of the root's
     # status: a coordinator-only root (non-standard package dir, no own
     # language) still produces working workspace profiles above.
@@ -3401,6 +3408,9 @@ def _bootstrap_repo_unlocked(
             continue
         ws_root = Path(ws_root_str)
         ws_repo_id = _compute_repo_id(ws_root)
+        # Calibrate before the hash snapshot so enforcement.json is included in
+        # the index.db mirror of profile_sha256 (see the root path above).
+        _calibrate_block_rules_for_repo(ws_root)
         index_db.upsert_repo(
             ws_repo_id,
             str(ws_root),
@@ -3417,7 +3427,6 @@ def _bootstrap_repo_unlocked(
             index_db.delete_all_file_clusters(ws_repo_id)
             if ws_rows:
                 index_db.upsert_file_clusters(ws_repo_id, ws_rows)
-        _calibrate_block_rules_for_repo(ws_root)
 
     _notify_daemon_cache_invalidation()
     return _envelope(report.to_dict())

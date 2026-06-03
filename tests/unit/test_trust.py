@@ -77,6 +77,27 @@ class TestHashProfile:
         h_with = hash_profile(profile_dir)
         assert h_without != h_with
 
+    def test_enforcement_json_changes_hash(self, tmp_path: Path):
+        # The block-rule calibration verdict is trust-hashed: a planted
+        # enforcement.json that flips a known-false-positive rule to "active"
+        # must de-trust the profile rather than slip past unchanged.
+        profile_dir = _make_profile_dir(tmp_path)
+        h_without = hash_profile(profile_dir)
+
+        (profile_dir / "enforcement.json").write_text(
+            json.dumps({"schema_version": 1, "block_rules": {}}),
+            encoding="utf-8",
+        )
+        h_with = hash_profile(profile_dir)
+        assert h_without != h_with
+
+        (profile_dir / "enforcement.json").write_text(
+            json.dumps({"schema_version": 1, "block_rules": {"no-explicit-any": "active"}}),
+            encoding="utf-8",
+        )
+        h_tampered = hash_profile(profile_dir)
+        assert h_tampered != h_with
+
 
 class TestTrustRecord:
     def test_to_dict_from_dict_round_trip(self):

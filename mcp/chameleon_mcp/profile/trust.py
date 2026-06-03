@@ -157,6 +157,7 @@ _HASHED_ARTIFACTS: tuple[str, ...] = (
     "canonicals.json",
     "config.json",
     "conventions.json",
+    "enforcement.json",
     "principles.md",
     "idioms.md",
     "profile.json",
@@ -181,6 +182,9 @@ def hash_profile(profile_dir: Path) -> str:
       past trust unchanged (Bug H1).
     - ``canonicals.json`` — canonical witness mappings. Also rewritten by
       ``/chameleon-rename``.
+    - ``enforcement.json`` — the block-rule calibration verdict. Hashed so a
+      tampered or planted calibration (e.g. flipping a known-false-positive rule
+      to "active") de-trusts the profile instead of slipping past unchanged.
     - ``idioms.md`` — captured team idioms. ``/chameleon-teach`` mutates
       this; included so the user re-reviews new natural-language idioms
       before they reach model context.
