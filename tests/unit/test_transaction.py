@@ -266,29 +266,119 @@ def test_stray_backup_removed_when_target_intact(tmp_path: Path):
     assert is_committed(target)
 
 
-def test_recovery_skips_while_rename_lock_held(tmp_path: Path):
-    """A backup left by a live commit (rename lock held) must not be touched."""
+def test_stray_backup_not_swept_while_rename_lock_held(tmp_path: Path):
+    """A stray backup beside an intact live profile is left alone while locked.
+
+    With the live profile present, the backup could belong to a commit mid-swap,
+    so a lock holder must not sweep it. Once the lock is free, it is swept.
+    """
     import fcntl
+
+    target = tmp_path / ".chameleon"
+    target.mkdir()
+    (target / COMMITTED_SENTINEL).write_text("live")
 
     backup = tmp_path / ".chameleon.backup-123-abcdef12-1700000000"
     backup.mkdir()
     (backup / COMMITTED_SENTINEL).write_text("old")
 
-    # The rename lock is the exclusive flock on the parent directory fd.
     fd = os.open(str(tmp_path), os.O_RDONLY)
     fcntl.flock(fd, fcntl.LOCK_EX)
     try:
-        handled = cleanup_orphan_tmp_dirs(tmp_path)
+        # Short timeout so the test does not block the full recovery window.
+        import chameleon_mcp.bootstrap.transaction as txn_mod
+
+        orig = txn_mod.RECOVERY_LOCK_TIMEOUT_SECONDS
+        txn_mod.RECOVERY_LOCK_TIMEOUT_SECONDS = 0.2
+        try:
+            handled = cleanup_orphan_tmp_dirs(tmp_path)
+        finally:
+            txn_mod.RECOVERY_LOCK_TIMEOUT_SECONDS = orig
+        # Target intact, so the guarded restore is a no-op and the stray backup
+        # is preserved (it may belong to the in-flight commit holding the lock).
         assert handled == 0
         assert backup.exists()
-        assert not (tmp_path / ".chameleon").exists()
+        assert is_committed(target)
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
 
     handled = cleanup_orphan_tmp_dirs(tmp_path)
     assert handled == 1
-    assert (tmp_path / ".chameleon").is_dir()
+    assert not backup.exists()
+    assert is_committed(target)
+
+
+def test_recovery_restores_backup_even_when_rename_lock_held(tmp_path: Path):
+    """A stranded profile is rescued even if a concurrent holder keeps the lock.
+
+    This is the audit repro: a crashed commit left a committed backup with no
+    live profile, and a concurrent refresh holds the rename lock. Recovery must
+    not be silently skipped, or the repo is left with no profile at all.
+    """
+    import fcntl
+
+    backup = tmp_path / ".chameleon.backup-123-abcdef12-1700000000"
+    backup.mkdir()
+    (backup / "profile.json").write_text('{"v": 1}')
+    (backup / COMMITTED_SENTINEL).write_text("old")
+    assert not (tmp_path / ".chameleon").exists()
+
+    fd = os.open(str(tmp_path), os.O_RDONLY)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        import chameleon_mcp.bootstrap.transaction as txn_mod
+
+        orig = txn_mod.RECOVERY_LOCK_TIMEOUT_SECONDS
+        txn_mod.RECOVERY_LOCK_TIMEOUT_SECONDS = 0.2
+        try:
+            handled = cleanup_orphan_tmp_dirs(tmp_path)
+        finally:
+            txn_mod.RECOVERY_LOCK_TIMEOUT_SECONDS = orig
+        assert handled == 1
+        target = tmp_path / ".chameleon"
+        assert target.is_dir()
+        assert is_committed(target)
+        assert (target / "profile.json").read_text() == '{"v": 1}'
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def test_recovery_blocks_then_recovers_when_lock_freed(tmp_path: Path):
+    """When the holder releases within the window, recovery acquires and restores."""
+    import subprocess
+    import sys
+
+    backup = tmp_path / ".chameleon.backup-123-abcdef12-1700000000"
+    backup.mkdir()
+    (backup / "profile.json").write_text('{"v": 2}')
+    (backup / COMMITTED_SENTINEL).write_text("old")
+
+    holder_src = (
+        "import fcntl, os, sys, time\n"
+        "fd = os.open(sys.argv[1], os.O_RDONLY)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+        "sys.stdout.write('locked\\n'); sys.stdout.flush()\n"
+        "time.sleep(0.5)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", holder_src, str(tmp_path)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert proc.stdout.readline().strip() == "locked"
+        # Default recovery window (10s) easily outlasts the 0.5s hold, so the
+        # blocking acquire succeeds once the holder exits, then recovery runs.
+        handled = cleanup_orphan_tmp_dirs(tmp_path)
+        assert handled == 1
+        target = tmp_path / ".chameleon"
+        assert is_committed(target)
+        assert (target / "profile.json").read_text() == '{"v": 2}'
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
 
 
 def test_cleanup_sweeps_stray_rename_locks(tmp_path: Path):

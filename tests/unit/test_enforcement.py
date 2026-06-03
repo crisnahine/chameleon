@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 
@@ -299,3 +300,114 @@ def test_stop_hook_blocks_roundtrip_and_merge_max():
     disk.stop_hook_blocks = 5
     merged = _merge_states(disk, s)
     assert merged.stop_hook_blocks == 5
+
+
+def test_concurrent_saves_do_not_lose_updates(tmp_path):
+    """Threads sharing a session_id must not clobber each other's file entries.
+
+    Reproduces the lost-update anomaly: each worker reads disk state, merges its
+    own unique entry, and writes. If the lock does not serialize the whole
+    read-modify-write, the final state holds far fewer than worker_count entries.
+    """
+    import threading
+
+    from chameleon_mcp.enforcement import (
+        EnforcementState,
+        FileState,
+        load_state,
+        save_state,
+    )
+
+    repo_dir = _make_data_dir(tmp_path)
+    worker_count = 6
+    edits_per_worker = 8
+    barrier = threading.Barrier(worker_count)
+
+    def worker(idx: int) -> None:
+        barrier.wait()
+        for j in range(edits_per_worker):
+            key = f"/w{idx}-{j}.ts"
+            state = EnforcementState(
+                files={key: FileState(level=1, last_verified_at=float(idx * 1000 + j))}
+            )
+            save_state(state, repo_dir, "shared-session")
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(worker_count)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    final = load_state(repo_dir, "shared-session")
+    expected = {f"/w{i}-{j}.ts" for i in range(worker_count) for j in range(edits_per_worker)}
+    assert set(final.files) == expected, (
+        f"lost updates: {len(final.files)} of {len(expected)} entries survived"
+    )
+
+
+def test_save_does_not_write_unlocked_when_lock_acquire_fails(tmp_path, monkeypatch):
+    """A failed lock acquire must not fall back to an unlocked read-modify-write.
+
+    The old fallback ran the merge+write outside any lock, so a save whose lock
+    acquire failed clobbered whatever a concurrent writer had just committed.
+    With the fix that save degrades to a no-op and the existing data survives.
+    """
+    from chameleon_mcp import enforcement
+    from chameleon_mcp.enforcement import (
+        EnforcementState,
+        FileState,
+        load_state,
+        save_state,
+    )
+
+    repo_dir = _make_data_dir(tmp_path)
+
+    # Seed an existing entry that a racing unlocked write would clobber.
+    save_state(
+        EnforcementState(files={"/seed.ts": FileState(level=1, last_verified_at=1.0)}),
+        repo_dir,
+        "contended-session",
+    )
+
+    @contextmanager
+    def failing_acquire(*args, **kwargs):
+        raise OSError("simulated lock unavailable")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(enforcement, "acquire_advisory_lock", failing_acquire)
+
+    # Must not raise (fail-open) and must not clobber the seeded entry.
+    save_state(
+        EnforcementState(files={"/added.ts": FileState(level=2, last_verified_at=2.0)}),
+        repo_dir,
+        "contended-session",
+    )
+
+    final = load_state(repo_dir, "contended-session")
+    assert "/seed.ts" in final.files
+    assert final.files["/seed.ts"].level == 1
+
+
+def test_save_reaps_orphan_tmp_files(tmp_path):
+    """A tmp file orphaned by a killed writer is swept on the next save."""
+    from chameleon_mcp.enforcement import (
+        EnforcementState,
+        FileState,
+        _state_path,
+        save_state,
+    )
+
+    repo_dir = _make_data_dir(tmp_path)
+    state_path = _state_path(repo_dir, "sweep-session")
+    orphan = state_path.with_suffix(".99999-deadbeef.tmp")
+    orphan.parent.mkdir(parents=True, exist_ok=True)
+    orphan.write_text("partial-write-debris")
+
+    save_state(
+        EnforcementState(files={"/x.ts": FileState(level=1, last_verified_at=1.0)}),
+        repo_dir,
+        "sweep-session",
+    )
+
+    assert not orphan.exists()
+    assert state_path.exists()

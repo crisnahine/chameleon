@@ -9,8 +9,13 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+
+SAVE_LOCK_TIMEOUT_SECONDS = 5.0
 
 MAX_CORRECTIONS_PER_FILE = 10
 MAX_FILE_ENTRIES = 200
@@ -142,21 +147,49 @@ def save_state(state: EnforcementState, repo_dir: Path, session_id: str) -> None
     def _merge_and_write() -> None:
         merged = _merge_states(load_state(repo_dir, session_id), state)
         _evict_if_needed(merged)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(merged.to_dict(), separators=(",", ":")), encoding="utf-8")
-        tmp.rename(path)
+        # Per-write tmp name so two writers never collide on the same tmp file,
+        # even on the degraded path below where the lock could not be held.
+        tmp = path.with_suffix(f".{os.getpid()}-{uuid.uuid4().hex[:8]}.tmp")
+        try:
+            tmp.write_text(json.dumps(merged.to_dict(), separators=(",", ":")), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
         try:
             os.chmod(path, 0o600)
         except OSError:
             pass
+        # Reap tmp files orphaned by a writer killed mid-write. Safe under the
+        # lock: no other writer for this session is producing a tmp right now.
+        for orphan in path.parent.glob(f"{path.stem}.*.tmp"):
+            try:
+                orphan.unlink()
+            except OSError:
+                pass
 
-    from chameleon_mcp.locks import acquire_advisory_lock
-
+    # Hold the lock across the whole load+merge+write so concurrent writers that
+    # share a session_id serialize their read-modify-write and cannot lose each
+    # other's entries. A contended save blocks-and-retries rather than falling
+    # back to an unlocked write (which produced lost updates). The lock is broken
+    # only when its holder is dead or older than the stale ceiling.
     try:
-        with acquire_advisory_lock(lock, stale_after_seconds=60):
+        with acquire_advisory_lock(
+            lock,
+            stale_after_seconds=60,
+            blocking_timeout=SAVE_LOCK_TIMEOUT_SECONDS,
+        ):
             _merge_and_write()
-    except Exception:
-        _merge_and_write()
+    except (LockHeldError, OSError):
+        # The lock could not be held (a live holder kept it past the blocking
+        # window, or the lock file itself was unwritable). Skipping is safer
+        # than racing an unlocked write, which clobbered a concurrent writer's
+        # data. Existing on-disk state is preserved; this session's update lands
+        # on the next edit that does acquire the lock.
+        pass
 
 
 def _evict_if_needed(state: EnforcementState) -> None:

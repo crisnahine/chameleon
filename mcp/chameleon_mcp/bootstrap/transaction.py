@@ -27,6 +27,11 @@ from pathlib import Path
 
 COMMITTED_SENTINEL = "COMMITTED"
 
+# How long recovery blocks for the rename lock before falling back to a guarded
+# restore. Long enough to outlast a normal commit's swap, short enough not to
+# stall a bootstrap/refresh if a writer wedges the lock.
+RECOVERY_LOCK_TIMEOUT_SECONDS = 10.0
+
 _PROTOCOL_FILES = frozenset(
     {
         COMMITTED_SENTINEL,
@@ -222,6 +227,103 @@ def _pid_alive(pid: int) -> bool:
         return e.errno != errno.ESRCH
 
 
+def _acquire_recovery_lock(
+    target_parent: Path, *, timeout_seconds: float | None = None
+) -> tuple[int | None, bool]:
+    """Block-and-retry for the rename lock used during recovery.
+
+    Returns (fd, holds_lock). The fd is always returned (closed by the caller)
+    so its open file description, and any lock on it, lives exactly as long as
+    the caller needs. holds_lock is False if the directory could not be opened
+    or the lock stayed held for the whole timeout.
+    """
+    if timeout_seconds is None:
+        timeout_seconds = RECOVERY_LOCK_TIMEOUT_SECONDS
+    try:
+        fd = _open_rename_lock_fd(target_parent)
+    except OSError:
+        return None, False
+    deadline = time.time() + timeout_seconds
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd, True
+        except OSError as e:
+            if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                return fd, False
+            if time.time() >= deadline:
+                return fd, False
+            time.sleep(0.05 + random.random() * 0.05)
+
+
+def _list_backups(target_parent: Path, profile_dir_name: str) -> list[Path]:
+    """All backup dirs for this profile, newest first by mtime."""
+    backups: set[Path] = set()
+    for pattern in (
+        f".{profile_dir_name}.backup-*",
+        f"..{profile_dir_name}.backup-*",
+    ):
+        backups.update(target_parent.glob(pattern))
+
+    def _mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    return sorted(backups, key=_mtime, reverse=True)
+
+
+def _recover_backups(target_parent: Path, target_dir: Path, profile_dir_name: str) -> int:
+    """Restore the newest committed backup if the live profile is gone, sweep rest.
+
+    Runs only while holding the rename lock. Returns the number of backup dirs
+    restored or removed.
+    """
+    handled = 0
+    restored = False
+    for backup_dir in _list_backups(target_parent, profile_dir_name):
+        if not backup_dir.is_dir():
+            continue
+        backup_committed = (backup_dir / COMMITTED_SENTINEL).is_file()
+        target_committed = (target_dir / COMMITTED_SENTINEL).is_file()
+        if not restored and backup_committed and not target_committed and not target_dir.exists():
+            try:
+                os.rename(backup_dir, target_dir)
+                restored = True
+                handled += 1
+                continue
+            except OSError:
+                pass
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        handled += 1
+    return handled
+
+
+def _restore_committed_backup_if_target_missing(
+    target_parent: Path, target_dir: Path, profile_dir_name: str
+) -> int:
+    """Lock-free rescue for the only profile-stranding state.
+
+    Restores the newest committed backup when no live profile exists. Does not
+    touch stray backups, since without the lock those could belong to an
+    in-flight swap. Returns 1 if a backup was restored, else 0.
+    """
+    if target_dir.exists():
+        return 0
+    for backup_dir in _list_backups(target_parent, profile_dir_name):
+        if not backup_dir.is_dir():
+            continue
+        if not (backup_dir / COMMITTED_SENTINEL).is_file():
+            continue
+        try:
+            os.rename(backup_dir, target_dir)
+            return 1
+        except OSError:
+            return 0
+    return 0
+
+
 def cleanup_orphan_tmp_dirs(target_parent: Path, profile_dir_name: str = "chameleon") -> int:
     """Sweep orphaned transaction dirs and recover interrupted commits.
 
@@ -233,9 +335,12 @@ def cleanup_orphan_tmp_dirs(target_parent: Path, profile_dir_name: str = "chamel
     ``.{name}.backup-<txn>`` dir. When the live profile is missing and a
     committed backup exists, the backup is restored; otherwise the stray
     backup (post-swap debris, or an uncommitted partial) is removed. Backup
-    handling runs only while holding the same rename lock the commit uses,
-    acquired non-blocking: if a live writer holds it, the backup is its
-    in-flight swap (transient, not an orphan) and is left untouched.
+    handling takes the same rename lock the commit uses, acquired
+    block-and-retry so a concurrent commit is serialized behind rather than
+    abandoning a crashed profile. If the lock stays held past the timeout, a
+    guarded lock-free restore still rescues the one state that strands a repo
+    (committed backup, no live profile); stray-backup sweeping is deferred to a
+    later run that does hold the lock.
 
     Orphan sweep: ``.{name}.tmp/<txn-id>/`` dirs that lack a COMMITTED
     sentinel are removed, unless the PID prefix is still alive (a concurrent
@@ -246,57 +351,32 @@ def cleanup_orphan_tmp_dirs(target_parent: Path, profile_dir_name: str = "chamel
     target_dir = target_parent / f".{profile_dir_name}"
     handled = 0
 
-    lock_fd: int | None = None
-    holds_lock = False
+    # Block-and-retry for the rename lock instead of probing once and skipping.
+    # A concurrent commit holds this lock only across its swap, so blocking
+    # serializes recovery behind it rather than abandoning a crashed profile
+    # because some unrelated refresh happened to hold the lock at that instant.
+    lock_fd, holds_lock = _acquire_recovery_lock(target_parent)
     try:
-        lock_fd = _open_rename_lock_fd(target_parent)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        holds_lock = True
-    except OSError:
-        holds_lock = False
-
-    if holds_lock:
-        backups: set[Path] = set()
-        for pattern in (
-            f".{profile_dir_name}.backup-*",
-            f"..{profile_dir_name}.backup-*",
-        ):
-            backups.update(target_parent.glob(pattern))
-
-        def _mtime(p: Path) -> float:
-            try:
-                return p.stat().st_mtime
-            except OSError:
-                return 0.0
-
-        restored = False
-        for backup_dir in sorted(backups, key=_mtime, reverse=True):
-            if not backup_dir.is_dir():
-                continue
-            backup_committed = (backup_dir / COMMITTED_SENTINEL).is_file()
-            target_committed = (target_dir / COMMITTED_SENTINEL).is_file()
-            if (
-                not restored
-                and backup_committed
-                and not target_committed
-                and not target_dir.exists()
-            ):
+        if holds_lock:
+            handled += _recover_backups(target_parent, target_dir, profile_dir_name)
+        else:
+            # The lock stayed held past the timeout. Do not sweep stray backups
+            # here (that could race a live swap), but still rescue the one state
+            # that strands a repo: a committed backup with no live profile. The
+            # restore is an atomic rename onto a missing target, safe to run even
+            # without the lock because a concurrent committer would itself land a
+            # valid committed profile (last-writer-wins, never an empty target).
+            handled += _restore_committed_backup_if_target_missing(
+                target_parent, target_dir, profile_dir_name
+            )
+    finally:
+        if lock_fd is not None:
+            if holds_lock:
                 try:
-                    os.rename(backup_dir, target_dir)
-                    restored = True
-                    handled += 1
-                    continue
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
                 except OSError:
                     pass
-            shutil.rmtree(backup_dir, ignore_errors=True)
-            handled += 1
-
-    if lock_fd is not None:
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        os.close(lock_fd)
+            os.close(lock_fd)
 
     for tmp_root in (
         target_parent / f".{profile_dir_name}.tmp",
