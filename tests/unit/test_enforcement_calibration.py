@@ -278,6 +278,140 @@ def test_import_preference_active_when_witness_uses_preferred(tmp_path):
     assert result["import-preference-violation"]["flagged"] == 0
 
 
+def test_naming_demoted_when_sibling_breaks_interface_prefix(tmp_path):
+    # Witness conforms to the `I`-prefix convention; an ordinary sibling declares a
+    # bare-named interface, so naming-convention-violation fires against the repo's
+    # own committed code and the rule must NOT be allowed to block.
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("export interface IThing { id: number }\n", encoding="utf-8")
+    (repo / "src" / "sibling.ts").write_text(
+        "export interface Widget { id: number }\n", encoding="utf-8"
+    )
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+            }
+        }
+        conventions = {
+            "conventions": {
+                "naming": {"util": {"interface_prefix": {"pattern": "I", "consistency": 1.0}}}
+            }
+        }
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    assert result["naming-convention-violation"]["active"] is False
+    assert result["naming-convention-violation"]["flagged"] == 1
+
+
+def test_naming_active_when_all_files_match_prefix(tmp_path):
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("export interface IThing { id: number }\n", encoding="utf-8")
+    (repo / "src" / "sibling.ts").write_text(
+        "export interface IWidget { id: number }\n", encoding="utf-8"
+    )
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+            }
+        }
+        conventions = {
+            "conventions": {
+                "naming": {"util": {"interface_prefix": {"pattern": "I", "consistency": 1.0}}}
+            }
+        }
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    assert result["naming-convention-violation"]["active"] is True
+    assert result["naming-convention-violation"]["flagged"] == 0
+
+
+def test_inheritance_demoted_when_witness_breaks_dominant_base(tmp_path):
+    # The witness declares a top-level class without the archetype's dominant base,
+    # so inheritance-convention-violation fires and the rule must NOT block.
+    repo = tmp_path
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "thing.rb").write_text("class Thing\nend\n", encoding="utf-8")
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "model": [
+                    {"witness": {"path": "app/thing.rb"}, "normative_shape": {"ast_query": {}}}
+                ]
+            }
+        }
+        conventions = {
+            "conventions": {
+                "inheritance": {"model": {"dominant_base": "ApplicationRecord", "frequency": 1.0}}
+            }
+        }
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    assert result["inheritance-convention-violation"]["active"] is False
+    assert result["inheritance-convention-violation"]["flagged"] == 1
+
+
+def test_inheritance_active_when_witness_uses_dominant_base(tmp_path):
+    repo = tmp_path
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "thing.rb").write_text(
+        "class Thing < ApplicationRecord\nend\n", encoding="utf-8"
+    )
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "model": [
+                    {"witness": {"path": "app/thing.rb"}, "normative_shape": {"ast_query": {}}}
+                ]
+            }
+        }
+        conventions = {
+            "conventions": {
+                "inheritance": {"model": {"dominant_base": "ApplicationRecord", "frequency": 1.0}}
+            }
+        }
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    assert result["inheritance-convention-violation"]["active"] is True
+    assert result["inheritance-convention-violation"]["flagged"] == 0
+
+
+def test_block_eligible_rules_all_present_in_result(tmp_path):
+    # Every block-eligible rule, including the two new convention rules, must appear
+    # in the calibration result with an active flag because calibrate_block_rules is
+    # generic over BLOCK_ELIGIBLE_RULES.
+    from chameleon_mcp.violation_class import BLOCK_ELIGIBLE_RULES
+
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("export const a = 1\n", encoding="utf-8")
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+            }
+        }
+        conventions = {"conventions": {}}
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    for rule in BLOCK_ELIGIBLE_RULES:
+        assert rule in result, rule
+        assert "active" in result[rule], rule
+
+
 def test_bootstrap_writes_enforcement_json(tmp_path, monkeypatch):
     # Lightweight: exercise the calibrate->write->read path the orchestrator
     # wiring uses. The full bootstrap_repo wiring is covered by the QA battery.

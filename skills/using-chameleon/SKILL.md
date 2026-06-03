@@ -41,7 +41,7 @@ Most chameleon feedback is advisory - it shapes the code you write but never blo
 **Three block points:**
 
 - **PreToolUse deny** — a banned/competing import in the *proposed* content of an Edit/Write blocks the call before it runs (`import-preference-violation`).
-- **PostToolUse block** — a hard-class violation (e.g. `phantom-import`) on a file already escalated to L2, when the archetype match is high-confidence AST, blocks the edit.
+- **PostToolUse block** — a hard-class violation (`phantom-import`, `naming-convention-violation`, `inheritance-convention-violation`, and other calibrated rules) on a file already escalated to L2, when the archetype match is high-confidence AST, blocks the edit.
 - **Stop backstop** — at turn end, an unresolved hard-class violation on a touched file refuses to end the turn (bounded by a per-session cap).
 
 **Modes** (from `.chameleon/config.json` `enforcement.mode`):
@@ -50,7 +50,7 @@ Most chameleon feedback is advisory - it shapes the code you write but never blo
 - `shadow` — default; logs would-have-blocked events but never blocks. A repo runs in shadow first so it measures before it enforces.
 - `enforce` — real deny/block on rules calibration kept active for this repo.
 
-Only block rules with a near-zero false-positive rate against the repo's own committed files stay active; the rest are demoted to advisory. `/chameleon-status` shows the active set and any demoted rule with its measured fp_rate.
+Only block rules with a near-zero false-positive rate against the repo's own committed files stay active; the rest are demoted to advisory. This includes `naming-convention-violation` (TypeScript interface prefix) and `inheritance-convention-violation` (Ruby dominant base class), which block only when calibration confirms the repo's own files all conform. `/chameleon-status` shows the active set and any demoted rule with its measured fp_rate.
 
 **Escape hatch:** a blocked edit is overridable inline with `// chameleon-ignore <rule>` (`# chameleon-ignore <rule>` in Ruby), or a bare `// chameleon-ignore` to suppress all chameleon blocks on that line. `CHAMELEON_ENFORCE=0` disables all blocking for the session regardless of mode.
 

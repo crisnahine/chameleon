@@ -12,7 +12,13 @@ def v(rule, severity="warning"):
 
 def test_block_eligible_rules_contents():
     assert BLOCK_ELIGIBLE_RULES == frozenset(
-        {"phantom-import", "import-preference-violation", "jsx-presence-mismatch"}
+        {
+            "phantom-import",
+            "import-preference-violation",
+            "jsx-presence-mismatch",
+            "naming-convention-violation",
+            "inheritance-convention-violation",
+        }
     )
 
 
@@ -31,11 +37,18 @@ def test_jsx_error_is_hard_warning_is_not():
     assert not is_hard_class(v("jsx-presence-mismatch", "warning"))
 
 
+def test_naming_and_inheritance_are_hard_but_dependent():
+    # Both rules are always emitted at "warning" severity; is_hard_class must
+    # qualify them despite that, since they are not jsx-presence-mismatch.
+    assert is_hard_class(v("naming-convention-violation", "warning"))
+    assert is_hard_class(v("inheritance-convention-violation", "warning"))
+    assert not is_archetype_independent("naming-convention-violation")
+    assert not is_archetype_independent("inheritance-convention-violation")
+
+
 def test_soft_rules_never_hard():
     for r in (
         "default-export-kind-mismatch",
-        "naming-convention-violation",
-        "inheritance-convention-violation",
         "top-level-node-kinds-mismatch",
         "content-signal-mismatch",
         "named-export-count-bucket-mismatch",

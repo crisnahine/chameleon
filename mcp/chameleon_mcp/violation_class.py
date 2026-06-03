@@ -33,8 +33,18 @@ def ignored_rules(content: str) -> set[str] | None:
 
 
 # Rules that MAY block, before per-repo self-calibration narrows the set.
+# naming-convention-violation and inheritance-convention-violation are
+# archetype-dependent: a wrong archetype match would make them spurious, so the
+# block path gates them on confidence=high + match_quality=ast and per-repo
+# calibration, same as the other dependent rules.
 BLOCK_ELIGIBLE_RULES: frozenset[str] = frozenset(
-    {"phantom-import", "import-preference-violation", "jsx-presence-mismatch"}
+    {
+        "phantom-import",
+        "import-preference-violation",
+        "jsx-presence-mismatch",
+        "naming-convention-violation",
+        "inheritance-convention-violation",
+    }
 )
 
 # Archetype-independent rules are true/false regardless of which archetype the
@@ -49,8 +59,11 @@ def is_archetype_independent(rule: str) -> bool:
 def is_hard_class(violation: dict) -> bool:
     """True if this violation is block-eligible on its own merits.
 
-    jsx-presence-mismatch only qualifies at severity ``error`` (file HAS JSX in a
-    non-JSX archetype); the ``warning`` form (missing JSX, may be a stub) does not.
+    jsx-presence-mismatch is the only severity-gated rule: it qualifies only at
+    severity ``error`` (file HAS JSX in a non-JSX archetype); the ``warning`` form
+    (missing JSX, may be a stub) does not. Every other block-eligible rule
+    qualifies regardless of severity, including naming/inheritance convention
+    violations, which are always emitted at ``warning``.
     """
     rule = violation.get("rule")
     if rule not in BLOCK_ELIGIBLE_RULES:
