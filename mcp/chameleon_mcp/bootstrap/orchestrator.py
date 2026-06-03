@@ -391,6 +391,14 @@ class BootstrapReport:
     "archetypes_detected": int, "files_processed": int, "duration_ms": int,
     "error": str | None}. Empty list for non-monorepo repos.
     """
+    workspace_skipped_warnings: list[str] = field(default_factory=list)
+    """Workspace package paths that could not be resolved and were skipped.
+
+    A broken symlink anywhere in a workspace package's path makes
+    Path.resolve() raise, which would otherwise abort the whole monorepo
+    fan-out. Such packages are skipped and recorded here (relative to the
+    repo root when possible) so the user knows a package was dropped and why.
+    """
     language_hint: dict | None = None
     """Bug 2: hybrid-language detection envelope.
 
@@ -475,6 +483,7 @@ class BootstrapReport:
             "bimodal_cluster_warnings": list(self.bimodal_cluster_warnings),
             "nested_profile_warnings": list(self.nested_profile_warnings),
             "workspaces": list(self.workspace_reports),
+            "workspace_skipped_warnings": list(self.workspace_skipped_warnings),
         }
         out["language_hint"] = self.language_hint
         out["workspace_roots"] = list(self.workspace_roots)
@@ -642,6 +651,22 @@ def _rel_or_abs(path: Path, repo_root: Path) -> str:
         return str(path.relative_to(repo_root))
     except ValueError:
         return str(path)
+
+
+def _witness_relpath(witness_path: Path, repo_root: Path) -> str:
+    """Witness path relative to repo_root, always with forward-slash segments.
+
+    Profile artifacts store every path with forward slashes so the downstream
+    overlap/dedup comparisons (which split on "/") stay correct no matter which
+    OS authored the profile. On Windows str(Path) yields backslashes, so the
+    raw separator must be folded here, at the storage source. A witness outside
+    repo_root falls back to its absolute path, normalized the same way.
+    """
+    try:
+        rel = witness_path.relative_to(repo_root)
+        return rel.as_posix()
+    except ValueError:
+        return str(witness_path).replace("\\", "/")
 
 
 def _stringify_distribution_key(value: object) -> str:
@@ -913,12 +938,21 @@ def bootstrap_repo(
     # bootstrappable workspaces — fan out to them anyway (coordinator-only root).
 
     workspace_reports: list[dict] = []
+    workspace_skipped: list[str] = []
     for ws_path in workspace.workspace_paths:
-        ws_root = ws_path.resolve()
+        # resolve() can raise on a workspace path that contains a broken/looping
+        # symlink (OSError, or RuntimeError for a detected symlink loop). Skip the
+        # offending package and record it rather than aborting the whole fan-out.
         try:
+            ws_root = ws_path.resolve()
             if ws_root == repo_root.resolve():
                 continue
-        except OSError:
+        except (OSError, RuntimeError):
+            try:
+                skipped_label = str(ws_path.relative_to(repo_root))
+            except ValueError:
+                skipped_label = str(ws_path)
+            workspace_skipped.append(skipped_label)
             continue
         ws_report = _bootstrap_single(
             ws_root,
@@ -941,6 +975,9 @@ def bootstrap_repo(
                 "error": ws_report.error,
             }
         )
+
+    if workspace_skipped:
+        report.workspace_skipped_warnings = workspace_skipped
 
     if workspace_reports:
         report.workspace_reports = workspace_reports
@@ -1363,7 +1400,7 @@ def _bootstrap_single(
         # witness so those files still get rules + nearby guidance.
         if sel is not None:
             try:
-                witness_relpath = str(sel.witness_path.relative_to(repo_root))
+                witness_relpath = _witness_relpath(sel.witness_path, repo_root)
             except ValueError:
                 witness_relpath = ""
         else:
@@ -1399,7 +1436,7 @@ def _bootstrap_single(
             canonicals_data["canonicals"][effective_name] = [
                 {
                     "witness": {
-                        "path": witness_relpath or str(sel.witness_path),
+                        "path": witness_relpath or str(sel.witness_path).replace("\\", "/"),
                         "sha_hint": sel.sha_hint,
                     },
                     "normative_shape": {

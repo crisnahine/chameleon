@@ -79,7 +79,13 @@ def _sample_files(repo_root: Path, loaded) -> list[tuple[str, str]]:
     for archetype, entries in canon.items():
         for entry in entries or []:
             rel = ((entry or {}).get("witness") or {}).get("path")
-            if not rel or rel in seen:
+            if not rel:
+                continue
+            # Profile artifacts use forward slashes; fold any backslashes from a
+            # Windows-authored or cross-platform-shared profile so the dedup set
+            # and the sibling paths below share one separator convention.
+            rel = rel.replace("\\", "/")
+            if rel in seen:
                 continue
             seen.add(rel)
             out.append((rel, archetype))
@@ -89,17 +95,30 @@ def _sample_files(repo_root: Path, loaded) -> list[tuple[str, str]]:
 
     # Second pass: bounded siblings per archetype. A sibling is a real, readable,
     # same-extension file in the witness's directory that is not itself a witness.
+    # iterdir() is run once per directory and shared across witnesses that live in
+    # the same directory, so a dense witness dir is scanned a single time.
+    dir_names_cache: dict[str, list[str] | None] = {}
     for witness_rel, archetype in witness_dirs:
         if len(out) >= _MAX_FILES_SAMPLED:
             break
-        wpath = Path(witness_rel)
+        # Witness paths may carry backslashes when the profile was authored on
+        # Windows or shared cross-platform; fold them so the parent/extension
+        # parse and the forward-slash dedup set agree.
+        wpath = Path(witness_rel.replace("\\", "/"))
         ext = wpath.suffix
         if not ext:
             continue
-        wdir_full = repo_root / wpath.parent
-        try:
-            names = sorted(p.name for p in wdir_full.iterdir() if p.is_file())
-        except OSError:
+        wdir_rel = wpath.parent.as_posix()
+        if wdir_rel in dir_names_cache:
+            names = dir_names_cache[wdir_rel]
+        else:
+            wdir_full = repo_root / wpath.parent
+            try:
+                names = sorted(p.name for p in wdir_full.iterdir() if p.is_file())
+            except OSError:
+                names = None
+            dir_names_cache[wdir_rel] = names
+        if names is None:
             continue
         taken = 0
         for name in names:
@@ -107,7 +126,7 @@ def _sample_files(repo_root: Path, loaded) -> list[tuple[str, str]]:
                 break
             if not name.endswith(ext):
                 continue
-            sib_rel = str(wpath.parent / name)
+            sib_rel = (wpath.parent / name).as_posix()
             if sib_rel in seen:
                 continue
             if detect_language(sib_rel) is None:

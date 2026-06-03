@@ -55,10 +55,13 @@ def _ensure_hmac_key() -> bytes:
     key_path = _hmac_key_path()
     if key_path.is_file():
         st = os.stat(key_path)
-        if st.st_uid != os.geteuid():
-            raise HMACKeyError(
-                f"HMAC key {key_path} owned by uid {st.st_uid}, expected {os.geteuid()}"
-            )
+        # POSIX-only: uid-based ownership verification. Windows has no
+        # os.geteuid / st_uid concept, so skip the owner check there rather than
+        # crashing with AttributeError; file ACLs are the platform's mechanism.
+        if hasattr(os, "geteuid"):
+            euid = os.geteuid()
+            if getattr(st, "st_uid", euid) != euid:
+                raise HMACKeyError(f"HMAC key {key_path} owned by uid {st.st_uid}, expected {euid}")
         if st.st_mode & 0o077:
             os.chmod(key_path, 0o600)
         return key_path.read_bytes()
