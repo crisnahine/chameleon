@@ -46,8 +46,13 @@ def _make_non_git_repo(tmp_path: Path) -> Path:
 
 
 def _expected_repo_id(repo_root: Path) -> str:
-    """The path-hash repo_id for a repo with no git remote."""
-    return hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()
+    """The path-hash repo_id for a repo with no git remote.
+
+    Mirrors _compute_repo_id's case-normalized path fallback (lower-cased
+    resolved path) so the expectation holds even when the tmp path carries
+    uppercase segments.
+    """
+    return hashlib.sha256(str(repo_root.resolve()).lower().encode("utf-8")).hexdigest()
 
 
 def _run_recorder(payload: dict, *, env: dict, reset_repo_cache: bool = True) -> dict:

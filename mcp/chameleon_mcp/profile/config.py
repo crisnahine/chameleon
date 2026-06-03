@@ -88,6 +88,10 @@ class ChameleonConfig:
     trust: TrustConfig = field(default_factory=TrustConfig)
     enforcement: EnforcementConfig = field(default_factory=EnforcementConfig)
     auto_rename: bool = True
+    # Stable identity for repos without a git remote. Bootstrap persists this so
+    # moving/renaming the working tree on disk does not orphan the trust grant.
+    # Repos with a remote ignore it; the remote URL is the stronger signal.
+    repo_uuid: str | None = None
 
     @property
     def branch_pinning_enabled(self) -> bool:
@@ -244,6 +248,7 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
         "trust",
         "enforcement",
         "auto_rename",
+        "repo_uuid",
     }
     unknown_top = set(raw.keys()) - allowed_top
     if unknown_top:
@@ -266,6 +271,12 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
     if not isinstance(auto_rename, bool):
         raise ChameleonConfigError(f"`auto_rename` must be bool, got {type(auto_rename).__name__}")
 
+    repo_uuid = raw.get("repo_uuid")
+    if repo_uuid is not None and not (isinstance(repo_uuid, str) and repo_uuid.strip()):
+        raise ChameleonConfigError(
+            f"`repo_uuid` must be a non-empty string or null, got {repo_uuid!r}"
+        )
+
     return ChameleonConfig(
         schema_version=schema,
         canonical_ref=canonical_ref.strip() if canonical_ref else None,
@@ -273,4 +284,5 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
         trust=_coerce_trust(raw.get("trust")),
         enforcement=_coerce_enforcement(raw.get("enforcement")),
         auto_rename=auto_rename,
+        repo_uuid=repo_uuid.strip() if repo_uuid else None,
     )

@@ -41,6 +41,13 @@ def _notify_daemon_cache_invalidation() -> None:
     Fail-open: if the daemon is unreachable the notification is a no-op;
     the next hook call will either hit the in-process fallback or the
     daemon's mtime check will eventually detect the change.
+
+    This notification closes the window in the common case, but it is
+    best-effort, not a synchronous reload barrier: a hook call racing the
+    mutation can still read one-generation-stale data before the daemon
+    processes the invalidation. A session that needs strict read-after-write
+    consistency on a mutating tool can run /chameleon-disable to take the
+    in-process path for the rest of the session, bypassing the daemon entirely.
     """
     try:
         from chameleon_mcp import daemon_client
@@ -238,6 +245,10 @@ def _normalize_git_url(url: str) -> str:
        hosting providers — both `https://github.com/...` and
        `ssh://git@github.com/...` resolve to the same repository.
     6. Lowercase the host for case-insensitive hosts.
+    7. Lowercase the owner/repo path too for those same hosts. GitHub,
+       GitLab, Bitbucket, and Azure DevOps resolve owner/repo
+       case-insensitively, so `github.com/Foo/Bar` and `github.com/foo/bar`
+       are the same repository and must collapse to one repo_id.
 
     Returns the canonical URL string. Non-URL input is returned stripped so
     we never crash — the caller still hashes whatever we return, which keeps
@@ -267,6 +278,7 @@ def _normalize_git_url(url: str) -> str:
     if host_l in _CASE_INSENSITIVE_HOSTS:
         host = host_l
         scheme = "https"
+        path = path.lower()
 
     return f"{scheme}://{host}{path}"
 
@@ -378,17 +390,88 @@ def _log_effective_profile_dir_fallback(repo_root: Path, reason: str, detail: st
         pass
 
 
+def _persisted_repo_uuid(repo_root: Path) -> str | None:
+    """Read ``.chameleon/config.json``'s ``repo_uuid`` if present.
+
+    A non-empty string repo_uuid pins a no-remote repo's identity to a value
+    that travels with the committed profile, so moving or renaming the working
+    tree on disk does not orphan the trust grant. Fail-open: any read/parse
+    error returns None and the caller falls back to the path hash. Read with a
+    raw json.loads (not the strict config loader) so a config that is malformed
+    for some unrelated feature still yields a usable uuid here.
+    """
+    try:
+        raw = (repo_root / ".chameleon" / "config.json").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    uuid = data.get("repo_uuid")
+    if isinstance(uuid, str) and uuid.strip():
+        return uuid.strip()
+    return None
+
+
+def _persist_repo_uuid_if_no_remote(repo_root: Path) -> None:
+    """Stamp a stable ``repo_uuid`` into ``.chameleon/config.json`` for repos
+    without a git remote, so a later move/rename keeps the same repo_id.
+
+    No-op when a git remote exists (the remote URL is the stronger identity) or
+    when a repo_uuid is already persisted. Best-effort: any failure is swallowed
+    and the repo simply keeps its path-derived id. Callers must clear the
+    repo-id cache afterward because writing the uuid changes the id this repo
+    resolves to.
+    """
+    try:
+        if _git_remote_url(repo_root):
+            return
+        if _persisted_repo_uuid(repo_root):
+            return
+        profile_dir = repo_root / ".chameleon"
+        if not profile_dir.is_dir():
+            return
+        config_path = profile_dir / "config.json"
+        existing: dict = {}
+        if config_path.is_file():
+            try:
+                parsed = json.loads(config_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    existing = parsed
+            except (OSError, json.JSONDecodeError, ValueError):
+                # A config malformed for some other feature must not block the
+                # uuid stamp; overwrite with a minimal valid document.
+                existing = {}
+        existing.setdefault("$schema", "chameleon-config-0.8.0")
+        existing["repo_uuid"] = secrets.token_hex(16)
+        text = json.dumps(existing, indent=2, sort_keys=True) + "\n"
+        tmp = config_path.with_name(config_path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(config_path)
+    except Exception:
+        pass
+
+
 def _compute_repo_id(repo_root: Path) -> str:
     """Canonical repo_id.
 
-    Schema v6+: prefer git remote URL (stable across moved checkouts);
-    fall back to the resolved absolute path when no git remote exists.
+    Identity precedence (most stable first):
+      1. git remote URL, stable across moved/renamed checkouts and machines.
+      2. a persisted ``repo_uuid`` in ``.chameleon/config.json``, for repos
+         without a remote (fresh `git init`, vendored snapshots, archive
+         extracts), this travels with the committed profile so a moved working
+         tree keeps its identity.
+      3. the case-normalized resolved absolute path, the final fallback.
 
-    Two checkouts of the same repository — even on different machines or
-    after moving the working tree — get the same id, so the per-user trust
-    grant and drift observations follow the project rather than the
-    filesystem location. Repos without `origin` (fresh `git init`, vendored
-    snapshots, archive extracts) keep the early path-based behavior.
+    The path fallback lower-cases the resolved path string before hashing so a
+    repo reached through a path that differs only in letter case (common on
+    case-preserving-but-insensitive filesystems like default macOS/Windows)
+    maps to one id. The pre-fix path id (non-lowercased) stays reachable via
+    `_legacy_path_repo_id`, which `detect_repo` uses to surface a re-trust hint
+    for grants made by earlier engines, so the change is migration-safe.
     """
     key = str(repo_root.resolve())
     cached = _REPO_ID_CACHE.get(key)
@@ -404,17 +487,25 @@ def _compute_repo_id(repo_root: Path) -> str:
             repo_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
             _REPO_ID_CACHE[key] = (time.monotonic(), repo_id)
             return repo_id
-    repo_id = hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+    uuid = _persisted_repo_uuid(repo_root)
+    if uuid:
+        repo_id = hashlib.sha256(f"chameleon-uuid:{uuid}".encode()).hexdigest()
+        _REPO_ID_CACHE[key] = (time.monotonic(), repo_id)
+        return repo_id
+
+    repo_id = hashlib.sha256(key.lower().encode("utf-8")).hexdigest()
     _REPO_ID_CACHE[key] = (time.monotonic(), repo_id)
     return repo_id
 
 
 def _legacy_path_repo_id(repo_root: Path) -> str:
-    """The pre-v6 path-derived repo_id.
+    """The pre-v6 path-derived repo_id (case-preserving).
 
-    Used by `detect_repo` to look up trust grants made by early engines.
-    A trust record found at the legacy id surfaces a `legacy_trust_state`
-    hint so the model can prompt the user to re-trust under the new id.
+    Used by `detect_repo` to look up trust grants made by early engines, which
+    hashed the resolved path verbatim (no case folding, no uuid). A trust
+    record found at the legacy id surfaces a `legacy_trust_hint` so the model
+    can prompt the user to re-trust under the current id.
     """
     return hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()
 
@@ -584,6 +675,20 @@ def detect_repo(file_path: str) -> dict:
     return _envelope(data)
 
 
+def _norm_rel_path(rel: str) -> str:
+    """Normalize a repo-relative path to forward-slash segments.
+
+    Repo-relative paths reach the scoring/overlap helpers from two sources: the
+    edited file's path (which on Windows stringifies with backslashes) and
+    witness paths loaded from JSON profile artifacts (which on a Windows-authored
+    or cross-platform-shared profile may carry backslashes). The directory-prefix
+    overlap logic splits on "/", so a backslash path scores zero overlap and the
+    archetype resolution silently degrades. Folding both separators to "/" keeps
+    the comparison correct regardless of authoring platform.
+    """
+    return rel.replace("\\", "/")
+
+
 def _prefix_overlap_fallback(rel_str: str, archetypes: dict) -> tuple[str | None, list[str]]:
     """BUG-015: pick the archetype that shares the longest directory prefix.
 
@@ -636,11 +741,12 @@ def _nearest_canonical_entry(rel_str: str, entries: list) -> dict:
     """
     if not entries:
         return {}
-    q_parts = rel_str.split("/")[:-1]
+    q_parts = _norm_rel_path(rel_str).split("/")[:-1]
     best = entries[0] or {}
     best_overlap = -1
     for e in entries:
-        w_parts = (((e or {}).get("witness") or {}).get("path") or "").split("/")[:-1]
+        witness_rel = ((e or {}).get("witness") or {}).get("path") or ""
+        w_parts = _norm_rel_path(witness_rel).split("/")[:-1]
         overlap = 0
         for a, b in zip(q_parts, w_parts):  # noqa: B905
             if a == b:
@@ -666,8 +772,8 @@ def _witness_path_overlap(rel_str: str, canonicals: dict, archetype_name: str) -
     witness_path = ((entries[0] or {}).get("witness") or {}).get("path") or ""
     if not witness_path:
         return 0
-    q_parts = rel_str.split("/")[:-1]
-    w_parts = witness_path.split("/")[:-1]
+    q_parts = _norm_rel_path(rel_str).split("/")[:-1]
+    w_parts = _norm_rel_path(witness_path).split("/")[:-1]
     common = 0
     for a, b in zip(q_parts, w_parts):  # noqa: B905
         if a == b:
@@ -840,6 +946,7 @@ def _get_archetype_with_loaded(
             rel_str = str(p.relative_to(repo_root))
         except ValueError:
             rel_str = str(p)
+    rel_str = _norm_rel_path(rel_str)
     file_bucket, _sub = path_pattern_bucket_for(rel_str)
     file_bucket_ext, _sub_ext = path_pattern_bucket_for(rel_str, include_extension=True)
 
@@ -2455,6 +2562,34 @@ def _attempt_partial_refresh(
         except (OSError, FileNotFoundError, _UnsafeFileError):
             renames_text = None
 
+    # conventions.json (taught competing imports) and principles.md are
+    # protocol files, so atomic_profile_commit will NOT copy them forward from
+    # the live profile. The partial path doesn't regenerate them, so they must
+    # be carried into the transaction verbatim or a successful partial refresh
+    # silently wipes every taught banned import and the principles doc.
+    conventions_text: str | None = None
+    conventions_path_partial = profile_dir / "conventions.json"
+    if conventions_path_partial.is_file():
+        from chameleon_mcp.safe_open import (
+            UnsafeFileError as _UnsafeFileErrorC,
+        )
+        from chameleon_mcp.safe_open import (
+            safe_read_profile_artifact as _safe_read_profile_artifact_c,
+        )
+
+        try:
+            conventions_text = _safe_read_profile_artifact_c(conventions_path_partial)
+        except (OSError, FileNotFoundError, _UnsafeFileErrorC):
+            conventions_text = None
+
+    principles_text = ""
+    principles_path = profile_dir / "principles.md"
+    if principles_path.is_file():
+        try:
+            principles_text = principles_path.read_text(encoding="utf-8")
+        except OSError:
+            principles_text = ""
+
     try:
         with atomic_profile_commit(profile_dir) as txn_dir:
             (txn_dir / "profile.json").write_text(
@@ -2475,8 +2610,11 @@ def _attempt_partial_refresh(
             )
             (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
             (txn_dir / "profile.summary.md").write_text(summary_text, encoding="utf-8")
+            (txn_dir / "principles.md").write_text(principles_text, encoding="utf-8")
             if renames_text is not None:
                 (txn_dir / "renames.json").write_text(renames_text, encoding="utf-8")
+            if conventions_text is not None:
+                (txn_dir / "conventions.json").write_text(conventions_text, encoding="utf-8")
     except Exception:
         return None
 
@@ -3264,6 +3402,36 @@ def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
         pass
 
 
+_NONGIT_PARENT_SCAN_LIMIT = 200
+
+
+def _nongit_parent_with_git_children(repo_root: Path) -> list[str]:
+    """Return immediate child dir names that are their own git repos when
+    ``repo_root`` itself is NOT a git working tree.
+
+    Bootstrapping a non-git parent that contains independent git repos plants a
+    ``.chameleon/`` at the parent level that then shadows every child repo's
+    profile (find_repo_root walks up to the parent). Returns [] when repo_root
+    is itself a git repo (the normal case) or has no git children. Best-effort:
+    a scan error yields [] so detection never fails bootstrap.
+    """
+    try:
+        if (repo_root / ".git").exists():
+            return []
+        children: list[str] = []
+        for i, child in enumerate(sorted(repo_root.iterdir())):
+            if i >= _NONGIT_PARENT_SCAN_LIMIT:
+                break
+            try:
+                if child.is_dir() and (child / ".git").exists():
+                    children.append(child.name)
+            except OSError:
+                continue
+        return children
+    except OSError:
+        return []
+
+
 def _bootstrap_repo_unlocked(
     path: str,
     paths_glob: str | None = None,
@@ -3319,6 +3487,24 @@ def _bootstrap_repo_unlocked(
             }
         )
 
+    git_children = _nongit_parent_with_git_children(repo_root)
+    nongit_parent_warning: dict | None = None
+    if git_children:
+        shown = git_children[:10]
+        nongit_parent_warning = {
+            "code": "nongit_parent_with_git_children",
+            "git_child_dirs": shown,
+            "git_child_count": len(git_children),
+            "message": (
+                f"This directory is not a git repo but contains {len(git_children)} "
+                f"git repo(s) ({', '.join(shown)}"
+                + ("..." if len(git_children) > len(shown) else "")
+                + "). A profile here shadows those child repos: edits inside them "
+                "will match this parent profile instead of their own. Bootstrap each "
+                "child repo directly instead of this parent."
+            ),
+        }
+
     if now is not None:
         if not isinstance(now, int | float) or isinstance(now, bool):
             return _envelope(
@@ -3370,21 +3556,27 @@ def _bootstrap_repo_unlocked(
                 )
             except Exception:
                 pass
-            return _envelope(
-                {
-                    "status": "already_bootstrapped",
-                    "profile_path": profile_path,
-                    "message": (
-                        "A committed profile already exists at this path. "
-                        "Pass force=true to overwrite, or run /chameleon-refresh "
-                        "to re-analyze without clearing trust state."
-                    ),
-                }
-            )
+            already_data = {
+                "status": "already_bootstrapped",
+                "profile_path": profile_path,
+                "message": (
+                    "A committed profile already exists at this path. "
+                    "Pass force=true to overwrite, or run /chameleon-refresh "
+                    "to re-analyze without clearing trust state."
+                ),
+            }
+            if nongit_parent_warning is not None:
+                already_data["nongit_parent_warning"] = nongit_parent_warning
+            return _envelope(already_data)
 
     report = _bootstrap(repo_root, paths_glob=paths_glob, now=now)
 
     if report.status == "success":
+        # Stamp a stable uuid for no-remote repos so the id survives a move,
+        # then drop the cache so this repo resolves to the uuid-based id for the
+        # index/hash snapshot and every downstream call.
+        _persist_repo_uuid_if_no_remote(repo_root)
+        _clear_repo_id_cache()
         repo_id = _compute_repo_id(repo_root)
         # Calibrate before the hash snapshot: enforcement.json is part of the
         # trust-hashed surface, so writing it first keeps the index.db mirror
@@ -3417,6 +3609,8 @@ def _bootstrap_repo_unlocked(
         if not ws_root_str:
             continue
         ws_root = Path(ws_root_str)
+        _persist_repo_uuid_if_no_remote(ws_root)
+        _clear_repo_id_cache()
         ws_repo_id = _compute_repo_id(ws_root)
         # Calibrate before the hash snapshot so enforcement.json is included in
         # the index.db mirror of profile_sha256 (see the root path above).
@@ -3439,7 +3633,10 @@ def _bootstrap_repo_unlocked(
                 index_db.upsert_file_clusters(ws_repo_id, ws_rows)
 
     _notify_daemon_cache_invalidation()
-    return _envelope(report.to_dict())
+    report_dict = report.to_dict()
+    if nongit_parent_warning is not None:
+        report_dict["nongit_parent_warning"] = nongit_parent_warning
+    return _envelope(report_dict)
 
 
 def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
