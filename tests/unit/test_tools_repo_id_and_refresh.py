@@ -70,9 +70,11 @@ def test_normalize_git_url_preserves_path_case_on_unknown_host():
 
 
 def test_compute_repo_id_path_fallback_is_case_insensitive(tmp_path, monkeypatch):
-    # No git remote -> path-based id. Two path spellings that differ only in
-    # case must collapse to one id.
+    # No git remote -> path-based id. On a case-insensitive filesystem, two path
+    # spellings that differ only in case must collapse to one id. Force the
+    # case-insensitive branch so the assertion holds on a case-sensitive CI host.
     monkeypatch.setattr(tools, "_git_remote_url", lambda _root: None)
+    monkeypatch.setattr(tools, "_fs_is_case_insensitive", lambda _p: True)
     repo = tmp_path / "MixedCase"
     repo.mkdir()
     id_mixed = tools._compute_repo_id(repo)
@@ -102,13 +104,13 @@ def test_detect_repo_surfaces_legacy_hint_after_case_normalization(tmp_path, mon
     from chameleon_mcp.profile.trust import grant_trust
 
     monkeypatch.setattr(tools, "_git_remote_url", lambda _root: None)
+    # Force the case-insensitive branch so the case-normalized id diverges from
+    # the legacy (non-lowercased) id on a case-sensitive CI host too.
+    monkeypatch.setattr(tools, "_fs_is_case_insensitive", lambda _p: True)
     repo = tmp_path / "MixedCaseRepo"
     cham = repo / ".chameleon"
     cham.mkdir(parents=True)
     (cham / "profile.json").write_text(json.dumps({"schema_version": 7, "generation": 1}))
-
-    if str(repo.resolve()) == str(repo.resolve()).lower():
-        pytest.skip("filesystem lower-cases the resolved path; no legacy divergence")
 
     legacy_id = tools._legacy_path_repo_id(repo)
     current_id = tools._compute_repo_id(repo)
