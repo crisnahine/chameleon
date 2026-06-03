@@ -151,10 +151,16 @@ def test_pid_alive_windows_never_calls_os_kill(monkeypatch):
         raise AssertionError("os.kill must not be called on the Windows path")
 
     monkeypatch.setattr(locks.os, "kill", _boom)
-    assert locks.pid_alive(4242) is True  # ctypes unavailable here -> assume alive
+    # The invariant is "os.kill is never reached"; the boolean itself is
+    # platform-dependent (POSIX with ctypes absent -> assume alive/True; real
+    # Windows -> the OpenProcess probe answers for the actual PID), so only the
+    # no-signal contract and the return type are asserted here.
+    result = locks.pid_alive(4242)
+    assert isinstance(result, bool)
 
 
-def test_pid_alive_posix_uses_os_kill(monkeypatch):
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: real Windows has no fcntl")
+def test_pid_alive_posix_uses_os_kill():
     """Sanity: with fcntl present the POSIX probe is exact for the current PID."""
     assert locks.fcntl is not None  # this host is POSIX
     assert locks.pid_alive(os.getpid()) is True
@@ -173,6 +179,7 @@ def test_open_dir_lock_fd_windows_uses_sidecar(monkeypatch, tmp_path):
         os.close(fd)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: Windows uses the sidecar")
 def test_open_dir_lock_fd_posix_uses_directory_fd(tmp_path):
     """POSIX locks the directory inode and leaves no stray file."""
     assert locks.fcntl is not None
