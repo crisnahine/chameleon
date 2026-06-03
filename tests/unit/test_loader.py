@@ -96,6 +96,149 @@ class TestFindRepoRoot:
         assert r1 is not r2
 
 
+class TestFindRepoRootMonorepoBoundary:
+    """A .git directory is a hard repo boundary.
+
+    find_repo_root must return the nearest repo root and must never cross a
+    .git boundary upward to a parent .chameleon. These guard the shared-parent
+    multi-repo scenario (the top user complaint).
+    """
+
+    def setup_method(self):
+        clear_repo_root_cache()
+
+    def test_git_child_does_not_resolve_to_parent_chameleon(self, tmp_path: Path, monkeypatch):
+        # parent has .chameleon; repoB has its own .git but no .chameleon.
+        # A file in repoB must resolve to repoB, not to the parent profile.
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        parent = tmp_path / "parent"
+        (parent / ".chameleon").mkdir(parents=True)
+        repo_b = parent / "repoB"
+        (repo_b / ".git").mkdir(parents=True)
+        file_b = repo_b / "file.rb"
+        file_b.write_text("puts 1")
+
+        result = find_repo_root(file_b)
+        assert result is not None
+        assert result.resolve() == repo_b.resolve()
+
+    def test_two_git_children_under_chameleon_parent(self, tmp_path: Path, monkeypatch):
+        # repoA bootstrapped (.git + .chameleon), repoB only .git, parent has .chameleon.
+        # Each repo's files resolve to that repo, never to the parent.
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        parent = tmp_path / "parent"
+        (parent / ".chameleon").mkdir(parents=True)
+        repo_a = parent / "repoA"
+        (repo_a / ".git").mkdir(parents=True)
+        (repo_a / ".chameleon").mkdir(parents=True)
+        repo_b = parent / "repoB"
+        (repo_b / ".git").mkdir(parents=True)
+
+        file_a = repo_a / "src" / "a.ts"
+        file_a.parent.mkdir(parents=True)
+        file_a.write_text("export const a = 1;")
+        file_b = repo_b / "lib" / "b.rb"
+        file_b.parent.mkdir(parents=True)
+        file_b.write_text("puts 2")
+
+        result_a = find_repo_root(file_a)
+        result_b = find_repo_root(file_b)
+        assert result_a is not None and result_a.resolve() == repo_a.resolve()
+        assert result_b is not None and result_b.resolve() == repo_b.resolve()
+
+    def test_git_child_with_own_chameleon_wins_over_parent(self, tmp_path: Path, monkeypatch):
+        # repoB has BOTH .git and .chameleon; its own profile must win.
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        parent = tmp_path / "parent"
+        (parent / ".chameleon").mkdir(parents=True)
+        repo_b = parent / "repoB"
+        (repo_b / ".git").mkdir(parents=True)
+        (repo_b / ".chameleon").mkdir(parents=True)
+        file_b = repo_b / "deep" / "nested" / "file.ts"
+        file_b.parent.mkdir(parents=True)
+        file_b.write_text("export const x = 1;")
+
+        result = find_repo_root(file_b)
+        assert result is not None
+        assert result.resolve() == repo_b.resolve()
+
+    def test_workspace_without_git_still_resolves_to_root_chameleon(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # The legitimate monorepo-workspace case: root has .git + .chameleon,
+        # each package has only package.json (no .git, no .chameleon).
+        # A package file must resolve UP to the root .chameleon, since no
+        # .git boundary is crossed.
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        root = tmp_path / "monorepo"
+        (root / ".git").mkdir(parents=True)
+        (root / ".chameleon").mkdir(parents=True)
+        pkg = root / "packages" / "ui"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text("{}")
+        file_ui = pkg / "src" / "Button.tsx"
+        file_ui.parent.mkdir(parents=True)
+        file_ui.write_text("export const Button = () => null;")
+
+        result = find_repo_root(file_ui)
+        assert result is not None
+        assert result.resolve() == root.resolve()
+
+    def test_git_workspace_package_does_not_cross_to_root_chameleon(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # If a workspace package is itself a git repo (submodule-like), it is a
+        # boundary: its files resolve to the package, not the root .chameleon.
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        root = tmp_path / "monorepo"
+        (root / ".git").mkdir(parents=True)
+        (root / ".chameleon").mkdir(parents=True)
+        pkg = root / "packages" / "vendored"
+        (pkg / ".git").mkdir(parents=True)
+        (pkg / "package.json").write_text("{}")
+        file_v = pkg / "index.ts"
+        file_v.write_text("export const x = 1;")
+
+        result = find_repo_root(file_v)
+        assert result is not None
+        assert result.resolve() == pkg.resolve()
+
+    def test_nested_chameleon_under_chameleon_no_git(self, tmp_path: Path, monkeypatch):
+        # Nested .chameleon directories with no .git boundary between them:
+        # the nearest .chameleon wins (closest to the file).
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        outer = tmp_path / "outer"
+        (outer / ".chameleon").mkdir(parents=True)
+        inner = outer / "inner"
+        (inner / ".chameleon").mkdir(parents=True)
+        file_inner = inner / "src" / "x.ts"
+        file_inner.parent.mkdir(parents=True)
+        file_inner.write_text("export const x = 1;")
+
+        result = find_repo_root(file_inner)
+        assert result is not None
+        assert result.resolve() == inner.resolve()
+
+    def test_language_marker_child_under_git_parent_resolves_to_git(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # No .chameleon anywhere. Child has package.json, parent has .git.
+        # The nearest hard boundary (.git) is the repo root, not the bare
+        # package.json subdir.
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        root = tmp_path / "gitroot"
+        (root / ".git").mkdir(parents=True)
+        pkg = root / "packages" / "lib"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text("{}")
+        file_lib = pkg / "index.ts"
+        file_lib.write_text("export const x = 1;")
+
+        result = find_repo_root(file_lib)
+        assert result is not None
+        assert result.resolve() == root.resolve()
+
+
 class TestCacheClearing:
     def setup_method(self):
         clear_profile_cache()

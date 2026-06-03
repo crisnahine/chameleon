@@ -169,8 +169,12 @@ def _is_unsafe_repo_root(root: Path) -> str | None:
     return None
 
 
+# A ``.git`` directory is a hard repo boundary; the walk stops there and never
+# crosses upward to a parent ``.chameleon``. ``.chameleon`` sits LAST so a
+# directory that owns its own profile still resolves to itself (it is checked
+# explicitly before the boundary in the walk), while language/.git markers are
+# the signal that bounds an unprofiled child to its own repo.
 REPO_ROOT_MARKERS: tuple[str, ...] = (
-    ".chameleon",
     ".git",
     "package.json",
     "tsconfig.json",
@@ -178,42 +182,38 @@ REPO_ROOT_MARKERS: tuple[str, ...] = (
     "pyproject.toml",
     "go.mod",
     "Cargo.toml",
+    ".chameleon",
 )
+
+# Markers that act as a hard repo boundary: the walk must not pass one of these
+# upward in search of an ancestor ``.chameleon``. Today only ``.git`` qualifies.
+_REPO_BOUNDARY_MARKERS: frozenset[str] = frozenset({".git"})
 
 
 def find_repo_root(file_path: Path) -> Path | None:
-    """Walk up from file_path looking for a repo-root marker.
+    """Walk up from file_path looking for the nearest repo root.
 
-    Two-pass strategy (BUG-NEW-002):
+    Resolution rules, in priority order at each ancestor level:
 
-    Pass 1 - if the immediate first-marker ancestor's marker is
-    ``.chameleon``, return it. (Fast path: behaves like pre-fix code
-    when the closest marker is already a chameleon profile, which is
-    the overwhelming-common case for files inside a single-root repo.)
+    1. ``.chameleon`` present  -> that directory is the repo root. The
+       nearest profile to the file always wins, so a profiled child under a
+       profiled parent resolves to the child.
+    2. ``.git`` present (no ``.chameleon`` at this level) -> that directory
+       is the repo root and a HARD boundary. The walk stops; it never crosses
+       a ``.git`` upward to a parent ``.chameleon``. This keeps shared-parent
+       multi-repo layouts correct: a file in ``/parent/repoB`` (its own git
+       repo) resolves to ``repoB`` even when ``/parent`` carries a
+       ``.chameleon``.
+    3. Another language marker (``package.json``, ``Gemfile``, ...) with no
+       ``.chameleon`` and no ``.git`` -> remembered as a lower-bound fallback,
+       but the walk continues upward looking for a ``.chameleon``. This is the
+       legitimate monorepo-workspace case: ``.chameleon`` at the root, plain
+       ``package.json`` at each workspace, no per-workspace ``.git``.
 
-    Pass 2 - the first-marker ancestor's marker is NOT ``.chameleon``
-    (e.g. workspace ``package.json``). Continue walking up looking for
-    an ancestor that DOES have ``.chameleon``. If found within
-    32 levels, return THAT one. Otherwise fall back to the first-marker
-    ancestor from pass 1 (pre-fix behavior).
+    If no ``.chameleon`` and no ``.git`` are found, the nearest language-marker
+    ancestor is returned; if nothing is found within 32 levels, ``None``.
 
-    Why two-pass: an earlier walk stopped at the first marker, so
-    monorepos with ``.chameleon`` at the root and ``package.json`` at
-    each workspace returned the workspace as repo_root and masked the
-    root profile. The straight ``.chameleon`` priority within a level
-    couldn't fix that because the marker existed at a DIFFERENT level.
-
-    Why not always prefer ``.chameleon``: tests, especially run_all_orders.py
-    test-isolation harness, can leak stray ``.chameleon`` dirs in tmp
-    paths between tests via the shared filesystem. Walking up looking
-    for ``.chameleon`` past a closer real marker introduces order-
-    dependent test failures. The two-pass approach is defensive: if a
-    closer language marker is present we trust it as the lower bound,
-    and we only override when a closer-or-equal-priority chameleon
-    profile genuinely exists upstream.
-
-    Returns the marker directory, or None if no marker is found within
-    32 parent directories.
+    Returns the marker directory, or None.
     """
     current = file_path.expanduser()
     try:
@@ -235,53 +235,51 @@ def find_repo_root(file_path: Path) -> Path | None:
     return result
 
 
+def _accept_root(root: Path) -> Path | None:
+    """Return ``root`` unless it fails the unsafe-repo-root guard, else None."""
+    if _is_unsafe_repo_root(root) is not None:
+        return None
+    return root
+
+
 def _find_repo_root_uncached(current: Path) -> Path | None:
-    """Filesystem walk implementation for find_repo_root (uncached)."""
-    first_marker_ancestor: Path | None = None
-    first_marker_name: str | None = None
+    """Filesystem walk implementation for find_repo_root (uncached).
+
+    Single upward walk. ``.chameleon`` at a level wins immediately (nearest
+    profile). A ``.git`` level with no ``.chameleon`` is a hard boundary: it
+    becomes the root and the walk stops, so a profiled parent never shadows a
+    git child. Any other language marker is held as a fallback while the walk
+    keeps climbing for a ``.chameleon``.
+    """
+    fallback_marker_ancestor: Path | None = None
     walker = current
     for _ in range(32):
-        for marker in REPO_ROOT_MARKERS:
-            if (walker / marker).exists():
-                first_marker_ancestor = walker
-                first_marker_name = marker
-                break
-        if first_marker_ancestor is not None:
-            break
-        parent = walker.parent
-        if parent == walker:
-            break
-        walker = parent
-
-    if first_marker_ancestor is None:
-        return None
-
-    if first_marker_name == ".chameleon":
-        reason = _is_unsafe_repo_root(first_marker_ancestor)
-        if reason is not None:
-            return None
-        return first_marker_ancestor
-
-    walker = first_marker_ancestor.parent
-    if walker == first_marker_ancestor:
-        reason = _is_unsafe_repo_root(first_marker_ancestor)
-        if reason is not None:
-            return None
-        return first_marker_ancestor
-    for _ in range(32):
         if (walker / ".chameleon").exists():
-            reason = _is_unsafe_repo_root(walker)
-            if reason is not None:
-                return None
-            return walker
+            return _accept_root(walker)
+
+        crossed_boundary = False
+        for marker in REPO_ROOT_MARKERS:
+            if marker == ".chameleon":
+                continue
+            if (walker / marker).exists():
+                if marker in _REPO_BOUNDARY_MARKERS:
+                    # Hard boundary with no .chameleon here: stop, do not climb
+                    # past it toward an ancestor profile.
+                    crossed_boundary = True
+                    break
+                if fallback_marker_ancestor is None:
+                    fallback_marker_ancestor = walker
+        if crossed_boundary:
+            return _accept_root(walker)
+
         parent = walker.parent
         if parent == walker:
             break
         walker = parent
-    reason = _is_unsafe_repo_root(first_marker_ancestor)
-    if reason is not None:
-        return None
-    return first_marker_ancestor
+
+    if fallback_marker_ancestor is not None:
+        return _accept_root(fallback_marker_ancestor)
+    return None
 
 
 def _compute_mtime_token(
