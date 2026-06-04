@@ -1,6 +1,7 @@
 from chameleon_mcp.violation_class import (
     BLOCK_ELIGIBLE_RULES,
     hard_class_violations,
+    ignored_rules,
     is_archetype_independent,
     is_deferred_to_turn_end,
     is_hard_class,
@@ -207,3 +208,45 @@ def test_fold_suffix_kind_parsed():
     tag_secret_hardness([s])
     assert s["secret_kind"] == "github_token"
     assert s["secret_hard"] is True
+
+
+# --- ignored_rules: inline chameleon-ignore directive parsing ---------------
+
+
+def test_ignore_line_comment_ts():
+    assert ignored_rules("// chameleon-ignore eval-call") == {"eval-call"}
+
+
+def test_ignore_line_comment_ruby():
+    assert ignored_rules("# chameleon-ignore eval-call") == {"eval-call"}
+
+
+def test_ignore_block_comment_with_rule():
+    # A /* */ block-comment override must parse: all three comment shapes are
+    # equivalent, so a block comment is not silently dropped.
+    assert ignored_rules("/* chameleon-ignore eval-call */") == {"eval-call"}
+
+
+def test_ignore_block_comment_inline_after_code():
+    assert ignored_rules("const x = 1; /* chameleon-ignore naming-convention-violation */") == {
+        "naming-convention-violation"
+    }
+
+
+def test_ignore_block_comment_bare_means_everything():
+    assert ignored_rules("/* chameleon-ignore */") == {""}
+
+
+def test_ignore_block_comment_file_suffix():
+    assert ignored_rules("/* chameleon-ignore-file eval-call */") == {"eval-call"}
+
+
+def test_ignore_trailing_star_slash_not_captured_as_rule():
+    # The closing `*/` is outside the [\w-] rule class, so it never leaks into
+    # the captured rule name.
+    rules = ignored_rules("/* chameleon-ignore eval-call*/")
+    assert rules == {"eval-call"}
+
+
+def test_ignore_absent_returns_none():
+    assert ignored_rules("const x = 1;") is None

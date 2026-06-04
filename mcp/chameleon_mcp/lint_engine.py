@@ -1763,7 +1763,10 @@ def _module_specifier_matches(spec: str, module: str) -> bool:
     return spec.startswith(module + "/")
 
 
-_TS_INTERFACE_DECL_RE = re.compile(r"\binterface\s+([A-Z]\w*)")
+# Match the declared name whatever its casing. An uppercase-only class would skip
+# the most blatant violation -- a lowercase `interface params` in an I-prefix
+# repo -- so the prefix/casing check downstream gets the real name and can flag it.
+_TS_INTERFACE_DECL_RE = re.compile(r"\binterface\s+([A-Za-z_$]\w*)")
 # A `.then(` on a line that also carries no `.catch`. Scoped to a single line on
 # purpose: a `.then().catch()` chain split across lines, a `.catch` on the same
 # statement but a later line, or rejection handled by an enclosing try/await are

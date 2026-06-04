@@ -15,6 +15,7 @@ from __future__ import annotations
 import pytest
 
 from chameleon_mcp.profile.summary import (
+    count_config_rules,
     count_terminal_rules,
     extract_idioms_section,
     render_summary_md,
@@ -76,6 +77,56 @@ class TestCountTerminalRules:
         # innermost dict sits at depth 7 -> recursion short-circuits to 0.
         assert count_terminal_rules(self._nest(8)) == 0
         assert count_terminal_rules(self._nest(12)) == 0
+
+
+# --------------------------------------------------------------------------
+# count_config_rules
+# --------------------------------------------------------------------------
+
+
+class TestCountConfigRules:
+    def test_rubocop_counts_cop_keys_not_leaves(self):
+        # A rubocop block: AllCops + require are scaffolding; 3 cops carry their
+        # own sub-options and Exclude lists. The count is 3, not the leaf tally.
+        block = {
+            "source": ".rubocop.yml",
+            "rules": {
+                "AllCops": {"TargetRubyVersion": 3.1, "Exclude": ["db/**", "bin/*"]},
+                "require": ["rubocop-rails", "rubocop-rspec"],
+                "Metrics/MethodLength": {"Max": 20, "Exclude": ["app/a.rb", "app/b.rb"]},
+                "Style/Documentation": {"Enabled": False},
+                "Layout/LineLength": {"Max": 120},
+            },
+        }
+        assert count_config_rules(block) == 3
+        # The old leaf counter over-counted; the fix must report fewer.
+        assert count_config_rules(block) < count_terminal_rules(block)
+
+    def test_eslint_counts_nested_rule_keys(self):
+        block = {
+            "source": ".eslintrc.json",
+            "rules": {
+                "extends": ["airbnb", "prettier"],
+                "plugins": ["react"],
+                "rules": {
+                    "no-console": "warn",
+                    "eqeqeq": ["error", "always"],
+                    "semi": ["error", "never"],
+                },
+            },
+        }
+        assert count_config_rules(block) == 3
+
+    def test_parse_warning_only_block_is_zero(self):
+        assert count_config_rules({"source": "", "parse_warning": "bad config"}) == 0
+
+    def test_non_dict_is_zero(self):
+        assert count_config_rules("nope") == 0
+        assert count_config_rules(None) == 0
+
+    def test_meta_keys_are_case_insensitive(self):
+        block = {"rules": {"allcops": {"x": 1}, "REQUIRE": ["a"], "Style/Foo": {"Enabled": True}}}
+        assert count_config_rules(block) == 1
 
 
 # --------------------------------------------------------------------------
@@ -398,10 +449,15 @@ class TestRulesSection:
         assert "_No tool-config rules detected._" in out
 
     def test_detected_tools_listed_sorted_with_counts(self):
+        # The orchestrator wraps each tool's config under a `rules` key alongside
+        # `source`; the bullet counts cop/rule KEYS, not nested config leaves.
         rules_data = {
             "rules": {
-                "tsconfig": {"strict": True},
-                "rubocop": {"Style/Foo": True, "Layout/Bar": {"x": 1}},
+                "tsconfig": {"source": "tsconfig.json", "rules": {"strict": True}},
+                "rubocop": {
+                    "source": ".rubocop.yml",
+                    "rules": {"Style/Foo": True, "Layout/Bar": {"x": 1, "Exclude": ["a", "b"]}},
+                },
             }
         }
         out = render_summary_md(
@@ -409,7 +465,7 @@ class TestRulesSection:
         )
         lines = _lines(out)
         assert "_Auto-derived from 2 tool config file(s): `rubocop`, `tsconfig`._" in lines
-        # rubocop: Style/Foo scalar (1) + Layout/Bar nested {x:1} (1) = 2
+        # rubocop: 2 cops (Style/Foo, Layout/Bar) regardless of nested options.
         assert "- **rubocop** — 2 rule(s) extracted" in lines
         assert "- **tsconfig** — 1 rule(s) extracted" in lines
         # sorted: rubocop bullet precedes tsconfig bullet
@@ -420,7 +476,12 @@ class TestRulesSection:
     def test_non_dict_tool_block_counted_in_header_but_no_bullet(self):
         # header counts every key (2), but a non-dict value is skipped for the
         # per-tool bullet.
-        rules_data = {"rules": {"good": {"a": 1}, "bad": "not-a-dict"}}
+        rules_data = {
+            "rules": {
+                "good": {"source": "x", "rules": {"a": 1}},
+                "bad": "not-a-dict",
+            }
+        }
         out = render_summary_md(
             archetypes={}, canonicals={}, profile_meta={}, idioms_text="", rules_data=rules_data
         )

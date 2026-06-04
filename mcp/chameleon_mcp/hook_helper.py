@@ -1473,7 +1473,10 @@ _REDIRECT_TARGET_RE = re.compile(
     (?P<target>
         "(?:[^"\\]|\\.)*"    # double-quoted literal
         | '[^']*'           # single-quoted literal
-        | [^\s;&|<>()`$*?\[\]{}~]+  # bare word, no glob/expansion metachars
+        # bare word: a run of non-metachar chars, with `\<char>` escapes kept
+        # inline so a backslash-escaped space (`Testing\ Apps`) is part of one
+        # word and not a word boundary. _unquote_target un-escapes them.
+        | (?:\\.|[^\s;&|<>()`$*?\[\]{}~\\])+
     )
     # A bare word immediately followed by an expansion/glob metachar (e.g.
     # `out.$EXT`) is not a literal path; require a boundary after it so a
@@ -1492,7 +1495,9 @@ _TEE_TARGET_RE = re.compile(
     (?P<target>
         "(?:[^"\\]|\\.)*"
         | '[^']*'
-        | [^\s;&|<>()`$*?\[\]{}~-][^\s;&|<>()`$*?\[\]{}~]*
+        # bare word: first char is neither a metachar nor a leading `-` (a flag);
+        # `\<char>` escapes are kept inline so an escaped space is part of the word.
+        | (?:\\.|[^\s;&|<>()`$*?\[\]{}~\\-])(?:\\.|[^\s;&|<>()`$*?\[\]{}~\\])*
     )
     (?![^\s;&|<>()`])
     """,
@@ -1509,7 +1514,7 @@ _SED_OPERAND_RE = re.compile(
     (?P<operand>
         "(?:[^"\\]|\\.)*"
         | '[^']*'
-        | [^\s;&|<>()`$*?\[\]{}~]+
+        | (?:\\.|[^\s;&|<>()`$*?\[\]{}~\\])+
     )
     """,
     re.VERBOSE,
@@ -1526,8 +1531,16 @@ def _unquote_target(raw: str) -> str | None:
     s = raw.strip()
     if not s:
         return None
-    if (s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'"):
+    quoted = (s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")
+    if quoted:
         s = s[1:-1]
+    else:
+        # An unquoted word carries shell escapes (`Testing\ Apps`, `a\$b`).
+        # Collapse each `\<char>` to its literal char so the on-disk path is
+        # recovered. A trailing lone backslash is unparseable; bail.
+        if s.endswith("\\") and not s.endswith("\\\\"):
+            return None
+        s = re.sub(r"\\(.)", r"\1", s)
     if not s:
         return None
     # A literal must not contain expansion or glob metachars after unquoting; if

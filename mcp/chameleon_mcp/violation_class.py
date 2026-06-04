@@ -13,12 +13,14 @@ from __future__ import annotations
 import re
 
 # Matches a `// chameleon-ignore <rule>` (TypeScript) or `# chameleon-ignore
-# <rule>` (Ruby) directive. The optional `-file` suffix and the bare form (no
-# rule) both parse; a bare directive means "ignore every block-eligible rule".
-# The rule name must sit on the same line as the directive: the inter-token
-# whitespace excludes newlines so a bare directive on its own line does not
-# capture the first word of the following line as a rule.
-_IGNORE_RE = re.compile(r"(?:#|//)[^\S\n]*chameleon-ignore(?:-file)?(?:[^\S\n]+([\w-]+))?")
+# <rule>` (Ruby) directive. A TypeScript `/* chameleon-ignore <rule> */` block
+# comment is also accepted: the trailing `*/` is not in the `[\w-]` rule class so
+# the rule name stops before it. The optional `-file` suffix and the bare form
+# (no rule) both parse; a bare directive means "ignore every block-eligible
+# rule". The rule name must sit on the same line as the directive: the
+# inter-token whitespace excludes newlines so a bare directive on its own line
+# does not capture the first word of the following line as a rule.
+_IGNORE_RE = re.compile(r"(?:#|//|/\*)[^\S\n]*chameleon-ignore(?:-file)?(?:[^\S\n]+([\w-]+))?")
 
 
 def ignored_rules(content: str) -> set[str] | None:

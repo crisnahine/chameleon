@@ -7,10 +7,11 @@ would each block rule have fired, on how many distinct files and sessions, and
 which specific file:line instances. This module aggregates that.
 
 It deliberately reports only would-block FREQUENCY plus a sampled file:line list
-for human spot-check. It does NOT compute a false-positive fraction: the metric
-rows carry no accept/override/fix outcome signal (``chameleon-ignore`` overrides
-are never logged), so whether a would-block was a genuine off-pattern edit stays
-a human judgement on the sample, not a number this module invents.
+for human spot-check. It does NOT compute a false-positive fraction: an inline
+``chameleon-ignore`` override IS logged (as its own per-rule ``overrides`` tally,
+kept distinct from advisory-only emissions), but the rows still carry no
+accept/fix outcome signal, so whether a would-block was a genuine off-pattern
+edit stays a human judgement on the sample, not a number this module invents.
 
 Rotation is the correctness trap. ``metrics.jsonl`` rotates by size into
 ``.1``..``.5`` and then deletes the oldest, so a reader of only the current file
@@ -140,7 +141,9 @@ def build_shadow_report(
       denominator the promotion verdict reads.
     - ``rules`` — per rule: ``would_blocks``, ``distinct_files``,
       ``distinct_sessions``, ``advisory_only`` (advisory-emitted rows for the
-      same rule that did not would-block), and a ``verdict``.
+      same rule that did not would-block), ``overrides`` (inline
+      ``chameleon-ignore`` bypasses of this rule, counted apart from
+      ``advisory_only``), and a ``verdict``.
     - ``idiom_review`` — turn-level would-block count for the idiom/principle
       gate, with no per-rule verdict.
     - ``sample`` — up to SHADOW_REPORT_SAMPLE_CAP ``{rule, file, line, ts}``
@@ -169,6 +172,7 @@ def build_shadow_report(
     files: dict[str, set[str]] = defaultdict(set)
     sessions: dict[str, set[str]] = defaultdict(set)
     advisory_only: dict[str, int] = defaultdict(int)
+    overrides: dict[str, int] = defaultdict(int)
     total_edits = 0
     idiom_review_blocks = 0
     sample: list[dict] = []
@@ -197,6 +201,16 @@ def build_shadow_report(
         if hook == _IDIOM_REVIEW_HOOK:
             if is_would_block:
                 idiom_review_blocks += 1
+            continue
+
+        # An override row records an inline `chameleon-ignore` that dropped a
+        # block-eligible rule. It carries would_block=False but is NOT an
+        # advisory-only emission: counting it in advisory_only would inflate the
+        # promotion-floor denominator with bypasses. Bucket it separately so the
+        # report can show "fired but overridden" without conflating the two.
+        if hook == "override" or row.get("override"):
+            if rule:
+                overrides[rule] += 1
             continue
 
         if hook == "posttool-verify" and not is_would_block:
@@ -248,13 +262,14 @@ def build_shadow_report(
     )
 
     rules_out: dict[str, dict] = {}
-    for rule_key in sorted(set(would_blocks) | set(advisory_only)):
+    for rule_key in sorted(set(would_blocks) | set(advisory_only) | set(overrides)):
         count = would_blocks.get(rule_key, 0)
         rules_out[rule_key] = {
             "would_blocks": count,
             "distinct_files": len(files.get(rule_key, ())),
             "distinct_sessions": len(sessions.get(rule_key, ())),
             "advisory_only": advisory_only.get(rule_key, 0),
+            "overrides": overrides.get(rule_key, 0),
             "verdict": _promotion_verdict(
                 would_blocks=count,
                 total_edits=total_edits,

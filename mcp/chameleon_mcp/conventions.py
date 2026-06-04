@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -724,6 +724,39 @@ _RUBY_DSL_CALL_RE = re.compile(
 )
 
 
+def _unqualified_name(base: str) -> str:
+    """Last ``::``-segment of a (possibly namespaced) constant name."""
+    return base.rsplit("::", 1)[-1]
+
+
+def _dominant_base_family(base_counts: Counter[str]) -> tuple[str, list[str], int] | None:
+    """Group bases by unqualified name; return the largest multi-namespace family.
+
+    A controller convention often spans namespaces -- ``Api::V1::BaseController``
+    and ``Api::V1::Admin::BaseController`` are the same ``BaseController`` base
+    reached through different module paths. Grouping by the unqualified name lets
+    the caller treat them as one convention when no single fully-qualified base
+    dominates. Only families with more than one distinct fully-qualified member
+    count; a single-member "family" is just the single base the caller already
+    handles, so returning it here would add nothing.
+
+    Returns ``(unqualified_name, [members], combined_count)`` for the family with
+    the highest combined count, or ``None`` when no multi-member family exists.
+    """
+    by_name: dict[str, list[str]] = defaultdict(list)
+    for base in base_counts:
+        by_name[_unqualified_name(base)].append(base)
+
+    best: tuple[str, list[str], int] | None = None
+    for name, members in by_name.items():
+        if len(members) < 2:
+            continue
+        combined = sum(base_counts[b] for b in members)
+        if best is None or combined > best[2]:
+            best = (name, members, combined)
+    return best
+
+
 def extract_inheritance_conventions(files: list[ParsedFile]) -> dict:
     """Detect dominant base class and include mixins by reading file content."""
     if len(files) < MIN_SAMPLE_SIZE:
@@ -766,6 +799,26 @@ def extract_inheritance_conventions(files: list[ParsedFile]) -> dict:
             # flag only a genuinely novel base instead of every non-dominant
             # one -- the latter drove an unsatisfiable PostToolUse STOP loop.
             result["known_bases"] = sorted(b for b, c in base_counts.items() if c >= 2)
+        else:
+            # No single base clears the threshold, but the bases may share an
+            # unqualified name across namespaces (``Api::V1::BaseController`` and
+            # ``Api::V1::Admin::BaseController`` are both ``BaseController``). When
+            # one such family covers the threshold, record it as the convention so
+            # a controller inheriting an unrelated base is still flagged. Without
+            # this, a repo whose controllers all inherit some ``*BaseController``
+            # but split across namespaces drops the whole inheritance convention.
+            family = _dominant_base_family(base_counts)
+            if family is not None:
+                family_name, members, family_count = family
+                if family_count / total >= _INHERITANCE_THRESHOLD:
+                    # The most-frequent fully-qualified member labels the message;
+                    # known_bases carries every namespace variant so the linter
+                    # accepts them all and flags only a base outside the family.
+                    result["dominant_base"] = max(members, key=lambda b: base_counts[b])
+                    result["frequency"] = round(family_count / total, 3)
+                    result["sample_size"] = total
+                    result["base_family"] = family_name
+                    result["known_bases"] = sorted(members)
 
     if include_counts:
         top_include, inc_count = include_counts.most_common(1)[0]

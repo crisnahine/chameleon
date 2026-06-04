@@ -307,3 +307,59 @@ def test_nonpositive_window_falls_back_to_default(tmp_path: Path):
     _write(base, [_row(ts=_ts(now - 10), would_block=True, rule="x", file_rel="a")])
     rep = build_shadow_report("R", 0, now=now, metrics_path=base)
     assert rep["window_days"] == threshold_int("SHADOW_REPORT_WINDOW_DAYS")
+
+
+def test_override_rows_counted_apart_from_advisory_only(tmp_path: Path):
+    # An inline chameleon-ignore override (hook="override", override=True) must
+    # NOT inflate advisory_only: it is a bypass of a block-eligible rule, not an
+    # advisory-only emission, so it would over-count the promotion denominator.
+    now = time.time()
+    base = tmp_path / "metrics.jsonl"
+    _write(
+        base,
+        [
+            {
+                "ts": _ts(now - 10),
+                "hook": "override",
+                "repo_id": "R",
+                "would_block": False,
+                "rule": "eval-call",
+                "override": True,
+                "file_rel": "a.ts",
+            },
+            # A genuine advisory-only emission for the same rule.
+            _row(ts=_ts(now - 9), hook="preflight-and-advise", rule="eval-call", file_rel="b.ts"),
+        ],
+    )
+    rep = build_shadow_report("R", 21, now=now, metrics_path=base)
+    entry = rep["rules"]["eval-call"]
+    assert entry["overrides"] == 1
+    assert entry["advisory_only"] == 1
+    assert entry["would_blocks"] == 0
+
+
+def test_override_flag_on_other_hook_still_bucketed_as_override(tmp_path: Path):
+    # The override flag is honored even if the row's hook name differs, so a
+    # future emit site that sets override=True is never miscounted as advisory.
+    now = time.time()
+    base = tmp_path / "metrics.jsonl"
+    _write(
+        base,
+        [
+            {
+                "ts": _ts(now - 10),
+                "hook": "posttool-verify",
+                "repo_id": "R",
+                "would_block": False,
+                "rule": "import-preference-violation",
+                "override": True,
+                "file_rel": "a.ts",
+            }
+        ],
+    )
+    rep = build_shadow_report("R", 21, now=now, metrics_path=base)
+    entry = rep["rules"]["import-preference-violation"]
+    assert entry["overrides"] == 1
+    assert entry["advisory_only"] == 0
+    # The override row must not be counted as a clean verify edit either.
+    assert rep["total_edits"] == 0

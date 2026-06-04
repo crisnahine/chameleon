@@ -71,6 +71,22 @@ def test_integrity_loop_defers_to_the_hunk_gate():
     assert "do not override it by judgment" in text
 
 
+def test_hunk_gate_covers_line_anchored_convention_findings():
+    """A line-anchored lint finding must run through the hunk gate too.
+
+    lint_file reads the whole file, so a style-rule-violation (e.g. a too-long
+    line) can sit outside the change. The gate must route any convention/style
+    finding that carries a parseable line through the same map as a logic
+    finding, so a pre-existing out-of-hunk style nit is dropped, not reported.
+    """
+    text = _skill_text()
+    assert "line-anchored convention/style finding from `lint_file`" in text
+    # The named rule shapes that carry a line and so must be gated.
+    assert "style-rule-violation" in text
+    # Only truly file-anchored convention findings stay exempt.
+    assert "Only convention findings with NO parseable line" in text
+
+
 def test_placeholder_name_nit_present_and_capped_at_nit():
     text = _skill_text()
     assert "Placeholder-name NIT" in text

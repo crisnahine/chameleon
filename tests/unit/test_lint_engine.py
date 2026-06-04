@@ -712,6 +712,20 @@ class TestConventionLint:
         violations = lint_conventions(content, conventions, language="typescript")
         assert len(violations) == 0
 
+    def test_lowercase_interface_name_is_flagged(self):
+        # A lowercase `interface params` is the most blatant I-prefix violation;
+        # an uppercase-only declaration regex would skip it entirely.
+        content = "interface params {\n  id: number;\n}\n"
+        conventions = {
+            "naming": {
+                "interface_prefix": {"pattern": "I", "consistency": 1.0, "sample_size": 2158},
+            },
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        naming = [v for v in violations if v.rule == "naming-convention-violation"]
+        assert len(naming) == 1
+        assert naming[0].actual == "params"
+
     def test_chameleon_ignore_suppresses_rule(self):
         content = '// chameleon-ignore import-preference\nimport http from "axios";\n'
         conventions = {

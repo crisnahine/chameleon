@@ -157,3 +157,34 @@ def test_oversize_command_capped():
 def test_heredoc_to_tee_is_a_literal_file():
     # The heredoc body feeds tee, which writes a literal file — in scope.
     assert extract("cat <<EOF | tee app/x.rb") == ["app/x.rb"]
+
+
+# --- backslash-escaped spaces in an unquoted target -------------------------
+
+
+def test_redirect_backslash_escaped_space():
+    # An unquoted path with a backslash-escaped space must not truncate at the
+    # space; the escape is collapsed so the full on-disk path is recovered.
+    assert extract(r"echo x > /a/Testing\ Apps/x.rb") == ["/a/Testing Apps/x.rb"]
+
+
+def test_redirect_append_backslash_escaped_space():
+    assert extract(r"echo x >> /a/Testing\ Apps/y.rb") == ["/a/Testing Apps/y.rb"]
+
+
+def test_tee_backslash_escaped_space():
+    assert extract(r"echo x | tee /a/Testing\ Apps/z.rb") == ["/a/Testing Apps/z.rb"]
+
+
+def test_sed_inplace_backslash_escaped_space():
+    assert extract(r"sed -i 's/a/b/' /a/Testing\ Apps/w.rb") == ["/a/Testing Apps/w.rb"]
+
+
+def test_multiple_escaped_spaces_in_one_path():
+    assert extract(r"echo x > /a/My\ Cool\ Dir/file.rb") == ["/a/My Cool Dir/file.rb"]
+
+
+def test_escaped_dollar_unescapes_to_literal_then_rejected():
+    # `\$` is an escaped literal dollar; after unescaping it is a metachar, so
+    # the target is treated as unparseable rather than guessed.
+    assert extract(r"echo x > /a/out\$EXT") == []
