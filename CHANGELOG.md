@@ -4,6 +4,37 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-06-05
+
+Re-baselines chameleon from review complement to machine review gate: 31 capabilities scoped by a design panel, implemented in four phased waves, then hardened by a real-use QA campaign on clones of two production repos (12 charters, 3 rounds, 25+ confirmed defects all fixed and re-verified) and an effectiveness audit that replayed real merged PRs against their human review comments. Validated by the full journey harness and the complete CI matrix including Windows.
+
+Upgrade from any prior version: update the plugin, open a new session, run `/chameleon-refresh` when the banner suggests it. Trust auto-preserves; no manual migration. Verified from 2.1.4 and 1.6.0 starting states.
+
+### Added
+
+- **Detection**: phantom-symbol check (TypeScript, barrel-safe via open-export-set skip), dangerous-sink rules (`eval-call` block-eligible; weak-hash/insecure-random/SQL-interpolation advisory), broader secret coverage (Google AIza, GCP service-account marker, Azure AccountKey; cross-quote and array-join de-obfuscation) with deterministic kinds promoted to block-eligible and the secret scan now running on the hook path including unarchetyped files, per-archetype body-shape norms (function length/nesting/branch percentiles), test-quality lints, declared-style baseline (indent/quote/line-length from the repo's own formatter config, archetype-independent so sparse repos keep signal), file-naming and required-guard conventions, async/error-handling contracts, doc-coverage and import-ordering data.
+- **Cross-file analysis**: committed exports index and caller-callee reverse index (TypeScript), existence-break advisories at turn end, semantic-duplication function catalog with prefilter, import-layering edges with a bootstrap cycle report, curated co-change pairs. Three new trust-hashed artifacts (13 total).
+- **Turn-end review**: opt-in independent correctness judge (`enforcement.correctness_judge`, advisory-only, spawns into an isolated throwaway config dir), test-pairing advisory, test-run signal, and coverage of files written via Bash (`cat >`, `tee`, `sed -i`) reaching the Stop backstop.
+- **PR review**: hunk-aware change-delta pass with a deterministic pre-existing-issue gate, dependency/supply-chain diff checks (new deps, non-registry hosts, install scripts, git/file sources) plus the opt-in `dep_audit` tool (`CHAMELEON_ALLOW_DEP_AUDIT=1`), security pass with kind- and hunk-gated secret escalation, migration-safety lens, coverage-delta view, stale-test detection, and verdicts recorded to a tamper-evident HMAC ledger.
+- **Trust path**: shadow evidence report (`get_shadow_report`, `/chameleon-status --shadow`), override audit with blanket-ignore flagging, honest longitudinal signals (structural conformance relabeled with an explicit not-covered list), per-edit decision log with the new `/chameleon-explain` command. Nine new MCP tools (33 total).
+
+### Changed
+
+- `enforce` promotion is documented as a two-step action everywhere: edit `config.json`, then re-run `/chameleon-trust` (the config is trust-hashed; the edit alone flips the profile to stale and silently disables enforcement).
+- `conventions.json` gains eight additive sections under the existing schema version; `drift.db` gains `rule_overrides` and `decision_log` tables additively, applied in place on first write and preserved across refresh.
+- The stop-backstop wrapper timeout now exceeds the correctness-judge budget (55s) so the judge is never killed mid-review; stale judge config dirs are swept on the next spawn.
+- `.gitattributes-template` routes `conventions.json` to the merge driver; the generated index artifacts are deliberately excluded (refresh regenerates them).
+
+### Fixed
+
+- The pr-review secret escalation could flip a clean PR to BLOCK from pre-existing hits in untouched files, and the broad fallback patterns (40-char base64 runs, long hex) matched ordinary identifiers and git SHAs on ~6% of real TypeScript files. Secret BLOCKs now require a deterministic kind on an added/changed line; the fallback patterns require credential context on the line. Re-measured post-fix: zero verdict-driving false positives across a 150-file sample and zero false BLOCKs on rubber-stamped control PRs.
+- `lint_file` returned only secret/sink findings when no ast_query could be derived, silently dropping conventions, test-quality, phantom-import, and style results for sparse and test archetypes.
+- A deterministic secret was stripped from the inline PostToolUse block set by the phantom-import deferral filter, leaving the documented secret block dead until turn end.
+- `get_crossfile_context` capped low-confidence open-set rows and genuine breaks in one budget, so barrel noise could evict real findings; the buckets are capped separately with an honest dropped count.
+- The GCP `"type": "service_account"` marker no longer hard-blocks (benign IAM bindings and terraform output match it; a real key file still blocks via its PEM block).
+- Controller inheritance falls back to a grouped base family when no single fully-qualified base clears the threshold, instead of dropping the convention.
+- `chameleon-ignore` works inside `/* */` block comments; the TS interface naming check sees lowercase interface names; backslash-escaped spaces parse fully in Bash write-target extraction; `profile.summary.md` counts rule keys instead of config leaves; the shadow report buckets override rows separately from advisory-only emissions.
+
 ## [2.1.4] - 2026-06-04
 
 Test-only release: unblocks CI on macOS runners and ships what 2.1.3 could not (its release run failed before publishing, so 2.1.3 was never released).
