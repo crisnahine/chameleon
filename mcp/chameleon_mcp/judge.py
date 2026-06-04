@@ -31,6 +31,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -306,6 +307,26 @@ def _coerce_findings(arr: list) -> list[Finding]:
     return out[:cap]
 
 
+def _sweep_stale_judge_dirs(max_age_seconds: int = 3600) -> None:
+    """Best-effort GC of throwaway judge config dirs older than an hour.
+
+    The normal path removes its own dir, but a SIGKILL (wrapper timeout, host
+    hook timeout) lands before the cleanup runs. Sweeping at the next spawn
+    keeps the leak bounded to at most one stale dir between judge runs.
+    """
+    try:
+        tmp = Path(tempfile.gettempdir())
+        cutoff = time.time() - max_age_seconds
+        for entry in tmp.glob("chameleon-judge-*"):
+            try:
+                if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                    shutil.rmtree(entry, ignore_errors=True)
+            except OSError:
+                continue
+    except Exception:
+        pass
+
+
 def _spawn_reviewer(prompt: str, cwd: Path) -> str | None:
     """Spawn ``claude -p`` for a one-shot correctness review, returning stdout.
 
@@ -335,6 +356,7 @@ def _spawn_reviewer(prompt: str, cwd: Path) -> str | None:
     # user's settings, plugins, or hooks: a SessionStart hook stack alone can
     # burn the whole wall-clock budget before the prompt is read. Auth still
     # resolves from the environment/keychain, which the config dir does not own.
+    _sweep_stale_judge_dirs()
     env = dict(os.environ)
     cfg_dir: str | None = None
     try:

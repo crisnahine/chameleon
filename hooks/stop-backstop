@@ -43,7 +43,13 @@ mkdir -p "${LOG_DIR}" 2>/dev/null || true
 
 # timeout(1) caps a stuck python; degrade to uncapped if neither timeout nor
 # gtimeout (Homebrew coreutils on macOS) is present, rather than failing the
-# whole hook on exit 127. In-process code self-limits (git 2s, busy_timeout).
+# whole hook on exit 127. In-process code self-limits (git 2s, busy_timeout),
+# so a normal turn exits in milliseconds; the cap only matters for a hung
+# interpreter. It must exceed the correctness-judge wall-clock budget (45s,
+# CORRECTNESS_JUDGE_TIMEOUT_SECONDS) because the judge spawn runs inside this
+# process - a shorter cap SIGKILLs the judge mid-review and leaks its
+# throwaway config dir. 55s keeps headroom under Claude Code's own 60s
+# hook timeout.
 # On Git Bash / MSYS the `timeout` on PATH is Windows' timeout.exe, which
 # takes no command and would break the wrapper; skip it there (in-process
 # code self-limits regardless).
@@ -52,6 +58,6 @@ case "$(uname -s 2>/dev/null)" in
     *) TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)" ;;
 esac
 PYTHONPATH="${MCP_DIR}" \
-    ${TIMEOUT_BIN:+"${TIMEOUT_BIN}" 3} "${PYTHON}" -m chameleon_mcp.hook_helper stop-backstop \
+    ${TIMEOUT_BIN:+"${TIMEOUT_BIN}" 55} "${PYTHON}" -m chameleon_mcp.hook_helper stop-backstop \
     2>>"${LOG_FILE}" \
     || { printf '{}\n'; echo "[$(date -u +%FT%TZ)] stop-backstop failed (python=${PYTHON})" >>"${LOG_FILE}" 2>/dev/null || true; }

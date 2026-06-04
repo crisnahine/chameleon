@@ -81,3 +81,34 @@ def test_crossfile_low_confidence_has_separate_cap():
 
     assert "CROSSFILE_MAX_LOW_CONFIDENCE" in DEFAULTS
     assert DEFAULTS["CROSSFILE_MAX_LOW_CONFIDENCE"] < DEFAULTS["CROSSFILE_MAX_FINDINGS"]
+
+
+def test_stop_backstop_wrapper_timeout_exceeds_judge_budget():
+    # The judge spawn runs inside the stop-backstop python process; a wrapper
+    # cap shorter than the judge wall-clock budget SIGKILLs the review mid-run
+    # and leaks its throwaway config dir.
+    from chameleon_mcp._thresholds import DEFAULTS
+
+    text = _read("hooks/stop-backstop")
+    import re
+
+    m = re.search(r'\$\{TIMEOUT_BIN:\+"\$\{TIMEOUT_BIN\}" (\d+)\}', text)
+    assert m, "stop-backstop must keep its timeout(1) cap"
+    assert int(m.group(1)) > DEFAULTS["CORRECTNESS_JUDGE_TIMEOUT_SECONDS"]
+
+
+def test_stale_judge_dirs_swept_on_next_spawn(monkeypatch, tmp_path):
+    import os as _os
+    import time as _time
+
+    from chameleon_mcp import judge
+
+    monkeypatch.setattr(judge.tempfile, "gettempdir", lambda: str(tmp_path))
+    stale = tmp_path / "chameleon-judge-stale"
+    stale.mkdir()
+    _os.utime(stale, (_time.time() - 7200, _time.time() - 7200))
+    fresh = tmp_path / "chameleon-judge-fresh"
+    fresh.mkdir()
+    judge._sweep_stale_judge_dirs()
+    assert not stale.exists(), "an hour-old leaked judge dir must be swept"
+    assert fresh.exists(), "a recent dir may belong to a live spawn; keep it"
