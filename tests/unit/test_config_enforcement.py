@@ -64,3 +64,54 @@ def test_idiom_judge_must_be_bool(tmp_path):
     d = _write(tmp_path, {"enforcement": {"idiom_judge": 1}})
     with pytest.raises(ChameleonConfigError):
         load_config(d)
+
+
+def test_stale_test_advisory_defaults_on(tmp_path):
+    cfg = load_config(tmp_path)  # no file
+    assert cfg.enforcement.stale_test_advisory is True
+
+
+def test_stale_test_advisory_parsed(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"stale_test_advisory": False}})
+    cfg = load_config(d)
+    assert cfg.enforcement.stale_test_advisory is False
+
+
+def test_stale_test_advisory_must_be_bool(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"stale_test_advisory": "sure"}})
+    with pytest.raises(ChameleonConfigError):
+        load_config(d)
+
+
+def test_changeset_completeness_defaults_on(tmp_path):
+    cfg = load_config(tmp_path)  # no file
+    assert cfg.enforcement.changeset_completeness is True
+
+
+def test_changeset_completeness_parsed(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"changeset_completeness": False}})
+    cfg = load_config(d)
+    assert cfg.enforcement.changeset_completeness is False
+
+
+def test_changeset_completeness_must_be_bool(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"changeset_completeness": "sure"}})
+    with pytest.raises(ChameleonConfigError):
+        load_config(d)
+
+
+def test_crossfile_existence_advisory_defaults_on(tmp_path):
+    cfg = load_config(tmp_path)  # no file
+    assert cfg.enforcement.crossfile_existence_advisory is True
+
+
+def test_crossfile_existence_advisory_parsed(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"crossfile_existence_advisory": False}})
+    cfg = load_config(d)
+    assert cfg.enforcement.crossfile_existence_advisory is False
+
+
+def test_crossfile_existence_advisory_must_be_bool(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"crossfile_existence_advisory": "sure"}})
+    with pytest.raises(ChameleonConfigError):
+        load_config(d)

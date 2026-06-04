@@ -605,6 +605,39 @@ class TestIsTsWorkspace:
         assert orch._is_ts_workspace(d) is False
 
 
+class TestResolveExtractor:
+    """resolve_extractor applies the workspace-monorepo fallback that the bare
+    _select_extractor misses, so the cross-file read tools resolve the same
+    extractor bootstrap did."""
+
+    def test_single_package_ts_repo_resolves_typescript(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "package.json").write_text(json.dumps({"devDependencies": {"typescript": "5"}}))
+        (repo / "tsconfig.json").write_text("{}")
+        ext = orch.resolve_extractor(repo)
+        assert ext is not None
+        assert ext.language == "typescript"
+
+    def test_monorepo_root_with_no_ts_deps_resolves_typescript(self, tmp_path: Path):
+        # Turborepo/pnpm/Nx shape: root package.json has only scripts, tsconfig
+        # lives under apps/*. _select_extractor returns None here; the fallback
+        # must recover the TS extractor.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _ts_monorepo(repo, "apps", 2)
+        assert orch._select_extractor(repo) is None
+        ext = orch.resolve_extractor(repo)
+        assert ext is not None
+        assert ext.language == "typescript"
+
+    def test_unsupported_repo_resolves_none(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "README.md").write_text("nothing here")
+        assert orch.resolve_extractor(repo) is None
+
+
 # --------------------------------------------------------------------------- #
 # Persisted coordination metadata: workspace_roots survives a profile reload
 # --------------------------------------------------------------------------- #

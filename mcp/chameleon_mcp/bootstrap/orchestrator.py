@@ -37,6 +37,7 @@ from chameleon_mcp.bootstrap.clustering import (
     BIMODAL_DOMINANT_SHARE_THRESHOLD,
     cluster_files,
 )
+from chameleon_mcp.bootstrap.comment_scan import detect_commented_out_code_by_group
 from chameleon_mcp.bootstrap.discovery import (
     REPO_SIZE_GUARD,
     TooManyFilesError,
@@ -48,6 +49,7 @@ from chameleon_mcp.bootstrap.tool_config import read_tool_configs
 from chameleon_mcp.bootstrap.transaction import atomic_profile_commit
 from chameleon_mcp.bootstrap.workspace import detect_workspace
 from chameleon_mcp.conventions import (
+    compute_doc_coverage_from_content,
     extract_all_conventions,
     extract_declarations_from_content,
     serialize_conventions,
@@ -318,6 +320,27 @@ def _is_ts_workspace(workspace_dir: Path) -> bool:
     except OSError:
         return False
     return any(token in content for token in ("typescript", '"ts-node"', '"vite"'))
+
+
+def resolve_extractor(repo_root: Path) -> Extractor | None:
+    """Resolve the extractor for ``repo_root`` the way bootstrap does.
+
+    ``_select_extractor`` only inspects the repo root, so a TS monorepo
+    whose root ``package.json`` carries no TS deps (Turborepo / pnpm
+    workspaces / Nx, with ``tsconfig.json`` living under ``apps/*``)
+    yields None. Bootstrap recovers from that via
+    ``_detect_workspace_ts_monorepo``; the cross-file read tools must
+    apply the same fallback or they parse the edited file with no
+    extractor and bail. Returns the TypeScript extractor when the
+    workspace scan finds at least one TS workspace, else None.
+    """
+    extractor = _select_extractor(repo_root)
+    if extractor is not None:
+        return extractor
+    workspace_roots, _fanout_capped = _detect_workspace_ts_monorepo(repo_root)
+    if workspace_roots:
+        return TypeScriptExtractor()
+    return None
 
 
 def _glob_for_extractor(extractor: Extractor) -> str:
@@ -1521,29 +1544,91 @@ def _bootstrap_single(
         if arch_name:
             files_by_archetype.setdefault(arch_name, []).extend(cluster.members)
 
+    # Re-check each archetype's witness for commented-out code: the strippers
+    # blanked comments before every other scan, so this is the one place the
+    # comment text is parsed. One batched extractor call covers every witness.
+    # Best-effort — any failure leaves the witnesses without the advisory.
+    try:
+        witness_content_by_arch: dict[str, list[str]] = {}
+        for arch_name, entries in canonicals_data["canonicals"].items():
+            if not entries:
+                continue
+            witness_rel = (entries[0].get("witness") or {}).get("path")
+            if not witness_rel:
+                continue
+            wpath = repo_root / witness_rel
+            try:
+                wcontent = wpath.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                continue
+            witness_content_by_arch[arch_name] = [wcontent]
+        if witness_content_by_arch:
+            cot_counts = detect_commented_out_code_by_group(
+                witness_content_by_arch,
+                language=extractor.language,
+                extractor=extractor,
+            )
+            for arch_name, count in cot_counts.items():
+                entries = canonicals_data["canonicals"].get(arch_name)
+                if entries and count > 0:
+                    idioms = entries[0].setdefault("normative_idioms", {})
+                    idioms["commented_out_code_blocks"] = count
+    except Exception:
+        pass
+
+    # One per-member re-read serves two derivations off the same file bytes:
+    # the TS interface/type/enum declaration names (naming conventions) and the
+    # per-file (documented, public) declaration counts (doc_coverage, both
+    # languages). The dump output carries neither, so the bytes are re-read here
+    # rather than threaded back through the subprocess.
     declarations_by_archetype: dict[str, dict[str, list[str]]] = {}
-    if extractor.language == "typescript":
-        for arch_name, pf_list in files_by_archetype.items():
-            merged: dict[str, list[str]] = {}
-            for pf in pf_list:
-                try:
-                    # 1 MB (matches the extractor MAX_FILE_SIZE) so declarations
-                    # past 100KB in a member file are not dropped from naming.
-                    content = pf.path.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
-                    decls = extract_declarations_from_content(content, language="typescript")
-                    for decl_type, names in decls.items():
-                        merged.setdefault(decl_type, []).extend(names)
-                except (OSError, UnicodeDecodeError):
-                    continue
-            if merged:
-                declarations_by_archetype[arch_name] = merged
+    doc_coverage_by_archetype: dict[str, list[tuple[int, int]]] = {}
+    for arch_name, pf_list in files_by_archetype.items():
+        merged: dict[str, list[str]] = {}
+        coverage_pairs: list[tuple[int, int]] = []
+        for pf in pf_list:
+            try:
+                # 1 MB (matches the extractor MAX_FILE_SIZE) so declarations
+                # past 100KB in a member file are not dropped from naming.
+                content = pf.path.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if extractor.language == "typescript":
+                decls = extract_declarations_from_content(content, language="typescript")
+                for decl_type, names in decls.items():
+                    merged.setdefault(decl_type, []).extend(names)
+            documented, public = compute_doc_coverage_from_content(
+                content, language=extractor.language
+            )
+            if public > 0:
+                coverage_pairs.append((documented, public))
+        if merged:
+            declarations_by_archetype[arch_name] = merged
+        if coverage_pairs:
+            doc_coverage_by_archetype[arch_name] = coverage_pairs
 
     conventions_data = extract_all_conventions(
         files_by_archetype=files_by_archetype,
         declarations_by_archetype=declarations_by_archetype,
         generation=generation,
         language=extractor.language,
+        doc_coverage_by_archetype=doc_coverage_by_archetype,
+        repo_root=repo_root,
     )
+
+    # Mirror the per-archetype callable-signature consensus into each canonical's
+    # normative_shape so a consumer reading the witness contract finds the exact
+    # signatures alongside the AST query, without a second pass over conventions.
+    try:
+        sig_section = conventions_data.get("conventions", {}).get("callable_signatures", {})
+        if isinstance(sig_section, dict):
+            for arch_name, entries in canonicals_data["canonicals"].items():
+                sig = sig_section.get(arch_name)
+                if entries and isinstance(sig, dict) and sig.get("signatures"):
+                    shape = entries[0].setdefault("normative_shape", {})
+                    shape["callable_signatures"] = sig["signatures"]
+    except Exception:
+        pass
 
     # Carry user-taught banned imports (conventions.imports.<arch>.competing) across
     # the re-derive. extract_all_conventions only produces the derived `preferred`
@@ -1635,6 +1720,11 @@ def _bootstrap_single(
             "source": tool_configs.sources.get("eslint", ""),
             "parse_warning": tool_configs.parse_warnings["eslint"],
         }
+    if tool_configs.editorconfig:
+        rules_data["rules"]["editorconfig"] = {
+            "source": tool_configs.sources.get("editorconfig", ".editorconfig"),
+            "rules": tool_configs.editorconfig,
+        }
     if tool_configs.rubocop:
         rubocop_rule: dict = {
             "source": tool_configs.sources.get("rubocop", ".rubocop.yml"),
@@ -1689,6 +1779,54 @@ def _bootstrap_single(
         (txn_dir / "rules.json").write_text(
             json.dumps(rules_data, indent=2, sort_keys=True), encoding="utf-8"
         )
+        # Symbol indexes back the phantom-symbol check and the cross-file edit
+        # advisory. Only TypeScript/JS files carry the export/import extras the
+        # builders read, so the indexes are TS-only; both are hashed into the
+        # trust SHA, so they are written inside this same atomic transaction.
+        # Best-effort: a build failure must not abort the whole profile commit.
+        if extractor.language == "typescript":
+            try:
+                from chameleon_mcp.symbol_index import (
+                    build_exports_index,
+                    build_reverse_index,
+                )
+
+                (txn_dir / "exports_index.json").write_text(
+                    json.dumps(
+                        build_exports_index(parse_result.files, repo_root),
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+                (txn_dir / "reverse_index.json").write_text(
+                    json.dumps(
+                        build_reverse_index(parse_result.files, repo_root),
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+        # The function catalog backs the cross-file duplication prefilter. Both
+        # TypeScript/JS and Ruby files carry the callable_signatures extras the
+        # builder reads, so the catalog is built for every supported language. It
+        # is hashed into the trust SHA, so it is written inside this same atomic
+        # transaction. Best-effort: a build failure must not abort the commit.
+        try:
+            from chameleon_mcp.function_catalog import build_function_catalog
+
+            (txn_dir / "function_catalog.json").write_text(
+                json.dumps(
+                    build_function_catalog(parse_result.files, repo_root),
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
         (txn_dir / "idioms.md").write_text(idioms_content, encoding="utf-8")
         (txn_dir / "profile.summary.md").write_text(
             _build_summary_md(

@@ -96,9 +96,11 @@ def test_drift_banner_fires_when_all_gates_pass(tmp_path, monkeypatch):
         banner = hh._drift_banner_for_repo(repo, session_id="s1")
 
     assert banner is not None
-    assert banner.startswith("[🦎 chameleon: drift]")
+    assert banner.startswith("[🦎 chameleon: structural conformance]")
+    # The blind-spots disclaimer leads so the score is never read as a quality bar.
+    assert "does NOT cover: logic, dataflow, cross-file, auth checks" in banner
     # score formatted to two decimals, observation count and the refresh nudge
-    assert "Observed drift score is 0.70 over the last 14 days (N=12 edits)." in banner
+    assert "Structural-conformance drift is 0.70 over the last 14 days (N=12 edits)" in banner
     assert "**/chameleon-refresh**" in banner
 
     # cooldown marker written under PLUGIN_DATA/<repo_id>/.drift_banner.last
@@ -128,7 +130,7 @@ def test_drift_banner_score_is_formatted_to_two_decimals(tmp_path, monkeypatch):
         banner = hh._drift_banner_for_repo(repo, session_id="s1")
 
     assert banner is not None
-    assert "score is 0.46 over the last 14 days (N=11 edits)" in banner
+    assert "drift is 0.46 over the last 14 days (N=11 edits)" in banner
     _reset_drift_conn_cache()
 
 
@@ -198,7 +200,7 @@ def test_drift_banner_score_threshold_is_inclusive(tmp_path, monkeypatch):
         banner = hh._drift_banner_for_repo(repo, session_id="s1")
 
     assert banner is not None
-    assert "score is 0.40" in banner
+    assert "drift is 0.40" in banner
     _reset_drift_conn_cache()
 
 
@@ -317,7 +319,7 @@ def test_drift_banner_integration_real_db(tmp_path, monkeypatch):
 
     assert banner is not None
     # 1 - mean(0.3) = 0.7
-    assert "score is 0.70 over the last 14 days (N=12 edits)" in banner
+    assert "drift is 0.70 over the last 14 days (N=12 edits)" in banner
     _reset_drift_conn_cache()
 
 

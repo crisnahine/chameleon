@@ -134,6 +134,265 @@ def record_edit_observation(
         return
 
 
+def record_override(
+    repo_id: str,
+    rule: str,
+    *,
+    rel_path: str | None = None,
+    archetype: str | None = None,
+    session_id: str | None = None,
+    blanket: bool = False,
+    observed_at: int | None = None,
+) -> None:
+    """Append one row to rule_overrides.
+
+    An inline ``chameleon-ignore`` directive that drops a block-eligible rule is
+    otherwise invisible after the turn. This records the bypass so the override
+    rate is auditable per repo. ``blanket`` distinguishes a bare directive (no
+    rule named, downgrades every block-eligible rule) from a targeted one.
+
+    Fail-open: any sqlite error is swallowed (override logging is advisory, not
+    load-bearing). ``repo_id`` and ``rule`` are required; a missing either is a
+    no-op.
+    """
+    if not repo_id or not rule:
+        return
+    ts = observed_at if observed_at is not None else int(time.time())
+
+    try:
+        conn = _get_drift_conn(repo_id)
+    except (sqlite3.Error, OSError):
+        return
+
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO rule_overrides
+                  (rel_path, rule, archetype, session_id, blanket, observed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (rel_path, rule, archetype, session_id, 1 if blanket else 0, ts),
+            )
+            (count,) = conn.execute("SELECT COUNT(*) FROM rule_overrides").fetchone()
+            if count > _EDIT_OBS_HARD_CAP:
+                # Same two-stage trim as edit_observations: shed rows older than
+                # the retention window first, then hard-cap by recency if the
+                # repo overrides so heavily that age alone does not bound it.
+                ninety_days_ago = ts - 90 * 24 * 3600
+                conn.execute(
+                    "DELETE FROM rule_overrides WHERE observed_at < ?",
+                    (ninety_days_ago,),
+                )
+                (count_after,) = conn.execute("SELECT COUNT(*) FROM rule_overrides").fetchone()
+                if count_after > _EDIT_OBS_SOFT_CAP:
+                    conn.execute(
+                        """
+                        DELETE FROM rule_overrides
+                        WHERE id NOT IN (
+                            SELECT id FROM rule_overrides
+                            ORDER BY observed_at DESC LIMIT ?
+                        )
+                        """,
+                        (_EDIT_OBS_SOFT_CAP,),
+                    )
+    except sqlite3.Error:
+        return
+
+
+def record_decision(
+    repo_id: str,
+    rel_path: str,
+    *,
+    archetype: str | None,
+    match_quality: str | None,
+    confidence_band: str | None,
+    violations_raised: int,
+    blockable_rules: list[str] | None = None,
+    outcome: str,
+    session_id: str | None = None,
+    observed_at: int | None = None,
+) -> None:
+    """Append one row to decision_log: what chameleon knew and did for an edit.
+
+    Written once per governed edit, after the outcome is resolved. A postmortem
+    replays the most-recent row for a file to classify a miss as a coverage gap
+    (``match_quality`` none/fallback) versus an in-scope miss (an ast/exact match
+    that raised nothing). ``rel_path`` must be a true repo-relative path so the
+    log keys consistently across clones; ``blockable_rules`` is the set of
+    block-eligible rules that still stood on the file (stored comma-joined).
+
+    Fail-open: any sqlite error is swallowed (decision logging is advisory, not
+    load-bearing). ``repo_id``, ``rel_path``, and ``outcome`` are required; a
+    missing one is a no-op.
+    """
+    if not repo_id or not rel_path or not outcome:
+        return
+    ts = observed_at if observed_at is not None else int(time.time())
+    rules_joined = ",".join(sorted(r for r in (blockable_rules or []) if r)) or None
+
+    try:
+        conn = _get_drift_conn(repo_id)
+    except (sqlite3.Error, OSError):
+        return
+
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+
+        hard_cap = threshold_int("DECISION_LOG_HARD_CAP")
+        soft_cap = threshold_int("DECISION_LOG_SOFT_CAP")
+        age_days = threshold_int("DECISION_LOG_AGE_DAYS")
+    except Exception:
+        hard_cap, soft_cap, age_days = 100_000, 50_000, 180
+
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO decision_log
+                  (rel_path, archetype, match_quality, confidence_band,
+                   violations_raised, blockable_rules, outcome, session_id, observed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rel_path,
+                    archetype,
+                    match_quality,
+                    confidence_band,
+                    int(violations_raised),
+                    rules_joined,
+                    outcome,
+                    session_id,
+                    ts,
+                ),
+            )
+            (count,) = conn.execute("SELECT COUNT(*) FROM decision_log").fetchone()
+            if count > hard_cap:
+                # Same two-stage trim as edit_observations: shed rows older than
+                # the retention window first, then hard-cap by recency if the
+                # repo edits so heavily that age alone does not bound the table.
+                cutoff = ts - age_days * 24 * 3600
+                conn.execute("DELETE FROM decision_log WHERE observed_at < ?", (cutoff,))
+                (count_after,) = conn.execute("SELECT COUNT(*) FROM decision_log").fetchone()
+                if count_after > soft_cap:
+                    conn.execute(
+                        """
+                        DELETE FROM decision_log
+                        WHERE id NOT IN (
+                            SELECT id FROM decision_log
+                            ORDER BY observed_at DESC LIMIT ?
+                        )
+                        """,
+                        (soft_cap,),
+                    )
+    except sqlite3.Error:
+        return
+
+
+def latest_decision(repo_id: str, rel_path: str) -> dict | None:
+    """Most-recent decision_log row for a file, or None when there is no record.
+
+    The replay read behind the post-incident gap analysis: returns what
+    chameleon last knew and did for ``rel_path`` (archetype, match quality,
+    confidence band, violations raised, the block-eligible rules that stood, the
+    resolved outcome, and when). ``rel_path`` must be the same repo-relative form
+    the write used.
+
+    Fail-open: a missing drift.db or any sqlite/OS error returns None.
+    """
+    if not repo_id or not rel_path:
+        return None
+    db_path = _drift_db_path(repo_id)
+    if not db_path.is_file():
+        return None
+    try:
+        conn = _get_drift_conn(repo_id)
+    except (sqlite3.Error, OSError):
+        return None
+    try:
+        row = conn.execute(
+            """
+            SELECT rel_path, archetype, match_quality, confidence_band,
+                   violations_raised, blockable_rules, outcome, session_id, observed_at
+            FROM decision_log
+            WHERE rel_path = ?
+            ORDER BY observed_at DESC, id DESC
+            LIMIT 1
+            """,
+            (rel_path,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    rules = [r for r in (row[5] or "").split(",") if r]
+    return {
+        "rel_path": row[0],
+        "archetype": row[1],
+        "match_quality": row[2],
+        "confidence_band": row[3],
+        "violations_raised": int(row[4] or 0),
+        "blockable_rules": rules,
+        "outcome": row[6],
+        "session_id": row[7],
+        "observed_at": int(row[8] or 0),
+    }
+
+
+def override_counts(
+    repo_id: str,
+    *,
+    window_days: int = 21,
+) -> dict[str, dict] | None:
+    """Per-rule override tallies from rule_overrides within the trailing window.
+
+    Returns ``{rule: {"overrides", "blanket", "distinct_files",
+    "distinct_sessions"}}`` or None when the drift.db is missing or no rows
+    match. ``blanket`` counts how many of the overrides came from a bare
+    directive (no rule named): a bare directive is recorded once per
+    block-eligible rule it downgraded, and a high bare share signals someone
+    stamping past the gate wholesale rather than annotating a specific
+    intentional deviation.
+
+    Fail-open: any sqlite/OS error returns None.
+    """
+    db_path = _drift_db_path(repo_id)
+    if not db_path.is_file():
+        return None
+    cutoff = int(time.time()) - window_days * 86_400
+    try:
+        conn = _get_drift_conn(repo_id)
+    except (sqlite3.Error, OSError):
+        return None
+    try:
+        rows = conn.execute(
+            """
+            SELECT rule,
+                   COUNT(*),
+                   SUM(blanket),
+                   COUNT(DISTINCT rel_path),
+                   COUNT(DISTINCT session_id)
+            FROM rule_overrides
+            WHERE observed_at >= ?
+            GROUP BY rule
+            """,
+            (cutoff,),
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    if not rows:
+        return None
+    out: dict[str, dict] = {}
+    for rule, total, blanket, files, sessions in rows:
+        out[str(rule)] = {
+            "overrides": int(total or 0),
+            "blanket": int(blanket or 0),
+            "distinct_files": int(files or 0),
+            "distinct_sessions": int(sessions or 0),
+        }
+    return out
+
+
 def record_bootstrap_baseline(
     repo_id: str,
     clustered_files: list[tuple[str, str | None, str | None]],

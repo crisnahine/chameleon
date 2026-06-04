@@ -59,41 +59,50 @@ class TestDefaults:
         assert d["CALIBRATION_MAX_SIBLINGS"] == 10
         assert d["CALIBRATION_FP_EPSILON"] == 0.001
 
-    def test_default_count_is_twenty(self):
-        assert len(_thresholds.DEFAULTS) == 20
+    # The original baseline threshold set. Later capabilities append their own
+    # keys, so the table is asserted as a superset of this baseline plus an
+    # explicit check on the keys each capability owns, rather than a brittle
+    # exact-count pin every new threshold would have to bump.
+    _BASELINE_KEYS = {
+        "WORKSPACE_FANOUT_CAP",
+        "WARNING_SAMPLE_PATHS",
+        "SPARSE_WARNING_LIMIT",
+        "MAX_EXTENDS_HOPS",
+        "EDIT_OBS_HARD_CAP",
+        "EDIT_OBS_SOFT_CAP",
+        "EDIT_OBS_AGE_DAYS",
+        "STRUCTURED_TOTAL_CAP",
+        "SPAWN_WAIT_SECONDS",
+        "LISTEN_BACKLOG",
+        "MAX_CONCAT_FOLDS_PER_FILE",
+        "CLUSTER_SHAPE_JACCARD_THRESHOLD",
+        "CLUSTER_PATH_BUCKET_DEPTH",
+        "RENAMES_OVERLAY_CAP",
+        "DRIFT_BANNER_THRESHOLD",
+        "DRIFT_BANNER_MIN_OBSERVATIONS",
+        "DRIFT_BANNER_TTL_SECONDS",
+        "CALIBRATION_MAX_FILES",
+        "CALIBRATION_MAX_SIBLINGS",
+        "CALIBRATION_FP_EPSILON",
+    }
 
-    def test_default_keys_are_exactly_the_documented_set(self):
-        assert set(_thresholds.DEFAULTS) == {
-            "WORKSPACE_FANOUT_CAP",
-            "WARNING_SAMPLE_PATHS",
-            "SPARSE_WARNING_LIMIT",
-            "MAX_EXTENDS_HOPS",
-            "EDIT_OBS_HARD_CAP",
-            "EDIT_OBS_SOFT_CAP",
-            "EDIT_OBS_AGE_DAYS",
-            "STRUCTURED_TOTAL_CAP",
-            "SPAWN_WAIT_SECONDS",
-            "LISTEN_BACKLOG",
-            "MAX_CONCAT_FOLDS_PER_FILE",
-            "CLUSTER_SHAPE_JACCARD_THRESHOLD",
-            "CLUSTER_PATH_BUCKET_DEPTH",
-            "RENAMES_OVERLAY_CAP",
-            "DRIFT_BANNER_THRESHOLD",
-            "DRIFT_BANNER_MIN_OBSERVATIONS",
-            "DRIFT_BANNER_TTL_SECONDS",
-            "CALIBRATION_MAX_FILES",
-            "CALIBRATION_MAX_SIBLINGS",
-            "CALIBRATION_FP_EPSILON",
-        }
+    def test_baseline_keys_are_present(self):
+        assert self._BASELINE_KEYS <= set(_thresholds.DEFAULTS)
 
-    def test_float_defaults_are_exactly_four(self):
+    def test_body_shape_thresholds_are_registered(self):
+        d = _thresholds.DEFAULTS
+        assert d["BODY_SHAPE_MIN_FUNCTIONS"] == 18
+        assert d["BODY_SHAPE_OUTLIER_MULT"] == 1.5
+
+    def test_baseline_float_defaults_are_present(self):
         floats = {k for k, v in _thresholds.DEFAULTS.items() if isinstance(v, float)}
-        assert floats == {
+        assert {
             "SPAWN_WAIT_SECONDS",
             "CLUSTER_SHAPE_JACCARD_THRESHOLD",
             "DRIFT_BANNER_THRESHOLD",
             "CALIBRATION_FP_EPSILON",
-        }
+            "BODY_SHAPE_OUTLIER_MULT",
+        } <= floats
 
     def test_int_defaults_are_genuine_ints_not_bools(self):
         # bool is an int subclass; the table should hold no booleans.

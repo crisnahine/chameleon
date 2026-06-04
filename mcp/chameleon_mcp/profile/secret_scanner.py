@@ -23,6 +23,20 @@ _FALLBACK_PATTERNS = (
     (re.compile(r"\bsk_live_[A-Za-z0-9]{24,}\b"), "stripe_live_key"),
     (re.compile(r"\b(rk|sk)_(live|test)_[A-Za-z0-9]{24,}\b"), "stripe_key"),
     (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "slack_token"),
+    # Google API key: the AIza prefix is unique to Google credentials and the
+    # 35-char body is fixed-length, so the shape is deterministic with little
+    # room for a benign collision.
+    (re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b"), "google_api_key"),
+    # GCP service-account key files are JSON carrying this exact type marker
+    # alongside a private_key. Matching the marker catches the whole file even
+    # when the embedded key itself is split or base64-wrapped.
+    (
+        re.compile(r"""["']type["']\s*:\s*["']service_account["']"""),
+        "gcp_service_account",
+    ),
+    # Azure Storage / Service Bus connection strings expose the shared key via
+    # an AccountKey= segment terminated by ';' or end-of-string.
+    (re.compile(r"\bAccountKey=[A-Za-z0-9+/=]{16,}"), "azure_account_key"),
     (re.compile(r"\b[a-f0-9]{40,}\b"), "high_entropy_hex"),
     (
         re.compile(r"-----BEGIN (RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----"),

@@ -10,6 +10,13 @@
 .chameleon/archetypes.json  merge=chameleon
 .chameleon/rules.json       merge=chameleon
 .chameleon/canonicals.json  merge=chameleon
+.chameleon/conventions.json merge=chameleon
+
+# Generated index artifacts (exports_index.json, reverse_index.json,
+# function_catalog.json) are intentionally NOT routed to the merge driver:
+# they have no structural merge, and the correct resolution for a conflict
+# on them is to accept either side and run /chameleon-refresh, which
+# regenerates all three from the merged repo state.
 
 # To register the merge driver, run once in your repo (or globally with --global):
 #

@@ -436,9 +436,18 @@ class TestFoldStringConcat:
     def test_triple_concat(self):
         assert _fold_string_concat('"a" + "b" + "c"') == '"abc"'
 
-    def test_mixed_quotes_no_fold(self):
-        original = "\"a\" + 'b'"
-        assert _fold_string_concat(original) == original
+    def test_mixed_quotes_fold(self):
+        # Cross-quote concat collapses into one well-formed double-quoted
+        # literal so a token split across quote styles becomes contiguous.
+        assert _fold_string_concat("\"a\" + 'b'") == '"ab"'
+        assert _fold_string_concat("'a' + \"b\"") == '"ab"'
+
+    def test_array_join_fold(self):
+        # An array of string literals joined with an empty separator collapses;
+        # a non-empty separator or a non-literal element does not fold.
+        assert _fold_string_concat("['gh', 'p_', 'rest'].join('')") == '"ghp_rest"'
+        assert _fold_string_concat("['a', 'b'].join('-')") == "['a', 'b'].join('-')"
+        assert _fold_string_concat("['a', key, 'b'].join('')") == "['a', key, 'b'].join('')"
 
     def test_no_plus_passthrough(self):
         original = "const x = 1;"

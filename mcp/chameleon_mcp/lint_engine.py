@@ -50,6 +50,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+from chameleon_mcp.conventions import _classify_casing, _split_compound_suffix
 from chameleon_mcp.signatures import bucket_named_export_count, content_signal_match_for
 
 Severity = Literal["info", "warning", "error"]
@@ -177,6 +178,63 @@ def _strip_ts_strings_and_comments(content: str) -> str:
     out = _TS_LINE_COMMENT.sub(_spaces, out)
     out = _TS_STRING.sub(_spaces, out)
     return out
+
+
+def extract_comment_spans(content: str, *, language: str) -> list[str]:
+    """Return candidate commented-out-code spans with comment markers removed.
+
+    The strings/comment strippers blank comments to spaces; this captures the
+    comment text instead so the real parser can re-check it. Consecutive
+    single-line comments are stitched into one span (a multi-line block of
+    commented-out code is one candidate, not N one-liners). Block comments are
+    returned as their own span. The leading ``//`` / ``#`` and the ``/* */``
+    fences are stripped so the residue is bare source the parser can try to
+    parse. Returns ``[]`` for an unsupported language.
+
+    Intended for bootstrap / pr-review only — the parse round-trip the caller
+    runs on each span is far too slow for the per-edit hot path.
+    """
+    if language == "typescript":
+        block_re, prefix = _TS_BLOCK_COMMENT, "//"
+    elif language == "ruby":
+        block_re, prefix = _RUBY_BLOCK_COMMENT, "#"
+    else:
+        return []
+
+    spans: list[str] = []
+    if block_re is not None:
+        for m in block_re.finditer(content):
+            inner = m.group(0)
+            # Strip the fence. TS uses /* */; Ruby's block is =begin/=end lines.
+            if inner.startswith("/*"):
+                inner = inner[2:]
+                if inner.endswith("*/"):
+                    inner = inner[:-2]
+                # Drop leading-star decoration common in JSDoc-style blocks.
+                inner = "\n".join(re.sub(r"^\s*\*\s?", "", ln) for ln in inner.splitlines())
+            else:
+                # Ruby =begin/=end: drop the marker lines, keep the body.
+                inner = "\n".join(
+                    ln for ln in inner.splitlines() if not ln.strip().startswith(("=begin", "=end"))
+                )
+            spans.append(inner)
+
+    # Stitch consecutive single-line comments. We walk the raw lines so adjacency
+    # is on-disk adjacency, not regex-match order.
+    run: list[str] = []
+    for raw_line in content.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith(prefix):
+            run.append(stripped[len(prefix) :])
+        elif run:
+            spans.append("\n".join(run))
+            run = []
+    if run:
+        spans.append("\n".join(run))
+
+    # Drop spans with no word characters (rulers, dividers, empty markers): they
+    # cannot parse as code and only cost a parser round-trip.
+    return [s for s in spans if re.search(r"\w", s)]
 
 
 _TS_DEFAULT_FUNCTION = re.compile(
@@ -354,6 +412,16 @@ _RUBY_DSL_CALLS = frozenset(
     }
 )
 _RUBY_DSL_RE = re.compile(r"^[ \t]+(" + "|".join(_RUBY_DSL_CALLS) + r")\b", re.MULTILINE)
+
+# Capture the guard method symbol of a before_action callback and any trailing
+# scoping options, so the required-guard advisory can tell a blanket authz call
+# from a scoped one and from a skip_before_action removal. Mirrors the capture
+# the convention builder uses so what is derived is what is checked.
+_RUBY_BEFORE_ACTION_LINT_RE = re.compile(
+    r"^[ \t]+(skip_before_action|before_action)\s+:([A-Za-z_]\w*[!?]?)(.*)$",
+    re.MULTILINE,
+)
+_RUBY_GUARD_SCOPE_LINT_RE = re.compile(r"\b(only|except|if|unless)\s*:")
 
 
 def _extract_ruby(content: str) -> DimensionSnapshot:
@@ -741,10 +809,47 @@ _CONCAT_SQ = re.compile(
     r"'((?:\\.|[^'\\])*)'\s*\+\s*'((?:\\.|[^'\\])*)'",
     re.DOTALL,
 )
+# Mixed-quote concat (`"a" + 'b'` or `'a' + "b"`). Either side may open with a
+# single or double quote independently; the inner bodies are joined and re-
+# emitted as one double-quoted literal so a token split across quote styles
+# (`'ghp_' + "rest"`) becomes contiguous for the scanners.
+_CONCAT_MIXED = re.compile(
+    r"""(["'])((?:\\.|(?!\1)[^\\])*)\1\s*\+\s*(["'])((?:\\.|(?!\3)[^\\])*)\3""",
+    re.DOTALL,
+)
+# Array of string literals collapsed via .join(''): ['gh','p_','rest'].join('').
+# Only an empty / single-quote-or-double-quote-empty separator counts, since a
+# non-empty separator (e.g. .join('-')) would not reconstruct a contiguous
+# token. The element list must be string literals only; any non-literal element
+# aborts the fold for that array.
+_ARRAY_JOIN = re.compile(
+    r"""\[\s*((?:["'](?:\\.|[^"'\\])*["']\s*,\s*)*["'](?:\\.|[^"'\\])*["'])\s*,?\s*\]"""
+    r"""\s*\.\s*join\(\s*(?:''|""|)\s*\)""",
+    re.DOTALL,
+)
+_ARRAY_ELEMENT = re.compile(r"""(["'])((?:\\.|(?!\1)[^\\])*)\1""", re.DOTALL)
+
+
+def _strip_string_escapes(body: str) -> str:
+    """Drop backslash escapes so a re-emitted literal body stays inert.
+
+    Folding joins the raw inner text of two literals; an escape like `\\"` or
+    `\\'` that was valid in its original quote style becomes meaningless (or
+    breaks the wrapping quote) once the body is re-wrapped. We only need the
+    decoded characters for pattern matching, so collapse `\\x` to `x` and let a
+    bare wrapping quote be re-escaped by the caller.
+    """
+    return re.sub(r"\\(.)", r"\1", body)
 
 
 def _fold_string_concat(content: str, *, max_folds: int = _MAX_CONCAT_FOLDS_PER_FILE) -> str:
-    """Iteratively collapse `"a" + "b"` / `'a' + 'b'` into single literals.
+    """Iteratively collapse split string literals into single literals.
+
+    Folds same-quote concat (`"a" + "b"`, `'a' + 'b'`), cross-quote concat
+    (`"a" + 'b'`), and `[...].join('')` of string literals. All three are
+    common ways a hardcoded token gets visually split (`'ghp_' + "rest"`,
+    `['sk_live_', key].join('')`) so the raw bytes never contain the literal
+    secret; folding makes the token contiguous before the scanners see it.
 
     Runs multiple passes because folding can create new folding opportunities
     (`"a" + "b" + "c"` → `"ab" + "c"` → `"abc"`). We bound *total*
@@ -754,17 +859,18 @@ def _fold_string_concat(content: str, *, max_folds: int = _MAX_CONCAT_FOLDS_PER_
     dominating lint_file latency. The 100KB content cap upstream gives a
     secondary defense.
 
-    Mixed-quote pairs (`"a" + 'b'`) are left alone — see module-level comment
-    above. The returned text is a strict structural subset of `content`'s
-    information: every fold replaces a substring of length N with a substring
-    of length ≤ N, so downstream regex line numbers may shift but no new
-    text is introduced.
+    Cross-quote and array-join folds re-emit a double-quoted literal whose body
+    has escapes stripped and any bare `"` re-escaped, so the result is always a
+    well-formed literal that cannot swallow following text on the next pass.
 
-    Pure function — no I/O. Safe to call on hostile input; the regex engine
-    runs at most `max_folds × 2` total substitutions before bailing.
+    Pure function, no I/O. Safe to call on hostile input; the regex engine
+    runs at most `max_folds x 4` total substitutions before bailing.
     """
-    if "+" not in content:
+    if "+" not in content and ".join" not in content:
         return content
+
+    def _emit_dq(body: str) -> str:
+        return '"' + _strip_string_escapes(body).replace('"', '\\"') + '"'
 
     remaining = max_folds
     out = content
@@ -777,12 +883,29 @@ def _fold_string_concat(content: str, *, max_folds: int = _MAX_CONCAT_FOLDS_PER_
         def _join_sq(m: re.Match) -> str:
             return "'" + m.group(1) + m.group(2) + "'"
 
+        def _join_mixed(m: re.Match) -> str:
+            return _emit_dq(m.group(2) + m.group(4))
+
+        def _join_array(m: re.Match) -> str:
+            parts = [
+                _strip_string_escapes(em.group(2)) for em in _ARRAY_ELEMENT.finditer(m.group(1))
+            ]
+            return _emit_dq("".join(parts))
+
         out, n_dq = _CONCAT_DQ.subn(_join_dq, out, count=remaining)
         remaining -= n_dq
         if remaining <= 0:
             break
         out, n_sq = _CONCAT_SQ.subn(_join_sq, out, count=remaining)
         remaining -= n_sq
+        if remaining <= 0:
+            break
+        out, n_mixed = _CONCAT_MIXED.subn(_join_mixed, out, count=remaining)
+        remaining -= n_mixed
+        if remaining <= 0:
+            break
+        out, n_arr = _ARRAY_JOIN.subn(_join_array, out, count=remaining)
+        remaining -= n_arr
         if out == before:
             break
     return out
@@ -882,10 +1005,1051 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
     return violations
 
 
+# `eval(` invoked as a function in either language. Restricted to a word-boundary
+# `eval` immediately followed by `(` so member access like `obj.evaluate(` and
+# identifiers ending in `eval` (`retrieval`) do not match. String/comment regions
+# are blanked before this runs, so a literal mentioning "eval(" is inert.
+_EVAL_CALL_RE = re.compile(r"(?<![.\w])eval\s*\(")
+
+# Weak message-digest constructors. Only meaningful as a security signal when a
+# crypto keyword sits nearby (a stable cache key or an ETag built from MD5 is
+# legitimate), so this stays advisory and is gated on `_has_security_context`.
+_WEAK_HASH_RE = re.compile(r"\b(?:MD5|SHA1|SHA-1)\b", re.IGNORECASE)
+
+# Non-cryptographic randomness used where unpredictability matters. Same context
+# gate as weak hashes: `Math.random()` for a UI jitter is fine; for a token or
+# salt it is a real weakness.
+_MATH_RANDOM_RE = re.compile(r"\bMath\.random\s*\(")
+
+# Crypto-relevant keywords used to decide whether an advisory weak-hash /
+# insecure-random hit is worth surfacing. Kept local to the sink scan so its
+# tuning is independent of the bootstrap poisoning scanner. Deliberately omits
+# "digest"/"cipher": those words are part of the construct itself (Ruby's
+# `Digest::MD5`, Node's `createCipher`), so including them would defeat the
+# context gate and flag every benign MD5 cache key.
+_SINK_SECURITY_KEYWORDS = re.compile(
+    r"\b(password|passwd|pwd|secret|token|signature|auth|hmac|csrf|session|"
+    r"api[_-]?key|access[_-]?token|nonce|salt|crypto|encrypt|decrypt|sign)\b",
+    re.IGNORECASE,
+)
+
+# Active Record query builders whose first string argument is emitted verbatim
+# into SQL. A `#{...}` interpolation inside that string splices the interpolated
+# value straight into the statement — the canonical Rails injection shape
+# (`User.where("name = #{params[:q]}")`). We match the method name, then a string
+# literal (single or double quoted) that contains a `#{`. Double-quoted Ruby
+# strings interpolate; single-quoted ones do not, but a literal `#{` in a
+# single-quoted string handed to `where` is still suspicious enough to flag.
+_RUBY_SQL_METHODS = (
+    r"where|having|order|group|select|joins|pluck|find_by_sql|"
+    r"exists\?|reorder|from|lock|distinct\.pluck"
+)
+_RUBY_SQL_INTERP_RE = re.compile(
+    rf"""\.\s*(?:{_RUBY_SQL_METHODS})\s*\(?\s*"[^"]*\#\{{[^}}]+\}}[^"]*\"""",
+    re.IGNORECASE,
+)
+# A few query helpers are commonly called without a receiver inside a model
+# scope (`scope :recent, -> { where("ts > #{cutoff}") }`), so also match the
+# bare method form not preceded by a `.` member access.
+_RUBY_SQL_INTERP_BARE_RE = re.compile(
+    rf"""(?<![.\w])(?:{_RUBY_SQL_METHODS})\s*\(\s*"[^"]*\#\{{[^}}]+\}}[^"]*\"""",
+    re.IGNORECASE,
+)
+
+
+def _sink_security_context(content: str, start: int, end: int, *, window: int = 200) -> bool:
+    """Return True if a crypto-relevant keyword sits within ±window chars."""
+    lo = max(0, start - window)
+    hi = min(len(content), end + window)
+    return bool(_SINK_SECURITY_KEYWORDS.search(content[lo:hi]))
+
+
+def _position_to_line(content: str, position: int) -> int:
+    """1-based line number for a character offset into `content`."""
+    return content.count("\n", 0, position) + 1
+
+
+def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violation]:
+    """Return one Violation per dangerous code sink detected in `content`.
+
+    Complements `scan_secrets` on the edit-time lint path. Where the secret scan
+    flags committed credentials, this flags code shapes a security reviewer would
+    stop: a dynamic `eval(...)` call, a weak hash or non-cryptographic random in
+    a crypto context, and Active Record string interpolation that splices user
+    input into SQL.
+
+    Detection runs against a string/comment-stripped copy of the source so a sink
+    mentioned inside a literal or a comment does not fire. The matched fragment
+    and its line number come from the same stripped offsets, which line up with
+    the original because the stripper preserves length.
+
+    Rule names are distinct from `secret-detected-in-content` so the hook
+    secret-rollup filters never mistake a sink for a credential.
+
+    `eval-call` is emitted at `error` severity (it is a content fact, not a style
+    mismatch); the advisory rules stay at `warning`. Whether any of these becomes
+    block-eligible is decided by the calibration gate, not here. Pure function —
+    no I/O, never executes the scanned code.
+    """
+    if not content:
+        return []
+
+    if language == "ruby":
+        scan = _strip_ruby_strings_and_comments(content)
+    elif language == "typescript":
+        scan = _strip_ts_strings_and_comments(content)
+    else:
+        # No language means no reliable string/comment stripping; only the
+        # language-agnostic `eval(` shape is safe to run, against raw content.
+        scan = content
+
+    violations: list[Violation] = []
+
+    for m in _EVAL_CALL_RE.finditer(scan):
+        line = _position_to_line(scan, m.start())
+        violations.append(
+            Violation(
+                rule="eval-call",
+                expected="<no dynamic eval>",
+                actual=f"eval( at line {line}",
+                severity="error",
+                message=(
+                    f"dynamic eval() at line {line} executes arbitrary code. "
+                    "If the argument can reach user input this is remote code "
+                    "execution; replace it with an explicit parser or dispatch "
+                    "table."
+                ),
+            )
+        )
+
+    if language == "typescript":
+        for m in _MATH_RANDOM_RE.finditer(scan):
+            if not _sink_security_context(scan, m.start(), m.end()):
+                continue
+            line = _position_to_line(scan, m.start())
+            violations.append(
+                Violation(
+                    rule="insecure-random",
+                    expected="<cryptographic randomness>",
+                    actual=f"Math.random() at line {line}",
+                    severity="warning",
+                    message=(
+                        f"Math.random() at line {line} is not cryptographically "
+                        "secure. For tokens, salts, or nonces use crypto."
+                        "randomBytes / crypto.getRandomValues instead."
+                    ),
+                )
+            )
+
+    # Weak hashes apply to both languages; the security-context gate keeps benign
+    # non-crypto MD5/SHA1 uses (cache keys, content fingerprints) quiet.
+    if language in ("typescript", "ruby"):
+        for m in _WEAK_HASH_RE.finditer(scan):
+            if not _sink_security_context(scan, m.start(), m.end()):
+                continue
+            line = _position_to_line(scan, m.start())
+            algo = m.group(0)
+            violations.append(
+                Violation(
+                    rule="weak-hash",
+                    expected="<strong hash>",
+                    actual=f"{algo} at line {line}",
+                    severity="warning",
+                    message=(
+                        f"{algo} at line {line} is a weak digest for a security "
+                        "use. Prefer SHA-256 or stronger, and a password KDF "
+                        "(bcrypt/argon2/scrypt) for credentials."
+                    ),
+                )
+            )
+
+    if language == "ruby":
+        # SQL interpolation lives inside a string literal, which the stripper
+        # above blanks out. Scan the raw content for this rule so the `#{...}`
+        # survives; the query-method anchor keeps it from matching arbitrary
+        # interpolated strings. A commented-out query would still match the raw
+        # text, so blank string literals first (without touching comments) and
+        # take real `#` comment spans from that copy to suppress those matches.
+        no_strings = _RUBY_STRING_DQ.sub(
+            lambda mm: " " * len(mm.group(0)),
+            _RUBY_STRING_SQ.sub(lambda mm: " " * len(mm.group(0)), content),
+        )
+        comment_spans = [(cm.start(), cm.end()) for cm in _RUBY_LINE_COMMENT.finditer(no_strings)]
+        comment_spans += [(cm.start(), cm.end()) for cm in _RUBY_BLOCK_COMMENT.finditer(no_strings)]
+
+        def _in_comment(pos: int) -> bool:
+            return any(lo <= pos < hi for lo, hi in comment_spans)
+
+        seen_spans: set[tuple[int, int]] = set()
+        for pat in (_RUBY_SQL_INTERP_RE, _RUBY_SQL_INTERP_BARE_RE):
+            for m in pat.finditer(content):
+                span = (m.start(), m.end())
+                if span in seen_spans or _in_comment(m.start()):
+                    continue
+                seen_spans.add(span)
+                line = _position_to_line(content, m.start())
+                violations.append(
+                    Violation(
+                        rule="sql-string-interpolation",
+                        expected="<parameterized query>",
+                        actual=f"interpolated query string at line {line}",
+                        severity="warning",
+                        message=(
+                            f"string interpolation inside a query at line {line} "
+                            "splices the value directly into SQL. Use a bind "
+                            'parameter instead: where("name = ?", value).'
+                        ),
+                    )
+                )
+
+    return violations
+
+
+# Default per-file cap on style-rule-violation emissions, read lazily from the
+# threshold module so an operator override is picked up at call time. Mirrors the
+# secret-scan cap: a misformatted paste can violate a rule on every line, so the
+# advisory list is bounded and a summary row reports the remainder.
+_STYLE_RULE_CAP_NAME = "STYLE_RULE_VIOLATIONS_PER_FILE"
+
+
+def _style_rule_cap() -> int:
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+
+        return threshold_int(_STYLE_RULE_CAP_NAME)
+    except Exception:
+        return 20
+
+
+def _rules_section(rules, key: str) -> dict | None:
+    """Return ``rules["rules"][key]["rules"]`` if it is a dict, else None.
+
+    rules.json nests each tool under ``rules.<tool>.rules`` (the verbatim config
+    body), with ``rules.<tool>.source`` alongside. Bootstrap writes prettier
+    under ``formatting``, rubocop under ``rubocop``, and editorconfig under
+    ``editorconfig`` (the parsed ``{section: {key: value}}`` map). Tolerant of a
+    missing key or a non-dict payload so a partial / hand-edited rules.json never
+    raises here.
+    """
+    if not isinstance(rules, dict):
+        return None
+    top = rules.get("rules")
+    if not isinstance(top, dict):
+        return None
+    tool = top.get(key)
+    if not isinstance(tool, dict):
+        return None
+    body = tool.get("rules")
+    return body if isinstance(body, dict) else None
+
+
+def _editorconfig_value(rules, key: str) -> str | None:
+    """First value for ``key`` across all .editorconfig sections, lowercased.
+
+    The parser keeps each glob section's settings separately and we have no
+    file-glob matcher here, so take the first declared value for the key in
+    section order (root first). Returns None when unset. Only used for indent /
+    line-length, where a repo's editorconfig is overwhelmingly one global rule.
+    """
+    body = _rules_section(rules, "editorconfig")
+    if not body:
+        return None
+    for section in body.values():
+        if isinstance(section, dict):
+            val = section.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip().lower()
+    return None
+
+
+def _rubocop_cop(rules, cop: str) -> dict | None:
+    body = _rules_section(rules, "rubocop")
+    if not body:
+        return None
+    val = body.get(cop)
+    return val if isinstance(val, dict) else None
+
+
+def _coerce_int(value) -> int | None:
+    """Parse a positive int from a config value (int or numeric string)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        try:
+            n = int(value.strip())
+        except ValueError:
+            return None
+        return n if n > 0 else None
+    return None
+
+
+def _declared_indent(rules, language: str) -> tuple[str, int | None] | None:
+    """Resolve the declared indent style/width, or None if no config declares it.
+
+    Returns ("tab", None) for tab indentation or ("space", width|None) for space
+    indentation. Precedence is the language's primary formatter first, then
+    .editorconfig: prettier for TypeScript, rubocop for Ruby. Only declared
+    values count -- an absent cop / key contributes nothing, so a repo with no
+    indent config gets no indent findings.
+    """
+    if language == "typescript":
+        prettier = _rules_section(rules, "formatting")
+        if prettier:
+            if prettier.get("useTabs") is True:
+                return ("tab", None)
+            if prettier.get("useTabs") is False:
+                return ("space", _coerce_int(prettier.get("tabWidth")))
+    elif language == "ruby":
+        style_cop = _rubocop_cop(rules, "Layout/IndentationStyle")
+        width_cop = _rubocop_cop(rules, "Layout/IndentationWidth")
+        enforced = None
+        if style_cop:
+            enforced = str(style_cop.get("EnforcedStyle") or "").lower()
+        width = _coerce_int(width_cop.get("Width")) if width_cop else None
+        if enforced == "tabs":
+            return ("tab", None)
+        if enforced == "spaces" or width is not None:
+            return ("space", width)
+
+    ec_style = _editorconfig_value(rules, "indent_style")
+    if ec_style == "tab":
+        return ("tab", None)
+    if ec_style == "space":
+        return ("space", _coerce_int(_editorconfig_value(rules, "indent_size")))
+    return None
+
+
+def _declared_quote(rules, language: str) -> str | None:
+    """Resolve the declared quote preference: "single", "double", or None.
+
+    TypeScript reads prettier ``singleQuote``; Ruby reads rubocop
+    ``Style/StringLiterals`` ``EnforcedStyle``. Returns None when the config does
+    not declare a quote preference, so no quote findings fire on those repos.
+    """
+    if language == "typescript":
+        prettier = _rules_section(rules, "formatting")
+        if prettier:
+            if prettier.get("singleQuote") is True:
+                return "single"
+            if prettier.get("singleQuote") is False:
+                return "double"
+    elif language == "ruby":
+        cop = _rubocop_cop(rules, "Style/StringLiterals")
+        if cop:
+            style = str(cop.get("EnforcedStyle") or "").lower()
+            if style == "single_quotes":
+                return "single"
+            if style == "double_quotes":
+                return "double"
+    return None
+
+
+def _declared_max_line_length(rules, language: str) -> int | None:
+    """Resolve the declared max line length, or None if no config declares it.
+
+    Precedence mirrors indent: prettier ``printWidth`` for TypeScript, rubocop
+    ``Layout/LineLength`` ``Max`` for Ruby, then .editorconfig
+    ``max_line_length``. rubocop's LineLength ``Max`` defaults to 120 when the
+    cop is present but sets no explicit value; we do NOT assume that default,
+    only a value the config states outright.
+    """
+    if language == "typescript":
+        prettier = _rules_section(rules, "formatting")
+        if prettier:
+            n = _coerce_int(prettier.get("printWidth"))
+            if n is not None:
+                return n
+    elif language == "ruby":
+        cop = _rubocop_cop(rules, "Layout/LineLength")
+        if cop:
+            n = _coerce_int(cop.get("Max"))
+            if n is not None:
+                return n
+    ec = _editorconfig_value(rules, "max_line_length")
+    if ec and ec != "off":
+        return _coerce_int(ec)
+    return None
+
+
+# Leading-whitespace run at the start of a line, used for the indent check.
+_LEADING_WS_RE = re.compile(r"^([ \t]+)")
+# Combined comment+string scanners for the quote-style check. A single left-to-
+# right pass matches comments and string literals in one alternation so a quote
+# char inside a comment is consumed as part of the comment and never mistaken for
+# a string literal. The string alternative is captured in a named group so the
+# caller can tell which kind matched. Comment alternatives come first so they win
+# when both could start at the same offset.
+_TS_TOKEN_RE = re.compile(
+    r"/\*.*?\*/"  # block comment
+    r"|//[^\n]*"  # line comment
+    r"|(?P<str>"
+    r'"(?:\\.|[^"\\])*"'
+    r"|'(?:\\.|[^'\\])*'"
+    r"|`(?:\\.|[^`\\])*`"
+    r")",
+    re.DOTALL,
+)
+_RUBY_TOKEN_RE = re.compile(
+    r"#[^\n]*"  # line comment
+    r"|(?P<str>"
+    r'"(?:\\.|[^"\\])*"'
+    r"|'(?:\\.|[^'\\])*'"
+    r")",
+    re.DOTALL,
+)
+
+
+def scan_style_rules(content: str, *, language: str | None, rules) -> list[Violation]:
+    """Flag edits that break the repo's own declared formatter config.
+
+    Archetype-independent, advisory-only style baseline. It reads ONLY the
+    declared tool-config values bootstrap already lifted into rules.json
+    (prettier / rubocop / .editorconfig) -- never a statistically inferred rule
+    -- and checks the edited content against them. Like ``scan_secrets`` and the
+    dangerous-sink scan it fires regardless of whether the file resolved to an
+    archetype, so a sparse repo where every cluster is too small to ground an
+    archetype still gets indent / quote / line-length feedback.
+
+    Three checks, each silent unless the config declares the rule:
+
+    - indentation style/width (prettier useTabs/tabWidth, rubocop
+      Layout/IndentationStyle + Layout/IndentationWidth, .editorconfig
+      indent_style/indent_size)
+    - quote style (prettier singleQuote, rubocop Style/StringLiterals), checked
+      against real string literals so a quote inside a comment never flags
+    - max line length (prettier printWidth, rubocop Layout/LineLength Max,
+      .editorconfig max_line_length)
+
+    Always emitted at ``warning``. This rule is never block-eligible (absent from
+    BLOCK_ELIGIBLE_RULES): a formatter disagreement is a nudge, not a turn-stop,
+    and CI's own formatter is the enforcing authority. Emissions are capped per
+    file; past the cap a single summary row reports the remainder. Pure function
+    -- no I/O, never executes the scanned code.
+    """
+    if not content or language not in ("typescript", "ruby"):
+        return []
+
+    indent = _declared_indent(rules, language)
+    quote = _declared_quote(rules, language)
+    max_len = _declared_max_line_length(rules, language)
+    if indent is None and quote is None and max_len is None:
+        return []
+
+    if language == "ruby":
+        stripped = _strip_ruby_strings_and_comments(content)
+        token_re = _RUBY_TOKEN_RE
+    else:
+        stripped = _strip_ts_strings_and_comments(content)
+        token_re = _TS_TOKEN_RE
+
+    cap = _style_rule_cap()
+    violations: list[Violation] = []
+    total = 0
+
+    def _emit(rule_actual: str, message: str) -> bool:
+        """Append a violation if under the cap. Returns False once the cap hits."""
+        nonlocal total
+        total += 1
+        if len(violations) >= cap:
+            return False
+        violations.append(
+            Violation(
+                rule="style-rule-violation",
+                expected="<matches declared formatter config>",
+                actual=rule_actual,
+                severity="warning",
+                message=message,
+            )
+        )
+        return True
+
+    lines = content.splitlines()
+    # The strippers blank a multi-line string/comment to spaces INCLUDING its
+    # newlines, which would collapse the line structure. Restore the original
+    # newline positions (the strip is length-preserving, so offsets line up) so
+    # line N of `indent_scan` aligns with line N of `content`. Using this copy for
+    # the indent scan keeps a tab/space inside a multi-line literal from being
+    # read as code indentation while keeping per-line alignment intact.
+    if len(stripped) == len(content):
+        indent_scan = "".join(
+            "\n" if oc == "\n" else sc for sc, oc in zip(stripped, content, strict=False)
+        )
+    else:
+        indent_scan = content
+    stripped_lines = indent_scan.splitlines()
+
+    # _emit keeps counting (`total`) past the cap but stops appending, so the
+    # summary row reports the true remainder. Both loops run to completion rather
+    # than breaking, which keeps the count honest at the cost of scanning the rest
+    # of an already-100KB-capped buffer.
+    for idx, raw_line in enumerate(lines):
+        line_no = idx + 1
+
+        if indent is not None:
+            scan_line = stripped_lines[idx] if idx < len(stripped_lines) else raw_line
+            m = _LEADING_WS_RE.match(scan_line)
+            if m:
+                lead = m.group(1)
+                want_style, want_width = indent
+                if want_style == "tab" and " " in lead:
+                    _emit(
+                        f"space indentation at line {line_no}",
+                        f"line {line_no} indents with spaces; this repo's config "
+                        "declares tab indentation.",
+                    )
+                elif want_style == "space" and "\t" in lead:
+                    _emit(
+                        f"tab indentation at line {line_no}",
+                        f"line {line_no} indents with a tab; this repo's config "
+                        f"declares {want_width or 'space'}-space indentation."
+                        if want_width
+                        else f"line {line_no} indents with a tab; this repo's "
+                        "config declares space indentation.",
+                    )
+
+        if max_len is not None and len(raw_line) > max_len:
+            _emit(
+                f"line {line_no} is {len(raw_line)} cols (max {max_len})",
+                f"line {line_no} is {len(raw_line)} columns; this repo's config "
+                f"sets a max of {max_len}.",
+            )
+
+    # Quote-style runs over the located string literals rather than per line, so
+    # one violation per offending literal. The stripper has already removed
+    # comments, so a quote char inside a comment cannot be mistaken for a literal.
+    if quote is not None:
+        want_char = "'" if quote == "single" else '"'
+        other_label = "double" if quote == "single" else "single"
+        for m in token_re.finditer(content):
+            literal = m.group("str")
+            if literal is None:
+                # The match was a comment; skip it so a quote char inside a
+                # comment never reads as a string literal.
+                continue
+            opener = literal[0]
+            if opener not in ("'", '"') or opener == want_char:
+                continue
+            # A literal that must contain the preferred quote char (so switching
+            # would force escapes) is a legitimate exception both prettier and
+            # rubocop allow; do not flag it.
+            if want_char in literal[1:-1]:
+                continue
+            line_no = _position_to_line(content, m.start())
+            _emit(
+                f"{other_label}-quoted string at line {line_no}",
+                f"line {line_no} uses a {other_label}-quoted string; this repo's "
+                f"config prefers {quote} quotes.",
+            )
+
+    if total > len(violations):
+        remaining = total - len(violations)
+        violations.append(
+            Violation(
+                rule="style-rule-violation",
+                expected="<matches declared formatter config>",
+                actual=f"+{remaining} more (capped at {cap})",
+                severity="warning",
+                message=(
+                    f"file has {total} style-config deviations; reporting the "
+                    f"first {cap}. Run the repo's formatter to fix them all."
+                ),
+            )
+        )
+
+    return violations
+
+
 _CHAMELEON_IGNORE_RE = re.compile(r"//\s*chameleon-ignore\s+([\w-]+)")
 _CHAMELEON_IGNORE_RUBY_RE = re.compile(r"#\s*chameleon-ignore\s+([\w-]+)")
 _TS_IMPORT_FROM_RE = re.compile(r"import\s+.*?\bfrom\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
 _TS_INTERFACE_DECL_RE = re.compile(r"\binterface\s+([A-Z]\w*)")
+# A `.then(` on a line that also carries no `.catch`. Scoped to a single line on
+# purpose: a `.then().catch()` chain split across lines, a `.catch` on the same
+# statement but a later line, or rejection handled by an enclosing try/await are
+# all common and legitimate, so a multi-line scan would false-positive heavily.
+# The narrow single-line case (`p.then(fn);` with nothing else) is the only one
+# precise enough to nudge on, and only ever as advisory.
+_TS_THEN_RE = re.compile(r"\.then\s*\(")
+
+
+def _then_without_catch_violations(scan_content: str) -> list[Violation]:
+    """Flag a single-line ``.then(`` that has no ``.catch`` on the same line.
+
+    Advisory only: an unhandled promise rejection is a real smell, but most
+    real ``.then`` usages either chain ``.catch`` (often on another line) or sit
+    inside an awaited/try-guarded context. We deliberately judge one physical
+    line at a time so only the bare ``x.then(fn)`` with no sibling rejection
+    handler is flagged, keeping the precision high enough for an advisory nudge.
+    """
+    out: list[Violation] = []
+    for line in scan_content.splitlines():
+        if ".catch" in line:
+            continue
+        if _TS_THEN_RE.search(line):
+            out.append(
+                Violation(
+                    rule="then-without-catch",
+                    expected=".catch handler",
+                    actual=".then with no .catch",
+                    severity="info",
+                    message=(
+                        "ASYNC: .then on this line has no .catch; an unhandled "
+                        "rejection is silent -- chain .catch or await inside try"
+                    ),
+                )
+            )
+    return out
+
+
+# --- Test-quality heuristics -------------------------------------------------
+#
+# These fire only for archetypes whose name marks them as tests (see
+# lint_conventions' archetype_name gate). A generated test that asserts nothing
+# or leans on a known flake source (real clock, real network, real randomness)
+# clears a "needs a test" demand while making coverage worse, and nothing else
+# in the pipeline models assertion shape. Every rule here is advisory: regex
+# assertion detection has genuine edge cases (custom matchers, helper-wrapped
+# asserts, tests that legitimately exercise sleep/random), so none is precise
+# enough to block. All scans run on the strings/comments-stripped copy so a
+# `sleep` or `expect` inside a description string or a comment never fires.
+
+# Skip / pending markers. The TS forms cover the jest/vitest/mocha family
+# (it.skip, xit, describe.skip, test.skip, xdescribe) plus a bare `pending(`
+# call. The Ruby forms cover RSpec (`pending`, `skip`, `xit`/`xdescribe`).
+_TS_SKIPPED_TEST_RE = re.compile(
+    r"\b(?:x(?:it|describe|test)|(?:it|describe|test|context)\s*\.\s*skip|pending)\b"
+)
+_RUBY_SKIPPED_TEST_RE = re.compile(r"^[ \t]*(?:x(?:it|describe)|skip|pending)\b", re.MULTILINE)
+
+# `expect(<literal>).toBe(<same literal>)` and the equality variants. A test
+# asserting a constant against itself proves nothing; the body is whitespace-
+# tolerant so `expect( true ).toEqual(true)` still matches. We only treat the
+# self-comparing boolean/number/string-literal shapes as tautological, which is
+# where the near-zero-FP signal lives.
+_TS_TAUTOLOGY_RE = re.compile(
+    r"expect\s*\(\s*(true|false|\d+|null|undefined)\s*\)\s*"
+    r"\.\s*(?:toBe|toEqual|toStrictEqual)\s*\(\s*\1\s*\)"
+)
+
+# A blocking real sleep inside a test body. TS: an awaited promise that resolves
+# on a real setTimeout (the canonical "wait N ms" hack) or a bare `sleep(`
+# helper call. Ruby: a top-of-statement `sleep` call. Fake-timer / freeze
+# helpers are call expressions the witness check handles separately, so these
+# patterns target only the real-clock wait.
+_TS_REAL_SLEEP_RE = re.compile(r"setTimeout\s*\([^,]*,\s*\d+\s*\)|(?<![.\w])sleep\s*\(\s*\d")
+_RUBY_REAL_SLEEP_RE = re.compile(r"(?<![.\w])sleep\s+\d|(?<![.\w])sleep\s*\(\s*\d")
+
+# Real randomness inside a test makes assertions order/seed dependent. TS:
+# Math.random. Ruby: rand(), Random.rand, SecureRandom.* (the last seeds from
+# the OS so it is just as non-deterministic for a test fixture).
+_TS_RANDOM_RE = re.compile(r"\bMath\s*\.\s*random\s*\(")
+_RUBY_RANDOM_RE = re.compile(r"(?<![.\w])rand\s*\(|\bRandom\s*\.\s*rand\b|\bSecureRandom\s*\.")
+
+# Tokens that mark a test as using fake timers / a frozen clock. If the witness
+# uses one of these and the candidate uses none, the candidate likely hits the
+# real clock (flaky on date-sensitive assertions). Whole-file scope on purpose:
+# the freeze often lives in a beforeEach / setup helper, not the assertion block.
+_CLOCK_FREEZE_TOKENS = (
+    "useFakeTimers",
+    "jest.useFakeTimers",
+    "vi.useFakeTimers",
+    "sinon.useFakeTimers",
+    "MockDate",
+    "freeze_time",
+    "travel_to",
+    "Timecop",
+)
+# Tokens that mark a test as stubbing the network. Same whole-file rationale.
+_NETWORK_STUB_TOKENS = (
+    "nock",
+    "WebMock",
+    "stub_request",
+    "fetchMock",
+    "fetch-mock",
+    "msw",
+    "setupServer",
+    "mockServer",
+    "VCR",
+)
+# Tokens that indicate a candidate touches the real network at all. Without one
+# of these present there is nothing to stub, so the unstubbed-network rule stays
+# silent regardless of the witness.
+_NETWORK_CALL_TOKENS = (
+    "fetch(",
+    "axios",
+    "http.get",
+    "http.post",
+    "https.get",
+    "https.request",
+    "XMLHttpRequest",
+    "Net::HTTP",
+    "HTTParty",
+    "RestClient",
+    "Faraday",
+)
+# Tokens that indicate a candidate reads the real clock. Without one of these
+# there is nothing to freeze, so the unfrozen-clock rule stays silent.
+_CLOCK_READ_TOKENS = (
+    "Date.now",
+    "new Date(",
+    "Time.now",
+    "Time.current",
+    "Date.today",
+    "DateTime.now",
+)
+
+# Assertion tokens. Presence of any of these in a test block means the block
+# asserts something via a recognized framework matcher, so assertion-free does
+# not fire. The set spans jest/vitest/chai (expect/assert) and RSpec/minitest
+# (expect/should/assert_*). Matched as call-ish tokens to avoid a stray word.
+_TS_ASSERTION_RE = re.compile(
+    r"\bexpect\s*\(|\bassert\b|\.should\b|\.to(?:Be|Equal|Throw|Match|Contain|Have)"
+)
+_RUBY_ASSERTION_RE = re.compile(
+    r"\bexpect\s*\(|\bassert(?:_\w+)?\b|\.should\b|\bis_expected\b|\brefute(?:_\w+)?\b"
+)
+
+# A test block opener. TS uses an `it(`/`test(` call with a brace body; Ruby
+# uses `it ... do`/`it ... {`. The scan runs on the strings/comments-stripped
+# copy where the description argument is blanked to spaces, so the opener cannot
+# rely on the quote being present. We span only the immediate block so a sibling
+# block's assertion does not mask an assertion-free neighbor.
+_TS_TEST_BLOCK_RE = re.compile(r"(?:^|[^.\w])(?:it|test)\s*\(")
+_RUBY_TEST_BLOCK_RE = re.compile(r"^[ \t]*(?:it|specify|example)\b.*\b(?:do|\{)\s*$", re.MULTILINE)
+
+# A call expression: NAME( ... . Used to derive the witness's assertion-helper
+# vocabulary (assertOk(res), expectUser(u)) so a candidate that wraps its
+# asserts in the same helpers is not mis-flagged as assertion-free.
+_CALL_TOKEN_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\(")
+# Generic call names we never treat as assertion helpers: the test framework's
+# own block/lifecycle/setup calls. Including these would make almost any block
+# look "asserting" and gut the rule.
+_NON_ASSERT_CALL_NAMES = frozenset(
+    {
+        "it",
+        "test",
+        "describe",
+        "context",
+        "specify",
+        "example",
+        "beforeEach",
+        "afterEach",
+        "beforeAll",
+        "afterAll",
+        "before",
+        "after",
+        "setup",
+        "teardown",
+        "require",
+        "import",
+        "console",
+        "fn",
+        "jest",
+        "vi",
+        "expect",
+        "function",
+        "return",
+        "if",
+        "for",
+        "while",
+        "switch",
+    }
+)
+
+
+def _ts_block_span(content: str, open_paren_idx: int) -> str:
+    """Return the brace body of the test block whose opener starts near `idx`.
+
+    Walks forward from the test call to its first `{`, then balances braces to
+    find the matching close. Falls back to the rest of the file (capped) if no
+    brace body is found, which keeps the assertion scan conservative (a missing
+    brace cannot make a genuinely-asserting block look empty).
+    """
+    brace_start = content.find("{", open_paren_idx)
+    if brace_start == -1:
+        return content[open_paren_idx : open_paren_idx + 2000]
+    depth = 0
+    for i in range(brace_start, min(len(content), brace_start + 20000)):
+        ch = content[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return content[brace_start : i + 1]
+    return content[brace_start : brace_start + 20000]
+
+
+def _ruby_block_span(lines: list[str], start_idx: int) -> str:
+    """Return the `do`/`end` (or `{`/`}`) body of a Ruby test block.
+
+    Tracks indentation off the opener line: the block ends at the first line at
+    or below the opener's indent that is an `end` (or a `}` for a brace block).
+    Capped so a malformed file cannot run the scan away.
+    """
+    opener = lines[start_idx]
+    base_indent = len(opener) - len(opener.lstrip())
+    brace_block = opener.rstrip().endswith("{")
+    body: list[str] = [opener]
+    for ln in lines[start_idx + 1 : start_idx + 1 + 4000]:
+        stripped = ln.strip()
+        indent = len(ln) - len(ln.lstrip())
+        body.append(ln)
+        if brace_block and stripped == "}":
+            break
+        if not brace_block and stripped == "end" and indent <= base_indent:
+            break
+    return "\n".join(body)
+
+
+# Call-name prefixes that read as an assertion helper rather than a setup call.
+# A witness call like assertUser()/expectOk()/verifyState() is almost certainly
+# the team's own matcher wrapper; makeUser()/create()/save() are not.
+_ASSERT_HELPER_PREFIXES = ("assert", "expect", "should", "verify", "check", "refute")
+
+
+def _witness_assert_helpers(witness_content: str, *, language: str) -> set[str]:
+    """Derive the call names the witness uses as assertion helpers.
+
+    A team's canonical test often wraps asserts in a helper (assertOk(res),
+    expectUser(u)). We collect two sources from the witness: call names that
+    share a line with a recognized assertion token, and call names whose own
+    spelling reads as an assertion helper (an assert*/expect*/verify* prefix).
+    Framework block/lifecycle calls are excluded. The candidate's
+    assertion-free check then also passes if it calls one of these, so a
+    helper-wrapped assert is not mistaken for no assertion at all.
+    """
+    if not witness_content:
+        return set()
+    assert_re = _TS_ASSERTION_RE if language == "typescript" else _RUBY_ASSERTION_RE
+    helpers: set[str] = set()
+    for line in witness_content.splitlines():
+        line_has_assert = bool(assert_re.search(line))
+        for m in _CALL_TOKEN_RE.finditer(line):
+            name = m.group(1)
+            if name in _NON_ASSERT_CALL_NAMES:
+                continue
+            if line_has_assert or name.lower().startswith(_ASSERT_HELPER_PREFIXES):
+                helpers.add(name)
+    return helpers
+
+
+def _block_asserts(block: str, *, language: str, witness_helpers: set[str]) -> bool:
+    """True when a test block contains a recognized assertion or helper call."""
+    assert_re = _TS_ASSERTION_RE if language == "typescript" else _RUBY_ASSERTION_RE
+    if assert_re.search(block):
+        return True
+    if witness_helpers:
+        for m in _CALL_TOKEN_RE.finditer(block):
+            if m.group(1) in witness_helpers:
+                return True
+    return False
+
+
+def _test_quality_violations(
+    scan_content: str,
+    *,
+    language: str,
+    witness_content: str | None,
+) -> list[Violation]:
+    """Advisory test-quality lints for a test/spec-archetype file.
+
+    Operates on the strings/comments-stripped copy so tokens inside descriptions
+    or comments do not fire. Every rule is advisory; none is block-eligible.
+    The two whole-file rules (unstubbed-network, unfrozen-clock) require a
+    witness that uses the stub/freeze token and a candidate that uses none,
+    self-calibrating to the team's own style.
+    """
+    out: list[Violation] = []
+
+    if language == "typescript":
+        skipped_re = _TS_SKIPPED_TEST_RE
+        sleep_re = _TS_REAL_SLEEP_RE
+        random_re = _TS_RANDOM_RE
+        random_label = "Math.random"
+    else:
+        skipped_re = _RUBY_SKIPPED_TEST_RE
+        sleep_re = _RUBY_REAL_SLEEP_RE
+        random_re = _RUBY_RANDOM_RE
+        random_label = "rand/SecureRandom"
+
+    if skipped_re.search(scan_content):
+        out.append(
+            Violation(
+                rule="skipped-test",
+                expected="an executed test",
+                actual="a skipped/pending test",
+                severity="info",
+                message=(
+                    "TEST: this file marks a test skipped or pending; a disabled "
+                    "test asserts nothing -- remove the skip or finish the test"
+                ),
+            )
+        )
+
+    if language == "typescript" and _TS_TAUTOLOGY_RE.search(scan_content):
+        out.append(
+            Violation(
+                rule="tautological-assertion",
+                expected="an assertion about the code under test",
+                actual="a self-comparing assertion",
+                severity="info",
+                message=(
+                    "TEST: an assertion compares a literal to itself (e.g. "
+                    "expect(true).toBe(true)); it always passes and proves nothing"
+                ),
+            )
+        )
+
+    if sleep_re.search(scan_content):
+        out.append(
+            Violation(
+                rule="real-sleep-in-test",
+                expected="a fake timer / awaited condition",
+                actual="a real sleep",
+                severity="info",
+                message=(
+                    "TEST: a real sleep makes the test slow and flaky -- use fake "
+                    "timers or await the condition instead of a fixed delay"
+                ),
+            )
+        )
+
+    if random_re.search(scan_content):
+        out.append(
+            Violation(
+                rule="random-in-test",
+                expected="a fixed/seeded value",
+                actual=f"{random_label} in a test",
+                severity="info",
+                message=(
+                    f"TEST: {random_label} makes assertions seed-dependent and "
+                    "flaky -- use a fixed value or a seeded generator"
+                ),
+            )
+        )
+
+    out.extend(
+        _assertion_free_violations(scan_content, language=language, witness_content=witness_content)
+    )
+    out.extend(
+        _witness_gated_setup_violations(
+            scan_content, language=language, witness_content=witness_content
+        )
+    )
+    return out
+
+
+def _assertion_free_violations(
+    scan_content: str,
+    *,
+    language: str,
+    witness_content: str | None,
+) -> list[Violation]:
+    """Flag a test block that sets up state but never asserts.
+
+    Gated on BOTH (a) no recognized assertion token in the block AND (b) no call
+    to a helper the witness uses around its own asserts. The helper gate keeps a
+    competently helper-wrapped assert (assertOk(res)) from misfiring. Advisory
+    only: regex assertion detection still has edge cases this gate cannot cover.
+    """
+    witness_helpers = _witness_assert_helpers(witness_content or "", language=language)
+
+    blocks: list[str] = []
+    if language == "typescript":
+        for m in _TS_TEST_BLOCK_RE.finditer(scan_content):
+            blocks.append(_ts_block_span(scan_content, m.end()))
+    else:
+        lines = scan_content.splitlines()
+        for i, line in enumerate(lines):
+            if _RUBY_TEST_BLOCK_RE.match(line):
+                blocks.append(_ruby_block_span(lines, i))
+
+    flagged = False
+    for block in blocks:
+        if not _block_asserts(block, language=language, witness_helpers=witness_helpers):
+            flagged = True
+            break
+
+    if not flagged:
+        return []
+    return [
+        Violation(
+            rule="assertion-free-test",
+            expected="at least one assertion per test",
+            actual="a test block with no assertion",
+            severity="info",
+            message=(
+                "TEST: a test block sets up state but never asserts; add an "
+                "expect/assert (or call the team's assertion helper) so the "
+                "test can actually fail"
+            ),
+        )
+    ]
+
+
+def _witness_gated_setup_violations(
+    scan_content: str,
+    *,
+    language: str,
+    witness_content: str | None,
+) -> list[Violation]:
+    """Whole-file unstubbed-network / unfrozen-clock advisories.
+
+    Each fires only when the witness file uses the relevant stub/freeze token
+    and the candidate uses none of them while still touching the real
+    network / clock. The witness gate makes this self-calibrating: a repo that
+    never stubs the network produces no witness token, so the rule stays silent.
+    """
+    if not witness_content:
+        return []
+
+    def _has_any(text: str, tokens: tuple[str, ...]) -> bool:
+        return any(tok in text for tok in tokens)
+
+    out: list[Violation] = []
+
+    if (
+        _has_any(witness_content, _NETWORK_STUB_TOKENS)
+        and not _has_any(scan_content, _NETWORK_STUB_TOKENS)
+        and _has_any(scan_content, _NETWORK_CALL_TOKENS)
+    ):
+        out.append(
+            Violation(
+                rule="unstubbed-network",
+                expected="a stubbed network (sibling tests stub it)",
+                actual="a real network call with no stub",
+                severity="info",
+                message=(
+                    "TEST: sibling tests stub the network but this file makes a "
+                    "real request -- stub it (nock/WebMock/msw) to keep the test "
+                    "hermetic and fast"
+                ),
+            )
+        )
+
+    if (
+        _has_any(witness_content, _CLOCK_FREEZE_TOKENS)
+        and not _has_any(scan_content, _CLOCK_FREEZE_TOKENS)
+        and _has_any(scan_content, _CLOCK_READ_TOKENS)
+    ):
+        out.append(
+            Violation(
+                rule="unfrozen-clock",
+                expected="a frozen clock (sibling tests freeze it)",
+                actual="a real clock read with no freeze",
+                severity="info",
+                message=(
+                    "TEST: sibling tests freeze the clock but this file reads the "
+                    "real time -- freeze it (fake timers/freeze_time) so date "
+                    "assertions stay stable"
+                ),
+            )
+        )
+
+    return out
 
 
 def _blank_string_embedded_imports(content: str) -> str:
@@ -917,13 +2081,103 @@ def _blank_string_embedded_imports(content: str) -> str:
     return "".join(chars)
 
 
+def _basename(file_path: str) -> str:
+    """Return the trailing path component, tolerating either separator."""
+    return file_path.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _file_naming_violations(file_path: str, file_naming: dict) -> list[Violation]:
+    """Emit a violation when the edited file's basename breaks the archetype's
+    dominant casing or compound-suffix token.
+
+    ``file_naming`` is the per-archetype ``{"casing", "casing_consistency",
+    "sample_size", optional "suffix", "suffix_consistency"}`` slice derived at
+    bootstrap. The check is path-only: a basename whose casing bucket differs
+    from the dominant one, or which omits a dominant suffix token, is flagged.
+    A basename with no casing signal (``index.ts``, ``.eslintrc.js``) is not
+    flagged — it contributed nothing to the convention either.
+    """
+    expected_casing = file_naming.get("casing")
+    if not expected_casing or file_naming.get("casing_consistency", 0) < 0.60:
+        return []
+
+    basename = _basename(file_path)
+    if not basename:
+        return []
+    # Only judge files of a profiled language. A Makefile/README/config dropped
+    # into a governed cluster carries no source-naming obligation, and judging
+    # its casing against a kebab `.service.ts` convention is a pure false
+    # positive. Both branches share this gate so they stay consistent.
+    if not basename.endswith(tuple(_TS_EXTENSIONS) + tuple(_RUBY_EXTENSIONS)):
+        return []
+    stem, suffix = _split_compound_suffix(basename)
+    out: list[Violation] = []
+
+    actual_casing = _classify_casing(stem)
+    if actual_casing is not None and actual_casing != expected_casing:
+        out.append(
+            Violation(
+                rule="file-naming-convention-violation",
+                expected=expected_casing,
+                actual=actual_casing,
+                severity="warning",
+                message=(
+                    f"NAMING: file {basename} uses {actual_casing}; sibling files "
+                    f"use {expected_casing} "
+                    f"({file_naming.get('casing_consistency', 0):.0%} convention)"
+                ),
+            )
+        )
+
+    expected_suffix = file_naming.get("suffix")
+    if (
+        expected_suffix
+        and file_naming.get("suffix_consistency", 0) >= 0.60
+        and suffix != expected_suffix
+        # A dot-prefixed config file (``.eslintrc.js``) has an empty stem and
+        # carries no naming signal, so it didn't vote in the suffix tally and
+        # must not be flagged for "missing" the suffix either.
+        and stem
+    ):
+        out.append(
+            Violation(
+                rule="file-naming-convention-violation",
+                expected=expected_suffix,
+                actual=suffix or "(none)",
+                severity="warning",
+                message=(
+                    f"NAMING: file {basename} is missing the {expected_suffix} suffix "
+                    f"sibling files use "
+                    f"({file_naming.get('suffix_consistency', 0):.0%} convention)"
+                ),
+            )
+        )
+
+    return out
+
+
 def lint_conventions(
     content: str,
     conventions: dict | None,
     *,
     language: str | None = None,
+    file_path: str | None = None,
+    archetype_name: str | None = None,
+    witness_content: str | None = None,
 ) -> list[Violation]:
-    """Check file content against convention rules."""
+    """Check file content against convention rules.
+
+    ``file_path`` enables the file-naming-convention check, which compares the
+    edited file's basename against the archetype's dominant casing/suffix. It is
+    optional so callers that only have content still run every other rule.
+
+    ``archetype_name`` enables the test-quality pass. It runs only when the name
+    marks the file as a test (starts with ``test`` / ``spec``); the default of
+    ``None`` leaves the pass inert so existing callers are unaffected.
+    ``witness_content`` is the archetype's canonical test, used to self-calibrate
+    the assertion-helper, stub, and freeze checks to the team's own style; when
+    absent those gated rules degrade to silent.
+    """
     if not conventions:
         return []
 
@@ -1007,49 +2261,156 @@ def lint_conventions(
                         )
                     )
 
-    if language == "ruby" and "inheritance-convention" not in ignored_rules:
+    if language == "typescript" and "then-without-catch" not in ignored_rules:
+        violations.extend(_then_without_catch_violations(scan_content))
+
+    # Ruby ignore directives live in `# ...` comments; the TS-only scan above
+    # misses them. Read them before the (language-agnostic) file-naming check so
+    # a Ruby file can suppress file-naming-convention with `# chameleon-ignore`.
+    if language == "ruby":
         for m in _CHAMELEON_IGNORE_RUBY_RE.finditer(content):
             ignored_rules.add(m.group(1))
 
-        if "inheritance-convention" not in ignored_rules:
-            inheritance = conventions.get("inheritance") or {}
-            dominant_base = inheritance.get("dominant_base")
-            if dominant_base and inheritance.get("frequency", 0) >= 0.60:
-                # Accept any base the repo has established for this archetype,
-                # not just the single dominant one. ``[\w:]+`` for the class
-                # name captures namespaced declarations fully (a bare ``\w+``
-                # truncated ``Api::V1::Foo`` to ``Api`` and lost the ``< Base``,
-                # mis-flagging legit controllers and driving a STOP loop).
-                known_bases = set(inheritance.get("known_bases") or ())
-                known_bases.add(dominant_base)
-                min_class_indent = None
-                for m in re.finditer(
-                    r"^([ \t]*)class\s+([\w:]+)(?:\s*<\s*([\w:]+))?",
-                    scan_content,
-                    re.MULTILINE,
-                ):
-                    indent = len(m.group(1))
-                    class_name = m.group(2)
-                    superclass = m.group(3)
-                    # Skip a class nested deeper than the outermost class: an inner
-                    # class (e.g. `class Result` inside a controller) is not a
-                    # top-level declaration of this archetype, so the inheritance
-                    # convention does not apply. Same-indent siblings and
-                    # module-nested top-level classes are still checked.
-                    if min_class_indent is not None and indent > min_class_indent:
-                        continue
-                    min_class_indent = (
-                        indent if min_class_indent is None else min(min_class_indent, indent)
-                    )
-                    if superclass is None or superclass not in known_bases:
-                        violations.append(
-                            Violation(
-                                rule="inheritance-convention-violation",
-                                expected=dominant_base,
-                                actual=superclass or "none",
-                                severity="warning",
-                                message=f"INHERITANCE: class {class_name} should inherit {dominant_base} ({inheritance['frequency']:.0%} convention)",
-                            )
+    # File-naming is path-only and language-agnostic: it compares the edited
+    # file's basename casing/suffix against the archetype's dominant pattern.
+    # Skipped when the caller passed no file_path (content-only lint) or the
+    # archetype has no derived file-naming convention.
+    if file_path and "file-naming-convention" not in ignored_rules:
+        naming = conventions.get("naming") or {}
+        fn = naming.get("file_naming")
+        if isinstance(fn, dict):
+            violations.extend(_file_naming_violations(file_path, fn))
+
+    if language == "ruby" and "inheritance-convention" not in ignored_rules:
+        inheritance = conventions.get("inheritance") or {}
+        dominant_base = inheritance.get("dominant_base")
+        if dominant_base and inheritance.get("frequency", 0) >= 0.60:
+            # Accept any base the repo has established for this archetype,
+            # not just the single dominant one. ``[\w:]+`` for the class
+            # name captures namespaced declarations fully (a bare ``\w+``
+            # truncated ``Api::V1::Foo`` to ``Api`` and lost the ``< Base``,
+            # mis-flagging legit controllers and driving a STOP loop).
+            known_bases = set(inheritance.get("known_bases") or ())
+            known_bases.add(dominant_base)
+            min_class_indent = None
+            for m in re.finditer(
+                r"^([ \t]*)class\s+([\w:]+)(?:\s*<\s*([\w:]+))?",
+                scan_content,
+                re.MULTILINE,
+            ):
+                indent = len(m.group(1))
+                class_name = m.group(2)
+                superclass = m.group(3)
+                # Skip a class nested deeper than the outermost class: an inner
+                # class (e.g. `class Result` inside a controller) is not a
+                # top-level declaration of this archetype, so the inheritance
+                # convention does not apply. Same-indent siblings and
+                # module-nested top-level classes are still checked.
+                if min_class_indent is not None and indent > min_class_indent:
+                    continue
+                min_class_indent = (
+                    indent if min_class_indent is None else min(min_class_indent, indent)
+                )
+                if superclass is None or superclass not in known_bases:
+                    violations.append(
+                        Violation(
+                            rule="inheritance-convention-violation",
+                            expected=dominant_base,
+                            actual=superclass or "none",
+                            severity="warning",
+                            message=f"INHERITANCE: class {class_name} should inherit {dominant_base} ({inheritance['frequency']:.0%} convention)",
                         )
+                    )
+
+    if language == "ruby" and "required-guard-convention" not in ignored_rules:
+        violations.extend(_required_guard_violations(scan_content, conventions))
+
+    # Test-quality lints, scoped to test/spec archetypes so the rules only judge
+    # files that are actually tests. The witness for the assertion-helper /
+    # stub / freeze gates is also stripped of strings & comments so its token
+    # vocabulary lines up with the candidate scan.
+    if (
+        archetype_name
+        and archetype_name.startswith(("test", "spec"))
+        and language in ("typescript", "ruby")
+        and "test-quality" not in ignored_rules
+    ):
+        if language == "ruby":
+            witness_scan = (
+                _strip_ruby_strings_and_comments(witness_content) if witness_content else None
+            )
+        else:
+            witness_scan = (
+                _strip_ts_strings_and_comments(witness_content) if witness_content else None
+            )
+        violations.extend(
+            _test_quality_violations(
+                scan_content,
+                language=language,
+                witness_content=witness_scan,
+            )
+        )
 
     return violations
+
+
+def _required_guard_violations(scan_content: str, conventions: dict) -> list[Violation]:
+    """Advisory hint when a controller lacks an authz guard its archetype expects.
+
+    Rails controllers usually authorize via a blanket ``before_action`` callback;
+    a new controller that forgets it (while keeping some other callback) matches
+    its archetype's coarse shape fine, so the gap is invisible to the structural
+    lint. This surfaces it as an ``info`` so the model confirms authorization is
+    handled.
+
+    Strictly advisory: authz is routinely inherited from a base controller, so a
+    clean controller can legitimately omit the line. When the controller extends
+    one of the archetype's known bases (the base most likely carries the guard)
+    the hint is suppressed; a guard removed here via ``skip_before_action`` is
+    likewise treated as a deliberate, legitimate absence and not flagged.
+    """
+    guards = conventions.get("required_guards") or {}
+    if not isinstance(guards, dict):
+        return []
+    required = guards.get("required_guards") or []
+    if not isinstance(required, list) or not required:
+        return []
+
+    known_bases = {b for b in (guards.get("known_bases") or ()) if isinstance(b, str)}
+    if known_bases:
+        for m in re.finditer(r"^[ \t]*class\s+[\w:]+\s*<\s*([\w:]+)", scan_content, re.MULTILINE):
+            if m.group(1) in known_bases:
+                # Extends a base the archetype establishes -- authz is inherited.
+                return []
+
+    present: set[str] = set()
+    skipped: set[str] = set()
+    for m in _RUBY_BEFORE_ACTION_LINT_RE.finditer(scan_content):
+        call, symbol, rest = m.group(1), m.group(2), m.group(3)
+        if call == "skip_before_action":
+            skipped.add(symbol)
+        elif not _RUBY_GUARD_SCOPE_LINT_RE.search(rest):
+            # Only a blanket callback satisfies the requirement; a scoped guard
+            # runs on a subset of actions and leaves the rest unguarded.
+            present.add(symbol)
+
+    out: list[Violation] = []
+    for guard in required:
+        if not isinstance(guard, str):
+            continue
+        if guard in present or guard in skipped:
+            continue
+        out.append(
+            Violation(
+                rule="required-guard-convention",
+                expected=guard,
+                actual="none",
+                severity="info",
+                message=(
+                    f"AUTHZ: controllers in this archetype usually call "
+                    f"before_action :{guard}; this file does not -- confirm "
+                    f"authorization is inherited or intentionally skipped"
+                ),
+            )
+        )
+    return out

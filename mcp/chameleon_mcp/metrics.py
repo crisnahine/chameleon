@@ -40,8 +40,24 @@ def emit_hook_metric(
     archetype: str | None = None,
     confidence: str | None = None,
     would_block: bool = False,
+    rule: str | None = None,
+    file_rel: str | None = None,
+    line: int | None = None,
+    override: bool = False,
 ) -> None:
-    """Append one metrics line. Best-effort; never raises."""
+    """Append one metrics line. Best-effort; never raises.
+
+    ``rule``, ``file_rel``, and ``line`` attribute a would_block row to the
+    specific convention rule and the repo-relative file (and line, when known)
+    that triggered it. The shadow report groups would_block rows by ``rule`` and
+    samples ``file_rel:line`` for human spot-check, so these are populated at the
+    rule-bearing block gates and left None elsewhere.
+
+    ``override`` marks a row emitted where an inline ``chameleon-ignore``
+    directive dropped a block-eligible rule. It pairs with ``rule`` to track how
+    often each rule gets overridden vs would-block; the durable per-repo tally
+    lives in drift.db, this row is the same write-path counter as would_block.
+    """
     try:
         path = _metrics_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,6 +74,10 @@ def emit_hook_metric(
             "archetype": archetype,
             "confidence": confidence,
             "would_block": bool(would_block),
+            "rule": rule,
+            "file_rel": file_rel,
+            "line": int(line) if isinstance(line, int) else None,
+            "override": bool(override),
         }
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))

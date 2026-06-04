@@ -27,7 +27,7 @@ The trust prompt is a security gate. **Don't grant trust mechanically.**
 
 ## Material-change re-prompt
 
-If any of the 10 hashed profile artifacts (`.archetype_renames.json`, `archetypes.json`, `canonicals.json`, `config.json`, `conventions.json`, `enforcement.json`, `principles.md`, `idioms.md`, `profile.json`, `rules.json`) have changed since trust was granted, trust becomes stale and the user must re-confirm.
+If any of the 13 hashed profile artifacts (`.archetype_renames.json`, `archetypes.json`, `canonicals.json`, `config.json`, `conventions.json`, `enforcement.json`, `exports_index.json`, `function_catalog.json`, `principles.md`, `idioms.md`, `profile.json`, `reverse_index.json`, `rules.json`) have changed since trust was granted, trust becomes stale and the user must re-confirm.
 
 The MCP `detect_repo` tool returns `trust_state: "stale"` after a material change (not `"untrusted"` - that means no trust record exists at all). `using-chameleon` surfaces the re-prompt.
 

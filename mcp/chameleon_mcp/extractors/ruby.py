@@ -147,4 +147,25 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
         has_jsx=bool(record.get("has_jsx", False)),
         parse_diagnostics_count=int(record.get("parse_diagnostics_count", 0)),
         sha_hint=sha_hint,
+        extras=_extras_from_record(record),
     )
+
+
+def _extras_from_record(record: dict) -> dict:
+    """Carry subprocess-only fields that don't map onto a normalized ParsedFile slot.
+
+    ``function_scopes`` is the per-method body-shape measurement (line span,
+    nesting depth, branch and parameter counts) feeding the per-archetype
+    body_shape norms. ``callable_signatures`` is the per-method declaration
+    header (name, param shape, enclosing class + base) feeding the per-archetype
+    signature consensus. Both are kept OUT of the cluster signature so they can't
+    perturb signature stability.
+    """
+    extras: dict = {}
+    scopes = record.get("function_scopes")
+    if isinstance(scopes, list) and scopes:
+        extras["function_scopes"] = scopes
+    signatures = record.get("callable_signatures")
+    if isinstance(signatures, list) and signatures:
+        extras["callable_signatures"] = signatures
+    return extras

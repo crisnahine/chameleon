@@ -71,7 +71,9 @@ def test_backstop_reuses_one_loaded_profile_across_candidates(trusted_repo):
     seen_loaded = []
 
     # Stub the real re-lint helper: record the ``loaded`` argument each call gets.
-    def fake_blockable(repo_root, file_path, loaded=None, active=None, daemon_state=None):
+    def fake_blockable(
+        repo_root, file_path, loaded=None, active=None, daemon_state=None, out_rules=None
+    ):
         seen_loaded.append(loaded)
         return True
 

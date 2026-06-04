@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -28,6 +29,98 @@ from pathlib import Path
 from chameleon_mcp.plugin_paths import secure_chmod
 
 _DEFAULT_HMAC_KEY_PATH = Path.home() / ".claude" / "hooks" / ".exec_hmac.key"
+
+
+# Broad allow-list of test-runner shapes, matched against the FIRST command word
+# of a segment (after wrapper/path/env stripping). The recorder classifies the
+# command BEFORE hashing, so only the resulting boolean is persisted and the
+# command body (which may carry secrets) is never stored. The list is
+# deliberately wide across ecosystems because the only consumer is an advisory
+# turn-end nudge: a missed runner costs a missed nudge, never a false block.
+#
+# Anchored at the start of the stripped segment (^) so `pip install pytest` and
+# `cat test.py` do not match: the runner has to BE the command, not an argument.
+_TEST_RUNNER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Node test runners, invoked directly or via a binary shim path.
+    re.compile(r"^(?:\S*/)?(?:jest|vitest|mocha|ava|tap|jasmine)\b"),
+    # Python.
+    re.compile(r"^(?:\S*/)?pytest\b"),
+    re.compile(r"^(?:\S*/)?python[0-9.]*\s+-m\s+(?:pytest|unittest)\b"),
+    re.compile(r"^(?:\S*/)?(?:tox|nox)\b"),
+    # Ruby.
+    re.compile(r"^(?:\S*/)?rspec\b"),
+    re.compile(r"^(?:\S*/)?rails\s+test\b"),
+    re.compile(r"^(?:\S*/)?rake\s+(?:test|spec)\b"),
+    re.compile(r"^(?:\S*/)?ruby\b.*\b(?:-Itest|minitest)\b"),
+    # Go / Rust / Elixir.
+    re.compile(r"^(?:\S*/)?go\s+test\b"),
+    re.compile(r"^(?:\S*/)?cargo\s+(?:test|nextest)\b"),
+    re.compile(r"^(?:\S*/)?mix\s+test\b"),
+    # Make / monorepo task runners.
+    re.compile(r"^(?:\S*/)?make\s+\S*test\b"),
+    re.compile(r"^(?:\S*/)?(?:nx|turbo)\b.*\btest\b"),
+    re.compile(r"^(?:\S*/)?bazel\s+test\b"),
+    # Package-manager script wrappers: `pnpm test`, `npm run test:unit`,
+    # `yarn test`, `npm t`, `bun test`. The script token must look like a test
+    # script so `npm install` does not match.
+    re.compile(r"^(?:\S*/)?(?:pnpm|yarn|bun)\s+(?:run\s+)?\S*test\S*\b"),
+    re.compile(r"^(?:\S*/)?npm\s+(?:run\s+)?\S*test\S*\b"),
+    re.compile(r"^(?:\S*/)?npm\s+t\b"),
+)
+
+# Leading shell scaffolding stripped off a segment before runner matching:
+# `FOO=bar` env assignments, and wrapper invokers that delegate to the real
+# runner (`npx jest`, `bundle exec rspec`, `pdm run pytest`, `time make test`).
+_LEADING_ENV_ASSIGN_RE = re.compile(r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
+_WRAPPER_PREFIX_RE = re.compile(
+    r"^(?:"
+    r"npx\s+(?:--yes\s+|-y\s+)?"  # npx jest
+    r"|pnpm\s+(?:exec|dlx)\s+"  # pnpm exec vitest
+    r"|yarn\s+(?:exec|dlx)\s+"
+    r"|bunx\s+"
+    r"|bundle\s+exec\s+"  # bundle exec rspec
+    r"|poetry\s+run\s+"  # poetry run pytest
+    r"|pdm\s+run\s+"
+    r"|hatch\s+run\s+"
+    r"|uv\s+run\s+"
+    r"|time\s+"  # time make test
+    r"|env\s+"  # env pytest (bare env, not env FOO=bar handled above)
+    r")"
+)
+
+
+def classify_test_command(command: str) -> bool:
+    """True if ``command`` looks like it runs a test suite.
+
+    Privacy-preserving: this runs on the raw command but returns only a boolean;
+    the caller persists the bit, never the body. Splits on shell separators so a
+    runner chained after a build step (``yarn build && yarn test``) still counts,
+    strips leading ``FOO=bar`` env assignments and common wrapper invokers
+    (``npx``, ``bundle exec``, ``poetry run``, ``time``), then requires a runner
+    at the START of the remaining segment so an argument like ``pip install
+    pytest`` does not match. Best-effort and intentionally broad: a false
+    negative costs a missed advisory nudge, never a wrong block.
+    """
+    if not command:
+        return False
+    # Heuristic split on the common segment separators, not a shell parse:
+    # quoted separators are rare in test invocations and a missed split only
+    # loses a nudge.
+    segments = re.split(r"&&|\|\||[;|&\n]", command)
+    for seg in segments:
+        seg = _LEADING_ENV_ASSIGN_RE.sub("", seg).strip()
+        # Peel wrapper invokers repeatedly (e.g. `time bundle exec rspec`).
+        for _ in range(4):
+            stripped = _WRAPPER_PREFIX_RE.sub("", seg, count=1)
+            if stripped == seg:
+                break
+            seg = stripped.lstrip()
+        if not seg:
+            continue
+        for pat in _TEST_RUNNER_PATTERNS:
+            if pat.search(seg):
+                return True
+    return False
 
 
 def _hmac_key_path() -> Path:
@@ -164,6 +257,7 @@ def append_exec_log(
     command: str,
     exit_code: int,
     duration_ms: int | None = None,
+    test_command_seen: bool | None = None,
 ) -> None:
     """Append an HMAC-signed log entry. One entry per Bash invocation.
 
@@ -174,8 +268,14 @@ def append_exec_log(
         "command_sha256": str (hex sha256 of the command; the body is never stored),
         "exit_code": int,
         "duration_ms": int | null,
+        "test_command_seen": bool,
         "hmac": "<hex sha256-hmac>"
       }
+
+    ``test_command_seen`` is the privacy-preserving test-runner classification of
+    the command, computed by the caller from the raw command before it is
+    discarded. When omitted it is derived here so any call site benefits; passing
+    it explicitly lets the recorder classify once and reuse the result.
     """
     key = _ensure_hmac_key()
     from chameleon_mcp.optouts import _safe_session_marker
@@ -187,12 +287,16 @@ def append_exec_log(
     # needs to know a session was seen, and command lines routinely carry secrets.
     command_sha256 = hashlib.sha256(command.encode("utf-8")).hexdigest()
 
+    if test_command_seen is None:
+        test_command_seen = classify_test_command(command)
+
     payload = {
         "ts": time.time(),
         "session_id": session_id,
         "command_sha256": command_sha256,
         "exit_code": exit_code,
         "duration_ms": duration_ms,
+        "test_command_seen": bool(test_command_seen),
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     sig = hmac.new(key, canonical, hashlib.sha256).hexdigest()
@@ -225,3 +329,40 @@ def verify_exec_log_line(line: str) -> bool:
         return False
     actual = hmac.new(key, canonical, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, actual)
+
+
+def session_test_run_seen(repo_id: str, session_id: str) -> bool:
+    """True if a passing test run was observed in this session's exec log.
+
+    Reads the session's HMAC-signed NDJSON log and returns True iff at least one
+    entry both classified as a test runner and exited 0. Only HMAC-verified lines
+    count, so a tampered or corrupt line cannot fake a "tests passed" signal.
+
+    This is a turn-end-only read (the Stop gate), deliberately off the per-Bash
+    hot path. Fails open to False on any error: an unreadable log degrades to
+    "no test seen", which only strengthens an advisory nudge, never blocks.
+    """
+    try:
+        from chameleon_mcp.optouts import _safe_session_marker
+
+        log_path = _exec_log_dir(repo_id) / f"{_safe_session_marker(session_id)}.jsonl"
+        if not log_path.is_file():
+            return False
+        with open(log_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not record.get("test_command_seen"):
+                    continue
+                if record.get("exit_code") != 0:
+                    continue
+                if verify_exec_log_line(line):
+                    return True
+        return False
+    except Exception:
+        return False

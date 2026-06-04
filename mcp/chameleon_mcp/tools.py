@@ -1869,6 +1869,37 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     working_content = content[:100_000] if truncated else content
 
     secret_violations = [v.to_dict() for v in _scan_secrets(working_content)]
+    # Tag each secret hit with whether its kind may hard-block, matching the hook
+    # path. scan_secrets emits every kind under one rule; the enforcement gate
+    # reads the per-hit secret_hard flag, so a consumer of this tool's violations
+    # (the posttool daemon path) sees the same hardness classification the
+    # in-process lint produces. Only the deterministic high-precision kinds set
+    # secret_hard; entropy/broad-fallback hits stay advisory.
+    try:
+        from chameleon_mcp.violation_class import tag_secret_hardness as _tag_secret_hardness
+
+        _tag_secret_hardness(secret_violations)
+    except Exception:
+        pass
+
+    # Dangerous code sinks (dynamic eval, weak hash, insecure random, SQL string
+    # interpolation) are content facts about the caller's own submission, like the
+    # secret scan above, so they run before the trust/canonical gates and ride the
+    # early-return paths too. eval-call is block-eligible; the rest are advisory.
+    # Language is inferred from the path; with no recognizable extension only the
+    # language-agnostic eval( shape fires, which is the block-eligible one.
+    _sink_lang = _detect_language(file_path) if file_path else None
+    if _sink_lang not in ("typescript", "ruby"):
+        _sink_lang = None
+    sink_violations: list[dict] = []
+    try:
+        from chameleon_mcp.lint_engine import scan_dangerous_sinks as _scan_dangerous_sinks
+
+        sink_violations = [
+            v.to_dict() for v in _scan_dangerous_sinks(working_content, language=_sink_lang)
+        ]
+    except Exception:
+        sink_violations = []
 
     # Resolve `repo` through the shape-detecting resolver every other read tool
     # uses. Calling `_resolve_repo_root_by_id` directly let a hostile path
@@ -1903,7 +1934,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
                     "repo could not be resolved to a profile dir; "
                     "/chameleon-init or /chameleon-trust the repo first"
                 ),
-                "violations": secret_violations,
+                "violations": secret_violations + sink_violations,
                 "canonical_confidence": 0.0,
                 "unparseable_regions": [],
                 "content_size": content_size,
@@ -1928,7 +1959,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
                     "profile is not trusted for this user; grant with "
                     "/chameleon-trust (convention/AST checks withheld)"
                 ),
-                "violations": secret_violations,
+                "violations": secret_violations + sink_violations,
                 "canonical_confidence": 0.0,
                 "unparseable_regions": [],
                 "content_size": content_size,
@@ -1943,7 +1974,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             {
                 "stub": True,
                 "stub_reason": "profile failed to load (corrupted? run /chameleon-refresh)",
-                "violations": secret_violations,
+                "violations": secret_violations + sink_violations,
                 "canonical_confidence": 0.0,
                 "unparseable_regions": [],
                 "content_size": content_size,
@@ -1987,7 +2018,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
                         "profile is not trusted for this user; grant with "
                         "/chameleon-trust (convention/AST checks withheld)"
                     ),
-                    "violations": secret_violations,
+                    "violations": secret_violations + sink_violations,
                     "canonical_confidence": 0.0,
                     "unparseable_regions": [],
                     "content_size": content_size,
@@ -2034,7 +2065,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             {
                 "stub": False,
                 "stub_reason": None,
-                "violations": secret_violations,
+                "violations": secret_violations + sink_violations,
                 "canonical_confidence": 0.0,
                 "unparseable_regions": [],
                 "content_size": content_size,
@@ -2081,11 +2112,49 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             arch_conv["naming"] = conv_data["naming"][archetype]
         if conv_data.get("inheritance", {}).get(archetype):
             arch_conv["inheritance"] = conv_data["inheritance"][archetype]
+        # required_guards drives the advisory authz hint. The lint reads it from
+        # the per-archetype slice, so it must be copied in alongside the others or
+        # the rule can never fire on this path.
+        if conv_data.get("required_guards", {}).get(archetype):
+            arch_conv["required_guards"] = conv_data["required_guards"][archetype]
+        # The test-quality pass gates only on the archetype name (it reads no
+        # convention keys), but lint_conventions early-returns on an empty
+        # conventions dict. A test/spec archetype often has no import/naming/
+        # inheritance conventions, so arch_conv would be empty and the pass would
+        # never run. Force a non-empty dict for those archetypes so the pass fires.
+        _is_test_arch = isinstance(archetype, str) and archetype.startswith(("test", "spec"))
+        if _is_test_arch and not arch_conv:
+            arch_conv = {"_test_quality_only": True}
+        # Witness content self-calibrates the test-quality stub/freeze/helper gates
+        # to the team's own test style. Read it only for a test/spec archetype (the
+        # only case where the gated rules can fire), via the same path-safe read
+        # the AST recalibration uses, so the common non-test edit stays witness-free.
+        _witness_content: str | None = None
+        if _is_test_arch and witness_rel_path:
+            try:
+                from chameleon_mcp.safe_open import safe_open as _safe_open
+
+                _wpath = _safe_open(repo_root, witness_rel_path, max_size_bytes=WITNESS_MAX_BYTES)
+                _witness_content = _wpath.read_bytes()[:100_000].decode("utf-8", errors="replace")
+            except Exception:
+                _witness_content = None
         if arch_conv:
-            convention_violations = [
-                v.to_dict()
-                for v in _lint_conventions(working_content, arch_conv, language=language)
-            ]
+            # Thread the archetype name (enables the test-quality pass on test/spec
+            # files) and the witness content (self-calibrates its gated checks); the
+            # params are keyword-only with None defaults, so guard the call in case
+            # an older engine build lacks them (then fall back to the legacy shape).
+            try:
+                conv_violations = _lint_conventions(
+                    working_content,
+                    arch_conv,
+                    language=language,
+                    file_path=file_path,
+                    archetype_name=archetype,
+                    witness_content=_witness_content,
+                )
+            except TypeError:
+                conv_violations = _lint_conventions(working_content, arch_conv, language=language)
+            convention_violations = [v.to_dict() for v in conv_violations]
     except Exception:
         pass
 
@@ -2108,19 +2177,64 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     except Exception:
         phantom_violations = []
 
+    # Cross-file import context (index-backed; advisory). Surfaces who imports
+    # the edited module's bindings and any export removed out from under an
+    # indexed call site. Reads the prebuilt reverse index only -- no caller is
+    # re-parsed on the hot path; silent without an absolute in-repo file_path.
+    crossfile_violations: list[dict] = []
+    try:
+        from chameleon_mcp.phantom_imports import lint_cross_file_imports
+
+        crossfile_violations = [
+            v.to_dict()
+            for v in lint_cross_file_imports(
+                working_content,
+                file_path=file_path,
+                repo_root=repo_root,
+                language=language,
+            )
+        ]
+    except Exception:
+        crossfile_violations = []
+
+    # Style baseline (indent / quote / line-length vs the repo's declared
+    # formatter config in rules.json). Archetype-independent like the secret and
+    # sink scans, so a sparse repo with no resolvable archetype still gets style
+    # feedback; advisory only, never block-eligible. Reads only declared config
+    # values and emits its own messages, so it is safe past the trust gate.
+    style_violations: list[dict] = []
+    try:
+        from chameleon_mcp.lint_engine import scan_style_rules as _scan_style_rules
+
+        style_violations = [
+            v.to_dict()
+            for v in _scan_style_rules(working_content, language=language, rules=loaded.rules)
+        ]
+    except Exception:
+        style_violations = []
+
     # Sanitize profile-derived violation messages (they embed conventions.json /
     # witness-derived strings) before returning on a model-callable surface,
-    # matching posttool_verify. Secret violations come from the caller's own
-    # content and are left as-is.
+    # matching posttool_verify. Secret and dangerous-sink violations come from the
+    # caller's own content and are left as-is. Style violations carry no profile
+    # strings (only declared config numbers), so they need no sanitizing.
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
 
-    for _v in best_ast_violations + convention_violations + phantom_violations:
+    for _v in (
+        best_ast_violations + convention_violations + phantom_violations + crossfile_violations
+    ):
         for _k, _val in list(_v.items()):
             if isinstance(_val, str):
                 _v[_k] = _sanitize(_val)
 
     violations = (
-        secret_violations + best_ast_violations + convention_violations + phantom_violations
+        secret_violations
+        + best_ast_violations
+        + convention_violations
+        + phantom_violations
+        + crossfile_violations
+        + sink_violations
+        + style_violations
     )
 
     return _envelope(
@@ -2135,6 +2249,463 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
             "language": language,
         },
         truncated=truncated,
+    )
+
+
+def query_symbol_importers(repo: str, file_path: str) -> dict:
+    """Who imports a TypeScript module's bindings, and which imports it now breaks.
+
+    The cross-file read backing PR-review and the Stop existence check. Reads the
+    prebuilt reverse index (``symbol -> importers``) plus the module's CURRENT
+    on-disk export set and returns, per the module at ``file_path``:
+
+    - ``importers``: each exported name with indexed importers, as
+      ``{name, count, sites: [{path, line}]}`` -- the rename blast radius.
+    - ``broken``: each name an importer still references that the module NO
+      LONGER exports -- the deterministic existence break (removed / renamed
+      export with a live call site). High-confidence; the only finding class a
+      consumer should surface as more than advisory.
+    - ``export_set_open``: True when the module does ``export * from`` and its
+      set can't be enumerated, so ``broken`` is suppressed (a missing name may be
+      re-exported). ``importers`` is still reported.
+
+    Fails open with an empty result (``found: False``) on any ambiguity:
+    unresolvable / untrusted repo, missing index, unreadable module. Never
+    fabricates an importer -- every site is a row the bootstrap recorded.
+    """
+    from chameleon_mcp.phantom_imports import _current_export_names
+    from chameleon_mcp.profile.loader import find_repo_root
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+    from chameleon_mcp.safe_open import safe_read_text
+    from chameleon_mcp.symbol_index import load_reverse_index, module_key_for_path
+
+    empty = {
+        "found": False,
+        "module": None,
+        "importers": [],
+        "broken": [],
+        "export_set_open": False,
+    }
+
+    if not _validate_file_path_arg(file_path):
+        return _envelope(dict(empty))
+
+    p = Path(file_path).expanduser()
+    repo_root = find_repo_root(p)
+    if repo_root is None:
+        return _envelope(dict(empty))
+
+    # The repo arg must agree with the file's own repo, mirroring get_archetype's
+    # cross-arg consistency check (a mismatched repo id must not read another
+    # repo's index).
+    expected_repo_id = _compute_repo_id(repo_root)
+    if isinstance(repo, str) and _REPO_ID_RE.match(repo):
+        if repo != expected_repo_id:
+            return _envelope(dict(empty))
+    else:
+        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
+        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
+            return _envelope(dict(empty))
+
+    # Trust-gate: the index is an attacker-controllable committed artifact, so
+    # its importer paths must not reach the model surface from an untrusted
+    # profile (mirrors lint_file / the other read tools).
+    gate = _trust_state_for(expected_repo_id)
+    if gate is None or not gate.grants_root(repo_root):
+        out = dict(empty)
+        out["status"] = "untrusted"
+        return _envelope(out)
+
+    index = load_reverse_index(repo_root)
+    if index is None:
+        return _envelope(dict(empty))
+    target_key = module_key_for_path(p, repo_root)
+    if target_key is None:
+        return _envelope(dict(empty))
+    indexed = index.names_for(target_key)
+    if not indexed:
+        # The module is real but nothing imports it by name; report found with
+        # empty lists so a caller can tell "no importers" from "couldn't look".
+        out = dict(empty)
+        out["found"] = True
+        out["module"] = target_key
+        return _envelope(out)
+
+    try:
+        content = safe_read_text(repo_root, target_key, max_size_bytes=1_000_000)
+    except Exception:
+        # The module can't be read (deleted, oversized, unsafe path); without its
+        # current export set the existence check can't run -- fail open.
+        return _envelope(dict(empty))
+
+    current, open_set = _current_export_names(content)
+
+    importers_out: list[dict] = []
+    broken_out: list[dict] = []
+    for name, importers in sorted(indexed.items()):
+        sites = [{"path": imp.path, "line": imp.line} for imp in importers]
+        if name in current:
+            importers_out.append({"name": name, "count": len(importers), "sites": sites})
+        elif not open_set:
+            broken_out.append({"name": name, "count": len(importers), "sites": sites})
+
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
+
+    def _clean(rows: list[dict]) -> list[dict]:
+        for row in rows:
+            row["name"] = _sanitize(row["name"])
+            for s in row["sites"]:
+                if isinstance(s.get("path"), str):
+                    s["path"] = _sanitize(s["path"])
+        return rows
+
+    return _envelope(
+        {
+            "found": True,
+            "module": _sanitize(target_key),
+            "importers": _clean(importers_out),
+            "broken": _clean(broken_out),
+            "export_set_open": open_set,
+        }
+    )
+
+
+def _name_still_referenced(repo_root: Path, importer_rel: str, name: str, line: int | None) -> bool:
+    """Cheap regex presence check: does ``importer_rel`` still name ``name``?
+
+    The reverse index is a bootstrap snapshot; an importer may have dropped the
+    reference since (the rename was completed there too). Confirm the importer
+    file still references ``name`` as a whole word so a finding is not raised for
+    a call site that no longer exists. Prefers the recorded import ``line`` when
+    present (the index placed the import there), and falls back to a whole-file
+    scan when the line drifted or was never placed. No parser -- a word-boundary
+    regex over the file bytes, matching the rest of the cross-file path's
+    in-process, never-execute-repo-code stance. Returns False on any read error
+    so an unreadable importer cannot prop up a finding.
+    """
+    from chameleon_mcp.safe_open import safe_read_text
+
+    try:
+        content = safe_read_text(repo_root, importer_rel, max_size_bytes=1_000_000)
+    except Exception:
+        return False
+    needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
+    lines = content.splitlines()
+    if line is not None and 1 <= line <= len(lines):
+        if needle.search(lines[line - 1]):
+            return True
+    return bool(needle.search(content))
+
+
+def get_crossfile_context(repo: str) -> dict:
+    """Cross-file existence breaks across a TypeScript repo, for PR review.
+
+    The single cross-file finding class chameleon can assert deterministically: a
+    binding a module USED to export (so the reverse index records importers for
+    it) is gone from the module's CURRENT export set, while indexed importers
+    still name it. Each such removed/renamed export is a call site the diff broke.
+
+    Scans the prebuilt reverse index (``symbol -> importers``) target by target,
+    recomputes each module's current export set from its on-disk source (a regex
+    read, no parser), and returns one finding per still-referenced removed export.
+    No importer is re-parsed and no edge is fabricated; every site is a row the
+    bootstrap recorded.
+
+    Each finding carries ``high_confidence``, true ONLY when the resolver chain is
+    unambiguous end to end:
+
+    - exact file match: the module's index key resolves to a real file whose
+      export set could be read;
+    - the export set is closed (no ``export * from``), so a missing name is truly
+      gone, not possibly re-exported through a star;
+    - at least one indexed importer still references the name (the recorded import
+      line, else anywhere in that file) by a cheap presence check.
+
+    A consumer (PR review) must relay ONLY ``high_confidence=true`` findings; a
+    leaky resolution must not launder a wrong cross-file claim past the integrity
+    rule. Findings with ``high_confidence=false`` are returned for transparency
+    (the module was open-set, or no importer still names the binding) and must be
+    dropped, not surfaced.
+
+    Returns ``{"found": bool, "findings": [...]}`` where each finding is
+    ``{symbol, module, count, high_confidence, sites: [{path, line}]}``. Fails
+    open with ``found: False`` on any ambiguity (unresolvable / untrusted repo,
+    missing index). TS-only; Ruby has no static import-of-named-symbol.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.phantom_imports import _current_export_names
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+    from chameleon_mcp.safe_open import safe_read_text
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
+    from chameleon_mcp.symbol_index import load_reverse_index
+
+    empty = {"found": False, "findings": []}
+
+    repo_root, repo_id = _resolve_repo_arg(repo)
+    if repo_root is None and repo_id is not None:
+        repo_root = _resolve_repo_root_by_id(repo_id)
+    if repo_root is None or not repo_root.is_dir():
+        return _envelope(dict(empty))
+
+    # Trust-gate: the reverse index is an attacker-controllable committed
+    # artifact, so its importer paths must not reach the model surface from an
+    # untrusted profile (mirrors the other cross-file reads).
+    expected_repo_id = _compute_repo_id(repo_root)
+    gate = _trust_state_for(expected_repo_id)
+    if gate is None or not gate.grants_root(repo_root):
+        out = dict(empty)
+        out["status"] = "untrusted"
+        return _envelope(out)
+
+    index = load_reverse_index(repo_root)
+    if index is None:
+        return _envelope(dict(empty))
+
+    max_modules = threshold_int("CROSSFILE_MAX_MODULES_SCANNED")
+    max_findings = threshold_int("CROSSFILE_MAX_FINDINGS")
+    max_sites = threshold_int("CROSSFILE_MAX_SITES_PER_FINDING")
+
+    # Sorted target keys so a truncated scan is deterministic across runs.
+    target_keys = sorted(index.target_keys())
+    findings: list[dict] = []
+    truncated = False
+    for target_key in target_keys[:max_modules]:
+        if len(findings) >= max_findings:
+            truncated = True
+            break
+        try:
+            content = safe_read_text(repo_root, target_key, max_size_bytes=1_000_000)
+        except Exception:
+            # The module can't be read (deleted, oversized, unsafe path). Without
+            # its current export set the existence check can't run for it -- skip
+            # rather than guess a break.
+            continue
+        current, open_set = _current_export_names(content)
+        broken = index.broken_importers(target_key, current)
+        if not broken:
+            continue
+        for name in sorted(broken):
+            if len(findings) >= max_findings:
+                truncated = True
+                break
+            importers = broken[name]
+            # High confidence requires the closed export set (a star re-export
+            # could still expose the name) AND at least one importer that still
+            # references the binding by the cheap presence check.
+            live_sites = [
+                imp
+                for imp in importers
+                if _name_still_referenced(repo_root, imp.path, name, imp.line)
+            ]
+            high_confidence = (not open_set) and bool(live_sites)
+            # When the export set is closed, the still-referencing sites are the
+            # broken call sites; when it is open, no site is asserted broken, so
+            # report the recorded importers for transparency only.
+            sites_src = live_sites if high_confidence else importers
+            sites_sorted = sorted(
+                sites_src, key=lambda imp: (imp.path, imp.line if imp.line is not None else -1)
+            )
+            sites = [
+                {"path": _sanitize(imp.path), "line": imp.line} for imp in sites_sorted[:max_sites]
+            ]
+            findings.append(
+                {
+                    "symbol": _sanitize(name),
+                    "module": _sanitize(target_key),
+                    "count": len(sites_src),
+                    "high_confidence": high_confidence,
+                    "sites": sites,
+                }
+            )
+
+    return _envelope({"found": True, "findings": findings}, truncated=truncated)
+
+
+def _candidate_body_excerpt(repo_root: Path, rel_path: str, name: str, max_lines: int) -> str:
+    """Read a short body excerpt for a cataloged function from disk, or "".
+
+    The catalog stores no body (the dump scripts emit no line spans alongside a
+    callable's name), so the candidate's source is read at query time -- the same
+    "read the witness body when asked" pattern the canonical excerpt uses. Finds
+    the first line whose text declares ``name`` (a ``def``/``function``/``const``
+    /``=>`` /method form) and returns that line plus up to ``max_lines`` after
+    it. This is a citation aid for the LLM judge, not a parse; an imperfect
+    excerpt simply gives the judge a few less-precise lines. Fails open to "" on
+    any unsafe path or read error.
+    """
+    from chameleon_mcp.safe_open import safe_read_text
+
+    try:
+        content = safe_read_text(repo_root, rel_path, max_size_bytes=1_000_000)
+    except Exception:
+        return ""
+    lines = content.splitlines()
+    needle = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])")
+    decl_hint = re.compile(r"\b(def|function|class|const|let|var)\b|=>|=\s*(async\s+)?\(")
+    start = None
+    for i, line in enumerate(lines):
+        if needle.search(line) and decl_hint.search(line):
+            start = i
+            break
+    if start is None:
+        return ""
+    excerpt = "\n".join(lines[start : start + max_lines])
+    return excerpt
+
+
+def get_duplication_candidates(repo: str, file_path: str) -> dict:
+    """Candidate existing functions a file's new functions may re-implement.
+
+    The cross-file duplication read backing PR-review and the turn-end judge. For
+    each function the file at ``file_path`` defines, the bootstrap function
+    catalog is prefiltered (signature shape + name-token overlap) to the handful
+    of existing functions elsewhere in the repo that look like the same intent
+    under a different name -- the ``toDisplayDate`` vs ``formatDate`` case the
+    flat exact-name signal cannot see. Each surfaced candidate carries a short
+    body excerpt read from disk so the caller can cite it.
+
+    The tool only PREFILTERS. The LLM caller judges semantic equivalence against
+    the candidate bodies; a returned candidate is a place to look, never a
+    confirmed duplicate. Duplication is a judgment call, so any finding the
+    caller raises from this is advisory FIX/NIT at most -- never block-eligible.
+
+    Returns ``{"found": bool, "file": str|None, "matches": [...]}`` where each
+    match is ``{"function": {name, kind, arity, required}, "candidates":
+    [{name, file, kind, arity, required, shared_tokens, body_excerpt}, ...]}``.
+    Fails open with ``found: False`` on any ambiguity (unresolvable / untrusted
+    repo, missing catalog, unparsable file). Never fabricates a candidate -- each
+    is a function the bootstrap recorded.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.bootstrap.orchestrator import resolve_extractor
+    from chameleon_mcp.function_catalog import (
+        NewFunction,
+        load_function_catalog,
+        select_candidates,
+    )
+    from chameleon_mcp.profile.loader import find_repo_root
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
+
+    empty = {"found": False, "file": None, "matches": []}
+
+    if not _validate_file_path_arg(file_path):
+        return _envelope(dict(empty))
+
+    p = Path(file_path).expanduser()
+    repo_root = find_repo_root(p)
+    if repo_root is None:
+        return _envelope(dict(empty))
+
+    # The repo arg must agree with the file's own repo, mirroring the other
+    # cross-file reads (a mismatched repo id must not read another repo's
+    # catalog).
+    expected_repo_id = _compute_repo_id(repo_root)
+    if isinstance(repo, str) and _REPO_ID_RE.match(repo):
+        if repo != expected_repo_id:
+            return _envelope(dict(empty))
+    else:
+        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
+        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
+            return _envelope(dict(empty))
+
+    # Trust-gate: the catalog is an attacker-controllable committed artifact, so
+    # its function names and paths must not reach the model surface from an
+    # untrusted profile (mirrors the other read tools).
+    gate = _trust_state_for(expected_repo_id)
+    if gate is None or not gate.grants_root(repo_root):
+        out = dict(empty)
+        out["status"] = "untrusted"
+        return _envelope(out)
+
+    catalog = load_function_catalog(repo_root)
+    if catalog is None or not len(catalog):
+        return _envelope(dict(empty))
+
+    try:
+        file_rel = p.resolve().relative_to(repo_root).as_posix()
+    except (ValueError, OSError):
+        file_rel = None
+
+    # Parse the edited file's own functions through the same extractor the
+    # bootstrap used, so the new functions carry the same callable_signatures
+    # shape the catalog was built from. resolve_extractor applies the
+    # workspace-monorepo fallback so a TS monorepo whose root package.json
+    # has no TS deps still resolves to the TS extractor.
+    try:
+        extractor = resolve_extractor(repo_root)
+    except Exception:
+        extractor = None
+    if extractor is None:
+        return _envelope(dict(empty))
+    try:
+        parse_result = extractor.parse_repo(repo_root, paths=[p])
+    except Exception:
+        return _envelope(dict(empty))
+
+    new_functions: list[NewFunction] = []
+    seen: set[tuple[str, int, int]] = set()
+    for pf in parse_result.files or ():
+        extras = getattr(pf, "extras", None) or {}
+        raw = extras.get("callable_signatures")
+        if not isinstance(raw, list):
+            continue
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            params = entry.get("params")
+            arity = 0
+            required = 0
+            if isinstance(params, list):
+                for prm in params:
+                    if not isinstance(prm, dict):
+                        continue
+                    arity += 1
+                    if not bool(prm.get("optional")):
+                        required += 1
+            key = (name, arity, required)
+            if key in seen:
+                continue
+            seen.add(key)
+            kind = entry.get("kind")
+            new_functions.append(
+                NewFunction(
+                    name=name,
+                    kind=kind if isinstance(kind, str) else "function",
+                    arity=arity,
+                    required=required,
+                )
+            )
+
+    if not new_functions:
+        out = dict(empty)
+        out["found"] = True
+        out["file"] = _sanitize(file_rel) if file_rel else None
+        return _envelope(out)
+
+    matches = select_candidates(catalog, new_functions, exclude_file=file_rel)
+
+    excerpt_lines = threshold_int("DUPLICATION_BODY_EXCERPT_LINES")
+    for match in matches:
+        fn = match["function"]
+        fn["name"] = _sanitize(fn["name"])
+        for cand in match["candidates"]:
+            cand["body_excerpt"] = _sanitize(
+                _candidate_body_excerpt(repo_root, cand["file"], cand["name"], excerpt_lines)
+            )
+            cand["name"] = _sanitize(cand["name"])
+            cand["file"] = _sanitize(cand["file"])
+            cand["shared_tokens"] = [_sanitize(t) for t in cand.get("shared_tokens", [])]
+
+    return _envelope(
+        {
+            "found": True,
+            "file": _sanitize(file_rel) if file_rel else None,
+            "matches": matches,
+        }
     )
 
 
@@ -2248,11 +2819,21 @@ def get_drift_status(repo: str) -> dict:
     else:
         recommended = "fresh"
 
+    # The drift score is structural-match confidence, not a correctness measure.
+    # Expose it under an honest alias and attach the blind-spots disclaimer so a
+    # caller cannot read "drift 0.08" as a quality bar. observed_drift_score is
+    # kept for backward compatibility with existing callers.
+    from chameleon_mcp.shadow_report import CONFORMANCE_DISCLAIMER, SIGNAL_BLIND_SPOTS
+
     return _envelope(
         {
             "repo_id": repo_id,
             "days_since_refresh": days_since_refresh,
             "observed_drift_score": drift_score,
+            "structural_conformance_score": drift_score,
+            "is_quality_bar": False,
+            "conformance_disclaimer": CONFORMANCE_DISCLAIMER,
+            "blind_spots": list(SIGNAL_BLIND_SPOTS),
             "engine_version_mismatch": engine_version_mismatch,
             "recommended_action": recommended,
         }
@@ -2327,15 +2908,486 @@ def get_status(repo: str) -> dict:
     active.sort()
     demoted.sort(key=lambda d: d["rule"])
 
+    # Live override-rate section. bootstrap fp_rate (above, calibration against
+    # committed files) and the override rate (here, team contention on real AI
+    # edits) are two distinct axes, not the same number: a rule can read
+    # fp_rate=0.000 and still be overridden on most edits. Fail-open: a missing
+    # drift.db / metrics log degrades to no section rather than crashing status.
+    overrides = None
+    try:
+        from chameleon_mcp.review_ledger import build_override_audit
+
+        _repo_path, repo_id = _resolve_repo_arg(repo)
+        if repo_id is not None:
+            overrides = build_override_audit(repo_id)
+    except Exception:
+        overrides = None
+
+    enforcement = {
+        "mode": mode,
+        "active": active,
+        "demoted": demoted,
+        "idiom_review": idiom_review,
+        "idiom_judge": idiom_judge,
+    }
+    if overrides is not None:
+        enforcement["overrides"] = overrides
+
+    # PR-review ledger section. Distinct axis from enforcement: this is the
+    # persisted trail of /chameleon-pr-review verdicts, surfaced so a lead can
+    # spot a BLOCK verdict that was merged anyway. Tamper-evident only (the
+    # signing key is local to the reviewed developer), so it is an honest audit
+    # trail, not a merge authority. Fail-open: a missing/unreadable ledger
+    # degrades to no section rather than crashing status.
+    review_ledger = None
+    try:
+        from chameleon_mcp.review_ledger import build_review_ledger_panel
+
+        _rl_path, rl_repo_id = _resolve_repo_arg(repo)
+        if rl_repo_id is not None:
+            review_ledger = build_review_ledger_panel(rl_repo_id)
+    except Exception:
+        review_ledger = None
+
+    out: dict = {"enforcement": enforcement}
+    if review_ledger is not None:
+        out["review_ledger"] = review_ledger
+    return _envelope(out)
+
+
+def get_shadow_report(repo: str, window_days: int | None = None) -> dict:
+    """Aggregate the shadow-mode would_block log for the shadow -> enforce decision.
+
+    Reads the accumulating real-edit metrics record (not the one-shot
+    bootstrap-time calibration ``get_status`` returns) for this repo over the
+    last ``window_days``. Reports, per block rule: how often it would have fired,
+    on how many distinct files and sessions, an advisory-only count, and a
+    promotion verdict by would-block COUNT (``safe_to_enforce`` only when zero
+    would-blocks across enough edits in a non-truncated window). The
+    idiom/principle review gate has no single rule, so it is reported as a
+    separate turn-level counter, not a promotion candidate.
+
+    A ``sample`` of file:line+rule is returned for human spot-check: the report
+    never computes a false-positive fraction because the metric rows carry no
+    accept/override/fix outcome signal, so whether a would-block was genuine
+    off-pattern code stays a human judgement on the sample.
+
+    ``window_truncated`` is True when log rotation dropped rows older than the
+    window, so the counts cannot claim full coverage of the requested period.
+
+    Fail-open: a missing/unreadable metrics log degrades to an empty report
+    rather than raising.
+    """
+    if not isinstance(repo, str) or not repo:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected repo path or repo_id hex digest",
+            }
+        )
+
+    _repo_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None:
+        return _envelope({"status": "no_repo"})
+
+    try:
+        from chameleon_mcp.shadow_report import build_shadow_report
+
+        report = build_shadow_report(repo_id, window_days)
+    except Exception:
+        # A corrupt or unreadable metrics log should not crash the status call;
+        # report an empty window rather than raising.
+        report = {
+            "repo_id": repo_id,
+            "window_days": window_days,
+            "window_truncated": False,
+            "total_edits": 0,
+            "rules": {},
+            "idiom_review": {"would_blocks": 0},
+            "sample": [],
+        }
+    return _envelope(report)
+
+
+def get_override_audit(repo: str, window_days: int | None = None) -> dict:
+    """Per-rule inline-override audit for the override-rate decision.
+
+    Reads the durable drift.db override history (which refresh does NOT wipe)
+    plus the would-block metrics, and reports, per block rule: how often it was
+    overridden via inline ``chameleon-ignore``, how often it would have blocked,
+    the bare-blanket-directive share, and an override rate (overrides / fired
+    edits). A high rate flags a rule that is fighting the team -- the convention
+    is wrong (``/chameleon-teach``) or the rule is miscalibrated (reconcile via
+    ``/chameleon-refresh``, which rewrites the verdict before the trust hash).
+
+    This is a contention signal, not a false-positive rate: an override can mean
+    the rule is wrong OR that this was a documented intentional deviation. The
+    audit only surfaces; it never auto-demotes a trust-hashed enforcement rule.
+
+    Fail-open: a missing drift.db / unreadable metrics log degrades to an empty
+    audit rather than raising.
+    """
+    if not isinstance(repo, str) or not repo:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected repo path or repo_id hex digest",
+            }
+        )
+
+    _repo_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None:
+        return _envelope({"status": "no_repo"})
+
+    try:
+        from chameleon_mcp.review_ledger import build_override_audit
+
+        audit = build_override_audit(repo_id, window_days)
+    except Exception:
+        audit = {
+            "repo_id": repo_id,
+            "window_days": window_days,
+            "total_overrides": 0,
+            "rules": {},
+            "flagged": [],
+        }
+    return _envelope(audit)
+
+
+def get_longitudinal_signals(repo: str, window_days: int | None = None) -> dict:
+    """The two honestly-labelled longitudinal health tracks for a repo.
+
+    A lead deciding whether AI code is staying healthy has historically had one
+    trailing number, the drift score, which measures structural mimicry, not
+    correctness. This returns both signals chameleon records, each labelled for
+    what it measures:
+
+    - ``structural_conformance`` — the drift score relabelled (1 - mean
+      structural-match confidence), explicitly NOT a quality bar.
+    - ``enforcement_outcomes`` — aggregate would-block / idiom-review rates over
+      the window, counting how often chameleon's own shape/idiom rules fired.
+
+    Both carry the ``blind_spots`` / ``disclaimer`` caveat so an all-zeros result
+    is not read as a correctness guarantee. The blind-spot classes (logic,
+    dataflow, cross-file, auth) are exactly what neither track sees.
+
+    Fail-open: a missing drift.db / unreadable metrics log degrades the affected
+    track to None / zeros rather than raising.
+    """
+    if not isinstance(repo, str) or not repo:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected repo path or repo_id hex digest",
+            }
+        )
+
+    _repo_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None:
+        return _envelope({"status": "no_repo"})
+
+    try:
+        from chameleon_mcp.shadow_report import build_longitudinal_signals
+
+        signals = build_longitudinal_signals(repo_id, window_days)
+    except Exception:
+        from chameleon_mcp.shadow_report import CONFORMANCE_DISCLAIMER, SIGNAL_BLIND_SPOTS
+
+        signals = {
+            "repo_id": repo_id,
+            "window_days": window_days,
+            "blind_spots": list(SIGNAL_BLIND_SPOTS),
+            "disclaimer": CONFORMANCE_DISCLAIMER,
+            "structural_conformance": None,
+            "enforcement_outcomes": {
+                "total_edits": 0,
+                "would_block_edits": 0,
+                "idiom_review_blocks": 0,
+                "block_rate": None,
+                "idiom_review_rate": None,
+                "window_truncated": False,
+            },
+        }
+    return _envelope(signals)
+
+
+def get_review_history(repo: str, limit: int | None = None) -> dict:
+    """Return the persisted PR-review verdict trail for a repo, newest first.
+
+    Once human review is optional, ``/chameleon-pr-review`` is the system of
+    record for "this change was checked", but the skill is chat-only and
+    persists nothing. The ledger fills that hole: each review run appends a
+    signed record pinning the reviewed commit, the exact profile that reviewed
+    it (``profile_sha256`` + generation + schema_version), the trust state, the
+    verdict, a findings-by-severity summary, the engine version, and the
+    reviewer. This read lets a lead see the trail and answer "which BLOCK
+    verdicts shipped anyway".
+
+    Each returned record carries ``verified`` -- whether its HMAC still matches.
+    That is tamper-EVIDENCE against a third local user silently editing a line;
+    it is NOT forgery resistance against the reviewed developer (who holds the
+    signing key) and CI cannot verify these records (no shared key). So treat
+    the trail as an honest self-attested audit log, not a merge authority.
+
+    ``limit`` defaults to ``CHAMELEON_REVIEW_HISTORY_DEFAULT_LIMIT``. Fail-open:
+    a missing/unreadable ledger returns an empty history rather than raising.
+    """
+    if not isinstance(repo, str) or not repo:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected repo path or repo_id hex digest",
+            }
+        )
+
+    _repo_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None:
+        return _envelope({"status": "no_repo"})
+
+    try:
+        from chameleon_mcp.review_ledger import read_review_history
+
+        history = read_review_history(repo_id, limit)
+    except Exception:
+        history = {"repo_id": repo_id, "records": [], "total": 0, "unverified": 0}
+    return _envelope(history)
+
+
+def _peek_profile_provenance(repo_root: Path | None, repo_id: str | None) -> dict:
+    """Best-effort profile provenance for a review-ledger record.
+
+    Reads profile.json once to pin which knowledge base reviewed the code:
+    ``profile_sha256`` (the trusted hash for this root, from the trust record),
+    ``generation`` and ``schema_version`` (from the profile), and ``trust_state``
+    at review time. Every field degrades to None on any read failure so the
+    record still writes; provenance is enrichment, not a precondition.
+    """
+    out: dict = {
+        "profile_sha256": None,
+        "generation": None,
+        "schema_version": None,
+        "trust_state": None,
+    }
+    if repo_root is None or repo_id is None:
+        return out
+
+    profile_dir = repo_root / ".chameleon"
+    profile_file = profile_dir / "profile.json"
+    try:
+        with profile_file.open("r", encoding="utf-8") as fh:
+            peek = json.load(fh)
+        if isinstance(peek, dict):
+            gen = peek.get("generation")
+            out["generation"] = gen if isinstance(gen, int) else None
+            sv = peek.get("schema_version")
+            out["schema_version"] = sv if isinstance(sv, int) else None
+    except (OSError, ValueError):
+        pass
+
+    try:
+        from chameleon_mcp.profile.trust import is_material_change, trust_state_for
+
+        trust = trust_state_for(repo_id)
+        if trust is None or not trust.grants_root(profile_dir.parent):
+            out["trust_state"] = "untrusted"
+        elif is_material_change(repo_id, profile_dir):
+            out["trust_state"] = "stale"
+        else:
+            out["trust_state"] = "trusted"
+        if trust is not None:
+            sha = trust.hash_for_root(profile_dir.parent)
+            out["profile_sha256"] = sha or None
+    except Exception:
+        pass
+
+    return out
+
+
+def record_review_verdict(
+    repo: str,
+    verdict: str,
+    findings_count: int | None = None,
+    commit_sha: str | None = None,
+    pr_id: str | None = None,
+) -> dict:
+    """Append one PR-review verdict to the repo's signed review ledger.
+
+    The final step of ``/chameleon-pr-review``: after the verdict is shown in
+    chat, this persists it so a lead can later audit which reviewed commits
+    shipped and whether any BLOCK verdict merged anyway. ``findings_count`` is
+    the total BLOCK+FIX+NIT count the run produced; it is stored under a
+    ``total`` severity bucket. Profile provenance (``profile_sha256`` +
+    generation + schema_version), the trust state at review time, the engine
+    version, and the reviewing user are stamped here so the record pins exactly
+    which knowledge base reviewed the code.
+
+    Best-effort and never blocks the review: any failure (no repo, unwritable
+    ledger) returns ``recorded: False`` rather than raising. The ledger is
+    tamper-evident against a third local user, NOT forgery-proof against the
+    reviewed developer (who holds the signing key) and NOT CI-verifiable. Read
+    it back with ``get_review_history``.
+    """
+    if not isinstance(repo, str) or not repo:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected repo path or repo_id hex digest",
+            }
+        )
+    if not isinstance(verdict, str) or not verdict.strip():
+        return _envelope({"status": "failed", "error": "expected a verdict string"})
+
+    repo_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None:
+        return _envelope({"status": "no_repo", "recorded": False})
+
+    findings: dict | None = None
+    if findings_count is not None:
+        try:
+            findings = {"total": int(findings_count)}
+        except (TypeError, ValueError):
+            findings = None
+
+    provenance = _peek_profile_provenance(repo_path, repo_id)
+
+    try:
+        from chameleon_mcp import __version__ as engine_version
+    except Exception:
+        engine_version = None
+
+    try:
+        from chameleon_mcp.review_ledger import record_review
+
+        record = record_review(
+            repo_id,
+            commit_sha=commit_sha,
+            verdict=verdict,
+            findings=findings,
+            profile_sha256=provenance["profile_sha256"],
+            generation=provenance["generation"],
+            schema_version=provenance["schema_version"],
+            trust_state=provenance["trust_state"],
+            engine_version=engine_version,
+            pr_id=pr_id,
+        )
+    except Exception as exc:
+        return _envelope(
+            {
+                "status": "failed",
+                "recorded": False,
+                "error": f"review ledger unavailable: {type(exc).__name__}",
+            }
+        )
+
     return _envelope(
         {
-            "enforcement": {
-                "mode": mode,
-                "active": active,
-                "demoted": demoted,
-                "idiom_review": idiom_review,
-                "idiom_judge": idiom_judge,
+            "status": "ok",
+            "recorded": True,
+            "signed": bool(record.get("hmac")),
+            "record": record,
+        }
+    )
+
+
+def _normalize_decision_rel_path(repo_path: Path | None, file_path: str) -> str:
+    """Repo-relative posix path for a decision_log lookup.
+
+    Mirrors how the hook keys the row (``relative_to`` the repo root, posix
+    form). Accepts an absolute path, a ``~`` path, or an already-relative path;
+    falls back to the basename when the path resolves outside the repo, and to
+    the input as-is when no repo root is known.
+    """
+    raw = (file_path or "").strip()
+    try:
+        p = Path(raw).expanduser()
+    except (OSError, ValueError):
+        return raw
+    if repo_path is not None:
+        try:
+            return p.resolve().relative_to(repo_path.resolve()).as_posix()
+        except (ValueError, OSError):
+            pass
+        if not p.is_absolute():
+            # An already-relative argument is taken verbatim — the hook stores
+            # the posix repo-relative form, so a caller passing that form matches.
+            return Path(raw).as_posix()
+        return p.name
+    return Path(raw).as_posix() if not p.is_absolute() else p.name
+
+
+def explain_edit(repo: str, file_path: str) -> dict:
+    """Replay what chameleon knew and did the last time a file was edited.
+
+    The post-incident recovery read: returns the most-recent decision_log row
+    for ``file_path`` and classifies the gate's silence so a postmortem can route
+    the fix. ``classification`` is:
+
+    - ``coverage-gap`` — no archetype matched, or it matched at fallback/none
+      quality, so the per-edit lint never had a calibrated shape to check against.
+      Route to ``/chameleon-refresh`` (re-derive archetypes) or ``/chameleon-teach``
+      (capture the missing convention).
+    - ``in-scope-miss`` — an ast/exact archetype matched and chameleon raised
+      nothing (or only advised) on the edit that later broke. The shape was
+      covered but no rule caught the defect; route to a new rule / idiom rather
+      than a refresh.
+    - ``blocked`` / ``overridden`` — the gate did fire: it blocked, or a block was
+      waved through with an inline ``chameleon-ignore``. Surfaced so a postmortem
+      sees the gate was not silent.
+
+    ``found`` is False when no edit of this file was ever logged (e.g. it was
+    edited outside a chameleon session, or before this log existed). Fail-open: a
+    missing drift.db or unreadable row degrades to ``found: False``.
+    """
+    if not isinstance(repo, str) or not repo:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected repo path or repo_id hex digest",
             }
+        )
+    if not isinstance(file_path, str) or not file_path.strip():
+        return _envelope({"status": "failed", "error": "expected a file path"})
+
+    repo_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None:
+        return _envelope({"status": "no_repo"})
+
+    rel_path = _normalize_decision_rel_path(repo_path, file_path)
+
+    try:
+        from chameleon_mcp.drift.observations import latest_decision
+
+        decision = latest_decision(repo_id, rel_path)
+    except Exception:
+        decision = None
+
+    if decision is None:
+        return _envelope(
+            {
+                "repo_id": repo_id,
+                "rel_path": rel_path,
+                "found": False,
+                "decision": None,
+                "classification": None,
+            }
+        )
+
+    match_quality = decision.get("match_quality")
+    outcome = decision.get("outcome")
+    if outcome in ("blocked", "overridden"):
+        classification = outcome
+    elif match_quality in (None, "none", "fallback"):
+        classification = "coverage-gap"
+    else:
+        classification = "in-scope-miss"
+
+    return _envelope(
+        {
+            "repo_id": repo_id,
+            "rel_path": rel_path,
+            "found": True,
+            "decision": decision,
+            "classification": classification,
         }
     )
 
@@ -6073,6 +7125,66 @@ def _write_new_deprecated_idiom(
             "note": f"appended '### {slug}' directly under '## deprecated'",
         }
     )
+
+
+def dep_audit(repo: str) -> dict:
+    """Opt-in dependency / supply-chain audit of a repo's manifests. Advisory only.
+
+    Runs ``npm audit --json`` and/or ``bundler-audit check`` (whichever manifests
+    exist) in the repo root and returns a structured advisory summary. Gated behind
+    ``CHAMELEON_ALLOW_DEP_AUDIT=1`` because it hits the network; without the flag it
+    refuses with a clear message rather than spawning a network process unasked.
+
+    Fails open: a missing binary, an offline registry, or a timeout yields an
+    ``unavailable`` no-signal result per ecosystem, never an error. Nothing here
+    blocks an edit or a turn. The no-network manifest/lockfile diff checks live in
+    the pr-review skill and run regardless of this tool.
+    """
+    from chameleon_mcp import dep_audit as _dep_audit
+
+    if not _dep_audit.is_enabled():
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    "dependency audit is opt-in and hits the network; set "
+                    f"{_dep_audit.ALLOW_ENV}=1 to enable it for this invocation. The "
+                    "no-network manifest/lockfile checks run in /chameleon-pr-review "
+                    "regardless."
+                ),
+            }
+        )
+
+    resolved_path, _ = _resolve_repo_arg(repo)
+    repo_root = resolved_path
+    try:
+        if repo_root is not None and not repo_root.is_dir():
+            repo_root = None
+    except (OSError, ValueError):
+        repo_root = None
+    if repo_root is None:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": ("repo could not be resolved to a directory; pass an absolute repo path"),
+            }
+        )
+
+    try:
+        result = _dep_audit.run_dep_audit(repo_root)
+    except Exception as exc:  # noqa: BLE001
+        # The helper is written never to raise, but a defensive fail-open here
+        # keeps an unexpected error from surfacing as a tool crash.
+        return _envelope(
+            {
+                "audits": [],
+                "ran": [],
+                "skipped": [],
+                "note": f"audit failed open: {type(exc).__name__}",
+            }
+        )
+    result["advisory"] = True
+    return _envelope(result)
 
 
 def daemon_status() -> dict:

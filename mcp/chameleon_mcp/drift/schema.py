@@ -55,6 +55,58 @@ CREATE TABLE IF NOT EXISTS edit_observations (
 );
 CREATE INDEX IF NOT EXISTS idx_edit_obs_at ON edit_observations(observed_at);
 CREATE INDEX IF NOT EXISTS idx_edit_obs_path ON edit_observations(rel_path, observed_at);
+
+-- Inline `chameleon-ignore` override history. A block-eligible rule dropped by
+-- an inline directive leaves no trace once the turn ends, so the override is
+-- invisible to anyone auditing whether enforcement is actually holding. Each
+-- bypass records one row here. Unlike edit_observations this is NOT reset on
+-- refresh: the override record is durable per-repo history, since whether a
+-- convention is fighting the team is a question that spans many profile
+-- revisions. `blanket` is 1 when the directive named no rule (a bare
+-- `chameleon-ignore` that downgrades every block-eligible rule on the file),
+-- 0 when it targeted this specific rule by name.
+CREATE TABLE IF NOT EXISTS rule_overrides (
+  id INTEGER PRIMARY KEY,
+  rel_path TEXT,
+  rule TEXT NOT NULL,
+  archetype TEXT,
+  session_id TEXT,
+  blanket INTEGER NOT NULL DEFAULT 0,  -- 0 or 1
+  observed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rule_overrides_at ON rule_overrides(observed_at);
+CREATE INDEX IF NOT EXISTS idx_rule_overrides_rule ON rule_overrides(rule, observed_at);
+
+-- Per-edit decision log. When a defect escapes, a postmortem needs to
+-- reconstruct what chameleon knew and did when that file was last edited:
+-- which archetype matched, at what quality, what rules stood, and whether the
+-- gate stayed silent. Each governed edit records one row here AFTER its outcome
+-- is resolved. Like rule_overrides and unlike edit_observations, this is NOT
+-- reset on refresh: closing a coverage gap (refresh/teach) must not destroy the
+-- record of the escape being diagnosed, and the history a postmortem reads
+-- spans many profile revisions.
+--
+-- `rel_path` is a true repo-relative path (relative_to the repo root), so the
+-- log keys consistently across clones rather than on an absolute home path.
+-- `match_quality` is none/fallback/exact/ast as resolved at archetype-match
+-- time; none/fallback marks a coverage gap directly. `blockable_rules` is a
+-- comma-joined list of the block-eligible rules that still stood on the file
+-- (empty when none). `outcome` is one of advised / would-block / blocked /
+-- overridden / clean.
+CREATE TABLE IF NOT EXISTS decision_log (
+  id INTEGER PRIMARY KEY,
+  rel_path TEXT NOT NULL,
+  archetype TEXT,
+  match_quality TEXT,
+  confidence_band TEXT,
+  violations_raised INTEGER NOT NULL DEFAULT 0,
+  blockable_rules TEXT,
+  outcome TEXT NOT NULL,
+  session_id TEXT,
+  observed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_decision_log_at ON decision_log(observed_at);
+CREATE INDEX IF NOT EXISTS idx_decision_log_path ON decision_log(rel_path, observed_at);
 """
 
 

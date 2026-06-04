@@ -569,7 +569,8 @@ def test_active_block_rules_filters_to_block_eligible(tmp_path):
 
     ec._clear_block_rules_cache()
     # A poisoned enforcement.json marks a rule that is not block-eligible "active".
-    # active_block_rules must drop it so it can never reach the block gate.
+    # active_block_rules must drop it so it can never reach the block gate, while
+    # keeping the genuinely block-eligible rules it also marked active.
     write_block_rules(
         tmp_path,
         {
@@ -578,4 +579,4 @@ def test_active_block_rules_filters_to_block_eligible(tmp_path):
             "made-up-rule": {"active": True},
         },
     )
-    assert active_block_rules(tmp_path) == {"phantom-import"}
+    assert active_block_rules(tmp_path) == {"phantom-import", "secret-detected-in-content"}

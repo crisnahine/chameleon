@@ -32,6 +32,9 @@ REGISTERED_TOOLS = [
     "get_canonical_excerpt",
     "get_rules",
     "lint_file",
+    "query_symbol_importers",
+    "get_crossfile_context",
+    "get_duplication_candidates",
     "get_drift_status",
     "refresh_repo",
     "bootstrap_repo",
@@ -118,6 +121,22 @@ def test_get_rules(trusted_repo):
 def test_lint_file(trusted_repo):
     res = tools.lint_file(str(trusted_repo), ARCH, "export const x = 1;\n", file_path="x.ts")
     _assert_envelope(res)
+
+
+def test_lint_file_tags_secret_hardness():
+    # The secret scan runs before the trust/canonical gates, so even on an
+    # unresolvable repo the returned secret violations must carry the secret_hard
+    # flag (parity with the hook path). A deterministic AWS key is hard; a benign
+    # file yields none. Repo is unresolvable so no profile is needed.
+    res = tools.lint_file(
+        "/nonexistent/repo/aaa", "util", 'const k = "AKIAIOSFODNN7EXAMPLE";\n', file_path="x.ts"
+    )
+    secrets = [
+        v for v in res["data"]["violations"] if v.get("rule") == "secret-detected-in-content"
+    ]
+    assert secrets, "lint_file must surface secrets on the early-return path"
+    assert all("secret_hard" in v for v in secrets), "each secret must be hardness-tagged"
+    assert any(v.get("secret_hard") for v in secrets), "the AWS key kind must be hard"
 
 
 def _seed_competing_import_profile(cham):
@@ -273,3 +292,279 @@ def test_bootstrap_repo_blocked_when_lock_held(tmp_path, monkeypatch):
         res = tools.bootstrap_repo(str(repo))["data"]
     assert res.get("status") == "failed"
     assert "in progress" in (res.get("error") or "")
+
+
+def _write_reverse_index(cham, targets):
+    import json as _json
+
+    from chameleon_mcp.symbol_index import REVERSE_INDEX_FILENAME, SCHEMA_VERSION
+
+    (cham / REVERSE_INDEX_FILENAME).write_text(
+        _json.dumps({"schema_version": SCHEMA_VERSION, "targets": targets}), encoding="utf-8"
+    )
+    # Re-grant trust so the rewritten profile surface (now including the reverse
+    # index, which is hashed into the trust SHA) is still trusted.
+    grant_trust(tools._compute_repo_id(cham.parent), cham)
+
+
+def test_query_symbol_importers_reports_importers_and_break(trusted_repo):
+    cham = trusted_repo / ".chameleon"
+    # pricing.ts exports editPrice (clean) but NOT oldName (a break).
+    (trusted_repo / "pricing.ts").write_text("export function editPrice() {}\n", encoding="utf-8")
+    _write_reverse_index(
+        cham,
+        {
+            "pricing.ts": {
+                "editPrice": [{"path": "cart.ts", "line": 3}],
+                "oldName": [{"path": "legacy.ts", "line": 7}],
+            }
+        },
+    )
+    res = tools.query_symbol_importers(str(trusted_repo), str(trusted_repo / "pricing.ts"))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True
+    assert data["module"] == "pricing.ts"
+    importer_names = {row["name"] for row in data["importers"]}
+    broken_names = {row["name"] for row in data["broken"]}
+    assert importer_names == {"editPrice"}
+    assert broken_names == {"oldName"}
+    assert data["broken"][0]["sites"] == [{"path": "legacy.ts", "line": 7}]
+
+
+def test_query_symbol_importers_no_index_found_false(trusted_repo):
+    (trusted_repo / "pricing.ts").write_text("export const x = 1;\n", encoding="utf-8")
+    res = tools.query_symbol_importers(str(trusted_repo), str(trusted_repo / "pricing.ts"))
+    _assert_envelope(res)
+    assert res["data"]["found"] is False
+
+
+def test_query_symbol_importers_untrusted(trusted_repo):
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    cham = trusted_repo / ".chameleon"
+    (trusted_repo / "pricing.ts").write_text("export const x = 1;\n", encoding="utf-8")
+    _write_reverse_index(cham, {"pricing.ts": {"x": [{"path": "a.ts", "line": 1}]}})
+    # Drop the trust grant so the committed (attacker-controllable) index must not
+    # reach the model surface.
+    trust_path = repo_data_dir(tools._compute_repo_id(trusted_repo)) / ".trust"
+    if trust_path.is_file():
+        trust_path.unlink()
+    res = tools.query_symbol_importers(str(trusted_repo), str(trusted_repo / "pricing.ts"))
+    _assert_envelope(res)
+    assert res["data"]["found"] is False
+    assert res["data"].get("status") == "untrusted"
+
+
+def test_get_crossfile_context_high_confidence_existence_break(trusted_repo):
+    cham = trusted_repo / ".chameleon"
+    # pricing.ts exports editPrice but NOT oldName; cart.ts still imports oldName.
+    (trusted_repo / "pricing.ts").write_text("export function editPrice() {}\n", encoding="utf-8")
+    (trusted_repo / "cart.ts").write_text(
+        "import { oldName } from './pricing';\noldName();\n", encoding="utf-8"
+    )
+    _write_reverse_index(
+        cham,
+        {
+            "pricing.ts": {
+                "editPrice": [{"path": "cart.ts", "line": 1}],
+                "oldName": [{"path": "cart.ts", "line": 1}],
+            }
+        },
+    )
+    res = tools.get_crossfile_context(str(trusted_repo))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True
+    # Only the removed export is a finding; the still-exported one is not.
+    symbols = {f["symbol"] for f in data["findings"]}
+    assert symbols == {"oldName"}
+    finding = data["findings"][0]
+    assert finding["high_confidence"] is True
+    assert finding["module"] == "pricing.ts"
+    assert finding["sites"] == [{"path": "cart.ts", "line": 1}]
+
+
+def test_get_crossfile_context_not_high_confidence_when_importer_dropped_name(trusted_repo):
+    cham = trusted_repo / ".chameleon"
+    # The export is gone AND the importer no longer references it (rename completed
+    # there too), so the presence check fails -> not a high-confidence finding.
+    (trusted_repo / "pricing.ts").write_text("export const keep = 1;\n", encoding="utf-8")
+    (trusted_repo / "cart.ts").write_text(
+        "import { keep } from './pricing';\nkeep;\n", encoding="utf-8"
+    )
+    _write_reverse_index(cham, {"pricing.ts": {"gone": [{"path": "cart.ts", "line": 1}]}})
+    res = tools.get_crossfile_context(str(trusted_repo))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True
+    by_symbol = {f["symbol"]: f for f in data["findings"]}
+    assert "gone" in by_symbol
+    assert by_symbol["gone"]["high_confidence"] is False
+
+
+def test_get_crossfile_context_open_export_set_not_high_confidence(trusted_repo):
+    cham = trusted_repo / ".chameleon"
+    # `export * from` makes the set unenumerable: a missing name may be re-exported
+    # through the star, so the finding cannot be high-confidence.
+    (trusted_repo / "barrel.ts").write_text("export * from './other';\n", encoding="utf-8")
+    (trusted_repo / "cart.ts").write_text(
+        "import { maybe } from './barrel';\nmaybe();\n", encoding="utf-8"
+    )
+    _write_reverse_index(cham, {"barrel.ts": {"maybe": [{"path": "cart.ts", "line": 1}]}})
+    res = tools.get_crossfile_context(str(trusted_repo))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True
+    by_symbol = {f["symbol"]: f for f in data["findings"]}
+    assert by_symbol["maybe"]["high_confidence"] is False
+
+
+def test_get_crossfile_context_no_index_found_false(trusted_repo):
+    res = tools.get_crossfile_context(str(trusted_repo))
+    _assert_envelope(res)
+    assert res["data"]["found"] is False
+    assert res["data"]["findings"] == []
+
+
+def test_get_crossfile_context_untrusted(trusted_repo):
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    cham = trusted_repo / ".chameleon"
+    (trusted_repo / "pricing.ts").write_text("export const x = 1;\n", encoding="utf-8")
+    (trusted_repo / "cart.ts").write_text(
+        "import { gone } from './pricing';\ngone();\n", encoding="utf-8"
+    )
+    _write_reverse_index(cham, {"pricing.ts": {"gone": [{"path": "cart.ts", "line": 1}]}})
+    trust_path = repo_data_dir(tools._compute_repo_id(trusted_repo)) / ".trust"
+    if trust_path.is_file():
+        trust_path.unlink()
+    res = tools.get_crossfile_context(str(trusted_repo))
+    _assert_envelope(res)
+    assert res["data"]["found"] is False
+    assert res["data"].get("status") == "untrusted"
+
+
+def _write_function_catalog(cham, files):
+    import json as _json
+
+    from chameleon_mcp.function_catalog import FUNCTION_CATALOG_FILENAME, SCHEMA_VERSION
+
+    (cham / FUNCTION_CATALOG_FILENAME).write_text(
+        _json.dumps({"schema_version": SCHEMA_VERSION, "files": files}), encoding="utf-8"
+    )
+    grant_trust(tools._compute_repo_id(cham.parent), cham)
+
+
+class _StubExtractor:
+    """Returns a single parsed file carrying the given callable_signatures, so
+    the duplication tool can be exercised without spawning the real TS/Ruby
+    extractor subprocess."""
+
+    def __init__(self, file_path, signatures):
+        self._file_path = file_path
+        self._signatures = signatures
+
+    def parse_repo(self, repo_root, paths=None):
+        class _Result:
+            pass
+
+        class _PF:
+            pass
+
+        pf = _PF()
+        pf.path = self._file_path
+        pf.extras = {"callable_signatures": self._signatures}
+        result = _Result()
+        result.files = [pf]
+        return result
+
+
+def _stub_extractor(monkeypatch, file_path, signatures):
+    from chameleon_mcp.bootstrap import orchestrator
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_select_extractor",
+        lambda repo_root: _StubExtractor(file_path, signatures),
+    )
+
+
+def test_get_duplication_candidates_surfaces_renamed_reimplementation(trusted_repo, monkeypatch):
+    cham = trusted_repo / ".chameleon"
+    (trusted_repo / "fmt.ts").write_text(
+        "export function formatDate(d) {\n  return d.toISOString();\n}\n", encoding="utf-8"
+    )
+    _write_function_catalog(
+        cham,
+        {"fmt.ts": [{"name": "formatDate", "kind": "function", "arity": 1, "required": 1}]},
+    )
+    new_file = trusted_repo / "display.ts"
+    new_file.write_text("export function toDisplayDate(d) {\n  return d;\n}\n", encoding="utf-8")
+    _stub_extractor(
+        monkeypatch,
+        new_file,
+        [
+            {
+                "name": "toDisplayDate",
+                "kind": "function",
+                "params": [{"name": "d", "optional": False, "kind": "positional"}],
+            }
+        ],
+    )
+
+    res = tools.get_duplication_candidates(str(trusted_repo), str(new_file))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True
+    assert data["file"] == "display.ts"
+    assert len(data["matches"]) == 1
+    match = data["matches"][0]
+    assert match["function"]["name"] == "toDisplayDate"
+    cand = match["candidates"][0]
+    assert cand["name"] == "formatDate"
+    assert cand["file"] == "fmt.ts"
+    assert cand["shared_tokens"] == ["date"]
+    # The candidate body excerpt is read from disk as a citation aid.
+    assert "formatDate" in cand["body_excerpt"]
+
+
+def test_get_duplication_candidates_no_catalog_found_false(trusted_repo):
+    new_file = trusted_repo / "display.ts"
+    new_file.write_text("export function toDisplayDate(d) {\n  return d;\n}\n", encoding="utf-8")
+    res = tools.get_duplication_candidates(str(trusted_repo), str(new_file))
+    _assert_envelope(res)
+    assert res["data"]["found"] is False
+
+
+def test_get_duplication_candidates_untrusted(trusted_repo):
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    cham = trusted_repo / ".chameleon"
+    _write_function_catalog(
+        cham, {"fmt.ts": [{"name": "formatDate", "kind": "function", "arity": 1, "required": 1}]}
+    )
+    new_file = trusted_repo / "display.ts"
+    new_file.write_text("export function toDisplayDate(d) {\n  return d;\n}\n", encoding="utf-8")
+    trust_path = repo_data_dir(tools._compute_repo_id(trusted_repo)) / ".trust"
+    if trust_path.is_file():
+        trust_path.unlink()
+    res = tools.get_duplication_candidates(str(trusted_repo), str(new_file))
+    _assert_envelope(res)
+    assert res["data"]["found"] is False
+    assert res["data"].get("status") == "untrusted"
+
+
+def test_get_duplication_candidates_no_new_functions(trusted_repo, monkeypatch):
+    cham = trusted_repo / ".chameleon"
+    _write_function_catalog(
+        cham, {"fmt.ts": [{"name": "formatDate", "kind": "function", "arity": 1, "required": 1}]}
+    )
+    new_file = trusted_repo / "consts.ts"
+    new_file.write_text("export const X = 1;\n", encoding="utf-8")
+    _stub_extractor(monkeypatch, new_file, [])
+    res = tools.get_duplication_candidates(str(trusted_repo), str(new_file))
+    _assert_envelope(res)
+    # found True (we looked, the file has no named callables) but no matches.
+    assert res["data"]["found"] is True
+    assert res["data"]["matches"] == []
