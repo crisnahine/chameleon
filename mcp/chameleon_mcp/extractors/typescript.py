@@ -454,7 +454,60 @@ def _parsed_file_from_record(path: Path, record: dict) -> ParsedFile:
         has_jsx=bool(record.get("has_jsx", False)),
         parse_diagnostics_count=int(record.get("parse_diagnostics_count", 0)),
         sha_hint=sha_hint,
+        extras=_extras_from_record(record),
     )
+
+
+def _extras_from_record(record: dict) -> dict:
+    """Carry subprocess-only fields that don't map onto a normalized ParsedFile slot.
+
+    ``function_scopes`` is the per-function body-shape measurement
+    (line span, nesting depth, branch and parameter counts) feeding the
+    per-archetype body_shape norms. ``callable_signatures`` is the per-callable
+    declaration header (name, param shape, default-export flag) feeding the
+    per-archetype signature consensus. Both are deliberately kept OUT of the
+    cluster signature so they can't perturb signature stability.
+    """
+    extras: dict = {}
+    scopes = record.get("function_scopes")
+    if isinstance(scopes, list) and scopes:
+        extras["function_scopes"] = scopes
+    signatures = record.get("callable_signatures")
+    if isinstance(signatures, list) and signatures:
+        extras["callable_signatures"] = signatures
+    # Named export bindings + the open-set flag drive the phantom-symbol index.
+    # `named_export_names` is the full set of importable names; `export_set_open`
+    # is True when the file does `export * from` and its export set can't be
+    # enumerated statically, so the symbol check skips imports from it.
+    names = record.get("named_export_names")
+    if isinstance(names, list) and names:
+        extras["named_export_names"] = [str(n) for n in names if isinstance(n, str)]
+    if record.get("export_set_open"):
+        extras["export_set_open"] = True
+    # Named-import bindings (name + source module + line) drive the reverse
+    # index symbol -> importers. Only well-formed rows survive; a malformed
+    # entry is dropped rather than aborting the file's record.
+    import_symbols = record.get("import_symbols")
+    if isinstance(import_symbols, list) and import_symbols:
+        rows: list[dict] = []
+        for sym in import_symbols:
+            if not isinstance(sym, dict):
+                continue
+            name = sym.get("name")
+            module = sym.get("module")
+            if not isinstance(name, str) or not isinstance(module, str):
+                continue
+            line = sym.get("line")
+            rows.append(
+                {
+                    "name": name,
+                    "module": module,
+                    "line": int(line) if isinstance(line, int) else None,
+                }
+            )
+        if rows:
+            extras["import_symbols"] = rows
+    return extras
 
 
 def _has_typescript_source_files(repo_root: Path, *, max_depth: int = 3) -> bool:

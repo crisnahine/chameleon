@@ -78,6 +78,34 @@ class EnforcementConfig:
     # to demand a thorough review (an independent judge is enabled). The judge
     # spawn itself is not wired into the hook; the flag only hardens the directive.
     idiom_judge: bool = False
+    # correctness_judge: opt-in, default off. When True and mode is shadow/enforce,
+    # turn end spawns a separate reviewer model that reads the turn's reconstructed
+    # diffs for correctness bugs (logic errors, missing guards, dropped awaits,
+    # error-handling gaps) and surfaces its findings as advisory context. It never
+    # blocks the turn and runs at most once per session, like the idiom gate.
+    correctness_judge: bool = False
+    # stale_test_advisory: on by default. At turn end, when the session edited a
+    # source file whose archetype's siblings overwhelmingly ship a paired test but
+    # the existing paired test was not touched this turn, surface an advisory
+    # naming that test and the exports the edit may have moved out from under it.
+    # Advisory only, never a block: the pairing floor admits many legitimately
+    # untested files, so this is a hint to confirm coverage, not a hard gate.
+    stale_test_advisory: bool = True
+    # changeset_completeness: on by default. At turn end, when the session created
+    # a NEW file whose framework convention demands a companion (a Rails model its
+    # migration, a new controller its route) but the change-set carries none,
+    # surface an advisory naming the file and the missing companion. Driven by a
+    # hand-curated framework pair table, gated to new files only, and silenced per
+    # rule for a repo whose own committed files already break the pairing. Advisory
+    # only, never a block: a partial edit may defer its companion to a later commit.
+    changeset_completeness: bool = True
+    # crossfile_existence_advisory: on by default. At turn end, for each TypeScript
+    # source the session touched, check the prebuilt reverse index for exports that
+    # disappeared while indexed importers still reference them, and surface an
+    # advisory naming the broken call sites. Reuses the persisted index plus a cheap
+    # regex presence check (no parse at Stop). Advisory only, never a block: a
+    # mid-rename turn may legitimately leave a call site for a follow-up edit.
+    crossfile_existence_advisory: bool = True
 
 
 @dataclass(frozen=True)
@@ -112,12 +140,14 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         return EnforcementConfig()
     if not isinstance(raw, dict):
         raise ChameleonConfigError(f"`enforcement` must be an object, got {type(raw).__name__}")
-    allowed = {"mode", "stop_backstop", "stop_block_cap", "idiom_review", "idiom_judge"}
-    unknown = set(raw.keys()) - allowed
-    if unknown:
-        raise ChameleonConfigError(
-            f"unknown key(s) under enforcement: {sorted(unknown)!r}; allowed: {sorted(allowed)!r}"
-        )
+    # Unknown keys under `enforcement` are tolerated (ignored), not rejected.
+    # config.json is committed and trust-hashed, so it travels via git to
+    # teammates who may run a different chameleon version. A newer version that
+    # adds an enforcement key must not brick auto-refresh / branch-pinning for a
+    # teammate still on an older engine (which would hard-reject the unknown key
+    # and surface a scary ChameleonConfigError in /chameleon-doctor). Known keys
+    # are still type-validated below, so a typo in a known key's VALUE still
+    # raises; only a key this engine does not recognize is skipped.
     mode = raw.get("mode", "shadow")
     if not isinstance(mode, str) or mode not in _VALID_ENFORCE_MODES:
         raise ChameleonConfigError(
@@ -143,12 +173,39 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         raise ChameleonConfigError(
             f"`enforcement.idiom_judge` must be bool, got {type(idiom_judge).__name__}"
         )
+    correctness_judge = raw.get("correctness_judge", False)
+    if not isinstance(correctness_judge, bool):
+        raise ChameleonConfigError(
+            f"`enforcement.correctness_judge` must be bool, got {type(correctness_judge).__name__}"
+        )
+    stale_test_advisory = raw.get("stale_test_advisory", True)
+    if not isinstance(stale_test_advisory, bool):
+        raise ChameleonConfigError(
+            "`enforcement.stale_test_advisory` must be bool, got "
+            f"{type(stale_test_advisory).__name__}"
+        )
+    changeset_completeness = raw.get("changeset_completeness", True)
+    if not isinstance(changeset_completeness, bool):
+        raise ChameleonConfigError(
+            "`enforcement.changeset_completeness` must be bool, got "
+            f"{type(changeset_completeness).__name__}"
+        )
+    crossfile_existence_advisory = raw.get("crossfile_existence_advisory", True)
+    if not isinstance(crossfile_existence_advisory, bool):
+        raise ChameleonConfigError(
+            "`enforcement.crossfile_existence_advisory` must be bool, got "
+            f"{type(crossfile_existence_advisory).__name__}"
+        )
     return EnforcementConfig(
         mode=mode,
         stop_backstop=stop_backstop,
         stop_block_cap=cap,
         idiom_review=idiom_review,
         idiom_judge=idiom_judge,
+        correctness_judge=correctness_judge,
+        stale_test_advisory=stale_test_advisory,
+        changeset_completeness=changeset_completeness,
+        crossfile_existence_advisory=crossfile_existence_advisory,
     )
 
 

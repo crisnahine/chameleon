@@ -133,6 +133,40 @@ def test_unresolved_blockable_blocks_stop(make_trusted_repo):
     assert out.get("decision") == "block"
 
 
+def test_l0_blockable_file_is_a_recheck_candidate(make_trusted_repo):
+    # A single-edit deterministic secret/phantom sits at L0 with the cached
+    # blockable flag set. The candidate loop must re-check it regardless of level
+    # so the documented turn-end refusal fires; the level gate lives inside the
+    # re-lint (for archetype-dependent rules), not in the candidate filter.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    Path(file_path).write_text("export const C = 1\n", encoding="utf-8")
+    st = EnforcementState()
+    st.files[file_path] = FileState(level=0, blockable_unresolved=True)
+    save_state(st, data_dir, sid)
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("decision") == "block"
+
+
+def test_l0_file_without_blockable_flag_is_skipped(make_trusted_repo):
+    # The candidate filter still requires the cached flag: an L0 file the verifier
+    # never armed (no hard violation) must not reach the re-lint and must not
+    # block. still_blockable would say True if reached, so a non-block proves the
+    # file was filtered out before the re-lint.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    Path(file_path).write_text("export const C = 1\n", encoding="utf-8")
+    st = EnforcementState()
+    st.files[file_path] = FileState(level=0, blockable_unresolved=False)
+    save_state(st, data_dir, sid)
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("decision") != "block"
+
+
 def test_cap_reached_allows_stop(make_trusted_repo):
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(
         mode="enforce", stop_block_cap=1

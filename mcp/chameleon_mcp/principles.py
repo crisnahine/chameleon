@@ -50,6 +50,30 @@ def generate_principles(
     if has_competing:
         principles.append("Use the project's wrapper, not the raw library.")
 
+    # Error-handling contract: the extractor only stores an entry once it clears
+    # the frequency floor, so presence here means the archetype's files uniformly
+    # handle errors one way. Naming the dominant shape gives the model a concrete
+    # target to match instead of free-text "check the witness" prose.
+    error_handling = conv.get("error_handling", {})
+    if isinstance(error_handling, dict):
+        for data in error_handling.values():
+            if not isinstance(data, dict):
+                continue
+            if "rescues" in data:
+                shape = data.get("error_shape")
+                tail = f" ({shape})" if isinstance(shape, str) and shape else ""
+                principles.append(
+                    "Controllers rescue at the base and render the project error "
+                    f"shape{tail}; match it instead of letting an action raise."
+                )
+                break
+            if "try_catch" in data:
+                principles.append(
+                    "Wrap work that can fail in try/catch the way siblings do; "
+                    "don't leave a rejection unhandled."
+                )
+                break
+
     principles.append(
         "Prefer the language's built-in idiom for upserts, lookups, and defaults over manual check-then-create."
     )

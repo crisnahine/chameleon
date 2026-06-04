@@ -61,6 +61,124 @@ def _as_dict(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _repo_rel(repo_root: Path | None, file_path: str | None) -> str | None:
+    """Repo-relative path for a would_block metric row, or None if unresolvable.
+
+    The shadow report samples ``file_rel:line`` for human spot-check, so a
+    stable repo-relative form keeps the sample readable and avoids leaking the
+    user's absolute home path into the metrics log. Falls back to the file's
+    basename when the path is outside the repo root, and to None when either
+    input is missing.
+    """
+    if not file_path:
+        return None
+    try:
+        p = Path(file_path)
+        if repo_root is not None:
+            try:
+                return p.resolve().relative_to(repo_root.resolve()).as_posix()
+            except (ValueError, OSError):
+                return p.name
+        return p.name
+    except (OSError, ValueError):
+        return None
+
+
+def _record_overrides(
+    repo_id: str | None,
+    overridden: list[dict],
+    *,
+    archetype: str | None,
+    file_rel: str | None,
+    session_id: str | None,
+    blanket: bool,
+) -> None:
+    """Record each inline-ignored block-eligible rule as an auditable override.
+
+    Emits one metric counter per rule (paired with the would_block stream the
+    shadow report already reads) and one durable drift.db row, so a bypass is
+    visible after the turn. Best-effort: a logging failure must never break the
+    hook, so every step is guarded.
+    """
+    if not overridden:
+        return
+    rules = sorted({v.get("rule") for v in overridden if v.get("rule")})
+    if not rules:
+        return
+    try:
+        from chameleon_mcp.metrics import emit_hook_metric
+
+        for rule in rules:
+            emit_hook_metric(
+                "override",
+                elapsed_ms=0,
+                repo_id=repo_id,
+                advisory_emitted=False,
+                archetype=archetype,
+                rule=rule,
+                file_rel=file_rel,
+                override=True,
+            )
+    except Exception:
+        pass
+    if not repo_id:
+        return
+    try:
+        from chameleon_mcp.drift.observations import record_override
+
+        for rule in rules:
+            record_override(
+                repo_id,
+                rule,
+                rel_path=file_rel,
+                archetype=archetype,
+                session_id=session_id,
+                blanket=blanket,
+            )
+    except Exception:
+        pass
+
+
+def _record_edit_decision(
+    repo_id: str | None,
+    repo_root: Path | None,
+    file_path: str | None,
+    *,
+    archetype: str | None,
+    match_quality: str | None,
+    confidence_band: str | None,
+    violations_raised: int,
+    blockable_rules: list[str] | None,
+    outcome: str,
+    session_id: str | None,
+) -> None:
+    """Persist one decision_log row capturing what chameleon knew and did here.
+
+    Written once per governed edit, after the outcome is resolved, so a
+    postmortem can replay 'last time this file was edited, chameleon matched X at
+    quality Q and the gate did Y'. Keyed by a true repo-relative path. Best-effort
+    only: a logging failure must never break the hook.
+    """
+    if not repo_id:
+        return
+    try:
+        from chameleon_mcp.drift.observations import record_decision
+
+        record_decision(
+            repo_id,
+            _repo_rel(repo_root, file_path) or "",
+            archetype=archetype,
+            match_quality=match_quality,
+            confidence_band=confidence_band,
+            violations_raised=violations_raised,
+            blockable_rules=blockable_rules,
+            outcome=outcome,
+            session_id=session_id,
+        )
+    except Exception:
+        pass
+
+
 def _emit_chameleon_context(block: str) -> None:
     """Wrap a ``<chameleon-context>`` block in the PreToolUse hook envelope.
 
@@ -354,12 +472,19 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
             pass
 
         score_str = f"{stats['score']:.2f}"
+        # The score is structural mimicry, not correctness. Lead with the
+        # blind-spots disclaimer so a reader never reads "low drift" as a
+        # quality bar, then state the metric and the refresh suggestion.
+        from chameleon_mcp.shadow_report import CONFORMANCE_DISCLAIMER
+
         return (
-            "[🦎 chameleon: drift]\n"
-            f"Observed drift score is {score_str} over the last 14 days "
-            f"(N={stats['count']} edits). The profile may not match how "
-            "the team actually writes code today. Suggest "
-            "**/chameleon-refresh** when you have a moment."
+            "[🦎 chameleon: structural conformance]\n"
+            f"{CONFORMANCE_DISCLAIMER}\n"
+            f"Structural-conformance drift is {score_str} over the last 14 days "
+            f"(N={stats['count']} edits): recent edits diverge from the "
+            "profile's archetype shapes. The profile may not match how the team "
+            "writes code today. Suggest **/chameleon-refresh** when you have a "
+            "moment."
         )
     except Exception as exc:
         try:
@@ -896,6 +1021,9 @@ def preflight_and_advise() -> int:
         archetype: str | None = None,
         confidence: str | None = None,
         would_block: bool = False,
+        rule: str | None = None,
+        file_rel: str | None = None,
+        line: int | None = None,
     ) -> None:
         try:
             from chameleon_mcp.metrics import emit_hook_metric
@@ -911,6 +1039,9 @@ def preflight_and_advise() -> int:
                 archetype=archetype,
                 confidence=confidence,
                 would_block=would_block,
+                rule=rule,
+                file_rel=file_rel,
+                line=line,
             )
         except Exception:
             pass
@@ -1104,7 +1235,17 @@ def preflight_and_advise() -> int:
             profile_dir = repo_root_path / ".chameleon"
             if "import-preference-violation" in active_block_rules(profile_dir):
                 proposed = tool_input.get("new_string") or tool_input.get("content") or ""
-                if proposed and match_quality == "ast" and confidence_band in ("high", "medium"):
+                # Gate on a confident archetype match. "ast" is the structural
+                # match on existing content; "exact" is the path-based match a
+                # brand-new file (Write target, no content on disk yet) resolves
+                # to -- a stronger signal, not a weaker one. Excluding "exact"
+                # let every new file slip the deny, which is exactly where the
+                # model most often introduces a banned import.
+                if (
+                    proposed
+                    and match_quality in ("ast", "exact")
+                    and confidence_band in ("high", "medium")
+                ):
                     conv_path = profile_dir / "conventions.json"
                     conv = (
                         json.loads(conv_path.read_text(encoding="utf-8")).get("conventions", {})
@@ -1120,6 +1261,19 @@ def preflight_and_advise() -> int:
                     from chameleon_mcp.violation_class import ignored_rules
 
                     ign = ignored_rules(proposed) or set()
+                    if banned and ("" in ign or "import-preference-violation" in ign):
+                        # The directive bypasses the deny. Record the override so
+                        # the audit sees a bypass at the deny gate too, not only
+                        # at the PostToolUse verifier. A bare directive (empty
+                        # string in the set) is the blanket form.
+                        _record_overrides(
+                            repo_id,
+                            [{"rule": "import-preference-violation"}],
+                            archetype=archetype_name,
+                            file_rel=_repo_rel(repo_root_path, file_path),
+                            session_id=session_id,
+                            blanket="" in ign,
+                        )
                     if banned and not ("" in ign or "import-preference-violation" in ign):
                         mode = load_config(profile_dir).enforcement.mode
                         if mode == "enforce":
@@ -1146,12 +1300,17 @@ def preflight_and_advise() -> int:
                             # Record the would-block counter, then fall through to
                             # the advisory path. The advisory emits its own metric;
                             # this would_block row is a distinct counter, so a shadow
-                            # would-block edit produces two rows by design.
+                            # would-block edit produces two rows by design. The rule
+                            # and file:line attribute the row so the shadow report
+                            # can sample the off-pattern import for spot-check.
                             _metric(
                                 advisory_emitted=True,
                                 repo_id=repo_id,
                                 archetype=archetype_name,
                                 would_block=True,
+                                rule="import-preference-violation",
+                                file_rel=_repo_rel(repo_root_path, file_path),
+                                line=banned[0].get("line"),
                             )
     except Exception:
         pass
@@ -1290,6 +1449,320 @@ def preflight_and_advise() -> int:
     return 0
 
 
+# A Bash command can write a file the same way an Edit tool does, but only
+# Edit/Write/NotebookEdit reach posttool_verify. The shapes below are the ones a
+# single literal target can be read straight off the command line:
+#   foo > path        foo >> path        foo | tee path        sed -i ... path
+# The target must be one unquoted (or simply-quoted) literal word — no globs, no
+# variables, no command substitution. Anything ambiguous yields no target and the
+# recorder stays as cheap as it is for a write-free command.
+#
+# Out of scope, by construction (the target is not a literal command-line word):
+#   - git apply / git am: the paths live inside the patch body, not the argv.
+#   - heredoc piped onward (cat <<EOF | ...): the sink is another command, not a
+#     literal file word.
+#   - codegen / scaffolding tools: the written paths are computed at runtime.
+# These produce no extractable target and are simply skipped.
+_REDIRECT_TARGET_RE = re.compile(
+    r"""
+    (?:^|\s|;|&|\|)          # start, whitespace, or a shell separator
+    (?:\d*)                  # optional leading fd number (e.g. 2>)
+    >>?                      # > or >>
+    \s*
+    (?:&\d+)?               # not a file: a >&N fd dup — captured to be rejected
+    (?P<target>
+        "(?:[^"\\]|\\.)*"    # double-quoted literal
+        | '[^']*'           # single-quoted literal
+        # bare word: a run of non-metachar chars, with `\<char>` escapes kept
+        # inline so a backslash-escaped space (`Testing\ Apps`) is part of one
+        # word and not a word boundary. _unquote_target un-escapes them.
+        | (?:\\.|[^\s;&|<>()`$*?\[\]{}~\\])+
+    )
+    # A bare word immediately followed by an expansion/glob metachar (e.g.
+    # `out.$EXT`) is not a literal path; require a boundary after it so a
+    # partial prefix is never extracted as a target.
+    (?![^\s;&|<>()`])
+    """,
+    re.VERBOSE,
+)
+
+# `tee FILE...` and `tee -a FILE...`: capture the first literal file operand.
+_TEE_TARGET_RE = re.compile(
+    r"""
+    (?:^|\||;|&|\s)\s*tee\b
+    (?P<flags>(?:\s+-{1,2}[A-Za-z-]+)*)   # optional flags (-a, --append, ...)
+    \s+
+    (?P<target>
+        "(?:[^"\\]|\\.)*"
+        | '[^']*'
+        # bare word: first char is neither a metachar nor a leading `-` (a flag);
+        # `\<char>` escapes are kept inline so an escaped space is part of the word.
+        | (?:\\.|[^\s;&|<>()`$*?\[\]{}~\\-])(?:\\.|[^\s;&|<>()`$*?\[\]{}~\\])*
+    )
+    (?![^\s;&|<>()`])
+    """,
+    re.VERBOSE,
+)
+
+# `sed -i ... FILE` / `sed -i.bak ... FILE`: the in-place flag means the trailing
+# operand is the file mutated on disk. GNU and BSD spell the suffix differently
+# (`-i` vs `-i.bak`/`-i ''`), so accept either and take the LAST literal operand
+# as the target — sed's file argument is always last.
+_SED_INPLACE_RE = re.compile(r"(?:^|\||;|&|\s)\s*sed\b[^|;&]*?\s-i")
+_SED_OPERAND_RE = re.compile(
+    r"""
+    (?P<operand>
+        "(?:[^"\\]|\\.)*"
+        | '[^']*'
+        | (?:\\.|[^\s;&|<>()`$*?\[\]{}~\\])+
+    )
+    """,
+    re.VERBOSE,
+)
+
+
+def _unquote_target(raw: str) -> str | None:
+    """Strip one matching pair of surrounding quotes from an extracted operand.
+
+    Returns None for an operand that still carries a shell metachar after
+    unquoting (a variable, a substitution, a glob that slipped past the bare-word
+    class), so an ambiguous target never reaches path resolution.
+    """
+    s = raw.strip()
+    if not s:
+        return None
+    quoted = (s[0] == '"' and s[-1] == '"') or (s[0] == "'" and s[-1] == "'")
+    if quoted:
+        s = s[1:-1]
+    else:
+        # An unquoted word carries shell escapes (`Testing\ Apps`, `a\$b`).
+        # Collapse each `\<char>` to its literal char so the on-disk path is
+        # recovered. A trailing lone backslash is unparseable; bail.
+        if s.endswith("\\") and not s.endswith("\\\\"):
+            return None
+        s = re.sub(r"\\(.)", r"\1", s)
+    if not s:
+        return None
+    # A literal must not contain expansion or glob metachars after unquoting; if
+    # it does, treat it as unparseable rather than guessing the on-disk path.
+    if any(c in s for c in "$`*?[]{}~\n"):
+        return None
+    return s
+
+
+def _extract_bash_write_targets(command: str) -> list[str]:
+    """Pure-regex pre-filter: extract single-literal-target file-write paths.
+
+    Returns the de-duplicated literal targets of ``>``/``>>`` redirects, the
+    first operand of ``tee``, and the file operand of ``sed -i``. Returns an
+    empty list whenever no clear single target is present — the common case for a
+    write-free Bash command — so the caller can bail before any profile load.
+
+    This never resolves, stats, or opens a path; it only reads the command
+    string. Path resolution and the trust gate happen in the caller.
+    """
+    if not command or not isinstance(command, str):
+        return []
+    if len(command) > 8192:
+        # An unusually long command is almost never a single-target write; cap
+        # the regex work so a pathological input can't stall the hook.
+        return []
+
+    targets: list[str] = []
+    seen: set[str] = set()
+
+    def _add(raw: str | None) -> None:
+        if raw is None:
+            return
+        resolved = _unquote_target(raw)
+        if resolved and resolved not in seen:
+            seen.add(resolved)
+            targets.append(resolved)
+
+    # A `>&N` fd duplication (2>&1) is a redirect to a file descriptor, not a
+    # file; the optional fd group inside the pattern consumes the `&N` so no
+    # literal target matches, and those forms are skipped without a separate
+    # guard here.
+    for m in _REDIRECT_TARGET_RE.finditer(command):
+        _add(m.group("target"))
+
+    for m in _TEE_TARGET_RE.finditer(command):
+        _add(m.group("target"))
+
+    if _SED_INPLACE_RE.search(command):
+        # sed's mutated file is its last operand. Scan only the sed segment so a
+        # later piped command's argument is not mistaken for the file.
+        seg = re.split(r"[;&|]", command)
+        for part in seg:
+            if re.search(r"\bsed\b.*\s-i", part):
+                operands = _SED_OPERAND_RE.findall(part)
+                if operands:
+                    _add(operands[-1])
+
+    return targets
+
+
+def _record_bash_write_mutations(
+    command: str,
+    cwd: Path,
+    session_id: str,
+) -> None:
+    """Mark in-repo TS/Ruby files written by a Bash command into enforcement state.
+
+    Mirrors the recording half of posttool_verify: resolve the target's
+    archetype, run the same in-process lint, and write the result into the
+    session's EnforcementState.files so the existing Stop backstop re-lints and
+    can block on an unresolved hard violation — exactly as it does for an edited
+    file. This path is advisory-by-default: it never emits a block itself; it only
+    arms the same state the calibrated Stop gate consumes.
+
+    Fails open throughout. Any unresolved target, untrusted profile, or sub-lint
+    error simply contributes nothing rather than aborting the recorder.
+    """
+    targets = _extract_bash_write_targets(command)
+    if not targets:
+        return
+
+    from chameleon_mcp.lint_engine import detect_language
+    from chameleon_mcp.profile.loader import find_repo_root
+    from chameleon_mcp.profile.trust import trust_state_for
+
+    now = time.time()
+
+    for target in targets:
+        try:
+            p = Path(target)
+            if not p.is_absolute():
+                p = cwd / p
+            p = p.expanduser()
+        except (OSError, ValueError):
+            continue
+
+        # Only TS/Ruby files can resolve to an archetype; skip the rest before
+        # any stat so a write to a log/data file costs nothing.
+        if detect_language(p.name) is None:
+            continue
+        try:
+            if not p.is_file():
+                continue
+        except OSError:
+            continue
+
+        try:
+            repo_root = find_repo_root(p)
+        except Exception:
+            repo_root = None
+        if repo_root is None:
+            continue
+
+        # The trust gate is the security boundary, same as posttool_verify: a
+        # never-trusted profile is attacker-controllable, so its conventions must
+        # not drive enforcement state. The written file must also resolve under
+        # the repo whose profile we are about to apply.
+        try:
+            from chameleon_mcp.tools import _compute_repo_id
+
+            target_repo_id = _compute_repo_id(repo_root)
+            rec = trust_state_for(target_repo_id)
+            if rec is None or not rec.grants_root(repo_root):
+                continue
+            # The file must resolve under its own repo root. relative_to raises
+            # ValueError when the target escaped the boundary (a symlink out, a
+            # `..` traversal), so refuse rather than enforce across repos.
+            p.resolve().relative_to(repo_root.resolve())
+        except Exception:
+            continue
+
+        file_path = str(p)
+        try:
+            content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+        except OSError:
+            continue
+
+        try:
+            from chameleon_mcp.tools import get_archetype
+
+            arch_result = get_archetype(str(repo_root), file_path)
+            archetype_name = (arch_result.get("data") or {}).get("archetype")
+        except Exception:
+            archetype_name = None
+        if not archetype_name:
+            # No archetype: the convention/AST lints have nothing to compare
+            # against, but a secret or eval in a bash-written file is a content
+            # fact that still needs the Stop backstop. Mirror the Edit path's
+            # no-archetype handling and record any deterministic-hard hit under the
+            # synthetic label so the backstop re-lints and blocks it.
+            try:
+                indep = _scan_archetype_independent(content, file_path)
+            except Exception:
+                indep = []
+            if not indep:
+                continue
+            violations = indep
+            record_archetype = _NO_ARCHETYPE_LABEL
+        else:
+            try:
+                violations = _lint_file_in_process(repo_root, archetype_name, content, file_path)
+            except Exception:
+                violations = []
+            if not violations:
+                continue
+            record_archetype = archetype_name
+
+        # Partition the hard (block-eligible) subset exactly as posttool_verify
+        # does, so the cached blockable_unresolved flag the Stop backstop reads is
+        # set only when a calibrated block-eligible rule actually fired here.
+        try:
+            from chameleon_mcp.enforcement_calibration import active_block_rules
+            from chameleon_mcp.violation_class import (
+                hard_class_violations,
+                ignored_rules,
+                is_archetype_independent,
+            )
+
+            active = active_block_rules(repo_root / ".chameleon")
+            hard = hard_class_violations(violations, active)
+            # Without an archetype only the archetype-independent hard rules (a
+            # deterministic secret) can be enforced at Stop, so record only those
+            # as blockable here -- matching the backstop's no-archetype re-lint.
+            if record_archetype == _NO_ARCHETYPE_LABEL:
+                hard = [v for v in hard if is_archetype_independent(v.get("rule"))]
+            ign = ignored_rules(content) or set()
+            if ign:
+                hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
+        except Exception:
+            hard = []
+
+        try:
+            from chameleon_mcp.enforcement import (
+                FileState,
+                load_state,
+                record_violation,
+                save_state,
+            )
+
+            # State is keyed by the WRITTEN file's repo, not the command's cwd
+            # repo, so the Stop backstop (which loads by the file's repo_id)
+            # finds and re-lints it. A Bash write can target a repo other than
+            # the one the command ran in.
+            repo_data_dir = _plugin_data_dir() / target_repo_id
+            state = load_state(repo_data_dir, session_id or "")
+            fs = state.files.get(file_path)
+            if fs is None:
+                fs = FileState()
+                state.files[file_path] = fs
+            record_violation(
+                fs,
+                now=now,
+                archetype=record_archetype,
+                hard_class=bool(hard),
+            )
+            state.archetypes_with_violations.add(record_archetype)
+            save_state(state, repo_data_dir, session_id or "")
+        except Exception:
+            pass
+
+
 def posttool_recorder() -> int:
     """PostToolUse Bash: HMAC-signed exec log."""
     payload = _read_payload_dict()
@@ -1317,16 +1790,34 @@ def posttool_recorder() -> int:
         repo_id = hashlib.sha256(str(cwd).encode("utf-8")).hexdigest()
 
     try:
-        from chameleon_mcp.exec_log import append_exec_log
+        from chameleon_mcp.exec_log import append_exec_log, classify_test_command
 
+        # Classify against the test-runner allow-list while the body is still in
+        # hand; only the boolean is persisted, never the command itself.
+        test_seen = classify_test_command(command)
         append_exec_log(
             repo_id=repo_id,
             session_id=session_id,
             command=command,
             exit_code=int(exit_code) if exit_code is not None else -1,
+            test_command_seen=test_seen,
         )
     except Exception:
         pass
+
+    # A file written via `cat > foo.ts`, `tee`, or `sed -i` never reaches
+    # posttool_verify (it matches only Edit/Write/NotebookEdit), so the same
+    # convention/phantom/secret lint that gates an edited file would silently
+    # skip it. Mark single-literal-target TS/Ruby writes into the same
+    # enforcement state the Stop backstop re-lints. The pre-filter inside
+    # bails before any profile load when there is no clear target, so a
+    # write-free Bash command stays as cheap as the HMAC append above. Honors
+    # CHAMELEON_VERIFY=0 like the Edit verifier, and fails open on any error.
+    if os.environ.get("CHAMELEON_VERIFY") != "0":
+        try:
+            _record_bash_write_mutations(command, cwd, session_id)
+        except Exception:
+            pass
 
     _emit({})
     return 0
@@ -1370,17 +1861,23 @@ def _lint_file_in_process(
         loaded = load_profile_dir(_effective_profile_dir(repo_root))
     canonicals = (loaded.canonicals.get("canonicals") or {}).get(archetype_name) or []
     ast_query: dict | None = None
+    # Witness content, captured from the single read below, so the test-quality
+    # pass can self-calibrate its assertion-helper / stub / freeze checks to the
+    # team's own test style without a second disk read on the hot path.
+    witness_content: str | None = None
     if canonicals:
         first = canonicals[0] or {}
         ast_query = (first.get("normative_shape") or {}).get("ast_query")
         witness_rel = (first.get("witness") or {}).get("path")
-        if ast_query and witness_rel:
+        if witness_rel:
             w_full = repo_root / witness_rel
             if w_full.is_file():
                 w_raw = w_full.read_bytes()[:100_000].decode("utf-8", errors="replace")
-                w_lang = detect_language(witness_rel)
-                w_snap = extract_dimensions(w_raw, language=w_lang, file_path=witness_rel)
-                ast_query = recalibrate_ast_query(w_snap)
+                witness_content = w_raw
+                if ast_query:
+                    w_lang = detect_language(witness_rel)
+                    w_snap = extract_dimensions(w_raw, language=w_lang, file_path=witness_rel)
+                    ast_query = recalibrate_ast_query(w_snap)
     language = detect_language(file_path)
     violations: list[dict] = []
     if ast_query:
@@ -1398,8 +1895,37 @@ def _lint_file_in_process(
             arch_conv["naming"] = conv_data["naming"][archetype_name]
         if conv_data.get("inheritance", {}).get(archetype_name):
             arch_conv["inheritance"] = conv_data["inheritance"][archetype_name]
+        # required_guards drives the advisory authz hint. The lint reads it from
+        # the per-archetype slice, so it must be copied in alongside the others or
+        # the rule can never fire on this path.
+        if conv_data.get("required_guards", {}).get(archetype_name):
+            arch_conv["required_guards"] = conv_data["required_guards"][archetype_name]
+        # The test-quality pass gates on the archetype name but reads no convention
+        # keys; lint_conventions early-returns on an empty conventions dict. A
+        # test/spec archetype usually has no import/naming/inheritance conventions,
+        # so force a non-empty dict for those so the pass fires. Matches lint_file.
+        _is_test_arch = isinstance(archetype_name, str) and archetype_name.startswith(
+            ("test", "spec")
+        )
+        if _is_test_arch and not arch_conv:
+            arch_conv = {"_test_quality_only": True}
         if arch_conv:
-            conv_violations = lint_conventions(content, arch_conv, language=language)
+            # Thread archetype_name (enables the test-quality pass on test/spec
+            # archetypes), file_path (enables the file-naming check), and the
+            # witness content (self-calibrates the test-quality stub/freeze/helper
+            # gates), matching the lint_file tool. Keyword-only with None defaults,
+            # so guard for an older engine build that lacks them and fall back.
+            try:
+                conv_violations = lint_conventions(
+                    content,
+                    arch_conv,
+                    language=language,
+                    file_path=file_path,
+                    archetype_name=archetype_name,
+                    witness_content=witness_content,
+                )
+            except TypeError:
+                conv_violations = lint_conventions(content, arch_conv, language=language)
             violations.extend(
                 v.to_dict() for v in conv_violations if v.rule != "secret-detected-in-content"
             )
@@ -1422,7 +1948,236 @@ def _lint_file_in_process(
     except Exception:
         pass
 
+    # Secrets are archetype-independent and the highest-value deterministic stop
+    # there is, but scan_secrets was never run on the hook path (only the
+    # lint_file MCP tool called it), so a committed credential reached neither the
+    # PostToolUse advisory nor the Stop backstop. Run it here, the single in-process
+    # lint orchestrator both paths share, and tag each hit so only the precise
+    # deterministic kinds can ever block; entropy/broad-fallback hits stay advisory.
+    try:
+        from chameleon_mcp.lint_engine import scan_secrets
+        from chameleon_mcp.violation_class import tag_secret_hardness
+
+        secret_violations = [v.to_dict() for v in scan_secrets(content)]
+        tag_secret_hardness(secret_violations)
+        violations.extend(secret_violations)
+    except Exception:
+        pass
+
+    # Dangerous code sinks (dynamic eval, weak hash, insecure random, SQL string
+    # interpolation) are content facts independent of the archetype, like the
+    # secret scan above. Only eval-call is block-eligible; the rest stay advisory.
+    # Run it here so the deterministic eval() stop reaches both the PostToolUse
+    # advisory and the Stop backstop, not only the lint_file MCP tool.
+    try:
+        from chameleon_mcp.lint_engine import scan_dangerous_sinks
+
+        violations.extend(v.to_dict() for v in scan_dangerous_sinks(content, language=language))
+    except Exception:
+        pass
+
+    # Style baseline: indent / quote / line-length checked against the repo's own
+    # declared formatter config (prettier/rubocop/.editorconfig in rules.json).
+    # Archetype-independent like the secret and sink scans, so it gives a sparse
+    # repo a maintainability floor even where no archetype resolved. Advisory only.
+    try:
+        from chameleon_mcp.lint_engine import scan_style_rules
+
+        violations.extend(
+            v.to_dict()
+            for v in scan_style_rules(
+                content,
+                language=language,
+                rules=loaded.rules,
+                file_path=file_path,
+                repo_root=repo_root,
+            )
+        )
+    except Exception:
+        pass
+
     return violations
+
+
+def _load_rules_for_style(repo_root: Path) -> dict | None:
+    """Load the profile's rules.json mapping for the style baseline, or None.
+
+    Used on the no-archetype path where the profile is not already loaded. The
+    style scan reads only declared formatter-config values and emits its own
+    messages (no profile strings reach the model surface), so a plain load is
+    enough here; trust gating on this path is handled by the caller. Fails open
+    to None so a missing / corrupt profile just skips the style check.
+    """
+    try:
+        from chameleon_mcp.profile.loader import load_profile_dir
+        from chameleon_mcp.tools import _effective_profile_dir
+
+        return load_profile_dir(_effective_profile_dir(repo_root)).rules
+    except Exception:
+        return None
+
+
+def _scan_archetype_independent(
+    content: str, file_path: str, rules: dict | None = None, repo_root: Path | str | None = None
+) -> list[dict]:
+    """Run only the archetype-independent content lints (secrets, sinks, style).
+
+    A secret is a fact about the content itself, true no matter which archetype
+    the file resolved to (or whether it resolved to one at all). When archetype
+    resolution fails the convention/AST lints have nothing to compare against
+    and are correctly skipped, but the credential scan must still run so a
+    leaked token in an unarchetyped file is not invisible. Sinks and style are
+    scanned here too, but they surface as advisories on this path: eval-call
+    enforcement stays gated on an archetype match. Each sub-scan is wrapped so a
+    raising scanner contributes nothing rather than aborting the whole check;
+    the caller treats an empty list as "clean".
+
+    ``rules`` is the loaded rules.json mapping. When supplied, the style baseline
+    (indent / quote / line-length against the repo's declared formatter config)
+    runs too, so a sparse repo with no resolvable archetype still gets style
+    feedback. Callers without the profile loaded pass None and skip that check.
+    ``repo_root`` lets the style scan honor rubocop's path Exclude globs (it needs
+    the repo-relative path); without it an absolute path can't match a glob.
+    """
+    from chameleon_mcp.lint_engine import detect_language
+
+    language = detect_language(file_path)
+    out: list[dict] = []
+    try:
+        from chameleon_mcp.lint_engine import scan_secrets
+        from chameleon_mcp.violation_class import tag_secret_hardness
+
+        secret_violations = [v.to_dict() for v in scan_secrets(content)]
+        tag_secret_hardness(secret_violations)
+        out.extend(secret_violations)
+    except Exception:
+        pass
+    try:
+        from chameleon_mcp.lint_engine import scan_dangerous_sinks
+
+        out.extend(v.to_dict() for v in scan_dangerous_sinks(content, language=language))
+    except Exception:
+        pass
+    if rules is not None:
+        try:
+            from chameleon_mcp.lint_engine import scan_style_rules
+
+            out.extend(
+                v.to_dict()
+                for v in scan_style_rules(
+                    content,
+                    language=language,
+                    rules=rules,
+                    file_path=file_path,
+                    repo_root=repo_root,
+                )
+            )
+        except Exception:
+            pass
+    return out
+
+
+# The synthetic archetype label recorded in enforcement state for a file that
+# carries an archetype-independent hard violation (a deterministic secret or
+# eval) but resolved to no archetype. The Stop backstop reads it back and runs
+# the archetype-independent re-lint, so the credential still blocks the turn.
+_NO_ARCHETYPE_LABEL = "<no-archetype>"
+
+
+def _posttool_no_archetype_advisory(
+    *,
+    repo_root: Path,
+    repo_id: str,
+    file_path: str,
+    violations: list[dict],
+    session_id,
+    now: float,
+) -> bool:
+    """Surface archetype-independent violations on a file with no archetype.
+
+    Returns True if it wrote a hook-output object to stdout, so the caller can
+    skip its own ``_emit`` and keep the one-object-per-invocation contract. A
+    False return (the emit raised) lets the caller fall back to ``_emit({})``.
+
+    The convention/AST escalation ladder needs an archetype, so this path does
+    not block inline; it emits the advisory and, when a deterministic-hard secret
+    or eval fired, records the file into enforcement state so the Stop backstop
+    re-lints and blocks it the same way an archetyped file's secret does. The
+    state is keyed by the written file's repo_id (the Stop backstop loads by it).
+    Fails open: any error leaves the advisory un-surfaced rather than crashing.
+    """
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    hard: list[dict] = []
+    try:
+        from chameleon_mcp.violation_class import is_archetype_independent, is_hard_class
+
+        # Only an archetype-INDEPENDENT hard rule (a deterministic secret) can be
+        # enforced without an archetype: the Stop backstop's no-archetype re-lint
+        # filters to the same set, since the confidence/match-quality gate an
+        # archetype-dependent rule (eval) needs can never pass here. Recording only
+        # what the backstop will actually block keeps the two paths consistent.
+        hard = [
+            v for v in violations if is_hard_class(v) and is_archetype_independent(v.get("rule"))
+        ]
+        ign = None
+        try:
+            from chameleon_mcp.violation_class import ignored_rules
+
+            ign = ignored_rules(_read_file_for_ignore(file_path))
+        except Exception:
+            ign = None
+        if ign:
+            hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
+    except Exception:
+        hard = []
+
+    if hard:
+        try:
+            from chameleon_mcp.enforcement import (
+                FileState,
+                load_state,
+                record_violation,
+                save_state,
+            )
+
+            repo_data_dir = _plugin_data_dir() / repo_id
+            state = load_state(repo_data_dir, session_id or "")
+            fs = state.files.get(file_path)
+            if fs is None:
+                fs = FileState()
+                state.files[file_path] = fs
+            record_violation(fs, now=now, archetype=_NO_ARCHETYPE_LABEL, hard_class=True)
+            state.archetypes_with_violations.add(_NO_ARCHETYPE_LABEL)
+            save_state(state, repo_data_dir, session_id or "")
+        except Exception:
+            pass
+
+    try:
+        lines = []
+        for i, v in enumerate(violations):
+            msg = sanitize_for_chameleon_context(v.get("message", ""))
+            lines.append(f"{i + 1}. {msg}")
+        block = (
+            f"[🦎 chameleon: {len(violations)} "
+            f"violation{'s' if len(violations) != 1 else ''}]\n" + "\n".join(lines)
+        )
+        _emit_posttool_context(f"<chameleon-context>\n{block}\n</chameleon-context>")
+        return True
+    except Exception:
+        return False
+
+
+def _read_file_for_ignore(file_path: str) -> str:
+    """Read the file's bytes to scan for an inline chameleon-ignore directive.
+
+    Bounded to the same 100 KB the lint paths read; returns an empty string on
+    any read error so the ignore scan simply finds no directive.
+    """
+    try:
+        return Path(file_path).read_bytes()[:100_000].decode("utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def posttool_verify() -> int:
@@ -1514,19 +2269,57 @@ def posttool_verify() -> int:
             archetype_name = (arch_result.get("data") or {}).get("archetype")
 
         if not archetype_name:
+            # No archetype: the convention/AST lints have nothing to compare
+            # against, but a secret or a dynamic eval is a content fact that does
+            # not depend on an archetype. Scan for those so a credential in an
+            # unarchetyped file is not invisible; record any deterministic-hard hit
+            # into enforcement state under a synthetic label so the Stop backstop
+            # re-lints and blocks it consistently with the archetyped path. Fail
+            # open: any error here still ends with a clean emit. Load the rules so
+            # the style baseline runs against the repo's declared formatter config
+            # even though no archetype resolved; a failed load just skips it.
+            _indep_rules = _load_rules_for_style(repo_root)
+            try:
+                indep = _scan_archetype_independent(
+                    content, file_path, _indep_rules, repo_root=repo_root
+                )
+            except Exception:
+                indep = []
+            if indep:
+                # The advisory emits its own PostToolUse context object. Emitting
+                # _emit({}) afterward would write a second JSON object to stdout,
+                # making the hook output unparseable. Each hook invocation writes
+                # exactly one object, so emit the fallback only when the advisory
+                # did not (its emit raised).
+                if _posttool_no_archetype_advisory(
+                    repo_root=repo_root,
+                    repo_id=repo_id,
+                    file_path=file_path,
+                    violations=indep,
+                    session_id=session_id,
+                    now=_started,
+                ):
+                    return 0
             _emit({})
             return 0
+
+        # Match-quality and confidence are resolved once here so every terminal
+        # outcome branch below can record the same decision_log row. match_quality
+        # none/fallback marks a coverage gap; ast/exact with no violation is an
+        # in-scope miss — the distinction a postmortem reads from this row.
+        _decision_data = arch_result.get("data") or {}
+        decision_match_quality = _decision_data.get("match_quality")
+        decision_confidence_band = _decision_data.get("confidence_band")
 
         if repo_id:
             try:
                 from chameleon_mcp.drift.observations import record_edit_observation
 
-                confidence_band = (arch_result.get("data") or {}).get("confidence_band")
                 record_edit_observation(
                     repo_id=repo_id,
                     rel_path=str(file_path),
                     archetype=archetype_name,
-                    confidence_band=confidence_band,
+                    confidence_band=decision_confidence_band,
                     matched_canonical=True,
                 )
             except Exception:
@@ -1622,7 +2415,17 @@ def posttool_verify() -> int:
             if lint_result is not None:
                 daemon_responded = True
                 raw = (lint_result.get("data") or {}).get("violations") or []
-                violations = [v for v in raw if v.get("rule") != "secret-detected-in-content"]
+                # The lint_file tool already runs scan_secrets, so the daemon
+                # response carries secret hits. Keep them (parity with the
+                # in-process path) and tag each so only the deterministic kinds
+                # can hard-block; the rest fall through to the advisory below.
+                violations = list(raw)
+                try:
+                    from chameleon_mcp.violation_class import tag_secret_hardness
+
+                    tag_secret_hardness(violations)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -1651,12 +2454,20 @@ def posttool_verify() -> int:
             # per-file escalation knows whether a blockable rule is unresolved.
             hard: list[dict] = []
             blockable_now: list[dict] = []
+            # True when an inline chameleon-ignore dropped a block-eligible rule
+            # on this edit, so the decision_log records the outcome as an
+            # overridden bypass rather than a plain advisory.
+            inline_overridden_hard = False
+            # Resolved decision_log outcome for the advisory path: "advised" by
+            # default, "would-block" when shadow mode logged a would-block then
+            # fell through, "overridden" when an inline ignore dropped a hard rule.
+            decision_outcome = "advised"
             try:
                 from chameleon_mcp.enforcement_calibration import active_block_rules
                 from chameleon_mcp.violation_class import (
                     hard_class_violations,
                     ignored_rules,
-                    is_archetype_independent,
+                    is_deferred_to_turn_end,
                 )
 
                 active = active_block_rules(repo_root / ".chameleon")
@@ -1670,10 +2481,33 @@ def posttool_verify() -> int:
                 # too; otherwise an inline-ignored rule still arms the backstop.
                 ign = ignored_rules(content) or set()
                 if ign:
+                    overridden = [v for v in hard if {"", v.get("rule")} & ign]
+                    inline_overridden_hard = bool(overridden)
                     hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
+                    # An inline directive dropping a block-eligible rule is
+                    # otherwise invisible after the turn. Record each bypass so
+                    # the override rate is auditable: a metric counter (paired
+                    # with the would_block stream) and a durable drift.db row.
+                    # A bare directive (the empty string is in the ignore set)
+                    # is flagged separately because it downgrades every rule at
+                    # once rather than annotating one intentional deviation.
+                    blanket = "" in ign
+                    _record_overrides(
+                        repo_id,
+                        overridden,
+                        archetype=archetype_name,
+                        file_rel=_repo_rel(repo_root, file_path),
+                        session_id=session_id,
+                        blanket=blanket,
+                    )
                 # phantom imports are a filesystem fact handled at turn end
-                # (Stop backstop), never blocked inline here.
-                blockable_now = [v for v in hard if not is_archetype_independent(v.get("rule"))]
+                # (Stop backstop), never blocked inline here: a later same-turn
+                # edit can create the import target. A deterministic secret does
+                # NOT defer -- nothing a later edit does makes a hardcoded
+                # credential safe -- so it stays in the inline block set as the
+                # documented "only security BLOCK". Strip only the deferred rules,
+                # not every archetype-independent one.
+                blockable_now = [v for v in hard if not is_deferred_to_turn_end(v.get("rule"))]
             except Exception:
                 hard = []
                 blockable_now = []
@@ -1722,14 +2556,22 @@ def posttool_verify() -> int:
                     try:
                         from chameleon_mcp.metrics import emit_hook_metric
 
-                        emit_hook_metric(
-                            "posttool-verify",
-                            elapsed_ms=0,
-                            repo_id=repo_id,
-                            advisory_emitted=True,
-                            archetype=archetype_name,
-                            would_block=True,
-                        )
+                        # One would_block row per blockable rule on this file, so
+                        # the shadow report attributes counts to the specific rule
+                        # and can sample the off-pattern file for spot-check.
+                        file_rel = _repo_rel(repo_root, file_path)
+                        for v in blockable_now:
+                            emit_hook_metric(
+                                "posttool-verify",
+                                elapsed_ms=0,
+                                repo_id=repo_id,
+                                advisory_emitted=True,
+                                archetype=archetype_name,
+                                would_block=True,
+                                rule=v.get("rule"),
+                                file_rel=file_rel,
+                                line=v.get("line"),
+                            )
                     except Exception:
                         pass
                     if mode == "enforce":
@@ -1746,6 +2588,18 @@ def posttool_verify() -> int:
                         # additionalContext channel.
                         safe_rules = sanitize_for_chameleon_context(rules)
                         safe_msgs = sanitize_for_chameleon_context(msgs)
+                        _record_edit_decision(
+                            repo_id,
+                            repo_root,
+                            file_path,
+                            archetype=archetype_name,
+                            match_quality=decision_match_quality,
+                            confidence_band=decision_confidence_band,
+                            violations_raised=len(violations),
+                            blockable_rules=[v.get("rule") for v in blockable_now],
+                            outcome="blocked",
+                            session_id=session_id,
+                        )
                         _emit_posttool_block(
                             f"chameleon blocks this edit: {safe_rules}. "
                             f"Fix before continuing: {safe_msgs}. "
@@ -1758,6 +2612,7 @@ def posttool_verify() -> int:
                         )
                         return 0
                     # shadow: would_block already logged; fall through to advisory.
+                    decision_outcome = "would-block"
             except Exception:
                 pass
 
@@ -1793,6 +2648,18 @@ def posttool_verify() -> int:
                 except Exception:
                     pass
 
+            _record_edit_decision(
+                repo_id,
+                repo_root,
+                file_path,
+                archetype=archetype_name,
+                match_quality=decision_match_quality,
+                confidence_band=decision_confidence_band,
+                violations_raised=len(violations),
+                blockable_rules=[v.get("rule") for v in blockable_now],
+                outcome="overridden" if inline_overridden_hard else decision_outcome,
+                session_id=session_id,
+            )
             _emit_posttool_context(f"<chameleon-context>\n{block}\n</chameleon-context>")
             _update_statusline(
                 f"{len(violations)} violation{'s' if len(violations) != 1 else ''}",
@@ -1828,6 +2695,19 @@ def posttool_verify() -> int:
                 record_clean(file_state, now=_started)
             except Exception:
                 pass
+
+        _record_edit_decision(
+            repo_id,
+            repo_root,
+            file_path,
+            archetype=archetype_name,
+            match_quality=decision_match_quality,
+            confidence_band=decision_confidence_band,
+            violations_raised=0,
+            blockable_rules=None,
+            outcome="clean",
+            session_id=session_id,
+        )
 
         if had_prior_violation:
             _emit_posttool_context(
@@ -1949,7 +2829,13 @@ def callout_detector() -> int:
 
 
 def _stop_file_still_blockable(
-    repo_root: Path, file_path: str, loaded=None, active=None, daemon_state=None
+    repo_root: Path,
+    file_path: str,
+    loaded=None,
+    active=None,
+    daemon_state=None,
+    out_rules=None,
+    level: int = 2,  # LEVEL_L2; a module-level literal so the default binds at import time
 ) -> bool:
     """Re-lint a candidate file live and report whether an enforceable hard-class
     violation still stands.
@@ -1963,11 +2849,16 @@ def _stop_file_still_blockable(
     blocks the turn.
 
     A hard violation counts only if it is enforceable on the live file: an
-    archetype-independent rule (a filesystem fact) always counts; an
-    archetype-dependent rule counts only when the archetype is AST-confirmed at
-    high or medium confidence, matching the per-edit block gate. Inline-ignored rules never
-    count. Returns False on any error (fail-open: a re-check that can't run does
-    not block).
+    archetype-independent rule (a deterministic content/filesystem fact -- a
+    leaked credential or a phantom import) always counts at any escalation level,
+    because nothing about a wrong archetype guess makes it spurious; an
+    archetype-dependent rule (naming/inheritance/file-naming) counts only when the
+    archetype is AST-confirmed at high or medium confidence AND the file has
+    escalated to L2, matching the per-edit block gate's ladder so a single
+    wrong-archetype match cannot trap the turn. ``level`` is the file's current
+    escalation level; archetype-independent rules ignore it. Inline-ignored rules
+    never count. Returns False on any error (fail-open: a re-check that can't run
+    does not block).
 
     ``loaded`` is the once-per-pass profile the backstop preloads so the per-file
     re-lint does not re-read the profile for every candidate. ``active`` is the
@@ -1977,6 +2868,11 @@ def _stop_file_still_blockable(
     call comes back empty, every later file skips the daemon and goes straight to
     the in-process archetype resolve, so a hung daemon cannot stack per-file
     timeouts past the hook's hard deadline.
+
+    ``out_rules``, when a list is passed, is appended with the enforceable hard
+    rule names that still stand on this file, so the shadow would_block row can
+    attribute the backstop block to a specific rule. Collecting them here reuses
+    the re-lint this function already performs; the bool return is unchanged.
     """
     try:
         p = Path(file_path)
@@ -2014,20 +2910,41 @@ def _stop_file_still_blockable(
             archetype_name = data.get("archetype")
             confidence_band = data.get("confidence_band")
             match_quality = data.get("match_quality")
-        if not archetype_name:
-            return False
-
-        violations = _lint_file_in_process(
-            repo_root, archetype_name, content, file_path, loaded=loaded
-        )
-        if not violations:
-            return False
 
         from chameleon_mcp.violation_class import (
             hard_class_violations,
             ignored_rules,
             is_archetype_independent,
         )
+
+        if not archetype_name:
+            # No archetype: only archetype-independent content facts (phantom
+            # imports, deterministic secrets) can still stand. An eval-call is
+            # scanned but filtered by the archetype-independent check below,
+            # because it stays gated on an archetype match. posttool_verify
+            # recorded this file under the synthetic no-archetype label
+            # precisely so the credential blocks the turn here.
+            indep = _scan_archetype_independent(content, file_path)
+            if not indep:
+                return False
+            if active is None:
+                from chameleon_mcp.enforcement_calibration import active_block_rules
+
+                active = active_block_rules(repo_root / ".chameleon")
+            hard = hard_class_violations(indep, active)
+            ign = ignored_rules(content) or set()
+            if ign:
+                hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
+            enforceable = [v for v in hard if is_archetype_independent(v.get("rule"))]
+            if isinstance(out_rules, list):
+                out_rules.extend(v.get("rule") for v in enforceable if v.get("rule"))
+            return bool(enforceable)
+
+        violations = _lint_file_in_process(
+            repo_root, archetype_name, content, file_path, loaded=loaded
+        )
+        if not violations:
+            return False
 
         if active is None:
             from chameleon_mcp.enforcement_calibration import active_block_rules
@@ -2038,16 +2955,42 @@ def _stop_file_still_blockable(
         if ign:
             hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
         gate_ok = (match_quality == "ast") and (confidence_band in ("high", "medium"))
-        for v in hard:
-            if is_archetype_independent(v.get("rule")) or gate_ok:
-                return True
-        return False
+        # Archetype-dependent rules honor the per-edit escalation ladder: they
+        # only refuse the turn once the file has reached L2, so a single
+        # wrong-archetype match cannot trap a turn. Archetype-independent facts
+        # (secrets, phantom imports) ignore the level entirely.
+        from chameleon_mcp.enforcement import LEVEL_L2
+
+        dep_ok = gate_ok and level >= LEVEL_L2
+        enforceable = [v for v in hard if is_archetype_independent(v.get("rule")) or dep_ok]
+        if isinstance(out_rules, list):
+            out_rules.extend(v.get("rule") for v in enforceable if v.get("rule"))
+        return bool(enforceable)
     except Exception:
         return False
 
 
 _IDIOM_REVIEWED_FILENAME = ".idiom_reviewed.{session}"
 _IDIOM_CONTEXT_CHAR_CAP = 1500
+
+_CORRECTNESS_JUDGED_FILENAME = ".correctness_judged.{session}"
+
+
+def _is_source_for_test_signal(rel_path: str, *, language: str) -> bool:
+    """True if ``rel_path`` is a real source file (not a test/spec) worth a
+    "did you run the tests" nudge at turn end.
+
+    Reuses the same test-path classification the bootstrap source pool uses, so a
+    turn that only touched test files (or docs) does not trigger the nudge. Fails
+    closed to False on any error: an unclassifiable path is treated as not
+    source, which only suppresses a soft advisory.
+    """
+    try:
+        from chameleon_mcp.conventions import _is_test_path
+
+        return not _is_test_path(rel_path, language=language)
+    except Exception:
+        return False
 
 
 def _idiom_review_gate(
@@ -2121,6 +3064,33 @@ def _idiom_review_gate(
         if not edited:
             return None
 
+        # Test-run signal: when the turn touched real source (not a pure
+        # test/docs edit) and no passing test runner was observed this session,
+        # the self-review directive is worth strengthening with a "run the
+        # suite" nudge. Watch-mode and CI-run-it are unobservable, so a missing
+        # signal is a soft strengthen only, never a gating condition.
+        no_test_for_source_edit = False
+        try:
+            from chameleon_mcp.exec_log import session_test_run_seen
+            from chameleon_mcp.lint_engine import detect_language
+
+            edited_source = False
+            for path in edited:
+                lang = detect_language(path)
+                if lang is None:
+                    continue
+                try:
+                    rel = os.path.relpath(path, str(repo_root))
+                except ValueError:
+                    rel = Path(path).name
+                if _is_source_for_test_signal(rel, language=lang):
+                    edited_source = True
+                    break
+            if edited_source and session_id:
+                no_test_for_source_edit = not session_test_run_seen(repo_id, session_id)
+        except Exception:
+            no_test_for_source_edit = False
+
         # Once-per-session marker: fire only the first time. Writing the marker
         # before the decision keeps shadow's frequency honest and prevents the
         # next turn from re-blocking.
@@ -2149,16 +3119,30 @@ def _idiom_review_gate(
 
         if cfg.mode != "enforce":
             # Shadow: record the would-have-blocked signal and allow the stop.
+            # This gate has no single rule (it nudges a once-per-session
+            # self-review of the turn's edits), so it emits under its own hook
+            # name with no rule. The shadow report counts it as a turn-level
+            # signal, never as a per-rule promotion candidate.
             try:
                 from chameleon_mcp.metrics import emit_hook_metric
 
                 emit_hook_metric(
-                    "stop-backstop",
+                    "stop-idiom-review",
                     elapsed_ms=0,
                     repo_id=repo_id,
                     advisory_emitted=True,
                     would_block=True,
                 )
+                if no_test_for_source_edit:
+                    # Separate signal so the test-run nudge's real frequency can
+                    # be measured in shadow before anyone relies on it.
+                    emit_hook_metric(
+                        "stop-test-run-signal",
+                        elapsed_ms=0,
+                        repo_id=repo_id,
+                        advisory_emitted=True,
+                        would_block=True,
+                    )
             except Exception:
                 pass
             return None
@@ -2176,6 +3160,12 @@ def _idiom_review_gate(
             "changes comply with the team idioms/principles below. Fix any clear "
             "violation; otherwise you may end.",
         ]
+        if no_test_for_source_edit:
+            parts.append(
+                "No passing test run was recorded this turn while you changed source "
+                "files. Run the suite to confirm your changes pass before ending "
+                "(skip only if a watch process or CI is already running them)."
+            )
         if idioms_block:
             parts.append("")
             parts.append("Team idioms:")
@@ -2210,6 +3200,542 @@ def _idiom_review_gate(
         return None
 
 
+def _archetype_resolver(repo_root: Path, daemon_state: dict):
+    """Return a callable ``abs_path -> archetype name or None`` for the judge.
+
+    Resolves through the shared daemon when reachable, falling back to the
+    in-process tool, mirroring the backstop's per-file resolution so a hung
+    daemon cannot stack timeouts across the touched files.
+    """
+
+    def resolve(abs_path: str) -> str | None:
+        if daemon_state is None or daemon_state.get("available", True):
+            try:
+                from chameleon_mcp import daemon_client
+
+                res = daemon_client.call(
+                    "get_archetype", {"repo": str(repo_root), "file_path": abs_path}
+                )
+                if res:
+                    return (res.get("data") or {}).get("archetype")
+                if daemon_state is not None:
+                    daemon_state["available"] = False
+            except Exception:
+                if daemon_state is not None:
+                    daemon_state["available"] = False
+        try:
+            from chameleon_mcp.tools import get_archetype
+
+            return (get_archetype(str(repo_root), abs_path).get("data") or {}).get("archetype")
+        except Exception:
+            return None
+
+    return resolve
+
+
+def _correctness_judge_gate(
+    *,
+    repo_root: Path,
+    repo_id: str,
+    session_id: str | None,
+    state,
+    cfg,
+    repo_data: Path,
+    daemon_state: dict | None,
+) -> dict | None:
+    """Independent turn-end correctness review of the turn's edits (advisory).
+
+    Reached only on the no-block stop path, after the idiom gate declined to
+    block. Opt-in (``enforcement.correctness_judge``) and mode-gated
+    (shadow/enforce); runs AT MOST ONCE per session like the idiom gate, so a
+    per-turn spawn cost is never incurred. It spawns a separate reviewer model
+    that reads the turn's reconstructed diffs for correctness bugs.
+
+    Returns a hook output dict carrying the findings as ``additionalContext``, or
+    None when the gate does not fire / found nothing (the caller then allows the
+    stop). It NEVER returns a block: the judge is stochastic and advisory, so its
+    findings are surfaced as context the model may act on, never a turn-trap. The
+    findings are shadow-logged for later human-labeled precision sampling. Fails
+    open: any error returns None.
+    """
+    try:
+        if cfg.mode == "off" or not cfg.correctness_judge:
+            return None
+
+        from chameleon_mcp.optouts import _safe_session_marker
+        from chameleon_mcp.violation_class import ignored_rules
+
+        # An edited file that still exists, not opted out via an inline
+        # `chameleon-ignore` (bare) directive in the touched file.
+        edited: list[str] = []
+        for path in state.files:
+            p = Path(path)
+            if not p.is_file():
+                continue
+            try:
+                content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            if "" in (ignored_rules(content) or set()):
+                continue
+            edited.append(path)
+        if not edited:
+            return None
+
+        # Once-per-session marker. Written before the (potentially slow) spawn so
+        # a second turn never re-spawns even if this one is interrupted.
+        marker = repo_data / _CORRECTNESS_JUDGED_FILENAME.format(
+            session=_safe_session_marker(session_id)
+        )
+        if marker.exists():
+            return None
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(marker.parent, 0o700)
+        except OSError:
+            pass
+        marker.touch(exist_ok=True)
+        try:
+            os.chmod(marker, 0o600)
+        except OSError:
+            pass
+
+        from chameleon_mcp import judge
+
+        resolver = _archetype_resolver(repo_root, daemon_state or {"available": True})
+        findings = judge.run_correctness_judge(
+            repo_root, repo_root / ".chameleon", edited, resolver
+        )
+
+        # Shadow-log every finding so a lead can sample judge precision over time.
+        # The judge never blocks, so would_block is always False; the row records
+        # the advisory finding, attributed to the file/line when known.
+        try:
+            from chameleon_mcp.metrics import emit_hook_metric
+
+            for f in findings:
+                emit_hook_metric(
+                    "stop-correctness-judge",
+                    elapsed_ms=0,
+                    repo_id=repo_id,
+                    advisory_emitted=True,
+                    would_block=False,
+                    rule="correctness-judge-finding",
+                    # The reviewer reports a repo-relative path already; keep it as
+                    # given rather than re-resolving against the working directory.
+                    file_rel=f.file,
+                    line=f.line,
+                )
+        except Exception:
+            pass
+
+        if not findings:
+            return None
+
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        lines = [
+            f"[🦎 chameleon: independent review flagged "
+            f"{len(findings)} possible correctness issue"
+            f"{'s' if len(findings) != 1 else ''}]",
+            "A separate reviewer read this turn's changes. These are advisory; "
+            "verify each before acting, they may be wrong.",
+        ]
+        for f in findings:
+            loc = sanitize_for_chameleon_context(f.file) if f.file else "?"
+            if f.line is not None:
+                loc += f":{f.line}"
+            lines.append(f"- {loc}: {sanitize_for_chameleon_context(f.message)}")
+
+        block = "<chameleon-context>\n" + "\n".join(lines) + "\n</chameleon-context>"
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "Stop",
+                "additionalContext": block,
+            }
+        }
+    except Exception:
+        return None
+
+
+def _stale_test_advisory_lines(
+    *,
+    repo_root: Path,
+    state,
+    cfg,
+    preloaded,
+    daemon_state: dict | None,
+) -> list[str]:
+    """Build the turn-end stale-test advisory lines, or [] when nothing applies.
+
+    A source file edited this turn whose archetype's siblings overwhelmingly ship
+    a paired test, but whose existing paired test went untouched, is at risk of
+    going stale. For each such file, name the test path and the exports the edit
+    may have moved out from under it. Advisory only: the pairing floor admits a
+    sizable fraction of legitimately untested files, so this is a coverage nudge,
+    never a block. Returns sanitized lines ready to fold into the Stop context;
+    fails open to [] on any error.
+
+    ``preloaded`` is the once-per-pass profile the backstop already loaded, so
+    this reuses it rather than re-reading conventions.json. ``daemon_state`` is
+    the shared liveness flag the backstop threads through archetype resolution.
+    """
+    try:
+        if cfg.mode == "off" or not cfg.stale_test_advisory:
+            return []
+        if preloaded is None or not hasattr(preloaded, "conventions"):
+            return []
+        conv = preloaded.conventions.get("conventions", {}) or {}
+        test_pairing = conv.get("test_pairing") or {}
+        if not test_pairing:
+            return []
+        key_exports = conv.get("key_exports") or {}
+
+        from chameleon_mcp.violation_class import ignored_rules
+
+        # Edited files that still exist and are not opted out via an inline
+        # `chameleon-ignore tests` (or bare ignore) directive in the touched file.
+        edited_abs: set[str] = set()
+        for path in state.files:
+            p = Path(path)
+            if not p.is_file():
+                continue
+            try:
+                content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            ign = ignored_rules(content) or set()
+            if "" in ign or "tests" in ign or "stale-test" in ign:
+                continue
+            edited_abs.add(path)
+        if not edited_abs:
+            return []
+
+        from chameleon_mcp.cochange import stale_test_items
+        from chameleon_mcp.lint_engine import detect_language
+
+        resolver = _archetype_resolver(repo_root, daemon_state or {"available": True})
+
+        def _read_content(abs_path: str) -> str | None:
+            try:
+                return Path(abs_path).read_bytes()[:100_000].decode("utf-8", errors="replace")
+            except OSError:
+                return None
+
+        items = stale_test_items(
+            repo_root=repo_root,
+            test_pairing=test_pairing,
+            key_exports=key_exports,
+            edited_abs=edited_abs,
+            archetype_of=resolver,
+            language_of=detect_language,
+            read_content=_read_content,
+        )
+        if not items:
+            return []
+
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        max_files = threshold_int("STALE_TEST_ADVISORY_MAX_FILES")
+        shown = items[:max_files]
+        extra = len(items) - len(shown)
+
+        lines = [
+            f"[🦎 chameleon: {len(items)} edited source file"
+            f"{'s' if len(items) != 1 else ''} may have left a paired test stale]",
+            "You changed these files but did not touch their paired tests. Confirm "
+            "the test still covers the new behavior; this is advisory, not a block.",
+        ]
+        for it in shown:
+            src = sanitize_for_chameleon_context(it.source_rel)
+            test = sanitize_for_chameleon_context(it.test_rel)
+            line = f"- {src} -> test {test} (unchanged)"
+            if it.exports:
+                names = ", ".join(sanitize_for_chameleon_context(n) for n in it.exports)
+                line += f"; changed exports: {names}"
+            lines.append(line)
+        if extra > 0:
+            lines.append(f"- ...and {extra} more.")
+        lines.append(
+            "To silence this for a file, add `// chameleon-ignore tests` "
+            "(`# chameleon-ignore tests` in Ruby) in the source you touched."
+        )
+        return lines
+    except Exception:
+        return []
+
+
+def _new_files_in_changeset(repo_root: Path, edited_abs: set[str]) -> set[str]:
+    """Subset of ``edited_abs`` that did not exist at HEAD (created this turn).
+
+    A change-set-completeness rule only fires on a brand-new file: editing a
+    method on an existing model must not demand a fresh migration. "New" is
+    decided by git, which is the only turn-end signal available (the enforcement
+    state does not record creation). A path is new when ``git ls-files`` does not
+    track it AND ``git cat-file`` finds no blob for it at HEAD, so a file the user
+    created and `git add`-ed this turn still counts as new.
+
+    Fails safe to the empty set: when git is unavailable or the work tree cannot
+    be probed, no file is treated as new and the change-set check stays silent
+    rather than guess a creation it cannot confirm.
+    """
+    try:
+        from chameleon_mcp.judge import _git_available, _run_git
+
+        if not edited_abs or not _git_available(repo_root):
+            return set()
+        new_abs: set[str] = set()
+        for ap in edited_abs:
+            try:
+                rel = Path(ap).relative_to(repo_root).as_posix()
+            except ValueError:
+                continue
+            tracked = _run_git(["ls-files", "--error-unmatch", "--", rel], cwd=repo_root)
+            if tracked is not None and tracked.returncode == 0:
+                # Tracked in the index; not a file this turn created.
+                continue
+            at_head = _run_git(["cat-file", "-e", f"HEAD:{rel}"], cwd=repo_root)
+            if at_head is not None and at_head.returncode == 0:
+                # Exists in the HEAD tree; an existing file, not a creation.
+                continue
+            new_abs.add(ap)
+        return new_abs
+    except Exception:
+        return set()
+
+
+def _changeset_completeness_lines(
+    *,
+    repo_root: Path,
+    state,
+    cfg,
+    daemon_state: dict | None,
+) -> list[str]:
+    """Build the turn-end change-set-completeness advisory lines, or [].
+
+    When a turn creates a NEW file that conventionally cannot stand alone (a Rails
+    model needs a migration, a new controller a route) but the change-set carries
+    no matching companion, surface a nudge to add it. Driven by a hand-curated
+    framework pair table; each rule is silenced for a repo whose own committed
+    files already break the pairing often enough that firing it would nag.
+    Advisory only, never a block: a partial edit may legitimately defer its
+    companion to a follow-up commit. Returns sanitized lines ready to fold into
+    the Stop context; fails open to [] on any error.
+
+    ``daemon_state`` is unused here (the check is path-pattern only and needs no
+    archetype resolution) but kept in the signature to mirror the sibling
+    advisory builders the backstop calls.
+    """
+    try:
+        if cfg.mode == "off" or not cfg.changeset_completeness:
+            return []
+
+        from chameleon_mcp.violation_class import ignored_rules
+
+        # Edited files that still exist and are not opted out via an inline
+        # `chameleon-ignore cochange` (or bare ignore) directive in the file.
+        edited_abs: set[str] = set()
+        for path in state.files:
+            p = Path(path)
+            if not p.is_file():
+                continue
+            try:
+                content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            ign = ignored_rules(content) or set()
+            if "" in ign or "cochange" in ign:
+                continue
+            edited_abs.add(path)
+        if not edited_abs:
+            return []
+
+        new_files_abs = _new_files_in_changeset(repo_root, edited_abs)
+        if not new_files_abs:
+            return []
+
+        from chameleon_mcp.cochange import changeset_completeness_items, cochange_rule_disabled
+        from chameleon_mcp.lint_engine import detect_language
+
+        # Cache the per-rule repo-applicability verdict across the turn's new
+        # files so the bounded committed-file walk runs at most once per rule.
+        disabled_cache: dict[str, bool] = {}
+
+        def _rule_enabled(rule) -> bool:
+            verdict = disabled_cache.get(rule.rule_id)
+            if verdict is None:
+                verdict = cochange_rule_disabled(rule, repo_root)
+                disabled_cache[rule.rule_id] = verdict
+            return not verdict
+
+        items = changeset_completeness_items(
+            repo_root=repo_root,
+            new_files_abs=new_files_abs,
+            edited_abs=edited_abs,
+            language_of=detect_language,
+            rule_enabled=_rule_enabled,
+        )
+        if not items:
+            return []
+
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        max_items = threshold_int("COCHANGE_ADVISORY_MAX_ITEMS")
+        shown = items[:max_items]
+        extra = len(items) - len(shown)
+
+        lines = [
+            f"[🦎 chameleon: {len(items)} new file"
+            f"{'s' if len(items) != 1 else ''} may be missing a companion change]",
+            "You created these files but the change-set has no matching companion. "
+            "Add it or confirm it is a separate commit; this is advisory, not a block.",
+        ]
+        for it in shown:
+            src = sanitize_for_chameleon_context(it.source_rel)
+            msg = sanitize_for_chameleon_context(it.message)
+            lines.append(f"- {src}: {msg}")
+        if extra > 0:
+            lines.append(f"- ...and {extra} more.")
+        lines.append(
+            "To silence this for a file, add `// chameleon-ignore cochange` "
+            "(`# chameleon-ignore cochange` in Ruby) in the file you touched."
+        )
+        return lines
+    except Exception:
+        return []
+
+
+def _crossfile_existence_advisory_lines(
+    *,
+    repo_root: Path,
+    state,
+    cfg,
+) -> list[str]:
+    """Build the turn-end cross-file existence-break advisory lines, or [].
+
+    For each TypeScript source the turn touched, recompute its current export set
+    (a regex read, no parser) and consult the prebuilt reverse index for names an
+    indexed importer still references that the file NO LONGER exports. Each such
+    removed/renamed export is a call site this turn broke; name it and its still-
+    referencing importers. Advisory only, never a block: a mid-rename turn may
+    legitimately leave a site for a follow-up edit. Bounded -- the index is read
+    once, each touched file's exports come from a single regex pass, and the
+    importer presence check is a word-boundary scan, so no caller is parsed at
+    Stop. Returns sanitized lines ready to fold into the Stop context; fails open
+    to [] on any error.
+    """
+    try:
+        if cfg.mode == "off" or not cfg.crossfile_existence_advisory:
+            return []
+
+        from chameleon_mcp.lint_engine import detect_language
+        from chameleon_mcp.phantom_imports import _current_export_names
+        from chameleon_mcp.symbol_index import load_reverse_index, module_key_for_path
+        from chameleon_mcp.violation_class import ignored_rules
+
+        index = load_reverse_index(repo_root)
+        if index is None:
+            return []
+
+        from chameleon_mcp._thresholds import threshold_int
+
+        max_files = threshold_int("CROSSFILE_STOP_ADVISORY_MAX_FILES")
+        max_sites = threshold_int("CROSSFILE_MAX_SITES_PER_FINDING")
+
+        def _name_present(importer_rel: str, name: str, line: int | None) -> bool:
+            # Cheap presence check: the index is a bootstrap snapshot, so confirm
+            # the importer still names the binding (the rename may have reached it
+            # too) before claiming its call site is broken. No parse -- a
+            # word-boundary regex over the importer bytes.
+            ip = repo_root / importer_rel
+            try:
+                text = ip.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+            except OSError:
+                return False
+            needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
+            text_lines = text.splitlines()
+            if line is not None and 1 <= line <= len(text_lines):
+                if needle.search(text_lines[line - 1]):
+                    return True
+            return bool(needle.search(text))
+
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        # symbol@module -> list of sanitized "path:line" sites, in touch order so
+        # the advisory lists the breaks this turn introduced.
+        breaks: list[tuple[str, str, list[str]]] = []
+        seen_files = 0
+        for path in state.files:
+            if seen_files >= max_files:
+                break
+            p = Path(path)
+            if not p.is_file():
+                continue
+            try:
+                content = p.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            if detect_language(str(p)) != "typescript":
+                continue
+            ign = ignored_rules(content) or set()
+            if "" in ign or "removed-export-breaks-importers" in ign:
+                continue
+            target_key = module_key_for_path(p, repo_root)
+            if target_key is None:
+                continue
+            current, open_set = _current_export_names(content)
+            if open_set:
+                # `export * from` re-exports an unknown set, so a name absent from
+                # the visible set may still be exported -- skip, matching the
+                # edit-time and tool stance.
+                continue
+            seen_files += 1
+            broken = index.broken_importers(target_key, current)
+            if not broken:
+                continue
+            for name in sorted(broken):
+                importers = broken[name]
+                live = [imp for imp in importers if _name_present(imp.path, name, imp.line)]
+                if not live:
+                    continue
+                live_sorted = sorted(
+                    live, key=lambda imp: (imp.path, imp.line if imp.line is not None else -1)
+                )
+                sites = [
+                    sanitize_for_chameleon_context(
+                        f"{imp.path}:{imp.line}" if imp.line is not None else imp.path
+                    )
+                    for imp in live_sorted[:max_sites]
+                ]
+                breaks.append((sanitize_for_chameleon_context(name), target_key, sites))
+
+        if not breaks:
+            return []
+
+        lines = [
+            f"[🦎 chameleon: {len(breaks)} export"
+            f"{'s' if len(breaks) != 1 else ''} you removed still ha"
+            f"{'ve' if len(breaks) != 1 else 's'} live importers]",
+            "These exports are gone from the files you edited but other files "
+            "still import them by name; their call sites are now broken. Restore "
+            "the export or update the importers. This is advisory, not a block.",
+        ]
+        for name, _module, sites in breaks:
+            shown = ", ".join(sites)
+            more = " ..." if len(sites) >= max_sites else ""
+            lines.append(f"- '{name}' no longer exported; still imported by {shown}{more}")
+        lines.append(
+            "To silence this for a file, add "
+            "`// chameleon-ignore removed-export-breaks-importers` in the source "
+            "you touched."
+        )
+        return lines
+    except Exception:
+        return []
+
+
 def stop_backstop() -> int:
     """Stop / SubagentStop: refuse to end the turn while a touched file holds an
     unresolved hard-class violation, then run a once-per-session reflexive
@@ -2237,7 +3763,7 @@ def stop_backstop() -> int:
         cwd = Path.cwd()
 
     try:
-        from chameleon_mcp.enforcement import LEVEL_L2, load_state, save_state
+        from chameleon_mcp.enforcement import load_state, save_state
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.config import load_config
         from chameleon_mcp.profile.loader import find_repo_root
@@ -2313,6 +3839,9 @@ def stop_backstop() -> int:
         daemon_state = {"available": True}
 
         unresolved: list[str] = []
+        # path -> enforceable hard rules still standing, so the shadow would_block
+        # row can attribute the backstop block to the specific rules per file.
+        unresolved_rules: dict[str, list[str]] = {}
         cleared_any = False
         for path, fs in list(state.files.items()):
             p = Path(path)
@@ -2322,12 +3851,27 @@ def stop_backstop() -> int:
                 del state.files[path]
                 cleared_any = True
                 continue
-            if not (fs.level >= LEVEL_L2 and fs.blockable_unresolved):
+            # Any file the per-edit verifier armed (cached blockable flag) is a
+            # re-check candidate, regardless of escalation level. The level gate
+            # belongs inside the re-lint, not here: a deterministic content fact
+            # (a leaked credential, a phantom import) refuses the turn on the
+            # first edit, while an archetype-dependent rule still honors the L2
+            # ladder. Filtering on L2 here disarmed the documented turn-end
+            # refusal for a single-edit secret/phantom that sits at L0/L1.
+            if not fs.blockable_unresolved:
                 continue
+            file_rules: list[str] = []
             if _stop_file_still_blockable(
-                repo_root, path, loaded=preloaded, active=active_rules, daemon_state=daemon_state
+                repo_root,
+                path,
+                loaded=preloaded,
+                active=active_rules,
+                daemon_state=daemon_state,
+                out_rules=file_rules,
+                level=fs.level,
             ):
                 unresolved.append(path)
+                unresolved_rules[path] = file_rules
             else:
                 fs.blockable_unresolved = False
                 cleared_any = True
@@ -2350,7 +3894,84 @@ def stop_backstop() -> int:
                 cfg=cfg,
                 repo_data=repo_data,
             )
-            _emit(gate if gate is not None else {})
+            if gate is not None:
+                _emit(gate)
+                return 0
+            # Idiom gate did not block: the turn is free to end. Run the
+            # independent correctness judge (opt-in, advisory only, once per
+            # session). It never blocks; its findings ride out as additionalContext
+            # the model reads after the turn.
+            judged = _correctness_judge_gate(
+                repo_root=repo_root,
+                repo_id=repo_id,
+                session_id=session_id,
+                state=state,
+                cfg=cfg,
+                repo_data=repo_data,
+                daemon_state=daemon_state,
+            )
+
+            # Stale-test advisory: a turn that edited a paired source but left its
+            # existing test untouched gets a coverage nudge. Advisory only, folded
+            # into the same Stop context the judge uses so a turn emits one block.
+            stale_lines = _stale_test_advisory_lines(
+                repo_root=repo_root,
+                state=state,
+                cfg=cfg,
+                preloaded=preloaded,
+                daemon_state=daemon_state,
+            )
+
+            # Change-set completeness: a turn that created a new file whose
+            # framework convention demands a companion (a model its migration, a
+            # controller its route) but whose change-set carries none gets a
+            # nudge. Advisory only, folded into the same Stop context.
+            cochange_lines = _changeset_completeness_lines(
+                repo_root=repo_root,
+                state=state,
+                cfg=cfg,
+                daemon_state=daemon_state,
+            )
+
+            # Cross-file existence breaks: a turn that removed/renamed a TS export
+            # other files still import by name left their call sites broken. Reuse
+            # the persisted reverse index + a regex presence check (no parse at
+            # Stop). Advisory only, folded into the same Stop context.
+            crossfile_lines = _crossfile_existence_advisory_lines(
+                repo_root=repo_root,
+                state=state,
+                cfg=cfg,
+            )
+
+            context_blocks: list[str] = []
+            if judged is not None:
+                jb = (judged.get("hookSpecificOutput") or {}).get("additionalContext")
+                if jb:
+                    context_blocks.append(jb)
+            if stale_lines:
+                context_blocks.append(
+                    "<chameleon-context>\n" + "\n".join(stale_lines) + "\n</chameleon-context>"
+                )
+            if cochange_lines:
+                context_blocks.append(
+                    "<chameleon-context>\n" + "\n".join(cochange_lines) + "\n</chameleon-context>"
+                )
+            if crossfile_lines:
+                context_blocks.append(
+                    "<chameleon-context>\n" + "\n".join(crossfile_lines) + "\n</chameleon-context>"
+                )
+
+            if context_blocks:
+                _emit(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "Stop",
+                            "additionalContext": "\n\n".join(context_blocks),
+                        }
+                    }
+                )
+            else:
+                _emit({})
             return 0
 
         # Shadow mode records the would-have-blocked signal and allows the stop.
@@ -2358,13 +3979,34 @@ def stop_backstop() -> int:
             try:
                 from chameleon_mcp.metrics import emit_hook_metric
 
-                emit_hook_metric(
-                    "stop-backstop",
-                    elapsed_ms=0,
-                    repo_id=repo_id,
-                    advisory_emitted=True,
-                    would_block=True,
-                )
+                # One would_block row per rule per unresolved file, so the shadow
+                # report attributes the backstop block to the specific rule and
+                # can sample the file for spot-check. A file that re-lints
+                # blockable but yielded no rule name still gets one row with a
+                # null rule so the file:line sample is not lost.
+                emitted_any = False
+                for path in unresolved:
+                    file_rel = _repo_rel(repo_root, path)
+                    rules = unresolved_rules.get(path) or [None]
+                    for rule in rules:
+                        emit_hook_metric(
+                            "stop-backstop",
+                            elapsed_ms=0,
+                            repo_id=repo_id,
+                            advisory_emitted=True,
+                            would_block=True,
+                            rule=rule,
+                            file_rel=file_rel,
+                        )
+                        emitted_any = True
+                if not emitted_any:
+                    emit_hook_metric(
+                        "stop-backstop",
+                        elapsed_ms=0,
+                        repo_id=repo_id,
+                        advisory_emitted=True,
+                        would_block=True,
+                    )
             except Exception:
                 pass
             _emit({})

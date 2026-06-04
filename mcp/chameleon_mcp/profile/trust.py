@@ -168,9 +168,12 @@ _HASHED_ARTIFACTS: tuple[str, ...] = (
     "config.json",
     "conventions.json",
     "enforcement.json",
+    "exports_index.json",
+    "function_catalog.json",
     "principles.md",
     "idioms.md",
     "profile.json",
+    "reverse_index.json",
     "rules.json",
 )
 
@@ -195,6 +198,19 @@ def hash_profile(profile_dir: Path) -> str:
     - ``enforcement.json`` — the block-rule calibration verdict. Hashed so a
       tampered or planted calibration (e.g. flipping a known-false-positive rule
       to "active") de-trusts the profile instead of slipping past unchanged.
+    - ``exports_index.json`` — per-file exported-symbol sets backing the
+      phantom-symbol check. Hashed so a planted index (e.g. one claiming a file
+      exports a name it does not, to mask a hallucinated import) de-trusts the
+      profile rather than silently steering the check.
+    - ``function_catalog.json`` — per-function name/signature-shape catalog
+      backing the cross-file duplication prefilter. Hashed so a planted catalog
+      (e.g. one inventing a function+path to steer the duplication candidates
+      reaching the model) de-trusts the profile rather than slipping past
+      unchanged.
+    - ``reverse_index.json`` — exported-name -> importer reverse index backing
+      the cross-file edit-time advisory and the existence-break query. Hashed so
+      a planted index (e.g. one fabricating importer call sites to manufacture a
+      false break) de-trusts the profile rather than silently steering the check.
     - ``idioms.md`` — captured team idioms. ``/chameleon-teach`` mutates
       this; included so the user re-reviews new natural-language idioms
       before they reach model context.

@@ -377,6 +377,111 @@ def test_no_archetype_emits_empty(tmp_path: Path):
     assert result == {}
 
 
+def test_no_archetype_with_violation_emits_single_advisory(tmp_path: Path):
+    """An unarchetyped file carrying a secret emits exactly one object.
+
+    Regression: the no-archetype branch called the advisory (which emits its own
+    PostToolUse context) and then fell through to _emit({}), writing two JSON
+    objects to stdout. The second object made the hook output unparseable
+    (json.loads raises "Extra data"). The advisory must own the single emit.
+    """
+    repo_id = "test_repo_id"
+    (tmp_path / repo_id).mkdir()
+
+    ts_file = tmp_path / "standalone.ts"
+    ts_file.write_text("const TOKEN = 'secret';\n", encoding="utf-8")
+
+    emit_calls: list[dict] = []
+
+    def _tracking_emit(output: dict) -> None:
+        emit_calls.append(output)
+        import sys
+
+        sys.stdout.write(json.dumps(output))
+        sys.stdout.write("\n")
+
+    synthetic = [
+        {
+            "rule": "detect-secrets",
+            "severity": "error",
+            "message": "secret flagged",
+            "expected": "",
+            "actual": "",
+        }
+    ]
+
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch("chameleon_mcp.hook_helper._emit", side_effect=_tracking_emit),
+        patch("chameleon_mcp.hook_helper._load_rules_for_style", return_value=None),
+        patch("chameleon_mcp.hook_helper._scan_archetype_independent", return_value=synthetic),
+        patch("chameleon_mcp.daemon_client.call", return_value={"data": {"archetype": None}}),
+        patch("chameleon_mcp.tools.get_archetype", return_value={"data": {"archetype": None}}),
+    ):
+        result = _run_verify(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
+
+    # Exactly one stdout object, and it is the advisory (not a stray {}).
+    assert len(emit_calls) == 1
+    assert "hookSpecificOutput" in result
+    assert "secret flagged" in result["hookSpecificOutput"]["additionalContext"]
+
+
+def test_no_archetype_advisory_emit_failure_falls_back_to_empty(tmp_path: Path):
+    """If the advisory's emit raises, the caller still writes exactly one object.
+
+    The one-object-per-invocation contract holds even when the advisory cannot
+    surface its context: it returns False and the caller emits the clean {}.
+    """
+    repo_id = "test_repo_id"
+    (tmp_path / repo_id).mkdir()
+
+    ts_file = tmp_path / "standalone.ts"
+    ts_file.write_text("const TOKEN = 'secret';\n", encoding="utf-8")
+
+    synthetic = [
+        {
+            "rule": "detect-secrets",
+            "severity": "error",
+            "message": "secret flagged",
+        }
+    ]
+
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch("chameleon_mcp.hook_helper._load_rules_for_style", return_value=None),
+        patch("chameleon_mcp.hook_helper._scan_archetype_independent", return_value=synthetic),
+        patch(
+            "chameleon_mcp.hook_helper._posttool_no_archetype_advisory",
+            return_value=False,
+        ),
+        patch("chameleon_mcp.daemon_client.call", return_value={"data": {"archetype": None}}),
+        patch("chameleon_mcp.tools.get_archetype", return_value={"data": {"archetype": None}}),
+    ):
+        result = _run_verify(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
+
+    assert result == {}
+
+
 def test_fail_open_on_find_repo_root_crash():
     with patch("chameleon_mcp.profile.loader.find_repo_root", side_effect=RuntimeError("boom")):
         result = _run_verify(

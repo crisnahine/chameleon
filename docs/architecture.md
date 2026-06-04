@@ -64,7 +64,11 @@ A Claude Code plugin that gives the AI deep understanding of YOUR repo's convent
 
 The engine clusters AST + statistical signals from your code, asks targeted questions about what it cannot infer, iterates via post-edit feedback. Over time, the profile becomes a living artifact capturing your team's actual coding style.
 
-**Target outcome:** measurable reduction in reviewer comments on file shape / naming / idiom usage on AI-generated code, validated against baseline transcripts collected during dogfooding.
+**North star:** a machine review-gate good enough that human review moves from mandatory to on-demand. Chameleon does not certify correctness, and no amount of static AST plus statistics ever will. What it can do is cover the review classes it provably covers well, reserve human eyes for the classes it provably cannot, and give a team lead the evidence to trust that split.
+
+**The honest boundary.** The gate covers, deterministically and per-repo calibrated: structural and convention conformance, hallucinated imports and symbols, hardcoded secrets, supply-chain red flags in manifests and lockfiles, and cross-file symbol-existence breaks. It adds an advisory LLM judge at PR-review and turn-end that reads the diff for logic-delta regressions (a removed guard, a dropped await, an inverted condition). What stays human, always: business-logic correctness (does the endpoint return the right field), novel security flaws (authorization logic, IDOR, complex injection, crypto design), and architectural judgment (is this the right design). The LLM judge helps on those; it is not a principal engineer, so it advises and never gates alone. Anything in an unsupported language, below sample-size thresholds, or in a file class the engine does not verify goes to a human regardless of gate color.
+
+**Target outcome:** measurable reduction in reviewer comments on file shape / naming / idiom usage on AI-generated code, validated against baseline transcripts collected during dogfooding; and, downstream, a gate a team can flip from shadow to enforce to review-optional on the evidence the engine surfaces.
 
 ---
 
@@ -103,6 +107,7 @@ AI-generated code in established codebases routinely violates local conventions 
 8. **Graceful boundaries** — AST falls short → interview + `/chameleon-teach` (renamed from refine); no claim of "supports framework X"
 9. **Distributed-systems crash safety** — atomic commits, OS-level locks, fail-open advisories, per-call cache invalidation
 10. **Long-term maintainability** — lock files, version pins, schema migration contract, ADRs, MAINTAINER.md, observable value attribution
+11. **Machine review-gate with an earned trust path.** Widen the deterministic envelope (structural, convention, secret, supply-chain, cross-file existence), bolt an advisory LLM judge onto the parts that need one, and stage the rollout shadow -> enforce -> review-optional so a lead earns confidence with evidence (shadow report, override audit, longitudinal panel, review ledger) instead of by decree. State the honest boundary at every surface: the gate widens the envelope, it never claims the whole field.
 
 ---
 
@@ -136,6 +141,16 @@ Replaces v4's "≥80% pattern conformance" (unverifiable) with measurable, falsi
 > **On the next 10 TypeScript and Ruby on Rails repos PRs that include AI-generated code (with chameleon active), fewer than 2 reviewer comments mention shape/naming/idiom violations that chameleon should have caught.**
 
 Concrete, falsifiable, costs you nothing to measure. Source: each PR's review thread; "should have caught" = within Tier 1 or Tier 2 dimensions documented in catalog.
+
+### Review-clean gate (the review-optional definition)
+
+The metric above measures whether chameleon reduces shape/naming review load. The review-gate north star needs its own operational definition: when is a change "review-clean" enough that human review is on-demand rather than mandatory? A change is review-clean when all of:
+
+1. `enforcement.mode == enforce` and no block-eligible rule fires on the diff, or every block is explicitly overridden with a recorded `chameleon-ignore` (the override is logged to the `rule_overrides` table, not silently dropped).
+2. `/chameleon-pr-review` returns APPROVE or APPROVE WITH NITS, with every BLOCK/FIX backed by chameleon data (the integrity rule drops any finding the engine cannot witness), and the verdict is recorded in the review ledger.
+3. The change touches only file classes and languages chameleon covers (TypeScript, Ruby on Rails; not Bash-written files outside the single-target write shapes the bash-mutation pass covers; not the classes listed under "What stays human").
+
+Human review stays available on demand and stays mandatory for anything outside that envelope. This is the gate the trust path (shadow -> enforce -> review-optional, see "Trust path" below) walks a team toward, not a claim that chameleon replaces a reviewer.
 
 ### Secondary metrics (planned — `value_attrib.db` not yet implemented)
 
@@ -416,6 +431,11 @@ Concrete enumeration of dimensions chameleon detects (Tier 1: auto-derivable) or
 │ │ list_profiles merge_profiles teach_profile │ │
 │ │ trust_profile disable_session pause_session │ │
 │ │ propose/apply_archetype_renames daemon_status doctor │ │
+│ │ + review-gate tools: query_symbol_importers │ │
+│ │ get_crossfile_context get_duplication_candidates │ │
+│ │ get_shadow_report get_override_audit dep_audit │ │
+│ │ get_longitudinal_signals get_review_history explain_edit │ │
+│ │ record_review_verdict teach_competing_import │ │
 │ │ (every file-reading tool: safe_open + lstat first; per-call │ │
 │ │ mtime check; AST node ceiling 50k; SQLite ro+trusted_schema=OFF)│ │
 │ └─────────────┬───────────────────────────────┬───────────────────┘ │
@@ -782,7 +802,7 @@ Most feedback is advisory. A narrow gate stack lets a small set of high-confiden
 | Stop backstop | `stop_backstop` (Stop / SubagentStop) | An unresolved hard-class violation on a touched file refuses to end the turn, bounded by `enforcement.stop_block_cap`. |
 | Idiom review | `stop_backstop` (Stop / SubagentStop) | After the lint-unresolved decision (only when nothing blocked there): a turn that edited files governed by team idioms/principles blocks ONCE per session to force a self-review against `idioms.md` / `principles.md`. Gated by `enforcement.idiom_review` (default on). |
 
-**Idiom review gate.** When `enforcement.idiom_review` is on (default), `mode` is shadow/enforce, the session edited at least one still-existing file, and `idioms.md` or `principles.md` is non-empty, the Stop hook fires a reflexive review. A per-session marker (`{plugin_data}/{repo_id}/.idiom_reviewed.{session}`) makes it block at most once per session, so the model is not re-nagged every turn (`stop_hook_active` already prevents the immediate re-block loop). In enforce mode it emits a Stop `block` whose reason lists up to 5 edited file basenames and the relevant idioms/principles (sanitized, length-capped), instructing the model to verify compliance and fix clear violations before ending; ending again confirms the review. In shadow mode it logs a `would_block` metric and allows the stop, still writing the marker so shadow reflects the real frequency. It respects `stop_block_cap` and fails open. An inline `// chameleon-ignore idioms` (or bare `// chameleon-ignore`) in any touched file skips it. `enforcement.idiom_judge` (opt-in, default off) only strengthens the directive for now; the independent-judge spawn (`claude -p`) is intentionally out of scope, so no LLM is invoked from the hook.
+**Idiom review gate.** When `enforcement.idiom_review` is on (default), `mode` is shadow/enforce, the session edited at least one still-existing file, and `idioms.md` or `principles.md` is non-empty, the Stop hook fires a reflexive review. A per-session marker (`{plugin_data}/{repo_id}/.idiom_reviewed.{session}`) makes it block at most once per session, so the model is not re-nagged every turn (`stop_hook_active` already prevents the immediate re-block loop). In enforce mode it emits a Stop `block` whose reason lists up to 5 edited file basenames and the relevant idioms/principles (sanitized, length-capped), instructing the model to verify compliance and fix clear violations before ending; ending again confirms the review. In shadow mode it logs a `would_block` metric and allows the stop, still writing the marker so shadow reflects the real frequency. It respects `stop_block_cap` and fails open. An inline `// chameleon-ignore idioms` (or bare `// chameleon-ignore`) in any touched file skips it. `enforcement.idiom_judge` (opt-in, default off) strengthens the directive text; the independent correctness judge that actually spawns a second model is the separate `enforcement.correctness_judge` toggle described below.
 
 **Mode gate.** `.chameleon/config.json` `enforcement.mode`:
 
@@ -790,13 +810,24 @@ Most feedback is advisory. A narrow gate stack lets a small set of high-confiden
 - `shadow` (default) — every gate computes its decision and logs a `would_block` metric, but the edit/turn proceeds. A repo runs shadow first so its false-positive rate is measured before any block.
 - `enforce` — the gates above block for real.
 
-**Block-eligible rules.** `violation_class.BLOCK_ELIGIBLE_RULES`: `phantom-import` (archetype-independent), and the archetype-dependent `import-preference-violation`, `jsx-presence-mismatch`, `naming-convention-violation`, and `inheritance-convention-violation`. The dependent rules block only at `confidence=high` + `match_quality=ast` so a wrong archetype match cannot make them spurious. Naming and inheritance violations are always `warning` severity; only `jsx-presence-mismatch` is severity-gated (qualifies at `error` only).
+**Block-eligible rules.** `violation_class.BLOCK_ELIGIBLE_RULES`: the archetype-independent `phantom-import` and `secret-detected-in-content`; and the archetype-gated `eval-call`, `import-preference-violation`, `jsx-presence-mismatch`, `naming-convention-violation`, `inheritance-convention-violation`, and `file-naming-convention-violation`. The archetype-gated rules block only at `confidence=high` + `match_quality=ast` so a wrong archetype match cannot make them spurious. Naming and inheritance violations are always `warning` severity; only `jsx-presence-mismatch` is severity-gated (qualifies at `error` only). `secret-detected-in-content` is the deliberate promotion of secrets from advisory to block: it is kind-gated to the high-precision deterministic patterns only (AKIA, ghp_, sk-ant-, sk_live, PEM, plus Google AIza and Azure AccountKey), and `scan_secrets` is now wired into the in-process lint path so the hook actually evaluates it. The GCP `"type": "service_account"` marker stays advisory: it matches benign IAM bindings and terraform output, and a real service-account key file always carries a PEM block that hard-blocks on its own. JWT `eyJ` and `://user:password@` stay advisory: both match benign committed content (base64 JSON, docker-compose test configs) and calibration cannot measure their precision because clean repos never trip them. `eval-call` is the one dangerous sink promoted to block; calibration does not exercise content scans, so it is active by default rather than by measurement. `exec-call` and `raw-sql-concat` stay advisory because `.exec()` is a common JS string method and the SQL regex matches the words SELECT/DELETE inside any interpolated template.
 
 **Per-rule calibration.** `enforcement_calibration.py` measures each block-eligible rule against the repo's own committed files at bootstrap/refresh and writes `enforcement.json` (`{rule: {active, fp_rate, sampled}}`). The measurement is generic over `BLOCK_ELIGIBLE_RULES`, so naming/inheritance are calibration-gated like the rest: a rule that flags any of the repo's own witnesses or siblings is demoted to advisory regardless of mode. `/chameleon-status` (`get_status`) reports `mode`, the active set, and each demoted rule with its `fp_rate`.
 
 **Classification.** `violation_class.is_hard_class` distinguishes hard (deterministic — e.g. a phantom import that cannot resolve, or a convention violation on a high-confidence AST match) from soft (style/archetype-fit) violations. Only hard-class rules in the active set are block-eligible; soft violations always stay advisory.
 
 **Escape hatch and kill switch.** Any block is overridable inline with `// chameleon-ignore <rule>` (`# chameleon-ignore <rule>` in Ruby), or a bare `// chameleon-ignore` to suppress all chameleon blocks on that line. `CHAMELEON_ENFORCE=0` forces advisory-only for the whole session regardless of mode. Every gate fails open: a missing/corrupt config or calibration artifact degrades to advisory, never an erroneous block.
+
+**Override audit.** Each inline override records one durable row in `drift.db.rule_overrides` (per-rule, with a `blanket` flag for bare directives). `get_override_audit` / `/chameleon-status` surface the per-rule override rate and blanket-share over a window. A rule overridden in a large fraction of the edits where it would block is fighting the team, not catching bugs; the fix is to reconcile the convention via refresh/teach or recalibrate at refresh time, never a runtime mutation of the trust-hashed `enforcement.json`. Blanket bare ignores are flagged separately because they signal someone stamping past the gate.
+
+**Bash-mutation coverage.** `Edit|Write|NotebookEdit` are not the only ways a file gets written; a file produced by `cat >`, `tee`, or `sed -i` would otherwise get zero scrutiny. `posttool-recorder` runs a pure-regex pre-filter (`_extract_bash_write_targets`) over the Bash command for single-literal-target write shapes (`>` / `>>` redirects, the first `tee` operand, the `sed -i` file operand). With no clear in-repo TS/Ruby target it bails with no profile load. A resolved target is marked into `EnforcementState.files` exactly like posttool-verify, so the existing Stop backstop re-lints and blocks it under the same calibrated rules. Out of scope by design (no single command-line target to extract): `git apply`, heredoc-to-pipe, and codegen.
+
+**Independent turn-end correctness judge (advisory only, opt-in).** `enforcement.correctness_judge` (default off) is the strongest analogue to a second reviewer: a separate `claude -p` model that reads the turn's diff at Stop for logic errors the static engine cannot see (off-by-one, inverted conditions, missing guards, dropped awaits, unhandled error paths). The author model self-reviewing shares its own blind spots; a separate spawn does not. It is **advisory only and never blocks** - findings are emitted as Stop `additionalContext` the model reads after the turn, and shadow-logged for later human-labeled precision sampling. There is no calibrate-to-FP-epsilon step: an LLM verdict is stochastic and cannot clear a near-zero reproducible bar, so a blocking variant does not belong on the hot path (if blocking is ever wanted, it belongs at PR-review). Every constraint fails open to no findings: the diff is reconstructed via `git diff` against HEAD (falling back to whole-file when git is unavailable or the path is untracked); the spawn has a short hard wall-clock budget (`CORRECTNESS_JUDGE_TIMEOUT_SECONDS`, 45s) so a slow review never traps the turn; it runs once per session; the prompt diff bytes, file count, and finding count are capped (`CORRECTNESS_JUDGE_MAX_*`). The runtime spawn wrapper lives inside `chameleon_mcp` (the journey-harness `claude.py` is under `tests/` and is never imported at runtime).
+
+**Turn-end advisories (on by default, never block).** Two more Stop-time advisories ground in committed artifacts:
+- **Stale-test** (`enforcement.stale_test_advisory`, on): when a turn edits a high-pairing source file (per `conventions.json` `test_pairing`) but leaves its paired test untouched, name the test path and the changed exports the test may now be missing. Backed by the `reverse_index` for the changed-export list. Capped by `STALE_TEST_ADVISORY_MAX_*`.
+- **Cross-file existence break** (`enforcement.crossfile_existence_advisory`, on): for each TS source touched this turn, if it stopped exporting a name an indexed importer still references, surface the break and the importer sites (from `reverse_index`). Existence-first; capped by `CROSSFILE_STOP_ADVISORY_MAX_FILES`.
+- **Change-set completeness** (co-change): when a turn ADDS a new file of a kind that structurally cannot stand alone (a Rails model needs a migration, a new controller needs a route), and the change-set contains no matching companion, nudge to add it. The trigger->companion pairs are a small curated framework table in `cochange.py` (`cochange-model-migration`, `cochange-controller-route`, `cochange-prisma-migration`, `cochange-slice-store`), not a learned statistic. Each rule is auto-silenced for a repo whose own committed files already break the pairing past `COCHANGE_MAX_VIOLATION_RATE` (so it never nags a repo that does not follow it). Triggers on added files only.
 
 **Cache_control discipline:** lstat output, drift.db queries, HMAC log entries, posttool exit codes, dynamic timestamps, MCP tool results - all flow as ephemeral input. NEVER in cached prefix.
 
@@ -825,6 +856,49 @@ Steady-state per edit drops to **~50 tokens** once an archetype has been seen; t
 **Tiered PreToolUse.** A full canonical excerpt every edit costs ~1,500 tokens. Tier 1 at ~50 tokens covers the common case (an archetype the model has already seen this session and isn't violating); Tier 2 fires only on the first edit in an archetype or after a violation, when the canonical is demonstrably worth its cost.
 
 **Per-file escalation.** A model struggling with one file shouldn't get stop-and-fix directives on unrelated files. Per-file levels (stored in `.enforcement.{session_id}.json`) keep enforcement proportional, and `MAX_CORRECTIONS_PER_FILE` caps the worst case so a stubborn file can't spin a verify-edit-verify loop.
+
+---
+
+## Review gate and trust path
+
+The enforcement spine above is the machine review-gate. This section covers the evidence surfaces that let a team trust it and the staged rollout that earns that trust. The standing rule across every stage: any change touching the "What stays human" classes, an unsupported language, or a file class the engine does not verify goes to a human regardless of gate color. The gate widens the envelope; it never claims the whole field.
+
+### Trust path: shadow -> enforce -> review-optional
+
+The rollout is staged so the team earns confidence with evidence at each step, not by decree.
+
+- **Stage 0 - bootstrap and trust.** Run `/chameleon-init`, review `profile.summary.md`, run `/chameleon-trust`. Default mode is `shadow`; nothing blocks yet. Gate to the next stage: the archetype list looks right, witness paths are real files, taught idioms are captured, and the profile is trusted.
+- **Stage 1 - shadow, accumulate evidence.** Leave `shadow` for 2 to 3 weeks of real editing. Every gate computes its decision and logs a `would_block` metric but never blocks. The lead reads `get_shadow_report` / `/chameleon-status --shadow`: per-rule would-block counts over a non-truncated window, distinct files and sessions, and a sampled file:line list to eyeball. The promotion verdict per rule is would-block-count-over-edits, not a computed FP fraction (the metric rows carry no accept/override/fix outcome, so FP determination stays a human read of the sample). Gate to the next stage: each candidate rule shows near-zero would-blocks across real edit volume (`SHADOW_PROMOTION_MIN_EDITS`), and the instances that did fire were genuine off-pattern code.
+- **Stage 2 - enforce, monitor overrides.** Flip `enforcement.mode` to `enforce`, then re-run `/chameleon-trust`: `config.json` is trust-hashed, so the edit alone flips the profile to stale and silently disables enforcement until trust is re-granted. Block-eligible rules now deny/block for real, gated by per-repo calibration so a rule that flags the repo's own committed files stays advisory. The lead watches the override-rate panel (`get_override_audit`): a rule overridden in a large fraction of edits is fighting the team, so either the convention is wrong (refresh/teach) or the rule is miscalibrated (recalibrate at refresh, never a runtime mutation). Blanket bare ignores are flagged separately. Gate to the next stage: override rate stable and low, no blanket-ignore abuse.
+- **Stage 3 - review-optional.** Wire the gate into CI: a change is merge-eligible when enforce mode passes clean on the diff (or blocks are individually overridden) and `/chameleon-pr-review` returns APPROVE or APPROVE WITH NITS, for changes inside the supported envelope. Human review becomes on-demand. The lead watches three surfaces continuously: the review ledger (`get_review_history`) for any merged-despite-BLOCK; the longitudinal panel (`get_longitudinal_signals`) with its two tracks kept separate; and the recovery loop (`explain_edit`) when a defect escapes.
+
+### Shadow evidence report
+
+`metrics.jsonl` is written by every hook call but, before this wave, nothing read it back. `get_shadow_report` (`shadow_report.py`) aggregates it for the shadow -> enforce decision. The rule-bearing emit sites carry `rule` and `file_rel` (and a line where available): import-preference at PreToolUse, the per-violation posttool-verify path, and the Stop lint backstop. The idiom-review gate has no single rule, so it reports as a separate turn-level counter. Rotation is the correctness trap: `metrics.jsonl` rotates by size into `.1`..`.5` and deletes the oldest, so a reader of only the current file silently undercounts. The reader globs every retained segment and merges them; if the oldest retained timestamp is younger than the requested window, it flags the window as **truncated** rather than asserting "0 would-blocks" covers the whole period. It deliberately reports only would-block frequency plus a sampled file:line list (`SHADOW_REPORT_SAMPLE_CAP`); it never invents a false-positive fraction the data cannot support.
+
+### Longitudinal signals (honest, two-track)
+
+`observed_drift_score` measures structural mimicry, not quality, so a "drift 0.08, fresh" reading invites over-trust if it is the only longitudinal signal a lead sees. `get_longitudinal_signals` keeps two tracks separate: a **structural-conformance** track relabeled as "structural conformance, not a quality bar" with an explicit "does NOT cover: logic, dataflow, cross-file, auth" line kept prominent above any green panel, and an **enforcement-outcome** track (block rate and idiom-would-block rate from the `would_block` rows plus the override metric). No "PR-review verdict mix" track is shown unless the review ledger has records to read.
+
+### Review ledger (tamper-evident, not forgery-proof)
+
+Once review is optional, `/chameleon-pr-review` becomes the system of record, but the skill is chat-only by default and persists nothing, so a merged commit leaves no trace of whether chameleon looked at it. The ledger (`review_ledger.py`) fills that hole: an append-only NDJSON audit log reusing the exec-log storage pattern (per-repo 0700 dir, owner-check, HMAC for tamper-evidence against other local users). `record_review_verdict` appends one record per review run pinning the commit SHA, `profile_sha256` + generation + schema_version, trust state at review time, the verdict, a findings-by-severity summary, the engine version, and the reviewing user. `get_review_history` reads it back; a status panel surfaces merged-despite-BLOCK. **Integrity scope, stated honestly:** the HMAC key is the same per-user local key the gated developer holds, so this is tamper-evident, not forgery-proof, and CI cannot verify it. If a real hard merge gate is the goal, post the verdict as a server-side platform status check (Bitbucket/GitHub via the existing `bbcurl`/`gh` path) where the platform is the authority; that is a separate, larger capability.
+
+### Recovery loop: per-edit decision log + `/chameleon-explain`
+
+When a defect escapes, the postmortem needs what chameleon knew and did about that file at edit time. The recovery loop does not reuse `edit_observations` (wiped on refresh, dropped on schema bumps, which would destroy the history a postmortem needs). It uses the durable `decision_log` table: one row written per governed edit *after* the outcome branch resolves, with a true repo-relative path, the resolved `match_quality`, the rules that still stood, and the outcome. `/chameleon-explain <file>` (the `explain_edit` tool) reads the most-recent row and classifies the miss as a coverage-gap (no archetype, or `match_quality` none/fallback) versus an in-scope miss, then routes it to teach/refresh/a new rule.
+
+### What stays human
+
+These review classes reach no mechanism in the engine. State this plainly to anyone considering dropping mandatory review.
+
+- **Business-logic correctness** - whether the endpoint returns the right field, whether the calculation is right, whether the feature does what the ticket asked. The LLM judge catches some logic-delta regressions; it does not understand the domain.
+- **Novel security flaws** - authorization logic correctness (not just guard presence), IDOR, complex injection, crypto design, business-logic security holes. The dependency and secret checks cover known-shape risks only.
+- **Architectural judgment** - whether the change is the right design, whether a new abstraction earns its keep, whether the layering is sound beyond direction heuristics.
+- **Intent and rationale** - why a pattern exists and when it is correct to break it. `idioms.md` stores one sentence per idiom; it does not reason.
+- **Unsupported languages** - Python, Go, Rust, Java, SQL, YAML return an empty snapshot and zero violations.
+- **Anything below sample-size thresholds** - sparse repos and brand-new directories where conventions are still forming.
+- **Performance and runtime behavior** - N+1 queries, O(n^2), memory, race conditions, swallowed errors at runtime. No dataflow or runtime analysis exists or is planned.
 
 ---
 
@@ -857,24 +931,42 @@ description: Use when starting any conversation in a repo with a chameleon profi
 - Coordination with a complementary skills library: "After `another bootstrap skill` triggers `brainstorming`, but before any Edit/Write" (priority order)
 - Non-blocking trust prompt: "If profile is untrusted, surface in response but proceed with user request"
 
-### User-invokable skills (10 commands)
+### User-invokable skills (11 commands)
 
 | Skill | Slash command | Purpose |
 |---|---|---|
 | `chameleon-init` | `/chameleon-init` | Bootstrap a new repo profile (≤3-prompt interview) |
 | `chameleon-refresh` | `/chameleon-refresh` | Re-analyze repo, detect drift, update profile |
-| `chameleon-status` | `/chameleon-status` | Show profile + drift + value attribution + plugin health |
+| `chameleon-status` | `/chameleon-status` | Show profile + drift + value attribution + plugin health + shadow/override/longitudinal panels |
 | `chameleon-teach` | `/chameleon-teach` | Iterate on profile based on observed misses; **owns idioms.md collection** |
 | `chameleon-trust` | `/chameleon-trust` | Approve a committed profile for this user (writes per-user `.trust` file) |
 | `chameleon-disable` | `/chameleon-disable` | Disable plugin for the rest of this session |
 | `chameleon-pause-15m` | `/chameleon-pause-15m` | Pause plugin for 15 minutes |
 | `chameleon-doctor` | `/chameleon-doctor` | Run health checks on the installation |
 | `chameleon-journey` | `/chameleon-journey` | Run the end-to-end journey test harness |
-| `chameleon-pr-review` | `/chameleon-pr-review` | Review a branch/PR against repo conventions and task intent |
+| `chameleon-pr-review` | `/chameleon-pr-review` | Review a branch/PR against repo conventions, supply chain, security, migrations, cross-file, and task intent |
+| `chameleon-explain` | `/chameleon-explain` | Reconstruct what chameleon knew and did about a file at its last edit; classify a miss (recovery loop) |
 
 **`/chameleon-trust` cooldown:** requires typing the repo name (or `yes-trust-<repo_id_short>`). New canonicals or idioms added after trust grant re-prompt. Trust granted is NOT trust authorizing all future content.
 
 **No dynamic archetype skills.** Replaced with MCP-driven dispatch (rationale documented in ADR `0005-mcp-dispatch-vs-dynamic-skills.md`).
+
+### Expanded `/chameleon-pr-review` flow
+
+The pr-review skill grew from a per-file convention pass into the review-optional gate. It runs whether or not a Jira ticket is supplied; the logic-intent pass is the only part that requires a ticket. Every finding stays under the integrity rule: a finding the engine cannot witness is dropped, and BLOCK/FIX logic findings are hard-gated to anchor lines that fall inside an added/changed hunk so a pre-existing issue is never reported as PR-introduced. The passes, in order:
+
+1. **Convention review (per file)** - archetype + lint + canonical-witness comparison + convention/principle checks, as before, now drawing on the new `conventions.json` sections (body-shape, doc-coverage, import-ordering, required-guards as a cited authz advisory).
+2. **Hunk-aware delta** - the branch case now captures the full unified diff (`git diff main...HEAD`), parses per-file hunk ranges, and runs a change-delta logic pass comparing post-hunk code against the removed (`-`) lines, not the canonical witness. This is the deterministic pre-existing-FP killer.
+3. **Dependency / supply-chain (Step 2.5)** - manifests and lockfiles are no longer skipped. A pure diff parse (no network) raises a BLOCK-until-acknowledged on a new direct dependency ("verify provenance", a deliberate human gate against typosquats), and FIX on a non-registry lockfile host, a new install-lifecycle script, or a `git+ssh:`/`file:`/`link:` source. The opt-in `dep_audit` (`npm audit` / `bundler-audit`) is the separate network layer, gated on `CHAMELEON_ALLOW_DEP_AUDIT=1`, advisory, fail-open.
+4. **Security pass (Step 2.6)** - `lint_file` runs on every changed source file regardless of ticket; `secret-detected-in-content` escalates to BLOCK (the only security BLOCK). Authz is a presence-only advisory FIX for Ruby controllers, explicitly labeled "cannot confirm the new action is covered". Taint/SSRF/traversal are LLM-judge findings capped at FIX, single-hunk-scope, with the cited line required inside the diff.
+5. **Migration-safety (Step 2.7, Rails `db/migrate/*.rb`)** - one BLOCK check (an irreversible operation inside `def change` with no `up`/`down` pair) plus two "verify table size" FIX advisories (`null: false` with no `default:`; `add_index` without `concurrently`), never BLOCK, because the repo's own clean migrations share those static shapes.
+6. **Co-change advisory (Step 2.8)** - the curated trigger->companion table fired on added files only, suppressible per `rule_id`.
+7. **Cross-file passes (Step 2.9)** - layering-direction, duplication candidates, and the TS symbol-existence break, each cited from a committed artifact.
+8. **Logic / placeholder / stale-test / stale-comment (Step 3)** - the ticket-gated intent trace, plus the placeholder-name NIT, the stale-paired-test FIX, and the stale-comment NIT.
+9. **Coverage-delta view (Step 3g)** - the source/test partition ("4 source files changed, 1 test"), advisory only, restricted to archetypes whose siblings predominantly carry tests. No assertion-count delta (no source-to-test map exists, so an LLM eyeball count is exactly the ungrounded finding the integrity rule forbids).
+10. **Record the verdict (Step 5)** - `record_review_verdict` appends the run to the review ledger.
+
+Severity discipline: only a secret (security pass) and an irreversible-`change` op (migration pass) and a new direct dependency reach BLOCK; the authz/taint/migration-table-size advisories are capped at FIX and never force a BLOCK verdict on their own.
 
 ---
 
@@ -962,8 +1054,24 @@ FastMCP-based, stdio transport (NEVER exposed over network).
 | `pause_session` | repo, minutes? | suppress injections temporarily | requires trust grant |
 | `propose_archetype_renames` | repo, top_n? | rename suggestions | read-only |
 | `apply_archetype_renames` | repo, renames | apply rename mapping | atomic profile commit |
+| `teach_competing_import` | repo, preferred, banned, ... | record a preferred-vs-banned import pair | feedback sanitization |
 | `daemon_status` | — | daemon liveness + version | read-only |
 | `doctor` | — | installation health checks | read-only |
+
+**Review-gate tools (added with the review-gate wave).** Nine tools back the cross-file checks, the trust surfaces, and the recovery loop. All are read-only except `record_review_verdict` (append-only ledger write) and `dep_audit` (spawns the user's own auditor, gated).
+
+| Tool | Input | Output | Note |
+|---|---|---|---|
+| `query_symbol_importers` | repo, file_path | for each name the file exports, the importer files + lines | reads prebuilt `reverse_index.json`; no caller re-parse on the hot path |
+| `get_crossfile_context` | repo | symbol-existence breaks: an indexed importer references a name the module no longer exports | TS only; existence-first, no arity; capped fan-out and finding count |
+| `get_duplication_candidates` | repo, file_path | for each function the file defines, the catalog functions whose signature shape + name tokens overlap | prefilter only; the LLM caller judges semantic equivalence against real bodies |
+| `get_shadow_report` | repo, window_days? | per-rule would-block counts, distinct files/sessions, trend, sampled file:line list | reads `metrics.jsonl*` including rotated segments; flags a truncated window; never computes an FP fraction |
+| `get_override_audit` | repo, window_days? | per-rule `chameleon-ignore` override rate, blanket-share, high-override flags | reads the durable `rule_overrides` table; surfaces contention, never auto-mutates a trust-hashed artifact |
+| `get_longitudinal_signals` | repo, window_days? | structural-conformance track and enforcement-outcome track, shown separately | the "does NOT cover logic/dataflow/cross-file/auth" line stays prominent above any green panel |
+| `get_review_history` | repo, limit? | recent PR-review verdicts from the ledger | tamper-evident, not forgery-proof; read-only |
+| `record_review_verdict` | repo, commit_sha, verdict, findings, ... | append one HMAC-signed ledger record | the only ledger write; pins profile_sha256 + generation + schema_version + engine version |
+| `explain_edit` | repo, file_path | the most-recent `decision_log` row for the file + a miss classification | recovery loop: coverage-gap (no archetype / fallback match) vs in-scope miss |
+| `dep_audit` | repo | structured `npm audit` / `bundler-audit` summary, or `unavailable` | opt-in via `CHAMELEON_ALLOW_DEP_AUDIT=1`; network, tool-time only, hard timeout, fails open |
 
 **Cache_control discipline:** lstat output, drift.db queries, HMAC log entries, posttool exit codes, dynamic timestamps, MCP tool results — all flow as ephemeral input. NEVER in cached prefix.
 
@@ -1100,6 +1208,13 @@ On /chameleon-refresh:
  ├── archetypes.json # path patterns + content_signal → archetype + cluster_size + outliers + recency_weight
  ├── rules.json # per-archetype rules + citations
  ├── canonicals.json # canonical references (witness + AST query + idiom annotations)
+ ├── conventions.json # per-archetype derived conventions (see "conventions.json sections")
+ ├── principles.md # data-backed prose principles (error-handling contract, etc.)
+ ├── exports_index.json # per-file exported-symbol sets (TS) - backs phantom-symbol
+ ├── reverse_index.json # exported-name -> importer files+lines (TS) - backs cross-file checks
+ ├── function_catalog.json # per-function name/signature-shape catalog - backs duplication prefilter
+ ├── enforcement.json # per-rule block calibration verdict
+ ├── config.json # enforcement mode + feature toggles
  ├── idioms.md # human-curated, deprecation-tracked
  └── profile.summary.md # human-readable for PR review (semantic deltas highlighted)
 
@@ -1176,6 +1291,33 @@ Migration: replace `useQuery(...)` with `useCustomQuery(...)`.
 
 (v2.0+ direction: structured idiom format `(name, ast_query_pattern, counterexample_query, prose_rationale, status)` for machine-checkability.)
 
+### conventions.json sections
+
+`conventions.json` holds the per-archetype conventions the engine derives at bootstrap beyond the cluster signature. Each section is keyed by archetype and gated on its own sample-size floor and (where applicable) a 0.60 dominance frequency: a convention is the archetype's norm only when the clear majority of its members share it. Sections that do not clear their gate stay empty. Thresholds live in `_thresholds.py` (`*_FREQUENCY`, `*_MIN_*`).
+
+- **`body_shape`** - per-archetype percentiles of per-function branch count, nesting depth, line span, and parameter count, drawn from a thicker witness pool (`BODY_SHAPE_MIN_FUNCTIONS`, default 18, because a p90 from 10 functions is too noisy). Branch count and nesting are the primary outlier signal; line span and parameter count never trigger a finding on their own (so a flat literal table or JSX tree does not read as complex). Advisory only, never block-eligible. Surfaced as a PR-review FIX/NIT.
+- **`required_guards`** - for Ruby controller archetypes, the `before_action` guard symbols the archetype's members share at 0.60, plus a `known_guards` set. Accounts for `skip_before_action` and `only:`/`except:`/`if:`/`unless:` scoping, and walks `known_bases` before deciding a controller is missing one. Advisory only: Rails authz is routinely inherited from `ApplicationController`, so a clean controller can legitimately lack the line. Cited by the PR-review authz advisory so it names the specific expected guard.
+- **`error_handling`** - the archetype's error-handling shape at 0.60: for TS, the fraction of function bodies that try/catch; for Rails controllers, the controller-base `rescue_from` pattern (not per-action inline rescue, which is the wrong unit). Feeds a data-backed principle in `principles.md` and replaces the old free-text "check the witness" line in PR-review.
+- **`doc_coverage`** - the fraction of an archetype's public declarations carrying a leading doc comment (`DOC_COVERAGE_FREQUENCY` 0.60, `DOC_COVERAGE_MIN_DECLS` 12). Surfaced as a NIT when a sibling-documented archetype gains an undocumented public declaration.
+- **`test_pairing`** - the fraction of an archetype's non-test source files that have a paired test at the derived path (`TEST_PAIRING_FREQUENCY` 0.60, `TEST_PAIRING_MIN_SAMPLE` 10). Advisory only and never block-eligible by design: up to 40% of files legitimately lack a test at a 0.60 floor, so the near-zero-FP calibration gate would demote any block rule on nearly every real repo. Backs the turn-end stale-test advisory and the PR-review stale-paired-test FIX.
+- **`callable_signatures`** - the consensus parameter shape (positional arity + which slots are optional) of the callable names an archetype's members share. A name must appear in at least `CALLABLE_SIGNATURE_MIN_FILES` (2) members before its shape is treated as the archetype's contract; the long tail of one-off helpers is dropped past `CALLABLE_SIGNATURE_MAX_NAMES` (80). Used only at PR-review time with the LLM judge for same-name overrides where the base is in-repo; no per-edit regex arity lint (it cannot beat the FP floor on multiline signatures).
+- **`layering`** - the cross-cluster import-edge multiset, from which the engine derives forbidden-upward edges only for directional, unanimous pairs (`LAYERING_MIN_EDGE_FILES` 3), capped at `LAYERING_MAX_FORBIDDEN_EDGES`. Cycles are computed as a static report at bootstrap (`LAYERING_MAX_CYCLES`), surfaced in status and PR-review, not on the per-edit path (which has no persisted adjacency graph). Advisory only; bare-package imports are unresolvable and skipped.
+- **`import_ordering`** - the dominant external-vs-relative import grouping order per archetype (`IMPORT_ORDERING_FREQUENCY` 0.60, `IMPORT_ORDERING_MIN_SAMPLE` 10). Scoped to import grouping only (imports are genuinely top-level; member ordering needs extraction the dumps do not do). Advisory PR-review NIT; competes with deterministic formatters teams run in CI, so low impact by design.
+
+The file-naming convention (dominant basename casing and suffix token per archetype, `FILE_NAMING_MIN_SAMPLE` 8) lives under the existing `naming` section and is block-eligible under calibration, which demotes it to advisory in mixed-casing repos.
+
+### Symbol and catalog index artifacts (TypeScript)
+
+Three committed artifacts make the cross-file checks possible without re-parsing callers on the hot path. All are TypeScript-only (Prism emits no export names; Ruby method resolution is dynamic, a guaranteed FP firehose under Rails metaprogramming).
+
+- **`exports_index.json`** - each repo-relative TS/JS source path -> the set of names it exports (direct declarations, `export { a as b }` clauses keyed on the exported name, and re-exports). A file containing `export * from` is marked "open" and skipped by the phantom-symbol check, because barrel files are the dominant FP source. The phantom-import pass resolves a specifier to a concrete on-disk file (it already does this for the path check), looks the file up here, and flags any named specifier absent from the exported set. Calibration decides block-vs-advisory per repo.
+- **`reverse_index.json`** - the inverse view: exported-name -> the files that import it by name, with the import line. Backs an edit-time advisory ("N files import `editPrice` from this module", purely from the prebuilt index) and the cross-file symbol-existence check (an export that was present is now gone and an indexed importer still references it) at Stop and PR-review. Existence-first only; no arity at edit time.
+- **`function_catalog.json`** - per top-level/exported function or method: name, kind, normalized signature shape (positional arity + optional slots), and the file it lives in. No body is stored. It is the cheap candidate-narrowing layer for cross-file duplication: `select_candidates` returns the handful of existing functions whose signature shape and name tokens overlap a new function, and the LLM caller judges semantic equivalence against those candidates' real bodies read from disk. Plain Python (arity + name-token overlap), no MinHash, which detects syntactic near-duplicates and misses the headline cases (`toDisplayDate` vs `formatDate`). Bounded by `DUPLICATION_CATALOG_MAX_FILES` and `DUPLICATION_CATALOG_MAX_FNS_PER_FILE`.
+
+### Trust hashing
+
+`/chameleon-trust` records a SHA-256 over the user-visible profile surface so a post-trust change re-prompts. The hash (`hash_profile` in `profile/trust.py`) covers, in alphabetical filename order with per-file framing: `.archetype_renames.json`, `archetypes.json`, `canonicals.json`, `config.json`, `conventions.json`, `enforcement.json`, `exports_index.json`, `function_catalog.json`, `idioms.md`, `principles.md`, `profile.json`, `reverse_index.json`, and `rules.json`. The new convention, index, and catalog artifacts are all in the set, so a refresh that changes any of them de-trusts the profile (flips it to `stale`) until the user re-approves. `enforcement.json` being in the hash is deliberate: it is why the override audit never auto-mutates the calibration verdict at runtime (that would silently flip the profile to stale and disable all blocking repo-wide); a recalibration runs only at refresh time, which legitimately rewrites the verdict before the next hash snapshot. Only the prose artifacts that a hostile committer could weaponize for prompt injection (`idioms.md`, `principles.md`) are content-scanned at trust time; `conventions.json` / `canonicals.json` carry real code shapes and are not.
+
 ---
 
 ## SQLite schemas
@@ -1226,9 +1368,54 @@ CREATE TABLE edit_observations (
 );
 CREATE INDEX idx_edit_obs_at ON edit_observations(observed_at);
 CREATE INDEX idx_edit_obs_path ON edit_observations(rel_path, observed_at);
+
+-- Inline `chameleon-ignore` override history. A block-eligible rule dropped by
+-- an inline directive leaves no trace once the turn ends, so the override is
+-- invisible to anyone auditing whether enforcement is holding. Each bypass
+-- records one row. UNLIKE edit_observations this is NOT reset on refresh:
+-- whether a convention is fighting the team is a question that spans many
+-- profile revisions. `blanket` is 1 for a bare `chameleon-ignore` (downgrades
+-- every block-eligible rule on the file), 0 when it named this rule.
+CREATE TABLE rule_overrides (
+ id INTEGER PRIMARY KEY,
+ rel_path TEXT,
+ rule TEXT NOT NULL,
+ archetype TEXT,
+ session_id TEXT,
+ blanket INTEGER NOT NULL DEFAULT 0, -- 0 or 1
+ observed_at INTEGER NOT NULL
+);
+CREATE INDEX idx_rule_overrides_at ON rule_overrides(observed_at);
+CREATE INDEX idx_rule_overrides_rule ON rule_overrides(rule, observed_at);
+
+-- Per-edit decision log. When a defect escapes, a postmortem needs what
+-- chameleon knew and did when that file was last edited. Each governed edit
+-- records one row AFTER its outcome is resolved (the edit_observations write
+-- runs before violations are computed, so it cannot carry the outcome). Like
+-- rule_overrides and UNLIKE edit_observations, NOT reset on refresh: closing a
+-- coverage gap must not destroy the record of the escape being diagnosed.
+-- `rel_path` is a true repo-relative path (keys consistently across clones,
+-- unlike edit_observations which holds an absolute path). `match_quality` is
+-- none/fallback/exact/ast (none/fallback marks a coverage gap directly).
+-- `blockable_rules` is a comma-joined list of block-eligible rules that still
+-- stood. `outcome` is advised / would-block / blocked / overridden / clean.
+CREATE TABLE decision_log (
+ id INTEGER PRIMARY KEY,
+ rel_path TEXT NOT NULL,
+ archetype TEXT,
+ match_quality TEXT,
+ confidence_band TEXT,
+ violations_raised INTEGER NOT NULL DEFAULT 0,
+ blockable_rules TEXT,
+ outcome TEXT NOT NULL,
+ session_id TEXT,
+ observed_at INTEGER NOT NULL
+);
+CREATE INDEX idx_decision_log_at ON decision_log(observed_at);
+CREATE INDEX idx_decision_log_path ON decision_log(rel_path, observed_at);
 ```
 
-**Migration policy:** drift.db is a CACHE. Drop-and-recreate is permitted on schema bumps. `/chameleon-refresh` rebuilds in <60s on typical repos.
+**Migration policy:** drift.db is mostly a CACHE - drop-and-recreate is permitted on schema bumps for `files` and `edit_observations`, and `/chameleon-refresh` rebuilds them in <60s. **Exception:** `rule_overrides` and `decision_log` are durable history, not cache. Refresh does NOT clear them, and a schema bump must preserve them (additive `ALTER TABLE`, not drop-and-recreate), because the override-contention and defect-postmortem questions they answer span many profile revisions. They are bounded by the same two-stage age-then-recency trim as `edit_observations` (`DECISION_LOG_*` and the override caps in `_thresholds.py`), sized larger because each row is reach-back history a lead may need, not a rolling drift signal.
 
 **GC policy:**
 - Records older than 30 days purged weekly
@@ -1867,6 +2054,7 @@ Magic numbers in the architecture, with evaluation protocols for validation:
 ## Security mitigations ( + + )
 
 ### Critical mitigations
+0. **Block-eligible deterministic secret detection** - `secret-detected-in-content` is promoted from advisory to block, kind-gated to high-precision deterministic patterns only (AKIA, ghp_, sk-ant-, sk_live, PEM, Google AIza, Azure AccountKey). Wired into the in-process lint path, archetype-independent, calibrated. PR-review escalates the same rule to a BLOCK verdict. JWT/`user:password@` and the GCP `"type": "service_account"` marker stay advisory (benign-content collisions; a real GCP key file hard-blocks via its PEM block).
 1. **Canonical excerpt secret scanner** — vendored detect-secrets rules; refuses unscanned canonicals
 2. **Canonical injection scanner** — bootstrap detects instruction-shaped natural language in canonical content; flag for user review or strip comments before injection
 3. **Tag-boundary sanitization** — before injection, escape `</chameleon-context>`, `</chameleon`, `<chameleon-context>` literals in canonical/idiom content; regression test in `tests/comprehensive_test.py` (sanitization section)
@@ -1887,6 +2075,9 @@ Magic numbers in the architecture, with evaluation protocols for validation:
 16. **Trust model with cooldown** — committed profiles untrusted-by-default; `/chameleon-trust` requires typing repo name; new canonicals/idioms after trust re-prompt
 17. **SQLite hardening profile** — `mode=ro` for read paths, `PRAGMA trusted_schema=OFF`, never run user-provided SQL
 18. **DoS protection on globs** — `pathlib.Path.glob` with `follow_symlinks=False`; manual repo-boundary walker
+19. **Supply-chain checks split network-vs-no-network** - the manifest/lockfile diff parse in pr-review (new direct dep, non-registry host, install-lifecycle script, `git+ssh:`/`file:` source) makes NO network calls and runs regardless. The `npm audit`/`bundler-audit` layer is the only network path: gated behind `CHAMELEON_ALLOW_DEP_AUDIT=1`, hard wall-clock timeout, fail-open to "unavailable", and it shells the user's own auditor against their repo root, never chameleon's private `--no-audit` provisioned-node dir.
+20. **Review ledger HMAC is tamper-evident, not forgery-proof** - the per-user local HMAC key is held by the gated developer, so the ledger detects tampering by other local users but cannot be a CI merge gate. A real hard gate needs a server-side platform status check (the authority is the platform, not the local key).
+21. **New trust-hashed artifacts** - `conventions.json`, `exports_index.json`, `reverse_index.json`, `function_catalog.json`, `enforcement.json`, and `config.json` join the trust SHA, so a refresh that changes any of them de-trusts the profile until re-approval. The override audit never auto-mutates `enforcement.json` at runtime precisely because it is hashed (a runtime rewrite would flip the profile to stale and silently disable all blocking).
 
 ---
 

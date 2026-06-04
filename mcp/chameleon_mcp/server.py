@@ -111,6 +111,64 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
 
 
 @mcp.tool()
+def query_symbol_importers(repo: str, file_path: str) -> dict:
+    """Cross-file importers of a TypeScript module + which imports it now breaks.
+
+    Reads the prebuilt reverse index (symbol -> importers) plus the module's
+    current on-disk export set. Returns:
+      - importers: per exported name, the files that import it (rename blast radius)
+      - broken: names an importer still references that the module no longer
+        exports (the deterministic existence break)
+      - export_set_open: True when `export * from` makes the set unenumerable
+        (broken is suppressed; importers still reported)
+
+    Fails open with found=False on any ambiguity (unresolvable/untrusted repo,
+    missing index, unreadable module). Never fabricates an importer.
+    """
+    return tools.query_symbol_importers(repo, file_path)
+
+
+@mcp.tool()
+def get_crossfile_context(repo: str) -> dict:
+    """Cross-file existence breaks across a TypeScript repo, for PR review.
+
+    Scans the prebuilt reverse index and returns one finding per removed/renamed
+    export an indexed importer still references -- the deterministic cross-file
+    break class. Each finding carries high_confidence, true only when the
+    resolution is unambiguous end to end (exact file match, closed export set,
+    an importer that still names the binding). A consumer must relay ONLY
+    high_confidence=true findings; lower-confidence rows are returned for
+    transparency and must be dropped, never surfaced.
+
+    Returns {found, findings: [{symbol, module, count, high_confidence, sites}]}.
+    Fails open with found=False on any ambiguity (unresolvable/untrusted repo,
+    missing index). TS-only; never fabricates an importer edge.
+    """
+    return tools.get_crossfile_context(repo)
+
+
+@mcp.tool()
+def get_duplication_candidates(repo: str, file_path: str) -> dict:
+    """Existing functions a file's new functions may re-implement under a new name.
+
+    For each function defined in file_path, the bootstrap function catalog is
+    prefiltered (signature shape + name-token overlap) to existing functions
+    elsewhere in the repo that look like the same intent under a different name --
+    the toDisplayDate vs formatDate case exact-name matching misses. Each
+    candidate carries a short body excerpt read from disk.
+
+    The tool only PREFILTERS; the LLM caller judges semantic equivalence against
+    the candidate bodies. Duplication is a judgment call, so any finding raised
+    from this is advisory FIX/NIT at most, never block-eligible.
+
+    Returns {found, file, matches: [{function, candidates: [...]}]}. Fails open
+    with found=False on any ambiguity (unresolvable/untrusted repo, missing
+    catalog, unparsable file). Never fabricates a candidate.
+    """
+    return tools.get_duplication_candidates(repo, file_path)
+
+
+@mcp.tool()
 def get_drift_status(repo: str) -> dict:
     """Report freshness, days_since_refresh, observed_drift_score for a repo."""
     return tools.get_drift_status(repo)
@@ -120,6 +178,111 @@ def get_drift_status(repo: str) -> dict:
 def get_status(repo: str) -> dict:
     """Report enforcement mode + active/demoted block rules for a repo."""
     return tools.get_status(repo)
+
+
+@mcp.tool()
+def get_shadow_report(repo: str, window_days: int | None = None) -> dict:
+    """Per-rule would-block counts from the shadow log for the shadow->enforce decision.
+
+    Aggregates the accumulating real-edit metrics (not the one-shot bootstrap
+    calibration get_status returns). Per rule: would-block count, distinct
+    files/sessions, advisory-only count, and a promotion verdict by count. Plus a
+    sampled file:line list for human spot-check and a window_truncated flag when
+    rotation dropped older rows. No false-positive fraction (the data has no
+    outcome signal). window_days defaults to CHAMELEON_SHADOW_REPORT_WINDOW_DAYS.
+    """
+    return tools.get_shadow_report(repo, window_days)
+
+
+@mcp.tool()
+def get_override_audit(repo: str, window_days: int | None = None) -> dict:
+    """Per-rule inline-override audit: how often each block rule gets chameleon-ignored.
+
+    Reads the durable drift.db override history (not wiped by refresh) plus the
+    would-block metrics. Per rule: override count, would-block count, bare-blanket
+    share, distinct files/sessions, and an override rate (overrides / fired edits).
+    A high rate flags a rule fighting the team -- reconcile via /chameleon-refresh
+    (recalibrate) or /chameleon-teach (fix the convention). This is a contention
+    signal, not a false-positive rate, and never auto-mutates enforcement.
+    window_days defaults to CHAMELEON_OVERRIDE_AUDIT_WINDOW_DAYS.
+    """
+    return tools.get_override_audit(repo, window_days)
+
+
+@mcp.tool()
+def get_longitudinal_signals(repo: str, window_days: int | None = None) -> dict:
+    """Two honestly-labelled longitudinal health tracks for a repo.
+
+    Track 1, structural_conformance: the drift score (1 - mean structural-match
+    confidence), relabelled and explicitly NOT a quality bar. Track 2,
+    enforcement_outcomes: aggregate would-block and idiom-review rates over the
+    window, counting how often chameleon's own shape/idiom rules fired. Both
+    carry a blind_spots/disclaimer caveat -- neither track sees logic, dataflow,
+    cross-file, or auth defects, so an all-zeros result is not a safety guarantee.
+    window_days defaults to CHAMELEON_LONGITUDINAL_WINDOW_DAYS.
+    """
+    return tools.get_longitudinal_signals(repo, window_days)
+
+
+@mcp.tool()
+def get_review_history(repo: str, limit: int | None = None) -> dict:
+    """Return the persisted PR-review verdict trail for a repo, newest first.
+
+    Each /chameleon-pr-review run appends a signed record pinning the reviewed
+    commit, the profile that reviewed it (profile_sha256 + generation +
+    schema_version), trust state, verdict, findings by severity, engine version,
+    and reviewer. Lets a lead see the trail and spot a BLOCK verdict that shipped
+    anyway. Each record carries `verified` (HMAC re-check): tamper-evidence
+    against a third local user, NOT forgery resistance against the reviewed
+    developer (who holds the key) and NOT CI-verifiable. Honest audit log, not a
+    merge gate. limit defaults to CHAMELEON_REVIEW_HISTORY_DEFAULT_LIMIT.
+    """
+    return tools.get_review_history(repo, limit)
+
+
+@mcp.tool()
+def record_review_verdict(
+    repo: str,
+    verdict: str,
+    findings_count: int | None = None,
+    commit_sha: str | None = None,
+    pr_id: str | None = None,
+) -> dict:
+    """Append a /chameleon-pr-review verdict to the repo's signed review ledger.
+
+    The skill's final step. After the verdict is shown in chat, persist it so a
+    lead can later audit which reviewed commits shipped (and whether any BLOCK
+    merged anyway). Args: `verdict` (the rendered verdict string),
+    `findings_count` (total BLOCK+FIX+NIT count), `commit_sha` (reviewed HEAD),
+    optional `pr_id`.
+
+    Stamps profile provenance (profile_sha256 + generation + schema_version),
+    trust state, engine version, and reviewer onto the record. Best-effort: a
+    ledger failure returns recorded=False and never blocks the review.
+    Tamper-evident, NOT forgery-proof and NOT CI-verifiable. Read back with
+    get_review_history.
+    """
+    return tools.record_review_verdict(
+        repo,
+        verdict,
+        findings_count=findings_count,
+        commit_sha=commit_sha,
+        pr_id=pr_id,
+    )
+
+
+@mcp.tool()
+def explain_edit(repo: str, file_path: str) -> dict:
+    """Replay what chameleon knew and did the last time a file was edited.
+
+    The post-incident recovery read. Returns the most-recent per-edit decision
+    log row for file_path (archetype, match_quality, confidence_band, violations
+    raised, the block-eligible rules that stood, the resolved outcome) and a
+    classification: coverage-gap (no archetype or fallback/none match quality),
+    in-scope-miss (ast/exact match but nothing caught the defect), or blocked /
+    overridden (the gate did fire). found is False when no edit was ever logged.
+    """
+    return tools.explain_edit(repo, file_path)
 
 
 @mcp.tool()
@@ -313,6 +476,19 @@ def doctor() -> dict:
     health status.
     """
     return tools.doctor()
+
+
+@mcp.tool()
+def dep_audit(repo: str) -> dict:
+    """Opt-in dependency / supply-chain audit (npm audit / bundler-audit). Advisory only.
+
+    Runs the ecosystem auditors whose manifests exist in the repo root and returns
+    a structured advisory summary. Gated behind CHAMELEON_ALLOW_DEP_AUDIT=1 because
+    it hits the network; refuses with a clear message otherwise. Fails open to an
+    "unavailable" per-ecosystem result when a binary or the network is absent.
+    Never blocks anything.
+    """
+    return tools.dep_audit(repo)
 
 
 def main() -> None:

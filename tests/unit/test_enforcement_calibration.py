@@ -333,6 +333,95 @@ def test_naming_active_when_all_files_match_prefix(tmp_path):
     assert result["naming-convention-violation"]["flagged"] == 0
 
 
+def test_file_naming_demoted_when_committed_siblings_break_casing(tmp_path):
+    # The archetype's stored file_naming is PascalCase, but every committed
+    # member is a camelCase `useXxx` hook. Calibration must run the file-naming
+    # check (which is gated on a file_path) against the committed files and
+    # measure its true false-positive rate, so the rule is demoted -- not ship
+    # active and hard-block the repo's own correctly-named files. Regression for
+    # the bug where calibration called lint_conventions without a file_path, so
+    # the check was silent and the rule measured a 0.0 fp_rate.
+    repo = tmp_path
+    (repo / "src" / "hooks").mkdir(parents=True)
+    (repo / "src" / "hooks" / "useCsv.tsx").write_text(
+        "export const useCsv = () => null\n", encoding="utf-8"
+    )
+    (repo / "src" / "hooks" / "useAlert.tsx").write_text(
+        "export const useAlert = () => null\n", encoding="utf-8"
+    )
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "hook": [
+                    {
+                        "witness": {"path": "src/hooks/useCsv.tsx"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
+            }
+        }
+        conventions = {
+            "conventions": {
+                "naming": {
+                    "hook": {
+                        "file_naming": {
+                            "casing": "PascalCase",
+                            "casing_consistency": 1.0,
+                            "sample_size": 13,
+                        }
+                    }
+                }
+            }
+        }
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    assert result["file-naming-convention-violation"]["active"] is False
+    assert result["file-naming-convention-violation"]["flagged"] >= 1
+
+
+def test_file_naming_active_when_committed_files_match_casing(tmp_path):
+    repo = tmp_path
+    (repo / "src" / "components").mkdir(parents=True)
+    (repo / "src" / "components" / "Widget.tsx").write_text(
+        "export const Widget = () => null\n", encoding="utf-8"
+    )
+    (repo / "src" / "components" / "Button.tsx").write_text(
+        "export const Button = () => null\n", encoding="utf-8"
+    )
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "component": [
+                    {
+                        "witness": {"path": "src/components/Widget.tsx"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
+            }
+        }
+        conventions = {
+            "conventions": {
+                "naming": {
+                    "component": {
+                        "file_naming": {
+                            "casing": "PascalCase",
+                            "casing_consistency": 1.0,
+                            "sample_size": 13,
+                        }
+                    }
+                }
+            }
+        }
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    assert result["file-naming-convention-violation"]["active"] is True
+    assert result["file-naming-convention-violation"]["flagged"] == 0
+
+
 def test_inheritance_demoted_when_witness_breaks_dominant_base(tmp_path):
     # The witness declares a top-level class without the archetype's dominant base,
     # so inheritance-convention-violation fires and the rule must NOT block.
@@ -569,7 +658,8 @@ def test_active_block_rules_filters_to_block_eligible(tmp_path):
 
     ec._clear_block_rules_cache()
     # A poisoned enforcement.json marks a rule that is not block-eligible "active".
-    # active_block_rules must drop it so it can never reach the block gate.
+    # active_block_rules must drop it so it can never reach the block gate, while
+    # keeping the genuinely block-eligible rules it also marked active.
     write_block_rules(
         tmp_path,
         {
@@ -578,4 +668,4 @@ def test_active_block_rules_filters_to_block_eligible(tmp_path):
             "made-up-rule": {"active": True},
         },
     )
-    assert active_block_rules(tmp_path) == {"phantom-import"}
+    assert active_block_rules(tmp_path) == {"phantom-import", "secret-detected-in-content"}

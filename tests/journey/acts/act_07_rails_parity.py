@@ -64,13 +64,18 @@ PHASE 21 - Rails parity (Prism extractor, rubocop rules, Rails priors, hybrid):
 
   STEP 5 - hybrid language detection:
     Switch to working/ts_with_rails_sidecar (this fixture has both Gemfile and
-    package.json). Run /chameleon-init.
+    package.json, with only a handful of files on each side). Run /chameleon-init.
     After bootstrap, run chameleon-mcp::get_pattern_context on any file in the
     fixture to verify chameleon initialized successfully.
-    Report the language detected in profile.json (should match the dominant tree).
-    Verify that a language_hint appeared in the SessionStart primer context during
-    this init (it should note whether this is a TS or Rails primary repo with a
-    sidecar of the other language).
+    Report the language detected in profile.json (should match the dominant tree:
+    typescript).
+    This fixture is deliberately below the sidecar-hint thresholds (fewer than 50
+    Ruby files and no config/application.rb), so the SessionStart language_hint is
+    expected to be ABSENT - its absence on a sparse sidecar is correct behavior,
+    not a failure. Likewise an empty archetype set is acceptable here: the fixture
+    is below clustering sample sizes by design. Only report a problem if init
+    crashes, the profile is missing, or profile.json reports a non-typescript
+    language.
 
   emit checkpoint completed phase 21
 
@@ -174,7 +179,15 @@ def run(ctx: JourneyContext) -> ActResult:
                     a.get("name", "") if isinstance(a, dict) else str(a) for a in archetypes_data
                 ]
             elif isinstance(archetypes_data, dict):
-                names = list(archetypes_data.keys())
+                # archetypes.json nests the archetype map under a top-level
+                # "archetypes" key beside generation/schema_version metadata, the
+                # same envelope shape as rules.json; reading the document root
+                # would compare metadata keys against the Rails name patterns.
+                inner = archetypes_data.get("archetypes")
+                if isinstance(inner, dict):
+                    names = list(inner.keys())
+                else:
+                    names = list(archetypes_data.keys())
             else:
                 names = []
             rails_patterns = ("controller", "model", "service", "spec", "job", "mailer")

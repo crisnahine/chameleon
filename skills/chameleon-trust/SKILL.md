@@ -27,7 +27,7 @@ The trust prompt is a security gate. **Don't grant trust mechanically.**
 
 ## Material-change re-prompt
 
-If any of the 10 hashed profile artifacts (`.archetype_renames.json`, `archetypes.json`, `canonicals.json`, `config.json`, `conventions.json`, `enforcement.json`, `principles.md`, `idioms.md`, `profile.json`, `rules.json`) have changed since trust was granted, trust becomes stale and the user must re-confirm.
+If any of the 13 hashed profile artifacts (`.archetype_renames.json`, `archetypes.json`, `canonicals.json`, `config.json`, `conventions.json`, `enforcement.json`, `exports_index.json`, `function_catalog.json`, `principles.md`, `idioms.md`, `profile.json`, `reverse_index.json`, `rules.json`) have changed since trust was granted, trust becomes stale and the user must re-confirm.
 
 The MCP `detect_repo` tool returns `trust_state: "stale"` after a material change (not `"untrusted"` - that means no trust record exists at all). `using-chameleon` surfaces the re-prompt.
 
@@ -36,6 +36,8 @@ The MCP `detect_repo` tool returns `trust_state: "stale"` after a material chang
 ## Enforcement starts in shadow
 
 A freshly trusted (or refreshed) profile runs enforcement in `shadow` mode by default: would-have-blocked events are logged but nothing blocks. This lets the repo measure its own false-positive rate before any edit is denied. Promote to `enforce` (set `enforcement.mode: "enforce"` in `config.json`) only after a clean shadow window — zero would-blocks on committed files, which `/chameleon-status` reports. Until then, blocking stays off and chameleon is purely advisory.
+
+Promotion is a TWO-step action: `config.json` is one of the trust-hashed artifacts, so editing it flips the profile to `stale` and disables all enforcement and canonical injection until trust is re-granted. After changing `enforcement.mode`, run `/chameleon-trust` again — otherwise the promotion silently turns chameleon OFF instead of on. The same applies to any other `config.json` edit.
 
 ## What to tell the user before running
 

@@ -18,8 +18,33 @@ import re
 from pathlib import Path
 
 from chameleon_mcp.lint_engine import Violation
+from chameleon_mcp.symbol_index import (
+    load_exports_index,
+    load_reverse_index,
+    module_key_for_path,
+    resolve_index_key,
+)
 
 _RULE = "phantom-import"
+_SYMBOL_RULE = "phantom-symbol"
+# Advisory: editing a module surfaces who imports its bindings (cross-file
+# blast radius), and a deterministic flag for an export removed/renamed out from
+# under an indexed call site. Both read the prebuilt reverse index only -- no
+# caller is re-parsed on the hot path. Suppress per-rule with chameleon-ignore.
+_CROSSFILE_RULE = "cross-file-importers"
+_BROKEN_EXPORT_RULE = "removed-export-breaks-importers"
+
+# One `{ a, b as c, type D }` specifier inside an import clause. Captures the
+# IMPORTED name (left of `as`) and an optional inline `type` prefix; the local
+# alias is irrelevant to whether the source module exports the name.
+_NAMED_SPEC_RE = re.compile(
+    r"(?:(?P<inline_type>\btype\b)\s+)?(?P<name>[A-Za-z_$][\w$]*)(?:\s+as\s+[A-Za-z_$][\w$]*)?"
+)
+# Maximum named specifiers checked per import statement. A real import lists a
+# handful; a generated re-export can list hundreds. The brace body is also
+# length-bounded before parsing so a pathological clause can't drive the hot
+# path.
+_MAX_NAMED_SPECS = 200
 
 # import/export ... from '<s>' | import('<s>') | require('<s>'). The
 # `[^;'"]{0,8000}?` run is bounded so a pathological no-anchor "import <huge>"
@@ -57,16 +82,96 @@ _RUBY_SUFFIXES = ("", ".rb", ".so", ".bundle")
 _MAX_SPECS = 200
 
 
+def _scan_quoted_string(content: str, start: int) -> int | None:
+    """Index just past a single-/double-quoted string literal opening at ``start``.
+
+    Returns the index after the closing quote, or None when no closing quote
+    appears before an unescaped newline. A real single-/double-quoted JS/TS
+    literal never spans a raw newline, so a quote with no same-line close is NOT
+    a string start: it is a JSX-text apostrophe (``It's broken``), a possessive
+    in doc text, or a regex artifact. Treating it as a string would open a fake
+    literal that swallows the rest of the file and masks every later export.
+    Bounded by the same-line constraint, so no ReDoS risk.
+    """
+    quote = content[start]
+    n = len(content)
+    j = start + 1
+    while j < n:
+        ch = content[j]
+        if ch == "\\":
+            # An escaped char (incl. a line continuation) is consumed as part of
+            # the literal; advance past it.
+            j += 2
+            continue
+        if ch == "\n":
+            return None
+        if ch == quote:
+            return j + 1
+        j += 1
+    return None
+
+
+# A `/` opens a regex literal (not division) only in a position where an
+# expression is expected. We approximate that position by the last significant
+# non-space character before the slash: after an operator, an opening bracket, a
+# comma, a return/typeof/etc. keyword, or at the start of input, a `/` is a
+# regex. After an identifier, a `)`, a `]`, or a number it is division. This is
+# the standard slash-disambiguation heuristic; getting it slightly wrong only
+# changes whether a `/...` run is blanked, never whether real code is masked as
+# a string.
+_REGEX_PREV_OK = frozenset("(,=:[{;!&|?+-*%^~<>")
+
+
+def _regex_allowed_at(prev_significant: str) -> bool:
+    if prev_significant == "":
+        return True  # start of input
+    return prev_significant in _REGEX_PREV_OK
+
+
+def _scan_regex_literal(content: str, start: int) -> int | None:
+    """Index just past a regex literal opening with ``/`` at ``start``.
+
+    Walks to the closing unescaped ``/`` on the same line, honoring character
+    classes (``[...]`` where a ``/`` is literal). Returns None when no close is
+    found before a newline (then the ``/`` was division, not a regex). Bounded
+    to one line, so no backtracking.
+    """
+    n = len(content)
+    j = start + 1
+    in_class = False
+    while j < n:
+        ch = content[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch == "\n":
+            return None
+        if ch == "[":
+            in_class = True
+        elif ch == "]":
+            in_class = False
+        elif ch == "/" and not in_class:
+            return j + 1
+        j += 1
+    return None
+
+
 def _strip_ts_noise(content: str) -> tuple[str, list[bool]]:
-    """Blank line/block comments and backtick template literals (so imports
-    embedded in fixtures/snapshots/docs aren't matched), preserving single- and
-    double-quoted strings so real import specifiers survive.
+    """Blank line/block comments, backtick template literals, and regex literals
+    (so imports/exports embedded in fixtures/snapshots/docs/patterns aren't
+    matched), preserving single- and double-quoted strings so real import
+    specifiers survive.
 
     Returns the rewritten text plus a parallel mask: ``mask[i]`` is True when
     output char ``i`` was inside a single-/double-quoted string literal. The
     caller skips a regex match whose keyword sits in a masked region, so a code
     snippet stored *as a string value* (e.g. ``const c = "import x from './y'"``)
     is not mistaken for a real import.
+
+    A single-/double-quoted string is only opened when its closing quote sits on
+    the same line. A lone apostrophe in JSX text (``It's broken``) or a regex
+    character class (``/[a-z'-]/``) therefore stays a normal char instead of
+    opening a fake literal that would mask every export after it.
 
     Single linear pass with explicit lexer states - no regex backtracking, so
     an unterminated template literal cannot trigger catastrophic backtracking
@@ -76,8 +181,11 @@ def _strip_ts_noise(content: str) -> tuple[str, list[bool]]:
     mask: list[bool] = []
     n = len(content)
     i = 0
-    NORMAL, LINE, BLOCK, TMPL, SQ, DQ = range(6)
+    NORMAL, LINE, BLOCK, TMPL = range(4)
     state = NORMAL
+    # Last non-space, non-newline char emitted in NORMAL state, used to decide
+    # whether a `/` opens a regex literal or is division.
+    prev_significant = ""
 
     def emit(s: str, in_str: bool) -> None:
         out.append(s)
@@ -93,17 +201,40 @@ def _strip_ts_noise(content: str) -> tuple[str, list[bool]]:
             elif c == "/" and nxt == "*":
                 state, i = BLOCK, i + 2
                 emit("  ", False)
+            elif c == "/" and _regex_allowed_at(prev_significant):
+                end = _scan_regex_literal(content, i)
+                if end is not None:
+                    # Blank the regex body so a quote/keyword inside it can't be
+                    # read as a string or import.
+                    emit(" " * (end - i), False)
+                    i = end
+                    prev_significant = "/"
+                    continue
+                # Not a regex (no same-line close) -> treat `/` as division.
+                emit(c, False)
+                prev_significant = c
+                i += 1
             elif c == "`":
                 state, i = TMPL, i + 1
                 emit(" ", False)
-            elif c == "'":
-                state, i = SQ, i + 1
-                emit(c, False)
-            elif c == '"':
-                state, i = DQ, i + 1
-                emit(c, False)
+                prev_significant = "`"
+            elif c == "'" or c == '"':
+                end = _scan_quoted_string(content, i)
+                if end is not None:
+                    emit(content[i:end], True)
+                    i = end
+                    prev_significant = c
+                else:
+                    # A quote with no same-line close is not a string start
+                    # (JSX-text apostrophe, possessive, regex artifact); emit it
+                    # as an ordinary char so the rest of the file stays visible.
+                    emit(c, False)
+                    prev_significant = c
+                    i += 1
             else:
                 emit(c, False)
+                if not c.isspace():
+                    prev_significant = c
                 i += 1
         elif state == LINE:
             emit(c if c == "\n" else " ", False)
@@ -117,25 +248,16 @@ def _strip_ts_noise(content: str) -> tuple[str, list[bool]]:
             else:
                 emit(c if c == "\n" else " ", False)
                 i += 1
-        elif state == TMPL:
+        else:  # TMPL
             if c == "\\":
                 emit("  ", False)
                 i += 2
             elif c == "`":
                 state, i = NORMAL, i + 1
                 emit(" ", False)
+                prev_significant = "`"
             else:
                 emit(c if c == "\n" else " ", False)
-                i += 1
-        else:  # SQ or DQ: preserve content so import specifiers survive
-            emit(c, True)
-            if c == "\\":
-                if i + 1 < n:
-                    emit(content[i + 1], True)
-                i += 2
-            else:
-                if (state == SQ and c == "'") or (state == DQ and c == '"'):
-                    state = NORMAL
                 i += 1
     return "".join(out), mask
 
@@ -155,6 +277,62 @@ def _violation(spec: str, search_dir: Path, root: Path | None) -> Violation:
             "Likely a typo or a file that doesn't exist; verify the path."
         ),
     )
+
+
+def _symbol_violation(name: str, spec: str) -> Violation:
+    return Violation(
+        rule=_SYMBOL_RULE,
+        expected=spec,
+        actual=name,
+        severity="warning",
+        message=(
+            f"phantom-symbol: '{name}' is not exported by '{spec}'. "
+            "Likely a hallucinated or renamed binding; the import resolves to a "
+            "real file but the name is missing from its exports."
+        ),
+    )
+
+
+def _named_specifiers(import_text: str) -> list[str] | None:
+    """Imported names from an import statement's ``{ ... }`` clause.
+
+    Returns the list of IMPORTED names (left of any `as`), or None when the
+    statement carries no checkable named clause: a side-effect import, a
+    type-only `import type { ... }`, or a namespace import. Default and namespace
+    bindings outside the braces are ignored (default/namespace imports are not
+    symbol-checkable here). Inline `type` specifiers and a `default as X`
+    re-bind are dropped -- the former is a type position and the latter targets
+    the default export, which the named index does not record.
+    """
+    # `import type { ... }` is a pure type import; the whole clause is types.
+    if re.match(r"\s*import\s+type\b", import_text):
+        return None
+    open_brace = import_text.find("{")
+    if open_brace == -1:
+        return None  # side-effect, default-only, or namespace import
+    close_brace = import_text.find("}", open_brace)
+    if close_brace == -1:
+        return None
+    body = import_text[open_brace + 1 : close_brace]
+    if len(body) > 16_000:
+        return None  # implausibly large clause; skip rather than parse on hot path
+    names: list[str] = []
+    for part in body.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        m = _NAMED_SPEC_RE.match(part)
+        if not m:
+            continue
+        if m.group("inline_type"):
+            continue  # `type Foo` inline specifier -> type position, not a value
+        name = m.group("name")
+        if name == "default":
+            continue  # `default as X` targets the default export (not indexed)
+        names.append(name)
+        if len(names) >= _MAX_NAMED_SPECS:
+            break
+    return names or None
 
 
 def _exists_with_suffix(base: Path) -> bool:
@@ -356,8 +534,14 @@ def lint_phantom_imports(
 
     violations: list[Violation] = []
     if language == "typescript":
-        if _RULE in {m.group(1) for m in _IGNORE_TS_RE.finditer(content)}:
+        _ignored = {m.group(1) for m in _IGNORE_TS_RE.finditer(content)}
+        if _RULE in _ignored:
             return []
+        # phantom-symbol can be suppressed independently of phantom-import; the
+        # symbol check resolves and loads the export index only when it is on.
+        symbol_check_on = _SYMBOL_RULE not in _ignored
+        exports_index = load_exports_index(root) if symbol_check_on else None
+        symbol_check_on = symbol_check_on and exports_index is not None
         ts_rules = ((rules or {}).get("rules") or {}).get("typescript") or {}
         paths = ts_rules.get("paths") or {}
         source = ts_rules.get("source") or "tsconfig.json"
@@ -385,6 +569,37 @@ def lint_phantom_imports(
 
         stripped, str_mask = _strip_ts_noise(content)
         seen: set[str] = set()
+        # The resolved-key cache is per-file: two imports from the same module
+        # resolve to the same on-disk path, so the index key is computed once.
+        _key_memo: dict[str, str | None] = {}
+
+        def _symbol_check(m, base: Path, spec: str) -> None:
+            # Each named specifier of a resolved-path `import` is checked against
+            # the target module's exported set. Runs once per import STATEMENT
+            # (not once per module path): two imports from the same module carry
+            # different bindings, so the second must be checked even when the
+            # path-resolution dedup already saw the spec. Skips `export { x }
+            # from` re-exports (group(1) covers both; the `import` prefix narrows
+            # to the binding the editing file references) and any target whose
+            # set is open or absent from the index.
+            if not symbol_check_on or m.group(1) is None:
+                return
+            import_text = m.group(0)
+            if not import_text.lstrip().startswith("import"):
+                return
+            names = _named_specifiers(import_text)
+            if not names:
+                return
+            if spec not in _key_memo:
+                _key_memo[spec] = resolve_index_key(base, root)  # type: ignore[arg-type]
+            key = _key_memo[spec]
+            entry = exports_index.lookup(key) if key is not None else None
+            if entry is None or entry.open:
+                return
+            for nm in names:
+                if nm not in entry.names:
+                    violations.append(_symbol_violation(nm, spec))
+
         for m in _TS_IMPORT_SPEC_RE.finditer(stripped):
             if len(seen) >= _MAX_SPECS:
                 break
@@ -398,7 +613,16 @@ def lint_phantom_imports(
             # Drop bundler query/fragment suffixes (vite/webpack): svgr's
             # `./icon.svg?react`, `?url`, `?raw`, `?worker`, etc.
             spec = raw.split("?", 1)[0].split("#", 1)[0]
-            if not spec or spec in seen:
+            if not spec:
+                continue
+            # A module path already path-checked this file is not stat'd again
+            # (the phantom-import dedup), but a repeat relative `import` still
+            # carries its own named bindings, so symbol-check it before skipping.
+            if spec in seen:
+                if spec.startswith("."):
+                    base = file_dir / spec
+                    if _under_repo(base, root) and _exists_cached(base):
+                        _symbol_check(m, base, spec)
                 continue
             seen.add(spec)
             if _NON_CODE_EXT_RE.search(spec):
@@ -411,14 +635,41 @@ def lint_phantom_imports(
                     continue  # escapes the repo -> don't stat outside, don't flag
                 if not _exists_cached(base):
                     violations.append(_violation(spec, base.parent, root))
+                    continue
+                _symbol_check(m, base, spec)
                 continue
             # tsconfig path alias?
             if root is None:
                 continue
+            # Symbol-check the alias target before any phantom-import skip. Build
+            # candidate base paths from the on-disk tsconfig `paths` (the
+            # authoritative source, present even when the profile rules carry no
+            # `paths`), falling back to the profile `paths`. When a candidate
+            # resolves to a real file, run the same named-binding check the
+            # relative branch runs, so a hallucinated symbol in an alias import
+            # (the dominant import style in many repos) is caught, not silently
+            # passed. File-existence flagging below stays exactly as conservative
+            # as before -- the symbol check never widens phantom-import.
+            on_disk_paths = {k: list(v) for k, v in tsconfig_alias_paths}
+            symbol_targets = [
+                t
+                for t in _alias_targets(spec, on_disk_paths, ts_config_dir)
+                if _under_repo(t, root)
+            ]
+            if not symbol_targets:
+                symbol_targets = [
+                    t for t in _alias_targets(spec, paths, ts_config_dir) if _under_repo(t, root)
+                ]
+            resolved = next((t for t in symbol_targets if _exists_cached(t)), None)
+            if resolved is not None:
+                _symbol_check(m, resolved, spec)
+
             # Consult the on-disk tsconfig/jsconfig directly: an aliased import
-            # whose pattern is declared there must never be flagged, even when
-            # the caller's profile rules carry no `paths` (e.g. calibration on a
-            # fresh checkout).
+            # whose pattern is declared there must never be flagged as a phantom
+            # file, even when the caller's profile rules carry no `paths` (e.g.
+            # calibration on a fresh checkout). Aliases routinely point at
+            # generated output / build dirs, so a declared-but-unresolved alias
+            # is treated as resolved.
             if _resolves_via_alias(spec, root, tsconfig_alias_paths):
                 continue
             targets = [
@@ -457,4 +708,192 @@ def lint_phantom_imports(
             if not _safe_is_dir(base.parent):
                 continue
             violations.append(_violation(spec, base.parent, root))
+    return violations
+
+
+# Direct named exports off a single statement: `export const|let|var|function|
+# class|interface|type|enum|namespace foo`. `default` is excluded by the keyword
+# alternation. Async/generator function modifiers sit before `function`, so the
+# name capture anchors on the declaring keyword, not the `export` token.
+_TS_EXPORT_DECL_RE = re.compile(
+    r"\bexport\s+(?:abstract\s+|declare\s+|async\s+)*"
+    r"(?:const|let|var|function\s*\*?|class|interface|type|enum|namespace)\s+"
+    r"([A-Za-z_$][\w$]*)"
+)
+# `export { a, b as c }` / `export { x } from './m'`: each element's EXPORTED
+# name is the one to the right of any `as`, which is what an importer references.
+_TS_EXPORT_CLAUSE_RE = re.compile(r"\bexport\s*\{([^}]*)\}")
+# `export * from './m'` (no `as`): pulls in an unenumerable set, so the current
+# export set can't be trusted -- skip both cross-file checks for the file.
+_TS_EXPORT_STAR_RE = re.compile(r"\bexport\s*\*\s*from\b")
+_CLAUSE_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\s+as\s+([A-Za-z_$][\w$]*))?")
+_MAX_EXPORT_NAMES = 1000
+
+
+def _current_export_names(content: str) -> tuple[frozenset[str], bool]:
+    """Names the edited TS file currently exports, plus an open-set flag.
+
+    Regex over comment/template-stripped content (so an export written inside a
+    string or doc comment doesn't count). Mirrors the export shapes ts_dump.mjs
+    records for the bootstrap index, so the live read and the stored index agree
+    on what "exported" means. Returns ``(names, open)``; ``open`` True means the
+    file does ``export * from`` and its set can't be enumerated -- the caller
+    then skips the cross-file checks rather than reason off a partial set.
+    """
+    stripped, mask = _strip_ts_noise(content)
+
+    def _masked(idx: int) -> bool:
+        # _strip_ts_noise preserves quoted-string CONTENT (so import specifiers
+        # survive) and flags it in the mask; an `export` token inside a string is
+        # a code-as-data snippet, not a real export, so skip it.
+        return 0 <= idx < len(mask) and mask[idx]
+
+    star = _TS_EXPORT_STAR_RE.search(stripped)
+    if star and not _masked(star.start()):
+        return frozenset(), True
+    names: set[str] = set()
+    for m in _TS_EXPORT_DECL_RE.finditer(stripped):
+        if _masked(m.start()):
+            continue
+        names.add(m.group(1))
+        if len(names) >= _MAX_EXPORT_NAMES:
+            return frozenset(names), False
+    for clause in _TS_EXPORT_CLAUSE_RE.finditer(stripped):
+        if _masked(clause.start()):
+            continue
+        body = clause.group(1)
+        if len(body) > 16_000:
+            # An implausibly large clause; treat the set as non-authoritative
+            # rather than parse it on the hot path.
+            return frozenset(), True
+        for part in body.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            mm = _CLAUSE_NAME_RE.match(part)
+            if not mm:
+                continue
+            # The exported name is the alias when `as` is present, else the bare
+            # identifier; `_CLAUSE_NAME_RE` group(1) is the alias.
+            exported = mm.group(1) or part.split()[0]
+            if exported and exported != "default":
+                names.add(exported)
+            if len(names) >= _MAX_EXPORT_NAMES:
+                return frozenset(names), False
+    return frozenset(names), False
+
+
+def _crossfile_violation(name: str, count: int, sample: list) -> Violation:
+    """Advisory: how many files import `name` from the edited module."""
+    noun = "file" if count == 1 else "files"
+    where = ""
+    if sample:
+        shown = ", ".join(s for s in sample[:3])
+        more = " ..." if count > len(sample[:3]) else ""
+        where = f" ({shown}{more})"
+    return Violation(
+        rule=_CROSSFILE_RULE,
+        expected=name,
+        actual=str(count),
+        severity="info",
+        message=(
+            f"cross-file: {count} {noun} import '{name}' from this module{where}. "
+            "Renaming or removing it changes their call sites; update them in the "
+            "same change."
+        ),
+    )
+
+
+def _broken_export_violation(name: str, importers: list) -> Violation:
+    """Deterministic: the edited module no longer exports `name`, but an indexed
+    importer still references it -- the call site is now broken."""
+    sites = ", ".join(s for s in importers[:5])
+    more = " ..." if len(importers) > 5 else ""
+    return Violation(
+        rule=_BROKEN_EXPORT_RULE,
+        expected=name,
+        actual="<removed>",
+        severity="warning",
+        message=(
+            f"removed-export: '{name}' is no longer exported by this module, but "
+            f"{len(importers)} importer(s) still reference it ({sites}{more}). "
+            "Restore the export or update the importers."
+        ),
+    )
+
+
+def lint_cross_file_imports(
+    content: str,
+    *,
+    file_path: str | None,
+    repo_root: Path | str | None,
+    language: str | None,
+) -> list[Violation]:
+    """Cross-file context for the edited module, read from the prebuilt reverse
+    index only (no caller is re-parsed).
+
+    Two advisory findings, both TS-only and silent on any ambiguity:
+
+    - ``cross-file-importers``: for each name the file currently exports that has
+      indexed importers, "N files import `name` from this module" -- the
+      blast-radius hint a reviewer gives before a rename.
+    - ``removed-export-breaks-importers``: a name the index records importers for
+      that the file NO LONGER exports. Deterministic existence break; warning
+      severity, but advisory at edit time (Stop/PR-review consume the same index
+      for the gate-eligible surfacing).
+
+    Returns ``[]`` when the language isn't TypeScript, the path can't be
+    resolved, the reverse index is absent/corrupt, or the file's export set is
+    open (``export * from``). Suppress with ``// chameleon-ignore <rule>``.
+    """
+    if language != "typescript" or not file_path:
+        return []
+    try:
+        root = Path(repo_root).resolve() if repo_root else None
+    except OSError:
+        return []
+    if root is None:
+        return []
+    fp = Path(file_path)
+    if not fp.is_absolute():
+        fp = root / fp
+    if not _under_repo(fp, root):
+        return []
+
+    ignored = {m.group(1) for m in _IGNORE_TS_RE.finditer(content)}
+    crossfile_on = _CROSSFILE_RULE not in ignored
+    broken_on = _BROKEN_EXPORT_RULE not in ignored
+    if not crossfile_on and not broken_on:
+        return []
+
+    index = load_reverse_index(root)
+    if index is None:
+        return []
+    target_key = module_key_for_path(fp, root)
+    if target_key is None:
+        return []
+    indexed = index.names_for(target_key)
+    if not indexed:
+        return []  # nothing imports this module by name -> no cross-file context
+
+    current, open_set = _current_export_names(content)
+    if open_set:
+        # `export * from` re-exports an unknown set; a name absent from the
+        # statically-visible set may still be re-exported, so the existence
+        # check would false-positive. Skip both checks, matching the
+        # skip-on-ambiguity stance the path/symbol checks already take.
+        return []
+
+    violations: list[Violation] = []
+    for name, importers in sorted(indexed.items()):
+        in_exports = name in current
+        if in_exports and crossfile_on:
+            sample = [imp.path for imp in importers]
+            violations.append(_crossfile_violation(name, len(importers), sample))
+        elif not in_exports and broken_on:
+            sites = [
+                (f"{imp.path}:{imp.line}" if imp.line is not None else imp.path)
+                for imp in importers
+            ]
+            violations.append(_broken_export_violation(name, sites))
     return violations

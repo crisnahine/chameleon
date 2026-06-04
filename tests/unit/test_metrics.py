@@ -35,6 +35,10 @@ EXPECTED_KEYS = [
     "archetype",
     "confidence",
     "would_block",
+    "rule",
+    "file_rel",
+    "line",
+    "override",
 ]
 
 TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
@@ -135,6 +139,47 @@ def test_optional_fields_default_to_null(monkeypatch, tmp_path: Path):
     assert record["confidence"] is None
     assert record["advisory_emitted"] is False
     assert record["elapsed_ms"] == 0
+    assert record["rule"] is None
+    assert record["file_rel"] is None
+    assert record["line"] is None
+    assert record["override"] is False
+
+
+def test_rule_attribution_fields_recorded(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path))
+
+    emit_hook_metric(
+        "posttool-verify",
+        elapsed_ms=0,
+        repo_id="r",
+        advisory_emitted=True,
+        would_block=True,
+        rule="import-preference-violation",
+        file_rel="src/a.ts",
+        line=12,
+    )
+
+    record = json.loads(_read_lines(tmp_path)[0])
+    assert record["rule"] == "import-preference-violation"
+    assert record["file_rel"] == "src/a.ts"
+    assert record["line"] == 12
+
+
+def test_line_non_int_coerced_to_null(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path))
+
+    # A non-int line (e.g. a stray string) must not break the append; it is
+    # stored as null rather than crashing the emitter.
+    emit_hook_metric(
+        "posttool-verify",
+        elapsed_ms=0,
+        repo_id="r",
+        advisory_emitted=True,
+        line="oops",  # type: ignore[arg-type]
+    )
+
+    record = json.loads(_read_lines(tmp_path)[0])
+    assert record["line"] is None
 
 
 def test_elapsed_ms_float_is_truncated_to_int(monkeypatch, tmp_path: Path):

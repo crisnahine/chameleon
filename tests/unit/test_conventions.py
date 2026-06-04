@@ -522,6 +522,55 @@ class TestInheritanceExtractor:
         result = extract_inheritance_conventions(files)
         assert result == {}
 
+    def test_groups_base_family_across_namespaces(self, tmp_path):
+        # ef-api shape: no single fully-qualified base clears 0.60, but the
+        # bases share the unqualified name `BaseController` across namespaces, so
+        # the convention is recorded as that family rather than dropped.
+        files = []
+        for i in range(51):
+            files.append(
+                _make_ruby_file(
+                    tmp_path,
+                    f"v1_{i}.rb",
+                    f"class Api::V1::C{i}Controller < Api::V1::BaseController\nend\n",
+                )
+            )
+        for i in range(31):
+            files.append(
+                _make_ruby_file(
+                    tmp_path,
+                    f"admin_{i}.rb",
+                    f"class Api::V1::Admin::C{i}Controller < Api::V1::Admin::BaseController\nend\n",
+                )
+            )
+        for i in range(15):
+            files.append(
+                _make_ruby_file(tmp_path, f"misc_{i}.rb", f"class Other{i} < Unrelated{i}\nend\n")
+            )
+        result = extract_inheritance_conventions(files)
+        # 82/97 = 0.845 of controllers inherit a *BaseController family member;
+        # the top single base alone was only 51/97 = 0.526, below threshold.
+        assert result["base_family"] == "BaseController"
+        assert result["frequency"] >= 0.60
+        assert result["dominant_base"] == "Api::V1::BaseController"
+        assert set(result["known_bases"]) == {
+            "Api::V1::BaseController",
+            "Api::V1::Admin::BaseController",
+        }
+
+    def test_no_family_when_bases_are_distinct(self, tmp_path):
+        # Three distinct unqualified names, none over threshold: no family forms,
+        # so the convention is still dropped (no false grouping).
+        files = []
+        bases = ["AlphaBase", "BetaService", "GammaJob"]
+        for i in range(15):
+            files.append(
+                _make_ruby_file(tmp_path, f"n{i}.rb", f"class N{i} < {bases[i % 3]}\nend\n")
+            )
+        result = extract_inheritance_conventions(files)
+        assert "dominant_base" not in result
+        assert "base_family" not in result
+
 
 class TestMethodCallExtractor:
     def test_detects_common_dsl_calls(self, tmp_path):
