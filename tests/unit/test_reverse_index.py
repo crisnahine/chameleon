@@ -120,6 +120,96 @@ class TestBuild:
         assert rows == [{"path": "a.ts", "line": None}]
 
 
+def _write_tsconfig(
+    repo: Path, paths: dict, base_url: str = ".", at: str = "tsconfig.json"
+) -> None:
+    p = repo / at
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(
+        json.dumps({"compilerOptions": {"baseUrl": base_url, "paths": paths}}),
+        encoding="utf-8",
+    )
+
+
+class TestBuildAliases:
+    """tsconfig path-alias importers resolve into the reverse index.
+
+    Alias-dominant TypeScript repos (most named imports go through `~/*`) were
+    blind to their own existence breaks: the builder dropped every non-relative
+    specifier. These cover the alias-resolution path now wired into the builder.
+    """
+
+    def test_wildcard_alias_resolves_to_target_key(self, tmp_path):
+        _write_tsconfig(tmp_path, {"~/*": ["src/*"]})
+        _touch(tmp_path, "src/utils/user.ts")
+        importer = FakeParsed(
+            tmp_path / "src" / "components" / "Card.tsx",
+            {"import_symbols": [{"name": "getFullName", "module": "~/utils/user", "line": 7}]},
+        )
+        idx = build_reverse_index([importer], tmp_path)
+        rows = idx["targets"]["src/utils/user.ts"]["getFullName"]
+        assert rows == [{"path": "src/components/Card.tsx", "line": 7}]
+
+    def test_exact_alias_resolves(self, tmp_path):
+        _write_tsconfig(tmp_path, {"@config": ["src/config/index.ts"]})
+        _touch(tmp_path, "src/config/index.ts")
+        importer = FakeParsed(
+            tmp_path / "src" / "a.ts",
+            {"import_symbols": [{"name": "settings", "module": "@config", "line": 1}]},
+        )
+        idx = build_reverse_index([importer], tmp_path)
+        assert idx["targets"]["src/config/index.ts"]["settings"] == [
+            {"path": "src/a.ts", "line": 1}
+        ]
+
+    def test_bare_package_still_dropped_with_aliases_present(self, tmp_path):
+        # A real package import must NOT be mistaken for an alias even when a
+        # tsconfig declares paths; it resolves to no in-repo file.
+        _write_tsconfig(tmp_path, {"~/*": ["src/*"]})
+        importer = FakeParsed(
+            tmp_path / "src" / "a.ts",
+            {"import_symbols": [{"name": "useState", "module": "react", "line": 1}]},
+        )
+        idx = build_reverse_index([importer], tmp_path)
+        assert idx["targets"] == {}
+
+    def test_alias_to_missing_file_dropped(self, tmp_path):
+        # An alias that maps to no on-disk file yields no key (the existence
+        # break can only be reasoned about for a real in-repo module).
+        _write_tsconfig(tmp_path, {"~/*": ["src/*"]})
+        importer = FakeParsed(
+            tmp_path / "src" / "a.ts",
+            {"import_symbols": [{"name": "x", "module": "~/ghost/thing", "line": 1}]},
+        )
+        idx = build_reverse_index([importer], tmp_path)
+        assert idx["targets"] == {}
+
+    def test_no_tsconfig_drops_alias(self, tmp_path):
+        # Without a tsconfig there is no alias map, so a `~/...` specifier is
+        # unresolvable and dropped (unchanged from the bare-package behavior).
+        _touch(tmp_path, "src/utils/user.ts")
+        importer = FakeParsed(
+            tmp_path / "src" / "a.ts",
+            {"import_symbols": [{"name": "getFullName", "module": "~/utils/user", "line": 1}]},
+        )
+        idx = build_reverse_index([importer], tmp_path)
+        assert idx["targets"] == {}
+
+    def test_monorepo_nearest_tsconfig_anchors_alias(self, tmp_path):
+        # Two apps map `~/*` to their own src; the importer's alias must resolve
+        # against its nearest tsconfig, not a sibling app's.
+        _write_tsconfig(tmp_path / "apps" / "web", {"~/*": ["src/*"]})
+        _touch(tmp_path, "apps/web/src/lib/fmt.ts")
+        importer = FakeParsed(
+            tmp_path / "apps" / "web" / "src" / "page.tsx",
+            {"import_symbols": [{"name": "fmt", "module": "~/lib/fmt", "line": 2}]},
+        )
+        idx = build_reverse_index([importer], tmp_path)
+        assert idx["targets"]["apps/web/src/lib/fmt.ts"]["fmt"] == [
+            {"path": "apps/web/src/page.tsx", "line": 2}
+        ]
+
+
 class TestLoad:
     def test_missing_artifact_returns_none(self, tmp_path):
         assert load_reverse_index(tmp_path) is None

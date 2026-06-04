@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -329,10 +331,22 @@ def _spawn_reviewer(prompt: str, cwd: Path) -> str | None:
         "--disallowedTools",
         "Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit",
     ]
+    # Spawn into an empty throwaway config dir so the judge inherits none of the
+    # user's settings, plugins, or hooks: a SessionStart hook stack alone can
+    # burn the whole wall-clock budget before the prompt is read. Auth still
+    # resolves from the environment/keychain, which the config dir does not own.
+    env = dict(os.environ)
+    cfg_dir: str | None = None
+    try:
+        cfg_dir = tempfile.mkdtemp(prefix="chameleon-judge-")
+        env["CLAUDE_CONFIG_DIR"] = cfg_dir
+    except OSError:
+        cfg_dir = None  # fall back to the inherited config; the timeout still bounds us
     try:
         proc = subprocess.run(
             args,
             cwd=str(cwd),
+            env=env,
             capture_output=True,
             text=True,
             timeout=timeout_s,
@@ -340,6 +354,9 @@ def _spawn_reviewer(prompt: str, cwd: Path) -> str | None:
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
+    finally:
+        if cfg_dir is not None:
+            shutil.rmtree(cfg_dir, ignore_errors=True)
     if proc.returncode != 0:
         return None
     return proc.stdout or ""

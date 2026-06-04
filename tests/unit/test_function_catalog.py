@@ -256,3 +256,26 @@ class TestSelectCandidates:
         catalog = _cat([("formatDate", 1, 1, "a.ts")])
         new = [fc.NewFunction(name="getData", kind="function", arity=1, required=1)]
         assert fc.select_candidates(catalog, new) == []
+
+    def test_connector_token_only_match_is_noise(self):
+        # `shuffleDeckInPlace` and `updateAccountInCache` share only the
+        # connector token `in`, which carries no reuse signal. It must not pair
+        # them; matching on `in` crowded the real counterpart out of the cap.
+        catalog = _cat([("updateAccountInCache", 2, 2, "a.ts")])
+        new = [fc.NewFunction(name="shuffleDeckInPlace", kind="function", arity=1, required=1)]
+        assert fc.select_candidates(catalog, new) == []
+
+    def test_jaccard_tiebreak_sinks_longer_name_noise(self):
+        # Two candidates share the single common token `name`. The one whose
+        # whole token set is closer to the query (a 2-token name) must rank above
+        # a longer multi-token name, so the cap keeps the better lead.
+        catalog = _cat(
+            [
+                ("fieldReceivingAccountName", 1, 1, "noise.ts"),  # 4 tokens, low jaccard
+                ("getFullName", 1, 1, "user.ts"),  # 2 tokens, higher jaccard
+            ]
+        )
+        new = [fc.NewFunction(name="buildDisplayName", kind="function", arity=1, required=1)]
+        out = fc.select_candidates(catalog, new)
+        names = [c["name"] for c in out[0]["candidates"]]
+        assert names[0] == "getFullName"

@@ -221,3 +221,102 @@ class TestStopBackstopNoArchetype:
                 daemon_state={"available": False},
             )
         assert blocked is False
+
+    def test_unarchetyped_secret_blocks_at_l0(self, tmp_path):
+        # The deterministic-secret branch is archetype-independent and must refuse
+        # the turn at the first edit (L0), not only after escalation to L2: a
+        # leaked credential is never made safe by the escalation ladder.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        f = repo / "config.ts"
+        f.write_text(f'const k = "{AWS_KEY}";\n', encoding="utf-8")
+
+        with patch("chameleon_mcp.tools.get_archetype", return_value={"data": {}}):
+            blocked = hook_helper._stop_file_still_blockable(
+                repo,
+                str(f),
+                loaded=self._loaded(),
+                active={"secret-detected-in-content"},
+                daemon_state={"available": False},
+                level=0,
+            )
+        assert blocked is True
+
+
+class TestStopBackstopArchetypeDependentLevelGate:
+    """Archetype-dependent rules honor the L2 ladder in the re-lint itself.
+
+    An archetype-dependent hard violation on a confident AST match blocks at the
+    Stop backstop only once the file has escalated to L2, so a single
+    wrong-archetype guess cannot trap the turn. The archetype-independent branch
+    is covered above; this exercises the level gate on the archetyped path.
+    """
+
+    def _loaded(self):
+        return SimpleNamespace(
+            canonicals={"canonicals": {}},
+            conventions={"conventions": {}},
+            rules={},
+        )
+
+    def _patches(self, dep_rule="naming-convention-violation"):
+        # Resolve a confident AST archetype and surface one archetype-dependent
+        # hard violation from the in-process re-lint, so only the level gate
+        # decides the outcome.
+        arch = {
+            "data": {
+                "archetype": "component",
+                "match_quality": "ast",
+                "confidence_band": "high",
+            }
+        }
+        vio = [
+            {
+                "rule": dep_rule,
+                "severity": "warning",
+                "message": "m",
+                "expected": "",
+                "actual": "",
+            }
+        ]
+        return (
+            patch("chameleon_mcp.tools.get_archetype", return_value=arch),
+            patch(
+                "chameleon_mcp.hook_helper._lint_file_in_process",
+                return_value=vio,
+            ),
+        )
+
+    def test_archetype_dependent_blocks_at_l2(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        f = repo / "Widget.ts"
+        f.write_text("export const C = 1\n", encoding="utf-8")
+        p_arch, p_lint = self._patches()
+        with p_arch, p_lint:
+            blocked = hook_helper._stop_file_still_blockable(
+                repo,
+                str(f),
+                loaded=self._loaded(),
+                active={"naming-convention-violation"},
+                daemon_state={"available": False},
+                level=2,
+            )
+        assert blocked is True
+
+    def test_archetype_dependent_does_not_block_below_l2(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        f = repo / "Widget.ts"
+        f.write_text("export const C = 1\n", encoding="utf-8")
+        p_arch, p_lint = self._patches()
+        with p_arch, p_lint:
+            blocked = hook_helper._stop_file_still_blockable(
+                repo,
+                str(f),
+                loaded=self._loaded(),
+                active={"naming-convention-violation"},
+                daemon_state={"available": False},
+                level=0,
+            )
+        assert blocked is False

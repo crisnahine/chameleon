@@ -60,6 +60,42 @@ _NOISY_DETECT_SECRETS_TYPES = frozenset(
 )
 
 
+# The two shape-only fallback patterns below match ordinary code with no
+# credential context: any 40-char base64 run is a long camelCase identifier
+# (e.g. adminListingNotesCreateRequestDescriptor) and any 40+ hex run is a git
+# SHA or a sourcemap hash. Both are advisory-only, so on a real repo they flood
+# the advisory tail without ever blocking. Keep one of their matches only when
+# the line that holds it also names a credential, so a true secret assignment
+# (api_token = "...") still flags while bare identifiers and hashes do not.
+_CONTEXT_GATED_KINDS = frozenset({"possible_aws_secret", "high_entropy_hex"})
+
+_CREDENTIAL_CONTEXT = re.compile(
+    r"secret|key|token|password|passwd|credential|auth|apikey|api_key|access|private",
+    re.IGNORECASE,
+)
+
+
+def _line_at(content: str, position: int) -> str:
+    """Return the full source line that contains the byte offset `position`."""
+    start = content.rfind("\n", 0, position) + 1
+    end = content.find("\n", position)
+    if end == -1:
+        end = len(content)
+    return content[start:end]
+
+
+def _line_number_at(content: str, position: int) -> int:
+    """1-based line number for the char offset `position`.
+
+    The deterministic fallback patterns match on the whole-buffer offset, but
+    every downstream consumer (the lint violation formatter, the PR-review hunk
+    gate) reasons in lines. Counting the newlines up to the offset gives the same
+    line a line-keyed diff map uses, so a hard-kind secret can be placed inside a
+    changed hunk rather than reported as a bare character position.
+    """
+    return content.count("\n", 0, position) + 1
+
+
 def _try_detect_secrets(content: str) -> list[dict[str, Any]] | None:
     try:
         from detect_secrets.core.scan import scan_line
@@ -94,10 +130,19 @@ def _fallback_scan(content: str) -> list[dict[str, Any]]:
     hits: list[dict[str, Any]] = []
     for pattern, kind in _FALLBACK_PATTERNS:
         for match in pattern.finditer(content):
+            if kind in _CONTEXT_GATED_KINDS and not _CREDENTIAL_CONTEXT.search(
+                _line_at(content, match.start())
+            ):
+                continue
             hits.append(
                 {
                     "type": kind,
                     "position": match.start(),
+                    # Also carry the line so a hard-kind secret (these are the only
+                    # source of the deterministic block-eligible kinds) can be
+                    # mapped into a diff hunk; ``position`` is retained for the
+                    # (type, position) dedup key and any offset-based caller.
+                    "line_number": _line_number_at(content, match.start()),
                     "secret_value": "<redacted>",
                 }
             )

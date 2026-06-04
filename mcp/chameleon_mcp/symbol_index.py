@@ -257,13 +257,55 @@ def build_reverse_index(files, repo_root: Path | str) -> dict:
     checkouts and reproducible byte-for-byte (it is hashed into the trust SHA).
     Bare-package and out-of-repo specifiers resolve to no in-repo target and are
     dropped: an existence break can only be reasoned about for a module that
-    lives in this repo. Importer rows are sorted and de-duplicated for a stable
-    record.
+    lives in this repo. A tsconfig/jsconfig path-alias specifier (``~/utils/x``,
+    ``@app/y``) DOES name an in-repo file and is resolved through the same alias
+    machinery the phantom-import path check uses, so an alias-dominant repo (where
+    most named imports go through ``~/*``) is not blind to its own existence
+    breaks. Importer rows are sorted and de-duplicated for a stable record.
     """
     try:
         root = Path(repo_root).resolve()
     except OSError:
         root = Path(repo_root)
+
+    # Per-tsconfig-dir alias map, resolved lazily and cached: a monorepo anchors
+    # each alias to the importer's nearest tsconfig, so two apps can map the same
+    # `~/*` to different roots. None marks a dir with no usable alias config.
+    from chameleon_mcp.phantom_imports import (
+        _alias_targets,
+        _load_tsconfig_paths,
+        _nearest_tsconfig_dir,
+    )
+
+    alias_cache: dict[Path, tuple[Path, dict] | None] = {}
+
+    def _alias_config_for(importer_dir: Path) -> tuple[Path, dict] | None:
+        ts_dir = _nearest_tsconfig_dir(importer_dir, root)
+        if ts_dir is None:
+            return None
+        cached = alias_cache.get(ts_dir, False)
+        if cached is not False:
+            return cached
+        _, norm = _load_tsconfig_paths(str(ts_dir))
+        paths = {k: list(v) for k, v in norm} if norm else {}
+        result = (ts_dir, paths) if paths else None
+        alias_cache[ts_dir] = result
+        return result
+
+    def _resolve_module(module: str, importer_dir: Path) -> str | None:
+        # Relative specifiers join onto the importer directory, same as the path
+        # check. Alias specifiers map through the tsconfig `paths` entries.
+        if module.startswith("."):
+            return resolve_index_key(importer_dir / module, root)
+        cfg = _alias_config_for(importer_dir)
+        if cfg is None:
+            return None
+        ts_dir, paths = cfg
+        for base in _alias_targets(module, paths, ts_dir):
+            key = resolve_index_key(base, root)
+            if key is not None:
+                return key
+        return None
 
     # target_rel -> name -> set of (importer_rel, line)
     accum: dict[str, dict[str, set[tuple[str, int | None]]]] = {}
@@ -284,11 +326,7 @@ def build_reverse_index(files, repo_root: Path | str) -> dict:
             module = row.get("module")
             if not isinstance(name, str) or not isinstance(module, str):
                 continue
-            # Only relative specifiers can name an in-repo file; a bare package
-            # or alias is not something the existence check can resolve safely.
-            if not module.startswith("."):
-                continue
-            target_key = resolve_index_key(importer_dir / module, root)
+            target_key = _resolve_module(module, importer_dir)
             if target_key is None:
                 continue
             line = row.get("line")

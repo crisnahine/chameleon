@@ -356,6 +356,27 @@ def _iter_repo_files(repo_root: Path, max_files: int):
         "dist",
         "build",
         ".next",
+        # Static-asset and test trees are never a source companion for any
+        # co-change rule (a model's migration, a controller's route). On a large
+        # monolith these dirs hold thousands of files; without skipping them the
+        # bounded walk exhausts its file budget inside `public/` and `spec/`
+        # (reverse-alphabetical pop order visits them first) and never reaches
+        # `app/`, `config/`, or `db/`, silently disabling every Rails rule.
+        "public",
+        "spec",
+        "test",
+        "tests",
+        "__tests__",
+        "e2e",
+        "cypress",
+        "storybook",
+        ".storybook",
+        "fixtures",
+        "assets",
+        "docs",
+        "doc",
+        "public_html",
+        "static",
     }
     count = 0
     stack = [repo_root]

@@ -209,6 +209,47 @@ def test_rubocop_line_length_without_max_is_silent():
     assert out == []
 
 
+def test_rubocop_allowed_patterns_exempts_comment_line():
+    # The repo's rubocop exempts comment lines from LineLength via
+    # AllowedPatterns. A long comment line must not be flagged here either, or
+    # chameleon contradicts the repo's own clean rubocop run.
+    rules = _rubocop({"Layout/LineLength": {"Max": 10, "AllowedPatterns": [r"(\A|\s)#"]}})
+    long_comment = "# " + "x" * 50 + "\n"
+    out = scan_style_rules(long_comment, language="ruby", rules=rules)
+    assert out == []
+
+
+def test_rubocop_allowed_patterns_still_flags_code_line():
+    rules = _rubocop({"Layout/LineLength": {"Max": 10, "AllowedPatterns": [r"(\A|\s)#"]}})
+    src = "# " + "x" * 50 + "\n" + "value = " + "1" * 50 + "\n"
+    out = scan_style_rules(src, language="ruby", rules=rules)
+    # Only the code line (line 2) flags; the comment line is exempt.
+    assert any("line 2" in a for a in _actuals(out))
+    assert not any("line 1" in a for a in _actuals(out))
+
+
+def test_rubocop_allowed_uri_exempts_url_line():
+    rules = _rubocop({"Layout/LineLength": {"Max": 10, "AllowedURI": True}})
+    out = scan_style_rules(
+        "see https://example.com/" + "a" * 50 + "\n", language="ruby", rules=rules
+    )
+    assert out == []
+
+
+def test_rubocop_bad_allowed_pattern_does_not_raise():
+    # An uncompilable pattern is skipped, not raised, on the hot path.
+    rules = _rubocop({"Layout/LineLength": {"Max": 10, "AllowedPatterns": ["(unclosed"]}})
+    out = scan_style_rules("value = " + "1" * 50 + "\n", language="ruby", rules=rules)
+    assert any("max 10" in a for a in _actuals(out))
+
+
+def test_prettier_print_width_has_no_pattern_exemption():
+    # prettier's printWidth applies uniformly; a long comment line still flags.
+    rules = _prettier(printWidth=10)
+    out = scan_style_rules("// " + "x" * 50 + "\n", language="typescript", rules=rules)
+    assert any("max 10" in a for a in _actuals(out))
+
+
 def test_editorconfig_max_line_length_off_is_silent():
     rules = _editorconfig(max_line_length="off")
     out = scan_style_rules("x = " + "1" * 500 + "\n", language="ruby", rules=rules)
@@ -218,6 +259,116 @@ def test_editorconfig_max_line_length_off_is_silent():
 def test_editorconfig_max_line_length_numeric_flags():
     rules = _editorconfig(max_line_length="10")
     out = scan_style_rules("x = 1234567890123\n", language="ruby", rules=rules)
+    assert any("max 10" in a for a in _actuals(out))
+
+
+# --- rubocop AllCops.Exclude / per-cop Exclude -----------------------------
+
+
+def _rubocop_with_allcops(cops: dict, exclude: list[str]) -> dict:
+    cops = dict(cops)
+    cops["AllCops"] = {"Exclude": exclude}
+    return _rubocop(cops)
+
+
+def test_allcops_exclude_skips_excluded_path():
+    # The repo's CI rubocop never inspects db/migrate; the style baseline must
+    # not flag a long line there either, or it nags a line CI deliberately exempts.
+    rules = _rubocop_with_allcops({"Layout/LineLength": {"Max": 10}}, ["db/migrate/*"])
+    out = scan_style_rules(
+        "x = 1234567890123\n",
+        language="ruby",
+        rules=rules,
+        file_path="/repo/db/migrate/20240101_add.rb",
+        repo_root="/repo",
+    )
+    assert out == []
+
+
+def test_allcops_exclude_double_star_matches_nested_path():
+    rules = _rubocop_with_allcops({"Layout/LineLength": {"Max": 10}}, ["lib/**/*"])
+    out = scan_style_rules(
+        "x = 1234567890123\n",
+        language="ruby",
+        rules=rules,
+        file_path="/repo/lib/foo/bar.rb",
+        repo_root="/repo",
+    )
+    assert out == []
+
+
+def test_allcops_exclude_does_not_skip_unexcluded_path():
+    # A path NOT under any Exclude glob still flags, so the exclude is a scalpel
+    # not a blanket suppression.
+    rules = _rubocop_with_allcops({"Layout/LineLength": {"Max": 10}}, ["db/migrate/*"])
+    out = scan_style_rules(
+        "x = 1234567890123\n",
+        language="ruby",
+        rules=rules,
+        file_path="/repo/app/models/foo.rb",
+        repo_root="/repo",
+    )
+    assert any("max 10" in a for a in _actuals(out))
+
+
+def test_allcops_exclude_no_file_path_keeps_flagging():
+    # Backwards compatibility: a caller that supplies no path gets the old
+    # behavior (the exclude check is a no-op without a path to match).
+    rules = _rubocop_with_allcops({"Layout/LineLength": {"Max": 10}}, ["db/migrate/*"])
+    out = scan_style_rules("x = 1234567890123\n", language="ruby", rules=rules)
+    assert any("max 10" in a for a in _actuals(out))
+
+
+def test_per_cop_exclude_drops_only_line_length():
+    # A per-cop Exclude on Layout/LineLength drops the line-length check for that
+    # path; the indent check (a different cop) still runs.
+    rules = _rubocop(
+        {
+            "Layout/LineLength": {"Max": 10, "Exclude": ["app/views/**/*"]},
+            "Layout/IndentationStyle": {"EnforcedStyle": "spaces"},
+        }
+    )
+    src = "\tx = 1234567890123\n"  # tab indent (wrong) + long line
+    out = scan_style_rules(
+        src,
+        language="ruby",
+        rules=rules,
+        file_path="/repo/app/views/foo.rb",
+        repo_root="/repo",
+    )
+    actuals = _actuals(out)
+    assert not any("max 10" in a for a in actuals)  # line-length excluded for this path
+    assert any("tab indentation" in a for a in actuals)  # indent still runs
+
+
+def test_allcops_exclude_relative_path_without_root_matches():
+    # A relative file_path with no repo_root still matches a glob against its own
+    # POSIX form, so a bash-recorded relative target is still honored.
+    rules = _rubocop_with_allcops({"Layout/LineLength": {"Max": 10}}, ["db/migrate/*"])
+    out = scan_style_rules(
+        "x = 1234567890123\n",
+        language="ruby",
+        rules=rules,
+        file_path="db/migrate/20240101_add.rb",
+    )
+    assert out == []
+
+
+def test_allcops_exclude_does_not_apply_to_typescript():
+    # AllCops is a rubocop concept; a TS file with prettier printWidth ignores it
+    # and still flags (a db/migrate path is meaningless for TS anyway).
+    rules = _prettier(printWidth=10)
+    rules["rules"]["rubocop"] = {
+        "source": ".rubocop.yml",
+        "rules": {"AllCops": {"Exclude": ["**/*"]}},
+    }
+    out = scan_style_rules(
+        "const a = 123456789012345;\n",
+        language="typescript",
+        rules=rules,
+        file_path="/repo/src/x.ts",
+        repo_root="/repo",
+    )
     assert any("max 10" in a for a in _actuals(out))
 
 

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from chameleon_mcp.profile.secret_scanner import _try_detect_secrets, scan_for_secrets
+from chameleon_mcp.profile.secret_scanner import (
+    _fallback_scan,
+    _line_number_at,
+    _try_detect_secrets,
+    scan_for_secrets,
+)
 
 
 def test_detect_secrets_backend_active():
@@ -45,3 +50,65 @@ def test_common_secret_shapes_caught():
 
 def test_empty_content_is_safe():
     assert scan_for_secrets("") == []
+
+
+def test_camelcase_identifier_not_flagged_as_aws_secret():
+    # A 40-char camelCase identifier on a plain line is not a credential. The
+    # shape-only possible_aws_secret pattern is gated on credential context, so
+    # it must not fire here (it used to match ~6% of real TS files).
+    src = "const x = adminListingNotesCreateRequestDescriptorXyz;"
+    assert [h for h in scan_for_secrets(src) if h["type"] == "possible_aws_secret"] == []
+
+
+def test_aws_secret_assignment_is_flagged():
+    blob = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0"
+    src = f'aws_secret_key = "{blob}"'
+    assert any(h["type"] == "possible_aws_secret" for h in scan_for_secrets(src))
+
+
+def test_bare_git_sha_in_comment_not_flagged_as_hex():
+    # A 40-char hex run with no credential token is a git SHA / sourcemap hash.
+    src = "# see commit a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0 for the fix"
+    assert [h for h in scan_for_secrets(src) if h["type"] == "high_entropy_hex"] == []
+
+
+def test_api_token_hex_assignment_is_flagged():
+    src = 'api_token = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"'
+    assert any(h["type"] == "high_entropy_hex" for h in scan_for_secrets(src))
+
+
+def test_line_number_at_counts_newlines():
+    content = "a\nb\ncredential\n"
+    pos = content.index("credential")
+    assert _line_number_at(content, pos) == 3
+    assert _line_number_at(content, 0) == 1
+
+
+def test_fallback_hard_kinds_carry_line_number():
+    # The deterministic hard kinds come only from _fallback_scan. They must carry
+    # a line, not just a char offset, so the PR-review hunk gate can place them in
+    # a diff hunk. Before the fix they reported `position` only and the gate was
+    # unrunnable on the only secrets it gates.
+    blank = "\n" * 9  # push the key onto line 10
+    content = blank + 'aws = "AKIAIOSFODNN7EXAMPLE"\n'
+    hits = [h for h in _fallback_scan(content) if h["type"] == "aws_access_key"]
+    assert hits
+    assert hits[0]["line_number"] == 10
+    # position is retained for the dedup key / offset-based callers.
+    assert "position" in hits[0]
+
+
+def test_scan_for_secrets_hard_hit_has_line_number():
+    gh_pat = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz"
+    content = "x = 1\ny = 2\n" + f'token = "{gh_pat}"\n'
+    hard = [h for h in scan_for_secrets(content) if h["type"] == "github_token"]
+    assert hard
+    assert hard[0]["line_number"] == 3
+
+
+def test_added_line_number_does_not_double_count():
+    # One AKIA on one line yields exactly one fallback aws_access_key hit; the new
+    # line_number field must not perturb the (type, position) dedup.
+    content = 'aws = "AKIAIOSFODNN7EXAMPLE"\n'
+    hits = [h for h in scan_for_secrets(content) if h["type"] == "aws_access_key"]
+    assert len(hits) == 1

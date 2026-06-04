@@ -2,6 +2,7 @@ from chameleon_mcp.violation_class import (
     BLOCK_ELIGIBLE_RULES,
     hard_class_violations,
     is_archetype_independent,
+    is_deferred_to_turn_end,
     is_hard_class,
     tag_secret_hardness,
 )
@@ -100,6 +101,29 @@ def test_file_naming_is_hard_but_dependent():
 
 def test_secret_rule_is_independent():
     assert is_archetype_independent("secret-detected-in-content")
+
+
+def test_only_phantom_import_defers_to_turn_end():
+    # phantom-import defers to the Stop backstop (a later same-turn edit can
+    # create the import target). A secret never defers: nothing makes a hardcoded
+    # credential safe, so it blocks inline at PostToolUse. Both are
+    # archetype-independent, so the deferral set must be the distinguishing axis.
+    assert is_deferred_to_turn_end("phantom-import")
+    assert not is_deferred_to_turn_end("secret-detected-in-content")
+    assert is_archetype_independent("phantom-import")
+    assert is_archetype_independent("secret-detected-in-content")
+
+
+def test_secret_stays_in_inline_block_set_after_deferral_filter():
+    # The per-edit PostToolUse gate strips only deferred rules from the inline
+    # block set. A deterministic secret must survive that filter; before the fix
+    # it was stripped along with phantom-import because both are
+    # archetype-independent, leaving the documented secret BLOCK dead.
+    vs = [secret("aws_access_key"), v("phantom-import")]
+    tag_secret_hardness(vs)
+    hard = hard_class_violations(vs, active_rules={"secret-detected-in-content", "phantom-import"})
+    blockable_now = [x for x in hard if not is_deferred_to_turn_end(x["rule"])]
+    assert [x["rule"] for x in blockable_now] == ["secret-detected-in-content"]
 
 
 def test_deterministic_secret_kinds_hard_block():

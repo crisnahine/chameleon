@@ -186,7 +186,7 @@ def test_backstop_loads_block_rules_once(trusted_repo):
     seen_active = []
 
     def fake_blockable(
-        repo_root, file_path, loaded=None, active=None, daemon_state=None, out_rules=None
+        repo_root, file_path, loaded=None, active=None, daemon_state=None, out_rules=None, level=2
     ):
         seen_active.append(active)
         return True

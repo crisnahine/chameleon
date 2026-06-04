@@ -109,6 +109,32 @@ class TestSplitSecretDetection:
         assert any(v.rule == "secret-detected-in-content" for v in scan_secrets(src))
 
 
+class TestHardSecretReportsLine:
+    """A hard-kind secret's formatted violation cites a line, not a char offset.
+
+    The deterministic kinds (the only block-eligible secrets) used to surface a
+    `position N` offset, which a line-keyed diff hunk map can't place. The
+    formatter must read the line the fallback scan now carries.
+    """
+
+    def test_hard_kind_actual_says_line_not_position(self):
+        # AKIA on line 4 of the buffer.
+        content = "a = 1\nb = 2\nc = 3\n" + 'aws = "AKIAIOSFODNN7EXAMPLE"\n'
+        vs = scan_secrets(content)
+        hard = [v for v in vs if "aws_access_key at " in v.actual]
+        assert hard
+        assert "at line 4" in hard[0].actual
+        assert "at position" not in hard[0].actual
+
+    def test_github_token_actual_says_line(self):
+        pat = "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz"
+        content = "\n" * 5 + f'token = "{pat}"\n'
+        vs = scan_secrets(content)
+        hard = [v for v in vs if "github_token at " in v.actual]
+        assert hard
+        assert "at line 6" in hard[0].actual
+
+
 class TestFoldRobustness:
     def test_empty_content(self):
         assert _fold_string_concat("") == ""

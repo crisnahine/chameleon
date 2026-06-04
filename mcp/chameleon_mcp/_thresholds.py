@@ -228,6 +228,11 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # sites in sorted (path, line) order are kept; the count still reports the
     # true total so the reader knows the full blast radius.
     "CROSSFILE_MAX_SITES_PER_FINDING": 10,
+    # Separate, smaller cap on low-confidence (open-set/barrel) existence rows.
+    # They are transparency output the PR-review consumer must not relay, so
+    # they get their own budget instead of crowding high-confidence findings
+    # out of CROSSFILE_MAX_FINDINGS; overflow is counted, not silently lost.
+    "CROSSFILE_MAX_LOW_CONFIDENCE": 10,
     # Cap on the source files touched this turn that the Stop existence-break
     # advisory inspects, bounding the turn-end read fan-out.
     "CROSSFILE_STOP_ADVISORY_MAX_FILES": 8,

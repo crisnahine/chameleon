@@ -263,6 +263,53 @@ def test_inactive_rule_does_not_deny(tmp_path: Path):
     assert hso.get("permissionDecision") != "deny"
 
 
+def test_exact_match_denies_new_file(tmp_path: Path):
+    # A brand-new file (Write target, no content on disk) resolves to
+    # match_quality="exact" via the path-based match, a STRONGER signal than the
+    # structural "ast" match. The deny gate must fire on it; new-file creation is
+    # the most common place a banned import is introduced.
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    write_block_rules(
+        repo / ".chameleon",
+        {"import-preference-violation": {"active": True, "fp_rate": 0.0, "sampled": 3}},
+    )
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/NewWidget.ts"),
+        content=LODASH_CONTENT,
+        session_id="s-exact",
+        env={"CHAMELEON_ENFORCE": "1"},
+        match_quality="exact",
+    )
+    hso = out.get("hookSpecificOutput", {})
+    assert hso.get("permissionDecision") == "deny"
+
+
+def test_exact_match_low_band_does_not_deny(tmp_path: Path):
+    # An "exact" match at low confidence is the weak fallback (no AST query to
+    # score, or an ambiguous multi-archetype path match), so it stays advisory.
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    write_block_rules(
+        repo / ".chameleon",
+        {"import-preference-violation": {"active": True, "fp_rate": 0.0, "sampled": 3}},
+    )
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/NewWidget.ts"),
+        content=LODASH_CONTENT,
+        session_id="s-exact-low",
+        env={"CHAMELEON_ENFORCE": "1"},
+        match_quality="exact",
+        confidence_band="low",
+    )
+    hso = out.get("hookSpecificOutput", {})
+    assert hso.get("permissionDecision") != "deny"
+
+
 def test_non_ast_match_does_not_deny(tmp_path: Path):
     repo, repo_id = _build_repo(tmp_path, mode="enforce")
     write_block_rules(

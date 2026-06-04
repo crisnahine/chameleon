@@ -614,13 +614,14 @@ class TestTopLevelKindsMatch:
 
 class TestConventionLint:
     def test_import_preference_violation(self):
-        content = 'import { useQuery } from "@tanstack/react-query";\n'
+        # over/preferred are MODULE specifiers; importing the banned module flags.
+        content = 'import http from "axios";\n'
         conventions = {
             "imports": {
                 "competing": [
                     {
-                        "preferred": "useCustomQuery",
-                        "over": "useQuery",
+                        "preferred": "@/lib/http",
+                        "over": "axios",
                         "preferred_count": 47,
                         "over_count": 0,
                     }
@@ -630,16 +631,16 @@ class TestConventionLint:
         violations = lint_conventions(content, conventions, language="typescript")
         assert len(violations) == 1
         assert violations[0].rule == "import-preference-violation"
-        assert "useCustomQuery" in violations[0].message
+        assert "@/lib/http" in violations[0].message
 
     def test_no_violation_when_correct_import(self):
-        content = 'import { useCustomQuery } from "@/hooks/useCustomQuery";\n'
+        content = 'import http from "@/lib/http";\n'
         conventions = {
             "imports": {
                 "competing": [
                     {
-                        "preferred": "useCustomQuery",
-                        "over": "useQuery",
+                        "preferred": "@/lib/http",
+                        "over": "axios",
                         "preferred_count": 47,
                         "over_count": 0,
                     }
@@ -648,6 +649,47 @@ class TestConventionLint:
         }
         violations = lint_conventions(content, conventions, language="typescript")
         assert len(violations) == 0
+
+    def test_preferred_scoped_package_not_false_flagged_by_substring_over(self):
+        # The preferred scoped package ends with the banned name as a path
+        # segment (`react-query` inside `@tanstack/react-query`). Importing the
+        # preferred package must NOT flag, and the preferred-present skip guard
+        # must still recognize it as present.
+        content = 'import { useQuery } from "@tanstack/react-query";\n'
+        conventions = {
+            "imports": {
+                "competing": [
+                    {"preferred": "@tanstack/react-query", "over": "react-query"},
+                ],
+            },
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        assert violations == []
+
+    def test_bare_banned_package_still_flagged(self):
+        content = 'import { useQuery } from "react-query";\n'
+        conventions = {
+            "imports": {
+                "competing": [
+                    {"preferred": "@tanstack/react-query", "over": "react-query"},
+                ],
+            },
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        assert len(violations) == 1
+        assert violations[0].rule == "import-preference-violation"
+
+    def test_banned_package_subpath_flagged(self):
+        content = 'import x from "react-query/devtools";\n'
+        conventions = {
+            "imports": {
+                "competing": [
+                    {"preferred": "@tanstack/react-query", "over": "react-query"},
+                ],
+            },
+        }
+        violations = lint_conventions(content, conventions, language="typescript")
+        assert len(violations) == 1
 
     def test_naming_convention_violation(self):
         content = "interface UserProps {\n  name: string;\n}\n"
@@ -671,13 +713,13 @@ class TestConventionLint:
         assert len(violations) == 0
 
     def test_chameleon_ignore_suppresses_rule(self):
-        content = '// chameleon-ignore import-preference\nimport { useQuery } from "@tanstack/react-query";\n'
+        content = '// chameleon-ignore import-preference\nimport http from "axios";\n'
         conventions = {
             "imports": {
                 "competing": [
                     {
-                        "preferred": "useCustomQuery",
-                        "over": "useQuery",
+                        "preferred": "@/lib/http",
+                        "over": "axios",
                         "preferred_count": 47,
                         "over_count": 0,
                     }
@@ -691,13 +733,13 @@ class TestConventionLint:
         # A competing import that lives entirely inside a string literal is not a
         # real import; the PreToolUse path already blanks these, so the shared
         # convention scan must agree (PreToolUse and PostToolUse must converge).
-        content = "const code = \"import { useQuery } from '@tanstack/react-query';\";\n"
+        content = "const code = \"import http from 'axios';\";\n"
         conventions = {
             "imports": {
                 "competing": [
                     {
-                        "preferred": "useCustomQuery",
-                        "over": "useQuery",
+                        "preferred": "@/lib/http",
+                        "over": "axios",
                         "preferred_count": 47,
                         "over_count": 0,
                     }
@@ -710,16 +752,13 @@ class TestConventionLint:
     def test_import_preference_real_import_still_flagged_alongside_string(self):
         # A real banned import must still be flagged even when an unrelated
         # string literal also contains an import-looking snippet.
-        content = (
-            "const code = \"import { x } from 'lodash';\";\n"
-            'import { useQuery } from "@tanstack/react-query";\n'
-        )
+        content = 'const code = "import { x } from \'lodash\';";\nimport http from "axios";\n'
         conventions = {
             "imports": {
                 "competing": [
                     {
-                        "preferred": "useCustomQuery",
-                        "over": "useQuery",
+                        "preferred": "@/lib/http",
+                        "over": "axios",
                         "preferred_count": 47,
                         "over_count": 0,
                     }

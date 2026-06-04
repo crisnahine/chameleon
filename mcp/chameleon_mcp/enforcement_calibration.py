@@ -261,9 +261,15 @@ def _violations_for_file(
         if conv.get(key, {}).get(archetype):
             arch_conv[key] = conv[key][archetype]
     if arch_conv:
+        # Pass the file's repo-relative path so the file-naming check (gated on a
+        # file_path) runs during calibration too. Without it the check is silent
+        # here while the runtime lint path supplies the path and runs it, so a
+        # file-naming rule that flags the repo's own committed files would
+        # measure a 0.0 false-positive rate and ship active -- then hard-block
+        # those very files at runtime.
         violations += [
             v.to_dict()
-            for v in lint_conventions(content, arch_conv, language=language)
+            for v in lint_conventions(content, arch_conv, language=language, file_path=rel)
             if v.rule != "secret-detected-in-content"
         ]
 

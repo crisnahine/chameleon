@@ -32,8 +32,29 @@ def test_bad_mode_rejected(tmp_path):
         load_config(d)
 
 
-def test_unknown_enforcement_key_rejected(tmp_path):
-    d = _write(tmp_path, {"enforcement": {"mode": "off", "wat": 1}})
+def test_unknown_enforcement_key_tolerated(tmp_path):
+    # config.json is committed and travels to teammates on different chameleon
+    # versions. An enforcement key a newer version added must not brick an older
+    # engine: the unknown key is ignored, the known keys still parse.
+    d = _write(tmp_path, {"enforcement": {"mode": "enforce", "some_future_key": True}})
+    cfg = load_config(d)
+    assert cfg.enforcement.mode == "enforce"
+
+
+def test_unknown_enforcement_key_does_not_corrupt_known_keys(tmp_path):
+    d = _write(
+        tmp_path,
+        {"enforcement": {"mode": "shadow", "stop_block_cap": 7, "v99_flag": "x"}},
+    )
+    cfg = load_config(d)
+    assert cfg.enforcement.mode == "shadow"
+    assert cfg.enforcement.stop_block_cap == 7
+
+
+def test_bad_value_on_known_enforcement_key_still_rejected(tmp_path):
+    # Tolerating unknown keys must not weaken validation of known ones: a wrong
+    # type on a known key is still a hard error so a real typo is caught.
+    d = _write(tmp_path, {"enforcement": {"mode": "shadow", "stop_block_cap": "lots"}})
     with pytest.raises(ChameleonConfigError):
         load_config(d)
 

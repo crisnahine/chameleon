@@ -1235,7 +1235,17 @@ def preflight_and_advise() -> int:
             profile_dir = repo_root_path / ".chameleon"
             if "import-preference-violation" in active_block_rules(profile_dir):
                 proposed = tool_input.get("new_string") or tool_input.get("content") or ""
-                if proposed and match_quality == "ast" and confidence_band in ("high", "medium"):
+                # Gate on a confident archetype match. "ast" is the structural
+                # match on existing content; "exact" is the path-based match a
+                # brand-new file (Write target, no content on disk yet) resolves
+                # to -- a stronger signal, not a weaker one. Excluding "exact"
+                # let every new file slip the deny, which is exactly where the
+                # model most often introduces a banned import.
+                if (
+                    proposed
+                    and match_quality in ("ast", "exact")
+                    and confidence_band in ("high", "medium")
+                ):
                     conv_path = profile_dir / "conventions.json"
                     conv = (
                         json.loads(conv_path.read_text(encoding="utf-8")).get("conventions", {})
@@ -1961,7 +1971,14 @@ def _lint_file_in_process(
         from chameleon_mcp.lint_engine import scan_style_rules
 
         violations.extend(
-            v.to_dict() for v in scan_style_rules(content, language=language, rules=loaded.rules)
+            v.to_dict()
+            for v in scan_style_rules(
+                content,
+                language=language,
+                rules=loaded.rules,
+                file_path=file_path,
+                repo_root=repo_root,
+            )
         )
     except Exception:
         pass
@@ -1988,7 +2005,7 @@ def _load_rules_for_style(repo_root: Path) -> dict | None:
 
 
 def _scan_archetype_independent(
-    content: str, file_path: str, rules: dict | None = None
+    content: str, file_path: str, rules: dict | None = None, repo_root: Path | str | None = None
 ) -> list[dict]:
     """Run only the archetype-independent content lints (secrets, sinks, style).
 
@@ -2006,6 +2023,8 @@ def _scan_archetype_independent(
     (indent / quote / line-length against the repo's declared formatter config)
     runs too, so a sparse repo with no resolvable archetype still gets style
     feedback. Callers without the profile loaded pass None and skip that check.
+    ``repo_root`` lets the style scan honor rubocop's path Exclude globs (it needs
+    the repo-relative path); without it an absolute path can't match a glob.
     """
     from chameleon_mcp.lint_engine import detect_language
 
@@ -2031,7 +2050,14 @@ def _scan_archetype_independent(
             from chameleon_mcp.lint_engine import scan_style_rules
 
             out.extend(
-                v.to_dict() for v in scan_style_rules(content, language=language, rules=rules)
+                v.to_dict()
+                for v in scan_style_rules(
+                    content,
+                    language=language,
+                    rules=rules,
+                    file_path=file_path,
+                    repo_root=repo_root,
+                )
             )
         except Exception:
             pass
@@ -2241,7 +2267,9 @@ def posttool_verify() -> int:
             # even though no archetype resolved; a failed load just skips it.
             _indep_rules = _load_rules_for_style(repo_root)
             try:
-                indep = _scan_archetype_independent(content, file_path, _indep_rules)
+                indep = _scan_archetype_independent(
+                    content, file_path, _indep_rules, repo_root=repo_root
+                )
             except Exception:
                 indep = []
             if indep:
@@ -2426,7 +2454,7 @@ def posttool_verify() -> int:
                 from chameleon_mcp.violation_class import (
                     hard_class_violations,
                     ignored_rules,
-                    is_archetype_independent,
+                    is_deferred_to_turn_end,
                 )
 
                 active = active_block_rules(repo_root / ".chameleon")
@@ -2460,8 +2488,13 @@ def posttool_verify() -> int:
                         blanket=blanket,
                     )
                 # phantom imports are a filesystem fact handled at turn end
-                # (Stop backstop), never blocked inline here.
-                blockable_now = [v for v in hard if not is_archetype_independent(v.get("rule"))]
+                # (Stop backstop), never blocked inline here: a later same-turn
+                # edit can create the import target. A deterministic secret does
+                # NOT defer -- nothing a later edit does makes a hardcoded
+                # credential safe -- so it stays in the inline block set as the
+                # documented "only security BLOCK". Strip only the deferred rules,
+                # not every archetype-independent one.
+                blockable_now = [v for v in hard if not is_deferred_to_turn_end(v.get("rule"))]
             except Exception:
                 hard = []
                 blockable_now = []
@@ -2783,7 +2816,13 @@ def callout_detector() -> int:
 
 
 def _stop_file_still_blockable(
-    repo_root: Path, file_path: str, loaded=None, active=None, daemon_state=None, out_rules=None
+    repo_root: Path,
+    file_path: str,
+    loaded=None,
+    active=None,
+    daemon_state=None,
+    out_rules=None,
+    level: int = 2,  # LEVEL_L2; a module-level literal so the default binds at import time
 ) -> bool:
     """Re-lint a candidate file live and report whether an enforceable hard-class
     violation still stands.
@@ -2797,11 +2836,16 @@ def _stop_file_still_blockable(
     blocks the turn.
 
     A hard violation counts only if it is enforceable on the live file: an
-    archetype-independent rule (a filesystem fact) always counts; an
-    archetype-dependent rule counts only when the archetype is AST-confirmed at
-    high or medium confidence, matching the per-edit block gate. Inline-ignored rules never
-    count. Returns False on any error (fail-open: a re-check that can't run does
-    not block).
+    archetype-independent rule (a deterministic content/filesystem fact -- a
+    leaked credential or a phantom import) always counts at any escalation level,
+    because nothing about a wrong archetype guess makes it spurious; an
+    archetype-dependent rule (naming/inheritance/file-naming) counts only when the
+    archetype is AST-confirmed at high or medium confidence AND the file has
+    escalated to L2, matching the per-edit block gate's ladder so a single
+    wrong-archetype match cannot trap the turn. ``level`` is the file's current
+    escalation level; archetype-independent rules ignore it. Inline-ignored rules
+    never count. Returns False on any error (fail-open: a re-check that can't run
+    does not block).
 
     ``loaded`` is the once-per-pass profile the backstop preloads so the per-file
     re-lint does not re-read the profile for every candidate. ``active`` is the
@@ -2898,7 +2942,14 @@ def _stop_file_still_blockable(
         if ign:
             hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
         gate_ok = (match_quality == "ast") and (confidence_band in ("high", "medium"))
-        enforceable = [v for v in hard if is_archetype_independent(v.get("rule")) or gate_ok]
+        # Archetype-dependent rules honor the per-edit escalation ladder: they
+        # only refuse the turn once the file has reached L2, so a single
+        # wrong-archetype match cannot trap a turn. Archetype-independent facts
+        # (secrets, phantom imports) ignore the level entirely.
+        from chameleon_mcp.enforcement import LEVEL_L2
+
+        dep_ok = gate_ok and level >= LEVEL_L2
+        enforceable = [v for v in hard if is_archetype_independent(v.get("rule")) or dep_ok]
         if isinstance(out_rules, list):
             out_rules.extend(v.get("rule") for v in enforceable if v.get("rule"))
         return bool(enforceable)
@@ -3699,7 +3750,7 @@ def stop_backstop() -> int:
         cwd = Path.cwd()
 
     try:
-        from chameleon_mcp.enforcement import LEVEL_L2, load_state, save_state
+        from chameleon_mcp.enforcement import load_state, save_state
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.config import load_config
         from chameleon_mcp.profile.loader import find_repo_root
@@ -3787,7 +3838,14 @@ def stop_backstop() -> int:
                 del state.files[path]
                 cleared_any = True
                 continue
-            if not (fs.level >= LEVEL_L2 and fs.blockable_unresolved):
+            # Any file the per-edit verifier armed (cached blockable flag) is a
+            # re-check candidate, regardless of escalation level. The level gate
+            # belongs inside the re-lint, not here: a deterministic content fact
+            # (a leaked credential, a phantom import) refuses the turn on the
+            # first edit, while an archetype-dependent rule still honors the L2
+            # ladder. Filtering on L2 here disarmed the documented turn-end
+            # refusal for a single-edit secret/phantom that sits at L0/L1.
+            if not fs.blockable_unresolved:
                 continue
             file_rules: list[str] = []
             if _stop_file_still_blockable(
@@ -3797,6 +3855,7 @@ def stop_backstop() -> int:
                 active=active_rules,
                 daemon_state=daemon_state,
                 out_rules=file_rules,
+                level=fs.level,
             ):
                 unresolved.append(path)
                 unresolved_rules[path] = file_rules

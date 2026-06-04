@@ -203,6 +203,84 @@ def test_lint_file_flags_real_competing_import(trusted_repo):
     assert any(v.get("rule") == "import-preference-violation" for v in viols)
 
 
+def _seed_no_ast_query_test_archetype(cham, repo):
+    """Rewrite the fixture profile to a test/spec archetype whose canonical entry
+    carries NO ast_query, so candidate_queries is empty and lint_file takes the
+    no-dimension-lint path. Returns the test archetype name."""
+    test_arch = "test"
+    witness = "service.test.ts"
+    (repo / witness).write_text("import { render } from './helpers';\n", encoding="utf-8")
+    (cham / "archetypes.json").write_text(
+        json.dumps({"generation": 1, "archetypes": {test_arch: {"summary": "tests"}}})
+    )
+    (cham / "canonicals.json").write_text(
+        json.dumps(
+            {
+                "generation": 1,
+                # No normative_shape/ast_query -> no candidate_queries can be built.
+                "canonicals": {test_arch: [{"witness": {"path": witness, "sha_hint": "deadbeef"}}]},
+            }
+        )
+    )
+    grant_trust(tools._compute_repo_id(repo), cham)
+    return test_arch
+
+
+def test_lint_file_runs_test_quality_and_phantom_without_ast_query(trusted_repo):
+    """A test/spec archetype with no derivable ast_query used to early-return with
+    only secret + sink violations. The conventions block (test-quality) and the
+    phantom-import check do not need an ast_query, so they must still run: a
+    skipped test and a relative import resolving to nothing both surface, and the
+    dimension-lint noop is narrated in noop_reason."""
+    from chameleon_mcp.profile.loader import _PROFILE_CACHE
+
+    _PROFILE_CACHE.clear()
+    test_arch = _seed_no_ast_query_test_archetype(trusted_repo / ".chameleon", trusted_repo)
+
+    content = "it.skip('todo', () => {});\nimport { x } from './does-not-exist';\n"
+    res = tools.lint_file(
+        str(trusted_repo), test_arch, content, file_path=str(trusted_repo / "service.test.ts")
+    )
+    _assert_envelope(res)
+    data = res["data"]
+    rules = {v.get("rule") for v in data.get("violations") or []}
+    assert "skipped-test" in rules, "test-quality pass must run on the no-ast_query path"
+    assert "phantom-import" in rules, "phantom-import check must run on the no-ast_query path"
+    # The dimension lint is the only scan that needs an ast_query; it is withheld,
+    # and the tool says so without short-circuiting the rest.
+    assert data.get("stub") is False
+    assert "noop_reason" in data and "dimension lint withheld" in data["noop_reason"]
+
+
+def test_lint_file_runs_style_scan_without_archetype_data(trusted_repo):
+    """A repo with a declared formatter config but no archetype data (empty
+    canonicals) must still get the archetype-independent style baseline. The old
+    early-return dropped it; the style scan runs on the no-ast_query path now."""
+    from chameleon_mcp.profile.loader import _PROFILE_CACHE
+
+    cham = trusted_repo / ".chameleon"
+    # Declare a prettier printWidth so the style scan has a rule to enforce.
+    (cham / "rules.json").write_text(
+        json.dumps(
+            {
+                "generation": 1,
+                "rules": {"formatting": {"source": "prettier", "rules": {"printWidth": 40}}},
+            }
+        )
+    )
+    # Empty archetype + canonical data: no candidate_queries can be built.
+    (cham / "archetypes.json").write_text(json.dumps({"generation": 1, "archetypes": {}}))
+    (cham / "canonicals.json").write_text(json.dumps({"generation": 1, "canonicals": {}}))
+    grant_trust(tools._compute_repo_id(trusted_repo), cham)
+    _PROFILE_CACHE.clear()
+
+    long_line = "const x = " + '"' + "a" * 60 + '"' + ";\n"
+    res = tools.lint_file(str(trusted_repo), "service", long_line, file_path="x.ts")
+    _assert_envelope(res)
+    rules = {v.get("rule") for v in res["data"].get("violations") or []}
+    assert "style-rule-violation" in rules, "style scan must run with no archetype data"
+
+
 def test_rename_preserves_and_renames_conventions_and_principles(trusted_repo):
     """Regression: apply_archetype_renames used to silently DROP conventions.json
     and principles.md (atomic_profile_commit replaces the whole dir and doesn't
@@ -383,6 +461,40 @@ def test_get_crossfile_context_high_confidence_existence_break(trusted_repo):
     assert finding["high_confidence"] is True
     assert finding["module"] == "pricing.ts"
     assert finding["sites"] == [{"path": "cart.ts", "line": 1}]
+
+
+def test_get_crossfile_context_high_confidence_survives_low_confidence_flood(
+    trusted_repo, monkeypatch
+):
+    """Low-confidence open-set rows have their own cap and cannot evict a break.
+
+    Thirty barrel modules (open export sets -> low confidence) sort ahead of the
+    one closed module with a genuinely removed, still-referenced export. Under a
+    shared cap the flood used to saturate the response before the scan reached
+    the real finding.
+    """
+    cham = trusted_repo / ".chameleon"
+    (trusted_repo / "consumer.ts").write_text(
+        "import { realGone } from './zz_target';\nrealGone();\n", encoding="utf-8"
+    )
+    targets = {}
+    for i in range(30):
+        rel = f"a_barrel_{i:02d}.ts"
+        (trusted_repo / rel).write_text("export * from './elsewhere';\n", encoding="utf-8")
+        targets[rel] = {f"gone_{i}": [{"path": "consumer.ts", "line": 1}]}
+    (trusted_repo / "zz_target.ts").write_text("export const other = 1;\n", encoding="utf-8")
+    targets["zz_target.ts"] = {"realGone": [{"path": "consumer.ts", "line": 1}]}
+    _write_reverse_index(cham, targets)
+    monkeypatch.setenv("CHAMELEON_CROSSFILE_MAX_FINDINGS", "5")
+    monkeypatch.setenv("CHAMELEON_CROSSFILE_MAX_LOW_CONFIDENCE", "3")
+    res = tools.get_crossfile_context(str(trusted_repo))
+    _assert_envelope(res)
+    data = res["data"]
+    high = [f for f in data["findings"] if f["high_confidence"]]
+    low = [f for f in data["findings"] if not f["high_confidence"]]
+    assert any(f["symbol"] == "realGone" for f in high)
+    assert len(low) <= 3
+    assert data["low_confidence_dropped"] >= 1
 
 
 def test_get_crossfile_context_not_high_confidence_when_importer_dropped_name(trusted_repo):

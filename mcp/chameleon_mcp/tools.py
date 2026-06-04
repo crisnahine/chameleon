@@ -2060,21 +2060,18 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     if not candidate_queries and ast_query:
         candidate_queries = [ast_query]
 
+    # An empty candidate_queries set means no ast_query could be derived for this
+    # archetype (common for sparse/test archetypes on real repos). The dimension
+    # lint is the only scan below that needs an ast_query, so skip just that one
+    # and still run everything archetype-independent or name-gated: the conventions
+    # block (test-quality, required_guards, file-naming), the phantom-import check,
+    # the cross-file check, and the style scan. The noop_reason then narrates that
+    # only the dimension lint was withheld, not the whole tool.
+    ast_noop_reason: str | None = None
     if not candidate_queries:
-        return _envelope(
-            {
-                "stub": False,
-                "stub_reason": None,
-                "violations": secret_violations + sink_violations,
-                "canonical_confidence": 0.0,
-                "unparseable_regions": [],
-                "content_size": content_size,
-                "noop_reason": (
-                    "no ast_query for archetype "
-                    f"{archetype!r} — re-bootstrap via /chameleon-refresh"
-                ),
-            },
-            truncated=truncated,
+        ast_noop_reason = (
+            f"no ast_query for archetype {archetype!r} (dimension lint withheld) "
+            "-- re-bootstrap via /chameleon-refresh"
         )
 
     language = (
@@ -2208,7 +2205,13 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
 
         style_violations = [
             v.to_dict()
-            for v in _scan_style_rules(working_content, language=language, rules=loaded.rules)
+            for v in _scan_style_rules(
+                working_content,
+                language=language,
+                rules=loaded.rules,
+                file_path=file_path,
+                repo_root=repo_root,
+            )
         ]
     except Exception:
         style_violations = []
@@ -2237,19 +2240,19 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
         + style_violations
     )
 
-    return _envelope(
-        {
-            "stub": False,
-            "stub_reason": None,
-            "violations": violations,
-            "canonical_confidence": best_confidence,
-            "unparseable_regions": snapshot.unparseable_regions,
-            "content_size": content_size,
-            "archetype": archetype,
-            "language": language,
-        },
-        truncated=truncated,
-    )
+    out = {
+        "stub": False,
+        "stub_reason": None,
+        "violations": violations,
+        "canonical_confidence": best_confidence,
+        "unparseable_regions": snapshot.unparseable_regions,
+        "content_size": content_size,
+        "archetype": archetype,
+        "language": language,
+    }
+    if ast_noop_reason is not None:
+        out["noop_reason"] = ast_noop_reason
+    return _envelope(out, truncated=truncated)
 
 
 def query_symbol_importers(repo: str, file_path: str) -> dict:
@@ -2466,11 +2469,18 @@ def get_crossfile_context(repo: str) -> dict:
     max_sites = threshold_int("CROSSFILE_MAX_SITES_PER_FINDING")
 
     # Sorted target keys so a truncated scan is deterministic across runs.
+    # High- and low-confidence findings are capped SEPARATELY: low-confidence
+    # open-set/barrel rows are transparency output the consumer always drops,
+    # so letting them share one cap would crowd the genuine high-confidence
+    # breaks found later in the scan order out of the response entirely.
     target_keys = sorted(index.target_keys())
-    findings: list[dict] = []
+    high: list[dict] = []
+    low: list[dict] = []
+    low_cap = threshold_int("CROSSFILE_MAX_LOW_CONFIDENCE")
+    low_dropped = 0
     truncated = False
     for target_key in target_keys[:max_modules]:
-        if len(findings) >= max_findings:
+        if len(high) >= max_findings:
             truncated = True
             break
         try:
@@ -2485,7 +2495,7 @@ def get_crossfile_context(repo: str) -> dict:
         if not broken:
             continue
         for name in sorted(broken):
-            if len(findings) >= max_findings:
+            if len(high) >= max_findings:
                 truncated = True
                 break
             importers = broken[name]
@@ -2508,17 +2518,24 @@ def get_crossfile_context(repo: str) -> dict:
             sites = [
                 {"path": _sanitize(imp.path), "line": imp.line} for imp in sites_sorted[:max_sites]
             ]
-            findings.append(
-                {
-                    "symbol": _sanitize(name),
-                    "module": _sanitize(target_key),
-                    "count": len(sites_src),
-                    "high_confidence": high_confidence,
-                    "sites": sites,
-                }
-            )
+            finding = {
+                "symbol": _sanitize(name),
+                "module": _sanitize(target_key),
+                "count": len(sites_src),
+                "high_confidence": high_confidence,
+                "sites": sites,
+            }
+            if high_confidence:
+                high.append(finding)
+            elif len(low) < low_cap:
+                low.append(finding)
+            else:
+                low_dropped += 1
 
-    return _envelope({"found": True, "findings": findings}, truncated=truncated)
+    return _envelope(
+        {"found": True, "findings": high + low, "low_confidence_dropped": low_dropped},
+        truncated=truncated,
+    )
 
 
 def _candidate_body_excerpt(repo_root: Path, rel_path: str, name: str, max_lines: int) -> str:

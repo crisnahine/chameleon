@@ -51,17 +51,23 @@ def test_lint_runs_on_every_source_file_even_with_no_archetype():
 def test_secret_escalation_is_block():
     text = _skill_text()
     assert "secret-detected-in-content" in text
-    assert "Escalate every `secret-detected-in-content` violation to **BLOCK**" in text
-    # A secret is the one witnessed fact in the pass, not a judgment.
-    assert "witnessed fact, not a judgment" in text
+    # Kind gate: only secret_hard violations may BLOCK; the soft heuristics cap at NIT.
+    assert "Escalate to **BLOCK** only violations whose `secret_hard` field is true" in text
+    assert "report them at most as a **NIT**" in text
+    # Hunk gate: a hard-kind secret inside an added/changed hunk is a BLOCK; an
+    # out-of-hunk hard secret goes to the repo-hygiene note and does not affect the verdict.
+    assert "falls inside an added/changed hunk of this diff is a **BLOCK**" in text
+    assert '"Pre-existing repo hygiene" note' in text
 
 
 def test_secret_pass_notes_false_positive_tail():
-    """detect-secrets has a known FP tail; the author must be able to override."""
+    """The low-precision secret heuristics have a known FP tail. They cap at NIT
+    and the hard-kind override stays the author's, not a silent drop."""
     text = _skill_text()
-    assert "known false-positive tail" in text
-    for needle in ("test fixtures", "UUIDs"):
-        assert needle in text, f"secret FP tail note omits {needle!r}"
+    # The soft kinds (base64 runs, hex, password assignments) match ordinary code,
+    # so they are capped at NIT with a verify-by-eye label, never FIX or BLOCK.
+    assert '"low-precision secret heuristic, verify by eye"' in text
+    assert "never as FIX or BLOCK, and never let them influence the verdict" in text
     # The override is the author's, not the review silently dropping the finding.
     assert "if it is a test fixture, it is safe to keep" in text
 
@@ -118,19 +124,35 @@ def test_security_findings_have_their_own_output_section():
 def test_severity_table_caps_authz_and_taint_at_fix():
     text = _skill_text()
     assert "Authz and taint/SSRF/traversal findings are capped at FIX" in text
-    assert "only a secret detection blocks from the security pass" in text
+    # Only a hard-kind secret on an added/changed line blocks; soft heuristics cap
+    # at NIT and out-of-hunk hard secrets go to the repo-hygiene note.
+    assert "only a hard-kind secret on an added/changed line blocks from the security pass" in text
+    assert "Low-precision secret heuristics cap at NIT" in text
+    assert "out-of-hunk hard secrets go to the repo-hygiene note" in text
 
 
-def test_hunk_gate_covers_taint_but_not_secret_findings():
+def test_hunk_gate_covers_taint_and_secret_findings():
     text = _skill_text()
     # 2.6c findings go through the hunk gate like every other per-line finding.
     assert "the taint/SSRF/traversal findings from Step 2.6c" in text
-    # Secret BLOCKs carry their own scanner line and are in-change by construction.
-    assert "The secret BLOCKs from Step 2.6a carry their own line" in text
+    # Secrets are now hunk-gated too: the scanner reads the full file, so an
+    # out-of-hunk hard secret is routed to the repo-hygiene note, not the verdict.
+    assert "AND the secret findings from Step 2.6a" in text
+    assert (
+        'an out-of-hunk hard-kind secret goes to the "Pre-existing repo hygiene" '
+        "note (Step 2.6a) instead of the verdict" in text
+    )
 
 
 def test_verdict_rule_makes_secret_drive_block():
     text = _skill_text()
-    assert "A secret detected in the diff (Step 2.6a) is a BLOCK and drives a BLOCK verdict" in text
+    # Only a hard-kind secret on an added/changed line drives a BLOCK verdict:
+    # the kind gate keeps low-precision heuristics out of the verdict, the hunk
+    # gate keeps pre-existing repo hygiene out of it.
+    assert (
+        "A hard-kind secret on an added/changed line (Step 2.6a, both gates passed) "
+        "is a BLOCK and drives a BLOCK verdict" in text
+    )
+    assert "Pre-existing-hygiene secret notes never affect the verdict" in text
     # The advisory findings never force a BLOCK verdict on their own.
     assert "never force a BLOCK verdict on their own" in text

@@ -140,22 +140,14 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         return EnforcementConfig()
     if not isinstance(raw, dict):
         raise ChameleonConfigError(f"`enforcement` must be an object, got {type(raw).__name__}")
-    allowed = {
-        "mode",
-        "stop_backstop",
-        "stop_block_cap",
-        "idiom_review",
-        "idiom_judge",
-        "correctness_judge",
-        "stale_test_advisory",
-        "changeset_completeness",
-        "crossfile_existence_advisory",
-    }
-    unknown = set(raw.keys()) - allowed
-    if unknown:
-        raise ChameleonConfigError(
-            f"unknown key(s) under enforcement: {sorted(unknown)!r}; allowed: {sorted(allowed)!r}"
-        )
+    # Unknown keys under `enforcement` are tolerated (ignored), not rejected.
+    # config.json is committed and trust-hashed, so it travels via git to
+    # teammates who may run a different chameleon version. A newer version that
+    # adds an enforcement key must not brick auto-refresh / branch-pinning for a
+    # teammate still on an older engine (which would hard-reject the unknown key
+    # and surface a scary ChameleonConfigError in /chameleon-doctor). Known keys
+    # are still type-validated below, so a typo in a known key's VALUE still
+    # raises; only a key this engine does not recognize is skipped.
     mode = raw.get("mode", "shadow")
     if not isinstance(mode, str) or mode not in _VALID_ENFORCE_MODES:
         raise ChameleonConfigError(

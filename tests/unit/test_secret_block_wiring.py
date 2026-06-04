@@ -64,13 +64,23 @@ def test_clean_file_yields_no_secret_violation(tmp_path):
     assert [v for v in out if v.get("rule") == "secret-detected-in-content"] == []
 
 
-def test_benign_base64_run_stays_advisory(tmp_path):
-    # 40 base64 chars with no credential prefix: surfaced (possible_aws_secret)
-    # but never hard, so it can advise and cannot block.
+def test_benign_base64_run_on_plain_line_does_not_surface(tmp_path):
+    # 40 base64 chars on a line with no credential token: a long identifier or a
+    # checksum, not a secret. The broad fallback is gated on credential context,
+    # so it must not surface at all (it used to flood the advisory tail).
     blob = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0"
     out = _lint(f'const checksum = "{blob}";\n', tmp_path)
     secrets = [v for v in out if v.get("rule") == "secret-detected-in-content"]
-    assert secrets, "the broad fallback should still surface the run as advisory"
+    assert secrets == [], "a 40-char run with no credential context must not flag"
+
+
+def test_credential_context_base64_run_surfaces_advisory(tmp_path):
+    # Same 40-char run, but the line names a credential: surfaced
+    # (possible_aws_secret) yet never hard, so it can advise and cannot block.
+    blob = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0"
+    out = _lint(f'const awsSecretKey = "{blob}";\n', tmp_path)
+    secrets = [v for v in out if v.get("rule") == "secret-detected-in-content"]
+    assert secrets, "a credential-context run should still surface as advisory"
     assert all(not v.get("secret_hard") for v in secrets)
     assert all(not is_hard_class(v) for v in secrets)
 

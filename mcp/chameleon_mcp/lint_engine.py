@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from chameleon_mcp.conventions import _classify_casing, _split_compound_suffix
@@ -1270,6 +1271,117 @@ def _rubocop_cop(rules, cop: str) -> dict | None:
     return val if isinstance(val, dict) else None
 
 
+def _rubocop_exclude_globs(rules, cop: str | None) -> list[str]:
+    """rubocop ``Exclude`` globs that apply to ``cop``, or just ``AllCops`` when None.
+
+    ``AllCops.Exclude`` removes a path from EVERY cop; a per-cop ``Exclude`` removes
+    it from that one cop. When ``cop`` is given the returned set is the union of
+    both, so a caller can ask "is this file out of scope for Layout/LineLength?"
+    and get a yes if either the whole-file or the per-cop exclude matches. When
+    ``cop`` is None only the whole-file ``AllCops.Exclude`` is returned. Tolerant
+    of a missing section / non-list payload: a malformed config yields no globs
+    rather than raising on the hot path.
+    """
+    out: list[str] = []
+    all_cops = _rubocop_cop(rules, "AllCops")
+    if all_cops:
+        raw = all_cops.get("Exclude")
+        if isinstance(raw, list):
+            out.extend(g for g in raw if isinstance(g, str))
+    if cop:
+        cop_body = _rubocop_cop(rules, cop)
+        if cop_body:
+            raw = cop_body.get("Exclude")
+            if isinstance(raw, list):
+                out.extend(g for g in raw if isinstance(g, str))
+    return out
+
+
+def _rubocop_glob_matches(rel_path: str, glob: str) -> bool:
+    """True if ``rel_path`` (repo-relative POSIX) matches a rubocop ``Exclude`` glob.
+
+    rubocop globs use ``**`` to span directories and ``*`` to match within one
+    segment, the same semantics Ruby's ``File.fnmatch(..., File::FNM_PATHNAME)``
+    gives. Python's :mod:`fnmatch` treats ``*`` as matching ``/`` too, which would
+    over-match, so translate the glob to a regex by hand: ``**/`` (or a trailing
+    ``**``) spans any number of segments, a lone ``*`` matches within a segment.
+    A glob that fails to translate matches nothing rather than raising.
+    """
+    import re as _re
+
+    g = glob.strip()
+    if not g:
+        return False
+    # rubocop matches `lib/**/*` against `lib/foo.rb` AND `lib/a/b.rb`; the `**/`
+    # is allowed to consume zero segments. Build the regex segment by segment.
+    out = ["^"]
+    i = 0
+    n = len(g)
+    while i < n:
+        c = g[i]
+        if g.startswith("**/", i):
+            # Any number of leading segments, including none.
+            out.append(r"(?:[^/]+/)*")
+            i += 3
+        elif g.startswith("**", i):
+            # Trailing `**`: any remaining path.
+            out.append(r".*")
+            i += 2
+        elif c == "*":
+            # Single segment wildcard: no `/`.
+            out.append(r"[^/]*")
+            i += 1
+        elif c == "?":
+            out.append(r"[^/]")
+            i += 1
+        else:
+            out.append(_re.escape(c))
+            i += 1
+    out.append("$")
+    try:
+        return _re.match("".join(out), rel_path) is not None
+    except _re.error:
+        return False
+
+
+def _rubocop_rel_path(file_path: str, repo_root: Path | str | None) -> str:
+    """Repo-relative POSIX path for the rubocop Exclude match.
+
+    rubocop globs are relative to the repo root, so resolve ``file_path`` against
+    ``repo_root`` when it lands inside. Falls back to the path's own POSIX form
+    when the root is unknown or the file resolves outside it: a relative input
+    like ``db/migrate/x.rb`` then still matches a ``db/migrate/*`` glob.
+    """
+    try:
+        p = Path(file_path)
+        if repo_root is not None:
+            root = Path(repo_root)
+            try:
+                if p.is_absolute() and root.is_absolute():
+                    return p.resolve().relative_to(root.resolve()).as_posix()
+            except (ValueError, OSError):
+                pass
+        return p.as_posix()
+    except (OSError, ValueError):
+        return file_path
+
+
+def _rubocop_excluded(rel_path: str | None, rules, cop: str | None) -> bool:
+    """True if ``rel_path`` is excluded from ``cop`` (or all cops) by rubocop config.
+
+    The repo's own CI rubocop never inspects a path under ``AllCops.Exclude`` (or a
+    per-cop ``Exclude``), so the style baseline must not flag it either. Returns
+    False when the path is unknown (no file_path threaded through) so behavior is
+    unchanged for callers that don't supply one.
+    """
+    if not rel_path:
+        return False
+    for glob in _rubocop_exclude_globs(rules, cop):
+        if _rubocop_glob_matches(rel_path, glob):
+            return True
+    return False
+
+
 def _coerce_int(value) -> int | None:
     """Parse a positive int from a config value (int or numeric string)."""
     if isinstance(value, bool):
@@ -1373,6 +1485,42 @@ def _declared_max_line_length(rules, language: str) -> int | None:
     return None
 
 
+def _line_length_allowed_patterns(rules, language: str) -> list[re.Pattern]:
+    """Compiled regexes for lines the declared line-length config exempts.
+
+    rubocop's ``Layout/LineLength`` carries ``AllowedPatterns`` (line patterns
+    that never count, commonly ``'(\\A|\\s)#'`` to exempt comment lines) and
+    ``AllowedURI: true`` (lines containing a URL). Honoring them keeps the style
+    baseline from flagging a long comment or docs-URL line that the repo's own
+    rubocop run leaves clean -- a pure false positive a user would act on.
+
+    Only Ruby declares these; prettier's ``printWidth`` applies uniformly with no
+    exemption, and .editorconfig ``max_line_length`` has none either, so this
+    returns nothing for those. A pattern that fails to compile is skipped rather
+    than raised on the hot path.
+    """
+    if language != "ruby":
+        return []
+    cop = _rubocop_cop(rules, "Layout/LineLength")
+    if not cop:
+        return []
+    out: list[re.Pattern] = []
+    raw = cop.get("AllowedPatterns") or cop.get("IgnoredPatterns") or []
+    if isinstance(raw, list):
+        for pat in raw:
+            if not isinstance(pat, str):
+                continue
+            try:
+                out.append(re.compile(pat))
+            except re.error:
+                continue
+    if cop.get("AllowedURI") is True or cop.get("URISchemes"):
+        # rubocop exempts a line that contains a URL when AllowedURI is on (the
+        # default). Match a bare scheme://… token anywhere on the line.
+        out.append(re.compile(r"\b[a-z][a-z0-9+.-]*://\S+"))
+    return out
+
+
 # Leading-whitespace run at the start of a line, used for the indent check.
 _LEADING_WS_RE = re.compile(r"^([ \t]+)")
 # Combined comment+string scanners for the quote-style check. A single left-to-
@@ -1401,7 +1549,14 @@ _RUBY_TOKEN_RE = re.compile(
 )
 
 
-def scan_style_rules(content: str, *, language: str | None, rules) -> list[Violation]:
+def scan_style_rules(
+    content: str,
+    *,
+    language: str | None,
+    rules,
+    file_path: str | None = None,
+    repo_root: Path | str | None = None,
+) -> list[Violation]:
     """Flag edits that break the repo's own declared formatter config.
 
     Archetype-independent, advisory-only style baseline. It reads ONLY the
@@ -1422,6 +1577,13 @@ def scan_style_rules(content: str, *, language: str | None, rules) -> list[Viola
     - max line length (prettier printWidth, rubocop Layout/LineLength Max,
       .editorconfig max_line_length)
 
+    ``file_path`` (with ``repo_root``) lets the Ruby checks honor rubocop's
+    ``AllCops.Exclude`` and per-cop ``Exclude`` globs: a path the repo's own
+    rubocop never inspects (db/migrate, lib, config, app/views, ...) gets no style
+    findings, so the baseline does not nag a long line CI deliberately exempts.
+    When the path is not supplied the exclude check is a no-op (behavior
+    unchanged), so existing callers keep their semantics.
+
     Always emitted at ``warning``. This rule is never block-eligible (absent from
     BLOCK_ELIGIBLE_RULES): a formatter disagreement is a nudge, not a turn-stop,
     and CI's own formatter is the enforcing authority. Emissions are capped per
@@ -1431,9 +1593,24 @@ def scan_style_rules(content: str, *, language: str | None, rules) -> list[Viola
     if not content or language not in ("typescript", "ruby"):
         return []
 
+    # Repo-relative POSIX path for the rubocop Exclude check. Resolve against the
+    # repo root when both are absolute; fall back to the raw path otherwise so a
+    # bare relative path still matches a `db/migrate/*` glob.
+    rel_path: str | None = None
+    if language == "ruby" and file_path:
+        rel_path = _rubocop_rel_path(file_path, repo_root)
+        # AllCops.Exclude removes the file from every cop: skip the whole scan.
+        if _rubocop_excluded(rel_path, rules, None):
+            return []
+
     indent = _declared_indent(rules, language)
     quote = _declared_quote(rules, language)
     max_len = _declared_max_line_length(rules, language)
+    line_len_allowed = _line_length_allowed_patterns(rules, language) if max_len is not None else []
+    # A per-cop Exclude on Layout/LineLength (without an AllCops match) drops only
+    # the line-length check; indent/quote still run.
+    if max_len is not None and rel_path and _rubocop_excluded(rel_path, rules, "Layout/LineLength"):
+        max_len = None
     if indent is None and quote is None and max_len is None:
         return []
 
@@ -1510,11 +1687,15 @@ def scan_style_rules(content: str, *, language: str | None, rules) -> list[Viola
                     )
 
         if max_len is not None and len(raw_line) > max_len:
-            _emit(
-                f"line {line_no} is {len(raw_line)} cols (max {max_len})",
-                f"line {line_no} is {len(raw_line)} columns; this repo's config "
-                f"sets a max of {max_len}.",
-            )
+            # Skip a line the declared config exempts (rubocop AllowedPatterns /
+            # AllowedURI), so a long comment or docs-URL line the repo's own
+            # rubocop leaves clean is not flagged here.
+            if not any(p.search(raw_line) for p in line_len_allowed):
+                _emit(
+                    f"line {line_no} is {len(raw_line)} cols (max {max_len})",
+                    f"line {line_no} is {len(raw_line)} columns; this repo's config "
+                    f"sets a max of {max_len}.",
+                )
 
     # Quote-style runs over the located string literals rather than per line, so
     # one violation per offending literal. The stripper has already removed
@@ -1564,6 +1745,24 @@ def scan_style_rules(content: str, *, language: str | None, rules) -> list[Viola
 _CHAMELEON_IGNORE_RE = re.compile(r"//\s*chameleon-ignore\s+([\w-]+)")
 _CHAMELEON_IGNORE_RUBY_RE = re.compile(r"#\s*chameleon-ignore\s+([\w-]+)")
 _TS_IMPORT_FROM_RE = re.compile(r"import\s+.*?\bfrom\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
+
+
+def _module_specifier_matches(spec: str, module: str) -> bool:
+    """True when an import specifier names `module` as a whole module path.
+
+    A package name matches the specifier when they are equal or when the
+    specifier is a subpath of the package (``react-query/devtools`` matches
+    ``react-query``). It must NOT match when the package name is only a trailing
+    segment of a longer scoped name: a plain ``\\b`` search treats the ``/`` and
+    quotes as word boundaries, so ``react-query`` would wrongly match inside
+    ``@tanstack/react-query``, false-flagging the preferred import and defeating
+    the preferred-present skip guard. Comparing whole path segments avoids that.
+    """
+    if spec == module:
+        return True
+    return spec.startswith(module + "/")
+
+
 _TS_INTERFACE_DECL_RE = re.compile(r"\binterface\s+([A-Z]\w*)")
 # A `.then(` on a line that also carries no `.catch`. Scoped to a single line on
 # purpose: a `.then().catch()` chain split across lines, a `.catch` on the same
@@ -2216,6 +2415,14 @@ def lint_conventions(
     # predates it. Honor either so the advertised escape hatch actually clears
     # the scan.
     if not ignored_rules & {"import-preference", "import-preference-violation"}:
+        # Resolve the import specifiers once so both the preferred-present skip
+        # guard and the banned-import scan compare whole module paths, not raw
+        # substrings. A `\b` search over the statement text treats `/` and the
+        # quotes as word boundaries, so a banned name that is a trailing segment
+        # of the preferred scoped package (`react-query` inside
+        # `@tanstack/react-query`) would both false-flag the preferred import and
+        # defeat the preferred-present guard.
+        import_specs = [m.group(1) for m in _TS_IMPORT_FROM_RE.finditer(import_scan_content)]
         for competing in (conventions.get("imports") or {}).get("competing", []):
             if not isinstance(competing, dict):
                 continue
@@ -2223,15 +2430,10 @@ def lint_conventions(
             preferred_mod = competing.get("preferred")
             if not over_mod or not preferred_mod:
                 continue
-            # Match the over/preferred token on word boundaries so `useQuery`
-            # doesn't match `useQueryClient` and `useCustomQuery` in a comment
-            # doesn't falsely suppress the violation.
-            over_re = re.compile(r"\b" + re.escape(over_mod) + r"\b")
-            preferred_re = re.compile(r"\b" + re.escape(preferred_mod) + r"\b")
-            if preferred_re.search(content):
+            if any(_module_specifier_matches(spec, preferred_mod) for spec in import_specs):
                 continue
-            for m in _TS_IMPORT_FROM_RE.finditer(import_scan_content):
-                if over_re.search(m.group(0)):
+            for spec in import_specs:
+                if _module_specifier_matches(spec, over_mod):
                     violations.append(
                         Violation(
                             rule="import-preference-violation",

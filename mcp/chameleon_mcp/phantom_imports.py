@@ -82,16 +82,96 @@ _RUBY_SUFFIXES = ("", ".rb", ".so", ".bundle")
 _MAX_SPECS = 200
 
 
+def _scan_quoted_string(content: str, start: int) -> int | None:
+    """Index just past a single-/double-quoted string literal opening at ``start``.
+
+    Returns the index after the closing quote, or None when no closing quote
+    appears before an unescaped newline. A real single-/double-quoted JS/TS
+    literal never spans a raw newline, so a quote with no same-line close is NOT
+    a string start: it is a JSX-text apostrophe (``It's broken``), a possessive
+    in doc text, or a regex artifact. Treating it as a string would open a fake
+    literal that swallows the rest of the file and masks every later export.
+    Bounded by the same-line constraint, so no ReDoS risk.
+    """
+    quote = content[start]
+    n = len(content)
+    j = start + 1
+    while j < n:
+        ch = content[j]
+        if ch == "\\":
+            # An escaped char (incl. a line continuation) is consumed as part of
+            # the literal; advance past it.
+            j += 2
+            continue
+        if ch == "\n":
+            return None
+        if ch == quote:
+            return j + 1
+        j += 1
+    return None
+
+
+# A `/` opens a regex literal (not division) only in a position where an
+# expression is expected. We approximate that position by the last significant
+# non-space character before the slash: after an operator, an opening bracket, a
+# comma, a return/typeof/etc. keyword, or at the start of input, a `/` is a
+# regex. After an identifier, a `)`, a `]`, or a number it is division. This is
+# the standard slash-disambiguation heuristic; getting it slightly wrong only
+# changes whether a `/...` run is blanked, never whether real code is masked as
+# a string.
+_REGEX_PREV_OK = frozenset("(,=:[{;!&|?+-*%^~<>")
+
+
+def _regex_allowed_at(prev_significant: str) -> bool:
+    if prev_significant == "":
+        return True  # start of input
+    return prev_significant in _REGEX_PREV_OK
+
+
+def _scan_regex_literal(content: str, start: int) -> int | None:
+    """Index just past a regex literal opening with ``/`` at ``start``.
+
+    Walks to the closing unescaped ``/`` on the same line, honoring character
+    classes (``[...]`` where a ``/`` is literal). Returns None when no close is
+    found before a newline (then the ``/`` was division, not a regex). Bounded
+    to one line, so no backtracking.
+    """
+    n = len(content)
+    j = start + 1
+    in_class = False
+    while j < n:
+        ch = content[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch == "\n":
+            return None
+        if ch == "[":
+            in_class = True
+        elif ch == "]":
+            in_class = False
+        elif ch == "/" and not in_class:
+            return j + 1
+        j += 1
+    return None
+
+
 def _strip_ts_noise(content: str) -> tuple[str, list[bool]]:
-    """Blank line/block comments and backtick template literals (so imports
-    embedded in fixtures/snapshots/docs aren't matched), preserving single- and
-    double-quoted strings so real import specifiers survive.
+    """Blank line/block comments, backtick template literals, and regex literals
+    (so imports/exports embedded in fixtures/snapshots/docs/patterns aren't
+    matched), preserving single- and double-quoted strings so real import
+    specifiers survive.
 
     Returns the rewritten text plus a parallel mask: ``mask[i]`` is True when
     output char ``i`` was inside a single-/double-quoted string literal. The
     caller skips a regex match whose keyword sits in a masked region, so a code
     snippet stored *as a string value* (e.g. ``const c = "import x from './y'"``)
     is not mistaken for a real import.
+
+    A single-/double-quoted string is only opened when its closing quote sits on
+    the same line. A lone apostrophe in JSX text (``It's broken``) or a regex
+    character class (``/[a-z'-]/``) therefore stays a normal char instead of
+    opening a fake literal that would mask every export after it.
 
     Single linear pass with explicit lexer states - no regex backtracking, so
     an unterminated template literal cannot trigger catastrophic backtracking
@@ -101,8 +181,11 @@ def _strip_ts_noise(content: str) -> tuple[str, list[bool]]:
     mask: list[bool] = []
     n = len(content)
     i = 0
-    NORMAL, LINE, BLOCK, TMPL, SQ, DQ = range(6)
+    NORMAL, LINE, BLOCK, TMPL = range(4)
     state = NORMAL
+    # Last non-space, non-newline char emitted in NORMAL state, used to decide
+    # whether a `/` opens a regex literal or is division.
+    prev_significant = ""
 
     def emit(s: str, in_str: bool) -> None:
         out.append(s)
@@ -118,17 +201,40 @@ def _strip_ts_noise(content: str) -> tuple[str, list[bool]]:
             elif c == "/" and nxt == "*":
                 state, i = BLOCK, i + 2
                 emit("  ", False)
+            elif c == "/" and _regex_allowed_at(prev_significant):
+                end = _scan_regex_literal(content, i)
+                if end is not None:
+                    # Blank the regex body so a quote/keyword inside it can't be
+                    # read as a string or import.
+                    emit(" " * (end - i), False)
+                    i = end
+                    prev_significant = "/"
+                    continue
+                # Not a regex (no same-line close) -> treat `/` as division.
+                emit(c, False)
+                prev_significant = c
+                i += 1
             elif c == "`":
                 state, i = TMPL, i + 1
                 emit(" ", False)
-            elif c == "'":
-                state, i = SQ, i + 1
-                emit(c, False)
-            elif c == '"':
-                state, i = DQ, i + 1
-                emit(c, False)
+                prev_significant = "`"
+            elif c == "'" or c == '"':
+                end = _scan_quoted_string(content, i)
+                if end is not None:
+                    emit(content[i:end], True)
+                    i = end
+                    prev_significant = c
+                else:
+                    # A quote with no same-line close is not a string start
+                    # (JSX-text apostrophe, possessive, regex artifact); emit it
+                    # as an ordinary char so the rest of the file stays visible.
+                    emit(c, False)
+                    prev_significant = c
+                    i += 1
             else:
                 emit(c, False)
+                if not c.isspace():
+                    prev_significant = c
                 i += 1
         elif state == LINE:
             emit(c if c == "\n" else " ", False)
@@ -142,25 +248,16 @@ def _strip_ts_noise(content: str) -> tuple[str, list[bool]]:
             else:
                 emit(c if c == "\n" else " ", False)
                 i += 1
-        elif state == TMPL:
+        else:  # TMPL
             if c == "\\":
                 emit("  ", False)
                 i += 2
             elif c == "`":
                 state, i = NORMAL, i + 1
                 emit(" ", False)
+                prev_significant = "`"
             else:
                 emit(c if c == "\n" else " ", False)
-                i += 1
-        else:  # SQ or DQ: preserve content so import specifiers survive
-            emit(c, True)
-            if c == "\\":
-                if i + 1 < n:
-                    emit(content[i + 1], True)
-                i += 2
-            else:
-                if (state == SQ and c == "'") or (state == DQ and c == '"'):
-                    state = NORMAL
                 i += 1
     return "".join(out), mask
 
@@ -544,10 +641,35 @@ def lint_phantom_imports(
             # tsconfig path alias?
             if root is None:
                 continue
+            # Symbol-check the alias target before any phantom-import skip. Build
+            # candidate base paths from the on-disk tsconfig `paths` (the
+            # authoritative source, present even when the profile rules carry no
+            # `paths`), falling back to the profile `paths`. When a candidate
+            # resolves to a real file, run the same named-binding check the
+            # relative branch runs, so a hallucinated symbol in an alias import
+            # (the dominant import style in many repos) is caught, not silently
+            # passed. File-existence flagging below stays exactly as conservative
+            # as before -- the symbol check never widens phantom-import.
+            on_disk_paths = {k: list(v) for k, v in tsconfig_alias_paths}
+            symbol_targets = [
+                t
+                for t in _alias_targets(spec, on_disk_paths, ts_config_dir)
+                if _under_repo(t, root)
+            ]
+            if not symbol_targets:
+                symbol_targets = [
+                    t for t in _alias_targets(spec, paths, ts_config_dir) if _under_repo(t, root)
+                ]
+            resolved = next((t for t in symbol_targets if _exists_cached(t)), None)
+            if resolved is not None:
+                _symbol_check(m, resolved, spec)
+
             # Consult the on-disk tsconfig/jsconfig directly: an aliased import
-            # whose pattern is declared there must never be flagged, even when
-            # the caller's profile rules carry no `paths` (e.g. calibration on a
-            # fresh checkout).
+            # whose pattern is declared there must never be flagged as a phantom
+            # file, even when the caller's profile rules carry no `paths` (e.g.
+            # calibration on a fresh checkout). Aliases routinely point at
+            # generated output / build dirs, so a declared-but-unresolved alias
+            # is treated as resolved.
             if _resolves_via_alias(spec, root, tsconfig_alias_paths):
                 continue
             targets = [

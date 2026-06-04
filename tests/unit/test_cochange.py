@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from chameleon_mcp.cochange import changed_exports_in_content, stale_test_items
+from chameleon_mcp.cochange import (
+    _COCHANGE_RULES,
+    changed_exports_in_content,
+    cochange_rule_disabled,
+    stale_test_items,
+)
 
 
 def _touch(root: Path, rel: str, body: str = "// x\n") -> Path:
@@ -254,3 +259,52 @@ class TestStaleTestItems:
             read_content=prof.read_content,
         )
         assert items == []
+
+
+def _rule(rule_id: str):
+    for r in _COCHANGE_RULES:
+        if r.rule_id == rule_id:
+            return r
+    raise KeyError(rule_id)
+
+
+class TestCochangeRuleDisabled:
+    """The repo-applicability gate must reach the relevant source dirs even on a
+    large monolith. Static-asset and test trees are skipped so the bounded walk
+    is not exhausted inside `public/` or `spec/` before it visits `app/`/`db/`.
+    """
+
+    def _make_rails_repo(self, root: Path, *, n_models: int, n_assets: int) -> None:
+        for i in range(n_models):
+            _touch(root, f"app/models/m{i}.rb", "class M\nend\n")
+        # One migration companion proves the convention is kept.
+        _touch(root, "db/migrate/20240101_create.rb", "class C\nend\n")
+        # A large static-asset tree whose name sorts AFTER `app`/`db`, so a
+        # reverse-alphabetical DFS would visit it first and burn the budget.
+        for i in range(n_assets):
+            _touch(root, f"public/assets/a{i}.js", "x\n")
+        for i in range(n_assets):
+            _touch(root, f"spec/models/m{i}_spec.rb", "x\n")
+
+    def test_model_migration_enabled_when_asset_tree_skipped(self, tmp_path, monkeypatch):
+        # Cap below the asset+spec count: if those dirs were walked, the budget
+        # would run out before any model is seen and the rule would disable.
+        monkeypatch.setenv("CHAMELEON_COCHANGE_MAX_FILES_SCANNED", "120")
+        self._make_rails_repo(tmp_path, n_models=10, n_assets=200)
+        assert cochange_rule_disabled(_rule("cochange-model-migration"), tmp_path) is False
+
+    def test_model_migration_disabled_when_no_migration_companion(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CHAMELEON_COCHANGE_MAX_FILES_SCANNED", "120")
+        for i in range(10):
+            _touch(tmp_path, f"app/models/m{i}.rb", "class M\nend\n")
+        for i in range(200):
+            _touch(tmp_path, f"public/assets/a{i}.js", "x\n")
+        # No db/migrate companion -> the repo does not keep the pairing here.
+        assert cochange_rule_disabled(_rule("cochange-model-migration"), tmp_path) is True
+
+    def test_too_few_triggers_stays_disabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CHAMELEON_COCHANGE_MAX_FILES_SCANNED", "4000")
+        # Below the trigger floor: not enough committed models to trust the signal.
+        _touch(tmp_path, "app/models/only.rb", "class M\nend\n")
+        _touch(tmp_path, "db/migrate/20240101_create.rb", "class C\nend\n")
+        assert cochange_rule_disabled(_rule("cochange-model-migration"), tmp_path) is True

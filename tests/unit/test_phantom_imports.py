@@ -1,12 +1,75 @@
 from pathlib import Path
 
 from chameleon_mcp.lint_engine import Violation
-from chameleon_mcp.phantom_imports import lint_phantom_imports
+from chameleon_mcp.phantom_imports import (
+    _current_export_names,
+    _strip_ts_noise,
+    lint_phantom_imports,
+)
 
 
 def _write(p: Path, text: str = "x") -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
+
+
+class TestExportLexerNoiseHandling:
+    """The export/import lexer must not desync on apostrophes that are not
+    string delimiters: JSX text (`It's`), possessives, and regex char classes
+    (`/[a-z'-]/`). A lone quote with no same-line close used to open a fake
+    string that masked every export after it.
+    """
+
+    def test_jsx_text_apostrophe_does_not_mask_later_export(self):
+        src = (
+            'import React from "react"\n\n'
+            "export const sellerConfig = [\n"
+            "  { description: (<>It's broken into sections.</>) },\n"
+            "]\n\n"
+            "export const buyerConfig = [\n"
+            '  { title: "Buyers" },\n'
+            "]\n"
+        )
+        names, open_set = _current_export_names(src)
+        assert "sellerConfig" in names
+        assert "buyerConfig" in names
+        assert open_set is False
+
+    def test_regex_char_class_apostrophe_does_not_mask_later_export(self):
+        src = "export const v = (x) => /^[a-zA-Z\\s'-]*$/.test(x)\nexport const THEME = {}\n"
+        names, _ = _current_export_names(src)
+        assert "v" in names
+        assert "THEME" in names
+
+    def test_possessive_in_line_comment_is_ignored(self):
+        # An apostrophe inside a line comment must not affect the export scan.
+        src = "// don't break the parser\nexport const ok = 1\n"
+        names, _ = _current_export_names(src)
+        assert "ok" in names
+
+    def test_export_inside_real_string_is_not_counted(self):
+        # The string-as-data guard must still hold: an export written inside a
+        # real same-line-closed string literal is masked.
+        src = 'const c = "export const FAKE = 1"\nexport const REAL = 2\n'
+        names, _ = _current_export_names(src)
+        assert "FAKE" not in names
+        assert "REAL" in names
+
+    def test_export_inside_regex_literal_is_not_counted(self):
+        src = "const r = /export const FAKE = 1/\nexport const REAL = 2\n"
+        names, _ = _current_export_names(src)
+        assert "FAKE" not in names
+        assert "REAL" in names
+
+    def test_division_not_treated_as_regex(self):
+        # `a / b` is division; the `/` must not open a regex that eats the export.
+        src = "const ratio = total / count\nexport const REAL = 1\n"
+        names, _ = _current_export_names(src)
+        assert "REAL" in names
+
+    def test_real_import_specifier_survives_strip(self):
+        stripped, mask = _strip_ts_noise('import { x } from "./mod"\n')
+        assert "./mod" in stripped
 
 
 class TestTypeScriptRelative:

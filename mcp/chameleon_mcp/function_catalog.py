@@ -91,6 +91,22 @@ _STOPWORD_TOKENS = frozenset(
         "item",
         "obj",
         "self",
+        # Connector / preposition tokens carry no reuse signal on their own; a
+        # match resting only on `in`/`on`/`for` (e.g. `shuffleDeckInPlace` vs
+        # `updateAccountInCache`) is pure noise that crowds out the real
+        # counterpart under the candidate cap.
+        "in",
+        "on",
+        "at",
+        "by",
+        "for",
+        "from",
+        "into",
+        "with",
+        "and",
+        "or",
+        "as",
+        "via",
     }
 )
 
@@ -344,6 +360,23 @@ def _overlap_score(new_tokens: frozenset[str], cand: CatalogedFunction) -> int:
     return len(new_tokens & cand.tokens)
 
 
+def _jaccard(new_tokens: frozenset[str], cand_tokens: frozenset[str]) -> float:
+    """Token-set Jaccard similarity, used as the candidate ranking tiebreak.
+
+    When several candidates share the same raw overlap count (commonly a single
+    very-frequent token like ``name``), the one whose whole token set is closest
+    to the query is the better reuse lead. Ranking purely by overlap then
+    alphabetically buried the real counterpart (``getFullName`` for
+    ``buildDisplayName``) below same-overlap noise like ``EventName`` and longer
+    multi-token names. Jaccard pushes the closest-shaped names up so they land
+    inside the candidate cap.
+    """
+    union = new_tokens | cand_tokens
+    if not union:
+        return 0.0
+    return len(new_tokens & cand_tokens) / len(union)
+
+
 @dataclass(frozen=True)
 class NewFunction:
     """A function defined in the file under review, the prefilter's query side."""
@@ -384,7 +417,7 @@ def select_candidates(
         if not new_tokens:
             continue
         new_shape = (nf.arity, nf.required)
-        scored: list[tuple[int, int, CatalogedFunction]] = []
+        scored: list[tuple[int, float, int, CatalogedFunction]] = []
         for cand in catalog.functions:
             if exclude_file is not None and cand.file == exclude_file:
                 continue
@@ -399,11 +432,15 @@ def select_candidates(
             if not _arity_close(new_shape, (cand.arity, cand.required)):
                 continue
             req_distance = abs(nf.required - cand.required)
-            scored.append((overlap, req_distance, cand))
+            similarity = _jaccard(new_tokens, cand.tokens)
+            scored.append((overlap, similarity, req_distance, cand))
 
         if not scored:
             continue
-        scored.sort(key=lambda t: (-t[0], t[1], t[2].name, t[2].file))
+        # Rank by raw token overlap, then token-set similarity (so the closest-
+        # shaped name wins the tie instead of the alphabetically-first one),
+        # then required-arity closeness, then a stable name/file tiebreak.
+        scored.sort(key=lambda t: (-t[0], -t[1], t[2], t[3].name, t[3].file))
         candidates = [
             {
                 "name": cand.name,
@@ -413,7 +450,7 @@ def select_candidates(
                 "required": cand.required,
                 "shared_tokens": sorted(new_tokens & cand.tokens),
             }
-            for _overlap, _dist, cand in scored[:max_candidates]
+            for _overlap, _sim, _dist, cand in scored[:max_candidates]
         ]
         results.append(
             {

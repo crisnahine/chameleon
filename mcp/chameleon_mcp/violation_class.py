@@ -70,6 +70,16 @@ BLOCK_ELIGIBLE_RULES: frozenset[str] = frozenset(
 # secret rule joins phantom-import here.
 _ARCHETYPE_INDEPENDENT: frozenset[str] = frozenset({"phantom-import", "secret-detected-in-content"})
 
+# Archetype-independent rules whose block decision is deliberately deferred from
+# the per-edit PostToolUse gate to the turn-end Stop backstop. A phantom import
+# is a filesystem fact that a later edit in the same turn can resolve (the import
+# target gets created), so blocking it mid-turn would refuse an edit the model is
+# about to make valid; the Stop backstop re-lints once the turn's edits settle.
+# A leaked credential is NOT deferrable: nothing a later edit does makes a
+# hardcoded AKIA key safe, and it is the documented "only security BLOCK", so it
+# blocks inline at PostToolUse and is intentionally absent here.
+_DEFERRED_TO_TURN_END: frozenset[str] = frozenset({"phantom-import"})
+
 # The secret kinds precise enough to hard-block on. Each is a fixed-prefix or
 # fixed-shape credential token with negligible benign-collision rate, so a match
 # is a real leaked credential rather than a coincidence in committed content.
@@ -100,6 +110,15 @@ _DETERMINISTIC_SECRET_KINDS: frozenset[str] = frozenset(
 
 def is_archetype_independent(rule: str) -> bool:
     return rule in _ARCHETYPE_INDEPENDENT
+
+
+def is_deferred_to_turn_end(rule: str) -> bool:
+    """True if this archetype-independent rule blocks at the Stop backstop, not inline.
+
+    Only ``phantom-import`` defers: a later same-turn edit can create the import
+    target. A deterministic secret never defers; it blocks at the per-edit gate.
+    """
+    return rule in _DEFERRED_TO_TURN_END
 
 
 def tag_secret_hardness(violations: list[dict]) -> None:

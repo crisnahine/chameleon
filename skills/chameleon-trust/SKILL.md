@@ -37,6 +37,8 @@ The MCP `detect_repo` tool returns `trust_state: "stale"` after a material chang
 
 A freshly trusted (or refreshed) profile runs enforcement in `shadow` mode by default: would-have-blocked events are logged but nothing blocks. This lets the repo measure its own false-positive rate before any edit is denied. Promote to `enforce` (set `enforcement.mode: "enforce"` in `config.json`) only after a clean shadow window — zero would-blocks on committed files, which `/chameleon-status` reports. Until then, blocking stays off and chameleon is purely advisory.
 
+Promotion is a TWO-step action: `config.json` is one of the trust-hashed artifacts, so editing it flips the profile to `stale` and disables all enforcement and canonical injection until trust is re-granted. After changing `enforcement.mode`, run `/chameleon-trust` again — otherwise the promotion silently turns chameleon OFF instead of on. The same applies to any other `config.json` edit.
+
 ## What to tell the user before running
 
 > Trust is per-user, per-repo. Granting trust means you've reviewed `profile.summary.md` and accept the canonical patterns it suggests. If a teammate later modifies the profile, you'll be re-prompted before chameleon resumes injecting context for you.

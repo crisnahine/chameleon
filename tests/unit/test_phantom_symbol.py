@@ -150,6 +150,42 @@ class TestPhantomSymbol:
         assert len(v) == 1
         assert v[0].rule == "phantom-import"
 
+    def test_alias_import_missing_export_is_flagged(self, tmp_path):
+        # A hallucinated named binding imported via a tsconfig path alias must be
+        # flagged the same as a relative import. The alias branch used to skip
+        # the symbol check entirely, so this was silently dead for the dominant
+        # import style in many repos.
+        (tmp_path / "tsconfig.json").write_text(
+            '{"compilerOptions":{"baseUrl":".","paths":{"~/*":["src/*"]}}}',
+            encoding="utf-8",
+        )
+        _write(tmp_path / "src" / "utils" / "env.ts")
+        _index(tmp_path, {"src/utils/env.ts": {"names": ["getEnv"], "open": False}})
+        v = lint_phantom_imports(
+            "import { getEnv, ghost } from '~/utils/env';\n",
+            file_path=str(tmp_path / "src" / "app.ts"),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
+        )
+        assert [f.actual for f in v] == ["ghost"]
+
+    def test_alias_import_present_export_is_clean(self, tmp_path):
+        (tmp_path / "tsconfig.json").write_text(
+            '{"compilerOptions":{"baseUrl":".","paths":{"~/*":["src/*"]}}}',
+            encoding="utf-8",
+        )
+        _write(tmp_path / "src" / "utils" / "env.ts")
+        _index(tmp_path, {"src/utils/env.ts": {"names": ["getEnv"], "open": False}})
+        v = lint_phantom_imports(
+            "import { getEnv } from '~/utils/env';\n",
+            file_path=str(tmp_path / "src" / "app.ts"),
+            repo_root=str(tmp_path),
+            language="typescript",
+            rules={},
+        )
+        assert v == []
+
     def test_ignore_phantom_symbol_suppresses_only_symbol(self, tmp_path):
         _write(tmp_path / "api.ts")
         _index(tmp_path, {"api.ts": {"names": ["getUser"], "open": False}})
