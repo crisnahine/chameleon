@@ -1992,13 +1992,15 @@ def _scan_archetype_independent(
 ) -> list[dict]:
     """Run only the archetype-independent content lints (secrets, sinks, style).
 
-    A secret or a dynamic ``eval()`` is a fact about the content itself, true no
-    matter which archetype the file resolved to (or whether it resolved to one at
-    all). When archetype resolution fails the convention/AST lints have nothing to
-    compare against and are correctly skipped, but the credential scan must still
-    run so a leaked token in an unarchetyped file is not invisible. Each sub-scan
-    is wrapped so a raising scanner contributes nothing rather than aborting the
-    whole check; the caller treats an empty list as "clean".
+    A secret is a fact about the content itself, true no matter which archetype
+    the file resolved to (or whether it resolved to one at all). When archetype
+    resolution fails the convention/AST lints have nothing to compare against
+    and are correctly skipped, but the credential scan must still run so a
+    leaked token in an unarchetyped file is not invisible. Sinks and style are
+    scanned here too, but they surface as advisories on this path: eval-call
+    enforcement stays gated on an archetype match. Each sub-scan is wrapped so a
+    raising scanner contributes nothing rather than aborting the whole check;
+    the caller treats an empty list as "clean".
 
     ``rules`` is the loaded rules.json mapping. When supplied, the style baseline
     (indent / quote / line-length against the repo's declared formatter config)
@@ -2859,11 +2861,12 @@ def _stop_file_still_blockable(
         )
 
         if not archetype_name:
-            # No archetype: only the content facts (a deterministic secret, a
-            # dynamic eval) can still stand. posttool_verify recorded this file
-            # under the synthetic no-archetype label precisely so the credential
-            # blocks the turn here. The archetype-dependent gate can never pass
-            # without an archetype, so only archetype-independent rules count.
+            # No archetype: only archetype-independent content facts (phantom
+            # imports, deterministic secrets) can still stand. An eval-call is
+            # scanned but filtered by the archetype-independent check below,
+            # because it stays gated on an archetype match. posttool_verify
+            # recorded this file under the synthetic no-archetype label
+            # precisely so the credential blocks the turn here.
             indep = _scan_archetype_independent(content, file_path)
             if not indep:
                 return False

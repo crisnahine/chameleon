@@ -56,8 +56,10 @@ BLOCK_ELIGIBLE_RULES: frozenset[str] = frozenset(
         "secret-detected-in-content",
         # An eval() / exec() invocation is a deterministic dangerous sink, not an
         # archetype heuristic, so it is block-eligible like the secret rule.
-        # Verified to fire zero times across the real test repos, so calibration
-        # keeps it active. The rule name matches what scan_dangerous_sinks emits.
+        # Calibration does not exercise content scans (it never runs
+        # scan_dangerous_sinks), so this rule stays active by default rather
+        # than by measurement. The rule name matches what scan_dangerous_sinks
+        # emits.
         "eval-call",
     }
 )
@@ -76,6 +78,11 @@ _ARCHETYPE_INDEPENDENT: frozenset[str] = frozenset({"phantom-import", "secret-de
 # (a quoted value next to a keyword, common in fixtures), and the FP-prone
 # JWT/userinfo-URL shapes. Those stay advisory because their precision cannot be
 # verified against a clean repo and they trip on benign committed files.
+# Also excluded: gcp_service_account, which matches the bare JSON marker
+# '"type": "service_account"' - that field appears in benign IAM bindings,
+# terraform output, and k8s manifests that carry no credential. A real GCP
+# service-account key file always contains a PEM block, which hard-blocks via
+# private_key, so demoting the marker to advisory loses no protection.
 _DETERMINISTIC_SECRET_KINDS: frozenset[str] = frozenset(
     {
         "aws_access_key",
@@ -85,7 +92,6 @@ _DETERMINISTIC_SECRET_KINDS: frozenset[str] = frozenset(
         "stripe_key",
         "slack_token",
         "google_api_key",
-        "gcp_service_account",
         "azure_account_key",
         "private_key",
     }

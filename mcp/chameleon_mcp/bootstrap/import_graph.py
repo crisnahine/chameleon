@@ -226,9 +226,14 @@ def _find_cycles(
     are normalized to start at their lexicographically smallest node and
     de-duplicated so the same loop reported from two entry points counts once.
     The walk is depth-first with a recursion-stack set; it is bounded by
-    ``max_cycles`` so a densely-connected graph cannot run away.
+    ``max_cycles`` on found cycles and by a total step budget, because the
+    cycle bound alone never fires on a dense acyclic graph where simple-path
+    enumeration is exponential.
     """
     cycles: list[list[str]] = []
+    # Cluster graphs are tens of nodes, so this budget is generous in practice
+    # while keeping the worst case linear-bounded.
+    steps_left = 50_000
     seen: set[tuple[str, ...]] = set()
     nodes = sorted(adjacency.keys())
 
@@ -241,8 +246,10 @@ def _find_cycles(
         return tuple(path[i:] + path[:i])
 
     def dfs(node: str, stack: list[str], on_stack: set[str]) -> None:
-        if len(cycles) >= max_cycles:
+        nonlocal steps_left
+        if len(cycles) >= max_cycles or steps_left <= 0:
             return
+        steps_left -= 1
         for nxt in sorted(adjacency.get(node, ())):
             if nxt == node:
                 continue  # self-edge is not a cycle

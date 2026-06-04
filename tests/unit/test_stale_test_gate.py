@@ -111,7 +111,7 @@ def test_flags_unsynced_test_with_exports(tmp_path):
     assert "user.test.ts" in body
     assert "getUser" in body
     assert "advisory" in body.lower()
-    # Advisory only: no block decision anywhere in the output.
+    # The advisory names its opt-out directive so the model can suppress it.
     assert "chameleon-ignore tests" in body
 
 

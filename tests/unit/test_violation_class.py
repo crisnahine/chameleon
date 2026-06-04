@@ -111,7 +111,6 @@ def test_deterministic_secret_kinds_hard_block():
         "stripe_key",
         "slack_token",
         "google_api_key",
-        "gcp_service_account",
         "azure_account_key",
         "private_key",
     ):
@@ -120,6 +119,17 @@ def test_deterministic_secret_kinds_hard_block():
         assert s["secret_kind"] == kind
         assert s["secret_hard"] is True
         assert is_hard_class(s), kind
+
+
+def test_gcp_service_account_marker_stays_advisory():
+    # The bare '"type": "service_account"' JSON field appears in benign IAM
+    # bindings and terraform output; a real key file hard-blocks via its PEM
+    # block instead, so this kind must never hard-block on its own.
+    s = secret("gcp_service_account")
+    tag_secret_hardness([s])
+    assert s["secret_kind"] == "gcp_service_account"
+    assert s["secret_hard"] is False
+    assert not is_hard_class(s)
 
 
 def test_noisy_secret_kinds_stay_advisory():

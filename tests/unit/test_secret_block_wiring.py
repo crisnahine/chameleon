@@ -64,6 +64,17 @@ def test_clean_file_yields_no_secret_violation(tmp_path):
     assert [v for v in out if v.get("rule") == "secret-detected-in-content"] == []
 
 
+def test_benign_base64_run_stays_advisory(tmp_path):
+    # 40 base64 chars with no credential prefix: surfaced (possible_aws_secret)
+    # but never hard, so it can advise and cannot block.
+    blob = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0"
+    out = _lint(f'const checksum = "{blob}";\n', tmp_path)
+    secrets = [v for v in out if v.get("rule") == "secret-detected-in-content"]
+    assert secrets, "the broad fallback should still surface the run as advisory"
+    assert all(not v.get("secret_hard") for v in secrets)
+    assert all(not is_hard_class(v) for v in secrets)
+
+
 def test_chameleon_ignore_reaches_secret_rule(tmp_path):
     content = f'const k = "{AWS_KEY}"; // chameleon-ignore secret-detected-in-content\n'
     out = _lint(content, tmp_path)

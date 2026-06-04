@@ -42,6 +42,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -497,6 +498,11 @@ def _shas_merged_into_head(repo_id: str, shas: list) -> set:
 
     merged: set = set()
     for sha in candidates:
+        # Ledger records are self-written, but the SHA still came from a file
+        # on disk: validate the shape so a corrupted value can never reach git
+        # argv as something option-like.
+        if not re.fullmatch(r"[0-9a-fA-F]{7,64}", sha or ""):
+            continue
         result = _run_git(["merge-base", "--is-ancestor", sha, "HEAD"], cwd=repo_root)
         if result is not None and result.returncode == 0:
             merged.add(sha)
