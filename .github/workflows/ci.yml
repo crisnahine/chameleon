@@ -307,13 +307,15 @@ jobs:
       - name: pip-audit
         working-directory: mcp
         run: |
-          # Upgrade pip first: pip-audit scans the whole environment including
-          # pip itself, so a runner image carrying a one-patch-stale pip (e.g.
-          # PYSEC-2026-196 on 26.1.1) fails the audit for every commit even
-          # though it is not a project dependency.
+          # pip-audit audits the environment of the interpreter it runs under.
+          # Under `pipx run` that is pipx's own throwaway venv — seeded with the
+          # runner's bundled pip — so the project deps were never audited and a
+          # one-patch-stale runner pip (PYSEC-2026-196 on 26.1.1) failed every
+          # commit. Install pip-audit into the project env instead, with pip
+          # upgraded first so the audited environment carries a patched pip.
           python -m pip install -q --upgrade pip
-          pip install -q -e ".[dev]"
-          pipx run pip-audit --desc on --progress-spinner off
+          pip install -q -e ".[dev]" pip-audit
+          pip-audit --desc on --progress-spinner off
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
