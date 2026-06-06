@@ -71,6 +71,50 @@ class TestSchemaInitShortTimeout:
             conn.close()
 
 
+class TestSchemaInitLeavesNoPendingTransaction:
+    """The schema-meta insert must be committed before init returns.
+
+    Under ``isolation_level=""`` an uncommitted INSERT leaves the connection
+    holding the WAL writer lock. A long-lived process that only ever READS
+    through this connection (the MCP server answering explain_edit /
+    get_shadow_report) then pins that lock for its whole lifetime, and every
+    hook write in other processes dies at its 200ms busy_timeout — silently,
+    because drift writes are fail-open. That starved the entire decision_log
+    during a multi-session campaign.
+    """
+
+    def test_init_returns_with_no_open_transaction(self, tmp_path: Path):
+        db_path = tmp_path / "drift.db"
+        conn = init_drift_db(db_path)
+        try:
+            assert conn.in_transaction is False
+        finally:
+            conn.close()
+
+    def test_reinit_on_existing_db_also_commits(self, tmp_path: Path):
+        db_path = tmp_path / "drift.db"
+        first = init_drift_db(db_path)
+        first.close()
+        conn = init_drift_db(db_path)
+        try:
+            assert conn.in_transaction is False
+        finally:
+            conn.close()
+
+    def test_schema_meta_row_is_durable_without_later_writes(self, tmp_path: Path):
+        # A reader-only process must still leave a committed schema_version
+        # behind: close without any write, reopen, row is there.
+        db_path = tmp_path / "drift.db"
+        conn = init_drift_db(db_path)
+        conn.close()
+        check = sqlite3.connect(str(db_path))
+        try:
+            row = check.execute("SELECT v FROM schema_meta WHERE k = 'schema_version'").fetchone()
+            assert row is not None
+        finally:
+            check.close()
+
+
 class TestSchemaInitSelfHeal:
     def test_malformed_db_self_heals_to_empty_working_db(self, tmp_path: Path):
         db_path = tmp_path / "drift.db"

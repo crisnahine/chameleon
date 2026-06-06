@@ -669,3 +669,124 @@ def test_active_block_rules_filters_to_block_eligible(tmp_path):
         },
     )
     assert active_block_rules(tmp_path) == {"phantom-import", "secret-detected-in-content"}
+
+
+def test_language_gating_demotes_ts_only_rules_on_ruby_profile(tmp_path):
+    # A Ruby profile has no signal source for jsx-presence-mismatch: its 0.0
+    # fp_rate is vacuous, so calibration must not certify it active (the
+    # gitlabhq QA campaign shipped it "active" on a Ruby-only repo this way).
+    repo = tmp_path
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "users_finder.rb").write_text(
+        "class UsersFinder\n  def execute\n  end\nend\n", encoding="utf-8"
+    )
+
+    class _Loaded:
+        profile = {"language": "ruby"}
+        canonicals = {
+            "canonicals": {
+                "finder": [
+                    {
+                        "witness": {"path": "app/users_finder.rb"},
+                        "normative_shape": {"ast_query": {}},
+                    }
+                ]
+            }
+        }
+        conventions = {"conventions": {}}
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    assert result["jsx-presence-mismatch"]["active"] is False
+    assert result["jsx-presence-mismatch"]["inert_reason"] == "no-signal-for-language"
+    # Ruby-capable rules keep their measured state.
+    assert result["inheritance-convention-violation"]["active"] is True
+    assert "inert_reason" not in result["naming-convention-violation"]
+
+
+def test_language_gating_demotes_ruby_only_rules_on_ts_profile(tmp_path):
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("export const a = 1\n", encoding="utf-8")
+
+    class _Loaded:
+        profile = {"language": "typescript"}
+        canonicals = {
+            "canonicals": {
+                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+            }
+        }
+        conventions = {"conventions": {}}
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    assert result["inheritance-convention-violation"]["active"] is False
+    assert result["inheritance-convention-violation"]["inert_reason"] == "no-signal-for-language"
+    assert result["jsx-presence-mismatch"]["active"] is True
+
+
+def test_language_gating_fails_open_when_language_unknown(tmp_path):
+    # Legacy profiles carry no `language` key; gating needs positive knowledge.
+    repo = tmp_path
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("export const a = 1\n", encoding="utf-8")
+
+    class _Loaded:
+        canonicals = {
+            "canonicals": {
+                "util": [{"witness": {"path": "src/a.ts"}, "normative_shape": {"ast_query": {}}}]
+            }
+        }
+        conventions = {"conventions": {}}
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    assert result["jsx-presence-mismatch"]["active"] is True
+    assert result["inheritance-convention-violation"]["active"] is True
+
+
+def test_get_status_surfaces_inert_reason(tmp_path, monkeypatch):
+    # A rule demoted for language capability must carry its reason through
+    # get_status, so /chameleon-status can say WHY it is inactive.
+    import json
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    repo = tmp_path / "repo"
+    cham = repo / ".chameleon"
+    cham.mkdir(parents=True)
+    (cham / "profile.json").write_text(json.dumps({"generation": 1, "language": "ruby"}))
+    (cham / "COMMITTED").touch()
+    (cham / "enforcement.json").write_text(
+        json.dumps(
+            {
+                "block_rules": {
+                    "eval-call": {"active": True, "fp_rate": 0.0, "sampled": 10, "flagged": 0},
+                    "jsx-presence-mismatch": {
+                        "active": False,
+                        "fp_rate": 0.0,
+                        "sampled": 10,
+                        "flagged": 0,
+                        "inert_reason": "no-signal-for-language",
+                    },
+                    "file-naming-convention-violation": {
+                        "active": False,
+                        "fp_rate": 0.03,
+                        "sampled": 10,
+                        "flagged": 3,
+                    },
+                }
+            }
+        )
+    )
+
+    from chameleon_mcp.profile.trust import grant_trust
+    from chameleon_mcp.tools import _compute_repo_id, get_status
+
+    grant_trust(_compute_repo_id(repo), cham)
+    data = get_status(str(repo))["data"]["enforcement"]
+    demoted = {d["rule"]: d for d in data["demoted"]}
+    assert demoted["jsx-presence-mismatch"]["inert_reason"] == "no-signal-for-language"
+    # Measured demotions carry no reason key (they were measured, not inert).
+    assert "inert_reason" not in demoted["file-naming-convention-violation"]
+    assert "eval-call" in data["active"]

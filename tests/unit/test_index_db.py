@@ -168,3 +168,15 @@ class TestReadOnlyConnection:
 
         root = resolve_repo_root("resolve-ro")
         assert root == "/resolve/path"
+
+
+def test_init_index_db_returns_with_no_open_transaction(tmp_path):
+    # Same starvation class as drift.db: an uncommitted schema-meta INSERT
+    # would pin the WAL writer lock for a reader-only server's lifetime.
+    from chameleon_mcp.index_db import init_index_db
+
+    conn = init_index_db(tmp_path / "index.db")
+    try:
+        assert conn.in_transaction is False
+    finally:
+        conn.close()

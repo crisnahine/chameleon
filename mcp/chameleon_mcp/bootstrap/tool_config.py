@@ -533,6 +533,15 @@ def _parse_eslint_yaml(path: Path) -> tuple[dict | None, str | None]:
     return loaded, None
 
 
+# ERB tags inside .rubocop.yml (gitlab: `parallel: <%= ENV['CI'] ... %>`).
+# Rendering ERB would execute repo code, which chameleon never does during
+# bootstrap; instead the tags are neutralized TEXTUALLY so the rest of the
+# (usually large) config still parses: value tags become a placeholder scalar,
+# control-flow tags vanish.
+_ERB_VALUE_TAG_RE = re.compile(r"<%=.*?%>", re.DOTALL)
+_ERB_CONTROL_TAG_RE = re.compile(r"<%[^=].*?%>", re.DOTALL)
+
+
 def _parse_rubocop_yaml(path: Path) -> tuple[dict | None, str | None]:
     """Parse a .rubocop.yml file via PyYAML (BUG-014).
 
@@ -540,6 +549,13 @@ def _parse_rubocop_yaml(path: Path) -> tuple[dict | None, str | None]:
     ``require``, ``inherit_from``, plus every cop entry. We cap the
     payload at ~50KB to keep rules.json bounded even for very large
     real-world configs (gitlab's .rubocop.yml is 42KB).
+
+    A config carrying ERB (Rails repos commonly template a value or two) is
+    not valid YAML as-is; rather than silently dropping the WHOLE rubocop
+    config — the primary linter on a Rails repo — the parse retries once with
+    the ERB tags neutralized textually (never rendered: rendering executes
+    repo code). The success result then carries a warning noting the
+    substitution so a placeholder value is never mistaken for a real one.
     """
     if _yaml is None:
         return None, "PyYAML unavailable; cannot parse rubocop config"
@@ -552,10 +568,51 @@ def _parse_rubocop_yaml(path: Path) -> tuple[dict | None, str | None]:
     try:
         loaded = _yaml.safe_load(text)
     except _yaml.YAMLError as exc:  # type: ignore[attr-defined]
-        return None, f"malformed YAML in {path.name}: {exc}"
+        first_error = f"malformed YAML in {path.name}: {exc}"
+        loaded, note = _parse_rubocop_tolerant(text, path.name)
+        if loaded is None:
+            return None, first_error
+        return loaded, note
     if not isinstance(loaded, dict):
         return None, f"{path.name} did not parse to a mapping"
     return loaded, None
+
+
+def _parse_rubocop_tolerant(text: str, name: str) -> tuple[dict | None, str | None]:
+    """Best-effort recovery parse for a .rubocop.yml the strict pass rejected.
+
+    Two tolerated constructs, both neutralized TEXTUALLY/structurally without
+    ever executing or constructing anything:
+    - ERB tags: value tags become the placeholder scalar ``erb_omitted``,
+      control-flow tags vanish.
+    - Custom YAML tags (``!ruby/regexp /…/``): mapped to their raw scalar
+      string instead of an object construction error.
+    Returns (parsed, warning-note) or (None, None) when even the tolerant
+    pass fails.
+    """
+    if _yaml is None:
+        return None, None
+    tolerated: list[str] = []
+    neutralized = text
+    if "<%" in neutralized:
+        neutralized = _ERB_VALUE_TAG_RE.sub("erb_omitted", neutralized)
+        neutralized = _ERB_CONTROL_TAG_RE.sub("", neutralized)
+        tolerated.append("ERB tags neutralized (templated values appear as 'erb_omitted')")
+
+    class _TolerantLoader(_yaml.SafeLoader):  # type: ignore[name-defined]
+        pass
+
+    _TolerantLoader.add_multi_constructor(
+        "!", lambda loader, suffix, node: getattr(node, "value", None)
+    )
+    try:
+        loaded = _yaml.load(neutralized, Loader=_TolerantLoader)  # noqa: S506 — SafeLoader subclass
+    except _yaml.YAMLError:
+        return None, None
+    if not isinstance(loaded, dict):
+        return None, None
+    tolerated.append("custom YAML tags read as plain strings")
+    return loaded, f"{name} required a tolerant parse: " + "; ".join(tolerated)
 
 
 _EXPORTS_RE = re.compile(

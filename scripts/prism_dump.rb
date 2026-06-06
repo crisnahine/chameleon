@@ -272,7 +272,12 @@ def extract_file(file_path)
           params: param_shapes(node),
           is_default_export: false,
           enclosing_class: enclosing && enclosing[:name],
-          base_class: enclosing && enclosing[:superclass]
+          base_class: enclosing && enclosing[:superclass],
+          # Body span for the duplication catalog's body-hash fallback: a
+          # body-exact clone whose name shares no tokens with the original
+          # can only be paired by body identity.
+          start_line: start,
+          end_line: finish
         }
       end
     elsif !frame_stack.empty?

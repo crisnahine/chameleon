@@ -215,6 +215,11 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # the duplication judge. Enough to show the function's intent without
     # inlining a whole large method into the tool result.
     "DUPLICATION_BODY_EXCERPT_LINES": 15,
+    # Minimum normalized-body length (chars) before a function gets a body-hash
+    # fingerprint in the catalog. The hash pairs body-exact clones whose names
+    # share no tokens; trivial one-expression bodies collide across half a
+    # codebase, so they carry no identity worth fingerprinting.
+    "DUPLICATION_BODY_HASH_MIN_CHARS": 40,
     # Cap on the modules scanned for cross-file existence breaks in one
     # get_crossfile_context call. Each scanned module reads its own source to
     # recompute its current export set, so this bounds the read fan-out on a

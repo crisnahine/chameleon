@@ -170,10 +170,12 @@ def _strip_ts_strings_and_comments(content: str) -> str:
 
     We replace each match with a same-length run of spaces so positions
     elsewhere remain meaningful (regex flag offsets / future line numbering).
+    Newlines inside a multiline match (block comment, template literal) are
+    preserved so line numbers downstream stay truthful.
     """
 
     def _spaces(m: re.Match) -> str:
-        return " " * len(m.group(0))
+        return re.sub(r"[^\n]", " ", m.group(0))
 
     out = _TS_BLOCK_COMMENT.sub(_spaces, content)
     out = _TS_LINE_COMMENT.sub(_spaces, out)
@@ -371,12 +373,61 @@ _RUBY_STRING_DQ = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
 _RUBY_STRING_SQ = re.compile(r"'(?:\\.|[^'\\])*'", re.DOTALL)
 
 
+# A heredoc OPENER token. Delimiter must be ALL-CAPS (the overwhelming
+# convention) and follow `<<` with no space, so `arr << FOO` and
+# `class << self` never match; the lookbehind rejects a `<<` that shifts a
+# value (`arr<<FOO`, `(x)<<FOO`, `"s"<<FOO`) — a real heredoc opener is always
+# preceded by whitespace, `(`, `,`, `=`, or line start.
+_RUBY_HEREDOC_OPENER = re.compile(r"(?<![\w)\]\"'])<<([~-]?)(['\"]?)([A-Z][A-Z0-9_]*)\2")
+
+
+def _blank_ruby_heredocs(content: str) -> str:
+    """Blank heredoc bodies in a single forward pass — length-preserving, O(n).
+
+    A heredoc body is string content: `def fakeMethod` inside `<<~TEXT ... TEXT`
+    must not feed the naming/inheritance/import scans. The first implementation
+    was a lazy cross-line regex; on a file with many unterminated openers every
+    match attempt rescanned to end-of-file — quadratic, multiple SECONDS at the
+    100KB lint cap, on the hook hot path, over attacker-controllable content.
+
+    One pass over lines instead: an opener queues its delimiter (FIFO — stacked
+    heredocs close in order), every line inside a body is blanked until the
+    front delimiter's terminator line, the terminator line itself is blanked
+    (it is heredoc syntax, not code). Text after the first opener on the opener
+    line is blanked too (`<<~SQL.strip` method chains are heredoc plumbing).
+    An unterminated heredoc blanks to end-of-file: its body is string content
+    either way, and the file is a syntax error Ruby itself would reject.
+    """
+    if "<<" not in content:
+        return content
+    lines = content.split("\n")
+    pending: list[str] = []
+    out: list[str] = []
+    for line in lines:
+        if pending:
+            if line.strip() == pending[0]:
+                pending.pop(0)
+            out.append(" " * len(line))
+            continue
+        m = _RUBY_HEREDOC_OPENER.search(line)
+        if m is None:
+            out.append(line)
+            continue
+        for om in _RUBY_HEREDOC_OPENER.finditer(line):
+            pending.append(om.group(3))
+        out.append(line[: m.start()] + " " * (len(line) - m.start()))
+    return "\n".join(out)
+
+
 def _strip_ruby_strings_and_comments(content: str) -> str:
     def _spaces(m: re.Match) -> str:
-        return " " * len(m.group(0))
+        # Preserve newlines so line numbers downstream of a multiline match
+        # (block comment, heredoc, multiline string) stay truthful.
+        return re.sub(r"[^\n]", " ", m.group(0))
 
     out = _RUBY_BLOCK_COMMENT.sub(_spaces, content)
     out = _RUBY_LINE_COMMENT.sub(_spaces, out)
+    out = _blank_ruby_heredocs(out)
     out = _RUBY_STRING_DQ.sub(_spaces, out)
     out = _RUBY_STRING_SQ.sub(_spaces, out)
     return out
@@ -1012,6 +1063,18 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
 # are blanked before this runs, so a literal mentioning "eval(" is inert.
 _EVAL_CALL_RE = re.compile(r"(?<![.\w])eval\s*\(")
 
+# Ruby dynamic-eval variants. The block forms (`instance_eval { ... }`,
+# `class_eval do ... end`) are the legitimate DSL pattern; only the STRING
+# argument forms execute arbitrary code. The argument shape is checked against
+# the ORIGINAL content at the matched offset (the stripper blanks string
+# literals but preserves length), so only a literal string / heredoc argument
+# fires — a variable argument stays unflagged to keep legitimate
+# metaprogramming out of an error-severity rule. `send(:eval, ...)` and the
+# string form are dynamic dispatch to the same sink.
+_RUBY_EVAL_VARIANT_RE = re.compile(r"(?<![:\w])(instance_eval|class_eval|module_eval)\b")
+_RUBY_EVAL_STRING_ARG_RE = re.compile(r"\A\s*\(?\s*(?:\"|'|<<[~-]?[A-Z'\"])")
+_RUBY_SEND_EVAL_RE = re.compile(r"\b((?:public_)?send)\s*\(\s*(?::eval\b|[\"']eval[\"'])")
+
 # Weak message-digest constructors. Only meaningful as a security signal when a
 # crypto keyword sits nearby (a stable cache key or an ETag built from MD5 is
 # legitimate), so this stays advisory and is gated on `_has_security_context`.
@@ -1122,6 +1185,60 @@ def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violatio
                 ),
             )
         )
+
+    if language == "ruby":
+        # String-argument *_eval forms. The method name is matched in the
+        # stripped scan (comment/string mentions are blanked there); the
+        # argument shape is read from the ORIGINAL content at the same offset,
+        # because the stripper blanks the very string literal that makes the
+        # call dangerous. Block/variable arguments do not fire.
+        for m in _RUBY_EVAL_VARIANT_RE.finditer(scan):
+            if not _RUBY_EVAL_STRING_ARG_RE.match(content[m.end() : m.end() + 40]):
+                continue
+            line = _position_to_line(scan, m.start())
+            method = m.group(1)
+            violations.append(
+                Violation(
+                    rule="eval-call",
+                    expected="<no dynamic eval>",
+                    actual=f"{method}( at line {line}",
+                    # Advisory severity on purpose: `class_eval <<~RUBY` is an
+                    # established Rails metaprogramming idiom, and content
+                    # scans are never calibrated, so the error/hard form would
+                    # block legitimate committed patterns. is_hard_class gates
+                    # eval-call hardness on severity.
+                    severity="warning",
+                    message=(
+                        f"dynamic {method} with a string argument at line {line} "
+                        "executes arbitrary code. If the string can reach user "
+                        "input this is remote code execution; use the block form "
+                        "or define_method instead."
+                    ),
+                )
+            )
+
+        # send(:eval, ...) / send("eval", ...) — dynamic dispatch to the same
+        # sink. The string form is blanked in the stripped scan, so the match
+        # runs on the original content and is confirmed real code by checking
+        # the stripped scan still carries the call at that offset.
+        for m in _RUBY_SEND_EVAL_RE.finditer(content):
+            if scan[m.start(1) : m.end(1)] != m.group(1):
+                continue
+            line = _position_to_line(content, m.start())
+            violations.append(
+                Violation(
+                    rule="eval-call",
+                    expected="<no dynamic eval>",
+                    actual=f"{m.group(1)}(:eval at line {line}",
+                    severity="error",
+                    message=(
+                        f"{m.group(1)} dispatching to eval at line {line} executes "
+                        "arbitrary code. If the argument can reach user input this "
+                        "is remote code execution; replace it with an explicit "
+                        "dispatch table."
+                    ),
+                )
+            )
 
     if language == "typescript":
         for m in _MATH_RANDOM_RE.finditer(scan):
@@ -1763,6 +1880,34 @@ def _module_specifier_matches(spec: str, module: str) -> bool:
     return spec.startswith(module + "/")
 
 
+_RUBY_REQUIRE_RE = re.compile(
+    r"^[ \t]*require(?:_relative)?\s*\(?\s*['\"]([^'\"]+)['\"]", re.MULTILINE
+)
+# A competing pair taught on a Ruby repo names either a require path
+# ('net/http') or a constant path (Net::HTTP). This shape-check picks the
+# matching strategy per entry.
+_RUBY_CONSTANT_PATH_RE = re.compile(r"[A-Z]\w*(?:::[A-Z]\w*)*\Z")
+
+
+def _ruby_module_in_use(mod: str, import_specs: list[str], scan_content: str) -> bool:
+    """True when `mod` is required or referenced in a Ruby file.
+
+    Require paths compare whole specifiers (same segment rules as the TS
+    matcher). Constant paths match word-bounded references in the
+    strings/comments-stripped content, so usage with no explicit require
+    (Rails autoloading, transitive requires) still counts while mentions in
+    comments and string literals do not. A reference is bounded on the left so
+    ``Foo::Net::HTTP`` does not count as ``Net::HTTP``; an explicit top-level
+    ``::Net::HTTP`` does.
+    """
+    if any(_module_specifier_matches(spec, mod) for spec in import_specs):
+        return True
+    if _RUBY_CONSTANT_PATH_RE.fullmatch(mod):
+        pattern = rf"(?<![\w:])(?:::)?{re.escape(mod)}\b"
+        return re.search(pattern, scan_content) is not None
+    return False
+
+
 # Match the declared name whatever its casing. An uppercase-only class would skip
 # the most blatant violation -- a lowercase `interface params` in an I-prefix
 # repo -- so the prefix/casing check downstream gets the real name and can flag it.
@@ -2358,6 +2503,99 @@ def _file_naming_violations(file_path: str, file_naming: dict) -> list[Violation
     return out
 
 
+# Lint-side Ruby declaration captures. Unlike the derivation regexes in
+# conventions.py (which require the uppercase start Ruby enforces for class
+# names), these are permissive on purpose: the lint must SEE a lowercase class
+# name to flag it. `(?!<<)` keeps `class << self` out; operator defs
+# (`def ==`) carry no casing to assert and stay excluded by the identifier
+# start.
+_RUBY_METHOD_DEF_LINT_RE = re.compile(
+    r"^[ \t]*def\s+(?:self\s*\.\s*)?([a-zA-Z_]\w*[!?=]?)", re.MULTILINE
+)
+_RUBY_CLASS_DECL_LINT_RE = re.compile(
+    r"^[ \t]*(?:class|module)\s+(?!<<)([A-Za-z_][\w:]*)", re.MULTILINE
+)
+_RUBY_CONSTANT_ASSIGN_LINT_RE = re.compile(r"^[ \t]*([A-Z]\w*)\s*=[^=~]", re.MULTILINE)
+
+
+def _ruby_naming_violations(scan_content: str, naming: dict) -> list[Violation]:
+    """In-source Ruby naming checks against the derived casing conventions.
+
+    Each dimension fires only when the profile derived the canonical casing
+    for it (snake_case methods, PascalCase classes, SCREAMING_SNAKE constants)
+    at >= 0.60 consistency, mirroring the TS interface-prefix gate. The
+    classifiers are shared with the derivation so what is measured is exactly
+    what is checked. PascalCase constant assignments are never flagged — a
+    `Result = Struct.new` class alias is legitimate in any Ruby repo.
+    """
+    from chameleon_mcp.conventions import (
+        _classify_ruby_class_casing,
+        _classify_ruby_constant_casing,
+        _classify_ruby_method_casing,
+    )
+
+    out: list[Violation] = []
+
+    method_entry = naming.get("method_casing") or {}
+    if method_entry.get("pattern") == "snake_case" and method_entry.get("consistency", 0) >= 0.60:
+        for m in _RUBY_METHOD_DEF_LINT_RE.finditer(scan_content):
+            name = m.group(1)
+            if _classify_ruby_method_casing(name) != "snake_case":
+                out.append(
+                    Violation(
+                        rule="naming-convention-violation",
+                        expected="snake_case",
+                        actual=name,
+                        severity="warning",
+                        message=(
+                            f"NAMING: method {name} should use snake_case "
+                            f"({method_entry['consistency']:.0%} convention)"
+                        ),
+                    )
+                )
+
+    class_entry = naming.get("class_casing") or {}
+    if class_entry.get("pattern") == "PascalCase" and class_entry.get("consistency", 0) >= 0.60:
+        for m in _RUBY_CLASS_DECL_LINT_RE.finditer(scan_content):
+            name = m.group(1)
+            if _classify_ruby_class_casing(name) != "PascalCase":
+                out.append(
+                    Violation(
+                        rule="naming-convention-violation",
+                        expected="PascalCase",
+                        actual=name,
+                        severity="warning",
+                        message=(
+                            f"NAMING: class {name} should use PascalCase "
+                            f"({class_entry['consistency']:.0%} convention)"
+                        ),
+                    )
+                )
+
+    constant_entry = naming.get("constant_casing") or {}
+    if (
+        constant_entry.get("pattern") == "SCREAMING_SNAKE_CASE"
+        and constant_entry.get("consistency", 0) >= 0.60
+    ):
+        for m in _RUBY_CONSTANT_ASSIGN_LINT_RE.finditer(scan_content):
+            name = m.group(1)
+            if _classify_ruby_constant_casing(name) == "other":
+                out.append(
+                    Violation(
+                        rule="naming-convention-violation",
+                        expected="SCREAMING_SNAKE_CASE",
+                        actual=name,
+                        severity="warning",
+                        message=(
+                            f"NAMING: constant {name} should use SCREAMING_SNAKE_CASE "
+                            f"({constant_entry['consistency']:.0%} convention)"
+                        ),
+                    )
+                )
+
+    return out
+
+
 def lint_conventions(
     content: str,
     conventions: dict | None,
@@ -2386,6 +2624,12 @@ def lint_conventions(
     ignored_rules: set[str] = set()
     for m in _CHAMELEON_IGNORE_RE.finditer(content):
         ignored_rules.add(m.group(1))
+    # Ruby directives live in `# ...` comments. Read them up front — before the
+    # import-preference scan, which can fire on Ruby — not just before the
+    # file-naming check.
+    if language == "ruby":
+        for m in _CHAMELEON_IGNORE_RUBY_RE.finditer(content):
+            ignored_rules.add(m.group(1))
 
     # Run the NAMING + INHERITANCE violation scans against a strings/comments-
     # stripped copy so a class/interface decl inside a heredoc / template string
@@ -2424,8 +2668,14 @@ def lint_conventions(
         # quotes as word boundaries, so a banned name that is a trailing segment
         # of the preferred scoped package (`react-query` inside
         # `@tanstack/react-query`) would both false-flag the preferred import and
-        # defeat the preferred-present guard.
-        import_specs = [m.group(1) for m in _TS_IMPORT_FROM_RE.finditer(import_scan_content)]
+        # defeat the preferred-present guard. Extraction is language-gated: the
+        # ES regex on Ruby content matched pasted ES snippets while real
+        # `require` statements and constant references never registered, so the
+        # rule was inert on exactly the language it was taught for.
+        if language == "ruby":
+            import_specs = [m.group(1) for m in _RUBY_REQUIRE_RE.finditer(content)]
+        else:
+            import_specs = [m.group(1) for m in _TS_IMPORT_FROM_RE.finditer(import_scan_content)]
         for competing in (conventions.get("imports") or {}).get("competing", []):
             if not isinstance(competing, dict):
                 continue
@@ -2433,20 +2683,26 @@ def lint_conventions(
             preferred_mod = competing.get("preferred")
             if not over_mod or not preferred_mod:
                 continue
-            if any(_module_specifier_matches(spec, preferred_mod) for spec in import_specs):
+            if language == "ruby":
+                over_used = _ruby_module_in_use(over_mod, import_specs, scan_content)
+                preferred_used = _ruby_module_in_use(preferred_mod, import_specs, scan_content)
+            else:
+                over_used = any(_module_specifier_matches(s, over_mod) for s in import_specs)
+                preferred_used = any(
+                    _module_specifier_matches(s, preferred_mod) for s in import_specs
+                )
+            if preferred_used:
                 continue
-            for spec in import_specs:
-                if _module_specifier_matches(spec, over_mod):
-                    violations.append(
-                        Violation(
-                            rule="import-preference-violation",
-                            expected=preferred_mod,
-                            actual=over_mod,
-                            severity="warning",
-                            message=f"IMPORT: {over_mod} imported - replace with {preferred_mod} (all usages)",
-                        )
+            if over_used:
+                violations.append(
+                    Violation(
+                        rule="import-preference-violation",
+                        expected=preferred_mod,
+                        actual=over_mod,
+                        severity="warning",
+                        message=f"IMPORT: {over_mod} imported - replace with {preferred_mod} (all usages)",
                     )
-                    break
+                )
 
     if language == "typescript" and "naming-convention" not in ignored_rules:
         naming = conventions.get("naming") or {}
@@ -2466,15 +2722,11 @@ def lint_conventions(
                         )
                     )
 
+    if language == "ruby" and "naming-convention" not in ignored_rules:
+        violations.extend(_ruby_naming_violations(scan_content, conventions.get("naming") or {}))
+
     if language == "typescript" and "then-without-catch" not in ignored_rules:
         violations.extend(_then_without_catch_violations(scan_content))
-
-    # Ruby ignore directives live in `# ...` comments; the TS-only scan above
-    # misses them. Read them before the (language-agnostic) file-naming check so
-    # a Ruby file can suppress file-naming-convention with `# chameleon-ignore`.
-    if language == "ruby":
-        for m in _CHAMELEON_IGNORE_RUBY_RE.finditer(content):
-            ignored_rules.add(m.group(1))
 
     # File-naming is path-only and language-agnostic: it compares the edited
     # file's basename casing/suffix against the archetype's dominant pattern.

@@ -41,3 +41,21 @@ def test_neutral_prompt_does_not_fire():
 
 def test_empty_prompt_is_safe():
     assert _run("").strip() == "{}"
+
+
+def test_machine_generated_block_does_not_trigger():
+    # A workflow task notification mentioning chameleon + carrying complaint
+    # words is machine output, not user frustration. Regression for the QA
+    # campaign's false positive.
+    prompt = (
+        "<task-notification>Task qa-7 failed: chameleon hook returned a broken "
+        "envelope; this is wrong and slow</task-notification>"
+    )
+    assert "detected frustration" not in _run(prompt)
+
+
+def test_human_text_outside_machine_block_still_triggers():
+    prompt = (
+        "<task-notification>run 12 done</task-notification>\nugh chameleon is so annoying today"
+    )
+    assert "detected frustration" in _run(prompt)

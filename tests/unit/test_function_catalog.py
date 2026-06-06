@@ -279,3 +279,91 @@ class TestSelectCandidates:
         out = fc.select_candidates(catalog, new)
         names = [c["name"] for c in out[0]["candidates"]]
         assert names[0] == "getFullName"
+
+
+RUBY_BODY = [
+    "def valid_image_mimetypes",
+    "  %w[image/png image/jpeg image/gif image/webp].freeze +",
+    "    extra_image_mimetypes_for(current_settings)",
+    "end",
+]
+
+
+class TestBodyHashFallback:
+    """A body-exact clone with ZERO shared name tokens must still surface.
+
+    Regression for the gitlabhq QA finding: `valid_image_mimetypes` cloned as
+    `allowed_picture_content_types` returned only name-token candidates, none
+    the real twin — exactly the LLM-duplication case the tool exists for.
+    """
+
+    def _ruby_file(self, tmp_path, rel, name):
+        body = [f"def {name}"] + RUBY_BODY[1:]
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(body) + "\n", encoding="utf-8")
+        return path, len(body)
+
+    def test_normalized_body_hash_ignores_name_and_whitespace(self):
+        a = fc.normalized_body_hash(RUBY_BODY, 1, 4)
+        renamed = ["def allowed_picture_content_types"] + [
+            "    " + ln.strip() for ln in RUBY_BODY[1:]
+        ]
+        b = fc.normalized_body_hash(renamed, 1, 4)
+        assert a is not None
+        assert a == b
+
+    def test_short_bodies_carry_no_hash(self):
+        assert fc.normalized_body_hash(["def a", "  1", "end"], 1, 3) is None
+
+    def test_invalid_spans_are_none(self):
+        assert fc.normalized_body_hash(RUBY_BODY, None, 4) is None
+        assert fc.normalized_body_hash(RUBY_BODY, 3, 2) is None
+        assert fc.normalized_body_hash(RUBY_BODY, 99, 120) is None
+
+    def test_zero_token_overlap_clone_surfaces_via_body_hash(self, tmp_path):
+        orig_path, n = self._ruby_file(tmp_path, "app/uploaders/checks.rb", "valid_image_mimetypes")
+        sig = dict(_sig("valid_image_mimetypes", [], kind="method"))
+        sig.update({"start_line": 1, "end_line": n})
+        files = [_FakeParsed(path=orig_path, extras={"callable_signatures": [sig]})]
+        payload = fc.build_function_catalog(files, tmp_path)
+        row = payload["files"]["app/uploaders/checks.rb"][0]
+        assert row.get("body_hash"), "catalog row must carry the body fingerprint"
+
+        cham = tmp_path / ".chameleon"
+        cham.mkdir()
+        (cham / fc.FUNCTION_CATALOG_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+        catalog = fc.load_function_catalog(tmp_path)
+        assert catalog is not None
+
+        clone_lines = ["def allowed_picture_content_types"] + RUBY_BODY[1:]
+        clone_hash = fc.normalized_body_hash(clone_lines, 1, len(clone_lines))
+        nf = fc.NewFunction(
+            name="allowed_picture_content_types",
+            kind="method",
+            arity=0,
+            required=0,
+            body_hash=clone_hash,
+        )
+        # Zero shared name tokens with the original — the name prefilter alone
+        # would return nothing.
+        assert not (fc.name_tokens(nf.name) & fc.name_tokens("valid_image_mimetypes"))
+        matches = fc.select_candidates(catalog, [nf])
+        assert matches, "body-identical clone must surface despite zero name overlap"
+        cand = matches[0]["candidates"][0]
+        assert cand["name"] == "valid_image_mimetypes"
+        assert cand["body_match"] is True
+
+    def test_name_only_candidates_marked_not_body_match(self, tmp_path):
+        path, _ = self._ruby_file(tmp_path, "app/a.rb", "format_date")
+        sig = _sig("format_date", _pos(1), kind="method")
+        files = [_FakeParsed(path=path, extras={"callable_signatures": [sig]})]
+        payload = fc.build_function_catalog(files, tmp_path)
+        cham = tmp_path / ".chameleon"
+        cham.mkdir()
+        (cham / fc.FUNCTION_CATALOG_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+        catalog = fc.load_function_catalog(tmp_path)
+        nf = fc.NewFunction(name="to_display_date", kind="method", arity=1, required=1)
+        matches = fc.select_candidates(catalog, [nf])
+        assert matches
+        assert matches[0]["candidates"][0]["body_match"] is False

@@ -403,16 +403,20 @@ def test_tone_strictly_escalates_across_levels(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
+def _content_digest(src: str) -> str:
+    return hashlib.sha256(src.encode("utf-8")).hexdigest()[:16]
+
+
 def test_cooldown_suppresses_repeat_then_emits_dedup_note(tmp_path: Path):
-    """A fresh .verify_seen marker within the cooldown TTL short-circuits the
-    deviation lint and emits the 'already verified' note instead."""
+    """A fresh .verify_seen marker recording the SAME content digest
+    short-circuits the deviation lint and emits the 'already verified' note."""
     repo, repo_id, loaded = _build_repo(tmp_path)
     cand = _write_source(repo, "src/Cool.tsx", VIOLATING_SRC)
     fp = str(cand)
 
     marker = _verify_seen_marker(tmp_path, repo_id, fp)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
+    marker.write_text(_content_digest(VIOLATING_SRC), encoding="utf-8")
 
     result = _run_verify(
         repo=repo,
@@ -427,6 +431,60 @@ def test_cooldown_suppresses_repeat_then_emits_dedup_note(tmp_path: Path):
     assert "already verified this file" in ctx
     # The real violation list must NOT be recomputed/emitted on a cooldown hit.
     assert "2 violations" not in ctx
+
+
+def test_cooldown_reverifies_when_content_changed_within_window(tmp_path: Path):
+    """An edit landing inside the cooldown window must re-verify: the marker
+    records a different content digest, so the dedup cannot suppress analysis.
+    Regression for the iterate-then-break flow where a defect introduced
+    mid-cooldown slipped through silently."""
+    repo, repo_id, loaded = _build_repo(tmp_path)
+    cand = _write_source(repo, "src/Cool2.tsx", VIOLATING_SRC)
+    fp = str(cand)
+
+    marker = _verify_seen_marker(tmp_path, repo_id, fp)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    # The previously verified content differs from what is on disk now.
+    marker.write_text(_content_digest("export const fine = 1;\n"), encoding="utf-8")
+
+    result = _run_verify(
+        repo=repo,
+        repo_id=repo_id,
+        loaded=loaded,
+        tmp_path=tmp_path,
+        file_path=fp,
+        session_id="s-cooldown-changed",
+    )
+
+    ctx = _ctx(result)
+    assert "already verified this file" not in ctx
+    assert "2 violations" in ctx
+
+
+def test_legacy_empty_marker_forces_reverification(tmp_path: Path):
+    """A pre-digest (empty) marker never matches, so one fresh verification
+    runs and rewrites the marker in the new digest format."""
+    repo, repo_id, loaded = _build_repo(tmp_path)
+    cand = _write_source(repo, "src/Cool3.tsx", VIOLATING_SRC)
+    fp = str(cand)
+
+    marker = _verify_seen_marker(tmp_path, repo_id, fp)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+
+    result = _run_verify(
+        repo=repo,
+        repo_id=repo_id,
+        loaded=loaded,
+        tmp_path=tmp_path,
+        file_path=fp,
+        session_id="s-cooldown-legacy",
+    )
+
+    ctx = _ctx(result)
+    assert "already verified this file" not in ctx
+    assert "2 violations" in ctx
+    assert marker.read_text(encoding="utf-8") == _content_digest(VIOLATING_SRC)
 
 
 def test_violation_writes_verify_seen_marker(tmp_path: Path):

@@ -48,6 +48,13 @@ def _get_drift_conn(repo_id: str) -> sqlite3.Connection:
     if conn is not None:
         try:
             conn.execute("SELECT 1")
+            # A transaction left pending on the cached connection pins the
+            # single WAL writer lock and starves every other process's write.
+            # No caller holds a transaction across acquisitions (writes are
+            # `with conn:` scoped), so anything pending here is a leak — drop
+            # it before handing the connection out.
+            if conn.in_transaction:
+                conn.rollback()
             return conn
         except sqlite3.Error:
             try:

@@ -260,3 +260,47 @@ def test_hard_cap_trims_by_age_then_recency(monkeypatch):
     paths = {r[0] for r in rows}
     assert "fresh.ts" in paths
     assert not any(p.startswith("old-") for p in paths)
+
+
+class TestLongLivedReaderDoesNotStarveHookWrites:
+    """Regression: a reader-only connection must never hold the WAL writer lock.
+
+    The MCP server opens its drift.db connection through ``_get_drift_conn``
+    and may only ever read from it (explain_edit, get_shadow_report). If init
+    leaves an uncommitted write pending, that connection pins the single WAL
+    writer slot, and every hook-process write (200ms busy_timeout, fail-open)
+    silently drops — the shadow report and decision log record nothing for as
+    long as the server lives. Reproduced live during the 2026-06-06 gitlabhq
+    QA campaign: 56 verified edits, zero decision rows.
+    """
+
+    def test_server_read_conn_holds_no_transaction(self):
+        server_conn = obs._get_drift_conn(REPO_A)
+        server_conn.execute("SELECT COUNT(*) FROM decision_log").fetchone()
+        assert server_conn.in_transaction is False
+
+    def test_hook_write_lands_while_server_reader_conn_stays_open(self):
+        # Simulate the long-lived server: open + read, keep the connection open.
+        server_conn = obs._get_drift_conn(REPO_A)
+        server_conn.execute("SELECT COUNT(*) FROM decision_log").fetchone()
+
+        # Simulate a hook in another process: force a fresh connection while
+        # the server's stays open (drop it from the cache WITHOUT closing it).
+        obs._DRIFT_CONN.clear()
+        try:
+            record_decision(
+                REPO_A,
+                "app/finders/users_finder.rb",
+                archetype="class-finders",
+                match_quality="ast",
+                confidence_band="medium",
+                violations_raised=1,
+                outcome="advised",
+            )
+            rows = _read_decision_rows(REPO_A)
+            assert len(rows) == 1, "hook write was starved by the long-lived reader connection"
+        finally:
+            try:
+                server_conn.close()
+            except sqlite3.Error:
+                pass

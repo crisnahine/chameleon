@@ -115,10 +115,16 @@ def _open_and_init(db_path: Path) -> sqlite3.Connection:
     conn = open_hardened(db_path)
     conn.execute(f"PRAGMA busy_timeout={_INIT_BUSY_TIMEOUT_MS}")
     conn.executescript(SCHEMA_DDL)
-    conn.execute(
-        "INSERT OR IGNORE INTO schema_meta (k, v) VALUES ('schema_version', ?)",
-        (DRIFT_DB_SCHEMA_VERSION,),
-    )
+    # Commit before returning. Under isolation_level="" this INSERT opens an
+    # implicit write transaction; left pending, a connection that only ever
+    # reads afterward (the long-lived MCP server) holds the single WAL writer
+    # lock for its whole lifetime and starves every hook-process write at its
+    # 200ms busy_timeout — silently, because drift writes are fail-open.
+    with conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta (k, v) VALUES ('schema_version', ?)",
+            (DRIFT_DB_SCHEMA_VERSION,),
+        )
     return conn
 
 

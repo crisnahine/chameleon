@@ -257,8 +257,9 @@ class TestGetDriftStatusWithData:
         data = get_drift_status(REPO_A)["data"]
         assert data["days_since_refresh"] == 0
         assert data["observed_drift_score"] == pytest.approx(0.05)
-        # Below threshold and recently granted -> fresh.
-        assert data["recommended_action"] == "fresh"
+        # Below threshold and recently granted -> a sentence, not the bare
+        # token "fresh" (which read as an instruction to refresh).
+        assert data["recommended_action"] == "none; profile is fresh"
 
     def test_stale_grant_no_observations(self, tmp_path: Path):
         from chameleon_mcp.tools import get_drift_status

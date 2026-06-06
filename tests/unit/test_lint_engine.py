@@ -793,6 +793,138 @@ class TestConventionLint:
         violations = lint_conventions(content, conventions, language="ruby")
         assert len(violations) == 0
 
+
+class TestRubyImportPreference:
+    CONSTANT_PAIR = {
+        "imports": {"competing": [{"preferred": "Gitlab::HTTP", "over": "Net::HTTP"}]},
+    }
+    REQUIRE_PAIR = {
+        "imports": {"competing": [{"preferred": "gitlab/http", "over": "net/http"}]},
+    }
+
+    def test_banned_constant_reference_flagged(self):
+        content = "response = Net::HTTP.get(uri)\n"
+        violations = lint_conventions(content, self.CONSTANT_PAIR, language="ruby")
+        assert [v.rule for v in violations] == ["import-preference-violation"]
+        assert "Gitlab::HTTP" in violations[0].message
+
+    def test_preferred_constant_present_skips_pair(self):
+        content = "response = Gitlab::HTTP.get(url)\n"
+        assert lint_conventions(content, self.CONSTANT_PAIR, language="ruby") == []
+
+    def test_banned_require_flagged(self):
+        content = "require 'net/http'\n\nuri = URI(url)\n"
+        violations = lint_conventions(content, self.REQUIRE_PAIR, language="ruby")
+        assert [v.rule for v in violations] == ["import-preference-violation"]
+
+    def test_require_relative_banned_path_flagged(self):
+        content = "require_relative 'net/http'\n"
+        violations = lint_conventions(content, self.REQUIRE_PAIR, language="ruby")
+        assert len(violations) == 1
+
+    def test_preferred_require_present_skips_pair(self):
+        content = "require 'gitlab/http'\n"
+        assert lint_conventions(content, self.REQUIRE_PAIR, language="ruby") == []
+
+    def test_constant_in_string_or_comment_not_flagged(self):
+        content = "# Net::HTTP is banned here\nmsg = 'use Net::HTTP never'\n"
+        assert lint_conventions(content, self.CONSTANT_PAIR, language="ruby") == []
+
+    def test_es_import_text_in_ruby_not_flagged(self):
+        # Regression: the TS import regex used to run on Ruby content, so an
+        # ES import line pasted into a .rb file fired while real requires never
+        # did. Specifier extraction is language-gated now.
+        content = "code = \"import x from 'net/http'\"\n"
+        assert lint_conventions(content, self.REQUIRE_PAIR, language="ruby") == []
+
+    def test_longer_constant_path_not_false_flagged(self):
+        # Foo::Net::HTTP is a different constant from Net::HTTP.
+        content = "x = Foo::Net::HTTP.new\n"
+        assert lint_conventions(content, self.CONSTANT_PAIR, language="ruby") == []
+
+    def test_toplevel_qualified_constant_flagged(self):
+        content = "x = ::Net::HTTP.get(uri)\n"
+        violations = lint_conventions(content, self.CONSTANT_PAIR, language="ruby")
+        assert len(violations) == 1
+
+    def test_ruby_ignore_directive_suppresses(self):
+        content = "# chameleon-ignore import-preference\nx = Net::HTTP.get(uri)\n"
+        assert lint_conventions(content, self.CONSTANT_PAIR, language="ruby") == []
+
+
+class TestRubyNamingConventionLint:
+    SNAKE_CONV = {
+        "naming": {
+            "method_casing": {"pattern": "snake_case", "consistency": 0.99, "sample_size": 400},
+            "class_casing": {"pattern": "PascalCase", "consistency": 0.99, "sample_size": 120},
+            "constant_casing": {
+                "pattern": "SCREAMING_SNAKE_CASE",
+                "consistency": 0.97,
+                "sample_size": 80,
+            },
+        },
+    }
+
+    def test_camel_case_method_flagged(self):
+        content = "class UsersFinder\n  def fetchData\n  end\nend\n"
+        violations = lint_conventions(content, self.SNAKE_CONV, language="ruby")
+        naming = [v for v in violations if v.rule == "naming-convention-violation"]
+        assert len(naming) == 1
+        assert naming[0].actual == "fetchData"
+        assert "snake_case" in naming[0].message
+
+    def test_lowercase_class_name_flagged(self):
+        content = "class users_finder\n  def execute\n  end\nend\n"
+        violations = lint_conventions(content, self.SNAKE_CONV, language="ruby")
+        naming = [v for v in violations if v.rule == "naming-convention-violation"]
+        assert len(naming) == 1
+        assert naming[0].actual == "users_finder"
+
+    def test_badly_cased_constant_flagged(self):
+        content = "class C\n  Max_retries = 3\nend\n"
+        violations = lint_conventions(content, self.SNAKE_CONV, language="ruby")
+        naming = [v for v in violations if v.rule == "naming-convention-violation"]
+        assert len(naming) == 1
+        assert naming[0].actual == "Max_retries"
+
+    def test_conforming_file_clean(self):
+        content = (
+            "class UsersFinder\n"
+            "  MAX_RESULTS = 100\n"
+            "  def execute\n"
+            "  end\n"
+            "  def filter_users\n"
+            "  end\n"
+            "end\n"
+        )
+        assert lint_conventions(content, self.SNAKE_CONV, language="ruby") == []
+
+    def test_pascal_constant_alias_not_flagged(self):
+        # `Result = Struct.new(...)` is a legitimate class alias, conforming
+        # regardless of the SCREAMING_SNAKE convention for value constants.
+        content = "class C\n  Result = Struct.new(:ok)\nend\n"
+        assert lint_conventions(content, self.SNAKE_CONV, language="ruby") == []
+
+    def test_operator_and_setter_defs_not_flagged(self):
+        content = "class C\n  def ==(other)\n  end\n  def name=(value)\n  end\nend\n"
+        assert lint_conventions(content, self.SNAKE_CONV, language="ruby") == []
+
+    def test_singleton_class_not_flagged(self):
+        content = "class C\n  class << self\n    def helper\n    end\n  end\nend\n"
+        assert lint_conventions(content, self.SNAKE_CONV, language="ruby") == []
+
+    def test_heredoc_content_not_flagged(self):
+        content = "class C\n  BODY = <<~TEXT\n    def fakeMethod\n  TEXT\nend\n"
+        assert lint_conventions(content, self.SNAKE_CONV, language="ruby") == []
+
+    def test_no_convention_entries_silent(self):
+        content = "class C\n  def fetchData\n  end\nend\n"
+        assert lint_conventions(content, {"naming": {}}, language="ruby") == []
+
+    def test_ruby_ignore_directive_suppresses_naming(self):
+        content = "# chameleon-ignore naming-convention\nclass C\n  def fetchData\n  end\nend\n"
+        assert lint_conventions(content, self.SNAKE_CONV, language="ruby") == []
+
     def test_empty_conventions_no_violations(self):
         content = 'import { useQuery } from "react-query";\n'
         violations = lint_conventions(content, {}, language="typescript")
@@ -921,3 +1053,77 @@ class TestConventionLint:
         assert len(violations) == 1
         assert "Api::V1::FooController" in violations[0].message
         assert violations[0].actual == "SomethingNovel"
+
+
+class TestRubyHeredocStrip:
+    """The heredoc blanker must be O(n) and precise.
+
+    The first implementation was a lazy cross-line regex; on a file with many
+    unterminated openers each match attempt rescanned to EOF — quadratic, 4+
+    seconds at the 100KB lint cap. A hook-path scan over attacker-controllable
+    repo content cannot afford that, so the blanker is a single forward pass.
+    """
+
+    def _strip(self, src: str) -> str:
+        from chameleon_mcp.lint_engine import _strip_ruby_strings_and_comments
+
+        return _strip_ruby_strings_and_comments(src)
+
+    def test_pathological_unterminated_openers_complete_fast(self):
+        import time
+
+        evil = ("x = <<~AAA\n" * 10_000)[:100_000]
+        t0 = time.monotonic()
+        out = self._strip(evil)
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.5, f"heredoc strip took {elapsed:.2f}s on pathological input"
+        assert len(out) == len(evil)
+
+    def test_heredoc_body_blanked_terminator_consumed(self):
+        src = "x = <<~TEXT\n  def fakeMethod\n  class fake_class\nTEXT\ny = 1\n"
+        out = self._strip(src)
+        assert "fakeMethod" not in out
+        assert "fake_class" not in out
+        assert "y = 1" in out
+        assert len(out) == len(src)
+        assert out.count("\n") == src.count("\n")
+
+    def test_code_before_opener_kept(self):
+        src = "query = <<~SQL.strip\n  SELECT 1\nSQL\n"
+        out = self._strip(src)
+        assert "query = " in out
+        assert "SELECT" not in out
+
+    def test_left_shift_on_value_not_treated_as_heredoc(self):
+        # `arr<<FOO` / `(x)<<FOO` are shifts, not heredocs: code after must
+        # NOT be blanked to EOF.
+        src = "arr<<FOO\n(x)<<BAR\ndef real_method\nend\n"
+        out = self._strip(src)
+        assert "def real_method" in out
+
+    def test_class_self_singleton_not_treated_as_heredoc(self):
+        src = "class C\n  class << self\n    def helper\n    end\n  end\nend\n"
+        out = self._strip(src)
+        assert "def helper" in out
+
+    def test_dash_and_quoted_delimiters(self):
+        src = "a = <<-EOS\n  def inner_a\n  EOS\nb = <<'RAW'\n  def inner_b\nRAW\nc = 1\n"
+        out = self._strip(src)
+        assert "inner_a" not in out
+        assert "inner_b" not in out
+        assert "c = 1" in out
+
+    def test_stacked_heredocs_both_bodies_blanked(self):
+        src = "foo(<<~AAA, <<~BBB)\n  def body_a\nAAA\n  def body_b\nBBB\nz = 1\n"
+        out = self._strip(src)
+        assert "body_a" not in out
+        assert "body_b" not in out
+        assert "z = 1" in out
+
+    def test_unterminated_heredoc_blanks_to_eof_not_code_before(self):
+        # An unterminated heredoc is a syntax error; its body is string
+        # content, so blanking it to EOF can only reduce false positives.
+        src = "x = 1\ny = <<~SQL\n  def looks_like_code\n"
+        out = self._strip(src)
+        assert "x = 1" in out
+        assert "looks_like_code" not in out

@@ -157,6 +157,98 @@ class TestNamingExtractor:
         assert "interface_prefix" not in result
 
 
+RUBY_FINDER_SRC = """\
+# frozen_string_literal: true
+
+class UsersFinder
+  MAX_RESULTS = 100
+  DEFAULT_SCOPE = :active
+
+  def execute
+    filter_users(base_scope)
+  end
+
+  private
+
+  def filter_users(scope)
+    scope.where(active: true)
+  end
+
+  def self.cache_key
+    'users_finder'
+  end
+end
+"""
+
+
+class TestRubyDeclarationExtraction:
+    def test_extracts_methods_classes_constants(self):
+        from chameleon_mcp.conventions import extract_declarations_from_content
+
+        decls = extract_declarations_from_content(RUBY_FINDER_SRC, language="ruby")
+        assert decls["method"] == ["execute", "filter_users", "cache_key"]
+        assert decls["class"] == ["UsersFinder"]
+        assert decls["constant"] == ["MAX_RESULTS", "DEFAULT_SCOPE"]
+
+    def test_namespaced_class_and_module_captured(self):
+        from chameleon_mcp.conventions import extract_declarations_from_content
+
+        src = "module Ci\n  class BuildsFinder\n  end\nend\n"
+        decls = extract_declarations_from_content(src, language="ruby")
+        assert decls["class"] == ["Ci", "BuildsFinder"]
+
+    def test_heredoc_and_comment_noise_ignored(self):
+        from chameleon_mcp.conventions import extract_declarations_from_content
+
+        src = (
+            "class Mailer\n"
+            "  # def commentedOut\n"
+            "  BODY = <<~TEXT\n"
+            "    def fakeMethod\n"
+            "    class fake_class\n"
+            "  TEXT\n"
+            "end\n"
+        )
+        decls = extract_declarations_from_content(src, language="ruby")
+        assert decls.get("method") is None
+        assert decls["class"] == ["Mailer"]
+
+    def test_operator_and_setter_defs(self):
+        from chameleon_mcp.conventions import extract_declarations_from_content
+
+        src = "class C\n  def ==(other)\n  end\n\n  def name=(value)\n  end\nend\n"
+        decls = extract_declarations_from_content(src, language="ruby")
+        # Operator defs carry no casing signal; setters do.
+        assert decls.get("method") == ["name="]
+
+
+class TestRubyNamingConventions:
+    def test_detects_snake_case_methods(self):
+        names = ["execute", "filter_users", "cache_key", "find_by_id", "valid?", "save!"]
+        result = extract_naming_conventions(declarations={"method": names})
+        assert result["method_casing"]["pattern"] == "snake_case"
+        assert result["method_casing"]["consistency"] >= 0.95
+
+    def test_detects_pascal_case_classes(self):
+        names = ["UsersFinder", "Ci", "BuildsFinder", "ApplicationRecord", "ProjectPolicy"]
+        result = extract_naming_conventions(declarations={"class": names})
+        assert result["class_casing"]["pattern"] == "PascalCase"
+
+    def test_detects_screaming_snake_constants(self):
+        names = ["MAX_RESULTS", "DEFAULT_SCOPE", "API_VERSION", "TTL", "RETRY_LIMIT"]
+        result = extract_naming_conventions(declarations={"constant": names})
+        assert result["constant_casing"]["pattern"] == "SCREAMING_SNAKE_CASE"
+
+    def test_mixed_methods_below_threshold_silent(self):
+        names = ["execute", "fetchData", "getUser", "callApi", "runJob"]
+        result = extract_naming_conventions(declarations={"method": names})
+        assert "method_casing" not in result
+
+    def test_below_min_sample_silent(self):
+        result = extract_naming_conventions(declarations={"method": ["a_b", "c_d"]})
+        assert result == {}
+
+
 class TestExtractAllConventions:
     def test_produces_conventions_dict(self):
         files_by_archetype = {

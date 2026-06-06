@@ -1593,10 +1593,12 @@ def _bootstrap_single(
                 content = pf.path.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
             except (OSError, UnicodeDecodeError):
                 continue
-            if extractor.language == "typescript":
-                decls = extract_declarations_from_content(content, language="typescript")
-                for decl_type, names in decls.items():
-                    merged.setdefault(decl_type, []).extend(names)
+            # Language-dispatching: TS yields interface/type/enum names (prefix
+            # conventions), Ruby yields method/class/constant names (casing
+            # conventions). Unknown languages yield nothing.
+            decls = extract_declarations_from_content(content, language=extractor.language)
+            for decl_type, names in decls.items():
+                merged.setdefault(decl_type, []).extend(names)
             documented, public = compute_doc_coverage_from_content(
                 content, language=extractor.language
             )

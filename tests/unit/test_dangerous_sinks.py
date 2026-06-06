@@ -54,6 +54,88 @@ def test_eval_without_language_still_detected_on_raw_content():
     assert _rules(violations) == ["eval-call"]
 
 
+# --- Ruby dynamic-eval variants (string-argument forms only) ----------------
+
+
+def test_instance_eval_with_string_literal_flagged():
+    violations = scan_dangerous_sinks('obj.instance_eval("def x; end")', language="ruby")
+    assert _rules(violations) == ["eval-call"]
+    assert "instance_eval" in violations[0].message
+    # Advisory severity: the string-arg *_eval variants surface but never
+    # hard-block (class_eval heredocs are an established Rails idiom).
+    assert violations[0].severity == "warning"
+
+
+def test_eval_variant_severity_split_controls_hardness():
+    from chameleon_mcp.violation_class import is_hard_class
+
+    direct = scan_dangerous_sinks("eval(params[:code])", language="ruby")[0]
+    variant = scan_dangerous_sinks('k.class_eval("def x; end")', language="ruby")[0]
+    send_form = scan_dangerous_sinks("obj.send(:eval, code)", language="ruby")[0]
+    assert is_hard_class(direct.to_dict()) is True
+    assert is_hard_class(variant.to_dict()) is False
+    assert is_hard_class(send_form.to_dict()) is True
+
+
+def test_class_eval_with_interpolated_string_flagged():
+    src = 'klass.class_eval("def #{name}; @#{name}; end")\n'
+    violations = scan_dangerous_sinks(src, language="ruby")
+    assert _rules(violations) == ["eval-call"]
+
+
+def test_module_eval_with_single_quoted_string_flagged():
+    violations = scan_dangerous_sinks("M.module_eval('CONST = 1')", language="ruby")
+    assert _rules(violations) == ["eval-call"]
+
+
+def test_class_eval_heredoc_form_flagged():
+    src = "klass.class_eval <<~RUBY, __FILE__, __LINE__ + 1\n  def go; end\nRUBY\n"
+    violations = scan_dangerous_sinks(src, language="ruby")
+    assert _rules(violations) == ["eval-call"]
+
+
+def test_instance_eval_block_forms_not_flagged():
+    # The block forms are the legitimate DSL pattern, not dynamic execution.
+    src = "obj.instance_eval { setup }\nobj.instance_eval do\n  setup\nend\n"
+    violations = scan_dangerous_sinks(src, language="ruby")
+    assert _rules(violations) == []
+
+
+def test_instance_eval_variable_and_block_pass_args_not_flagged():
+    src = "obj.instance_eval(&block)\nobj.instance_eval(code_var)\n"
+    violations = scan_dangerous_sinks(src, language="ruby")
+    assert _rules(violations) == []
+
+
+def test_send_eval_symbol_flagged():
+    violations = scan_dangerous_sinks("obj.send(:eval, code)", language="ruby")
+    assert _rules(violations) == ["eval-call"]
+    assert "send" in violations[0].message
+
+
+def test_public_send_eval_string_flagged():
+    violations = scan_dangerous_sinks('obj.public_send("eval", code)', language="ruby")
+    assert _rules(violations) == ["eval-call"]
+
+
+def test_send_other_symbol_not_flagged():
+    violations = scan_dangerous_sinks("obj.send(:evaluate, x)", language="ruby")
+    assert _rules(violations) == []
+
+
+def test_eval_variants_in_comment_or_string_not_flagged():
+    src = "# obj.instance_eval(\"x\")\nmsg = 'send(:eval, y)'\n"
+    violations = scan_dangerous_sinks(src, language="ruby")
+    assert _rules(violations) == []
+
+
+def test_eval_variant_line_numbers_truthful():
+    src = 'a = 1\nb = 2\nobj.instance_eval("bad")\n'
+    violations = scan_dangerous_sinks(src, language="ruby")
+    assert len(violations) == 1
+    assert "line 3" in violations[0].message
+
+
 # --- weak-hash (advisory, security-context gated) --------------------------
 
 

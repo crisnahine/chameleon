@@ -642,3 +642,59 @@ class TestParseRubocopYamlDirect:
         assert warning is None
         assert isinstance(parsed, dict)
         assert parsed["AllCops"] == {"NewCops": "enable"}
+
+
+class TestRubocopTolerantParse:
+    """An ERB-templated .rubocop.yml must not silently drop ALL rubocop rules.
+
+    Regression for the gitlabhq QA finding: ERB in .rubocop.yml broke the YAML
+    parse and rubocop — the primary linter on a Rails repo — derived zero
+    rules with only a buried warning. The tolerant retry neutralizes ERB tags
+    textually and reads custom YAML tags as plain strings; it never renders
+    ERB (that would execute repo code).
+    """
+
+    def test_erb_config_recovers_with_warning(self, tmp_path):
+        from chameleon_mcp.bootstrap.tool_config import _parse_rubocop_yaml
+
+        cfg = tmp_path / ".rubocop.yml"
+        cfg.write_text(
+            "AllCops:\n"
+            "  TargetRubyVersion: 3.2\n"
+            "  DefaultFormatter: <%= ENV['CI'] == '1' ? 'clang' : 'progress' %>\n"
+            "Style/FrozenStringLiteralComment:\n"
+            "  Enabled: true\n",
+            encoding="utf-8",
+        )
+        parsed, warning = _parse_rubocop_yaml(cfg)
+        assert parsed is not None
+        assert parsed["AllCops"]["TargetRubyVersion"] == 3.2
+        assert parsed["AllCops"]["DefaultFormatter"] == "erb_omitted"
+        assert parsed["Style/FrozenStringLiteralComment"]["Enabled"] is True
+        assert warning and "tolerant parse" in warning
+
+    def test_ruby_regexp_tags_read_as_strings(self, tmp_path):
+        from chameleon_mcp.bootstrap.tool_config import _parse_rubocop_yaml
+
+        cfg = tmp_path / ".rubocop.yml"
+        cfg.write_text(
+            "Migration/Datetime:\n"
+            "  Include:\n"
+            "    - !ruby/regexp /\\Adb\\/migrate\\/.*\\z/\n"
+            "  Enabled: <%= true %>\n",
+            encoding="utf-8",
+        )
+        parsed, warning = _parse_rubocop_yaml(cfg)
+        assert parsed is not None
+        include = parsed["Migration/Datetime"]["Include"][0]
+        assert isinstance(include, str)
+        assert warning is not None
+
+    def test_truly_malformed_yaml_still_fails_with_first_error(self, tmp_path):
+        from chameleon_mcp.bootstrap.tool_config import _parse_rubocop_yaml
+
+        cfg = tmp_path / ".rubocop.yml"
+        cfg.write_text("AllCops:\n  bad: [unclosed\n", encoding="utf-8")
+        parsed, warning = _parse_rubocop_yaml(cfg)
+        assert parsed is None
+        assert warning and "malformed YAML" in warning

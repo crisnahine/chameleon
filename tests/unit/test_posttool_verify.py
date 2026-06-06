@@ -9,6 +9,19 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_metrics(tmp_path, monkeypatch):
+    """Point CHAMELEON_PLUGIN_DATA at tmp_path for every test in this module.
+
+    posttool_verify emits metric rows via emit_hook_metric, which resolves its
+    path from the env, NOT from the patched _plugin_data_dir — without this,
+    test rows leak into the developer's real metrics.jsonl.
+    """
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "metrics-isolated"))
+
 
 def _run_verify(payload: dict, *, env: dict | None = None) -> dict:
     """Call posttool_verify() with a mocked stdin payload; return the emitted JSON."""
@@ -141,7 +154,9 @@ def test_cooldown_skips_reverification(tmp_path: Path):
     file_path = str(ts_file)
     file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
     marker = marker_dir / f".verify_seen.{file_hash}"
-    marker.touch()
+    # The dedup only holds for unchanged content: the marker body records the
+    # digest of the content that was already verified.
+    marker.write_text(hashlib.sha256(b"x").hexdigest()[:16], encoding="utf-8")
 
     with (
         patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),

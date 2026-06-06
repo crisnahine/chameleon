@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_float, threshold_int
-from chameleon_mcp.violation_class import BLOCK_ELIGIBLE_RULES
+from chameleon_mcp.violation_class import BLOCK_ELIGIBLE_RULES, BLOCK_RULE_LANGUAGES
 
 ARTIFACT = "enforcement.json"
 
@@ -289,6 +289,16 @@ def _violations_for_file(
     return violations
 
 
+def _profile_languages(loaded) -> set[str]:
+    """The language(s) the profile actually analyzed, for rule capability gating."""
+    langs: set[str] = set()
+    profile = getattr(loaded, "profile", {}) or {}
+    lang = profile.get("language")
+    if lang in ("typescript", "ruby"):
+        langs.add(lang)
+    return langs
+
+
 def calibrate_block_rules(repo_root: Path, loaded) -> dict:
     """Measure each block-eligible rule against the repo's own committed files.
 
@@ -297,7 +307,12 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
 
     Fail-closed on no evidence: with zero sampled witnesses (empty or
     unbootstrapped profile) every block-eligible rule stays inactive rather than
-    greenlighting blockers no file vouched for.
+    greenlighting blockers no file vouched for. Same principle for language
+    capability: a rule with no signal source for the profile's language can
+    never fire, so its vacuous 0.0 fp_rate must not certify it active —
+    silence from a rule that cannot speak is not evidence of safety. Those
+    rules are marked inactive with an ``inert_reason`` so /chameleon-status
+    can say why.
     """
     sample = _sample_files(repo_root, loaded)
     n = len(sample)
@@ -312,14 +327,23 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
                     continue
                 flagged[rule].add(rel)
 
+    langs = _profile_languages(loaded)
     result: dict = {}
     for rule in BLOCK_ELIGIBLE_RULES:
         hits = len(flagged[rule])
         fp_rate = (hits / n) if n else 0.0
-        result[rule] = {
-            "active": n > 0 and fp_rate <= _FP_EPSILON,
+        supported = BLOCK_RULE_LANGUAGES.get(rule)
+        # Gate only on POSITIVE knowledge: an unknown/legacy profile language
+        # (no `language` key) keeps the measured behavior rather than demoting
+        # every language-scoped rule.
+        can_fire = supported is None or not langs or bool(langs & supported)
+        entry: dict = {
+            "active": can_fire and n > 0 and fp_rate <= _FP_EPSILON,
             "fp_rate": round(fp_rate, 4),
             "sampled": n,
             "flagged": hits,
         }
+        if not can_fire:
+            entry["inert_reason"] = "no-signal-for-language"
+        result[rule] = entry
     return result

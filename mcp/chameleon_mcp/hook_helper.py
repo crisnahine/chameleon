@@ -27,10 +27,46 @@ import time
 from pathlib import Path
 
 
+def _absorb_broken_stdout() -> None:
+    """Point stdout at devnull after EPIPE so the exit flush cannot raise again.
+
+    Without this, the interpreter's shutdown flush of the still-buffered stream
+    raises a second BrokenPipeError that lands on stderr, pollutes
+    ``.hook_errors.log``, and trips the doctor's error-log warning — all for a
+    consumer that already hung up.
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull, sys.stdout.fileno())
+        finally:
+            os.close(devnull)
+    except (OSError, ValueError):
+        pass
+
+
 def _emit(output: dict) -> None:
-    """Write Claude Code hook output JSON to stdout. Single source of truth."""
-    sys.stdout.write(json.dumps(output))
-    sys.stdout.write("\n")
+    """Write Claude Code hook output JSON to stdout. Single source of truth.
+
+    A consumer that closed the pipe (harness timeout-kill, mid-write teardown)
+    must not turn into a noisy crash: nobody is left to read the JSON, so
+    EPIPE is absorbed and stdout is neutralized for the rest of the process.
+    """
+    try:
+        sys.stdout.write(json.dumps(output))
+        sys.stdout.write("\n")
+        # Flush HERE so a closed pipe surfaces now, inside the guard — a
+        # buffered write succeeds silently and the EPIPE would otherwise fire
+        # in the interpreter's exit flush, outside any handler (exit code 120).
+        sys.stdout.flush()
+    except BrokenPipeError:
+        _absorb_broken_stdout()
+    except OSError as exc:
+        import errno
+
+        if exc.errno != errno.EPIPE:
+            raise
+        _absorb_broken_stdout()
 
 
 def _read_payload_dict() -> dict | None:
@@ -648,6 +684,39 @@ def _marker_path_is_fresh(marker: Path, ttl_seconds: int) -> bool:
     except OSError:
         return False
     return (time.time() - st.st_mtime) < ttl_seconds
+
+
+def _marker_digest_matches(marker: Path, content_digest: str) -> bool:
+    """True when the verify marker records this exact content digest.
+
+    The marker's mtime is the cooldown clock; its body pins WHICH content was
+    verified. Suppressing re-analysis on mtime alone hid defects introduced by
+    an edit landing inside the cooldown window — the common iterate-then-break
+    flow — so the dedup only holds for unchanged content. A legacy empty
+    marker (pre-digest format) never matches, forcing one fresh verification
+    that rewrites it in the new format.
+    """
+    try:
+        return marker.read_text(encoding="utf-8").strip() == content_digest
+    except OSError:
+        return False
+
+
+def _write_verify_marker(marker: Path, content_digest: str) -> None:
+    """Stamp a verification pass: cooldown mtime plus the verified content digest."""
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(marker.parent, 0o700)
+        except OSError:
+            pass
+        marker.write_text(content_digest, encoding="utf-8")
+        try:
+            os.chmod(marker, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
 
 
 def _sanitize_profile_obj(obj: object) -> object:
@@ -2378,6 +2447,7 @@ def posttool_verify() -> int:
 
         file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
         marker = repo_data_dir / f".verify_seen.{file_hash}"
+        content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
         cooldown_ttl = _VERIFY_SEEN_TTL_SECONDS
         if enforcement_state is not None and file_state is not None:
@@ -2389,7 +2459,15 @@ def posttool_verify() -> int:
             except Exception:
                 pass
 
-        if cooldown_ttl > 0 and _marker_path_is_fresh(marker, cooldown_ttl):
+        # Dedup only when the content is byte-identical to what was already
+        # verified. A path+mtime-only cooldown suppressed analysis of EDITED
+        # files too, so a defect introduced while iterating inside the window
+        # slipped through silently.
+        if (
+            cooldown_ttl > 0
+            and _marker_path_is_fresh(marker, cooldown_ttl)
+            and _marker_digest_matches(marker, content_digest)
+        ):
             _emit_posttool_context(
                 "<chameleon-context>\n"
                 "[🦎 chameleon: already verified this file — review previous feedback]\n"
@@ -2672,19 +2750,7 @@ def posttool_verify() -> int:
                 except Exception:
                     pass
 
-            try:
-                marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                try:
-                    os.chmod(marker.parent, 0o700)
-                except OSError:
-                    pass
-                marker.touch(exist_ok=True)
-                try:
-                    os.chmod(marker, 0o600)
-                except OSError:
-                    pass
-            except OSError:
-                pass
+            _write_verify_marker(marker, content_digest)
 
             return 0
 
@@ -2724,19 +2790,7 @@ def posttool_verify() -> int:
             except Exception:
                 pass
 
-        try:
-            marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            try:
-                os.chmod(marker.parent, 0o700)
-            except OSError:
-                pass
-            marker.touch(exist_ok=True)
-            try:
-                os.chmod(marker, 0o600)
-            except OSError:
-                pass
-        except OSError:
-            pass
+        _write_verify_marker(marker, content_digest)
 
         return 0
 
@@ -2777,6 +2831,16 @@ _GENERIC_FRUSTRATION_PATTERNS = (
 
 _CHAMELEON_MENTION_RE = re.compile(r"chameleon|🦎", re.IGNORECASE)
 
+# Harness-injected blocks riding inside the prompt (task notifications, system
+# reminders, command transcripts) are machine-generated: "failed"/"broken" in a
+# workflow status report is not the user venting. Strip them before the
+# frustration scan so only the human-typed remainder is judged.
+_MACHINE_BLOCK_RE = re.compile(
+    r"<(task-notification|system-reminder|command-name|command-message|"
+    r"local-command-stdout|tool_result)\b[^>]*>.*?</\1>",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def callout_detector() -> int:
     """UserPromptSubmit: frustration phrase reminder.
@@ -2800,9 +2864,14 @@ def callout_detector() -> int:
         _emit({})
         return 0
 
-    chameleon_specific = any(p.search(user_prompt) for p in _CHAMELEON_SPECIFIC_PATTERNS)
-    generic = any(p.search(user_prompt) for p in _GENERIC_FRUSTRATION_PATTERNS)
-    mentions_chameleon = _CHAMELEON_MENTION_RE.search(user_prompt) is not None
+    scan_prompt = _MACHINE_BLOCK_RE.sub(" ", user_prompt)
+    if not scan_prompt.strip():
+        _emit({})
+        return 0
+
+    chameleon_specific = any(p.search(scan_prompt) for p in _CHAMELEON_SPECIFIC_PATTERNS)
+    generic = any(p.search(scan_prompt) for p in _GENERIC_FRUSTRATION_PATTERNS)
+    mentions_chameleon = _CHAMELEON_MENTION_RE.search(scan_prompt) is not None
     if not (chameleon_specific or (generic and mentions_chameleon)):
         _emit({})
         return 0
@@ -4041,18 +4110,25 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("hook_helper.py: missing command argument\n")
         return 1
     command = args[0]
-    if command == "session-start":
-        return session_start()
-    if command == "preflight-and-advise":
-        return preflight_and_advise()
-    if command == "posttool-recorder":
-        return posttool_recorder()
-    if command == "posttool-verify":
-        return posttool_verify()
-    if command == "callout-detector":
-        return callout_detector()
-    if command == "stop-backstop":
-        return stop_backstop()
+    try:
+        if command == "session-start":
+            return session_start()
+        if command == "preflight-and-advise":
+            return preflight_and_advise()
+        if command == "posttool-recorder":
+            return posttool_recorder()
+        if command == "posttool-verify":
+            return posttool_verify()
+        if command == "callout-detector":
+            return callout_detector()
+        if command == "stop-backstop":
+            return stop_backstop()
+    except BrokenPipeError:
+        # The harness closed our stdout (timeout-kill / teardown). Hooks are
+        # fail-open by contract: exit 0 quietly instead of crashing into
+        # .hook_errors.log for a consumer that already hung up.
+        _absorb_broken_stdout()
+        return 0
     sys.stderr.write(f"hook_helper.py: unknown command {command!r}\n")
     return 1
 

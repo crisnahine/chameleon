@@ -183,10 +183,14 @@ def init_index_db(db_path: Path | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     _migrate_repos_to_composite_pk(conn)
     conn.executescript(SCHEMA_DDL)
-    conn.execute(
-        "INSERT OR IGNORE INTO schema_meta (k, v) VALUES ('schema_version', ?)",
-        (INDEX_DB_SCHEMA_VERSION,),
-    )
+    # Commit before returning: an uncommitted INSERT pins the WAL writer lock
+    # for the connection's lifetime, starving every other process's write
+    # (same failure class as drift.db's schema-init — see drift/schema.py).
+    with conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta (k, v) VALUES ('schema_version', ?)",
+            (INDEX_DB_SCHEMA_VERSION,),
+        )
     return conn
 
 

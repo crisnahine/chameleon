@@ -155,7 +155,9 @@ class CatalogedFunction:
 
     ``arity`` / ``required`` are the signature shape; ``tokens`` are the lowered
     domain-word tokens of the name, precomputed at load so the prefilter does not
-    re-tokenize every candidate per query.
+    re-tokenize every candidate per query. ``body_hash`` is the normalized-body
+    fingerprint (None for rows built before spans were recorded, or for bodies
+    too short to be a meaningful identity).
     """
 
     name: str
@@ -164,6 +166,34 @@ class CatalogedFunction:
     arity: int
     required: int
     tokens: frozenset[str]
+    body_hash: str | None = None
+
+
+def normalized_body_hash(
+    source_lines: list[str], start_line: object, end_line: object
+) -> str | None:
+    """Fingerprint a function body for the exact-clone fallback, or None.
+
+    Slices the 1-based inclusive ``start_line``..``end_line`` span, DROPS the
+    first line (it carries the function's name, which differs between a clone
+    and its original), collapses all whitespace, and hashes. Bodies shorter
+    than the minimum normalized length return None: trivial one-expression
+    bodies collide across half a codebase and would flood the candidate list
+    with noise rather than reuse leads.
+    """
+    if not isinstance(start_line, int) or not isinstance(end_line, int):
+        return None
+    if start_line < 1 or end_line < start_line or start_line > len(source_lines):
+        return None
+    body_lines = source_lines[start_line : min(end_line, len(source_lines))]
+    if not body_lines:
+        return None
+    normalized = " ".join("\n".join(body_lines).split())
+    if len(normalized) < threshold_int("DUPLICATION_BODY_HASH_MIN_CHARS"):
+        return None
+    import hashlib
+
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
 def _function_rows(pf, root: Path) -> tuple[str | None, list[dict]]:
@@ -185,6 +215,9 @@ def _function_rows(pf, root: Path) -> tuple[str | None, list[dict]]:
         return None, []
 
     per_file_cap = threshold_int("DUPLICATION_CATALOG_MAX_FNS_PER_FILE")
+    # Body hashing needs the file's lines; read them once per file, lazily, so
+    # files whose dump predates body spans cost nothing extra.
+    source_lines: list[str] | None = None
     rows: list[dict] = []
     seen: set[tuple[str, int, int]] = set()
     for entry in raw:
@@ -204,14 +237,30 @@ def _function_rows(pf, root: Path) -> tuple[str | None, list[dict]]:
             continue
         seen.add(key)
         kind = entry.get("kind")
-        rows.append(
-            {
-                "name": name,
-                "kind": kind if isinstance(kind, str) else "function",
-                "arity": arity,
-                "required": required,
-            }
-        )
+        body_hash: str | None = None
+        if isinstance(entry.get("start_line"), int) and isinstance(entry.get("end_line"), int):
+            if source_lines is None:
+                try:
+                    source_lines = (
+                        Path(pf.path)
+                        .read_bytes()[:1_000_000]
+                        .decode("utf-8", errors="replace")
+                        .splitlines()
+                    )
+                except OSError:
+                    source_lines = []
+            body_hash = normalized_body_hash(
+                source_lines, entry.get("start_line"), entry.get("end_line")
+            )
+        row = {
+            "name": name,
+            "kind": kind if isinstance(kind, str) else "function",
+            "arity": arity,
+            "required": required,
+        }
+        if body_hash is not None:
+            row["body_hash"] = body_hash
+        rows.append(row)
     return rel, rows
 
 
@@ -323,6 +372,7 @@ def load_function_catalog(repo_root: Path | str | None) -> FunctionCatalog | Non
             kind = row.get("kind")
             arity = row.get("arity")
             required = row.get("required")
+            body_hash = row.get("body_hash")
             functions.append(
                 CatalogedFunction(
                     name=name,
@@ -331,6 +381,7 @@ def load_function_catalog(repo_root: Path | str | None) -> FunctionCatalog | Non
                     arity=int(arity) if isinstance(arity, int) else 0,
                     required=int(required) if isinstance(required, int) else 0,
                     tokens=name_tokens(name),
+                    body_hash=body_hash if isinstance(body_hash, str) and body_hash else None,
                 )
             )
 
@@ -385,6 +436,7 @@ class NewFunction:
     kind: str
     arity: int
     required: int
+    body_hash: str | None = None
 
 
 def select_candidates(
@@ -417,7 +469,7 @@ def select_candidates(
         if not new_tokens:
             continue
         new_shape = (nf.arity, nf.required)
-        scored: list[tuple[int, float, int, CatalogedFunction]] = []
+        scored: list[tuple[int, int, float, int, CatalogedFunction]] = []
         for cand in catalog.functions:
             if exclude_file is not None and cand.file == exclude_file:
                 continue
@@ -426,21 +478,27 @@ def select_candidates(
                 # check's responsibility; the near-duplicate prefilter targets
                 # the DIFFERENT-name re-implementation case.
                 continue
+            # Identical normalized bodies pair regardless of name tokens: a
+            # body-exact clone renamed with zero shared tokens is exactly the
+            # LLM-duplication case the name prefilter cannot see.
+            body_match = bool(nf.body_hash) and nf.body_hash == cand.body_hash
             overlap = _overlap_score(new_tokens, cand)
-            if overlap < min_tokens:
-                continue
-            if not _arity_close(new_shape, (cand.arity, cand.required)):
-                continue
+            if not body_match:
+                if overlap < min_tokens:
+                    continue
+                if not _arity_close(new_shape, (cand.arity, cand.required)):
+                    continue
             req_distance = abs(nf.required - cand.required)
             similarity = _jaccard(new_tokens, cand.tokens)
-            scored.append((overlap, similarity, req_distance, cand))
+            scored.append((1 if body_match else 0, overlap, similarity, req_distance, cand))
 
         if not scored:
             continue
-        # Rank by raw token overlap, then token-set similarity (so the closest-
+        # Rank body-identical matches first (strongest possible reuse lead),
+        # then raw token overlap, then token-set similarity (so the closest-
         # shaped name wins the tie instead of the alphabetically-first one),
         # then required-arity closeness, then a stable name/file tiebreak.
-        scored.sort(key=lambda t: (-t[0], -t[1], t[2], t[3].name, t[3].file))
+        scored.sort(key=lambda t: (-t[0], -t[1], -t[2], t[3], t[4].name, t[4].file))
         candidates = [
             {
                 "name": cand.name,
@@ -449,8 +507,9 @@ def select_candidates(
                 "arity": cand.arity,
                 "required": cand.required,
                 "shared_tokens": sorted(new_tokens & cand.tokens),
+                "body_match": bool(body_flag),
             }
-            for _overlap, _sim, _dist, cand in scored[:max_candidates]
+            for body_flag, _overlap, _sim, _dist, cand in scored[:max_candidates]
         ]
         results.append(
             {

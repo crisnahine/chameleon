@@ -112,3 +112,34 @@ def test_added_line_number_does_not_double_count():
     content = 'aws = "AKIAIOSFODNN7EXAMPLE"\n'
     hits = [h for h in scan_for_secrets(content) if h["type"] == "aws_access_key"]
     assert len(hits) == 1
+
+
+def test_gitlab_pat_caught_by_detect_secrets_backend():
+    # Regression guard for the QA campaign's "glpat not caught" report: a
+    # valid-length GitLab PAT (>= 20 chars after the prefix) is detected. The
+    # campaign's miss reproduces only with a too-short fake token, which is
+    # not a valid PAT shape.
+    pat = "glpat-" + "x" * 20
+    hits = _try_detect_secrets(f'token = "{pat}"')
+    assert hits is not None
+    assert any(h["type"] == "GitLab Token" for h in hits)
+
+
+def test_gitlab_token_family_caught_by_fallback():
+    # The fallback must keep parity with detect-secrets so GitLab tokens stay
+    # caught if the library is ever unavailable.
+    for prefix in ("glpat", "gldt", "glrt"):
+        token = f"{prefix}-" + "a1B2" * 6
+        hits = [h for h in _fallback_scan(f'x = "{token}"') if h["type"] == "gitlab_token"]
+        assert hits, f"{prefix} token missed by fallback"
+        assert hits[0]["line_number"] == 1
+
+
+def test_gitlab_token_hard_kind_tagged():
+    from chameleon_mcp.lint_engine import scan_secrets
+    from chameleon_mcp.violation_class import tag_secret_hardness
+
+    token = "glpat-" + "k" * 24
+    violations = [v.to_dict() for v in scan_secrets(f'GITLAB_TOKEN = "{token}".freeze')]
+    tag_secret_hardness(violations)
+    assert any(v.get("secret_hard") for v in violations)

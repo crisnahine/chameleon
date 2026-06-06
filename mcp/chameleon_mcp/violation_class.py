@@ -66,6 +66,24 @@ BLOCK_ELIGIBLE_RULES: frozenset[str] = frozenset(
     }
 )
 
+# Languages each block-eligible rule has a signal source for. Calibration
+# certifies a rule "active" when it flags ~none of the repo's own files — but a
+# rule with no signal source for the profile's language flags nothing
+# VACUOUSLY, and listing it active misreads that silence as safety (a Ruby
+# profile shipped with jsx-presence-mismatch "active" at fp_rate 0.0 this way).
+# None means language-independent.
+BLOCK_RULE_LANGUAGES: dict[str, frozenset[str] | None] = {
+    "phantom-import": None,
+    "import-preference-violation": None,
+    "jsx-presence-mismatch": frozenset({"typescript"}),
+    "naming-convention-violation": frozenset({"typescript", "ruby"}),
+    "inheritance-convention-violation": frozenset({"ruby"}),
+    "file-naming-convention-violation": None,
+    "secret-detected-in-content": None,
+    "eval-call": None,
+}
+
+
 # Archetype-independent rules are true/false regardless of which archetype the
 # file matched, so they need no confidence/match-quality gate. A hardcoded AWS
 # key is a credential no matter which archetype the file resolved to, so the
@@ -99,6 +117,9 @@ _DETERMINISTIC_SECRET_KINDS: frozenset[str] = frozenset(
     {
         "aws_access_key",
         "github_token",
+        # Fixed glpat-/gldt-/glrt- prefixes — same precision class as the
+        # GitHub ghp_ family.
+        "gitlab_token",
         "ai_api_key",
         "stripe_live_key",
         "stripe_key",
@@ -172,6 +193,14 @@ def is_hard_class(violation: dict) -> bool:
     if rule not in BLOCK_ELIGIBLE_RULES:
         return False
     if rule == "jsx-presence-mismatch":
+        return violation.get("severity") == "error"
+    # eval-call is severity-gated like jsx: the direct `eval(` form and
+    # send-dispatch to eval are emitted at ``error`` and may block, while the
+    # string-argument `*_eval` variants are emitted at ``warning`` and stay
+    # advisory — `class_eval <<~RUBY` is an established (if sharp) Rails
+    # metaprogramming idiom that calibration never measures (content scans are
+    # not calibrated), so blocking it would FP on legitimate committed code.
+    if rule == "eval-call":
         return violation.get("severity") == "error"
     if rule == "secret-detected-in-content":
         return bool(violation.get("secret_hard"))

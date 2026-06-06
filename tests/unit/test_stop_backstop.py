@@ -25,6 +25,17 @@ import pytest
 from chameleon_mcp.enforcement import EnforcementState, FileState, save_state
 
 
+@pytest.fixture(autouse=True)
+def _isolate_metrics(tmp_path, monkeypatch):
+    """Point CHAMELEON_PLUGIN_DATA at tmp_path for every test in this module.
+
+    stop_backstop emits would_block metric rows via emit_hook_metric, which
+    resolves its path from the env, NOT from the patched _plugin_data_dir —
+    without this, test rows leak into the developer's real metrics.jsonl.
+    """
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "metrics-isolated"))
+
+
 @pytest.fixture
 def make_trusted_repo(tmp_path):
     """Factory: a trusted repo with an enforcement config and an isolated data dir.

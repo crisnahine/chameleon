@@ -19,6 +19,10 @@ _FALLBACK_PATTERNS = (
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "aws_access_key"),
     (re.compile(r"\b[A-Za-z0-9/+=]{40}\b"), "possible_aws_secret"),
     (re.compile(r"\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b"), "github_token"),
+    # GitLab token family (PAT, deploy, feed, SOAT, runner). detect-secrets
+    # 1.5.0 covers these too; the fallback keeps parity with the GitHub entry
+    # above so GitLab tokens stay caught if detect-secrets is ever unavailable.
+    (re.compile(r"\b(glpat|gldt|glft|glsoat|glrt)-[A-Za-z0-9_\-]{20,50}\b"), "gitlab_token"),
     (re.compile(r"\bsk-(ant-|proj-)?[A-Za-z0-9_\-]{20,}\b"), "ai_api_key"),
     (re.compile(r"\bsk_live_[A-Za-z0-9]{24,}\b"), "stripe_live_key"),
     (re.compile(r"\b(rk|sk)_(live|test)_[A-Za-z0-9]{24,}\b"), "stripe_key"),

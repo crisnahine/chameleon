@@ -482,6 +482,11 @@ function extractFile(filePath) {
           kind: callableKindOf(node),
           params: paramShapesOf(node),
           is_default_export: isDefaultExportNode(node),
+          // Body span for the duplication catalog's body-hash fallback: a
+          // body-exact clone whose name shares no tokens with the original
+          // can only be paired by body identity.
+          start_line: start,
+          end_line: end,
         });
       }
     } else if (frameStack.length > 0) {

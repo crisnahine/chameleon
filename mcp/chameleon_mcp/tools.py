@@ -871,11 +871,21 @@ def get_archetype(repo: str, file_path: str) -> dict:
     candidate by how many `ast_query` dimensions align. Higher score wins;
     ties fall back to the cluster-size ordering.
 
-    The confidence band reflects how strong the AST signal was:
-      "high"   — score >= 4 of 5 ast_query dimensions agreed
-      "medium" — at least one dimension agreed
-      "low"    — no AST signal (file missing on disk, no ast_query, or
-                 substring-only fallback match)
+    The confidence band reflects the strength of whatever evidence backed the
+    match, and ``match_basis`` names that evidence so bands from different
+    bases are not compared as if they were one scale:
+      basis "path_and_ast" (file readable, canonical ast_query available):
+        "high"   — score >= 4 of 5 ast_query dimensions agreed
+        "medium" — at least one dimension agreed
+        "low"    — no dimension agreed
+      basis "path_only" (file missing/unreadable, or no ast_query to compare):
+        "high"   — exactly one archetype's path pattern matched
+        "low"    — multiple candidates or substring-only fallback
+    A nonexistent path scoring "exact/high" while a real file scores
+    "ast/medium" is therefore expected, not inverted: the phantom band speaks
+    only to path-pattern uniqueness (the supported PreToolUse new-file case —
+    the hook fires before the Write creates the file), the real-file band to
+    AST agreement. ``file_exists`` distinguishes the two at a glance.
 
     Backwards compat: files without on-disk content (deleted, just-detected
     from a hook input that doesn't carry content) fall back to the
@@ -910,6 +920,8 @@ def get_archetype(repo: str, file_path: str) -> dict:
                 "content_signal_match": "none",
                 "confidence_band": "low",
                 "match_quality": "none",
+                "match_basis": None,
+                "file_exists": False,
             }
         )
 
@@ -926,6 +938,8 @@ def get_archetype(repo: str, file_path: str) -> dict:
                 "content_signal_match": content_signal_value,
                 "confidence_band": "low",
                 "match_quality": "none",
+                "match_basis": None,
+                "file_exists": p.is_file(),
             }
         )
 
@@ -939,6 +953,8 @@ def get_archetype(repo: str, file_path: str) -> dict:
                     "content_signal_match": content_signal_value,
                     "confidence_band": "low",
                     "match_quality": "none",
+                    "match_basis": None,
+                    "file_exists": p.is_file(),
                 }
             )
     else:
@@ -951,6 +967,8 @@ def get_archetype(repo: str, file_path: str) -> dict:
                     "content_signal_match": content_signal_value,
                     "confidence_band": "low",
                     "match_quality": "none",
+                    "match_basis": None,
+                    "file_exists": p.is_file(),
                 }
             )
 
@@ -965,6 +983,8 @@ def get_archetype(repo: str, file_path: str) -> dict:
                 "content_signal_match": content_signal_value,
                 "confidence_band": "low",
                 "match_quality": "none",
+                "match_basis": None,
+                "file_exists": p.is_file(),
             }
         )
 
@@ -1035,6 +1055,8 @@ def _get_archetype_with_loaded(
                 "content_signal_match": content_signal_value,
                 "confidence_band": confidence,
                 "match_quality": "fallback" if primary is not None else "none",
+                "match_basis": "path_only" if primary is not None else None,
+                "file_exists": p.is_file(),
             }
         )
 
@@ -1055,6 +1077,12 @@ def _get_archetype_with_loaded(
             content = None
 
     if content is None:
+        # Path-pattern-only branding for a file with no readable content — the
+        # supported PreToolUse new-file case (the hook fires before the Write
+        # creates the file). The band can read "high" on a unique path match,
+        # which is HIGHER than an existing file scoring medium on AST: the two
+        # bands rest on different evidence, so `match_basis`/`file_exists`
+        # carry the distinction rather than the band silently inverting.
         return _envelope(
             {
                 "archetype": exact_matches[0],
@@ -1062,6 +1090,8 @@ def _get_archetype_with_loaded(
                 "content_signal_match": content_signal_value,
                 "confidence_band": "high" if len(exact_matches) == 1 else "low",
                 "match_quality": "exact",
+                "match_basis": "path_only",
+                "file_exists": False,
             }
         )
 
@@ -1114,11 +1144,13 @@ def _get_archetype_with_loaded(
         else:
             confidence = "low"
         match_quality = "ast"
+        match_basis = "path_and_ast"
     else:
         primary = exact_matches[0]
         alternatives = exact_matches[1:]
         confidence = "high" if len(exact_matches) == 1 else "low"
         match_quality = "exact"
+        match_basis = "path_only"
 
     final_signal = (
         content_signal_value
@@ -1132,6 +1164,8 @@ def _get_archetype_with_loaded(
             "content_signal_match": final_signal,
             "confidence_band": confidence,
             "match_quality": match_quality,
+            "match_basis": match_basis,
+            "file_exists": True,
         }
     )
 
@@ -1746,14 +1780,37 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         return _envelope(env)
 
     rules_dict = loaded.rules.get("rules", {}) or {}
+
+    # A source whose config could not be (fully) parsed carries a per-source
+    # ``parse_warning``. Aggregate them at the top level too: on a Rails repo
+    # whose primary linter is rubocop, "zero rubocop rules" with the warning
+    # buried inside an empty source block read as silent degradation.
+    # Sanitize each warning — a YAML parse error embeds source lines from the
+    # committed (attacker-controllable) config file, so the string must not be
+    # able to smuggle tag-boundary tokens onto the model surface. The
+    # per-source block gets the sanitized form too.
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize_warn
+
+    parse_warnings: dict[str, str] = {}
+    for key, val in rules_dict.items():
+        if isinstance(val, dict) and val.get("parse_warning"):
+            clean_warning = _sanitize_warn(str(val["parse_warning"]))
+            parse_warnings[key] = clean_warning
+            val["parse_warning"] = clean_warning
+
+    def _with_warnings(env: dict) -> dict:
+        if parse_warnings:
+            env["parse_warnings"] = parse_warnings
+        return env
+
     if source is None:
-        env = {"rules": list(rules_dict.items())}
+        env = _with_warnings({"rules": list(rules_dict.items())})
         if deprecation_note:
             env["deprecation"] = deprecation_note
         return _envelope(env)
 
     if source in rules_dict:
-        env = {"rules": [(source, rules_dict[source])]}
+        env = _with_warnings({"rules": [(source, rules_dict[source])]})
         if deprecation_note:
             env["deprecation"] = deprecation_note
         return _envelope(env)
@@ -2660,6 +2717,17 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     except Exception:
         return _envelope(dict(empty))
 
+    # The edited file's lines feed the body-hash fallback: a body-exact clone
+    # whose name shares no tokens with the original can only be paired by body
+    # identity, so each new function is fingerprinted the same way the catalog
+    # rows were at bootstrap.
+    from chameleon_mcp.function_catalog import normalized_body_hash
+
+    try:
+        query_lines = p.read_bytes()[:1_000_000].decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        query_lines = []
+
     new_functions: list[NewFunction] = []
     seen: set[tuple[str, int, int]] = set()
     for pf in parse_result.files or ():
@@ -2694,6 +2762,9 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
                     kind=kind if isinstance(kind, str) else "function",
                     arity=arity,
                     required=required,
+                    body_hash=normalized_body_hash(
+                        query_lines, entry.get("start_line"), entry.get("end_line")
+                    ),
                 )
             )
 
@@ -2733,7 +2804,11 @@ def get_drift_status(repo: str) -> dict:
     - days_since_refresh from the trust record's granted_at
     - observed_drift_score from drift.db's recent edit_observations
       (None if no observations yet)
-    - recommended_action: combines both signals
+    - structural_conformance_score: the SAME value as observed_drift_score by
+      design — an honest alias kept alongside the legacy name (see the inline
+      comment at the return), not an independent metric
+    - recommended_action: combines both signals; always a sentence, never a
+      bare token
 
     Bug 4: `repo` accepts either an absolute repo path or a
     64-char repo_id hex digest. Earlier, passing a path silently
@@ -2834,7 +2909,9 @@ def get_drift_status(repo: str) -> dict:
     elif days_since_refresh > 30:
         recommended = "consider /chameleon-refresh if codebase has materially changed"
     else:
-        recommended = "fresh"
+        # A full sentence like its siblings: the bare value "fresh" read as an
+        # instruction ("refresh"?) rather than a status.
+        recommended = "none; profile is fresh"
 
     # The drift score is structural-match confidence, not a correctness measure.
     # Expose it under an honest alias and attach the blind-spots disclaimer so a
@@ -2921,7 +2998,13 @@ def get_status(repo: str) -> dict:
         if meta.get("active") is True:
             active.append(rule)
         else:
-            demoted.append({"rule": rule, "fp_rate": meta.get("fp_rate")})
+            entry = {"rule": rule, "fp_rate": meta.get("fp_rate")}
+            # Language-capability demotions carry a reason ("no-signal-for-
+            # language") so the status display can say the rule is inert for
+            # this repo's language rather than implying it was measured out.
+            if meta.get("inert_reason"):
+                entry["inert_reason"] = meta["inert_reason"]
+            demoted.append(entry)
     active.sort()
     demoted.sort(key=lambda d: d["rule"])
 
@@ -3159,7 +3242,11 @@ def get_review_history(repo: str, limit: int | None = None) -> dict:
 
     _repo_path, repo_id = _resolve_repo_arg(repo)
     if repo_id is None:
-        return _envelope({"status": "no_repo"})
+        # Carry the same data keys as the healthy shape (empty) so a consumer
+        # parses one schema regardless of repo existence.
+        return _envelope(
+            {"status": "no_repo", "repo_id": None, "records": [], "total": 0, "unverified": 0}
+        )
 
     try:
         from chameleon_mcp.review_ledger import read_review_history
@@ -4922,15 +5009,35 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
             }
         )
 
+    from chameleon_mcp.profile.trust import is_material_change
+
     base = plugin_data_dir()
     profiles = []
     for row in page_rows:
         repo_id = row["repo_id"]
         trust = trust_state_for(repo_id) if (base / repo_id).is_dir() else None
+        # Freshness-aware trust state, agreeing with detect_repo: a grant whose
+        # profile has materially changed since it was reviewed reads "stale",
+        # not "trusted" (this tool used to report the raw record while
+        # detect_repo reported staleness, and the two disagreed for the same
+        # repo). Falls back to the raw record when the row carries no
+        # resolvable root to hash the profile against.
+        trust_state = "untrusted"
+        if trust is not None:
+            trust_state = "trusted"
+            row_root = row.get("repo_root")
+            if row_root:
+                try:
+                    profile_dir = Path(row_root) / ".chameleon"
+                    if profile_dir.is_dir() and is_material_change(repo_id, profile_dir):
+                        trust_state = "stale"
+                except OSError:
+                    pass
+        row_stats = (row.get("archetype_count"), row.get("files_indexed"))
         profiles.append(
             {
                 "repo_id": repo_id,
-                "trust_state": "trusted" if trust else "untrusted",
+                "trust_state": trust_state,
                 "trusted_at": trust.granted_at if trust else None,
                 "trusted_by": trust.granted_by_user if trust else None,
                 "repo_root": row.get("repo_root"),
@@ -4938,6 +5045,10 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
                 "files_indexed": row.get("files_indexed"),
                 "bootstrap_ms": row.get("bootstrap_ms"),
                 "last_seen_at": row.get("last_seen_at"),
+                # A row with no stats is an aborted/incomplete bootstrap that
+                # persisted; flag it so a reader doesn't mistake it for a
+                # healthy profile with null metrics.
+                "incomplete": all(v is None for v in row_stats),
             }
         )
 
@@ -7306,19 +7417,9 @@ def dep_audit(repo: str) -> dict:
     """
     from chameleon_mcp import dep_audit as _dep_audit
 
-    if not _dep_audit.is_enabled():
-        return _envelope(
-            {
-                "status": "failed",
-                "error": (
-                    "dependency audit is opt-in and hits the network; set "
-                    f"{_dep_audit.ALLOW_ENV}=1 to enable it for this invocation. The "
-                    "no-network manifest/lockfile checks run in /chameleon-pr-review "
-                    "regardless."
-                ),
-            }
-        )
-
+    # Validate the repo argument BEFORE the env gate: a bad path must surface
+    # as a bad path, not as an opt-in refusal that masks the real problem (and
+    # path validation is read-only, so there is nothing the gate protects).
     resolved_path, _ = _resolve_repo_arg(repo)
     repo_root = resolved_path
     try:
@@ -7331,6 +7432,19 @@ def dep_audit(repo: str) -> dict:
             {
                 "status": "failed",
                 "error": ("repo could not be resolved to a directory; pass an absolute repo path"),
+            }
+        )
+
+    if not _dep_audit.is_enabled():
+        return _envelope(
+            {
+                "status": "failed",
+                "error": (
+                    "dependency audit is opt-in and hits the network; set "
+                    f"{_dep_audit.ALLOW_ENV}=1 to enable it for this invocation. The "
+                    "no-network manifest/lockfile checks run in /chameleon-pr-review "
+                    "regardless."
+                ),
             }
         )
 

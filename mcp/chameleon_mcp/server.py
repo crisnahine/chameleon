@@ -81,7 +81,12 @@ def get_pattern_context(file_path: str) -> dict:
 
 @mcp.tool()
 def get_canonical_excerpt(repo: str, archetype: str) -> dict:
-    """Return the annotated canonical excerpt for an archetype (~500-800 tokens)."""
+    """Return the canonical witness source for an archetype.
+
+    The content is the witness file's source as committed (sanitized, not
+    annotated), so its length tracks the witness — typically well under a
+    thousand tokens, larger for a long canonical file.
+    """
     return tools.get_canonical_excerpt(repo, archetype)
 
 

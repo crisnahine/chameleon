@@ -222,24 +222,56 @@ _TS_TYPE_NAME_RE = re.compile(r"^\s*(?:export\s+)?type\s+([A-Z]\w*)\s*[=<]", re.
 _TS_ENUM_NAME_RE = re.compile(r"^\s*(?:export\s+)?(?:const\s+)?enum\s+([A-Z]\w*)", re.MULTILINE)
 
 
-def extract_declarations_from_content(content: str, *, language: str) -> dict[str, list[str]]:
-    """Extract interface/type/enum declaration names from file content.
+# Ruby in-source declaration names, for casing-convention derivation. The
+# method capture accepts any identifier start so a PascalCase `def FetchData`
+# is still measurable; operator defs (`def ==`) carry no casing signal and are
+# excluded by the identifier-start requirement. The class capture requires the
+# uppercase start Ruby itself enforces; the permissive lint-side capture that
+# must SEE a lowercase class name lives in lint_engine.
+_RUBY_DECL_METHOD_RE = re.compile(
+    r"^[ \t]*def\s+(?:self\s*\.\s*)?([a-zA-Z_]\w*[!?=]?)", re.MULTILINE
+)
+_RUBY_DECL_CLASS_RE = re.compile(r"^[ \t]*(?:class|module)\s+([A-Z]\w*(?:::\w+)*)", re.MULTILINE)
+# Constant assignment; `[^=~]` keeps `==` / `=~` comparisons out.
+_RUBY_DECL_CONSTANT_RE = re.compile(r"^[ \t]*([A-Z]\w*)\s*=[^=~]", re.MULTILINE)
 
-    Returns {"interface": ["IFoo", "IBar"], "type": ["TBaz"], "enum": ["EQux"]}.
-    Only TypeScript is supported; Ruby returns empty dict.
+
+def extract_declarations_from_content(content: str, *, language: str) -> dict[str, list[str]]:
+    """Extract declaration names from file content for naming derivation.
+
+    TypeScript returns {"interface": [...], "type": [...], "enum": [...]}
+    (prefix conventions). Ruby returns {"method": [...], "class": [...],
+    "constant": [...]} (casing conventions), scanned over a strings/comments/
+    heredoc-stripped copy so generator templates and docs don't pollute the
+    measurement. Other languages return an empty dict.
     """
-    if language != "typescript":
-        return {}
     result: dict[str, list[str]] = {}
-    interfaces = _TS_INTERFACE_NAME_RE.findall(content)
-    if interfaces:
-        result["interface"] = interfaces
-    types = _TS_TYPE_NAME_RE.findall(content)
-    if types:
-        result["type"] = types
-    enums = _TS_ENUM_NAME_RE.findall(content)
-    if enums:
-        result["enum"] = enums
+    if language == "typescript":
+        interfaces = _TS_INTERFACE_NAME_RE.findall(content)
+        if interfaces:
+            result["interface"] = interfaces
+        types = _TS_TYPE_NAME_RE.findall(content)
+        if types:
+            result["type"] = types
+        enums = _TS_ENUM_NAME_RE.findall(content)
+        if enums:
+            result["enum"] = enums
+        return result
+    if language == "ruby":
+        # Local import: lint_engine imports from this module at load time.
+        from chameleon_mcp.lint_engine import _strip_ruby_strings_and_comments
+
+        scan = _strip_ruby_strings_and_comments(content)
+        methods = _RUBY_DECL_METHOD_RE.findall(scan)
+        if methods:
+            result["method"] = methods
+        classes = _RUBY_DECL_CLASS_RE.findall(scan)
+        if classes:
+            result["class"] = classes
+        constants = _RUBY_DECL_CONSTANT_RE.findall(scan)
+        if constants:
+            result["constant"] = constants
+        return result
     return result
 
 
@@ -542,18 +574,81 @@ _ENFORCE_THRESHOLD = 0.95
 _STRONG_THRESHOLD = 0.60
 
 
-def extract_naming_conventions(*, declarations: dict[str, list[str]]) -> dict:
-    """Detect prefix conventions (I-prefix, T-prefix, E-prefix) from declaration names.
+_RUBY_SNAKE_NAME_RE = re.compile(r"[a-z_][a-z0-9_]*\Z")
+_RUBY_PASCAL_SEGMENT_RE = re.compile(r"[A-Z][a-zA-Z0-9]*\Z")
+_RUBY_SCREAMING_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*\Z")
 
-    ``declarations`` maps a declaration type ("interface", "type", "enum") to a
-    list of identifier names found in the codebase.  Returns a dict keyed by
-    ``<type>_prefix`` with pattern, consistency, and sample_size when a
-    dominant single-letter prefix is detected above ``_STRONG_THRESHOLD``.
+
+def _classify_ruby_method_casing(name: str) -> str:
+    base = name.rstrip("!?=")
+    if _RUBY_SNAKE_NAME_RE.fullmatch(base):
+        return "snake_case"
+    if re.fullmatch(r"[a-z][a-zA-Z0-9]*", base):
+        return "camelCase"
+    return "other"
+
+
+def _classify_ruby_class_casing(name: str) -> str:
+    segments = name.split("::")
+    if all(_RUBY_PASCAL_SEGMENT_RE.fullmatch(s) for s in segments):
+        return "PascalCase"
+    return "other"
+
+
+def _classify_ruby_constant_casing(name: str) -> str:
+    if _RUBY_SCREAMING_NAME_RE.fullmatch(name):
+        return "SCREAMING_SNAKE_CASE"
+    if _RUBY_PASCAL_SEGMENT_RE.fullmatch(name):
+        # `Result = Struct.new(...)` — a class alias, not a value constant.
+        return "PascalCase"
+    return "other"
+
+
+# (result key, classifier, asserted pattern, conforming buckets). Only the
+# canonical Ruby casing is ever derived: a sample whose conforming share is
+# below threshold (a camelCase-heavy corner, say) yields NO convention rather
+# than a non-canonical one, keeping the block-eligible naming rule precise.
+# PascalCase constants conform alongside SCREAMING_SNAKE because a
+# `Result = Struct.new` class alias is legitimate in any Ruby repo.
+_RUBY_CASING_KEYS = {
+    "method": ("method_casing", _classify_ruby_method_casing, "snake_case", ("snake_case",)),
+    "class": ("class_casing", _classify_ruby_class_casing, "PascalCase", ("PascalCase",)),
+    "constant": (
+        "constant_casing",
+        _classify_ruby_constant_casing,
+        "SCREAMING_SNAKE_CASE",
+        ("SCREAMING_SNAKE_CASE", "PascalCase"),
+    ),
+}
+
+
+def extract_naming_conventions(*, declarations: dict[str, list[str]]) -> dict:
+    """Detect naming conventions from declaration names.
+
+    TS declaration types ("interface", "type", "enum") yield ``<type>_prefix``
+    entries when a dominant single-letter prefix clears ``_STRONG_THRESHOLD``.
+    Ruby declaration types ("method", "class", "constant") yield
+    ``<type>_casing`` entries when a dominant casing bucket clears the same
+    threshold, giving the lint an in-source signal (``def fetchData`` against a
+    snake_case repo) rather than only file-level naming.
     """
     result: dict = {}
     type_to_key = {"interface": "interface_prefix", "type": "type_prefix", "enum": "enum_prefix"}
     for decl_type, names in declarations.items():
         if len(names) < MIN_SAMPLE_SIZE_NAMING:
+            continue
+        casing = _RUBY_CASING_KEYS.get(decl_type)
+        if casing is not None:
+            key, classify, canonical, conforming_buckets = casing
+            buckets = Counter(classify(name) for name in names)
+            conforming = sum(buckets.get(b, 0) for b in conforming_buckets)
+            consistency = conforming / len(names)
+            if consistency >= _STRONG_THRESHOLD:
+                result[key] = {
+                    "pattern": canonical,
+                    "consistency": round(consistency, 3),
+                    "sample_size": len(names),
+                }
             continue
         key = type_to_key.get(decl_type)
         if not key:
