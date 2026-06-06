@@ -307,6 +307,11 @@ jobs:
       - name: pip-audit
         working-directory: mcp
         run: |
+          # Upgrade pip first: pip-audit scans the whole environment including
+          # pip itself, so a runner image carrying a one-patch-stale pip (e.g.
+          # PYSEC-2026-196 on 26.1.1) fails the audit for every commit even
+          # though it is not a project dependency.
+          python -m pip install -q --upgrade pip
           pip install -q -e ".[dev]"
           pipx run pip-audit --desc on --progress-spinner off
 
