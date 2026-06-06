@@ -30,11 +30,19 @@ _MAX_ENFORCEMENT_BYTES = 256 * 1024
 _CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
 _CACHE_LOCK = threading.Lock()
 
+# Cache of the profile's recorded language, keyed like the block_rules cache and
+# invalidated by profile.json's mtime+size token. active_block_rules sits on the
+# PostToolUse and Stop hot paths, so the read-time language gate must not re-read
+# and re-parse profile.json per call.
+_LANG_CACHE: dict[str, tuple[tuple[int, int], frozenset[str]]] = {}
+_MAX_PROFILE_META_BYTES = 256 * 1024
+
 
 def _clear_block_rules_cache() -> None:
     """Drop the in-process block_rules cache (tests; mutation paths after a write)."""
     with _CACHE_LOCK:
         _CACHE.clear()
+        _LANG_CACHE.clear()
 
 
 # Upper bound on sampled witnesses; protects huge repos from scanning every file.
@@ -103,12 +111,61 @@ def load_block_rules(profile_dir: Path) -> dict:
     return rules
 
 
+def _stored_profile_languages(profile_dir: Path) -> frozenset[str]:
+    """Language(s) recorded in the on-disk profile, for read-time rule gating."""
+    path = profile_dir / "profile.json"
+    token = _cache_token(path)
+    if token is None or token[1] > _MAX_PROFILE_META_BYTES:
+        return frozenset()
+    try:
+        key = str(profile_dir.resolve())
+    except OSError:
+        key = str(profile_dir)
+
+    with _CACHE_LOCK:
+        cached = _LANG_CACHE.get(key)
+        if cached is not None and cached[0] == token:
+            return cached[1]
+
+    langs: frozenset[str] = frozenset()
+    try:
+        profile = json.loads(path.read_text(encoding="utf-8"))
+        lang = profile.get("language") if isinstance(profile, dict) else None
+        if lang in ("typescript", "ruby"):
+            langs = frozenset({lang})
+    except (OSError, ValueError):
+        langs = frozenset()
+
+    with _CACHE_LOCK:
+        _LANG_CACHE[key] = (token, langs)
+    return langs
+
+
+def rule_inert_for_language(rule: str, profile_dir: Path) -> bool:
+    """True when the rule positively cannot fire for this profile's language.
+
+    Calibration applies this gate when it writes enforcement.json, but a
+    profile calibrated by an older engine carries its stale verdict until the
+    first refresh recomputes it. Re-applying the gate at read time keeps a
+    vacuously-active rule from being reported (or relied on) in the window
+    between the engine upgrade and that refresh. Gates only on POSITIVE
+    knowledge — an unknown/legacy language keeps the measured behavior.
+    """
+    supported = BLOCK_RULE_LANGUAGES.get(rule)
+    if supported is None:
+        return False
+    langs = _stored_profile_languages(profile_dir)
+    return bool(langs) and not (langs & supported)
+
+
 def active_block_rules(profile_dir: Path) -> set[str]:
     out = set()
     for rule, meta in load_block_rules(profile_dir).items():
         # Only block-eligible rules can ever block; a committed profile that marks
         # some other rule "active" (tampering or schema drift) must not promote it.
         if rule not in BLOCK_ELIGIBLE_RULES:
+            continue
+        if rule_inert_for_language(rule, profile_dir):
             continue
         if isinstance(meta, dict) and meta.get("active") is True:
             out.add(rule)

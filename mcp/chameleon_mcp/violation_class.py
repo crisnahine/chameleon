@@ -11,29 +11,166 @@ deterministic-kind ``secret-detected-in-content`` (a leaked credential).
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 
 # Matches a `// chameleon-ignore <rule>` (TypeScript) or `# chameleon-ignore
 # <rule>` (Ruby) directive. A TypeScript `/* chameleon-ignore <rule> */` block
-# comment is also accepted: the trailing `*/` is not in the `[\w-]` rule class so
-# the rule name stops before it. The optional `-file` suffix and the bare form
-# (no rule) both parse; a bare directive means "ignore every block-eligible
-# rule". The rule name must sit on the same line as the directive: the
+# comment is also accepted via the optional trailing `*/`. The optional `-file`
+# suffix widens the directive to the whole file; the plain form is scoped to
+# its own line (or the line below, when the directive sits on a line of its
+# own). The directive must end its line — nothing but whitespace (and the
+# block-comment closer) may follow the rule name — so prose that merely
+# MENTIONS a directive ("add // chameleon-ignore x if intentional") never
+# activates it. The rule name must sit on the same line as the directive: the
 # inter-token whitespace excludes newlines so a bare directive on its own line
 # does not capture the first word of the following line as a rule.
-_IGNORE_RE = re.compile(r"(?:#|//|/\*)[^\S\n]*chameleon-ignore(?:-file)?(?:[^\S\n]+([\w-]+))?")
+_IGNORE_RE = re.compile(
+    r"(?:#|//|/\*)[^\S\n]*chameleon-ignore(-file)?(?:[^\S\n]+([\w-]+))?"
+    r"[^\S\n]*(?:\*/[^\S\n]*)?$",
+    re.MULTILINE,
+)
+
+# Recovers the 1-based line number a violation reports inside its
+# human-readable ``actual`` field ("<thing> at line N"). The line-bearing
+# rules (deterministic secrets, eval-call) all use this shape; violations
+# without it are file-level facts that have no line to scope a directive to.
+_AT_LINE_RE = re.compile(r" at line (\d+)\b")
 
 
-def ignored_rules(content: str) -> set[str] | None:
+@dataclass(frozen=True)
+class IgnoreIndex:
+    """Parsed inline-ignore directives, scoped for violation filtering.
+
+    ``file_rules`` holds the ``chameleon-ignore-file`` directives (whole-file
+    scope). ``line_rules`` maps each covered line to the plain directives that
+    apply there: a trailing directive covers its own line; a directive on a
+    line of its own covers the line below it too. ``named_anywhere`` is the
+    union of every plain directive in the file — the fallback scope for
+    violations that carry no line number, which a line-scoped directive could
+    otherwise never suppress. The empty-string rule means "every rule".
+    """
+
+    file_rules: frozenset[str] = frozenset()
+    line_rules: dict[int, frozenset[str]] = field(default_factory=dict)
+    named_anywhere: frozenset[str] = frozenset()
+
+    def all_rules(self) -> frozenset[str]:
+        return self.file_rules | self.named_anywhere
+
+
+def _blank_string_literals(content: str, file_path: str | None, language: str | None) -> str:
+    """Blank string-literal bodies so embedded text cannot activate directives.
+
+    A directive only counts when it lives in a real comment. Text inside a
+    string constant ("to silence this add // chameleon-ignore ...") is
+    attacker-controllable content, not author intent — left unblanked it could
+    switch off the secret block from a help string. Replacement preserves
+    newlines so directive line numbers stay truthful. Best-effort: a blanking
+    miss fails closed (the directive deactivates and the violation still
+    fires), never open.
+    """
+    try:
+        from chameleon_mcp.lint_engine import (
+            _RUBY_STRING_DQ,
+            _RUBY_STRING_SQ,
+            _TS_STRING,
+            _blank_ruby_heredocs,
+            detect_language,
+        )
+
+        def _spaces(m: re.Match) -> str:
+            return re.sub(r"[^\n]", " ", m.group(0))
+
+        if language is None and file_path:
+            language = detect_language(file_path)
+        if language == "ruby":
+            out = _blank_ruby_heredocs(content)
+            out = _RUBY_STRING_DQ.sub(_spaces, out)
+            return _RUBY_STRING_SQ.sub(_spaces, out)
+        # TypeScript and unknown languages share the quote/backtick shapes.
+        return _TS_STRING.sub(_spaces, content)
+    except Exception:
+        return content
+
+
+def build_ignore_index(
+    content: str, *, file_path: str | None = None, language: str | None = None
+) -> IgnoreIndex | None:
+    """Parse inline-ignore directives into their file/line scopes.
+
+    Returns None when the content carries no directive, so callers can skip
+    filtering entirely on the common path.
+    """
+    blanked = _blank_string_literals(content, file_path, language)
+    file_rules: set[str] = set()
+    named: set[str] = set()
+    line_rules: dict[int, set[str]] = {}
+    for m in _IGNORE_RE.finditer(blanked):
+        rule = m.group(2) or ""
+        if m.group(1):
+            file_rules.add(rule)
+            continue
+        named.add(rule)
+        line_no = blanked.count("\n", 0, m.start()) + 1
+        line_start = blanked.rfind("\n", 0, m.start()) + 1
+        standalone = not blanked[line_start : m.start()].strip()
+        covered = (line_no, line_no + 1) if standalone else (line_no,)
+        for ln in covered:
+            line_rules.setdefault(ln, set()).add(rule)
+    if not file_rules and not named:
+        return None
+    return IgnoreIndex(
+        file_rules=frozenset(file_rules),
+        line_rules={ln: frozenset(rules) for ln, rules in line_rules.items()},
+        named_anywhere=frozenset(named),
+    )
+
+
+def violation_line(violation: dict) -> int | None:
+    """1-based line a violation reports, or None for file-level violations."""
+    actual = violation.get("actual")
+    if not isinstance(actual, str):
+        return None
+    m = _AT_LINE_RE.search(actual)
+    return int(m.group(1)) if m else None
+
+
+def is_violation_ignored(violation: dict, idx: IgnoreIndex | None) -> bool:
+    """True when an inline directive covers this violation.
+
+    A ``-file`` directive covers everything. A plain directive covers only the
+    line it annotates — except for violations that report no line, which any
+    same-file plain directive may suppress (there is no line to target).
+    """
+    if idx is None:
+        return False
+    keys = {"", violation.get("rule") or ""}
+    if keys & idx.file_rules:
+        return True
+    line = violation_line(violation)
+    if line is None:
+        return bool(keys & idx.named_anywhere)
+    rules_at = idx.line_rules.get(line)
+    return bool(rules_at and keys & rules_at)
+
+
+def ignored_rules(
+    content: str, *, file_path: str | None = None, language: str | None = None
+) -> set[str] | None:
     """Return the set of explicitly-ignored rule names, or None if there are none.
 
-    A bare ``chameleon-ignore`` (no rule) contributes the empty string, which
-    callers read as "ignore everything": membership of ``""`` downgrades any
-    block-eligible rule on this file.
+    The flat, file-scope view of the directives: the turn-end opt-out checks
+    (idioms review, stale-test, cochange, removed-export) and the
+    import-preference deny read this, since those gates have no per-line
+    granularity. Violation filters use ``build_ignore_index`` +
+    ``is_violation_ignored`` for line scoping. A bare ``chameleon-ignore`` (no
+    rule) contributes the empty string, which callers read as "ignore
+    everything".
     """
-    found: set[str] = set()
-    for m in _IGNORE_RE.finditer(content):
-        found.add(m.group(1) or "")
-    return found or None
+    idx = build_ignore_index(content, file_path=file_path, language=language)
+    if idx is None:
+        return None
+    return set(idx.all_rules()) or None
 
 
 # Rules that MAY block, before per-repo self-calibration narrows the set.
@@ -96,8 +233,12 @@ _ARCHETYPE_INDEPENDENT: frozenset[str] = frozenset({"phantom-import", "secret-de
 # target gets created), so blocking it mid-turn would refuse an edit the model is
 # about to make valid; the Stop backstop re-lints once the turn's edits settle.
 # A leaked credential is NOT deferrable: nothing a later edit does makes a
-# hardcoded AKIA key safe, and it is the documented "only security BLOCK", so it
-# blocks inline at PostToolUse and is intentionally absent here.
+# hardcoded AKIA key safe, so it stays in the inline block set rather than being
+# listed here. Note the inline gate itself still requires the file to have
+# escalated to L2 — on a lower-escalation file a deterministic secret is
+# recorded as blockable_unresolved and the Stop backstop refuses the turn
+# instead, so the credential cannot leave the turn either way; only the
+# block's timing differs.
 _DEFERRED_TO_TURN_END: frozenset[str] = frozenset({"phantom-import"})
 
 # The secret kinds precise enough to hard-block on. Each is a fixed-prefix or

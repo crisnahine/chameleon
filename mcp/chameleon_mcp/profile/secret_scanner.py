@@ -107,10 +107,21 @@ def _try_detect_secrets(content: str) -> list[dict[str, Any]] | None:
     except ImportError:
         return None
 
+    from chameleon_mcp._thresholds import threshold_int
+
+    # detect-secrets re-scans the whole line through its allowlist regexes for
+    # every candidate it yields, so a token-dense single line (minified bundle,
+    # generated const map) costs O(candidates x length) — tens of seconds at
+    # 100KB. Lines past the cap are left to the deterministic fallback patterns,
+    # which scan linearly and carry every block-eligible secret kind.
+    max_line_len = threshold_int("SECRET_SCAN_MAX_LINE_LEN")
+
     hits: list[dict[str, Any]] = []
     try:
         with default_settings():
             for line_no, line in enumerate(content.splitlines(), start=1):
+                if len(line) > max_line_len:
+                    continue
                 try:
                     for s in scan_line(line):
                         if s.type in _NOISY_DETECT_SECRETS_TYPES:

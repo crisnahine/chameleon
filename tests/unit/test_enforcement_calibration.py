@@ -790,3 +790,92 @@ def test_get_status_surfaces_inert_reason(tmp_path, monkeypatch):
     # Measured demotions carry no reason key (they were measured, not inert).
     assert "inert_reason" not in demoted["file-naming-convention-violation"]
     assert "eval-call" in data["active"]
+
+
+def test_stale_active_rule_gated_at_read_time(tmp_path):
+    # A pre-language-gate engine wrote enforcement.json with jsx active=True on
+    # a Ruby profile (the gate only ran at calibration time, so the stale
+    # verdict survived an engine upgrade until the first refresh). The reader
+    # must not surface — or act on — a rule that cannot fire for this language.
+    from chameleon_mcp.enforcement_calibration import (
+        _clear_block_rules_cache,
+        active_block_rules,
+        rule_inert_for_language,
+    )
+
+    cham = tmp_path / ".chameleon"
+    cham.mkdir()
+    (cham / "profile.json").write_text(json.dumps({"language": "ruby"}))
+    (cham / "enforcement.json").write_text(
+        json.dumps(
+            {
+                "block_rules": {
+                    "jsx-presence-mismatch": {"active": True, "fp_rate": 0.0},
+                    "naming-convention-violation": {"active": True, "fp_rate": 0.0},
+                    "eval-call": {"active": True, "fp_rate": 0.0},
+                }
+            }
+        )
+    )
+    _clear_block_rules_cache()
+
+    active = active_block_rules(cham)
+    assert "jsx-presence-mismatch" not in active
+    # Rules with signal for ruby keep their measured verdict.
+    assert "naming-convention-violation" in active
+    assert "eval-call" in active
+    assert rule_inert_for_language("jsx-presence-mismatch", cham)
+    assert not rule_inert_for_language("eval-call", cham)
+
+
+def test_read_time_gate_fails_open_without_language(tmp_path):
+    # Gate only on POSITIVE knowledge: a legacy profile with no language key
+    # keeps the measured behavior rather than demoting every scoped rule.
+    from chameleon_mcp.enforcement_calibration import (
+        _clear_block_rules_cache,
+        active_block_rules,
+    )
+
+    cham = tmp_path / ".chameleon"
+    cham.mkdir()
+    (cham / "profile.json").write_text(json.dumps({"generation": 1}))
+    (cham / "enforcement.json").write_text(
+        json.dumps({"block_rules": {"jsx-presence-mismatch": {"active": True, "fp_rate": 0.0}}})
+    )
+    _clear_block_rules_cache()
+
+    assert "jsx-presence-mismatch" in active_block_rules(cham)
+
+
+def test_get_status_demotes_stale_active_rule_with_reason(tmp_path, monkeypatch):
+    # The status display applies the same read-time gate, so an un-refreshed
+    # profile shows the inert rule as demoted instead of listing it active.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    repo = tmp_path / "repo"
+    cham = repo / ".chameleon"
+    cham.mkdir(parents=True)
+    (cham / "profile.json").write_text(json.dumps({"generation": 1, "language": "ruby"}))
+    (cham / "COMMITTED").touch()
+    (cham / "enforcement.json").write_text(
+        json.dumps(
+            {
+                "block_rules": {
+                    "jsx-presence-mismatch": {"active": True, "fp_rate": 0.0},
+                    "eval-call": {"active": True, "fp_rate": 0.0},
+                }
+            }
+        )
+    )
+
+    from chameleon_mcp.enforcement_calibration import _clear_block_rules_cache
+    from chameleon_mcp.profile.trust import grant_trust
+    from chameleon_mcp.tools import _compute_repo_id, get_status
+
+    _clear_block_rules_cache()
+    grant_trust(_compute_repo_id(repo), cham)
+    data = get_status(str(repo))["data"]["enforcement"]
+    assert "jsx-presence-mismatch" not in data["active"]
+    demoted = {d["rule"]: d for d in data["demoted"]}
+    assert demoted["jsx-presence-mismatch"]["inert_reason"] == "no-signal-for-language"
+    assert "eval-call" in data["active"]

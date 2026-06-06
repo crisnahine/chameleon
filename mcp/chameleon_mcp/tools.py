@@ -2888,8 +2888,29 @@ def get_drift_status(repo: str) -> dict:
             resolved_path / ".chameleon", ENGINE_MIN_VERSION
         )
 
+    # A pre-current schema_version means the clustering algorithm changed
+    # underneath the profile, which the loader accepts silently (only a NEWER
+    # schema is rejected). In practice an old schema rides along with an old
+    # engine stamp, so the engine branch above catches it first — this check
+    # closes the remaining gap (hand-edited or partially-migrated profiles).
+    schema_outdated = False
+    if resolved_path is not None:
+        try:
+            from chameleon_mcp.profile.schema import CURRENT_SCHEMA_VERSION
+
+            _declared = json.loads(
+                (resolved_path / ".chameleon" / "profile.json").read_text(encoding="utf-8")
+            ).get("schema_version")
+            schema_outdated = isinstance(_declared, int) and _declared < CURRENT_SCHEMA_VERSION
+        except (OSError, ValueError):
+            schema_outdated = False
+
     if engine_version_mismatch:
         recommended = "engine upgraded since this profile was built; run /chameleon-refresh"
+    elif schema_outdated:
+        recommended = (
+            "profile predates the current clustering schema; run /chameleon-refresh to re-derive"
+        )
     elif days_since_refresh is None:
         # Only a resolvable path lets us distinguish "no profile" (run init) from
         # "untrusted profile" (run trust). A bare repo_id has no path to inspect
@@ -2929,6 +2950,7 @@ def get_drift_status(repo: str) -> dict:
             "conformance_disclaimer": CONFORMANCE_DISCLAIMER,
             "blind_spots": list(SIGNAL_BLIND_SPOTS),
             "engine_version_mismatch": engine_version_mismatch,
+            "schema_outdated": schema_outdated,
             "recommended_action": recommended,
         }
     )
@@ -2990,20 +3012,29 @@ def get_status(repo: str) -> dict:
         # fixed. Report the safest mode rather than crashing the status call.
         mode = "off"
 
+    from chameleon_mcp.enforcement_calibration import rule_inert_for_language
+
     active: list[str] = []
     demoted: list[dict] = []
     for rule, meta in load_block_rules(profile_dir).items():
         if not isinstance(meta, dict):
             continue
-        if meta.get("active") is True:
+        # A profile calibrated by an older engine can carry active=True for a
+        # rule that has no signal source in this profile's language; the
+        # read-time gate keeps that stale verdict out of the active list (the
+        # enforcement path applies the same gate) until a refresh recalibrates.
+        if meta.get("active") is True and not rule_inert_for_language(rule, profile_dir):
             active.append(rule)
         else:
             entry = {"rule": rule, "fp_rate": meta.get("fp_rate")}
             # Language-capability demotions carry a reason ("no-signal-for-
             # language") so the status display can say the rule is inert for
             # this repo's language rather than implying it was measured out.
-            if meta.get("inert_reason"):
-                entry["inert_reason"] = meta["inert_reason"]
+            reason = meta.get("inert_reason")
+            if not reason and meta.get("active") is True:
+                reason = "no-signal-for-language"
+            if reason:
+                entry["inert_reason"] = reason
             demoted.append(entry)
     active.sort()
     demoted.sort(key=lambda d: d["rule"])
@@ -5221,8 +5252,20 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
             }
         )
 
-    ours_text = ours_path.read_text(encoding="utf-8")
-    theirs_text = theirs_path.read_text(encoding="utf-8")
+    # Undecodable bytes at a profile path (a binary blob routed through the
+    # merge driver) fail like the non-JSON case: leave the conflict for manual
+    # resolution instead of leaking a traceback to the driver's stderr.
+    try:
+        ours_text = ours_path.read_text(encoding="utf-8")
+        theirs_text = theirs_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": f"profile artifact is not readable UTF-8 text: {e}",
+                "merged_profile_path": None,
+            }
+        )
 
     # idioms.md is markdown, not JSON. Route it to the structural union merge so
     # two branches that each taught idioms keep both sets (git's built-in union
@@ -5234,10 +5277,14 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
         base_text = ""
         try:
             base_text = Path(base).read_text(encoding="utf-8") if base else ""
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             base_text = ""
         merged_md = merge_idioms_markdown(base_text, ours_text, theirs_text)
-        ours_path.write_text(merged_md, encoding="utf-8")
+        # Atomic write: a SIGKILL mid-write would otherwise leave OURS truncated
+        # for git to stage. tmp + replace means the driver result is all-or-nothing.
+        _tmp = ours_path.with_name(ours_path.name + ".chameleon-merge.tmp")
+        _tmp.write_text(merged_md, encoding="utf-8")
+        _tmp.replace(ours_path)
         return _envelope(
             {
                 "status": "success",
@@ -5369,7 +5416,11 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
         ours_count = ours_data.get("archetype_count", 0)
         theirs_count = theirs_data.get("archetype_count", 0)
 
-    ours_path.write_text(json.dumps(merged_data, indent=2, sort_keys=True), encoding="utf-8")
+    # Atomic write: a SIGKILL mid-write would otherwise leave OURS truncated
+    # for git to stage. tmp + replace means the driver result is all-or-nothing.
+    _tmp = ours_path.with_name(ours_path.name + ".chameleon-merge.tmp")
+    _tmp.write_text(json.dumps(merged_data, indent=2, sort_keys=True), encoding="utf-8")
+    _tmp.replace(ours_path)
 
     return _envelope(
         {

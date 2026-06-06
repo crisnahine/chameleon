@@ -250,3 +250,125 @@ def test_ignore_trailing_star_slash_not_captured_as_rule():
 
 def test_ignore_absent_returns_none():
     assert ignored_rules("const x = 1;") is None
+
+
+# --- ignore-directive scoping: line vs file, string blanking, anchoring -----
+
+
+def _secret_violation(line: int) -> dict:
+    return {
+        "rule": "secret-detected-in-content",
+        "severity": "error",
+        "expected": "no secrets",
+        "actual": f"aws_access_key at line {line}",
+        "message": f"aws_access_key at line {line}",
+        "secret_hard": True,
+    }
+
+
+def _naming_violation() -> dict:
+    # Convention violations report no line; they are file-level facts.
+    return {
+        "rule": "naming-convention-violation",
+        "severity": "warning",
+        "expected": "I-prefixed interface",
+        "actual": "Props",
+        "message": "interface Props should be IProps",
+    }
+
+
+def test_directive_in_string_literal_does_not_activate():
+    # Attacker-controllable string content must not switch a rule off: a help
+    # string mentioning the directive used to suppress a real secret elsewhere
+    # in the file.
+    from chameleon_mcp.violation_class import build_ignore_index, is_violation_ignored
+
+    content = (
+        'export const help = "to silence add // chameleon-ignore secret-detected-in-content";\n'
+        'const key = "AKIAIOSFODNN7EXAMPLE";\n'
+    )
+    idx = build_ignore_index(content, language="typescript")
+    assert idx is None or not is_violation_ignored(_secret_violation(2), idx)
+
+
+def test_directive_in_ruby_string_does_not_activate():
+    from chameleon_mcp.violation_class import build_ignore_index
+
+    content = "help = 'add # chameleon-ignore eval-call to silence'\n"
+    assert build_ignore_index(content, language="ruby") is None
+
+
+def test_prose_mention_does_not_activate():
+    # A comment DISCUSSING the directive is not the directive: text after the
+    # rule name invalidates the match.
+    content = "// chameleon-ignore import-preference-violation is what you would add\nimport x;\n"
+    assert ignored_rules(content) is None
+
+
+def test_same_line_directive_suppresses_line_violation():
+    from chameleon_mcp.violation_class import build_ignore_index, is_violation_ignored
+
+    content = 'const key = "x"; // chameleon-ignore secret-detected-in-content\nconst other = 1;\n'
+    idx = build_ignore_index(content, language="typescript")
+    assert is_violation_ignored(_secret_violation(1), idx)
+    assert not is_violation_ignored(_secret_violation(2), idx)
+
+
+def test_standalone_directive_covers_next_line():
+    from chameleon_mcp.violation_class import build_ignore_index, is_violation_ignored
+
+    content = "// chameleon-ignore secret-detected-in-content\nconst key = 'x';\nconst y = 2;\n"
+    idx = build_ignore_index(content, language="typescript")
+    assert is_violation_ignored(_secret_violation(1), idx)
+    assert is_violation_ignored(_secret_violation(2), idx)
+    assert not is_violation_ignored(_secret_violation(3), idx)
+
+
+def test_distant_directive_does_not_suppress_line_violation():
+    # The old file-wide scope let a directive on line 1 silence a secret on
+    # line 99. Line-bearing violations now require the directive on their line.
+    from chameleon_mcp.violation_class import build_ignore_index, is_violation_ignored
+
+    content = (
+        "// chameleon-ignore secret-detected-in-content\n"
+        + "const a = 1;\n" * 5
+        + 'const key = "x";\n'
+    )
+    idx = build_ignore_index(content, language="typescript")
+    assert not is_violation_ignored(_secret_violation(7), idx)
+
+
+def test_ignore_file_suffix_suppresses_everywhere():
+    from chameleon_mcp.violation_class import build_ignore_index, is_violation_ignored
+
+    content = "// chameleon-ignore-file secret-detected-in-content\n" + "const a = 1;\n" * 5
+    idx = build_ignore_index(content, language="typescript")
+    assert is_violation_ignored(_secret_violation(6), idx)
+
+
+def test_lineless_violation_suppressed_by_named_directive_anywhere():
+    # File-level violations have no line a directive could target, so the
+    # named directive keeps its same-file scope for them.
+    from chameleon_mcp.violation_class import build_ignore_index, is_violation_ignored
+
+    content = "// chameleon-ignore naming-convention-violation\ninterface Props {}\n"
+    idx = build_ignore_index(content, language="typescript")
+    assert is_violation_ignored(_naming_violation(), idx)
+
+
+def test_bare_directive_with_trailing_prose_does_not_activate():
+    assert ignored_rules("// chameleon-ignore this line because reasons\n") is None
+
+
+def test_directive_in_template_literal_does_not_activate():
+    from chameleon_mcp.violation_class import build_ignore_index
+
+    content = "const t = `\n// chameleon-ignore secret-detected-in-content\n`;\n"
+    assert build_ignore_index(content, language="typescript") is None
+
+
+def test_directive_in_ruby_heredoc_does_not_activate():
+    from chameleon_mcp.violation_class import build_ignore_index
+
+    content = "doc = <<~TEXT\n  # chameleon-ignore eval-call\nTEXT\n"
+    assert build_ignore_index(content, language="ruby") is None

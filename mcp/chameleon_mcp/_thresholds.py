@@ -187,6 +187,15 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # violation rate is trustworthy. A rate drawn from two models swings wildly on
     # one exception; below the floor the rule stays silent rather than guess.
     "COCHANGE_MIN_TRIGGER_FILES": 8,
+    # Lines longer than this skip the detect-secrets per-line pass. On a
+    # token-dense single line (minified bundle, generated const map) the keyword
+    # detector yields thousands of candidates and each one re-scans the whole
+    # line through the allowlist regex set, turning one 100KB line into tens of
+    # seconds. Hand-written code stays far below this length, and the
+    # deterministic fallback patterns (the only source of block-eligible secret
+    # kinds) still scan the full content linearly, so hard secrets on long lines
+    # remain caught.
+    "SECRET_SCAN_MAX_LINE_LEN": 2_000,
     # Upper bound on committed files scanned when measuring a co-change rule's repo
     # violation rate, so the disable check on a huge repo stays a bounded glob walk.
     "COCHANGE_MAX_FILES_SCANNED": 4000,

@@ -151,9 +151,11 @@ def test_cooldown_skips_reverification(tmp_path: Path):
 
     import hashlib
 
+    from chameleon_mcp.optouts import _safe_session_marker
+
     file_path = str(ts_file)
     file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
-    marker = marker_dir / f".verify_seen.{file_hash}"
+    marker = marker_dir / f".verify_seen.{_safe_session_marker('s1')}.{file_hash}"
     # The dedup only holds for unchanged content: the marker body records the
     # digest of the content that was already verified.
     marker.write_text(hashlib.sha256(b"x").hexdigest()[:16], encoding="utf-8")
@@ -181,6 +183,79 @@ def test_cooldown_skips_reverification(tmp_path: Path):
 
     ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
     assert "already verified" in ctx
+
+
+def test_cooldown_is_session_scoped(tmp_path: Path):
+    # A marker stamped by one session must not swallow another session's
+    # verification: the cooldown means "this session already verified this
+    # content". A shared marker let an advisory pass in session A suppress
+    # the lint (including the enforce-mode block path) for session B.
+    repo_id = "test_repo_id"
+    marker_dir = tmp_path / repo_id
+    marker_dir.mkdir()
+
+    ts_file = tmp_path / "x.ts"
+    ts_file.write_text("x", encoding="utf-8")
+
+    import hashlib
+
+    from chameleon_mcp.optouts import _safe_session_marker
+
+    file_path = str(ts_file)
+    file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
+    other = marker_dir / f".verify_seen.{_safe_session_marker('other-session')}.{file_hash}"
+    other.write_text(hashlib.sha256(b"x").hexdigest()[:16], encoding="utf-8")
+
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+                {"data": {"violations": []}},
+            ],
+        ),
+    ):
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": file_path},
+                "session_id": "s1",
+            }
+        )
+
+    # Fresh verification ran (clean -> empty emit), not the dedup short-circuit.
+    assert result == {}
+    # And this session stamped its own marker alongside the other session's.
+    mine = marker_dir / f".verify_seen.{_safe_session_marker('s1')}.{file_hash}"
+    assert mine.exists()
+
+
+def test_stale_verify_markers_pruned(tmp_path: Path):
+    # Markers accumulate one per (session, path) pair; anything a day past its
+    # cooldown is dead weight and gets swept when a new marker is stamped.
+    import os
+    import time as _time
+
+    from chameleon_mcp.hook_helper import _write_verify_marker
+
+    marker_dir = tmp_path / "repo"
+    marker_dir.mkdir()
+    stale = marker_dir / ".verify_seen.deadbeef.cafe"
+    stale.write_text("old", encoding="utf-8")
+    two_days_ago = _time.time() - 2 * 86_400
+    os.utime(stale, (two_days_ago, two_days_ago))
+    fresh = marker_dir / ".verify_seen.aaaa.bbbb"
+    fresh.write_text("new", encoding="utf-8")
+
+    _write_verify_marker(marker_dir / ".verify_seen.cccc.dddd", "digest")
+
+    assert not stale.exists()
+    assert fresh.exists()
 
 
 def test_hook_event_name_is_posttool(tmp_path: Path):
@@ -794,6 +869,96 @@ def test_corrections_exhausted_emits_advisory(tmp_path: Path):
     assert "additionalContext" in hook_output
     assert "corrections exhausted" in hook_output["additionalContext"]
     mock_lint.assert_not_called()
+
+
+def _run_exhausted_with_content(tmp_path: Path, content: str) -> tuple[dict, object]:
+    """Drive the corrections-exhausted path with the given file content.
+
+    Returns (hook result, FileState after the run) so callers can assert on
+    both the emitted note and the persisted enforcement state.
+    """
+    repo_id = "test_repo_id"
+    (tmp_path / repo_id).mkdir(exist_ok=True)
+
+    ts_file = tmp_path / "test.ts"
+    ts_file.write_text(content, encoding="utf-8")
+
+    from chameleon_mcp.enforcement import (
+        MAX_CORRECTIONS_PER_FILE,
+        EnforcementState,
+        FileState,
+        load_state,
+        save_state,
+    )
+
+    state = EnforcementState()
+    fs = FileState(
+        correction_count=MAX_CORRECTIONS_PER_FILE,
+        last_violation_at=time.time(),
+    )
+    state.files[str(ts_file)] = fs
+    save_state(state, tmp_path / repo_id, "s1")
+
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=Path("/repo")),
+        patch("chameleon_mcp.profile.trust.trust_state_for", return_value=MagicMock()),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch("chameleon_mcp.optouts.is_chameleon_suppressed", return_value=None),
+        patch("chameleon_mcp.hook_helper._plugin_data_dir", return_value=tmp_path),
+        patch(
+            "chameleon_mcp.daemon_client.call",
+            side_effect=[
+                {"data": {"archetype": "component"}},
+            ],
+        ),
+    ):
+        result = _run_verify(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": str(ts_file)},
+                "session_id": "s1",
+            }
+        )
+
+    after = load_state(tmp_path / repo_id, "s1").files[str(ts_file)]
+    return result, after
+
+
+def test_corrections_exhausted_still_arms_backstop_on_secret(tmp_path: Path):
+    # The loop breaker suppresses advisory feedback, not security tracking: a
+    # credential introduced after corrections ran out used to skip both the
+    # inline lint AND the Stop backstop (nothing set blockable_unresolved).
+    result, fs = _run_exhausted_with_content(tmp_path, 'const key = "AKIAIOSFODNN7EXAMPLE";\n')
+
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "corrections exhausted" in ctx
+    assert "credential" in ctx
+    assert fs.blockable_unresolved is True
+
+
+def test_corrections_exhausted_secret_respects_inline_ignore(tmp_path: Path):
+    # An inline ignore directive for the secret rule downgrades the hit on the
+    # exhausted path the same way the full lint path honors it.
+    result, fs = _run_exhausted_with_content(
+        tmp_path,
+        'const key = "AKIAIOSFODNN7EXAMPLE"; // chameleon-ignore secret-detected-in-content\n',
+    )
+
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "corrections exhausted" in ctx
+    assert "credential" not in ctx
+    assert fs.blockable_unresolved is False
+
+
+def test_corrections_exhausted_clean_content_does_not_arm(tmp_path: Path):
+    # No secret in the exhausted edit: state stays unarmed and the note stays
+    # the plain corrections-exhausted message.
+    result, fs = _run_exhausted_with_content(tmp_path, "export const x = 1;\n")
+
+    ctx = result.get("hookSpecificOutput", {}).get("additionalContext", "")
+    assert "corrections exhausted" in ctx
+    assert "credential" not in ctx
+    assert fs.blockable_unresolved is False
 
 
 def test_clean_after_violation_emits_archetype_clean(tmp_path: Path):

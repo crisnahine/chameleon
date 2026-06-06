@@ -101,9 +101,13 @@ def _write_source(repo: Path, rel: str, src: str) -> Path:
     return path
 
 
-def _verify_seen_marker(tmp_path: Path, repo_id: str, file_path: str) -> Path:
+def _verify_seen_marker(
+    tmp_path: Path, repo_id: str, file_path: str, session_id: str = "sess-deviation"
+) -> Path:
+    from chameleon_mcp.optouts import _safe_session_marker
+
     file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
-    return tmp_path / repo_id / f".verify_seen.{file_hash}"
+    return tmp_path / repo_id / f".verify_seen.{_safe_session_marker(session_id)}.{file_hash}"
 
 
 def _run_verify(
@@ -333,15 +337,9 @@ def test_tone_strictly_escalates_across_levels(tmp_path: Path):
     repo, repo_id, loaded = _build_repo(tmp_path)
     cand = _write_source(repo, "src/Ladder.tsx", VIOLATING_SRC)
     fp = str(cand)
-    marker = _verify_seen_marker(tmp_path, repo_id, fp)
-
-    def _clear_cooldown() -> None:
-        # Each prior run drops a fresh .verify_seen marker; the per-level
-        # cooldown TTL would otherwise short-circuit the next run into the
-        # "already verified" note instead of re-linting. A real second edit
-        # arrives after the cooldown elapses; clearing the marker models that.
-        if marker.exists():
-            marker.unlink()
+    # Each run uses a distinct session, and the cooldown marker is session-
+    # scoped, so no run's .verify_seen stamp can short-circuit the next into
+    # the "already verified" note instead of re-linting.
 
     # Fresh (no prior state) -> escalates to L0 tone.
     fresh = _ctx(
@@ -355,7 +353,6 @@ def test_tone_strictly_escalates_across_levels(tmp_path: Path):
         )
     )
 
-    _clear_cooldown()
     _seed_file_state(tmp_path, repo_id, "ladder-l0", fp, level=LEVEL_L0)
     at_l0 = _ctx(
         _run_verify(
@@ -368,7 +365,6 @@ def test_tone_strictly_escalates_across_levels(tmp_path: Path):
         )
     )
 
-    _clear_cooldown()
     _seed_file_state(tmp_path, repo_id, "ladder-l1", fp, level=LEVEL_L1)
     at_l1 = _ctx(
         _run_verify(
@@ -414,7 +410,7 @@ def test_cooldown_suppresses_repeat_then_emits_dedup_note(tmp_path: Path):
     cand = _write_source(repo, "src/Cool.tsx", VIOLATING_SRC)
     fp = str(cand)
 
-    marker = _verify_seen_marker(tmp_path, repo_id, fp)
+    marker = _verify_seen_marker(tmp_path, repo_id, fp, session_id="s-cooldown")
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(_content_digest(VIOLATING_SRC), encoding="utf-8")
 
@@ -442,7 +438,7 @@ def test_cooldown_reverifies_when_content_changed_within_window(tmp_path: Path):
     cand = _write_source(repo, "src/Cool2.tsx", VIOLATING_SRC)
     fp = str(cand)
 
-    marker = _verify_seen_marker(tmp_path, repo_id, fp)
+    marker = _verify_seen_marker(tmp_path, repo_id, fp, session_id="s-cooldown-changed")
     marker.parent.mkdir(parents=True, exist_ok=True)
     # The previously verified content differs from what is on disk now.
     marker.write_text(_content_digest("export const fine = 1;\n"), encoding="utf-8")
@@ -468,7 +464,7 @@ def test_legacy_empty_marker_forces_reverification(tmp_path: Path):
     cand = _write_source(repo, "src/Cool3.tsx", VIOLATING_SRC)
     fp = str(cand)
 
-    marker = _verify_seen_marker(tmp_path, repo_id, fp)
+    marker = _verify_seen_marker(tmp_path, repo_id, fp, session_id="s-cooldown-legacy")
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.touch()
 
@@ -493,7 +489,7 @@ def test_violation_writes_verify_seen_marker(tmp_path: Path):
     repo, repo_id, loaded = _build_repo(tmp_path)
     cand = _write_source(repo, "src/Mark.tsx", VIOLATING_SRC)
     fp = str(cand)
-    marker = _verify_seen_marker(tmp_path, repo_id, fp)
+    marker = _verify_seen_marker(tmp_path, repo_id, fp, session_id="s-mark")
 
     assert not marker.exists()
 

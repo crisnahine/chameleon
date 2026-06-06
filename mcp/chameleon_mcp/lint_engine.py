@@ -1859,8 +1859,6 @@ def scan_style_rules(
     return violations
 
 
-_CHAMELEON_IGNORE_RE = re.compile(r"//\s*chameleon-ignore\s+([\w-]+)")
-_CHAMELEON_IGNORE_RUBY_RE = re.compile(r"#\s*chameleon-ignore\s+([\w-]+)")
 _TS_IMPORT_FROM_RE = re.compile(r"import\s+.*?\bfrom\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
 
 
@@ -2621,15 +2619,16 @@ def lint_conventions(
     if not conventions:
         return []
 
-    ignored_rules: set[str] = set()
-    for m in _CHAMELEON_IGNORE_RE.finditer(content):
-        ignored_rules.add(m.group(1))
-    # Ruby directives live in `# ...` comments. Read them up front — before the
-    # import-preference scan, which can fire on Ruby — not just before the
-    # file-naming check.
-    if language == "ruby":
-        for m in _CHAMELEON_IGNORE_RUBY_RE.finditer(content):
-            ignored_rules.add(m.group(1))
+    # Inline-ignore directives gate whole checks here; the violations these
+    # scans emit carry no line numbers, so the file-wide directive scope is
+    # the one that applies. Parsed by the shared violation_class parser so a
+    # directive embedded in a string literal, or prose that merely mentions
+    # one, does not switch a check off.
+    from chameleon_mcp.violation_class import ignored_rules as _parse_ignored_rules
+
+    ignored_rules: set[str] = (
+        _parse_ignored_rules(content, file_path=file_path, language=language) or set()
+    )
 
     # Run the NAMING + INHERITANCE violation scans against a strings/comments-
     # stripped copy so a class/interface decl inside a heredoc / template string

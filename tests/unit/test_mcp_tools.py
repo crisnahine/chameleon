@@ -796,3 +796,46 @@ def test_get_rules_parse_warnings_sanitized(trusted_repo):
     # The per-source block carries the same sanitized string.
     rules_map = dict(res["data"]["rules"])
     assert "</chameleon-context>" not in rules_map["rubocop"]["parse_warning"]
+
+
+def test_get_drift_status_flags_outdated_schema(trusted_repo):
+    # The loader only rejects a NEWER schema; an older one loads silently even
+    # though the clustering algorithm changed underneath it. Drift status is
+    # the surface that tells the user to re-derive.
+    cham = trusted_repo / ".chameleon"
+    profile = json.loads((cham / "profile.json").read_text())
+    profile["schema_version"] = 4
+    (cham / "profile.json").write_text(json.dumps(profile))
+
+    data = tools.get_drift_status(str(trusted_repo))["data"]
+    assert data["schema_outdated"] is True
+    assert "schema" in data["recommended_action"]
+
+
+def test_get_drift_status_current_schema_not_flagged(trusted_repo):
+    from chameleon_mcp.profile.schema import CURRENT_SCHEMA_VERSION
+
+    cham = trusted_repo / ".chameleon"
+    profile = json.loads((cham / "profile.json").read_text())
+    profile["schema_version"] = CURRENT_SCHEMA_VERSION
+    (cham / "profile.json").write_text(json.dumps(profile))
+
+    data = tools.get_drift_status(str(trusted_repo))["data"]
+    assert data["schema_outdated"] is False
+
+
+def test_merge_profiles_binary_input_fails_cleanly(tmp_path, monkeypatch):
+    # A binary blob routed through the merge driver must produce the same
+    # clean failure as non-JSON text, not a UnicodeDecodeError traceback.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    ours = tmp_path / "ours.json"
+    theirs = tmp_path / "theirs.json"
+    ours.write_bytes(b"\xff\xfe\x00\x01binary")
+    theirs.write_bytes(b"\xff\xfe\x00\x01binary")
+
+    result = tools.merge_profiles("repo", "", str(ours), str(theirs))
+    data = result.get("data", result)
+    assert data["status"] == "failed"
+    assert "UTF-8" in data["error"]
+    # OURS is untouched so git keeps the conflict for manual resolution.
+    assert ours.read_bytes() == b"\xff\xfe\x00\x01binary"

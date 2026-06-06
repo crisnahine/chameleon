@@ -143,3 +143,39 @@ def test_gitlab_token_hard_kind_tagged():
     violations = [v.to_dict() for v in scan_secrets(f'GITLAB_TOKEN = "{token}".freeze')]
     tag_secret_hardness(violations)
     assert any(v.get("secret_hard") for v in violations)
+
+
+def test_long_line_skipped_by_detect_secrets_pass():
+    # A token-dense single line (minified bundle, generated const map) makes
+    # detect-secrets re-scan the whole line per candidate — O(candidates x
+    # length), tens of seconds at 100KB. Lines past the cap are skipped by the
+    # per-line pass entirely.
+    import time
+
+    line = "".join(f"const v{i}={i};" for i in range(5000))
+    start = time.monotonic()
+    hits = _try_detect_secrets(line)
+    elapsed = time.monotonic() - start
+    assert hits == []
+    assert elapsed < 2.0, f"long-line scan took {elapsed:.1f}s"
+
+
+def test_hard_secret_on_long_line_still_caught():
+    # Skipping a long line in the detect-secrets pass must not lose the
+    # deterministic kinds: the fallback patterns scan the full content.
+    long_line = "const pad=1;" * 500 + 'const k = "AKIAIOSFODNN7EXAMPLE";' + "const pad=2;" * 500
+    assert "\n" not in long_line
+    hits = scan_for_secrets(long_line)
+    assert any(h["type"] == "aws_access_key" for h in hits)
+
+
+def test_line_at_cap_still_scanned_by_detect_secrets():
+    # The cap excludes only pathological lines; a line exactly at the cap (and
+    # any realistic hand-written line) still goes through detect-secrets.
+    from chameleon_mcp._thresholds import threshold_int
+
+    cap = threshold_int("SECRET_SCAN_MAX_LINE_LEN")
+    line = ('aws_key = "AKIAIOSFODNN7EXAMPLE"' + " " * cap)[:cap]
+    hits = _try_detect_secrets(line)
+    assert hits is not None
+    assert any(h["type"] == "AWS Access Key" for h in hits)

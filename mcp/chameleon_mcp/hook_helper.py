@@ -715,6 +715,27 @@ def _write_verify_marker(marker: Path, content_digest: str) -> None:
             os.chmod(marker, 0o600)
         except OSError:
             pass
+        _prune_stale_verify_markers(marker.parent)
+    except OSError:
+        pass
+
+
+def _prune_stale_verify_markers(repo_data_dir: Path, max_age_seconds: int = 86_400) -> None:
+    """Drop verify markers long past any cooldown TTL.
+
+    Markers are keyed per session and per file, so they accumulate one tiny
+    file per (session, path) pair. Their useful life is the cooldown window
+    (seconds); anything a day old is dead weight. Best-effort — a racing
+    unlink or permission error never disturbs the verify path.
+    """
+    try:
+        cutoff = time.time() - max_age_seconds
+        for stale in repo_data_dir.glob(".verify_seen.*"):
+            try:
+                if stale.stat().st_mtime < cutoff:
+                    stale.unlink(missing_ok=True)
+            except OSError:
+                continue
     except OSError:
         pass
 
@@ -1329,7 +1350,7 @@ def preflight_and_advise() -> int:
                     )
                     from chameleon_mcp.violation_class import ignored_rules
 
-                    ign = ignored_rules(proposed) or set()
+                    ign = ignored_rules(proposed, file_path=file_path) or set()
                     if banned and ("" in ign or "import-preference-violation" in ign):
                         # The directive bypasses the deny. Record the override so
                         # the audit sees a bypass at the deny gate too, not only
@@ -1784,9 +1805,10 @@ def _record_bash_write_mutations(
         try:
             from chameleon_mcp.enforcement_calibration import active_block_rules
             from chameleon_mcp.violation_class import (
+                build_ignore_index,
                 hard_class_violations,
-                ignored_rules,
                 is_archetype_independent,
+                is_violation_ignored,
             )
 
             active = active_block_rules(repo_root / ".chameleon")
@@ -1796,9 +1818,9 @@ def _record_bash_write_mutations(
             # as blockable here -- matching the backstop's no-archetype re-lint.
             if record_archetype == _NO_ARCHETYPE_LABEL:
                 hard = [v for v in hard if is_archetype_independent(v.get("rule"))]
-            ign = ignored_rules(content) or set()
-            if ign:
-                hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
+            idx = build_ignore_index(content, file_path=file_path)
+            if idx is not None:
+                hard = [v for v in hard if not is_violation_ignored(v, idx)]
         except Exception:
             hard = []
 
@@ -2189,15 +2211,14 @@ def _posttool_no_archetype_advisory(
         hard = [
             v for v in violations if is_hard_class(v) and is_archetype_independent(v.get("rule"))
         ]
-        ign = None
         try:
-            from chameleon_mcp.violation_class import ignored_rules
+            from chameleon_mcp.violation_class import build_ignore_index, is_violation_ignored
 
-            ign = ignored_rules(_read_file_for_ignore(file_path))
+            idx = build_ignore_index(_read_file_for_ignore(file_path), file_path=file_path)
+            if idx is not None:
+                hard = [v for v in hard if not is_violation_ignored(v, idx)]
         except Exception:
-            ign = None
-        if ign:
-            hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
+            pass
     except Exception:
         hard = []
 
@@ -2235,6 +2256,34 @@ def _posttool_no_archetype_advisory(
         return True
     except Exception:
         return False
+
+
+def _content_has_hard_secret(content: str, file_path: str | None = None) -> bool:
+    """True when a deterministic-hard secret kind fires on this content.
+
+    Only the hard kinds count — the same set the Stop backstop blocks — and an
+    inline chameleon-ignore directive for the secret rule is honored, matching
+    the filtering the full lint path applies.
+    """
+    from chameleon_mcp.lint_engine import scan_secrets
+    from chameleon_mcp.violation_class import (
+        build_ignore_index,
+        is_hard_class,
+        is_violation_ignored,
+        tag_secret_hardness,
+    )
+
+    violations = [v.to_dict() for v in scan_secrets(content)]
+    if not violations:
+        return False
+    tag_secret_hardness(violations)
+    hard = [v for v in violations if is_hard_class(v)]
+    if not hard:
+        return False
+    idx = build_ignore_index(content, file_path=file_path)
+    if idx is not None:
+        hard = [v for v in hard if not is_violation_ignored(v, idx)]
+    return bool(hard)
 
 
 def _read_file_for_ignore(file_path: str) -> str:
@@ -2428,6 +2477,28 @@ def posttool_verify() -> int:
                 if file_state.correction_count >= MAX_CORRECTIONS_PER_FILE:
                     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
+                    # The breaker suppresses advisory feedback, not security
+                    # tracking: an edit landing after corrections ran out could
+                    # otherwise introduce a credential that neither blocks
+                    # inline (no lint runs) nor at turn end (nothing armed the
+                    # backstop). The deterministic secret scan is cheap and
+                    # pure, so run just that and arm the backstop on a hit.
+                    secret_note = ""
+                    try:
+                        if _content_has_hard_secret(content, file_path):
+                            record_violation(
+                                file_state,
+                                now=_started,
+                                archetype=archetype_name,
+                                hard_class=True,
+                            )
+                            secret_note = (
+                                "A hardcoded credential was detected in this "
+                                "edit — remove it before ending the turn.\n"
+                            )
+                    except Exception:
+                        pass
+
                     safe_path = sanitize_for_chameleon_context(file_path)
                     _emit_posttool_context(
                         "<chameleon-context>\n"
@@ -2435,6 +2506,7 @@ def posttool_verify() -> int:
                         "Chameleon has verified this file 10 times recently. "
                         "Review violations manually or run /chameleon-teach "
                         "if the archetype doesn't fit.\n"
+                        f"{secret_note}"
                         "</chameleon-context>"
                     )
                     try:
@@ -2445,8 +2517,15 @@ def posttool_verify() -> int:
             except Exception:
                 pass
 
+        from chameleon_mcp.optouts import _safe_session_marker
+
+        # Keyed by session as well as path: the cooldown means "this session
+        # already verified this content", not "some session somewhere did".
+        # A shared marker let an advisory pass in one session swallow the
+        # lint — including the enforce-mode block path — for every other
+        # session editing the same bytes inside the TTL.
         file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
-        marker = repo_data_dir / f".verify_seen.{file_hash}"
+        marker = repo_data_dir / (f".verify_seen.{_safe_session_marker(session_id)}.{file_hash}")
         content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
         cooldown_ttl = _VERIFY_SEEN_TTL_SECONDS
@@ -2543,33 +2622,35 @@ def posttool_verify() -> int:
             try:
                 from chameleon_mcp.enforcement_calibration import active_block_rules
                 from chameleon_mcp.violation_class import (
+                    build_ignore_index,
                     hard_class_violations,
-                    ignored_rules,
                     is_deferred_to_turn_end,
+                    is_violation_ignored,
                 )
 
                 active = active_block_rules(repo_root / ".chameleon")
                 hard = hard_class_violations(violations, active)
                 # An inline `chameleon-ignore <rule>` directive (or a bare one)
-                # downgrades the matching rule to advisory. The lint layer already
-                # suppresses some rules on the directive, but the AST-query rules
-                # (e.g. jsx-presence-mismatch) reach here intact. Filter the hard
+                # downgrades the matching rule to advisory on the annotated
+                # line. The lint layer already suppresses some rules on the
+                # directive, but the AST-query rules (e.g.
+                # jsx-presence-mismatch) reach here intact. Filter the hard
                 # set itself (not only blockable_now) so the cached
                 # blockable_unresolved flag the Stop backstop reads is cleared
                 # too; otherwise an inline-ignored rule still arms the backstop.
-                ign = ignored_rules(content) or set()
-                if ign:
-                    overridden = [v for v in hard if {"", v.get("rule")} & ign]
+                idx = build_ignore_index(content, file_path=file_path)
+                if idx is not None:
+                    overridden = [v for v in hard if is_violation_ignored(v, idx)]
                     inline_overridden_hard = bool(overridden)
-                    hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
+                    hard = [v for v in hard if not is_violation_ignored(v, idx)]
                     # An inline directive dropping a block-eligible rule is
                     # otherwise invisible after the turn. Record each bypass so
                     # the override rate is auditable: a metric counter (paired
                     # with the would_block stream) and a durable drift.db row.
-                    # A bare directive (the empty string is in the ignore set)
-                    # is flagged separately because it downgrades every rule at
-                    # once rather than annotating one intentional deviation.
-                    blanket = "" in ign
+                    # A bare directive (the empty-string rule) is flagged
+                    # separately because it downgrades every rule at once
+                    # rather than annotating one intentional deviation.
+                    blanket = "" in idx.all_rules()
                     _record_overrides(
                         repo_id,
                         overridden,
@@ -2682,7 +2763,7 @@ def posttool_verify() -> int:
                             f"chameleon blocks this edit: {safe_rules}. "
                             f"Fix before continuing: {safe_msgs}. "
                             f"Override with `// chameleon-ignore <rule>` "
-                            f"if this is intentional.",
+                            f"on the offending line if this is intentional.",
                             "<chameleon-context>\n"
                             f"[🦎 chameleon: BLOCKED — {safe_rules}]\n"
                             f"{safe_msgs}\n"
@@ -2981,9 +3062,10 @@ def _stop_file_still_blockable(
             match_quality = data.get("match_quality")
 
         from chameleon_mcp.violation_class import (
+            build_ignore_index,
             hard_class_violations,
-            ignored_rules,
             is_archetype_independent,
+            is_violation_ignored,
         )
 
         if not archetype_name:
@@ -3001,9 +3083,9 @@ def _stop_file_still_blockable(
 
                 active = active_block_rules(repo_root / ".chameleon")
             hard = hard_class_violations(indep, active)
-            ign = ignored_rules(content) or set()
-            if ign:
-                hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
+            idx = build_ignore_index(content, file_path=file_path)
+            if idx is not None:
+                hard = [v for v in hard if not is_violation_ignored(v, idx)]
             enforceable = [v for v in hard if is_archetype_independent(v.get("rule"))]
             if isinstance(out_rules, list):
                 out_rules.extend(v.get("rule") for v in enforceable if v.get("rule"))
@@ -3020,9 +3102,9 @@ def _stop_file_still_blockable(
 
             active = active_block_rules(repo_root / ".chameleon")
         hard = hard_class_violations(violations, active)
-        ign = ignored_rules(content) or set()
-        if ign:
-            hard = [v for v in hard if not ({"", v.get("rule")} & ign)]
+        idx = build_ignore_index(content, file_path=file_path)
+        if idx is not None:
+            hard = [v for v in hard if not is_violation_ignored(v, idx)]
         gate_ok = (match_quality == "ast") and (confidence_band in ("high", "medium"))
         # Archetype-dependent rules honor the per-edit escalation ladder: they
         # only refuse the turn once the file has reached L2, so a single
@@ -3126,7 +3208,7 @@ def _idiom_review_gate(
                 content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
             except OSError:
                 continue
-            ign = ignored_rules(content) or set()
+            ign = ignored_rules(content, file_path=path) or set()
             if "" in ign or "idioms" in ign:
                 continue
             edited.append(path)
@@ -3345,7 +3427,7 @@ def _correctness_judge_gate(
                 content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
             except OSError:
                 continue
-            if "" in (ignored_rules(content) or set()):
+            if "" in (ignored_rules(content, file_path=path) or set()):
                 continue
             edited.append(path)
         if not edited:
@@ -3473,7 +3555,7 @@ def _stale_test_advisory_lines(
                 content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
             except OSError:
                 continue
-            ign = ignored_rules(content) or set()
+            ign = ignored_rules(content, file_path=path) or set()
             if "" in ign or "tests" in ign or "stale-test" in ign:
                 continue
             edited_abs.add(path)
@@ -3613,7 +3695,7 @@ def _changeset_completeness_lines(
                 content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
             except OSError:
                 continue
-            ign = ignored_rules(content) or set()
+            ign = ignored_rules(content, file_path=path) or set()
             if "" in ign or "cochange" in ign:
                 continue
             edited_abs.add(path)
@@ -3748,7 +3830,7 @@ def _crossfile_existence_advisory_lines(
                 continue
             if detect_language(str(p)) != "typescript":
                 continue
-            ign = ignored_rules(content) or set()
+            ign = ignored_rules(content, file_path=path) or set()
             if "" in ign or "removed-export-breaks-importers" in ign:
                 continue
             target_key = module_key_for_path(p, repo_root)
@@ -4094,7 +4176,8 @@ def stop_backstop() -> int:
                 "decision": "block",
                 "reason": (
                     f"chameleon: unresolved convention violations remain in {names}. "
-                    f"Fix them before ending, or add `// chameleon-ignore <rule>`."
+                    f"Fix them before ending, or add `// chameleon-ignore <rule>` "
+                    f"on the offending line."
                 ),
             }
         )
