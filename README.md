@@ -77,6 +77,7 @@ The [Quickstart](#quickstart) above has the two commands for Claude Code. For th
 | `/chameleon-refresh` | Re-analyze and update profile after team changes |
 | `/chameleon-status` | View profile state, drift score, plugin health |
 | `/chameleon-teach` | Capture a missed pattern as a team idiom |
+| `/chameleon-auto-idiom` | Derive novel team idioms from repo evidence (append-only, deduplicated against the profile) |
 | `/chameleon-trust` | Approve a committed profile for your user |
 | `/chameleon-disable` | Suppress chameleon for the rest of this session |
 | `/chameleon-pause-15m` | Pause for 15 minutes (auto-resume) |
@@ -84,7 +85,7 @@ The [Quickstart](#quickstart) above has the two commands for Claude Code. For th
 | `/chameleon-journey` | Run the end-to-end journey test harness |
 | `/chameleon-pr-review` | Review a branch/PR against the repo's conventions and task intent |
 
-`using-chameleon` is the eleventh skill — it auto-fires on `SessionStart` and orients the model.
+`using-chameleon` is one more skill on top of these — it auto-fires on `SessionStart` and orients the model.
 
 ### Hooks
 
@@ -98,7 +99,7 @@ Five hooks drive the runtime:
 
 ### MCP server
 
-`chameleon-mcp` (Python, FastMCP, stdio transport) exposes 20 tools: `detect_repo`, `get_archetype`, `get_pattern_context`, `get_canonical_excerpt`, `get_rules`, `lint_file`, `get_drift_status`, `refresh_repo`, `bootstrap_repo`, `list_profiles`, `merge_profiles`, `teach_profile`, `teach_profile_structured`, `trust_profile`, `disable_session`, `pause_session`, `propose_archetype_renames`, `apply_archetype_renames`, `daemon_status`, `doctor`.
+`chameleon-mcp` (Python, FastMCP, stdio transport) exposes 34 tools, including `detect_repo`, `get_archetype`, `get_pattern_context`, `get_canonical_excerpt`, `get_rules`, `lint_file`, `get_drift_status`, `refresh_repo`, `bootstrap_repo`, `list_profiles`, `merge_profiles`, `teach_profile`, `teach_profile_structured`, `teach_competing_import`, `get_idiom_coverage`, `check_idiom_candidates`, `trust_profile`, `disable_session`, `pause_session`, `propose_archetype_renames`, `apply_archetype_renames`, `daemon_status`, `doctor`, plus the review-gate tools (`query_symbol_importers`, `get_crossfile_context`, `get_duplication_candidates`, `get_shadow_report`, `get_override_audit`, `get_longitudinal_signals`, `get_review_history`, `record_review_verdict`, `explain_edit`, `dep_audit`, `get_status`). The full table lives in [docs/architecture.md](./docs/architecture.md).
 
 ### Opt-out hierarchy
 

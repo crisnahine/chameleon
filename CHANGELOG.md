@@ -4,6 +4,29 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-06-06
+
+Adds `/chameleon-auto-idiom`: derive legit, high-value team idioms from repo evidence without ever duplicating what chameleon already captures. Validated end-to-end against two real production-repo clones (TypeScript + Rails), including a second-pass re-run against a populated profile to prove the no-repeats guarantee, then hardened by three adversarial bug-bounty rounds (find, fix-verify, final) with independent skeptic reproduction, fixing 30 issues before release. Dedup is pinned by a 16-paraphrase / 17-novel probe across both real repos: 16/16 reworded duplicates caught, 17/17 genuinely-novel idioms kept.
+
+### Added
+
+- **`/chameleon-auto-idiom` skill**: mines the repo for Tier-2 patterns AST analysis cannot infer (mandatory wrappers with a why, domain vocabulary, auth invariants, transaction/money handling, cross-cutting conventions), backs every candidate with grep-verified occurrence counts, gates the batch deterministically, presents survivors for approval, and writes via the append-only structured teach path. Existing idioms are never modified, removed, or deprecated by this skill; conflicts are surfaced and require an explicit user decision.
+- **`get_idiom_coverage` MCP tool** (read-only): the already-covered map — active/deprecated idioms with summaries, principle lines, preferred/competing imports, file-naming casing, inheritance bases, error-handling shape, non-empty convention kinds, lint sources, archetypes. Fail-open per artifact with `checks_skipped`.
+- **`check_idiom_candidates` MCP tool** (read-only): per-candidate novelty verdicts (`novel` / `duplicate` / `covered` / `invalid`) with reasons and quality warnings. Detects slug collisions, near-identical text against existing idioms (stemmed token similarity, so inflected rewordings can't evade the gate), in-batch self-duplication, and restatements of principles, competing-import pairs, naming/inheritance conventions, or lint/format rules. 34 tools total.
+- **Init/refresh offers**: `/chameleon-init` now offers `/chameleon-auto-idiom` after bootstrap (a fresh profile has zero idioms); `/chameleon-refresh` checks `existing_idioms.active_count` and offers it only when the profile has none.
+- **`tests/qa_auto_idiom.py` battery**: read-only probes built from each repo's own coverage data, plus a write-path lifecycle (teach → recheck → append-only proof) on a temp copy of the profile.
+
+### Security
+
+- **Trust gate on the idiom tools**: `get_idiom_coverage` and `check_idiom_candidates` are model-callable, so they now withhold all profile-derived prose (returning `status: "untrusted"`) for an untrusted profile, matching `get_rules` / `get_pattern_context`. An attacker-planted, committed-but-untrusted `.chameleon` profile no longer reaches model context through these tools.
+- **Sanitization at the emit boundary**: idiom summaries, slugs, and principle lines pass through `sanitize_for_chameleon_context` before relay, neutralizing tag-boundary, bidi, and control-byte tokens.
+
+### Fixed
+
+- The novelty gate reads the working-tree `idioms.md` (not the canonical-ref pin), so its dedup matches where `teach_profile_structured` writes; an unreadable (over-cap / directory / corrupt) `idioms.md` and a non-object `conventions.json` / `rules.json` / `archetypes.json` are now reported in `checks_skipped` instead of silently collapsing to "no idioms".
+- `covered-by-lint-rules` and `covered-by-naming` no longer reject genuinely novel architectural idioms that merely mention a linter or the word "file" in passing; the PascalCase/camelCase casing-synonym lookup now resolves. The gate validates optional fields (`archetype` / `example` / `counterexample`) so a `novel` verdict always teaches without a surprise refusal, and `teach_profile_structured` fails soft (typed envelope, no `TypeError`) on a non-string example/counterexample. `_find_all_slug_sections` is fence-aware, matching the gate.
+- `.chameleon/idioms.md` routes to the chameleon merge driver (`merge=chameleon`), which unions idioms by slug, so two branches that each taught idioms keep both sets on merge. The driver detects the markdown file and merges it structurally; git's built-in `merge=union` is deliberately NOT used because it line-unions the fenced code blocks and corrupts the file. Without the driver registered, git falls back to visible conflict markers (recoverable), never silent corruption.
+
 ## [2.2.0] - 2026-06-05
 
 Re-baselines chameleon from review complement to machine review gate: 31 capabilities scoped by a design panel, implemented in four phased waves, then hardened by a real-use QA campaign on clones of two production repos (12 charters, 3 rounds, 25+ confirmed defects all fixed and re-verified) and an effectiveness audit that replayed real merged PRs against their human review comments. Validated by the full journey harness and the complete CI matrix including Windows.

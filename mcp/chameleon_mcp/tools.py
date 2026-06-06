@@ -5093,12 +5093,11 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     on conflict (ties broken by alphabetic witness path), and write the
     result to `ours` so the merge driver can stage it.
 
-    The base argument is currently used only for conflict-detection logging;
-    canonical-correct three-way merging requires re-bootstrap from the merged
-    repo state, which the user can trigger with /chameleon-refresh after
-    accepting the merge.
+    The base argument is the merge base: used by the idioms.md union path and
+    otherwise only for conflict-detection logging. Canonical-correct three-way
+    JSON merging requires re-bootstrap from the merged repo state, which the
+    user can trigger with /chameleon-refresh after accepting the merge.
     """
-    del base
 
     ours_path = Path(ours)
     theirs_path = Path(theirs)
@@ -5111,9 +5110,34 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
             }
         )
 
+    ours_text = ours_path.read_text(encoding="utf-8")
+    theirs_text = theirs_path.read_text(encoding="utf-8")
+
+    # idioms.md is markdown, not JSON. Route it to the structural union merge so
+    # two branches that each taught idioms keep both sets (git's built-in union
+    # driver corrupts the fenced code blocks). Detected by content, so the merge
+    # driver needs no extra path argument.
+    from chameleon_mcp.idiom_coverage import looks_like_idioms_markdown, merge_idioms_markdown
+
+    if looks_like_idioms_markdown(ours_text) or looks_like_idioms_markdown(theirs_text):
+        base_text = ""
+        try:
+            base_text = Path(base).read_text(encoding="utf-8") if base else ""
+        except OSError:
+            base_text = ""
+        merged_md = merge_idioms_markdown(base_text, ours_text, theirs_text)
+        ours_path.write_text(merged_md, encoding="utf-8")
+        return _envelope(
+            {
+                "status": "success",
+                "merged_profile_path": str(ours_path),
+                "artifact": "idioms.md",
+            }
+        )
+
     try:
-        ours_data = json.loads(ours_path.read_text(encoding="utf-8"))
-        theirs_data = json.loads(theirs_path.read_text(encoding="utf-8"))
+        ours_data = json.loads(ours_text)
+        theirs_data = json.loads(theirs_text)
     except json.JSONDecodeError as e:
         return _envelope(
             {
@@ -6713,6 +6737,13 @@ def teach_profile_structured(
                 "error": (f"archetype {archetype!r} must match {ARCHETYPE_NAME_RE.pattern!r}"),
             }
         )
+    # Fail soft on a non-string example/counterexample (the signature declares
+    # str | None). Without this, len(example or "") raises TypeError on a
+    # bool/int instead of returning the documented failed envelope.
+    if example is not None and not isinstance(example, str):
+        return _envelope({"status": "failed", "error": "example must be a string or null"})
+    if counterexample is not None and not isinstance(counterexample, str):
+        return _envelope({"status": "failed", "error": "counterexample must be a string or null"})
 
     total = len(rationale) + len(example or "") + len(counterexample or "")
     if total > _STRUCTURED_TOTAL_CAP:
@@ -6848,8 +6879,18 @@ def _find_all_slug_sections(idioms_path: Path, slug: str) -> frozenset[str]:
     header = f"### {slug}"
     found: set[str] = set()
     section: str = "active"
+    in_fence = False
     for line in text.splitlines():
         stripped = line.strip()
+        # Fence-aware, matching idiom_coverage.parse_idiom_blocks: a `### slug`
+        # line inside a fenced example is payload, not a real heading. Without
+        # this, the gate (fence-aware) and this duplicate-checker disagree and
+        # teach falsely refuses a slug that only appears as example code.
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         if stripped == "## active":
             section = "active"
             continue
@@ -7142,6 +7183,112 @@ def _write_new_deprecated_idiom(
             "note": f"appended '### {slug}' directly under '## deprecated'",
         }
     )
+
+
+def _resolve_profile_dir_for_idiom_tools(repo: str) -> tuple[Path | None, dict | None]:
+    """Shared repo/profile resolution + trust gate for the idiom tools.
+
+    Returns (profile_dir, error_data); exactly one side is non-None. The
+    error carries ``status: "untrusted"`` when the profile exists but is not
+    trusted, so the caller can withhold content (these tools are
+    model-callable and idioms.md / principles.md / conventions.json are
+    committed, attacker-controllable prose). Stale still flows (trusted once),
+    mirroring get_rules / get_pattern_context.
+
+    Resolves to the WORKING-TREE ``.chameleon`` (not the canonical-ref pin):
+    the novelty gate must read the same idioms.md that
+    teach_profile_structured writes, or a near-duplicate of a just-taught
+    working-tree idiom would sail through on a pinned repo.
+    """
+    repo_path, _repo_id = _resolve_repo_arg(repo)
+    if repo_path is None or not repo_path.is_dir():
+        return None, {
+            "status": "failed",
+            "error": "expected repo path or repo_id hex digest",
+        }
+    cham = repo_path / ".chameleon"
+    if not cham.is_dir():
+        return None, {
+            "status": "failed",
+            "error": "no profile in this repo (run /chameleon-init)",
+        }
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+
+    _gate = _trust_state_for(_compute_repo_id(repo_path))
+    if _gate is None or not _gate.grants_root(repo_path):
+        return None, {"status": "untrusted"}
+    return cham, None
+
+
+def get_idiom_coverage(repo: str) -> dict:
+    """Map of guidance chameleon ALREADY captures for a repo, for /chameleon-auto-idiom.
+
+    Read-only. Returns existing idioms (active + deprecated, with per-idiom
+    summaries), auto-derived principle lines, structured conventions
+    (preferred/competing imports, file-naming casing, inheritance bases,
+    error-handling shape, non-empty convention kinds), lint sources, and
+    archetype names. The auto-idiom skill reads this BEFORE drafting
+    candidates so it never proposes something chameleon already derives.
+
+    Withholds all profile-derived content (returns ``status: "untrusted"``)
+    for an untrusted profile, mirroring the rest of the model-callable read
+    surface. Fail-open: each missing/corrupt artifact skips its own section
+    and is listed in ``checks_skipped``; only a missing profile fails the call.
+    """
+    from chameleon_mcp.idiom_coverage import build_coverage
+
+    profile_dir, error = _resolve_profile_dir_for_idiom_tools(repo)
+    if error is not None:
+        if error.get("status") == "untrusted":
+            return _envelope(
+                {
+                    "status": "untrusted",
+                    "existing_idioms": {"active": [], "active_count": 0, "deprecated": []},
+                    "covered": {},
+                    "checks_skipped": [],
+                }
+            )
+        return _envelope(error)
+    try:
+        data, skipped = build_coverage(profile_dir)
+    except Exception as exc:
+        return _envelope({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
+    data["status"] = "ok"
+    data["checks_skipped"] = skipped
+    return _envelope(data)
+
+
+def check_idiom_candidates(repo: str, candidates: list) -> dict:
+    """Deterministic novelty gate for /chameleon-auto-idiom candidates.
+
+    Each candidate is {slug, rationale, example?, counterexample?, archetype?}.
+    Verdicts: ``novel`` (safe to teach), ``duplicate`` (slug exists, text is
+    near-identical to an existing idiom, or repeats an earlier candidate in
+    the same batch), ``covered`` (restates an auto-derived principle,
+    competing-import pair, naming/inheritance convention, or lint/format
+    rule), ``invalid`` (bad slug / missing rationale / over the 50KB cap).
+    ``quality_warnings`` flags missing example/counterexample and thin
+    rationales so the skill can raise candidate quality before writing.
+
+    Read-only: this judges candidates; the write still goes through
+    teach_profile_structured (append-only — existing idioms are never
+    modified or removed). Withholds judging (returns ``status: "untrusted"``)
+    for an untrusted profile. Fail-open: damaged artifacts skip their own
+    check (reported in ``checks_skipped``) and never crash the call.
+    """
+    from chameleon_mcp.idiom_coverage import check_candidates
+
+    profile_dir, error = _resolve_profile_dir_for_idiom_tools(repo)
+    if error is not None:
+        if error.get("status") == "untrusted":
+            return _envelope(
+                {"status": "untrusted", "results": [], "novel_count": 0, "checks_skipped": []}
+            )
+        return _envelope(error)
+    try:
+        return _envelope(check_candidates(profile_dir, candidates))
+    except Exception as exc:
+        return _envelope({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
 
 
 def dep_audit(repo: str) -> dict:

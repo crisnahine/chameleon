@@ -48,3 +48,21 @@ Exception: structurally-identical refreshes (only the generation counter bumped,
 ## Incremental refresh
 
 When <= 10% of files changed since the last run, `refresh_repo` uses partial refresh: only changed files are re-parsed and re-clustered via `index.db`'s `file_clusters` table. Above 10% change ratio (or when `force=True`), a full re-bootstrap runs.
+
+## After success: offer /chameleon-auto-idiom when there are no idioms
+
+Refresh preserves `idioms.md` verbatim, but many profiles never got idioms in
+the first place. After reporting the refresh diff, call
+`chameleon-mcp::get_idiom_coverage(repo=<abs-repo-path>)` and branch on
+`data.status` FIRST, then `data.existing_idioms.active_count`:
+
+- `status == "untrusted"` → do NOT make the offer. An untrusted profile
+  withholds content and reports `active_count: 0` even when it has idioms, so
+  the offer would be a false "no idioms yet" claim. Suggest `/chameleon-trust`
+  instead if trust is stale.
+- `status == "ok"` and `active_count == 0` → offer: "This profile has no team
+  idioms yet. Run /chameleon-auto-idiom to derive them from repo evidence
+  (append-only; it never overwrites idioms)?" If the user accepts, invoke the
+  `chameleon-auto-idiom` skill.
+- `status == "ok"` and `active_count > 0` → say nothing; don't nag a profile
+  that already has idioms.

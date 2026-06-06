@@ -225,3 +225,11 @@ bypasses our shared error handling; replaced by use-custom-query
 
 The structured path makes deprecation a first-class operation. Phase 4
 will add explicit `/chameleon-teach --deprecate <slug>` shorthand.
+
+**Deprecating an EXISTING active idiom overwrites its body.** When the slug is
+already in `## active`, `status="deprecated"` moves the block to
+`## deprecated` and replaces its rationale/example/counterexample with
+whatever you pass — it does not preserve the original text. If you want to
+keep the original guidance for the record, read the active block from
+`idioms.md` first and re-pass its body (append a deprecation note to the
+rationale), rather than passing only a short "replaced by X" line.

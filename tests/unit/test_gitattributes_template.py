@@ -14,13 +14,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO_ROOT / ".gitattributes-template"
 
 # Artifacts merge_profiles handles: profile.json via the top-level-key union
-# fallback, the rest via the data_key branch in tools.merge_profiles.
+# fallback, the JSON artifacts via the data_key branch, and idioms.md via the
+# markdown union-by-slug branch in tools.merge_profiles.
 MERGEABLE = {
     "profile.json",
     "archetypes.json",
     "rules.json",
     "canonicals.json",
     "conventions.json",
+    "idioms.md",
 }
 
 

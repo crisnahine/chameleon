@@ -47,6 +47,8 @@ REGISTERED_TOOLS = [
     "propose_archetype_renames",
     "apply_archetype_renames",
     "teach_profile_structured",
+    "get_idiom_coverage",
+    "check_idiom_candidates",
     "daemon_status",
     "doctor",
 ]

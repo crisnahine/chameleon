@@ -451,6 +451,40 @@ def teach_competing_import(
 
 
 @mcp.tool()
+def get_idiom_coverage(repo: str) -> dict:
+    """Map of guidance chameleon ALREADY captures for a repo. Read-only.
+
+    Drives /chameleon-auto-idiom: the skill reads this BEFORE drafting idiom
+    candidates so it never proposes guidance chameleon already auto-derives
+    or the team already taught. Returns existing idioms (active slugs with
+    summaries + deprecated slugs), principle lines, structured conventions
+    (preferred/competing imports, file-naming casing, inheritance bases,
+    error-handling shape, non-empty convention kinds), lint sources, and
+    archetype names. Fail-open: damaged artifacts skip their section
+    (listed in checks_skipped); only a missing profile fails.
+    """
+    return tools.get_idiom_coverage(repo)
+
+
+@mcp.tool()
+def check_idiom_candidates(repo: str, candidates: list) -> dict:
+    """Novelty gate for idiom candidates before they are taught. Read-only.
+
+    Each candidate is {slug, rationale, example?, counterexample?, archetype?}
+    (at most 32 per call). Per-candidate verdicts: ``novel`` (safe to teach),
+    ``duplicate`` (slug already in idioms.md, text near-identical to an
+    existing idiom, or repeats an earlier candidate in the same batch),
+    ``covered`` (restates an auto-derived principle, competing-import pair,
+    naming/inheritance convention, or lint/format rule), ``invalid``.
+    ``quality_warnings`` flags missing example/counterexample and thin
+    rationales. Judging only — writes still go through
+    teach_profile_structured, which is append-only (existing idioms are
+    never modified or removed by this flow).
+    """
+    return tools.check_idiom_candidates(repo, candidates)
+
+
+@mcp.tool()
 def daemon_status() -> dict:
     """Return current chameleon-mcp daemon status.
 

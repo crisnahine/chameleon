@@ -538,7 +538,7 @@ chameleon/
 │ │ ├── safe_open.py # NEW: shared safe_open(repo, rel_path) helper
 │ │ │ # realpath + prefix-match + null/NFD/sep checks
 │ │ │ # used by every file-reading tool
-│ │ ├── tools.py # all 20 MCP tool implementations
+│ │ ├── tools.py # all 34 MCP tool implementations
 │ │ ├── extractors/
 │ │ │ ├── _base.py
 │ │ │ ├── typescript.py
@@ -1049,6 +1049,8 @@ FastMCP-based, stdio transport (NEVER exposed over network).
 | `merge_profiles` | repo, base, ours, theirs | merged profile (re-clustered from union) | programmatic git merge driver |
 | `teach_profile` | repo, feedback | apply user-driven idiom | feedback sanitization (strip ANSI/zero-width, 50KB cap) |
 | `teach_profile_structured` | repo, slug, rationale, example?, counterexample?, archetype?, status? | structured idiom entry | slug + archetype regex validation |
+| `get_idiom_coverage` | repo | existing idioms + everything already auto-derived (principles, conventions, lint sources) | read-only; drives /chameleon-auto-idiom dedup; fail-open per artifact |
+| `check_idiom_candidates` | repo, candidates | per-candidate verdict: novel / duplicate / covered / invalid + quality warnings | read-only novelty gate (stemmed token similarity + convention probes); ≤32 candidates |
 | `trust_profile` | repo, confirmation_token | mark profile as trusted | requires repo name confirmation |
 | `disable_session` | repo, session_id, force? | suppress injections for session | requires trust grant |
 | `pause_session` | repo, minutes? | suppress injections temporarily | requires trust grant |
@@ -1767,21 +1769,23 @@ In v1, chameleon ships ONE thing: the engine plugin. Profiles are NOT distribute
 **Conflict resolution via merge_profiles:** when two devs run `/chameleon-refresh` on parallel branches and merge:
 
 ```bash
-# .gitattributes (shipped as template)
-.chameleon/profile.json merge=chameleon
-.chameleon/archetypes.json merge=chameleon
-.chameleon/rules.json merge=chameleon
-.chameleon/canonicals.json merge=chameleon
+# .gitattributes (shipped as template; see .gitattributes-template for the full file)
+.chameleon/profile.json     merge=chameleon
+.chameleon/archetypes.json  merge=chameleon
+.chameleon/rules.json       merge=chameleon
+.chameleon/canonicals.json  merge=chameleon
+.chameleon/conventions.json merge=chameleon
+.chameleon/idioms.md        merge=chameleon
 ```
 
 ```bash
-# Git config (set by chameleon-init or manually)
+# Git config (set manually, once per repo or globally)
 [merge "chameleon"]
  name = chameleon profile merge
- driver = chameleon-mcp merge_profiles --base %O --ours %A --theirs %B --output %A
+ driver = /path/to/chameleon/scripts/chameleon-merge-driver.sh %O %A %B %P
 ```
 
-`merge_profiles` re-clusters from union of `ours` and `theirs` inputs, producing a deterministic resolved profile that doesn't lose either side's recent work.
+`merge_profiles` re-clusters from the union of `ours` and `theirs` for the JSON artifacts, producing a deterministic resolved profile that doesn't lose either side's recent work. For `idioms.md` (markdown, detected by content) it unions the hand-curated idioms by slug so both branches' taught idioms survive. The old `chameleon-mcp merge_profiles ...` console form does NOT work — that script only launches the stdio MCP server; the shell driver above is the real driver.
 
 **implementation testing case:**
 - Run `/chameleon-init` on `project/api` → commit `.chameleon/`

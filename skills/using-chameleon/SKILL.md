@@ -97,9 +97,11 @@ Chameleon is an output-layer advisory: archetype + canonical + rules shape the c
 | `/chameleon-refresh` | Re-analyze repo, update profile after drift |
 | `/chameleon-status` | View profile state, drift, value attribution |
 | `/chameleon-teach` | Capture a missed pattern as an idiom |
+| `/chameleon-auto-idiom` | Derive novel team idioms from repo evidence (append-only) |
 | `/chameleon-trust` | Approve a committed profile for this user |
 | `/chameleon-disable` | Disable for the rest of this session |
 | `/chameleon-pause-15m` | Pause for 15 minutes |
 | `/chameleon-doctor` | Run health checks on the installation |
 | `/chameleon-journey` | Run the end-to-end journey test harness |
 | `/chameleon-pr-review` | Review a branch/PR against repo conventions and task intent |
+| `/chameleon-explain` | Drill down on one enforcement rule or replay a file's last edit |

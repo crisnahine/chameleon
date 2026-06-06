@@ -126,9 +126,16 @@ Profile created at .chameleon/
 Next steps:
 1. Run /chameleon-trust to approve this profile for your user.
 2. Commit `.chameleon/` to git so your team can share the profile.
-3. (Optional) Run /chameleon-teach to capture team idioms (banned imports,
-   mandatory wrappers, etc.) that AST analysis cannot infer.
+3. Run /chameleon-auto-idiom to derive team idioms (mandatory wrappers,
+   domain vocabulary, auth invariants) from repo evidence — a fresh profile
+   has none, and AST analysis cannot infer them.
+4. (Optional) Run /chameleon-teach to capture specific idioms by hand.
 ```
+
+A fresh bootstrap always starts with zero idioms, so the `/chameleon-auto-idiom`
+offer in step 3 is unconditional: ask the user whether to run it now. If they
+accept, invoke the `chameleon-auto-idiom` skill in this same session. It is
+append-only — it never touches idioms the team later adds.
 
 ## Out of scope (current release)
 

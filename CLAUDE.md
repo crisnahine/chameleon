@@ -15,7 +15,7 @@ chameleon/
 ├── .claude-plugin/    plugin.json + marketplace.json (Claude Code plugin manifest)
 ├── hooks/             session-start, preflight-and-advise, posttool-recorder,
 │                      posttool-verify, callout-detector (+ run-hook.cmd, hooks.json)
-├── skills/            using-chameleon (auto) + 10 user-invocable slash commands
+├── skills/            using-chameleon (auto) + 12 user-invocable slash commands
 ├── mcp/               chameleon-mcp Python server (FastMCP, stdio transport)
 ├── scripts/           ts_dump.mjs, prism_dump.rb, bump-version.sh, merge driver
 ├── bin/               chameleon-statusline.sh (status line, <100ms budget)
@@ -23,7 +23,7 @@ chameleon/
 └── docs/              architecture.md (design) + install.md
 ```
 
-The user-invocable commands: `init`, `refresh`, `status`, `teach`, `trust`, `disable`, `pause-15m`, `doctor`, `journey`, `pr-review` (all invoked as `/chameleon-*`).
+The user-invocable commands: `init`, `refresh`, `status`, `teach`, `auto-idiom`, `trust`, `disable`, `pause-15m`, `doctor`, `journey`, `pr-review`, `explain` (all invoked as `/chameleon-*`).
 
 ## Conventions
 
@@ -139,7 +139,7 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 - **Trust states**: every tool under untrusted / stale / trusted.
 
 ### Pass 3 — full surface (beyond tools + hooks)
-- **Slash-command / skill flows**: drive each `/chameleon-*` end-to-end (init, refresh, status, teach, trust, disable, pause-15m, doctor, pr-review) — the skill logic + output, not just the underlying tool.
+- **Slash-command / skill flows**: drive each `/chameleon-*` end-to-end (init, refresh, status, teach, auto-idiom, trust, disable, pause-15m, doctor, pr-review, explain) — the skill logic + output, not just the underlying tool.
 - **Statusline**: `bin/chameleon-statusline.sh` with a sample payload — correct format, within the <100ms budget, respects `CHAMELEON_DISABLE`.
 - **MCP stdio server**: `python -m chameleon_mcp.server` — call a tool over the real stdio transport, not just in-process.
 - **Daemon**: `daemon.py` / `daemon_client.py` — startup, socket, idle-timeout self-exit, `daemon_status`.

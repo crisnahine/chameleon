@@ -12,6 +12,16 @@
 .chameleon/canonicals.json  merge=chameleon
 .chameleon/conventions.json merge=chameleon
 
+# idioms.md is hand-curated, append-only, and preserved across refresh, so two
+# branches that each ran /chameleon-auto-idiom or /chameleon-teach must keep
+# BOTH sets of idioms on merge. The chameleon driver detects markdown idioms
+# and unions them by slug (git's built-in `merge=union` is NOT used: it
+# line-unions the fenced code blocks and unbalances the ``` fences, corrupting
+# the file). With the driver registered (see below) the merge is clean; without
+# registration git falls back to visible conflict markers you resolve by hand —
+# never silent corruption.
+.chameleon/idioms.md        merge=chameleon
+
 # Generated index artifacts (exports_index.json, reverse_index.json,
 # function_catalog.json) are intentionally NOT routed to the merge driver:
 # they have no structural merge, and the correct resolution for a conflict
