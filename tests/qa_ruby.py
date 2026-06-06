@@ -82,6 +82,18 @@ from chameleon_mcp.tools import (  # noqa: E402
     lint_file,
 )
 
+# The battery asserts trusted-content behavior (canonical excerpts, rules).
+# A fresh CHAMELEON_PLUGIN_DATA holds no grant for the target repo, which
+# redacts those payloads and fails assertions that say nothing about the code
+# under test — pointing the env var at a repo implies trusting it for the run.
+try:
+    from chameleon_mcp.profile.trust import grant_trust as _grant_trust
+    from chameleon_mcp.tools import _compute_repo_id as _qa_repo_id
+
+    _grant_trust(_qa_repo_id(Path(REPO_PATH)), Path(REPO_PATH) / ".chameleon")
+except Exception as _exc:
+    print(f"WARN: could not pre-grant trust for the battery run: {_exc}")
+
 
 def _archetype_for(fpath: str) -> str | None:
     try:

@@ -192,9 +192,25 @@ def test_cleanup_preserves_alive_pid_dirs(tmp_path: Path):
     assert alive.exists()
 
 
-def test_cleanup_removes_committed_dirs_not(tmp_path: Path):
-    """Dirs with COMMITTED sentinel are left alone (they're valid, just
-    haven't been renamed yet)."""
+def test_cleanup_keeps_committed_dir_while_writer_alive(tmp_path: Path):
+    """A COMMITTED txn whose writer is still alive is mid-swap; leave it."""
+    import os as _os
+
+    tmp_root = tmp_path / ".chameleon.tmp"
+    tmp_root.mkdir()
+    committed = tmp_root / f"{_os.getpid()}-abc12345-1700000000"
+    committed.mkdir()
+    (committed / COMMITTED_SENTINEL).write_text("done")
+
+    cleaned = cleanup_orphan_tmp_dirs(tmp_path)
+    assert cleaned == 0
+    assert committed.exists()
+
+
+def test_cleanup_sweeps_committed_dir_once_writer_is_dead(tmp_path: Path):
+    """qa25 P3 — a COMMITTED txn that was never swapped in is permanent
+    debris once its writer is gone: only that process could finish the
+    rename, so the sweep must reclaim it instead of leaking it forever."""
     tmp_root = tmp_path / ".chameleon.tmp"
     tmp_root.mkdir()
     committed = tmp_root / "99999999-abc12345-1700000000"
@@ -202,8 +218,8 @@ def test_cleanup_removes_committed_dirs_not(tmp_path: Path):
     (committed / COMMITTED_SENTINEL).write_text("done")
 
     cleaned = cleanup_orphan_tmp_dirs(tmp_path)
-    assert cleaned == 0
-    assert committed.exists()
+    assert cleaned == 1
+    assert not committed.exists()
 
 
 def test_cleanup_removes_legacy_no_pid_dirs(tmp_path: Path):
@@ -451,3 +467,33 @@ def test_recover_legacy_double_dot_tmp(tmp_path: Path):
     handled = cleanup_orphan_tmp_dirs(tmp_path)
     assert handled == 1
     assert not orphan.exists()
+
+
+# --------------------------------------------------------------------------
+# qa25 P2 — an unresolved git merge leaves conflict markers inside the
+# COMMITTED sentinel (it is tracked in committed-profile repos); a marker-laden
+# sentinel means the profile state is indeterminate and must read as
+# uncommitted, never half-work.
+
+
+class TestConflictMarkedSentinel:
+    def test_marker_laden_sentinel_reads_uncommitted(self, tmp_path: Path):
+        pd = tmp_path / ".chameleon"
+        pd.mkdir()
+        (pd / "COMMITTED").write_text(
+            "<<<<<<< HEAD\ncommitted-at=1.0\npid=1\n=======\n"
+            "committed-at=2.0\npid=2\n>>>>>>> feature\n",
+            encoding="utf-8",
+        )
+        assert is_committed(pd) is False
+
+    def test_healthy_sentinel_reads_committed(self, tmp_path: Path):
+        pd = tmp_path / ".chameleon"
+        pd.mkdir()
+        (pd / "COMMITTED").write_text("committed-at=1.0\npid=1\n", encoding="utf-8")
+        assert is_committed(pd) is True
+
+    def test_missing_sentinel_reads_uncommitted(self, tmp_path: Path):
+        pd = tmp_path / ".chameleon"
+        pd.mkdir()
+        assert is_committed(pd) is False

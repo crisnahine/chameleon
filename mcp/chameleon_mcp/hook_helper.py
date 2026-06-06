@@ -244,6 +244,29 @@ def _emit_posttool_context(block: str) -> None:
     )
 
 
+def _ignore_hint(paths: object, rule: str = "<rule>") -> str:
+    """Render the inline-override directive in the offending file's comment syntax.
+
+    A block message that hands a Ruby developer ``//`` describes a directive
+    that is a syntax error in their file; the parser only honors the
+    language's own comment token. Accepts a single path or a list (the Stop
+    backstop can hold files in both languages at once — then both forms are
+    shown).
+    """
+    from chameleon_mcp.lint_engine import detect_language
+
+    if isinstance(paths, str) or paths is None:
+        paths = [paths] if paths else []
+    langs = {detect_language(str(p)) for p in paths if p}
+    # Unknown extensions never carry violations, so they don't shape the hint.
+    langs.discard(None)
+    if langs == {"ruby"}:
+        return f"`# chameleon-ignore {rule}`"
+    if "ruby" in langs:
+        return f"`// chameleon-ignore {rule}` (`# chameleon-ignore {rule}` in Ruby)"
+    return f"`// chameleon-ignore {rule}`"
+
+
 def _emit_posttool_block(reason: str, additional_context: str) -> None:
     """PostToolUse hard block: stops the loop and feeds ``reason`` back to Claude."""
     _emit(
@@ -1143,7 +1166,9 @@ def preflight_and_advise() -> int:
 
     tool_input = _as_dict(payload.get("tool_input"))
     file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
-    if not file_path:
+    # A non-string path (malformed payload) must fail open silently here, not
+    # surface as a TypeError in the error log doctor reads.
+    if not isinstance(file_path, str) or not file_path:
         _emit({})
         return 0
 
@@ -1382,7 +1407,7 @@ def preflight_and_advise() -> int:
                             _seed_archetype_seen(repo_id, session_id, archetype_name)
                             _emit_pretool_deny(
                                 f"chameleon: {msg}. Use the preferred import, or add "
-                                "`// chameleon-ignore import-preference-violation` "
+                                f"{_ignore_hint(file_path, 'import-preference-violation')} "
                                 "if intentional."
                             )
                             return 0
@@ -2322,7 +2347,9 @@ def posttool_verify() -> int:
 
     tool_input = _as_dict(payload.get("tool_input"))
     file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
-    if not file_path:
+    # A non-string path (malformed payload) must fail open silently here, not
+    # surface as a TypeError in the error log doctor reads.
+    if not isinstance(file_path, str) or not file_path:
         _emit({})
         return 0
 
@@ -2762,7 +2789,7 @@ def posttool_verify() -> int:
                         _emit_posttool_block(
                             f"chameleon blocks this edit: {safe_rules}. "
                             f"Fix before continuing: {safe_msgs}. "
-                            f"Override with `// chameleon-ignore <rule>` "
+                            f"Override with {_ignore_hint(file_path)} "
                             f"on the offending line if this is intentional.",
                             "<chameleon-context>\n"
                             f"[🦎 chameleon: BLOCKED — {safe_rules}]\n"
@@ -4176,7 +4203,7 @@ def stop_backstop() -> int:
                 "decision": "block",
                 "reason": (
                     f"chameleon: unresolved convention violations remain in {names}. "
-                    f"Fix them before ending, or add `// chameleon-ignore <rule>` "
+                    f"Fix them before ending, or add {_ignore_hint(unresolved[:5])} "
                     f"on the offending line."
                 ),
             }

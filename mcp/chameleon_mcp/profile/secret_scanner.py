@@ -142,12 +142,36 @@ def _try_detect_secrets(content: str) -> list[dict[str, Any]] | None:
 
 def _fallback_scan(content: str) -> list[dict[str, Any]]:
     """Regex-based scan when detect-secrets is unavailable."""
+    import bisect
+
     hits: list[dict[str, Any]] = []
+    # Resolving each hit's line with rfind/count re-scanned the whole buffer
+    # per hit — O(hits x content length), a multi-hundred-ms stall on a
+    # token-dense single line. One offset table + a per-line context-verdict
+    # cache makes each hit O(log lines).
+    line_starts = [0]
+    nl = content.find("\n")
+    while nl != -1:
+        line_starts.append(nl + 1)
+        nl = content.find("\n", nl + 1)
+    context_ok_by_line: dict[int, bool] = {}
+
+    def _line_index(position: int) -> int:
+        return bisect.bisect_right(line_starts, position) - 1
+
+    def _credential_context_at(idx: int) -> bool:
+        cached = context_ok_by_line.get(idx)
+        if cached is None:
+            start = line_starts[idx]
+            end = line_starts[idx + 1] - 1 if idx + 1 < len(line_starts) else len(content)
+            cached = bool(_CREDENTIAL_CONTEXT.search(content, start, end))
+            context_ok_by_line[idx] = cached
+        return cached
+
     for pattern, kind in _FALLBACK_PATTERNS:
         for match in pattern.finditer(content):
-            if kind in _CONTEXT_GATED_KINDS and not _CREDENTIAL_CONTEXT.search(
-                _line_at(content, match.start())
-            ):
+            idx = _line_index(match.start())
+            if kind in _CONTEXT_GATED_KINDS and not _credential_context_at(idx):
                 continue
             hits.append(
                 {
@@ -157,7 +181,7 @@ def _fallback_scan(content: str) -> list[dict[str, Any]]:
                     # source of the deterministic block-eligible kinds) can be
                     # mapped into a diff hunk; ``position`` is retained for the
                     # (type, position) dedup key and any offset-based caller.
-                    "line_number": _line_number_at(content, match.start()),
+                    "line_number": idx + 1,
                     "secret_value": "<redacted>",
                 }
             )

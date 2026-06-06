@@ -1026,3 +1026,36 @@ def test_phantom_import_surfaced_in_process(tmp_path):
     )
     assert len(out) == 1 and out[0].rule == "phantom-import"
     assert isinstance(out[0], Violation)
+
+
+# --------------------------------------------------------------------------
+# qa25 P3 — a non-string file_path in the payload must fail open silently,
+# not log a TypeError to the error log doctor reads.
+
+
+def test_int_file_path_fails_open_without_error_log(tmp_path, monkeypatch):
+    err_log = tmp_path / "hook_errors.log"
+    monkeypatch.setenv("CHAMELEON_HOOK_ERROR_LOG", str(err_log))
+    out = _run_verify(
+        {
+            "tool_name": "Edit",
+            "tool_input": {"file_path": 12345},
+            "session_id": "s-int-path",
+        }
+    )
+    assert out == {}
+    assert not err_log.exists() or "TypeError" not in err_log.read_text(encoding="utf-8")
+
+
+def test_list_file_path_fails_open(tmp_path, monkeypatch):
+    err_log = tmp_path / "hook_errors2.log"
+    monkeypatch.setenv("CHAMELEON_HOOK_ERROR_LOG", str(err_log))
+    out = _run_verify(
+        {
+            "tool_name": "Write",
+            "tool_input": {"file_path": ["/a.ts"], "content": "x"},
+            "session_id": "s-list-path",
+        }
+    )
+    assert out == {}
+    assert not err_log.exists() or "TypeError" not in err_log.read_text(encoding="utf-8")

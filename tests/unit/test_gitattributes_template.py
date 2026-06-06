@@ -1,10 +1,19 @@
-"""The shipped .gitattributes-template must route exactly the artifacts
-merge_profiles can structurally merge.
+"""The shipped .gitattributes-template must route exactly the artifacts the
+merge driver is meant to see.
 
-A profile artifact listed with merge=chameleon but unknown to merge_profiles
-would fail every merge (git keeps the conflict); an artifact merge_profiles
-supports but the template omits silently falls back to git's default
-conflict markers, leaving the merge branch dead code.
+Two intentional classes:
+- MERGEABLE: artifacts merge_profiles structurally merges.
+- DECLINE_TO_MERGE: protocol files the driver deliberately fails on. A failed
+  custom driver leaves your side's content whole with the path flagged
+  conflicted — never raw conflict markers inside live profile state (the
+  runtime reads COMMITTED / principles.md / profile.summary.md, so markers in
+  them are live damage, not just an ugly diff). Resolution is accept-a-side +
+  /chameleon-refresh.
+
+An artifact in neither set but listed in the template would silently change
+merge behavior; an artifact merge_profiles supports but the template omits
+falls back to git's default conflict markers, leaving the merge branch dead
+code.
 """
 
 import re
@@ -25,6 +34,15 @@ MERGEABLE = {
     "idioms.md",
 }
 
+# Routed to the driver so it can DECLINE: keeps conflict markers out of
+# runtime-read protocol files (qa25: a real two-branch merge landed markers in
+# COMMITTED and profile.summary.md, and is_committed half-trusted the result).
+DECLINE_TO_MERGE = {
+    "COMMITTED",
+    "principles.md",
+    "profile.summary.md",
+}
+
 
 def _template_merge_entries() -> set[str]:
     entries = set()
@@ -42,12 +60,12 @@ def test_template_exists():
     assert TEMPLATE.is_file()
 
 
-def test_every_template_entry_is_mergeable():
-    assert _template_merge_entries() <= MERGEABLE
+def test_every_template_entry_is_mergeable_or_deliberately_declined():
+    assert _template_merge_entries() <= MERGEABLE | DECLINE_TO_MERGE
 
 
-def test_every_mergeable_artifact_is_in_template():
-    assert _template_merge_entries() == MERGEABLE
+def test_every_routed_artifact_is_in_template():
+    assert _template_merge_entries() == MERGEABLE | DECLINE_TO_MERGE
 
 
 def test_generated_index_artifacts_not_routed_to_driver():

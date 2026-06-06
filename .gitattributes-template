@@ -22,11 +22,24 @@
 # never silent corruption.
 .chameleon/idioms.md        merge=chameleon
 
+# The transaction sentinel and the regenerated markdown companions have no
+# structural merge, but they MUST still route to the driver: without it a
+# conflicting merge writes raw conflict markers INTO these files, and a
+# marker-laden COMMITTED or principles.md is live profile state the runtime
+# then reads. The driver declines to merge them, which leaves your side's
+# content whole and the file flagged conflicted — resolve by accepting either
+# side and running /chameleon-refresh, which regenerates the content.
+.chameleon/COMMITTED          merge=chameleon
+.chameleon/principles.md      merge=chameleon
+.chameleon/profile.summary.md merge=chameleon
+
 # Generated index artifacts (exports_index.json, reverse_index.json,
 # function_catalog.json) are intentionally NOT routed to the merge driver:
 # they have no structural merge, and the correct resolution for a conflict
 # on them is to accept either side and run /chameleon-refresh, which
-# regenerates all three from the merged repo state.
+# regenerates all three from the merged repo state. A conflict on them is
+# harmless to the runtime: markers break the JSON parse and every loader
+# fails open.
 
 # To register the merge driver, run once in your repo (or globally with --global):
 #

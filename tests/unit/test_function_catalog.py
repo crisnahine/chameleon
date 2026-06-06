@@ -367,3 +367,164 @@ class TestBodyHashFallback:
         matches = fc.select_candidates(catalog, [nf])
         assert matches
         assert matches[0]["candidates"][0]["body_match"] is False
+
+
+# --------------------------------------------------------------------------
+# qa25 P2 — two body-clone blind spots:
+#   1. a generic-verb name (run/handle/process) tokenizes to nothing and was
+#      skipped before the body-hash pairing could run, so the exact Sidekiq /
+#      service entry-point naming hid clones completely;
+#   2. a clone whose only body difference is renamed parameters defeated the
+#      exact body hash (the most common shape of a copied-and-tweaked helper).
+
+
+TS_WEIGHTED_BODY = [
+    "export const computeWeightedScore = (items: Array<{ value: number; weight: number }>): number => {",
+    "  let total = 0",
+    "  let weightSum = 0",
+    "  for (const entry of items) {",
+    "    total += entry.value * entry.weight",
+    "    weightSum += entry.weight",
+    "  }",
+    "  if (weightSum === 0) {",
+    "    return 0",
+    "  }",
+    "  return total / weightSum",
+    "}",
+]
+
+
+def _ts_clone_lines(name: str, param: str) -> list[str]:
+    head = (
+        f"export const {name} = ({param}: Array<{{ value: number; weight: number }}>): number => {{"
+    )
+    body = [ln.replace("items", param) for ln in TS_WEIGHTED_BODY[1:]]
+    return [head] + body
+
+
+class TestGenericVerbNameCloneSurfaces:
+    def _catalog_with(self, tmp_path, rel, lines, name, params):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        sig = dict(_sig(name, params, kind="function"))
+        sig.update({"start_line": 1, "end_line": len(lines)})
+        files = [_FakeParsed(path=path, extras={"callable_signatures": [sig]})]
+        payload = fc.build_function_catalog(files, tmp_path)
+        cham = tmp_path / ".chameleon"
+        cham.mkdir(exist_ok=True)
+        (cham / fc.FUNCTION_CATALOG_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+        return fc.load_function_catalog(tmp_path)
+
+    def test_stopword_only_name_pairs_on_exact_body(self, tmp_path):
+        # `run` is all stopwords; before the fix the query was dropped before
+        # the body-hash comparison the prefilter exists for.
+        catalog = self._catalog_with(
+            tmp_path,
+            "app/services/payment_processor.rb",
+            ["def settle_invoice_balances"] + RUBY_BODY[1:],
+            "settle_invoice_balances",
+            [],
+        )
+        clone_lines = ["def run"] + RUBY_BODY[1:]
+        nf = fc.NewFunction(
+            name="run",
+            kind="method",
+            arity=0,
+            required=0,
+            body_hash=fc.normalized_body_hash(clone_lines, 1, len(clone_lines)),
+        )
+        assert fc.name_tokens("run") == frozenset()
+        matches = fc.select_candidates(catalog, [nf])
+        assert matches, "stopword-named body clone must surface"
+        assert matches[0]["candidates"][0]["name"] == "settle_invoice_balances"
+        assert matches[0]["candidates"][0]["body_match"] is True
+
+    def test_stopword_only_name_without_body_hash_still_skipped(self):
+        catalog = _cat([("formatDate", 1, 1, "a.ts")])
+        nf = fc.NewFunction(name="run", kind="function", arity=1, required=1)
+        assert fc.select_candidates(catalog, [nf]) == []
+
+
+class TestParamRenamedCloneSurfaces:
+    def _catalog_with_ts_original(self, tmp_path):
+        path = tmp_path / "src/utils/score.ts"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(TS_WEIGHTED_BODY) + "\n", encoding="utf-8")
+        sig = dict(
+            _sig(
+                "computeWeightedScore",
+                [{"name": "items", "optional": False, "kind": "positional"}],
+            )
+        )
+        sig.update({"start_line": 1, "end_line": len(TS_WEIGHTED_BODY)})
+        files = [_FakeParsed(path=path, extras={"callable_signatures": [sig]})]
+        payload = fc.build_function_catalog(files, tmp_path)
+        cham = tmp_path / ".chameleon"
+        cham.mkdir(exist_ok=True)
+        (cham / fc.FUNCTION_CATALOG_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+        return fc.load_function_catalog(tmp_path)
+
+    def _new_fn(self, name: str, param: str) -> fc.NewFunction:
+        lines = _ts_clone_lines(name, param)
+        return fc.NewFunction(
+            name=name,
+            kind="function",
+            arity=1,
+            required=1,
+            body_hash=fc.normalized_body_hash(lines, 1, len(lines)),
+            body_hash_pnorm=fc.normalized_body_hash(lines, 1, len(lines), param_names=[param]),
+        )
+
+    def test_param_renamed_disjoint_name_clone_pairs(self, tmp_path):
+        # The qa25 fixture shape: blendRatingTally(records) is a verbatim copy
+        # of computeWeightedScore(items) with only the parameter renamed. The
+        # exact hash differs (the param appears in the body); the
+        # param-normalized hash must pair them.
+        catalog = self._catalog_with_ts_original(tmp_path)
+        nf = self._new_fn("blendRatingTally", "records")
+        assert nf.body_hash != catalog.functions[0].body_hash
+        matches = fc.select_candidates(catalog, [nf])
+        assert matches, "param-renamed clone must surface via the pnorm hash"
+        cand = matches[0]["candidates"][0]
+        assert cand["name"] == "computeWeightedScore"
+        assert cand["body_match"] is True
+
+    def test_genuinely_different_body_does_not_pair(self, tmp_path):
+        catalog = self._catalog_with_ts_original(tmp_path)
+        lines = [
+            "export const blendRatingTally = (records: Array<number>): number => {",
+            "  let total = 0",
+            "  for (const entry of records) {",
+            "    total += entry * 2",
+            "  }",
+            "  if (total > 100) {",
+            "    return 100",
+            "  }",
+            "  return total",
+            "}",
+        ]
+        nf = fc.NewFunction(
+            name="blendRatingTally",
+            kind="function",
+            arity=1,
+            required=1,
+            body_hash=fc.normalized_body_hash(lines, 1, len(lines)),
+            body_hash_pnorm=fc.normalized_body_hash(lines, 1, len(lines), param_names=["records"]),
+        )
+        matches = fc.select_candidates(catalog, [nf])
+        for m in matches:
+            for cand in m["candidates"]:
+                assert cand["body_match"] is False
+
+    def test_param_names_skips_non_identifier_markers(self):
+        assert fc._param_names(
+            [
+                {"name": "items", "optional": False, "kind": "positional"},
+                {"name": "{}", "optional": False, "kind": "destructured"},
+                {"name": "_", "optional": False, "kind": "positional"},
+                {"name": "*", "optional": True, "kind": "rest"},
+                "not-a-dict",
+            ]
+        ) == ["items", "", "", "", ""]
+        assert fc._param_names(None) == []

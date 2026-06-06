@@ -22,18 +22,17 @@ from pathlib import Path
 
 import xxhash
 
-from chameleon_mcp.extractors._base import ParsedFile, ParseResult
+from chameleon_mcp.extractors._base import ExtractorUnavailableError, ParsedFile, ParseResult
 from chameleon_mcp.plugin_paths import plugin_root
 
 
-class NodeUnavailableError(RuntimeError):
+class NodeUnavailableError(ExtractorUnavailableError):
     """Node.js / npm (or an installed node_modules) is unavailable.
 
     Raised by the TypeScript extractor when its node deps cannot be
-    provisioned. Subclasses ``RuntimeError`` so callers that catch
-    ``RuntimeError`` still work; the bootstrap orchestrator catches it
-    specifically and degrades to a ``failed_node_unavailable`` report instead
-    of aborting the whole run.
+    provisioned. The bootstrap orchestrator catches it (via
+    ``ExtractorUnavailableError``) and degrades to a
+    ``failed_node_unavailable`` report instead of aborting the whole run.
     """
 
 
@@ -339,7 +338,7 @@ class TypeScriptExtractor:
             return ParseResult(files=[], skipped=[])
 
         if not self._ts_dump_script.exists():
-            raise FileNotFoundError(
+            raise NodeUnavailableError(
                 f"ts_dump.mjs not found at {self._ts_dump_script}; "
                 "the plugin install appears incomplete."
             )

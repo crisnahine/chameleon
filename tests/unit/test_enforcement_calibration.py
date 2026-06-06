@@ -701,7 +701,11 @@ def test_language_gating_demotes_ts_only_rules_on_ruby_profile(tmp_path):
     assert result["jsx-presence-mismatch"]["inert_reason"] == "no-signal-for-language"
     # Ruby-capable rules keep their measured state.
     assert result["inheritance-convention-violation"]["active"] is True
-    assert "inert_reason" not in result["naming-convention-violation"]
+    # This profile carries no naming sub-conventions at all, so the rule is
+    # inert for missing data (not for language): the vacuous 0.0 must not
+    # certify it active either.
+    assert result["naming-convention-violation"]["active"] is False
+    assert result["naming-convention-violation"]["inert_reason"] == "missing-convention-data"
 
 
 def test_language_gating_demotes_ruby_only_rules_on_ts_profile(tmp_path):
@@ -879,3 +883,148 @@ def test_get_status_demotes_stale_active_rule_with_reason(tmp_path, monkeypatch)
     demoted = {d["rule"]: d for d in data["demoted"]}
     assert demoted["jsx-presence-mismatch"]["inert_reason"] == "no-signal-for-language"
     assert "eval-call" in data["active"]
+
+
+# --------------------------------------------------------------------------
+# qa25 P2 — active-but-inert on a stale profile: enforcement.json certified
+# naming-convention-violation active (vacuous 0.0 fp_rate) while the profile's
+# conventions carry only file_naming, so the rule could never fire. The
+# missing-signal gate applies the same stale-verdict treatment as the language
+# gate, one level deeper.
+
+
+def _stale_naming_profile(tmp_path, *, naming_conventions):
+    import json
+
+    repo = tmp_path / "repo"
+    cham = repo / ".chameleon"
+    cham.mkdir(parents=True)
+    (cham / "profile.json").write_text(json.dumps({"generation": 1, "language": "ruby"}))
+    (cham / "COMMITTED").write_text("committed-at=1\npid=1\n")
+    (cham / "conventions.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 8,
+                "generation": 1,
+                "conventions": {"naming": naming_conventions},
+            }
+        )
+    )
+    (cham / "enforcement.json").write_text(
+        json.dumps(
+            {
+                "block_rules": {
+                    "naming-convention-violation": {
+                        "active": True,
+                        "fp_rate": 0.0,
+                        "sampled": 80,
+                        "flagged": 0,
+                    },
+                }
+            }
+        )
+    )
+    return repo, cham
+
+
+def test_naming_active_but_inert_gated_at_read_time(tmp_path):
+    from chameleon_mcp.enforcement_calibration import (
+        active_block_rules,
+        rule_inert_missing_signal,
+    )
+
+    _repo, cham = _stale_naming_profile(
+        tmp_path,
+        naming_conventions={
+            "service": {"file_naming": {"casing": "snake_case", "casing_consistency": 1.0}},
+            "model": {"file_naming": {"casing": "snake_case", "casing_consistency": 1.0}},
+        },
+    )
+    assert rule_inert_missing_signal("naming-convention-violation", cham) is True
+    assert "naming-convention-violation" not in active_block_rules(cham)
+
+
+def test_naming_gate_lifts_once_casing_conventions_derived(tmp_path):
+    from chameleon_mcp.enforcement_calibration import (
+        active_block_rules,
+        rule_inert_missing_signal,
+    )
+
+    _repo, cham = _stale_naming_profile(
+        tmp_path,
+        naming_conventions={
+            "model": {
+                "file_naming": {"casing": "snake_case", "casing_consistency": 1.0},
+                "method_casing": {"pattern": "snake_case", "consistency": 0.98},
+            },
+        },
+    )
+    assert rule_inert_missing_signal("naming-convention-violation", cham) is False
+    assert "naming-convention-violation" in active_block_rules(cham)
+
+
+def test_naming_gate_keeps_measured_behavior_without_conventions_file(tmp_path):
+    # Positive knowledge only: no conventions.json (or unreadable) must not
+    # demote the rule the calibration measured.
+    from chameleon_mcp.enforcement_calibration import rule_inert_missing_signal
+
+    _repo, cham = _stale_naming_profile(tmp_path, naming_conventions={})
+    (cham / "conventions.json").unlink()
+    assert rule_inert_missing_signal("naming-convention-violation", cham) is False
+
+
+def test_get_status_reports_missing_convention_data(tmp_path, monkeypatch):
+    import json as _json
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    repo, cham = _stale_naming_profile(
+        tmp_path,
+        naming_conventions={
+            "service": {"file_naming": {"casing": "snake_case", "casing_consistency": 1.0}},
+        },
+    )
+
+    from chameleon_mcp.profile.trust import grant_trust
+    from chameleon_mcp.tools import _compute_repo_id, get_status
+
+    grant_trust(_compute_repo_id(repo), cham)
+    data = get_status(str(repo))["data"]["enforcement"]
+    assert "naming-convention-violation" not in data["active"]
+    demoted = {d["rule"]: d for d in data["demoted"]}
+    assert demoted["naming-convention-violation"]["inert_reason"] == "missing-convention-data"
+    _ = _json  # keep the import shape parallel with the sibling test
+
+
+def test_calibration_writes_missing_convention_inert_reason(tmp_path):
+    # Write-time: a vacuous 0.0 fp_rate from a rule whose driving data is
+    # absent must not certify it active.
+    from chameleon_mcp.enforcement_calibration import calibrate_block_rules
+
+    repo = tmp_path / "repo"
+    (repo / "app" / "models").mkdir(parents=True)
+    (repo / "app" / "models" / "user.rb").write_text("class User < ApplicationRecord\nend\n")
+
+    class _Loaded:
+        profile = {"language": "ruby"}
+        archetypes = {
+            "archetypes": {
+                "model": {
+                    "witnesses": ["app/models/user.rb"],
+                    "paths_pattern": "app/models",
+                }
+            }
+        }
+        conventions = {
+            "conventions": {
+                "naming": {
+                    "model": {"file_naming": {"casing": "snake_case", "casing_consistency": 1.0}}
+                }
+            }
+        }
+        rules = {}
+
+    result = calibrate_block_rules(repo, _Loaded())
+    entry = result["naming-convention-violation"]
+    assert entry["active"] is False
+    assert entry["inert_reason"] == "missing-convention-data"

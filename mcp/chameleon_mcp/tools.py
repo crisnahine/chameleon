@@ -643,6 +643,7 @@ def detect_repo(file_path: str) -> dict:
 
     profile_corrupted = False
     profile_unsupported_schema = False
+    profile_too_new = False
     if profile_present:
         from chameleon_mcp.bootstrap.transaction import is_committed
 
@@ -662,10 +663,15 @@ def detect_repo(file_path: str) -> dict:
             _sv = _peek.get("schema_version") if isinstance(_peek, dict) else None
             if isinstance(_sv, int) and _sv > MAX_SUPPORTED_SCHEMA_VERSION:
                 profile_unsupported_schema = True
+            # A profile from a NEWER engine is intact, just unreadable here;
+            # "corrupted" would send the user chasing damage that isn't there,
+            # and "trusted/present" would imply this engine can honor it.
+            if _profile_requires_newer_engine(profile_dir) is not None:
+                profile_too_new = True
         except (OSError, ValueError):
             profile_corrupted = True
 
-    if not profile_present or profile_corrupted or profile_unsupported_schema:
+    if not profile_present or profile_corrupted or profile_unsupported_schema or profile_too_new:
         trust_state = "n/a"
     elif trust is None or not trust.grants_root(profile_dir.parent):
         # No record, or a record that covers a different root under the same
@@ -715,6 +721,8 @@ def detect_repo(file_path: str) -> dict:
         profile_status = "profile_corrupted"
     elif profile_unsupported_schema:
         profile_status = "profile_unsupported_schema_version"
+    elif profile_too_new:
+        profile_status = "profile_too_new"
     elif profile_present:
         profile_status = "profile_present"
     else:
@@ -2312,6 +2320,21 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     return _envelope(out, truncated=truncated)
 
 
+def _crossfile_unavailable_reason(repo_root: Path) -> str:
+    """Why no reverse index exists here: a TS-only feature vs a missing artifact.
+
+    The symbol indexes are built from TS/JS export extras only, so on a Ruby
+    profile their absence is by design; a bare not-found read as damage and
+    sent users chasing a repair that does not exist.
+    """
+    from chameleon_mcp.enforcement_calibration import _stored_profile_languages
+
+    langs = _stored_profile_languages(_effective_profile_dir(repo_root))
+    if langs and "typescript" not in langs:
+        return "typescript-only"
+    return "index-unavailable"
+
+
 def query_symbol_importers(repo: str, file_path: str) -> dict:
     """Who imports a TypeScript module's bindings, and which imports it now breaks.
 
@@ -2378,7 +2401,9 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
 
     index = load_reverse_index(repo_root)
     if index is None:
-        return _envelope(dict(empty))
+        out = dict(empty)
+        out["reason"] = _crossfile_unavailable_reason(repo_root)
+        return _envelope(out)
     target_key = module_key_for_path(p, repo_root)
     if target_key is None:
         return _envelope(dict(empty))
@@ -2519,7 +2544,9 @@ def get_crossfile_context(repo: str) -> dict:
 
     index = load_reverse_index(repo_root)
     if index is None:
-        return _envelope(dict(empty))
+        out = dict(empty)
+        out["reason"] = _crossfile_unavailable_reason(repo_root)
+        return _envelope(out)
 
     max_modules = threshold_int("CROSSFILE_MAX_MODULES_SCANNED")
     max_findings = threshold_int("CROSSFILE_MAX_FINDINGS")
@@ -2721,7 +2748,7 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     # whose name shares no tokens with the original can only be paired by body
     # identity, so each new function is fingerprinted the same way the catalog
     # rows were at bootstrap.
-    from chameleon_mcp.function_catalog import normalized_body_hash
+    from chameleon_mcp.function_catalog import _param_names, normalized_body_hash
 
     try:
         query_lines = p.read_bytes()[:1_000_000].decode("utf-8", errors="replace").splitlines()
@@ -2764,6 +2791,12 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
                     required=required,
                     body_hash=normalized_body_hash(
                         query_lines, entry.get("start_line"), entry.get("end_line")
+                    ),
+                    body_hash_pnorm=normalized_body_hash(
+                        query_lines,
+                        entry.get("start_line"),
+                        entry.get("end_line"),
+                        param_names=_param_names(params),
                     ),
                 )
             )
@@ -2956,6 +2989,32 @@ def get_drift_status(repo: str) -> dict:
     )
 
 
+def _profile_requires_newer_engine(profile_dir: Path) -> str | None:
+    """The profile's declared engine_min_version when this engine is older.
+
+    Mirrors the loader's gate as a cheap peek for display paths (detect_repo,
+    get_status) so they classify a too-new profile honestly instead of
+    rendering its panels or reporting it corrupted. Returns None when the
+    profile is readable by this engine or the peek fails (the load-bearing
+    paths still enforce the gate).
+    """
+    from chameleon_mcp import __version__ as _engine_version
+    from chameleon_mcp.profile.loader import _version_tuple
+
+    try:
+        peek = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    declared = peek.get("engine_min_version") if isinstance(peek, dict) else None
+    if (
+        isinstance(declared, str)
+        and declared
+        and _version_tuple(_engine_version) < _version_tuple(declared)
+    ):
+        return declared
+    return None
+
+
 def get_status(repo: str) -> dict:
     """Report enforcement state for a repo's chameleon profile.
 
@@ -2997,6 +3056,21 @@ def get_status(repo: str) -> dict:
 
     profile_dir = _effective_profile_dir(repo_root)
 
+    # A profile written by a newer engine carries verdicts this engine cannot
+    # interpret; rendering its enforcement panel would describe guarantees
+    # this engine does not honor. Refuse like the load-bearing read paths do.
+    too_new = _profile_requires_newer_engine(profile_dir)
+    if too_new is not None:
+        return _envelope(
+            {
+                "status": "profile_too_new",
+                "error": (
+                    f"profile requires engine >= {too_new}; this engine is older. "
+                    "Upgrade chameleon to read this profile."
+                ),
+            }
+        )
+
     mode = "off"
     idiom_review = True
     idiom_judge = False
@@ -3012,7 +3086,10 @@ def get_status(repo: str) -> dict:
         # fixed. Report the safest mode rather than crashing the status call.
         mode = "off"
 
-    from chameleon_mcp.enforcement_calibration import rule_inert_for_language
+    from chameleon_mcp.enforcement_calibration import (
+        rule_inert_for_language,
+        rule_inert_missing_signal,
+    )
 
     active: list[str] = []
     demoted: list[dict] = []
@@ -3020,19 +3097,23 @@ def get_status(repo: str) -> dict:
         if not isinstance(meta, dict):
             continue
         # A profile calibrated by an older engine can carry active=True for a
-        # rule that has no signal source in this profile's language; the
-        # read-time gate keeps that stale verdict out of the active list (the
-        # enforcement path applies the same gate) until a refresh recalibrates.
-        if meta.get("active") is True and not rule_inert_for_language(rule, profile_dir):
+        # rule that has no signal source in this profile's language, or whose
+        # driving convention data was never derived; the read-time gates keep
+        # that stale verdict out of the active list (the enforcement path
+        # applies the same gates) until a refresh recalibrates.
+        lang_inert = rule_inert_for_language(rule, profile_dir)
+        signal_inert = rule_inert_missing_signal(rule, profile_dir)
+        if meta.get("active") is True and not lang_inert and not signal_inert:
             active.append(rule)
         else:
             entry = {"rule": rule, "fp_rate": meta.get("fp_rate")}
-            # Language-capability demotions carry a reason ("no-signal-for-
-            # language") so the status display can say the rule is inert for
-            # this repo's language rather than implying it was measured out.
+            # Capability demotions carry a reason ("no-signal-for-language" /
+            # "missing-convention-data") so the status display can say the
+            # rule is inert for this repo rather than implying it was
+            # measured out.
             reason = meta.get("inert_reason")
             if not reason and meta.get("active") is True:
-                reason = "no-signal-for-language"
+                reason = "missing-convention-data" if signal_inert else "no-signal-for-language"
             if reason:
                 entry["inert_reason"] = reason
             demoted.append(entry)
@@ -4407,7 +4488,7 @@ def _persisted_paths_glob(profile_dir: Path) -> str | None:
         return None
     try:
         data = json.loads(profile_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     discovery = data.get("discovery") if isinstance(data, dict) else None
     if not isinstance(discovery, dict):
@@ -7590,6 +7671,27 @@ def _chameleon_version_or_unknown() -> str:
         return "unknown"
 
 
+def _conflict_marked_artifacts(profile_dir: Path) -> list[str]:
+    """Names of profile artifacts carrying unresolved git conflict markers.
+
+    Only the markdown artifacts and the sentinel need the scan: a marker-laden
+    JSON artifact already fails its parse and reads as corrupt everywhere.
+    """
+    found: list[str] = []
+    for name in ("COMMITTED", "idioms.md", "principles.md", "profile.summary.md"):
+        p = profile_dir / name
+        try:
+            if not p.is_file():
+                continue
+            head = p.read_bytes()[:262_144]
+        except OSError:
+            continue
+        anchored = b"\n" + head
+        if b"\n<<<<<<< " in anchored and b"\n>>>>>>> " in anchored:
+            found.append(name)
+    return found
+
+
 def doctor() -> dict:
     """Triage report for chameleon installation health.
 
@@ -7844,6 +7946,23 @@ def doctor() -> dict:
         )
 
     try:
+        from chameleon_mcp import index_db as _index_db_mod
+
+        conn = _index_db_mod.init_index_db()
+        row = conn.execute("SELECT v FROM schema_meta WHERE k='schema_version'").fetchone()
+        checks.append(
+            {
+                "name": "index_db",
+                "status": "ok",
+                "detail": f"schema_version={row[0] if row else 'missing'}",
+            }
+        )
+    except Exception as exc:
+        checks.append(
+            {"name": "index_db", "status": "warn", "detail": f"{type(exc).__name__}: {exc}"}
+        )
+
+    try:
         from chameleon_mcp.bootstrap.transaction import is_committed
         from chameleon_mcp.profile.loader import load_profile_dir
 
@@ -7867,13 +7986,26 @@ def doctor() -> dict:
                 status = "no_profile"
             else:
                 status = "unknown"
-            repo_states.append(
-                {
-                    "repo_root": root,
-                    "profile_status": status,
-                    "trust_state": r.get("trust_state"),
-                }
-            )
+            entry = {
+                "repo_root": root,
+                "profile_status": status,
+                "trust_state": r.get("trust_state"),
+            }
+            # An unresolved git merge leaves conflict markers inside the
+            # markdown artifacts (the JSON ones fail their parse and already
+            # read as corrupt). Markers in principles/summary inject garbage
+            # into sessions and markers in idioms.md hide taught idioms, so
+            # surface them here with the resolution.
+            if root:
+                conflicted = _conflict_marked_artifacts(Path(root) / ".chameleon")
+                if conflicted:
+                    entry["merge_conflict_markers"] = conflicted
+                    entry["resolution"] = (
+                        "accept one side of the merge for these files, then "
+                        "run /chameleon-refresh to regenerate"
+                    )
+                    any_corrupt = True
+            repo_states.append(entry)
         checks.append(
             {
                 "name": "known_repos",

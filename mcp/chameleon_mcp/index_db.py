@@ -179,19 +179,48 @@ def init_index_db(db_path: Path | None = None) -> sqlite3.Connection:
     else:
         path = db_path
         path.parent.mkdir(parents=True, exist_ok=True)
-    conn = open_hardened(path)
-    conn.execute("PRAGMA busy_timeout=5000")
-    _migrate_repos_to_composite_pk(conn)
-    conn.executescript(SCHEMA_DDL)
-    # Commit before returning: an uncommitted INSERT pins the WAL writer lock
-    # for the connection's lifetime, starving every other process's write
-    # (same failure class as drift.db's schema-init — see drift/schema.py).
-    with conn:
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_meta (k, v) VALUES ('schema_version', ?)",
-            (INDEX_DB_SCHEMA_VERSION,),
-        )
-    return conn
+
+    def _open_and_setup() -> sqlite3.Connection:
+        conn = open_hardened(path)
+        conn.execute("PRAGMA busy_timeout=5000")
+        _migrate_repos_to_composite_pk(conn)
+        conn.executescript(SCHEMA_DDL)
+        # Commit before returning: an uncommitted INSERT pins the WAL writer
+        # lock for the connection's lifetime, starving every other process's
+        # write (same failure class as drift.db's schema-init — see
+        # drift/schema.py).
+        with conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_meta (k, v) VALUES ('schema_version', ?)",
+                (INDEX_DB_SCHEMA_VERSION,),
+            )
+        return conn
+
+    try:
+        return _open_and_setup()
+    except sqlite3.DatabaseError as exc:
+        if not _is_corruption_error(exc):
+            raise
+        # index.db is a derived cache of repo metadata: corruption (truncated
+        # header, overwritten pages) otherwise persists forever because every
+        # reader fails open and nothing ever rewrites the file. Rebuilding
+        # from scratch loses only re-derivable rows.
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                Path(f"{path}{suffix}").unlink()
+            except OSError:
+                pass
+        return _open_and_setup()
+
+
+def _is_corruption_error(exc: sqlite3.Error) -> bool:
+    """True for the sqlite errors that mean the file itself is damaged.
+
+    Lock contention and missing tables are OperationalErrors with different
+    messages and must NOT trigger a rebuild.
+    """
+    msg = str(exc).lower()
+    return "not a database" in msg or "malformed" in msg or "corrupt" in msg
 
 
 def _migrate_repos_to_composite_pk(conn: sqlite3.Connection) -> None:

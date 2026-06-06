@@ -240,11 +240,20 @@ def is_committed(target_dir: Path) -> bool:
     """Return True iff target_dir contains a valid COMMITTED sentinel.
 
     Loaders use this to refuse incomplete profiles per docs/architecture.md.
+    The sentinel is a tracked file in committed-profile repos, so an
+    unresolved git merge can leave conflict markers inside it; that profile's
+    state is indeterminate and must read as uncommitted, never half-work.
     """
     if not target_dir.is_dir():
         return False
     sentinel = target_dir / COMMITTED_SENTINEL
-    return sentinel.is_file()
+    if not sentinel.is_file():
+        return False
+    try:
+        head = sentinel.read_bytes()[:4096]
+    except OSError:
+        return False
+    return b"<<<<<<<" not in head and b">>>>>>>" not in head
 
 
 def _txn_dir_pid(txn_dir: Path) -> int | None:
@@ -422,11 +431,13 @@ def cleanup_orphan_tmp_dirs(target_parent: Path, profile_dir_name: str = "chamel
         for txn_dir in tmp_root.iterdir():
             if not txn_dir.is_dir():
                 continue
-            if (txn_dir / COMMITTED_SENTINEL).exists():
-                continue
             pid = _txn_dir_pid(txn_dir)
             if pid is not None and _pid_alive(pid):
                 continue
+            # This sweeps COMMITTED txn dirs too once their writer is gone: a
+            # crash between the sentinel write and the swap strands the dir
+            # forever (only the writer process could finish the rename), and
+            # crash recovery restores from the backup dir, never from here.
             shutil.rmtree(txn_dir, ignore_errors=True)
             handled += 1
         try:

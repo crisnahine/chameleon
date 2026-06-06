@@ -272,3 +272,25 @@ def test_maybe_preserve_trust_honors_always(tmp_path, monkeypatch):
     assert envelope["data"].get("trust_preserved") is True
     assert envelope["data"].get("trust_preserve_reason") == "always"
     assert trust_state_for(rid) is not None
+
+
+# --------------------------------------------------------------------------
+# _persisted_paths_glob — the docstring promises any error returns None, so a
+# profile.json holding non-UTF8 bytes must not leak UnicodeDecodeError into
+# refresh (qa25 P2)
+
+
+def test_persisted_paths_glob_returns_none_on_non_utf8_profile(tmp_path: Path):
+    pd = tmp_path / ".chameleon"
+    pd.mkdir()
+    (pd / "profile.json").write_bytes(b'{"discovery": {"paths_glob": "\xff\xfe**/*.rb"}}')
+    assert t._persisted_paths_glob(pd) is None
+
+
+def test_persisted_paths_glob_reads_valid_profile(tmp_path: Path):
+    pd = tmp_path / ".chameleon"
+    pd.mkdir()
+    (pd / "profile.json").write_text(
+        json.dumps({"discovery": {"paths_glob": "app/**/*.rb"}}), encoding="utf-8"
+    )
+    assert t._persisted_paths_glob(pd) == "app/**/*.rb"

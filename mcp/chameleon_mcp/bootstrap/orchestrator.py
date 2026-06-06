@@ -54,7 +54,7 @@ from chameleon_mcp.conventions import (
     extract_declarations_from_content,
     serialize_conventions,
 )
-from chameleon_mcp.extractors._base import Extractor
+from chameleon_mcp.extractors._base import Extractor, ExtractorUnavailableError
 from chameleon_mcp.extractors.ruby import RubyExtractor
 from chameleon_mcp.extractors.typescript import NodeUnavailableError, TypeScriptExtractor
 
@@ -322,6 +322,27 @@ def _is_ts_workspace(workspace_dir: Path) -> bool:
     return any(token in content for token in ("typescript", '"ts-node"', '"vite"'))
 
 
+def _parse_looks_degraded(files_parsed: int, files_skipped: int) -> bool:
+    """True when a parse run is too damaged to commit a profile from.
+
+    A dying extractor child (OOM-killed node, interrupted ruby) surfaces as a
+    mass of skipped files, not an exception. Committing the residue would
+    atomically replace a healthy profile with a near-empty one under a success
+    status. Healthy repos parse at ~100%; the ratio gate leaves room for a
+    handful of genuinely unparseable files while still catching truncated
+    runs, and the floor spares tiny repos where one bad file dominates the
+    ratio.
+    """
+    from chameleon_mcp._thresholds import threshold_float, threshold_int
+
+    attempted = files_parsed + files_skipped
+    if files_parsed == 0:
+        return attempted > 0
+    skip_floor = threshold_int("EXTRACTOR_DEGRADED_MIN_SKIPPED")
+    skip_ratio = threshold_float("EXTRACTOR_DEGRADED_RATIO")
+    return files_skipped >= skip_floor and files_skipped / attempted > skip_ratio
+
+
 def resolve_extractor(repo_root: Path) -> Extractor | None:
     """Resolve the extractor for ``repo_root`` the way bootstrap does.
 
@@ -393,6 +414,11 @@ class BootstrapReport:
     "distributions": {dim: {value_str: count}}}. The future interview UI uses
     these to offer a manual split.
     """
+    idiom_warnings: list[str] = field(default_factory=list)
+    """Carried-forward idioms.md looked damaged (unreadable, non-UTF8, or no
+    parseable idiom blocks despite non-template content). Taught idioms are
+    user-authored and unrecoverable by a refresh, so the damage is surfaced
+    here instead of committing silently."""
     nested_profile_warnings: list[str] = field(default_factory=list)
     """BUG-NEW-005: pre-existing `.chameleon/` directories found
     in workspace subdirectories of the repo being bootstrapped.
@@ -522,6 +548,7 @@ class BootstrapReport:
             "error": self.error,
             "sparse_cluster_warnings": list(self.sparse_cluster_warnings),
             "bimodal_cluster_warnings": list(self.bimodal_cluster_warnings),
+            "idiom_warnings": list(self.idiom_warnings),
             "nested_profile_warnings": list(self.nested_profile_warnings),
             "workspaces": list(self.workspace_reports),
             "workspace_skipped_warnings": list(self.workspace_skipped_warnings),
@@ -1108,12 +1135,15 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
         except OSError:
             pass
 
-    idioms_text: str
+    # idioms.md is user-authored and re-emitted verbatim, so carry the raw
+    # bytes: decoding here could only lose data (a non-UTF8 file must survive
+    # the rewrite byte-identical, never be clobbered to empty).
+    idioms_raw: bytes
     idioms_path = profile_dir / "idioms.md"
     try:
-        idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.is_file() else ""
+        idioms_raw = idioms_path.read_bytes() if idioms_path.is_file() else b""
     except OSError:
-        idioms_text = ""
+        idioms_raw = b""
 
     summary_path = profile_dir / "profile.summary.md"
     try:
@@ -1135,7 +1165,7 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
         )
         for name, body in siblings.items():
             (txn_dir / name).write_text(body, encoding="utf-8")
-        (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
+        (txn_dir / "idioms.md").write_bytes(idioms_raw)
         (txn_dir / "profile.summary.md").write_text(summary_text, encoding="utf-8")
         if renames_text is not None:
             (txn_dir / "renames.json").write_text(renames_text, encoding="utf-8")
@@ -1390,11 +1420,16 @@ def _bootstrap_single(
 
     try:
         parse_result = extractor.parse_repo(repo_root, paths=candidates)
-    except NodeUnavailableError as exc:
-        # Node/npm couldn't be provisioned for the TS extractor. Degrade to a
-        # clean report instead of aborting the whole bootstrap run.
+    except ExtractorUnavailableError as exc:
+        # The language toolchain couldn't be provisioned (node/ts_dump.mjs for
+        # TS, ruby/prism_dump.rb for Ruby). Degrade to a clean report instead
+        # of aborting the whole bootstrap run.
         return BootstrapReport(
-            status="failed_node_unavailable",
+            status=(
+                "failed_node_unavailable"
+                if isinstance(exc, NodeUnavailableError)
+                else "failed_ruby_unavailable"
+            ),
             archetypes_detected=0,
             rules_extracted=0,
             idioms_collected=0,
@@ -1411,6 +1446,33 @@ def _bootstrap_single(
             discovered_files_post_exclusion=post_exclusion_count,
         )
     files_skipped_parse = len(parse_result.skipped)
+
+    files_parsed = len(parse_result.files)
+    attempted = files_parsed + files_skipped_parse
+    if _parse_looks_degraded(files_parsed, files_skipped_parse):
+        sample = "; ".join(f"{path.name}: {reason}" for path, reason in parse_result.skipped[:3])
+        return BootstrapReport(
+            status="failed_extractor_degraded",
+            archetypes_detected=0,
+            rules_extracted=0,
+            idioms_collected=0,
+            canonicals_skipped_failed_scans=0,
+            files_processed=files_parsed,
+            files_skipped_generated=0,
+            files_skipped_parse=files_skipped_parse,
+            duration_ms=int((time.time() - started_at) * 1000),
+            profile_path=None,
+            error=(
+                f"{files_skipped_parse} of {attempted} files failed to parse "
+                f"({sample}). The extractor subprocess likely died mid-run; "
+                "the existing profile was left untouched. Re-run once the "
+                "toolchain is healthy."
+            ),
+            workspace_roots=list(workspace_roots),
+            fanout_capped=fanout_capped,
+            discovered_files_pre_exclusion=pre_exclusion_count,
+            discovered_files_post_exclusion=post_exclusion_count,
+        )
 
     clustering = cluster_files(parse_result.files, repo_root=repo_root)
     files_skipped_generated = len(clustering.skipped_generated)
@@ -1741,16 +1803,52 @@ def _bootstrap_single(
             "parse_warning": tool_configs.parse_warnings["rubocop"],
         }
 
+    # idioms.md is user-authored: taught idioms cannot be regenerated, so a
+    # damaged file must be carried forward byte-identical and flagged loudly,
+    # never silently replaced with the empty template (that would destroy the
+    # only on-disk copy) and never silently committed as if healthy (the user
+    # would not learn their idioms stopped injecting until much later).
     existing_idioms_path = profile_dir / "idioms.md"
+    idiom_warnings: list[str] = []
+    idioms_collected = 0
+    idioms_raw_bytes: bytes | None = None
+    idioms_content = _EMPTY_IDIOMS_TEMPLATE
     if existing_idioms_path.is_file():
         try:
-            idioms_content = existing_idioms_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            # UnicodeDecodeError is a ValueError, not an OSError, so a non-UTF8
-            # idioms.md must be caught explicitly or refresh crashes mid-preserve.
-            idioms_content = _EMPTY_IDIOMS_TEMPLATE
-    else:
-        idioms_content = _EMPTY_IDIOMS_TEMPLATE
+            raw_idioms = existing_idioms_path.read_bytes()
+        except OSError:
+            raw_idioms = None
+            idiom_warnings.append(
+                "idioms.md exists but could not be read; a fresh template was "
+                "written. If idioms were taught here, restore the file from "
+                "git history."
+            )
+        if raw_idioms is not None:
+            try:
+                idioms_content = raw_idioms.decode("utf-8")
+            except UnicodeDecodeError:
+                idioms_raw_bytes = raw_idioms
+                idiom_warnings.append(
+                    "idioms.md is not valid UTF-8; the file was carried forward "
+                    "unchanged, but taught idioms cannot be read until it is "
+                    "repaired (restore from git history)."
+                )
+    if idioms_raw_bytes is None:
+        from chameleon_mcp.idiom_coverage import parse_idiom_blocks
+
+        idiom_blocks = parse_idiom_blocks(idioms_content)
+        idioms_collected = sum(1 for b in idiom_blocks if b.get("section") == "active")
+        if (
+            existing_idioms_path.is_file()
+            and not idiom_blocks
+            and idioms_content.strip()
+            and idioms_content.strip() != _EMPTY_IDIOMS_TEMPLATE.strip()
+        ):
+            idiom_warnings.append(
+                "idioms.md exists but contains no parseable idiom blocks; if "
+                "idioms were previously taught here the file may be damaged - "
+                "check git history."
+            )
 
     with atomic_profile_commit(profile_dir) as txn_dir:
         (txn_dir / "profile.json").write_text(
@@ -1829,13 +1927,16 @@ def _bootstrap_single(
             )
         except Exception:
             pass
-        (txn_dir / "idioms.md").write_text(idioms_content, encoding="utf-8")
+        if idioms_raw_bytes is not None:
+            (txn_dir / "idioms.md").write_bytes(idioms_raw_bytes)
+        else:
+            (txn_dir / "idioms.md").write_text(idioms_content, encoding="utf-8")
         (txn_dir / "profile.summary.md").write_text(
             _build_summary_md(
                 archetypes_data,
                 canonicals_data,
                 profile_data,
-                idioms_content,
+                idioms_content if idioms_raw_bytes is None else _EMPTY_IDIOMS_TEMPLATE,
                 rules_data,
             ),
             encoding="utf-8",
@@ -1910,7 +2011,7 @@ def _bootstrap_single(
         status="success",
         archetypes_detected=archetype_count,
         rules_extracted=len(rules_data["rules"]),
-        idioms_collected=0,
+        idioms_collected=idioms_collected,
         canonicals_skipped_failed_scans=canonicals_skipped_failed_scans,
         files_processed=len(parse_result.files),
         files_skipped_generated=files_skipped_generated,
@@ -1919,6 +2020,7 @@ def _bootstrap_single(
         profile_path=profile_dir,
         sparse_cluster_warnings=sparse_warnings,
         bimodal_cluster_warnings=bimodal_warnings,
+        idiom_warnings=idiom_warnings,
         nested_profile_warnings=nested_warnings,
         language_hint=language_hint,
         workspace_roots=list(workspace_roots),

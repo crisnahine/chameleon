@@ -167,10 +167,37 @@ class CatalogedFunction:
     required: int
     tokens: frozenset[str]
     body_hash: str | None = None
+    body_hash_pnorm: str | None = None
+
+
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_$][\w$]*\Z")
+
+
+def _param_names(params: object) -> list[str]:
+    """Positional parameter identifiers from a callable_signatures entry.
+
+    Non-identifier slots (destructured ``{}``, anonymous ``_``, rest ``*``)
+    keep their position as an empty string so positional alpha-renaming stays
+    aligned between a clone and its original.
+    """
+    if not isinstance(params, list):
+        return []
+    names: list[str] = []
+    for prm in params:
+        name = prm.get("name") if isinstance(prm, dict) else None
+        if isinstance(name, str) and name not in ("_", "{}", "*") and _IDENTIFIER_RE.match(name):
+            names.append(name)
+        else:
+            names.append("")
+    return names
 
 
 def normalized_body_hash(
-    source_lines: list[str], start_line: object, end_line: object
+    source_lines: list[str],
+    start_line: object,
+    end_line: object,
+    *,
+    param_names: list[str] | None = None,
 ) -> str | None:
     """Fingerprint a function body for the exact-clone fallback, or None.
 
@@ -180,6 +207,13 @@ def normalized_body_hash(
     than the minimum normalized length return None: trivial one-expression
     bodies collide across half a codebase and would flood the candidate list
     with noise rather than reuse leads.
+
+    With ``param_names``, each parameter identifier is alpha-renamed to its
+    positional slot before hashing, so a clone whose only difference is
+    renamed parameters still pairs with its original. The rename is textual
+    (word-bounded), which can over-match a shadowing outer name — acceptable
+    for a prefilter whose candidates are verified against real bodies by the
+    caller.
     """
     if not isinstance(start_line, int) or not isinstance(end_line, int):
         return None
@@ -191,6 +225,13 @@ def normalized_body_hash(
     normalized = " ".join("\n".join(body_lines).split())
     if len(normalized) < threshold_int("DUPLICATION_BODY_HASH_MIN_CHARS"):
         return None
+    if param_names:
+        for i, pname in enumerate(param_names):
+            if not pname:
+                continue
+            normalized = re.sub(
+                rf"(?<![\w$]){re.escape(pname)}(?![\w$])", f"\x00p{i}\x00", normalized
+            )
     import hashlib
 
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
@@ -238,6 +279,7 @@ def _function_rows(pf, root: Path) -> tuple[str | None, list[dict]]:
         seen.add(key)
         kind = entry.get("kind")
         body_hash: str | None = None
+        body_hash_pnorm: str | None = None
         if isinstance(entry.get("start_line"), int) and isinstance(entry.get("end_line"), int):
             if source_lines is None:
                 try:
@@ -252,6 +294,12 @@ def _function_rows(pf, root: Path) -> tuple[str | None, list[dict]]:
             body_hash = normalized_body_hash(
                 source_lines, entry.get("start_line"), entry.get("end_line")
             )
+            body_hash_pnorm = normalized_body_hash(
+                source_lines,
+                entry.get("start_line"),
+                entry.get("end_line"),
+                param_names=_param_names(entry.get("params")),
+            )
         row = {
             "name": name,
             "kind": kind if isinstance(kind, str) else "function",
@@ -260,6 +308,8 @@ def _function_rows(pf, root: Path) -> tuple[str | None, list[dict]]:
         }
         if body_hash is not None:
             row["body_hash"] = body_hash
+        if body_hash_pnorm is not None:
+            row["body_hash_pnorm"] = body_hash_pnorm
         rows.append(row)
     return rel, rows
 
@@ -373,6 +423,7 @@ def load_function_catalog(repo_root: Path | str | None) -> FunctionCatalog | Non
             arity = row.get("arity")
             required = row.get("required")
             body_hash = row.get("body_hash")
+            body_hash_pnorm = row.get("body_hash_pnorm")
             functions.append(
                 CatalogedFunction(
                     name=name,
@@ -382,6 +433,11 @@ def load_function_catalog(repo_root: Path | str | None) -> FunctionCatalog | Non
                     required=int(required) if isinstance(required, int) else 0,
                     tokens=name_tokens(name),
                     body_hash=body_hash if isinstance(body_hash, str) and body_hash else None,
+                    body_hash_pnorm=(
+                        body_hash_pnorm
+                        if isinstance(body_hash_pnorm, str) and body_hash_pnorm
+                        else None
+                    ),
                 )
             )
 
@@ -437,6 +493,7 @@ class NewFunction:
     arity: int
     required: int
     body_hash: str | None = None
+    body_hash_pnorm: str | None = None
 
 
 def select_candidates(
@@ -466,7 +523,10 @@ def select_candidates(
     results: list[dict] = []
     for nf in new_functions:
         new_tokens = name_tokens(nf.name)
-        if not new_tokens:
+        # Generic-verb names (run, handle, process) tokenize to nothing, which
+        # is exactly the naming a renamed clone hides behind — keep them in
+        # play whenever a body fingerprint exists to pair on.
+        if not new_tokens and not (nf.body_hash or nf.body_hash_pnorm):
             continue
         new_shape = (nf.arity, nf.required)
         scored: list[tuple[int, int, float, int, CatalogedFunction]] = []
@@ -480,8 +540,12 @@ def select_candidates(
                 continue
             # Identical normalized bodies pair regardless of name tokens: a
             # body-exact clone renamed with zero shared tokens is exactly the
-            # LLM-duplication case the name prefilter cannot see.
-            body_match = bool(nf.body_hash) and nf.body_hash == cand.body_hash
+            # LLM-duplication case the name prefilter cannot see. The
+            # param-normalized hash extends this to clones whose only body
+            # difference is renamed parameters.
+            body_match = (bool(nf.body_hash) and nf.body_hash == cand.body_hash) or (
+                bool(nf.body_hash_pnorm) and nf.body_hash_pnorm == cand.body_hash_pnorm
+            )
             overlap = _overlap_score(new_tokens, cand)
             if not body_match:
                 if overlap < min_tokens:

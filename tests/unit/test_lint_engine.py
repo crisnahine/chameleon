@@ -1127,3 +1127,45 @@ class TestRubyHeredocStrip:
         out = self._strip(src)
         assert "x = 1" in out
         assert "looks_like_code" not in out
+
+
+class TestStringEmbeddedSlashesDoNotBlindImports:
+    """qa25 P3 — a string holding `//` (a URL) on the line above an import was
+    mis-tokenized as a comment opener, unbalancing the quote pairing across the
+    newline and blanking the real import below; the deny rule went blind."""
+
+    CONVENTIONS = {
+        "imports": {
+            "competing": [
+                {
+                    "preferred": "@/lib/http",
+                    "over": "axios",
+                    "preferred_count": 47,
+                    "over_count": 0,
+                }
+            ],
+        },
+    }
+
+    def test_url_string_above_import_does_not_blind_the_rule(self):
+        content = 'const E = "https://api.x/v1"\nimport http from "axios";\n'
+        violations = lint_conventions(content, self.CONVENTIONS, language="typescript")
+        assert [v.rule for v in violations] == ["import-preference-violation"]
+
+    def test_protocol_relative_url_single_quotes(self):
+        content = "const cdn = '//cdn.example.com/lib'\nimport http from \"axios\";\n"
+        violations = lint_conventions(content, self.CONVENTIONS, language="typescript")
+        assert [v.rule for v in violations] == ["import-preference-violation"]
+
+    def test_real_line_comment_still_stripped(self):
+        # A genuine comment naming the banned module must not flag.
+        content = '// we used to import axios from "axios" here\nimport http from "@/lib/http";\n'
+        violations = lint_conventions(content, self.CONVENTIONS, language="typescript")
+        assert violations == []
+
+    def test_banned_import_inside_string_still_immune(self):
+        # The string-blanking that protects help-text mentioning imports keeps
+        # working under the combined pass.
+        content = "const help = 'import http from \"axios\"'\n"
+        violations = lint_conventions(content, self.CONVENTIONS, language="typescript")
+        assert violations == []

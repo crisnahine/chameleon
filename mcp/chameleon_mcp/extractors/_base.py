@@ -12,6 +12,17 @@ from pathlib import Path
 from typing import Any, Protocol
 
 
+class ExtractorUnavailableError(RuntimeError):
+    """The language toolchain backing an extractor is unavailable.
+
+    Raised when the subprocess an extractor depends on (node + ts_dump.mjs,
+    ruby + prism_dump.rb) cannot be started at all. Subclasses ``RuntimeError``
+    so callers that catch ``RuntimeError`` still work; the bootstrap
+    orchestrator catches this base class and degrades to a clean failed report
+    instead of letting the exception escape to the MCP boundary.
+    """
+
+
 @dataclass
 class ParsedFile:
     """Normalized AST representation of a single source file.

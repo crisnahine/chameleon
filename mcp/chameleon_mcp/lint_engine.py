@@ -163,6 +163,20 @@ _TS_STRING = re.compile(
     )""",
     re.VERBOSE | re.DOTALL,
 )
+# One alternation so comments and strings consume each other's openers in
+# source order. Sequential passes mis-tokenized `//` INSIDE a string (a URL
+# literal) as a comment opener, which unbalanced the quote pairing across the
+# newline and blanked real code below — blinding the import rules.
+_TS_STRING_OR_COMMENT = re.compile(
+    r"""/\*.*?\*/
+        | //[^\n]*
+        | (?<!\\)(?:
+            "(?:\\.|[^"\\])*" |
+            '(?:\\.|[^'\\])*' |
+            `(?:\\.|[^`\\])*`
+          )""",
+    re.VERBOSE | re.DOTALL,
+)
 
 
 def _strip_ts_strings_and_comments(content: str) -> str:
@@ -177,10 +191,7 @@ def _strip_ts_strings_and_comments(content: str) -> str:
     def _spaces(m: re.Match) -> str:
         return re.sub(r"[^\n]", " ", m.group(0))
 
-    out = _TS_BLOCK_COMMENT.sub(_spaces, content)
-    out = _TS_LINE_COMMENT.sub(_spaces, out)
-    out = _TS_STRING.sub(_spaces, out)
-    return out
+    return _TS_STRING_OR_COMMENT.sub(_spaces, content)
 
 
 def extract_comment_spans(content: str, *, language: str) -> list[str]:

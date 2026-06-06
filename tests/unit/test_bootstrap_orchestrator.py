@@ -817,3 +817,208 @@ class TestSchemaVersionStamping:
     def test_engine_min_version_is_nonempty_string(self):
         assert isinstance(o.ENGINE_MIN_VERSION, str)
         assert o.ENGINE_MIN_VERSION
+
+
+# --------------------------------------------------------------------------
+# degraded-parse gate — a dying extractor child must never commit a thin
+# profile over a healthy one under a success status (qa25 P1)
+
+
+class TestKilledExtractorNeverCommitsThinProfile:
+    def _ruby_repo(self, tmp_path: Path, n_files: int) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "Gemfile").write_text("source 'https://rubygems.org'\n")
+        for i in range(n_files):
+            _write(repo, f"app/models/model_{i}.rb", f"class Model{i}; end\n")
+        return repo
+
+    def test_mass_parse_skips_fail_the_run_and_leave_profile_untouched(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # Simulate a ruby child killed after the first record: 1 parsed, the
+        # rest marked skipped as never-reached-stdout. The run must fail with
+        # failed_extractor_degraded and must not write a profile.
+        repo = self._ruby_repo(tmp_path, 12)
+        files = sorted((repo / "app" / "models").glob("*.rb"))
+
+        from chameleon_mcp.extractors._base import ParseResult
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        def _truncated(self, repo_root, glob="**/*.rb", limit=None, paths=None):
+            return ParseResult(
+                files=[_pf(files[0])],
+                skipped=[(p, "extractor exited before emitting a record") for p in files[1:]],
+            )
+
+        monkeypatch.setattr(RubyExtractor, "parse_repo", _truncated)
+        # A pre-existing profile must survive byte-identical.
+        marker = repo / ".chameleon"
+        marker.mkdir()
+        (marker / "sentinel.txt").write_text("healthy\n")
+
+        report = o.bootstrap_repo(repo)
+        assert report.status == "failed_extractor_degraded"
+        assert "11 of 12 files failed to parse" in (report.error or "")
+        assert report.files_skipped_parse == 11
+        assert (marker / "sentinel.txt").read_text() == "healthy\n"
+        assert not (marker / "archetypes.json").exists()
+
+    def test_zero_parsed_files_fail_even_below_the_skip_floor(self, tmp_path: Path, monkeypatch):
+        # 3 candidates, all skipped: below EXTRACTOR_DEGRADED_MIN_SKIPPED but
+        # nothing parsed at all — still a failed run, never an empty profile.
+        repo = self._ruby_repo(tmp_path, 3)
+        files = sorted((repo / "app" / "models").glob("*.rb"))
+
+        from chameleon_mcp.extractors._base import ParseResult
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        monkeypatch.setattr(
+            RubyExtractor,
+            "parse_repo",
+            lambda self, repo_root, glob="**/*.rb", limit=None, paths=None: ParseResult(
+                files=[], skipped=[(p, "boom") for p in files]
+            ),
+        )
+        report = o.bootstrap_repo(repo)
+        assert report.status == "failed_extractor_degraded"
+        assert not (repo / ".chameleon").exists()
+
+    def test_ruby_toolchain_missing_degrades_to_clean_report(self, tmp_path: Path, monkeypatch):
+        # ruby/prism_dump.rb unavailable must yield a failed report through the
+        # normal envelope, not an exception escaping to the MCP boundary.
+        repo = self._ruby_repo(tmp_path, 2)
+
+        from chameleon_mcp.extractors.ruby import RubyExtractor, RubyUnavailableError
+
+        def _raise(self, repo_root, glob="**/*.rb", limit=None, paths=None):
+            raise RubyUnavailableError("`ruby` not found on PATH")
+
+        monkeypatch.setattr(RubyExtractor, "parse_repo", _raise)
+        report = o.bootstrap_repo(repo)
+        assert report.status == "failed_ruby_unavailable"
+        assert "ruby" in (report.error or "")
+        assert not (repo / ".chameleon").exists()
+
+    def test_missing_ts_dump_script_is_extractor_unavailable_not_crash(self, tmp_path: Path):
+        # The TS extractor's missing-script guard must raise the catchable
+        # NodeUnavailableError, not a bare FileNotFoundError.
+        from chameleon_mcp.extractors.typescript import NodeUnavailableError, TypeScriptExtractor
+
+        ext = TypeScriptExtractor(ts_dump_script=tmp_path / "nope" / "ts_dump.mjs")
+        src = _write(tmp_path, "src/a.ts", "export const a = 1\n")
+        with pytest.raises(NodeUnavailableError):
+            ext.parse_repo(tmp_path, paths=[src])
+
+
+class TestParseLooksDegraded:
+    def test_clean_parse_is_not_degraded(self):
+        assert not o._parse_looks_degraded(100, 0)
+
+    def test_handful_of_skips_below_floor_is_not_degraded(self):
+        assert not o._parse_looks_degraded(5, 9)
+
+    def test_ratio_above_half_with_floor_met_is_degraded(self):
+        assert o._parse_looks_degraded(9, 11)
+
+    def test_large_repo_minority_skips_not_degraded(self):
+        assert not o._parse_looks_degraded(900, 100)
+
+    def test_zero_attempted_is_not_degraded(self):
+        assert not o._parse_looks_degraded(0, 0)
+
+    def test_zero_parsed_any_skipped_is_degraded(self):
+        assert o._parse_looks_degraded(0, 1)
+
+
+# --------------------------------------------------------------------------
+# idioms.md carry-forward — taught idioms are user-authored and cannot be
+# regenerated, so a damaged idioms.md must survive byte-identical and be
+# flagged loudly, never silently templated away or committed as healthy
+# (qa25 P2)
+
+
+TAUGHT_IDIOMS = """# Team idioms
+
+## active
+
+### http-via-request-tuple
+
+All HTTP goes through the request tuple helper.
+
+Example:
+
+```ts
+const [data, error] = await request(url)
+```
+"""
+
+
+class TestDamagedIdiomsCarryForward:
+    def _ts_repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "tsconfig.json").write_text("{}")
+        for i in range(3):
+            _write(repo, f"src/util_{i}.ts", f"export const u{i} = {i}\n")
+        return repo
+
+    def _bootstrap_with_fake_parse(self, repo: Path, monkeypatch):
+        from chameleon_mcp.extractors.typescript import TypeScriptExtractor
+
+        files = sorted((repo / "src").glob("*.ts"))
+        monkeypatch.setattr(
+            TypeScriptExtractor,
+            "parse_repo",
+            lambda self, repo_root, glob="**/*", limit=None, paths=None: __import__(
+                "chameleon_mcp.extractors._base", fromlist=["ParseResult"]
+            ).ParseResult(files=[_pf(p, kinds=("VariableStatement",)) for p in files], skipped=[]),
+        )
+        return o.bootstrap_repo(repo)
+
+    def test_non_utf8_idioms_md_survives_byte_identical_with_warning(
+        self, tmp_path: Path, monkeypatch
+    ):
+        repo = self._ts_repo(tmp_path)
+        pd = repo / ".chameleon"
+        pd.mkdir()
+        damaged = b"# Team idioms\n\xff\xfe taught content here\n"
+        (pd / "idioms.md").write_bytes(damaged)
+
+        report = self._bootstrap_with_fake_parse(repo, monkeypatch)
+        assert report.status == "success"
+        assert (pd / "idioms.md").read_bytes() == damaged
+        assert any("not valid UTF-8" in w for w in report.idiom_warnings)
+
+    def test_garbage_idioms_md_carried_verbatim_with_warning(self, tmp_path: Path, monkeypatch):
+        repo = self._ts_repo(tmp_path)
+        pd = repo / ".chameleon"
+        pd.mkdir()
+        garbage = "completely unstructured text, no idiom blocks at all\n"
+        (pd / "idioms.md").write_text(garbage, encoding="utf-8")
+
+        report = self._bootstrap_with_fake_parse(repo, monkeypatch)
+        assert report.status == "success"
+        assert (pd / "idioms.md").read_text(encoding="utf-8") == garbage
+        assert any("no parseable idiom blocks" in w for w in report.idiom_warnings)
+
+    def test_healthy_idioms_md_carried_with_count_and_no_warning(self, tmp_path: Path, monkeypatch):
+        repo = self._ts_repo(tmp_path)
+        pd = repo / ".chameleon"
+        pd.mkdir()
+        (pd / "idioms.md").write_text(TAUGHT_IDIOMS, encoding="utf-8")
+
+        report = self._bootstrap_with_fake_parse(repo, monkeypatch)
+        assert report.status == "success"
+        assert report.idiom_warnings == []
+        assert report.idioms_collected == 1
+        assert "http-via-request-tuple" in (pd / "idioms.md").read_text(encoding="utf-8")
+
+    def test_fresh_repo_without_idioms_gets_template_and_no_warning(
+        self, tmp_path: Path, monkeypatch
+    ):
+        repo = self._ts_repo(tmp_path)
+        report = self._bootstrap_with_fake_parse(repo, monkeypatch)
+        assert report.status == "success"
+        assert report.idiom_warnings == []
+        assert report.idioms_collected == 0

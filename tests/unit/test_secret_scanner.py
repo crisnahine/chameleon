@@ -179,3 +179,41 @@ def test_line_at_cap_still_scanned_by_detect_secrets():
     hits = _try_detect_secrets(line)
     assert hits is not None
     assert any(h["type"] == "AWS Access Key" for h in hits)
+
+
+# --------------------------------------------------------------------------
+# qa25 P3 — the fallback scan resolved each hit's line by re-scanning the
+# whole buffer (O(hits x length)); a token-dense single line stalled for
+# hundreds of ms. The offset table + per-line context cache must keep the
+# pathological shape linear without changing any verdict.
+
+
+def test_fallback_scan_token_dense_single_line_is_bounded():
+    import time
+
+    # ~110KB single line: 2000 exactly-40-char aws-secret-shaped tokens with
+    # credential context on the line.
+    tokens = " ".join(
+        f"x{i} = 'aBcDeFgH1jKlMnOpQrStUvWxYz0123456789abc{i % 10:01d}'" for i in range(2000)
+    )
+    content = "api_secret_map = " + tokens
+    start = time.monotonic()
+    hits = _fallback_scan(content)
+    elapsed = time.monotonic() - start
+    assert hits, "credential-context line must still flag"
+    assert elapsed < 0.5, f"fallback scan took {elapsed:.3f}s on a token-dense line"
+
+
+def test_fallback_scan_line_numbers_match_old_resolution():
+    content = "first = 1\nsecond = 2\napi_key = 'aBcDeFgH1jKlMnOpQrStUvWxYz0123456789'\n"
+    hits = _fallback_scan(content)
+    assert hits, "shaped token on a credential line must flag"
+    for h in hits:
+        assert h["line_number"] == _line_number_at(content, h["position"])
+
+
+def test_fallback_scan_context_gate_still_blocks_bare_identifiers():
+    # A 40-char camelCase identifier with no credential context must stay
+    # un-flagged (the context gate the cache now answers per line).
+    content = "const adminListingNotesCreateRequestDescriptor = factory()\n"
+    assert _fallback_scan(content) == []

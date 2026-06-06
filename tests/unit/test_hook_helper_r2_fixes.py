@@ -278,3 +278,44 @@ def test_backstop_skips_daemon_after_first_miss(trusted_repo):
     # The daemon was tried at most once for the whole pass; after it came back
     # empty the remaining files went straight to the in-process path.
     assert calls["n"] <= 1
+
+
+# --------------------------------------------------------------------------
+# _ignore_hint — block messages must hand each language its own comment token;
+# a Ruby developer told to add `// chameleon-ignore` gets a directive that is
+# a syntax error in .rb (qa25 P2)
+
+from chameleon_mcp import hook_helper as hh  # noqa: E402
+
+
+class TestIgnoreHintLanguageAware:
+    def test_ruby_file_gets_hash_token(self):
+        assert (
+            hh._ignore_hint("/repo/app/models/user.rb", "naming-convention-violation")
+            == "`# chameleon-ignore naming-convention-violation`"
+        )
+
+    def test_ts_file_gets_slash_token(self):
+        assert (
+            hh._ignore_hint("/repo/src/api.ts", "import-preference-violation")
+            == "`// chameleon-ignore import-preference-violation`"
+        )
+
+    def test_default_rule_placeholder(self):
+        assert hh._ignore_hint("/repo/src/api.tsx") == "`// chameleon-ignore <rule>`"
+
+    def test_mixed_language_paths_show_both_forms(self):
+        hint = hh._ignore_hint(["/r/a.ts", "/r/b.rb"])
+        assert "`// chameleon-ignore <rule>`" in hint
+        assert "`# chameleon-ignore <rule>` in Ruby" in hint
+
+    def test_all_ruby_paths_show_hash_only(self):
+        hint = hh._ignore_hint(["/r/a.rb", "/r/b.rake"])
+        assert hint == "`# chameleon-ignore <rule>`"
+
+    def test_unknown_extension_defaults_to_slash(self):
+        assert hh._ignore_hint("/r/Makefile") == "`// chameleon-ignore <rule>`"
+
+    def test_none_and_empty_default_to_slash(self):
+        assert hh._ignore_hint(None) == "`// chameleon-ignore <rule>`"
+        assert hh._ignore_hint([]) == "`// chameleon-ignore <rule>`"

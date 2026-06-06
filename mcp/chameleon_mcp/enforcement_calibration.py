@@ -158,6 +158,91 @@ def rule_inert_for_language(rule: str, profile_dir: Path) -> bool:
     return bool(langs) and not (langs & supported)
 
 
+# Mirrors the lint engine's consistency gate: a sub-convention below this
+# never produces a violation, so it cannot make the rule fire either.
+_NAMING_MIN_CONSISTENCY = 0.60
+
+_NAMING_SIGNAL_CACHE: dict[str, tuple[tuple[int, int], bool]] = {}
+
+
+def _naming_entry_drives_rule(entry: object) -> bool:
+    """True when one archetype's naming map can produce naming-convention-violation."""
+    if not isinstance(entry, dict):
+        return False
+    ip = entry.get("interface_prefix")
+    if (
+        isinstance(ip, dict)
+        and ip.get("pattern")
+        and ip.get("consistency", 0) >= (_NAMING_MIN_CONSISTENCY)
+    ):
+        return True
+    for key, pattern in (
+        ("method_casing", "snake_case"),
+        ("class_casing", "PascalCase"),
+        ("constant_casing", "SCREAMING_SNAKE_CASE"),
+    ):
+        sub = entry.get(key)
+        if (
+            isinstance(sub, dict)
+            and sub.get("pattern") == pattern
+            and sub.get("consistency", 0) >= _NAMING_MIN_CONSISTENCY
+        ):
+            return True
+    return False
+
+
+def _naming_rule_has_signal_from_conventions(conventions_doc: object) -> bool:
+    """Whether any archetype carries a naming sub-convention the rule reads.
+
+    naming-convention-violation fires only off interface_prefix (TS) or the
+    casing sub-conventions (Ruby). A profile derived before those existed —
+    or whose repo never converged on one — holds only ``file_naming`` (a
+    different rule), leaving naming-convention-violation unable to fire.
+    """
+    if not isinstance(conventions_doc, dict):
+        return False
+    naming_by_arch = (conventions_doc.get("conventions") or {}).get("naming") or {}
+    if not isinstance(naming_by_arch, dict):
+        return False
+    return any(_naming_entry_drives_rule(entry) for entry in naming_by_arch.values())
+
+
+def rule_inert_missing_signal(rule: str, profile_dir: Path) -> bool:
+    """True when the rule's driving convention data is absent from the profile.
+
+    Same stale-verdict window as the language gate one level deeper: a profile
+    whose conventions lack every sub-convention a rule reads leaves the rule
+    active-but-inert until a refresh derives them, so /chameleon-status would
+    advertise a guarantee that cannot fire. Gates only on POSITIVE knowledge —
+    an unreadable conventions.json keeps the measured behavior.
+    """
+    if rule != "naming-convention-violation":
+        return False
+    path = profile_dir / "conventions.json"
+    token = _cache_token(path)
+    if token is None:
+        return False
+    try:
+        key = str(profile_dir.resolve())
+    except OSError:
+        key = str(profile_dir)
+
+    with _CACHE_LOCK:
+        cached = _NAMING_SIGNAL_CACHE.get(key)
+        if cached is not None and cached[0] == token:
+            return not cached[1]
+
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    has_signal = _naming_rule_has_signal_from_conventions(doc)
+
+    with _CACHE_LOCK:
+        _NAMING_SIGNAL_CACHE[key] = (token, has_signal)
+    return not has_signal
+
+
 def active_block_rules(profile_dir: Path) -> set[str]:
     out = set()
     for rule, meta in load_block_rules(profile_dir).items():
@@ -166,6 +251,8 @@ def active_block_rules(profile_dir: Path) -> set[str]:
         if rule not in BLOCK_ELIGIBLE_RULES:
             continue
         if rule_inert_for_language(rule, profile_dir):
+            continue
+        if rule_inert_missing_signal(rule, profile_dir):
             continue
         if isinstance(meta, dict) and meta.get("active") is True:
             out.add(rule)
@@ -385,6 +472,9 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
                 flagged[rule].add(rel)
 
     langs = _profile_languages(loaded)
+    naming_has_signal = _naming_rule_has_signal_from_conventions(
+        getattr(loaded, "conventions", {}) or {}
+    )
     result: dict = {}
     for rule in BLOCK_ELIGIBLE_RULES:
         hits = len(flagged[rule])
@@ -393,14 +483,20 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
         # Gate only on POSITIVE knowledge: an unknown/legacy profile language
         # (no `language` key) keeps the measured behavior rather than demoting
         # every language-scoped rule.
-        can_fire = supported is None or not langs or bool(langs & supported)
+        lang_ok = supported is None or not langs or bool(langs & supported)
+        # Same principle one level deeper: a rule whose driving convention data
+        # is absent measures a vacuous 0.0 fp_rate (it cannot flag anything),
+        # which must not certify it active.
+        signal_ok = rule != "naming-convention-violation" or naming_has_signal
         entry: dict = {
-            "active": can_fire and n > 0 and fp_rate <= _FP_EPSILON,
+            "active": lang_ok and signal_ok and n > 0 and fp_rate <= _FP_EPSILON,
             "fp_rate": round(fp_rate, 4),
             "sampled": n,
             "flagged": hits,
         }
-        if not can_fire:
+        if not lang_ok:
             entry["inert_reason"] = "no-signal-for-language"
+        elif not signal_ok:
+            entry["inert_reason"] = "missing-convention-data"
         result[rule] = entry
     return result

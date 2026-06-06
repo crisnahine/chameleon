@@ -18,8 +18,18 @@ from pathlib import Path
 
 import xxhash
 
-from chameleon_mcp.extractors._base import ParsedFile, ParseResult
+from chameleon_mcp.extractors._base import ExtractorUnavailableError, ParsedFile, ParseResult
 from chameleon_mcp.plugin_paths import plugin_root
+
+
+class RubyUnavailableError(ExtractorUnavailableError):
+    """Ruby (or the prism_dump.rb script) is unavailable.
+
+    Raised by the Ruby extractor when its subprocess cannot be started. The
+    bootstrap orchestrator catches it (via ``ExtractorUnavailableError``) and
+    degrades to a ``failed_ruby_unavailable`` report instead of letting the
+    exception escape to the MCP boundary.
+    """
 
 
 class RubyExtractor:
@@ -62,13 +72,13 @@ class RubyExtractor:
             return ParseResult(files=[], skipped=[])
 
         if not self._prism_dump_script.exists():
-            raise FileNotFoundError(
+            raise RubyUnavailableError(
                 f"prism_dump.rb not found at {self._prism_dump_script}; "
                 "Ruby support requires this script."
             )
 
         if not shutil.which("ruby"):
-            raise RuntimeError(
+            raise RubyUnavailableError(
                 "chameleon: `ruby` not found on PATH. Install Ruby >= 3.3 "
                 "(ships Prism) to use the Ruby extractor."
             )

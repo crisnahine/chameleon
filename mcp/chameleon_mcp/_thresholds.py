@@ -47,6 +47,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "CALIBRATION_MAX_FILES": 600,
     "CALIBRATION_MAX_SIBLINGS": 10,
     "CALIBRATION_FP_EPSILON": 0.001,
+    # Degraded-parse gate: a bootstrap/refresh whose extractor child died
+    # mid-run surfaces as mass parse skips. Healthy repos parse at ~100%, so a
+    # skip rate past the ratio (with at least the floor of skipped files, to
+    # spare tiny repos) aborts the run instead of committing a thin profile
+    # over a healthy one.
+    "EXTRACTOR_DEGRADED_MIN_SKIPPED": 10,
+    "EXTRACTOR_DEGRADED_RATIO": 0.5,
     # Body-shape norms need a thicker witness pool than the generic sample gate:
     # a p90 drawn from 10 functions is too noisy to ground an outlier claim.
     "BODY_SHAPE_MIN_FUNCTIONS": 18,
