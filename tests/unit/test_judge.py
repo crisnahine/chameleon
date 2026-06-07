@@ -295,11 +295,25 @@ def test_finding_dataclass_defaults():
 # --- config flag ------------------------------------------------------------
 
 
-def test_config_correctness_judge_default_off(tmp_path):
+def test_config_correctness_judge_default_on(tmp_path):
     from chameleon_mcp.profile.config import load_config
 
     profile = tmp_path / ".chameleon"
     profile.mkdir()
+    cfg = load_config(profile)
+    assert cfg.enforcement.correctness_judge is True
+
+
+def test_config_correctness_judge_opt_out(tmp_path):
+    import json as _json
+
+    from chameleon_mcp.profile.config import load_config
+
+    profile = tmp_path / ".chameleon"
+    profile.mkdir()
+    (profile / "config.json").write_text(
+        _json.dumps({"enforcement": {"correctness_judge": False}}), encoding="utf-8"
+    )
     cfg = load_config(profile)
     assert cfg.enforcement.correctness_judge is False
 

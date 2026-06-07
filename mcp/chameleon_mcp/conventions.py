@@ -1183,9 +1183,12 @@ def _int_env(name: str, default: int) -> int:
     return v if v > 0 else default
 
 
-# No real cap by default (a real archetype has far fewer distinct key exports);
-# env-overridable for the rare repo that wants to bound it.
-_MAX_KEY_EXPORTS = _int_env("CHAMELEON_MAX_KEY_EXPORTS", 200)
+# Stored-artifact cap only: every prompt-side consumer re-caps downstream (the
+# SessionStart union to _MAX_CONVENTION_ITEMS, the stale-test advisory to its
+# own export cap), so this bounds conventions.json size, not context. Wide
+# archetypes on large Rails repos legitimately exceed 200 distinct exports, and
+# truncation here blinds the name-collision and stale-test lookups to the tail.
+_MAX_KEY_EXPORTS = _int_env("CHAMELEON_MAX_KEY_EXPORTS", 400)
 
 # Generous ceiling on the ASSEMBLED SessionStart convention block. Per-archetype
 # counts are small, but their UNION across a large monorepo (hundreds of

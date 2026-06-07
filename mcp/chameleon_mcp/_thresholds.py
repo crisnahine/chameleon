@@ -44,9 +44,14 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "DRIFT_BANNER_THRESHOLD": 0.4,
     "DRIFT_BANNER_MIN_OBSERVATIONS": 10,
     "DRIFT_BANNER_TTL_SECONDS": 7 * 24 * 3600,
-    "CALIBRATION_MAX_FILES": 600,
-    "CALIBRATION_MAX_SIBLINGS": 10,
-    "CALIBRATION_FP_EPSILON": 0.001,
+    # Calibration corpus bounds. The file cap and epsilon move together: keeping
+    # the cap below 1/epsilon means a single flagged file already exceeds the
+    # tolerance, so the gate stays "zero false positives" in practice. 1200/20
+    # lets a gitlabhq-sized repo's witness+sibling corpus through (a 600-file
+    # head sample masked real FPs that only surfaced past file 600).
+    "CALIBRATION_MAX_FILES": 1200,
+    "CALIBRATION_MAX_SIBLINGS": 20,
+    "CALIBRATION_FP_EPSILON": 0.0005,
     # Degraded-parse gate: a bootstrap/refresh whose extractor child died
     # mid-run surfaces as mass parse skips. Healthy repos parse at ~100%, so a
     # skip rate past the ratio (with at least the floor of skipped files, to
@@ -141,8 +146,10 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "REVIEW_LEDGER_MAX_RECORDS": 5_000,
     # Cap on the number of distinct callable names recorded in an archetype's
     # signature consensus. Names are kept most-frequent-first so the cap drops the
-    # long tail of one-off helpers, not the methods every sibling shares.
-    "CALLABLE_SIGNATURE_MAX_NAMES": 80,
+    # long tail of one-off helpers, not the methods every sibling shares. Wide
+    # archetypes (a fat Rails controller base, a broad service module) legitimately
+    # share more than 80 method names, so the cap admits them with margin.
+    "CALLABLE_SIGNATURE_MAX_NAMES": 120,
     # A callable name must appear in at least this many of an archetype's member
     # files before its parameter shape is treated as the archetype's contract. A
     # shape drawn from one file is an instance, not a convention.
@@ -164,12 +171,15 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "CORRECTNESS_JUDGE_TIMEOUT_SECONDS": 45,
     # Cap on the total bytes of reconstructed diff the judge prompt carries. A
     # large refactor can produce a huge diff; past this the diff is truncated so
-    # the prompt stays bounded and the spawn stays within its time budget.
-    "CORRECTNESS_JUDGE_MAX_DIFF_BYTES": 40_000,
-    # Cap on the number of touched files the judge inspects in one turn. Beyond a
-    # handful the prompt grows past what a single short-budget read can review,
-    # so the most-recently-edited files are kept and the rest are dropped.
-    "CORRECTNESS_JUDGE_MAX_FILES": 8,
+    # the prompt stays bounded and the spawn stays within its time budget. Sized
+    # so ~5 per-file diffs at the 12KB per-file cap fit, keeping the file cap
+    # below meaningful on multi-file turns (~1 in 5 real turns touches >8 files).
+    "CORRECTNESS_JUDGE_MAX_DIFF_BYTES": 60_000,
+    # Cap on the number of touched files the judge inspects in one turn. Covers
+    # the p90 of real multi-file turns; the most-recently-edited files are kept
+    # and the rest are dropped. Moves together with the diff-bytes cap above:
+    # raising one without the other leaves the loop bound by the other cap.
+    "CORRECTNESS_JUDGE_MAX_FILES": 12,
     # Cap on the number of findings surfaced from a single judge run. The judge
     # is advisory, so a long list is noise; the highest-confidence findings are
     # kept and the remainder dropped.
@@ -205,7 +215,7 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "SECRET_SCAN_MAX_LINE_LEN": 2_000,
     # Upper bound on committed files scanned when measuring a co-change rule's repo
     # violation rate, so the disable check on a huge repo stays a bounded glob walk.
-    "COCHANGE_MAX_FILES_SCANNED": 4000,
+    "COCHANGE_MAX_FILES_SCANNED": 8000,
     # Cap on the change-set-completeness items surfaced at turn end. When a turn
     # creates many trigger files with no companion, the list is truncated so the
     # advisory stays a short nudge rather than a wall of paths.
@@ -213,11 +223,16 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # Cap on the number of files recorded in the cross-file function catalog. A
     # large monorepo has tens of thousands of functions; past this the artifact
     # is truncated (sorted-path order) so it stays a bounded, committable size.
-    "DUPLICATION_CATALOG_MAX_FILES": 4_000,
+    # The catalog IS the duplication detector's search space, so a low cap
+    # silently blinds it on exactly the repos where duplication is most likely;
+    # 8000 keeps the biggest measured artifact (~9.4MB) under the loader's 16MB
+    # ceiling — do not raise past that without lifting the loader cap too.
+    "DUPLICATION_CATALOG_MAX_FILES": 8_000,
     # Cap on the functions recorded per file in the function catalog, so one
     # generated or machine-emitted file cannot crowd out the rest of the repo
-    # under the file cap.
-    "DUPLICATION_CATALOG_MAX_FNS_PER_FILE": 60,
+    # under the file cap. High enough to admit a real hand-written wide module
+    # (a util grab-bag, a wide Rails concern) without losing its tail.
+    "DUPLICATION_CATALOG_MAX_FNS_PER_FILE": 120,
     # Minimum shared domain-word tokens between a new function's name and a
     # catalog candidate before the candidate is surfaced. One shared token (date,
     # slug, total) is enough to be worth the judge's look; zero overlap means the
@@ -229,8 +244,10 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "DUPLICATION_MAX_CANDIDATES_PER_FN": 5,
     # Lines of a candidate function's body read from disk as a citation aid for
     # the duplication judge. Enough to show the function's intent without
-    # inlining a whole large method into the tool result.
-    "DUPLICATION_BODY_EXCERPT_LINES": 15,
+    # inlining a whole large method into the tool result: covers the median TS
+    # function body (~14 lines) with margin and the Ruby p90, while staying a
+    # bounded prompt-side slice (this excerpt flows verbatim into tool results).
+    "DUPLICATION_BODY_EXCERPT_LINES": 20,
     # Minimum normalized-body length (chars) before a function gets a body-hash
     # fingerprint in the catalog. The hash pairs body-exact clones whose names
     # share no tokens; trivial one-expression bodies collide across half a

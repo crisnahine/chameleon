@@ -55,9 +55,12 @@ class TestDefaults:
         assert d["DRIFT_BANNER_THRESHOLD"] == 0.4
         assert d["DRIFT_BANNER_MIN_OBSERVATIONS"] == 10
         assert d["DRIFT_BANNER_TTL_SECONDS"] == 7 * 24 * 3600  # 604800
-        assert d["CALIBRATION_MAX_FILES"] == 600
-        assert d["CALIBRATION_MAX_SIBLINGS"] == 10
-        assert d["CALIBRATION_FP_EPSILON"] == 0.001
+        assert d["CALIBRATION_MAX_FILES"] == 1200
+        assert d["CALIBRATION_MAX_SIBLINGS"] == 20
+        assert d["CALIBRATION_FP_EPSILON"] == 0.0005
+        # The zero-FP gate's arithmetic: a single flagged file must exceed the
+        # tolerance, which holds only while the file cap stays below 1/epsilon.
+        assert d["CALIBRATION_MAX_FILES"] < 1 / d["CALIBRATION_FP_EPSILON"]
 
     # The original baseline threshold set. Later capabilities append their own
     # keys, so the table is asserted as a superset of this baseline plus an

@@ -45,15 +45,15 @@ def _clear_block_rules_cache() -> None:
         _LANG_CACHE.clear()
 
 
-# Upper bound on sampled witnesses; protects huge repos from scanning every file.
-_MAX_FILES_SAMPLED = threshold_int("CALIBRATION_MAX_FILES")
-# Per-archetype cap on ordinary sibling files added beyond the witnesses. Read at
-# call time (not import) so tests and operators can override via the env var.
-# A rule is demoted if it flags more than this fraction of sampled committed
-# files. With the default cap (600) below 1/epsilon (1000), a single hit already
-# exceeds the tolerance, so in practice this is a "zero false positives" gate;
-# raise CALIBRATION_FP_EPSILON above 1/CALIBRATION_MAX_FILES to allow any slack.
-_FP_EPSILON = threshold_float("CALIBRATION_FP_EPSILON")
+# Calibration thresholds (CALIBRATION_MAX_FILES, CALIBRATION_MAX_SIBLINGS,
+# CALIBRATION_FP_EPSILON) are all read at call time inside the functions that
+# use them, never at import, so tests and operators can override via the env
+# vars without reloading the module.
+#
+# The file cap and epsilon move together: with the default cap (1200) below
+# 1/epsilon (2000), a single flagged file already exceeds the tolerance, so in
+# practice this is a "zero false positives" gate; raise CALIBRATION_FP_EPSILON
+# above 1/CALIBRATION_MAX_FILES to allow any slack.
 
 
 def write_block_rules(profile_dir: Path, data: dict) -> None:
@@ -272,6 +272,7 @@ def _sample_files(repo_root: Path, loaded) -> list[tuple[str, str]]:
     from chameleon_mcp.lint_engine import detect_language
 
     max_siblings = threshold_int("CALIBRATION_MAX_SIBLINGS")
+    max_files = threshold_int("CALIBRATION_MAX_FILES")
     seen: set[str] = set()
     out: list[tuple[str, str]] = []
 
@@ -294,7 +295,7 @@ def _sample_files(repo_root: Path, loaded) -> list[tuple[str, str]]:
             seen.add(rel)
             out.append((rel, archetype))
             witness_dirs.append((rel, archetype))
-            if len(out) >= _MAX_FILES_SAMPLED:
+            if len(out) >= max_files:
                 return out
 
     # Second pass: bounded siblings per archetype. A sibling is a real, readable,
@@ -303,7 +304,7 @@ def _sample_files(repo_root: Path, loaded) -> list[tuple[str, str]]:
     # the same directory, so a dense witness dir is scanned a single time.
     dir_names_cache: dict[str, list[str] | None] = {}
     for witness_rel, archetype in witness_dirs:
-        if len(out) >= _MAX_FILES_SAMPLED:
+        if len(out) >= max_files:
             break
         # Witness paths may carry backslashes when the profile was authored on
         # Windows or shared cross-platform; fold them so the parent/extension
@@ -326,7 +327,7 @@ def _sample_files(repo_root: Path, loaded) -> list[tuple[str, str]]:
             continue
         taken = 0
         for name in names:
-            if taken >= max_siblings or len(out) >= _MAX_FILES_SAMPLED:
+            if taken >= max_siblings or len(out) >= max_files:
                 break
             if not name.endswith(ext):
                 continue
@@ -446,8 +447,9 @@ def _profile_languages(loaded) -> set[str]:
 def calibrate_block_rules(repo_root: Path, loaded) -> dict:
     """Measure each block-eligible rule against the repo's own committed files.
 
-    A rule that flags more than _FP_EPSILON of sampled files is marked inactive
-    (advisory only) for this repo. The witness corpus is presumed correct.
+    A rule that flags more than CALIBRATION_FP_EPSILON of sampled files is
+    marked inactive (advisory only) for this repo. The witness corpus is
+    presumed correct.
 
     Fail-closed on no evidence: with zero sampled witnesses (empty or
     unbootstrapped profile) every block-eligible rule stays inactive rather than
@@ -458,6 +460,7 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
     rules are marked inactive with an ``inert_reason`` so /chameleon-status
     can say why.
     """
+    fp_epsilon = threshold_float("CALIBRATION_FP_EPSILON")
     sample = _sample_files(repo_root, loaded)
     n = len(sample)
     baselines = _archetype_baselines(repo_root, loaded)
@@ -489,7 +492,7 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
         # which must not certify it active.
         signal_ok = rule != "naming-convention-violation" or naming_has_signal
         entry: dict = {
-            "active": lang_ok and signal_ok and n > 0 and fp_rate <= _FP_EPSILON,
+            "active": lang_ok and signal_ok and n > 0 and fp_rate <= fp_epsilon,
             "fp_rate": round(fp_rate, 4),
             "sampled": n,
             "flagged": hits,

@@ -168,7 +168,7 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 - `CHAMELEON_ALLOW_ESLINT_EVAL=1` — opt into loading JS ESLint configs via Node `require()`/`import()` during bootstrap (default OFF; off uses a static parser that never executes repo code). Enable only for repos you trust.
 - `CHAMELEON_ALLOW_DEP_AUDIT=1` - opt into the `dep_audit` MCP tool, which shells the repo's own `npm audit` / `bundler-audit` (default OFF). Off refuses rather than spawning a network process behind your back. This is the only supply-chain check that touches the network and runs tool-time only, never on a hook hot path; it fails open to an "unavailable" result when the binary, manifest, or network is absent. The no-network manifest/lockfile diff checks in the pr-review skill run regardless of this flag.
 - `CHAMELEON_MAX_CONVENTION_ITEMS` — cap on each repo-size-scaling section of the SessionStart convention block (preferred imports, DSL calls, key-export union); default 60, over-cap shows a "+N more" tail. Raise to surface more, lower to shrink the block. Read at import time.
-- `CHAMELEON_MAX_KEY_EXPORTS` — cap on stored key exports per archetype (default 200). Read at import time.
+- `CHAMELEON_MAX_KEY_EXPORTS` — cap on stored key exports per archetype (default 400). Read at import time.
 - `CHAMELEON_MAX_SIBLINGS` — cap on the per-edit "Nearby files" sibling listing (default 60). Read at import time.
 - `CHAMELEON_EXCERPT_CACHE_CAP` — LRU capacity for the canonical-excerpt cache (default 64). Read at import time.
 - `CHAMELEON_LINT_DIMENSIONS` — set to `core` to use the coarse lint dimension set instead of the full per-rule set.

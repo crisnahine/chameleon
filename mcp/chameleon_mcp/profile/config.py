@@ -78,12 +78,17 @@ class EnforcementConfig:
     # to demand a thorough review (an independent judge is enabled). The judge
     # spawn itself is not wired into the hook; the flag only hardens the directive.
     idiom_judge: bool = False
-    # correctness_judge: opt-in, default off. When True and mode is shadow/enforce,
-    # turn end spawns a separate reviewer model that reads the turn's reconstructed
+    # correctness_judge: on by default. When True and mode is shadow/enforce, turn
+    # end spawns a separate reviewer model that reads the turn's reconstructed
     # diffs for correctness bugs (logic errors, missing guards, dropped awaits,
     # error-handling gaps) and surfaces its findings as advisory context. It never
     # blocks the turn and runs at most once per session, like the idiom gate.
-    correctness_judge: bool = False
+    # Safe as a default because every stage fails open (missing CLI, timeout,
+    # non-zero exit all collapse to no findings) and the spawn is bounded: no
+    # tools, one turn, hard wall-clock budget, throwaway config dir. The cost is
+    # one bounded reviewer spawn per session at the first governed turn end; set
+    # false to opt out.
+    correctness_judge: bool = True
     # stale_test_advisory: on by default. At turn end, when the session edited a
     # source file whose archetype's siblings overwhelmingly ship a paired test but
     # the existing paired test was not touched this turn, surface an advisory

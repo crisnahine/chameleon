@@ -3424,9 +3424,9 @@ def _correctness_judge_gate(
     """Independent turn-end correctness review of the turn's edits (advisory).
 
     Reached only on the no-block stop path, after the idiom gate declined to
-    block. Opt-in (``enforcement.correctness_judge``) and mode-gated
-    (shadow/enforce); runs AT MOST ONCE per session like the idiom gate, so a
-    per-turn spawn cost is never incurred. It spawns a separate reviewer model
+    block. On by default (``enforcement.correctness_judge``, set false to opt
+    out) and mode-gated (shadow/enforce); runs AT MOST ONCE per session like
+    the idiom gate, so a per-turn spawn cost is never incurred. It spawns a separate reviewer model
     that reads the turn's reconstructed diffs for correctness bugs.
 
     Returns a hook output dict carrying the findings as ``additionalContext``, or
@@ -4076,9 +4076,9 @@ def stop_backstop() -> int:
                 _emit(gate)
                 return 0
             # Idiom gate did not block: the turn is free to end. Run the
-            # independent correctness judge (opt-in, advisory only, once per
-            # session). It never blocks; its findings ride out as additionalContext
-            # the model reads after the turn.
+            # independent correctness judge (on by default, advisory only, once
+            # per session). It never blocks; its findings ride out as
+            # additionalContext the model reads after the turn.
             judged = _correctness_judge_gate(
                 repo_root=repo_root,
                 repo_id=repo_id,

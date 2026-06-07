@@ -1,9 +1,9 @@
 """Stop-hook correctness-judge gate tests for stop_backstop().
 
 The judge gate runs on the no-block stop path, after the idiom gate declines to
-block. It is opt-in (`enforcement.correctness_judge`, default off), runs at most
-once per session, and is ADVISORY ONLY: it never returns a Stop block, only
-`additionalContext` carrying the reviewer's findings. The real `claude -p` spawn
+block. It is on by default (`enforcement.correctness_judge`, set false to opt
+out), runs at most once per session, and is ADVISORY ONLY: it never returns a
+Stop block, only `additionalContext` carrying the reviewer's findings. The real `claude -p` spawn
 is mocked here via judge.run_correctness_judge.
 
 Isolation mirrors test_idiom_review: a real repo + config + plugin-data dir under
