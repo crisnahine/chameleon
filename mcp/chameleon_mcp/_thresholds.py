@@ -242,6 +242,16 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # only narrows the search for the LLM judge, so a short ranked list is the
     # goal; the highest-overlap candidates are kept and the tail dropped.
     "DUPLICATION_MAX_CANDIDATES_PER_FN": 5,
+    # Caps for the turn-end body-hash duplication review gate. The file and
+    # findings caps bound the parse fan-out and advisory length per turn. The
+    # prompt-bytes cap keeps the judge prompt within the session budget. The
+    # spawns cap limits how many judge spawns can fire across an entire session
+    # (one per significant editing burst is the intent; raising it too high
+    # turns every turn into a billable spawn).
+    "DUPLICATION_REVIEW_MAX_FILES": 12,
+    "DUPLICATION_REVIEW_MAX_FINDINGS": 8,
+    "DUPLICATION_REVIEW_MAX_PROMPT_BYTES": 60_000,
+    "DUPLICATION_REVIEW_MAX_SPAWNS_PER_SESSION": 2,
     # Lines of a candidate function's body read from disk as a citation aid for
     # the duplication judge. Enough to show the function's intent without
     # inlining a whole large method into the tool result: covers the median TS
