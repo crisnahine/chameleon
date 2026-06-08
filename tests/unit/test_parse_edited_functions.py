@@ -26,3 +26,5 @@ def test_parse_edited_functions_ruby(tmp_path):
     assert a.body_hash is not None
     assert a.start_line >= 1
     assert "process" in a.excerpt
+    assert a.arity == 1
+    assert a.required == 1

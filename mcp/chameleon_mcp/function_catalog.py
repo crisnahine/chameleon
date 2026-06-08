@@ -564,11 +564,17 @@ class ParsedFn:
     NewFunction carries only the hashes for matching; ParsedFn additionally
     carries the 1-based start line and a body excerpt so the duplication gate can
     cite a line and feed the judge a body without a second parse.
+
+    ``arity`` / ``required`` mirror the signature shape so callers can map
+    directly to NewFunction without a second pass over the params list.
+    ``start_line`` is None for entries whose dump predates span recording.
     """
 
     name: str
     kind: str
-    start_line: int
+    arity: int
+    required: int
+    start_line: int | None
     body_hash: str | None
     body_hash_pnorm: str | None
     excerpt: str

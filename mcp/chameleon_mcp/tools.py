@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from chameleon_mcp.function_catalog import ParsedFn
     from chameleon_mcp.profile.loader import LoadedProfile
 
 
@@ -2691,11 +2692,14 @@ def _candidate_body_excerpt(repo_root: Path, rel_path: str, name: str, max_lines
     return excerpt
 
 
-def parse_edited_functions(repo_root, file_path: str) -> list:
-    """Parse one edited file into ParsedFn rows (name, kind, line, hashes, excerpt).
+def parse_edited_functions(repo_root, file_path: str) -> list[ParsedFn]:
+    """Parse one edited file into ParsedFn rows (name, kind, arity, required, line, hashes, excerpt).
 
     Shares the exact parse get_duplication_candidates uses; the only additions are
     start_line and a bounded body excerpt. Returns [] on any parse error.
+    Entries whose dump predates span recording are included with start_line=None
+    and None hashes so get_duplication_candidates can still build NewFunction rows
+    for name-token matching.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.bootstrap.orchestrator import resolve_extractor
@@ -2703,6 +2707,7 @@ def parse_edited_functions(repo_root, file_path: str) -> list:
         ParsedFn,
         _lang_from_path,
         _param_names,
+        _signature_shape,
         normalized_body_hash,
     )
 
@@ -2726,7 +2731,7 @@ def parse_edited_functions(repo_root, file_path: str) -> list:
 
     query_lang = _lang_from_path(str(p))
     excerpt_cap = threshold_int("DUPLICATION_BODY_EXCERPT_LINES")
-    out: list = []
+    out: list[ParsedFn] = []
     for pf in parse_result.files or ():
         extras = getattr(pf, "extras", None) or {}
         raw = extras.get("callable_signatures")
@@ -2738,27 +2743,35 @@ def parse_edited_functions(repo_root, file_path: str) -> list:
             name = entry.get("name")
             if not isinstance(name, str) or not name:
                 continue
+            params = entry.get("params")
+            arity, required = _signature_shape(params)
             start = entry.get("start_line")
             end = entry.get("end_line")
-            if not isinstance(start, int) or not isinstance(end, int):
-                continue
-            params = entry.get("params")
-            body_hash = normalized_body_hash(query_lines, start, end)
-            body_hash_pnorm = normalized_body_hash(
-                query_lines,
-                start,
-                end,
-                param_names=_param_names(params),
-                language=query_lang,
+            has_span = isinstance(start, int) and isinstance(end, int)
+            body_hash = normalized_body_hash(query_lines, start, end) if has_span else None
+            body_hash_pnorm = (
+                normalized_body_hash(
+                    query_lines,
+                    start,
+                    end,
+                    param_names=_param_names(params),
+                    language=query_lang,
+                )
+                if has_span
+                else None
             )
-            body = query_lines[start : min(end, len(query_lines))]
-            excerpt = "\n".join(body[:excerpt_cap])
+            excerpt = ""
+            if has_span:
+                body = query_lines[start : min(end, len(query_lines))]
+                excerpt = "\n".join(body[:excerpt_cap])
             kind = entry.get("kind")
             out.append(
                 ParsedFn(
                     name=name,
                     kind=kind if isinstance(kind, str) else "function",
-                    start_line=start,
+                    arity=arity,
+                    required=required,
+                    start_line=start if has_span else None,
                     body_hash=body_hash,
                     body_hash_pnorm=body_hash_pnorm,
                     excerpt=excerpt,
@@ -2791,7 +2804,6 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     is a function the bootstrap recorded.
     """
     from chameleon_mcp._thresholds import threshold_int
-    from chameleon_mcp.bootstrap.orchestrator import resolve_extractor
     from chameleon_mcp.function_catalog import (
         NewFunction,
         load_function_catalog,
@@ -2843,86 +2855,30 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
 
     # Parse the edited file's own functions through the same extractor the
     # bootstrap used, so the new functions carry the same callable_signatures
-    # shape the catalog was built from. resolve_extractor applies the
-    # workspace-monorepo fallback so a TS monorepo whose root package.json
-    # has no TS deps still resolves to the TS extractor.
-    try:
-        extractor = resolve_extractor(repo_root)
-    except Exception:
-        extractor = None
-    if extractor is None:
-        return _envelope(dict(empty))
-    try:
-        parse_result = extractor.parse_repo(repo_root, paths=[p])
-    except Exception:
-        return _envelope(dict(empty))
+    # shape the catalog was built from. parse_edited_functions applies the
+    # workspace-monorepo fallback via resolve_extractor and returns [] on any
+    # parse or extractor failure (which the empty-result path below handles).
+    parsed_fns = parse_edited_functions(repo_root, str(p))
 
-    # The edited file's lines feed the body-hash fallback: a body-exact clone
-    # whose name shares no tokens with the original can only be paired by body
-    # identity, so each new function is fingerprinted the same way the catalog
-    # rows were at bootstrap.
-    from chameleon_mcp.function_catalog import (
-        _lang_from_path,
-        _param_names,
-        normalized_body_hash,
-    )
-
-    # Same language tag the catalog build used, so the param-normalized hash
-    # normalizes block parameters identically on both sides (else a refreshed
-    # catalog's block-normalized rows would never match the query hash).
-    query_lang = _lang_from_path(str(p))
-
-    try:
-        query_lines = p.read_bytes()[:1_000_000].decode("utf-8", errors="replace").splitlines()
-    except OSError:
-        query_lines = []
-
+    # Map ParsedFn -> NewFunction, deduplicating overload sets on (name, arity,
+    # required) exactly as the original loop did.
     new_functions: list[NewFunction] = []
     seen: set[tuple[str, int, int]] = set()
-    for pf in parse_result.files or ():
-        extras = getattr(pf, "extras", None) or {}
-        raw = extras.get("callable_signatures")
-        if not isinstance(raw, list):
+    for fn in parsed_fns:
+        key = (fn.name, fn.arity, fn.required)
+        if key in seen:
             continue
-        for entry in raw:
-            if not isinstance(entry, dict):
-                continue
-            name = entry.get("name")
-            if not isinstance(name, str) or not name:
-                continue
-            params = entry.get("params")
-            arity = 0
-            required = 0
-            if isinstance(params, list):
-                for prm in params:
-                    if not isinstance(prm, dict):
-                        continue
-                    arity += 1
-                    if not bool(prm.get("optional")):
-                        required += 1
-            key = (name, arity, required)
-            if key in seen:
-                continue
-            seen.add(key)
-            kind = entry.get("kind")
-            new_functions.append(
-                NewFunction(
-                    name=name,
-                    kind=kind if isinstance(kind, str) else "function",
-                    arity=arity,
-                    required=required,
-                    body_hash=normalized_body_hash(
-                        query_lines, entry.get("start_line"), entry.get("end_line")
-                    ),
-                    body_hash_pnorm=normalized_body_hash(
-                        query_lines,
-                        entry.get("start_line"),
-                        entry.get("end_line"),
-                        param_names=_param_names(params),
-                        language=query_lang,
-                    ),
-                )
+        seen.add(key)
+        new_functions.append(
+            NewFunction(
+                name=fn.name,
+                kind=fn.kind,
+                arity=fn.arity,
+                required=fn.required,
+                body_hash=fn.body_hash,
+                body_hash_pnorm=fn.body_hash_pnorm,
             )
+        )
 
     if not new_functions:
         out = dict(empty)
