@@ -19,7 +19,6 @@ import os
 import time
 from pathlib import Path
 
-
 ITERATIONS = 100
 
 _CANDIDATE_REPOS = [
@@ -279,6 +278,40 @@ def main():
         print(
             f"  {'get_pattern_context no-prof (cold x30)':<40s}  {p50:>10s}  {p99:>10s}  {mn:>10s}  {mx:>10s}"
         )
+
+    if profiled_repo and target_file:
+        print()
+        print(f"  {'--- Duplication-gate deterministic phase ---':<40s}")
+        print(f"  {'Component':<40s}  {'p50':>10s}  {'p99':>10s}  {'min':>10s}  {'max':>10s}")
+        print(f"  {'-' * 40}  {'-' * 10}  {'-' * 10}  {'-' * 10}  {'-' * 10}")
+        # Limitations: build_candidate_index loads the full catalog from disk each
+        # call (no in-process cache), so warm runs still pay catalog I/O.  The timer
+        # covers both phases of the deterministic path (catalog load + gather) but
+        # not the judge spawn, which only fires when the index finds a hit.
+        try:
+            from chameleon_mcp.duplication_review import (
+                build_candidate_index,
+                gather_body_match_findings,
+            )
+            from chameleon_mcp.function_catalog import _lang_from_path
+
+            lang = _lang_from_path(target_file)
+            dup_times = []
+            for _ in range(30):
+                t0 = time.perf_counter()
+                idx = build_candidate_index(profiled_repo, [target_file])
+                gather_body_match_findings(profiled_repo, [target_file], idx, lang)
+                t1 = time.perf_counter()
+                dup_times.append(t1 - t0)
+            p50 = fmt_ms(percentile(dup_times, 50))
+            p99 = fmt_ms(percentile(dup_times, 99))
+            mn = fmt_ms(min(dup_times))
+            mx = fmt_ms(max(dup_times))
+            print(
+                f"  {'dup-gate deterministic (30 runs)':<40s}  {p50:>10s}  {p99:>10s}  {mn:>10s}  {mx:>10s}"
+            )
+        except Exception as exc:
+            print(f"  dup-gate bench skipped: {exc}")
 
     print()
     print("=" * 100)
