@@ -4025,6 +4025,101 @@ def _crossfile_existence_advisory_lines(
         return []
 
 
+def _duplication_advisory_lines(
+    *,
+    repo_root: Path,
+    session_id: str | None,
+    state,
+    cfg,
+    repo_data: Path,
+    corr_spawning: bool,
+) -> list[str]:
+    """Build the turn-end duplication advisory lines, or [].
+
+    For each function the turn introduced whose body hash matches an existing one
+    (the committed catalog or a function added earlier this session), name the
+    original so the author can reuse it instead of re-implementing it. A bounded
+    judge spawn confirms each body match is a real re-implementation, not just a
+    structural coincidence, before it is surfaced. Advisory only, never a block.
+
+    Heavily gated so it costs at most one extra model spawn per session and never
+    repeats work: it stays silent when the correctness judge is already spawning
+    this Stop (``corr_spawning``), when the per-session spawn cap is reached, and
+    for any (file, content-digest) already judged. The spawn is counted and
+    persisted BEFORE it runs so a timeout cannot slip past the cap. Returns
+    sanitized lines ready to fold into the Stop context; fails open to [] on any
+    error.
+    """
+    try:
+        if not cfg.duplication_review or cfg.mode == "off":
+            return []
+        # The correctness judge is the other heavy turn-end spawn; when it is
+        # firing this Stop, defer the duplication spawn so a single turn never
+        # pays for two reviewer model calls.
+        if corr_spawning:
+            return []
+
+        from chameleon_mcp._thresholds import threshold_int
+
+        if state.duplication_spawns >= threshold_int("DUPLICATION_REVIEW_MAX_SPAWNS_PER_SESSION"):
+            return []
+
+        from chameleon_mcp import duplication_review as dr
+
+        edited = [p for p in state.files if Path(p).is_file()]
+        if not edited:
+            return []
+
+        # Single catalog language per pass: the body-hash catalog is one language,
+        # so infer it from the first edited file and let gather drop the rest.
+        lang = dr._lang_of(edited[0])
+
+        index = dr.build_candidate_index(repo_root, edited)
+
+        # Only files not already judged at their CURRENT content contribute, so a
+        # repeated unchanged turn never re-spawns. Digest is sha256 of the first
+        # 1 MB of bytes, the same window the rest of the Stop path reads.
+        fresh: list[str] = []
+        digests: dict[str, str] = {}
+        for p in edited:
+            try:
+                content = Path(p).read_bytes()[:1_000_000]
+            except OSError:
+                continue
+            d = hashlib.sha256(content).hexdigest()[:16]
+            digests[p] = d
+            rel = dr._repo_rel(repo_root, p)
+            if not dr.already_judged(repo_data, session_id or "", rel, d):
+                fresh.append(p)
+        if not fresh:
+            return []
+
+        findings = dr.gather_body_match_findings(repo_root, fresh, index, lang)
+        if not findings:
+            return []
+
+        # Spend a spawn: count it and persist BEFORE the (potentially slow) judge
+        # call so an interrupted Stop still consumes the budget and the cap holds.
+        state.duplication_spawns += 1
+        try:
+            from chameleon_mcp.enforcement import save_state
+
+            save_state(state, repo_data, session_id or "")
+        except Exception:
+            pass
+
+        confirmed = dr.judge_body_matches(repo_root, findings)
+        # Mark every fresh file judged at its current digest so the next turn over
+        # the same content is suppressed regardless of whether it was confirmed.
+        for p in fresh:
+            dr.mark_judged(
+                repo_data, session_id or "", dr._repo_rel(repo_root, p), digests.get(p, "")
+            )
+        return dr.format_duplication_advisory(confirmed)
+    except Exception:
+        return []
+
+
 def stop_backstop() -> int:
     """Stop / SubagentStop: refuse to end the turn while a touched file holds an
     unresolved hard-class violation, then run a once-per-session reflexive
@@ -4045,6 +4140,11 @@ def stop_backstop() -> int:
         return 0
 
     session_id = payload.get("session_id")
+    # The Stop and SubagentStop events share this handler (hooks.json routes both
+    # to stop-backstop). The input payload's hook_event_name distinguishes them;
+    # the turn-end duplication spawn runs only on a top-level Stop, never per
+    # subagent, so a multi-subagent turn pays for it at most once.
+    is_subagent = payload.get("hook_event_name") == "SubagentStop"
     cwd_raw = payload.get("cwd")
     try:
         cwd = Path(cwd_raw).expanduser() if isinstance(cwd_raw, str) and cwd_raw else Path.cwd()
@@ -4186,6 +4286,18 @@ def stop_backstop() -> int:
             if gate is not None:
                 _emit(gate)
                 return 0
+            # Whether the correctness judge will spawn its reviewer THIS Stop,
+            # computed before the gate runs because the gate writes the
+            # once-per-session marker as a side effect. The duplication gate reads
+            # this to defer when the judge is already paying for a spawn, so a
+            # single turn never fires two reviewer models.
+            from chameleon_mcp.optouts import _safe_session_marker
+
+            corr_marker = repo_data / _CORRECTNESS_JUDGED_FILENAME.format(
+                session=_safe_session_marker(session_id)
+            )
+            corr_spawning = cfg.correctness_judge and cfg.mode != "off" and not corr_marker.exists()
+
             # Idiom gate did not block: the turn is free to end. Run the
             # independent correctness judge (on by default, advisory only, once
             # per session). It never blocks; its findings ride out as
@@ -4232,6 +4344,23 @@ def stop_backstop() -> int:
                 cfg=cfg,
             )
 
+            # Turn-end duplication: a function this turn introduced whose body
+            # matches an existing one (catalog or earlier this session) gets named
+            # so the author can reuse the original. Confirmed by a bounded judge
+            # spawn, skipped on a SubagentStop and when the correctness judge is
+            # already spawning this Stop, so a turn fires at most one reviewer.
+            # Advisory only, folded into the same Stop context.
+            dup_lines: list[str] = []
+            if not is_subagent:
+                dup_lines = _duplication_advisory_lines(
+                    repo_root=repo_root,
+                    session_id=session_id,
+                    state=state,
+                    cfg=cfg,
+                    repo_data=repo_data,
+                    corr_spawning=corr_spawning,
+                )
+
             context_blocks: list[str] = []
             if judged is not None:
                 jb = (judged.get("hookSpecificOutput") or {}).get("additionalContext")
@@ -4248,6 +4377,10 @@ def stop_backstop() -> int:
             if crossfile_lines:
                 context_blocks.append(
                     "<chameleon-context>\n" + "\n".join(crossfile_lines) + "\n</chameleon-context>"
+                )
+            if dup_lines:
+                context_blocks.append(
+                    "<chameleon-context>\n" + "\n".join(dup_lines) + "\n</chameleon-context>"
                 )
 
             if context_blocks:
