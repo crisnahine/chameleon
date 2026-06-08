@@ -2691,6 +2691,82 @@ def _candidate_body_excerpt(repo_root: Path, rel_path: str, name: str, max_lines
     return excerpt
 
 
+def parse_edited_functions(repo_root, file_path: str) -> list:
+    """Parse one edited file into ParsedFn rows (name, kind, line, hashes, excerpt).
+
+    Shares the exact parse get_duplication_candidates uses; the only additions are
+    start_line and a bounded body excerpt. Returns [] on any parse error.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.bootstrap.orchestrator import resolve_extractor
+    from chameleon_mcp.function_catalog import (
+        ParsedFn,
+        _lang_from_path,
+        _param_names,
+        normalized_body_hash,
+    )
+
+    p = Path(file_path)
+    try:
+        query_lines = p.read_bytes()[:1_000_000].decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+    try:
+        extractor = resolve_extractor(Path(repo_root))
+    except Exception:
+        return []
+    if extractor is None:
+        return []
+
+    try:
+        parse_result = extractor.parse_repo(Path(repo_root), paths=[p])
+    except Exception:
+        return []
+
+    query_lang = _lang_from_path(str(p))
+    excerpt_cap = threshold_int("DUPLICATION_BODY_EXCERPT_LINES")
+    out: list = []
+    for pf in parse_result.files or ():
+        extras = getattr(pf, "extras", None) or {}
+        raw = extras.get("callable_signatures")
+        if not isinstance(raw, list):
+            continue
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            start = entry.get("start_line")
+            end = entry.get("end_line")
+            if not isinstance(start, int) or not isinstance(end, int):
+                continue
+            params = entry.get("params")
+            body_hash = normalized_body_hash(query_lines, start, end)
+            body_hash_pnorm = normalized_body_hash(
+                query_lines,
+                start,
+                end,
+                param_names=_param_names(params),
+                language=query_lang,
+            )
+            body = query_lines[start : min(end, len(query_lines))]
+            excerpt = "\n".join(body[:excerpt_cap])
+            kind = entry.get("kind")
+            out.append(
+                ParsedFn(
+                    name=name,
+                    kind=kind if isinstance(kind, str) else "function",
+                    start_line=start,
+                    body_hash=body_hash,
+                    body_hash_pnorm=body_hash_pnorm,
+                    excerpt=excerpt,
+                )
+            )
+    return out
+
+
 def get_duplication_candidates(repo: str, file_path: str) -> dict:
     """Candidate existing functions a file's new functions may re-implement.
 

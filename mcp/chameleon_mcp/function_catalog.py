@@ -557,6 +557,23 @@ class NewFunction:
     body_hash_pnorm: str | None = None
 
 
+@dataclass(frozen=True)
+class ParsedFn:
+    """A function parsed from an edited file, with the spans the catalog drops.
+
+    NewFunction carries only the hashes for matching; ParsedFn additionally
+    carries the 1-based start line and a body excerpt so the duplication gate can
+    cite a line and feed the judge a body without a second parse.
+    """
+
+    name: str
+    kind: str
+    start_line: int
+    body_hash: str | None
+    body_hash_pnorm: str | None
+    excerpt: str
+
+
 def select_candidates(
     catalog: FunctionCatalog,
     new_functions: list[NewFunction],
