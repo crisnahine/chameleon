@@ -4,6 +4,18 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2026-06-08
+
+Turn-end duplication advisory gate. At Stop, chameleon now detects when a turn introduces a function whose body matches one already in the committed catalog or added earlier this session, confirms via a bounded judge spawn, and surfaces the original as an advisory ("X re-implements Y at path -- reuse it"). Advisory only, never blocks, on by default via `enforcement.duplication_review`. Validated by the full unit suite (2,914), the gitlabhq (63/63) and bulletproof-react (56/56) batteries, cross-cutting (15/15), and hook simulation (6/6).
+
+### Added
+
+- **Turn-end duplication advisory** (`enforcement.duplication_review`, default on). After each turn, edited files are parsed for callable signatures; each function's body hash is looked up against the committed function catalog and the session union (functions added earlier this turn). A bounded `claude -p` judge confirms real re-implementations vs. coincidentally similar bodies. Confirmed matches arrive as `[🦎 chameleon: N possible duplicates]` advisory context naming the new function, the existing one it mirrors, and the path to reuse. Skipped on SubagentStop. Capped per session (`DUPLICATION_REVIEW_MAX_SPAWNS_PER_SESSION`). Per-(file, content-digest) dedup so an unchanged file is not re-judged every turn. Defers when the correctness judge fires the same Stop (at most one heavy spawn per Stop). Single-language filter. Fails open everywhere.
+
+### Fixed
+
+- **Hook interpreter dep-probe hardened** (commit cbe9b5b). The canary script now probes `xxhash`, `pyyaml`, AND `detect-secrets` (previously only `xxhash`); a doubly-unavailable skip (neither the current interpreter nor `uv run` resolves) now logs a one-line diagnostic to stderr instead of silently suppressing the background refresh.
+
 ## [2.8.0] - 2026-06-08
 
 Remediation of an external QA report (gitlabhq, Ruby profile) after a two-round adversarial verification: round 1 read each claim against the source and ran it; round 2 tried to overturn every verdict and executed the enforce-mode paths the first round only reasoned about. Two of the report's headline P1s did not reproduce as described (the `chameleon-ignore` matcher is not inverted; constant casing is asserted), but verification surfaced the real, narrower defects behind them, plus the items that did hold. Validated by the full unit suite (2,873), the gitlabhq (63/63) and bulletproof-react (56/56) batteries, cross-cutting (15/15), and hook simulation (6/6 within budget).
