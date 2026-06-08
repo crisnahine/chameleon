@@ -111,6 +111,11 @@ class EnforcementConfig:
     # regex presence check (no parse at Stop). Advisory only, never a block: a
     # mid-rename turn may legitimately leave a call site for a follow-up edit.
     crossfile_existence_advisory: bool = True
+    # duplication_review: on by default. At turn end, when the session introduced a
+    # function whose body hash matches an existing one in the catalog or earlier
+    # this session, surface an advisory naming the original so the author can reuse
+    # it. Confirmed by a bounded judge spawn; advisory only, never a block.
+    duplication_review: bool = True
 
 
 @dataclass(frozen=True)
@@ -201,6 +206,9 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
             "`enforcement.crossfile_existence_advisory` must be bool, got "
             f"{type(crossfile_existence_advisory).__name__}"
         )
+    duplication_review = raw.get("duplication_review", True)
+    if not isinstance(duplication_review, bool):
+        raise ChameleonConfigError("enforcement.duplication_review must be a boolean")
     return EnforcementConfig(
         mode=mode,
         stop_backstop=stop_backstop,
@@ -211,6 +219,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         stale_test_advisory=stale_test_advisory,
         changeset_completeness=changeset_completeness,
         crossfile_existence_advisory=crossfile_existence_advisory,
+        duplication_review=duplication_review,
     )
 
 
