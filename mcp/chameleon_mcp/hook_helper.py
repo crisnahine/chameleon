@@ -574,7 +574,13 @@ def _refresh_interpreter_cmd() -> list[str] | None:
     an actionable line instead of spawning a child doomed to fail.
     """
     try:
+        # Probe the third-party deps the refresh/bootstrap path actually imports
+        # — xxhash (extractors), pyyaml (tool-config / workspace scan),
+        # detect-secrets (secret scanner) — not xxhash alone, so an interpreter
+        # carrying one but not the others is not mistaken for deps-complete.
+        import detect_secrets  # noqa: F401
         import xxhash  # noqa: F401
+        import yaml  # noqa: F401
 
         return [sys.executable]
     except Exception:
@@ -702,6 +708,18 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
                             ).encode(),
                         )
                     except OSError:
+                        pass
+                else:
+                    # The log file could not be opened either (broken data dir);
+                    # the hook's stderr is captured to .hook_errors.log, so a line
+                    # there keeps the skip diagnosable instead of fully silent.
+                    try:
+                        print(
+                            "chameleon: auto-refresh skipped (no deps-complete "
+                            "interpreter; run /chameleon-doctor)",
+                            file=sys.stderr,
+                        )
+                    except Exception:
                         pass
             else:
                 _sp.Popen(

@@ -8036,7 +8036,7 @@ def doctor() -> dict:
                 )
             else:
                 probe = _subp.run(
-                    [hook_py, "-c", "import xxhash, chameleon_mcp"],
+                    [hook_py, "-c", "import xxhash, yaml, detect_secrets, chameleon_mcp"],
                     capture_output=True,
                     text=True,
                     timeout=15,
