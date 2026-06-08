@@ -114,13 +114,17 @@ def test_as_dict_coerces_non_dicts(value, expected):
     assert _as_dict(value) == expected
 
 
-def test_read_payload_dict_deeply_nested_json_fails_open():
-    # Deeply nested JSON makes json.loads raise RecursionError (a RuntimeError,
-    # not a ValueError); the guard must catch it and return None, or the hook
-    # writes a traceback to .hook_errors.log that flips /chameleon-doctor to
-    # "warn" -- a healthy install reporting degraded from one malformed payload.
-    deep = '{"a":' * 2000 + "1" + "}" * 2000
-    with patch("sys.stdin", io.StringIO(deep)):
+def test_read_payload_dict_recursion_error_fails_open():
+    # A RecursionError from json.loads on deeply nested JSON subclasses RuntimeError,
+    # not ValueError, so it would escape the (JSONDecodeError, ValueError) guard and
+    # write a traceback to .hook_errors.log (a false /chameleon-doctor "degraded").
+    # The nesting depth that actually triggers RecursionError is interpreter-version-
+    # dependent (3.12+ parses deeper than 3.11), so force the error deterministically
+    # and assert the guard catches it and fails open on every interpreter.
+    with (
+        patch("sys.stdin", io.StringIO('{"a": 1}')),
+        patch.object(json, "loads", side_effect=RecursionError("nesting too deep")),
+    ):
         assert _read_payload_dict() is None
 
 

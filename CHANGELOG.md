@@ -4,6 +4,14 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.2] - 2026-06-09
+
+CI fix on top of 2.9.1; no product change.
+
+### Fixed
+
+- The 2.9.1 RecursionError fail-open guard test assumed a fixed JSON nesting depth (2000) triggers `RecursionError`. That holds on Python 3.11 but not 3.12+, where `json.loads` parses deeper and returns the dict, so the test failed CI on the 3.12 and 3.13 matrix legs. It now forces the error deterministically (patching `json.loads`) and verifies the guard on every interpreter. The 2.9.1 guard itself was correct and version-agnostic; only the test was version-fragile.
+
 ## [2.9.1] - 2026-06-09
 
 Remediation of the ULTRACODE QA campaign: six hostile lenses plus a slash-command pass against the real profiled repos (ef-api, ef-client, bulletproof-react, excalidraw, forem, gitlabhq), then the real-loop journey harness and a direct zero-reviews effectiveness measurement. Every finding was re-read against source before acting; two reported items were dropped after verification because they did not reproduce against the current tree. Validated by the full unit suite (2,942), the ef-api (63/63) and ef-client (56/56) batteries, cross-cutting (15/15), hook simulation (6/6), and the journey harness (40/40).
