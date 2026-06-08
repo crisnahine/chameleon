@@ -112,3 +112,20 @@ def test_read_payload_dict(raw, expected):
 )
 def test_as_dict_coerces_non_dicts(value, expected):
     assert _as_dict(value) == expected
+
+
+def test_read_payload_dict_deeply_nested_json_fails_open():
+    # Deeply nested JSON makes json.loads raise RecursionError (a RuntimeError,
+    # not a ValueError); the guard must catch it and return None, or the hook
+    # writes a traceback to .hook_errors.log that flips /chameleon-doctor to
+    # "warn" -- a healthy install reporting degraded from one malformed payload.
+    deep = '{"a":' * 2000 + "1" + "}" * 2000
+    with patch("sys.stdin", io.StringIO(deep)):
+        assert _read_payload_dict() is None
+
+
+def test_entry_point_fails_open_on_deeply_nested_json(tmp_path):
+    deep = '{"a":' * 2000 + "1" + "}" * 2000
+    rc, out = _run(preflight_and_advise, deep, env={"CHAMELEON_PLUGIN_DATA": str(tmp_path)})
+    assert rc == 0
+    assert isinstance(out, dict)

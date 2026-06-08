@@ -2034,7 +2034,7 @@ Magic numbers in the architecture, with evaluation protocols for validation:
 ## Versioning & Compatibility
 
 **Engine version policy:**
-- Engine vN supports schemas v(N-1) to v(N+0); refuses older with migration prompt; refuses newer with upgrade prompt
+- Engine vN reads any schema <= N: an older-schema profile still loads, and the schema/engine bump surfaces a `/chameleon-refresh` recommendation (via drift status) that re-derives it. A newer-than-N schema is refused — the load-bearing read paths return `profile_too_new` with an upgrade prompt.
 - Schema migrations live in `mcp/chameleon_mcp/profile/migrations/` per the migration correctness contract above
 
 **Dependency pinning:**

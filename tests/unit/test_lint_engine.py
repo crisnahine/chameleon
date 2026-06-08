@@ -1169,3 +1169,73 @@ class TestStringEmbeddedSlashesDoNotBlindImports:
         content = "const help = 'import http from \"axios\"'\n"
         violations = lint_conventions(content, self.CONVENTIONS, language="typescript")
         assert violations == []
+
+
+class TestRubyPercentLiteralBlanking:
+    def test_eval_inside_percent_literal_blanked(self):
+        from chameleon_mcp.lint_engine import _strip_ruby_strings_and_comments as strip
+
+        stripped = strip("PAT = %q{eval(}\nreal = eval(x)\n")
+        # The literal's eval( is blanked; a real eval( on the next line survives.
+        assert "eval(" not in stripped.splitlines()[0]
+        assert "eval(" in stripped.splitlines()[1]
+
+    def test_modulo_not_treated_as_literal(self):
+        from chameleon_mcp.lint_engine import _strip_ruby_strings_and_comments as strip
+
+        out = strip("x = a % b\ny = total%count\n")
+        assert "% b" in out
+        assert "total%count" in out
+
+    def test_word_array_content_blanked(self):
+        from chameleon_mcp.lint_engine import _blank_ruby_percent_literals as blank
+
+        assert "eval" not in blank("x = %w[eval( foo]")
+
+
+class TestRubyInheritanceShortFormBase:
+    CONV = {
+        "inheritance": {
+            "dominant_base": "Api::V1::BaseController",
+            "frequency": 0.9,
+            "known_bases": ["Api::V1::BaseController"],
+        }
+    }
+
+    def test_short_form_base_accepted(self):
+        content = "module Api::V1\n  class QboController < BaseController\n  end\nend\n"
+        assert lint_conventions(content, self.CONV, language="ruby") == []
+
+    def test_fully_qualified_base_accepted(self):
+        content = "class QboController < Api::V1::BaseController\nend\n"
+        assert lint_conventions(content, self.CONV, language="ruby") == []
+
+    def test_wrong_base_still_flagged(self):
+        content = "class QboController < SomethingElse\nend\n"
+        rules = {v.rule for v in lint_conventions(content, self.CONV, language="ruby")}
+        assert "inheritance-convention-violation" in rules
+
+
+class TestTsAmbientInterfaceNaming:
+    CONV = {"naming": {"interface_prefix": {"pattern": "I", "consistency": 1.0}}}
+
+    def test_declare_global_interface_exempt(self):
+        content = "declare global {\n  interface Window { x: string }\n}\n"
+        assert lint_conventions(content, self.CONV, language="typescript") == []
+
+    def test_declare_module_interface_exempt(self):
+        content = 'declare module "ext" {\n  interface Plugin { y: number }\n}\n'
+        assert lint_conventions(content, self.CONV, language="typescript") == []
+
+    def test_plain_interface_still_flagged(self):
+        content = "export interface UserProfile { x: number }\n"
+        rules = {v.rule for v in lint_conventions(content, self.CONV, language="typescript")}
+        assert "naming-convention-violation" in rules
+
+    def test_nested_braces_in_ambient_block_do_not_leak_exemption(self):
+        content = (
+            "declare global {\n  interface Window { fn: () => { a: number } }\n}\n"
+            "export interface BadName {}\n"
+        )
+        actuals = {v.actual for v in lint_conventions(content, self.CONV, language="typescript")}
+        assert "BadName" in actuals

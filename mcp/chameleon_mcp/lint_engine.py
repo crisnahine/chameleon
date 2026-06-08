@@ -430,6 +430,46 @@ def _blank_ruby_heredocs(content: str) -> str:
     return "\n".join(out)
 
 
+# Ruby percent-literals: %q{}, %Q[], %w(), %i<>, %r||, and the bare %(...) /
+# %{...} string forms. The text inside is string/array/regex content, not code,
+# so `%q{eval(}` is an inert literal and a `# chameleon-ignore` inside one is
+# content, not author intent. Blank them like the quote forms so the dangerous-
+# sink scan does not false-positive on the embedded text and an embedded
+# directive cannot suppress a real violation. The typed forms (q/Q/w/W/i/I/r/s/x)
+# accept any delimiter; the bare form is restricted to bracket pairs so a modulo
+# expression (`a % b`, `a%[0]`) is not mistaken for a literal. Non-nesting: the
+# first matching close delimiter ends the literal, so a blanking miss fails
+# closed (the violation still fires, the directive deactivates), never open. The
+# two inner alternatives are disjoint (`\\.` vs a class excluding `\\`), so the
+# match is linear with no catastrophic backtracking.
+_RUBY_PCT_DELIMS_ALL = (
+    r"\{(?:\\.|[^\\{}])*\}"
+    r"|\[(?:\\.|[^\\\[\]])*\]"
+    r"|\((?:\\.|[^\\()])*\)"
+    r"|<(?:\\.|[^\\<>])*>"
+    r"|\|(?:\\.|[^\\|])*\|"
+    r"|!(?:\\.|[^\\!])*!"
+    r"|/(?:\\.|[^\\/])*/"
+)
+_RUBY_PCT_DELIMS_BRACKET = (
+    r"\{(?:\\.|[^\\{}])*\}"
+    r"|\[(?:\\.|[^\\\[\]])*\]"
+    r"|\((?:\\.|[^\\()])*\)"
+    r"|<(?:\\.|[^\\<>])*>"
+)
+_RUBY_PERCENT_LITERAL = re.compile(
+    rf"%(?:[qQwWiIrsx](?:{_RUBY_PCT_DELIMS_ALL})|(?:{_RUBY_PCT_DELIMS_BRACKET}))",
+    re.DOTALL,
+)
+
+
+def _blank_ruby_percent_literals(content: str) -> str:
+    def _spaces(m: re.Match) -> str:
+        return re.sub(r"[^\n]", " ", m.group(0))
+
+    return _RUBY_PERCENT_LITERAL.sub(_spaces, content)
+
+
 def _strip_ruby_strings_and_comments(content: str) -> str:
     def _spaces(m: re.Match) -> str:
         # Preserve newlines so line numbers downstream of a multiline match
@@ -441,7 +481,9 @@ def _strip_ruby_strings_and_comments(content: str) -> str:
     out = _blank_ruby_heredocs(out)
     out = _RUBY_STRING_DQ.sub(_spaces, out)
     out = _RUBY_STRING_SQ.sub(_spaces, out)
-    return out
+    # After the quote forms: a `%` inside a normal "..."/'...' string is already
+    # blanked and cannot start a literal, so only true percent-literals remain.
+    return _blank_ruby_percent_literals(out)
 
 
 _RUBY_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -1921,6 +1963,35 @@ def _ruby_module_in_use(mod: str, import_specs: list[str], scan_content: str) ->
 # the most blatant violation -- a lowercase `interface params` in an I-prefix
 # repo -- so the prefix/casing check downstream gets the real name and can flag it.
 _TS_INTERFACE_DECL_RE = re.compile(r"\binterface\s+([A-Za-z_$]\w*)")
+
+# `declare global { ... }` and `declare module "x" { ... }` augment external or
+# lib-global types (e.g. `interface Window`) whose names cannot be renamed, so
+# their interfaces are exempt from the repo's I-prefix naming convention. Match
+# the block opener; the caller brace-matches the body to find its extent. Run
+# over string/comment-stripped content so braces inside literals do not skew the
+# depth count.
+_TS_AMBIENT_BLOCK_OPENER = re.compile(r"\bdeclare\s+(?:global\b|module\b[^{]*)")
+
+
+def _ts_ambient_block_spans(content: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for m in _TS_AMBIENT_BLOCK_OPENER.finditer(content):
+        brace = content.find("{", m.end())
+        if brace == -1:
+            continue
+        depth = 0
+        for i in range(brace, len(content)):
+            ch = content[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    spans.append((m.start(), i))
+                    break
+    return spans
+
+
 # A `.then(` on a line that also carries no `.catch`. Scoped to a single line on
 # purpose: a `.then().catch()` chain split across lines, a `.catch` on the same
 # statement but a later line, or rejection handled by an enclosing try/await are
@@ -2733,7 +2804,12 @@ def lint_conventions(
         prefix_entry = naming.get("interface_prefix")
         if prefix_entry and prefix_entry.get("consistency", 0) >= 0.60:
             expected_prefix = prefix_entry["pattern"]
+            ambient_spans = _ts_ambient_block_spans(scan_content)
             for m in _TS_INTERFACE_DECL_RE.finditer(scan_content):
+                # Interfaces inside `declare global`/`declare module` augment
+                # external types and cannot be renamed -- exempt from I-prefix.
+                if any(s <= m.start() <= e for s, e in ambient_spans):
+                    continue
                 name = m.group(1)
                 if not name.startswith(expected_prefix) or (len(name) > 1 and name[1].islower()):
                     violations.append(
@@ -2773,6 +2849,14 @@ def lint_conventions(
             # mis-flagging legit controllers and driving a STOP loop).
             known_bases = set(inheritance.get("known_bases") or ())
             known_bases.add(dominant_base)
+            # A class declared inside its module names the base in namespace-
+            # relative short form (`< BaseController`) while the stored bases are
+            # fully qualified (`Api::V1::BaseController`). Accept a match on the
+            # unqualified tail so the idiomatic short form is not mis-flagged as
+            # a wrong base (a false positive that, if a repo's calibration sample
+            # happened to be all-fully-qualified, would harden into a block on
+            # conforming code).
+            known_base_tails = {b.rsplit("::", 1)[-1] for b in known_bases}
             min_class_indent = None
             for m in re.finditer(
                 r"^([ \t]*)class\s+([\w:]+)(?:\s*<\s*([\w:]+))?",
@@ -2792,7 +2876,10 @@ def lint_conventions(
                 min_class_indent = (
                     indent if min_class_indent is None else min(min_class_indent, indent)
                 )
-                if superclass is None or superclass not in known_bases:
+                if superclass is None or (
+                    superclass not in known_bases
+                    and superclass.rsplit("::", 1)[-1] not in known_base_tails
+                ):
                     violations.append(
                         Violation(
                             rule="inheritance-convention-violation",

@@ -3,30 +3,6 @@ set -euo pipefail
 
 [[ "${CHAMELEON_DISABLE:-}" == "1" ]] && exit 0
 
-# The statusline cache lives in a repo-relative path (.claude/), so its values
-# are attacker-controllable. Strip control chars before emitting to the
-# terminal: ANSI/OSC escape injection, terminal-title rewrite, plus the
-# multibyte controls `tr -d '[:cntrl:]'` misses under a non-UTF-8 locale -
-# C1 (U+0080..U+009F), bidi overrides, and zero-width chars that can spoof
-# the rendered profile name. A single python pass over the whole field stream
-# keeps this locale-independent and O(1) in process spawns. Tab (U+0009) and
-# newline (U+000A) are preserved because the caller uses them as the field /
-# record framing; the per-field contents have already had both gsub'd out.
-strip_ctrl() {
-  python3 -c "
-import sys, re
-_CTRL = re.compile(
-    '[\\x00-\\x08\\x0b-\\x1f\\x7f'  # C0 minus tab/newline, plus DEL
-    '\\x80-\\x9f'                   # C1
-    '\\u200b-\\u200d\\ufeff'        # zero-width + BOM
-    '\\u200e\\u200f'                # LRM / RLM
-    '\\u202a-\\u202e'               # bidi embeddings + overrides
-    '\\u2066-\\u2069]'              # bidi isolates
-)
-sys.stdout.write(_CTRL.sub('', sys.stdin.read()))
-" 2>/dev/null || tr -d '\000-\010\013-\037\177'
-}
-
 input=$(cat)
 project_dir=""
 if command -v jq &>/dev/null; then
@@ -43,15 +19,16 @@ if [[ -f "$cache_file" ]]; then
     # One jq pass emits every field as a tagged, tab-separated record so the
     # process spawn count stays constant regardless of profile count (the
     # former per-field/per-profile loop spawned 2N+3 jq processes and broke
-    # the <100ms budget past ~12 profiles). Embedded tabs/newlines in a name
-    # are dropped here so they cannot corrupt the line protocol; the shared
-    # strip_ctrl pass then removes the remaining control chars in one go.
+    # the <100ms budget past ~12 profiles). Each field is stripped of control,
+    # bidi, and zero-width chars (plus the framing tab/newline) in the same jq
+    # gsub, so embedded content cannot corrupt the line protocol or inject a
+    # terminal escape -- locale-independent, and no per-render process spawn.
     records=$(jq -r '
       (.profiles // [])[] as $p
-        | "P\t" + (($p.name // "") | gsub("[\t\n]"; "")) + "\t" + ($p.trust // ""),
-      "A\t" + ((.activity // "") | tostring | gsub("[\t\n]"; "")),
-      "U\t" + ((.update // "") | tostring | gsub("[\t\n]"; ""))
-    ' "$cache_file" 2>/dev/null | strip_ctrl || true)
+        | "P\t" + (($p.name // "") | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069]"; "")) + "\t" + ($p.trust // ""),
+      "A\t" + ((.activity // "") | tostring | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069]"; "")),
+      "U\t" + ((.update // "") | tostring | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069]"; ""))
+    ' "$cache_file" 2>/dev/null || true)
     if [[ -n "$records" ]]; then
       parts=""
       activity=""

@@ -38,7 +38,7 @@ _ACTS = [
     ("03b_drift_refresh", "Drift injection + refresh recovery", 2.00, [10, 11]),
     ("04_v060_ux_bundle", "auto_refresh subprocess discipline", 2.00, [12]),
     ("04b_canonical_trust", "canonical_ref lifecycle + trust.auto_preserve_when", 2.50, [13, 14]),
-    ("05_teach_status_doctor", "Teach idiom (structured + cap tests)", 2.00, [16]),
+    ("05_teach_status_doctor", "Teach idiom (structured + slug boundary)", 2.00, [16]),
     ("05b_status", "Status v0.6.0 config surface", 1.50, [17]),
     ("05c_doctor", "Doctor stale errors filter", 1.50, [18]),
     ("06_suppression_callout", "Pause + disable + 4-level precedence", 1.50, [19]),

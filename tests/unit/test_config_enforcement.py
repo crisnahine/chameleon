@@ -136,3 +136,27 @@ def test_crossfile_existence_advisory_must_be_bool(tmp_path):
     d = _write(tmp_path, {"enforcement": {"crossfile_existence_advisory": "sure"}})
     with pytest.raises(ChameleonConfigError):
         load_config(d)
+
+
+def test_correctness_judge_default_on_no_file(tmp_path):
+    assert load_config(tmp_path).enforcement.correctness_judge is True
+
+
+def test_correctness_judge_default_on_when_block_omits_key(tmp_path):
+    # A committed config that sets any enforcement key but omits correctness_judge
+    # must keep it on: the coerce default has to match the dataclass default, or
+    # the turn-end correctness reviewer silently disables itself for every repo
+    # that ships a config.json (every other enforcement field gets this right).
+    d = _write(tmp_path, {"enforcement": {"mode": "enforce"}})
+    assert load_config(d).enforcement.correctness_judge is True
+
+
+def test_correctness_judge_explicit_off(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"correctness_judge": False}})
+    assert load_config(d).enforcement.correctness_judge is False
+
+
+def test_correctness_judge_must_be_bool(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"correctness_judge": "yes"}})
+    with pytest.raises(ChameleonConfigError):
+        load_config(d)

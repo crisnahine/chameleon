@@ -372,3 +372,12 @@ def test_directive_in_ruby_heredoc_does_not_activate():
 
     content = "doc = <<~TEXT\n  # chameleon-ignore eval-call\nTEXT\n"
     assert build_ignore_index(content, language="ruby") is None
+
+
+def test_directive_in_ruby_percent_literal_does_not_activate():
+    # A directive inside a `%q{...}` literal is string content, not author
+    # intent, and must not suppress a real violation.
+    from chameleon_mcp.violation_class import build_ignore_index
+
+    content = "X = %q{\n# chameleon-ignore phantom-import\n}\n"
+    assert build_ignore_index(content, language="ruby") is None

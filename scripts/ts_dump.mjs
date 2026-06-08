@@ -81,14 +81,36 @@ function isNamedExportTopLevel(node) {
 // and the caller marks the whole file's export set as non-authoritative. The
 // phantom-symbol check then skips imports from such a file, mirroring the
 // conservative skip-on-ambiguity stance the path check already takes.
+// Collect every identifier bound by a declaration target. A simple binding is
+// an Identifier (`.text`); a destructuring export (`export const { a, b: c,
+// ...rest } = f()`) binds through an Object/ArrayBindingPattern whose node
+// carries no `.text`, so the names live one level down in `.elements`. Left
+// unwalked those names vanish from the export set while the file is still
+// marked authoritative (`open: false`), and the phantom-symbol check then
+// flags the (real) imports of them as hallucinated. Recurse so each bound name
+// is recorded; array holes (`[, a]`) are OmittedExpression with no `.name`.
+function collectBindingNames(name, names) {
+  if (!name) return;
+  if (typeof name.text === "string") {
+    names.add(name.text);
+    return;
+  }
+  if (
+    name.kind === ts.SyntaxKind.ObjectBindingPattern ||
+    name.kind === ts.SyntaxKind.ArrayBindingPattern
+  ) {
+    for (const el of name.elements) {
+      if (el.name) collectBindingNames(el.name, names);
+    }
+  }
+}
+
 function collectExportNames(node, names, state) {
   // export const|let|var|function|class|interface|type|enum|namespace foo
   if (isNamedExportTopLevel(node)) {
     if (node.kind === ts.SyntaxKind.VariableStatement) {
       for (const decl of node.declarationList.declarations) {
-        if (decl.name && typeof decl.name.text === "string") {
-          names.add(decl.name.text);
-        }
+        collectBindingNames(decl.name, names);
       }
     } else if (node.name && typeof node.name.text === "string") {
       names.add(node.name.text);

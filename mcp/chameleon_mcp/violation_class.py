@@ -75,6 +75,7 @@ def _blank_string_literals(content: str, file_path: str | None, language: str | 
             _RUBY_STRING_SQ,
             _TS_STRING,
             _blank_ruby_heredocs,
+            _blank_ruby_percent_literals,
             detect_language,
         )
 
@@ -86,7 +87,10 @@ def _blank_string_literals(content: str, file_path: str | None, language: str | 
         if language == "ruby":
             out = _blank_ruby_heredocs(content)
             out = _RUBY_STRING_DQ.sub(_spaces, out)
-            return _RUBY_STRING_SQ.sub(_spaces, out)
+            out = _RUBY_STRING_SQ.sub(_spaces, out)
+            # Percent-literals too: a directive inside `%q{...}` is content, not
+            # author intent, and must not suppress a real violation.
+            return _blank_ruby_percent_literals(out)
         # TypeScript and unknown languages share the quote/backtick shapes.
         return _TS_STRING.sub(_spaces, content)
     except Exception:

@@ -1,4 +1,15 @@
-"""Act 5: Teach idiom (structured + cap tests) (Phase 16)."""
+"""Act 5: Teach idiom (structured + slug-length boundary) (Phase 16).
+
+A single bounded claude session does the real-loop teach: a structured teach
+that must land in idioms.md, plus the slug-length boundary (64-char ok, 65-char
+rejected). It then emits the one phase-16 checkpoint the harness expects.
+
+The per-idiom 50KB cap is NOT exercised here: forcing a model to emit a 51KB
+rationale through a live session either trips the per-response output ceiling or
+stalls the stream, and tests the model rather than the cap. That cap is
+deterministic server-side validation and is covered by tests/unit/
+test_teach_structured_cap.py instead.
+"""
 
 from __future__ import annotations
 
@@ -8,68 +19,67 @@ from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
 
-_PROMPT_BODY = """\
-Teach idioms against working/ts_basic (trusted from Act 2).
-Use absolute paths for all file references.
+_TEACH_TOOLS = [
+    "Bash",
+    "Read",
+    "Edit",
+    "Write",
+    "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
+    "mcp__plugin_chameleon_chameleon-mcp__doctor",
+    "mcp__plugin_chameleon_chameleon-mcp__get_archetype",
+    "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
+    "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
+    "mcp__plugin_chameleon_chameleon-mcp__get_rules",
+    "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
+    "mcp__plugin_chameleon_chameleon-mcp__refresh_repo",
+    "mcp__plugin_chameleon_chameleon-mcp__teach_profile",
+    "mcp__plugin_chameleon_chameleon-mcp__teach_profile_structured",
+    "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
+]
 
-PHASE 16 - structured idiom teach:
-  FIRST: emit checkpoint started phase 16 NOW (plain Bash echo, outside any code fence).
-  Run /chameleon-teach (structured) with these exact values:
-    slug: no-direct-axios
-    rationale: We wrap HTTP in src/lib/api.ts - never import axios directly
-    example: import { api } from '@/lib/api'
-    counterexample: import axios from 'axios'
-    archetype: util
-    status: active
-  After teach succeeds:
-    - Confirm .chameleon/idioms.md was updated and contains "no-direct-axios".
-    - Confirm idioms.md contains Language: typescript frontmatter.
-  Test the slug length boundary:
-    - Try a 64-char slug (e.g. "a" + "b" * 63). Expect success.
-    - Try a 65-char slug (e.g. "a" + "b" * 64). Expect an error (exceeds 64-char limit).
-  Test the 50KB per-idiom cap:
-    - Use Bash to generate a 51000-character string and save it to a temp file:
-        python3 -c "print('x' * 51000)" > /tmp/big_rationale.txt
-    - Read the file contents and pass them as the rationale to /chameleon-teach (structured)
-      with slug "fifty-kb-test". Expect a "failed" status with an error mentioning the 50KB cap.
-      Do NOT add this idiom successfully; the failure is expected.
-  emit checkpoint completed phase 16.
 
-Reminder: emit checkpoints as plain Bash echo lines outside any code fences.
-Use absolute paths when referencing fixture directories.
+def _body(repo: str) -> str:
+    return f"""\
+Phase 16 (structured idiom teach + slug-length boundary) against the trusted repo at
+{repo} (trusted in Act 2). Use absolute paths. Be terse: do not print file contents or
+long narration.
+
+1. Run /chameleon-teach (structured) with EXACTLY these values:
+     slug: no-direct-axios
+     rationale: We wrap HTTP in src/lib/api.ts - never import axios directly
+     example: import {{ api }} from '@/lib/api'
+     counterexample: import axios from 'axios'
+     archetype: util
+     status: active
+   After it succeeds, confirm {repo}/.chameleon/idioms.md contains "no-direct-axios"
+   and a "Language: typescript" frontmatter line.
+2. Slug-length boundary:
+     - A 64-character slug ("a" then 63 "b"s): expect SUCCESS.
+     - A 65-character slug ("a" then 64 "b"s): expect an ERROR (exceeds the 64-char
+       limit). Do not retry it.
+
+Then emit the phase-16 checkpoint: status "passed" if the structured teach landed
+(idioms.md contains "no-direct-axios" and the "Language: typescript" frontmatter) and
+both slug-boundary cases behaved as described; otherwise status "failed" with a short
+note naming what broke.
 """
 
 
 def run(ctx: JourneyContext) -> ActResult:
     cwd = ctx.fixture("ts_basic")
+    repo = str(cwd)
     transcript = ctx.run_dir / "transcripts" / "act_05.txt"
     transcript.parent.mkdir(exist_ok=True)
 
     session = spawn_claude(
-        prompt=build_act_prompt(_PROMPT_BODY),
+        prompt=build_act_prompt(_body(repo)),
         cwd=cwd,
         env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
         transcript_path=transcript,
-        max_turns=60,
-        allowed_tools=[
-            "Bash",
-            "Read",
-            "Edit",
-            "Write",
-            "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
-            "mcp__plugin_chameleon_chameleon-mcp__doctor",
-            "mcp__plugin_chameleon_chameleon-mcp__get_archetype",
-            "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
-            "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
-            "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__refresh_repo",
-            "mcp__plugin_chameleon_chameleon-mcp__teach_profile",
-            "mcp__plugin_chameleon_chameleon-mcp__teach_profile_structured",
-            "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
-        ],
+        max_turns=40,
+        allowed_tools=_TEACH_TOOLS,
         plugin_root=ctx.plugin_root,
-        timeout_s=1200,
+        timeout_s=900,
         add_dirs=[ctx.run_dir],
     )
 
@@ -77,11 +87,13 @@ def run(ctx: JourneyContext) -> ActResult:
         ctx.current_checkpoint_file, expected_phases=[16]
     )
 
+    # Backstop: cross-check the on-disk artifact so a "passed" the state does not
+    # support is flagged, and a session that never checkpointed is still attributed
+    # from the idioms.md it left behind.
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    ts_basic_chameleon = ctx.fixture("ts_basic") / ".chameleon"
-    idioms_md = ts_basic_chameleon / "idioms.md"
+    idioms_md = cwd / ".chameleon" / "idioms.md"
     try:
         expect.path_exists(16, idioms_md)
         expect.file_size_between(16, idioms_md, 1, 200 * 1024)

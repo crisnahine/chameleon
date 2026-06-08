@@ -183,7 +183,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         raise ChameleonConfigError(
             f"`enforcement.idiom_judge` must be bool, got {type(idiom_judge).__name__}"
         )
-    correctness_judge = raw.get("correctness_judge", False)
+    correctness_judge = raw.get("correctness_judge", True)
     if not isinstance(correctness_judge, bool):
         raise ChameleonConfigError(
             f"`enforcement.correctness_judge` must be bool, got {type(correctness_judge).__name__}"

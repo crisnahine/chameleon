@@ -7017,18 +7017,39 @@ def teach_competing_import(
     except Exception as e:
         return _envelope({"status": "failed", "error": f"conventions write failed: {e}"})
 
-    return _envelope(
-        {
-            "status": "success",
-            "archetype": archetype,
-            "competing": {"preferred": preferred, "over": over},
-            "already_present": already,
-            "note": (
-                "wrapper-preference recorded in conventions.json; the profile hash "
-                "changed, so run /chameleon-trust if it shows as stale."
-            ),
-        }
-    )
+    # The archetype is regex-validated but not required to exist (a teammate may
+    # be capturing a rule for a renamed/refreshed archetype the profile does not
+    # yet reflect). But unlike a teach_profile idiom, this rule DRIVES a lint:
+    # an archetype no committed file matches makes the rule silently dead. Surface
+    # a non-fatal warning when the archetype is absent from the current profile so
+    # a typo is visible; the write still succeeds. Best-effort: skip the warning if
+    # the catalog is unreadable.
+    warning = None
+    try:
+        _arch = json.loads(safe_read_profile_artifact(profile_dir / "archetypes.json"))
+        _known = _arch.get("archetypes") if isinstance(_arch, dict) else None
+        if isinstance(_known, dict) and archetype not in _known:
+            warning = (
+                f"archetype {archetype!r} is not in the current profile; the rule was "
+                "recorded but will not match any file until an archetype by that name "
+                "exists. Check for a typo, or /chameleon-refresh if it was renamed."
+            )
+    except Exception:
+        warning = None
+
+    result = {
+        "status": "success",
+        "archetype": archetype,
+        "competing": {"preferred": preferred, "over": over},
+        "already_present": already,
+        "note": (
+            "wrapper-preference recorded in conventions.json; the profile hash "
+            "changed, so run /chameleon-trust if it shows as stale."
+        ),
+    }
+    if warning:
+        result["warning"] = warning
+    return _envelope(result)
 
 
 def unteach_competing_import(

@@ -1328,3 +1328,31 @@ def test_server_registers_idiom_coverage_tools():
     for name in ("get_idiom_coverage", "check_idiom_candidates"):
         assert hasattr(server, name), f"server.py does not register {name!r}"
         assert callable(getattr(server, name))
+
+
+class TestLooksLikeIdiomsMarkdown:
+    """The merge driver routes a file through the idioms union merge only when
+    this returns True; a hand-edited idioms.md that misses the canonical markers
+    must still be recognized, or the driver falls into the JSON parser and bails
+    to a raw markdown conflict (the case the driver exists to avoid)."""
+
+    def test_canonical_header_and_markers(self):
+        from chameleon_mcp.idiom_coverage import looks_like_idioms_markdown
+
+        assert looks_like_idioms_markdown("# idioms\n\n## active\n")
+
+    def test_capitalized_header_without_markers(self):
+        from chameleon_mcp.idiom_coverage import looks_like_idioms_markdown
+
+        assert looks_like_idioms_markdown("# Idioms\n\n### a\nfoo\n")
+
+    def test_slug_blocks_without_any_header(self):
+        from chameleon_mcp.idiom_coverage import looks_like_idioms_markdown
+
+        assert looks_like_idioms_markdown("\n### use-shared-client\nPrefer the client.\n")
+
+    def test_json_artifact_is_not_idioms(self):
+        from chameleon_mcp.idiom_coverage import looks_like_idioms_markdown
+
+        assert not looks_like_idioms_markdown('{"schema_version": 1, "files": []}')
+        assert not looks_like_idioms_markdown("[1, 2, 3]")

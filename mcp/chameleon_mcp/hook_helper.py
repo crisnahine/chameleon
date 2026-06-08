@@ -80,7 +80,11 @@ def _read_payload_dict() -> dict | None:
     """
     try:
         payload = json.loads(sys.stdin.read())
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        # RecursionError (deeply nested JSON) subclasses RuntimeError, not
+        # ValueError, so it would otherwise escape and write a traceback to the
+        # error log even though the bash wrapper masks the exit code -- a false
+        # /chameleon-doctor "degraded" warning from one malformed payload.
         return None
     if not isinstance(payload, dict):
         return None

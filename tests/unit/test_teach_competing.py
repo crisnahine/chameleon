@@ -83,3 +83,54 @@ def test_teach_competing_import_rejects_bad_input(tmp_path, monkeypatch):
         )["status"]
         == "failed"
     )
+
+
+def _setup_repo_with_archetypes(tmp_path, monkeypatch, names):
+    repo = _setup_repo(tmp_path, monkeypatch)
+    (repo / ".chameleon" / "archetypes.json").write_text(
+        json.dumps({"archetypes": {n: {} for n in names}}), encoding="utf-8"
+    )
+    return repo
+
+
+def test_teach_competing_known_archetype_no_warning(tmp_path, monkeypatch):
+    from chameleon_mcp import tools
+
+    repo = _setup_repo_with_archetypes(tmp_path, monkeypatch, ["httpclient"])
+    res = _data(
+        tools.teach_competing_import(
+            str(repo), archetype="httpclient", preferred="@/lib/http", over="axios"
+        )
+    )
+    assert res["status"] == "success"
+    assert "warning" not in res
+
+
+def test_teach_competing_unknown_archetype_warns_but_succeeds(tmp_path, monkeypatch):
+    # The rule drives a lint; a typo'd archetype no file matches is a silent dead
+    # rule. It is still recorded (forward-compat for renamed archetypes) but flagged.
+    from chameleon_mcp import tools
+
+    repo = _setup_repo_with_archetypes(tmp_path, monkeypatch, ["httpclient"])
+    res = _data(
+        tools.teach_competing_import(
+            str(repo), archetype="typoclient", preferred="@/lib/http", over="axios"
+        )
+    )
+    assert res["status"] == "success"
+    assert "warning" in res
+    assert "typoclient" in res["warning"]
+
+
+def test_teach_competing_no_catalog_no_warning(tmp_path, monkeypatch):
+    # Fail-open: with no archetypes.json the known set is undeterminable, so no warning.
+    from chameleon_mcp import tools
+
+    repo = _setup_repo(tmp_path, monkeypatch)
+    res = _data(
+        tools.teach_competing_import(
+            str(repo), archetype="anything", preferred="@/lib/http", over="axios"
+        )
+    )
+    assert res["status"] == "success"
+    assert "warning" not in res

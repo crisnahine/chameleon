@@ -177,3 +177,32 @@ def test_ruby_function_scopes(tmp_path):
     deep = next(s for s in scopes if s["param_count"] == 1)
     assert deep["branch_count"] >= 2
     assert deep["max_depth"] >= 1
+
+
+@pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+def test_ts_destructured_export_names_recorded(tmp_path):
+    # `export const { a, b: c, ...rest } = f()` binds names through a binding
+    # pattern whose node has no `.text`. Unwalked, those names vanish from the
+    # export set while the file stays authoritative, so the phantom-symbol check
+    # flags the (real) imports of them as hallucinated. Every bound name must be
+    # recorded and the set must stay closed (it is fully enumerable).
+    (tmp_path / "auth.ts").write_text(
+        "export const { useUser, useLogout, AuthLoader } = configureAuth({});\n"
+        "export const { a: renamed, ...rest } = obj;\n"
+        "export const [first, , third] = makeTuple();\n"
+        "export const PLAIN = 1;\n"
+    )
+    pr = TypeScriptExtractor().parse_repo(repo_root=tmp_path, glob="**/*.{ts,tsx}")
+    by_name = {f.path.name: f for f in pr.files}
+    names = set(by_name["auth.ts"].extras.get("named_export_names", []))
+    assert {
+        "useUser",
+        "useLogout",
+        "AuthLoader",
+        "renamed",
+        "rest",
+        "first",
+        "third",
+        "PLAIN",
+    } <= names
+    assert by_name["auth.ts"].extras.get("export_set_open") is not True

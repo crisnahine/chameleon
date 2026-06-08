@@ -846,7 +846,17 @@ def looks_like_idioms_markdown(text: str) -> bool:
     stripped = text.lstrip()
     if stripped.startswith("{") or stripped.startswith("["):
         return False
-    return stripped.startswith("# idioms") or "## active" in text or "## deprecated" in text
+    # Tolerate a hand-edited header (`# Idioms`, any case) and the canonical
+    # section markers; also accept a file carrying real `### slug` blocks even
+    # without section headers, so a hand-maintained idioms.md still routes
+    # through the union merge instead of falling into the JSON parser (which
+    # makes the merge driver bail and git fall back to a raw markdown conflict).
+    lowered = text.lower()
+    if re.match(r"#\s*idioms\b", stripped, re.IGNORECASE):
+        return True
+    if "## active" in lowered or "## deprecated" in lowered:
+        return True
+    return re.search(r"(?m)^###\s+\S", text) is not None
 
 
 def _parse_idioms_for_merge(text: str) -> dict[str, dict[str, str]]:
