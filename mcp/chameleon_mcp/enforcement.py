@@ -71,6 +71,7 @@ class EnforcementState:
     archetypes_with_violations: set[str] = field(default_factory=set)
     files: dict[str, FileState] = field(default_factory=dict)
     stop_hook_blocks: int = 0
+    duplication_spawns: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -78,6 +79,7 @@ class EnforcementState:
             "archetypes_with_violations": sorted(self.archetypes_with_violations),
             "files": {k: v.to_dict() for k, v in self.files.items()},
             "stop_hook_blocks": self.stop_hook_blocks,
+            "duplication_spawns": self.duplication_spawns,
         }
 
     @classmethod
@@ -87,6 +89,7 @@ class EnforcementState:
             archetypes_with_violations=set(d.get("archetypes_with_violations", [])),
             files={k: FileState.from_dict(v) for k, v in d.get("files", {}).items()},
             stop_hook_blocks=d.get("stop_hook_blocks", 0),
+            duplication_spawns=d.get("duplication_spawns", 0),
         )
 
 
@@ -132,6 +135,7 @@ def _merge_states(disk: EnforcementState, mem: EnforcementState) -> EnforcementS
         if dfs is None or (mfs.last_verified_at or 0) >= (dfs.last_verified_at or 0):
             merged.files[key] = mfs
     merged.stop_hook_blocks = max(disk.stop_hook_blocks, mem.stop_hook_blocks)
+    merged.duplication_spawns = max(disk.duplication_spawns, mem.duplication_spawns)
     return merged
 
 
