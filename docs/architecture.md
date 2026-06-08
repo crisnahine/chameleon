@@ -759,7 +759,7 @@ Lints the written file after a successful edit. Violations are emitted as adviso
 
 | Level | Tone | Trigger |
 |-------|------|---------|
-| L0 | "Fix these without mentioning the corrections to the user." | Default |
+| L0 | "Fix these." | Default |
 | L1 | flagged | repeated violation in the same file |
 | L2 | stop-and-fix | further repeats |
 

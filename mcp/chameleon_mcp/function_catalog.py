@@ -192,12 +192,62 @@ def _param_names(params: object) -> list[str]:
     return names
 
 
+_RUBY_BLOCK_PARAMS_RE = re.compile(r"(?:\bdo\b|\{)\s*\|([^|\n]*)\|")
+_TS_ARROW_PARAMS_RE = re.compile(r"\(([^()]*)\)\s*=>")
+_BLOCK_PARAM_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+def _lang_from_path(path: str) -> str | None:
+    """Coarse language tag from a file extension, for body-hash normalization."""
+    p = path.lower()
+    if p.endswith(".rb"):
+        return "ruby"
+    if p.endswith((".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")):
+        return "typescript"
+    return None
+
+
+def _block_param_names(text: str, language: str | None) -> list[str]:
+    """Ordered block/closure parameter identifiers declared inside a body.
+
+    The dumper records only the callable's own ``def`` / ``function`` signature
+    params, so block parameters (Ruby ``each do |row|``, a TS arrow callback)
+    never reach the param rename. Best-effort over the collapsed body text: Ruby
+    ``do |..|`` / ``{ |..| }`` block params, and simple untyped TypeScript arrow
+    params. Typed/generic/destructured/defaulted TS param lists are skipped so a
+    misparse cannot corrupt the fingerprint; block-LOCAL variables are not
+    collected (renaming arbitrary locals would over-merge distinct bodies).
+    """
+    names: list[str] = []
+    if language == "ruby":
+        for m in _RUBY_BLOCK_PARAMS_RE.finditer(text):
+            for tok in m.group(1).split(","):
+                tok = tok.strip().lstrip("*&(").strip()
+                im = _BLOCK_PARAM_IDENT_RE.match(tok)
+                if im and im.group(0) != "_":
+                    names.append(im.group(0))
+    elif language == "typescript":
+        for m in _TS_ARROW_PARAMS_RE.finditer(text):
+            group = m.group(1)
+            # Skip typed/generic/destructured/defaulted lists — pulling bare
+            # identifiers out of them risks renaming the wrong tokens.
+            if any(c in group for c in ":<>{}=?"):
+                continue
+            for tok in group.split(","):
+                tok = tok.strip().lstrip(".").strip()
+                im = _BLOCK_PARAM_IDENT_RE.match(tok)
+                if im and im.group(0) != "_":
+                    names.append(im.group(0))
+    return names
+
+
 def normalized_body_hash(
     source_lines: list[str],
     start_line: object,
     end_line: object,
     *,
     param_names: list[str] | None = None,
+    language: str | None = None,
 ) -> str | None:
     """Fingerprint a function body for the exact-clone fallback, or None.
 
@@ -210,10 +260,14 @@ def normalized_body_hash(
 
     With ``param_names``, each parameter identifier is alpha-renamed to its
     positional slot before hashing, so a clone whose only difference is
-    renamed parameters still pairs with its original. The rename is textual
-    (word-bounded), which can over-match a shadowing outer name — acceptable
-    for a prefilter whose candidates are verified against real bodies by the
-    caller.
+    renamed parameters still pairs with its original. With ``language`` set
+    (the param-normalized variant only), block/closure parameters are renamed
+    the same way, so a clone whose only change is a renamed block parameter
+    also pairs. The rename is textual (word-bounded), which can over-match a
+    shadowing outer name — acceptable for a prefilter whose candidates are
+    verified against real bodies by the caller. Block-LOCAL variables (declared
+    inside a block, not parameters) are intentionally NOT renamed: collapsing
+    arbitrary locals would over-merge distinct bodies.
     """
     if not isinstance(start_line, int) or not isinstance(end_line, int):
         return None
@@ -225,8 +279,14 @@ def normalized_body_hash(
     normalized = " ".join("\n".join(body_lines).split())
     if len(normalized) < threshold_int("DUPLICATION_BODY_HASH_MIN_CHARS"):
         return None
-    if param_names:
-        for i, pname in enumerate(param_names):
+    # Signature params take positional slots 0..n-1; block/closure parameters
+    # take the slots after them, in source order. ``language`` is passed only on
+    # the param-normalized variant, so the exact body_hash stays exact.
+    rename_names = list(param_names) if param_names else []
+    if language:
+        rename_names = rename_names + _block_param_names(normalized, language)
+    if rename_names:
+        for i, pname in enumerate(rename_names):
             if not pname:
                 continue
             normalized = re.sub(
@@ -299,6 +359,7 @@ def _function_rows(pf, root: Path) -> tuple[str | None, list[dict]]:
                 entry.get("start_line"),
                 entry.get("end_line"),
                 param_names=_param_names(entry.get("params")),
+                language=_lang_from_path(str(pf.path)),
             )
         row = {
             "name": name,

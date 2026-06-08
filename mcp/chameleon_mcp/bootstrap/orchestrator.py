@@ -754,11 +754,11 @@ def _stringify_distribution_key(value: object) -> str:
 
 
 _SPARSE_WARNING_LIMIT = 50
-"""BUG-008/009: cap on the per-bootstrap sparse_cluster_warnings
-list. Earlier bootstrap returned 2000-6000 warning entries on
-mid-sized repos and exceeded the MCP protocol's response size, breaking
-chameleon-init. The cap is applied after the same-paths_pattern
-aggregation step below."""
+"""Cap on the per-bootstrap sparse_cluster_warnings list.
+
+An uncapped bootstrap returned 2000-6000 warning entries on mid-sized repos and
+exceeded the MCP protocol's response size, breaking chameleon-init. The cap is
+applied after the same-paths_pattern aggregation step below."""
 
 
 def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
@@ -769,7 +769,7 @@ def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
     records the cluster's resolved threshold instead of the legacy
     module-level constant.
 
-    BUG-008/009: aggregate by ``paths_pattern`` first so 50
+    Aggregate by ``paths_pattern`` first so 50
     singletons at ``src/x/y:ts`` collapse to one row with
     ``cluster_count: 50, total_members: 50``. After aggregation, cap at
     ``_SPARSE_WARNING_LIMIT`` and surface ``truncated`` + ``total_groups``
@@ -842,7 +842,7 @@ def _build_sparse_warnings(sparse_clusters, repo_root: Path) -> list[dict]:
                 "total_groups": total_groups,
                 "shown": _SPARSE_WARNING_LIMIT,
                 "note": (
-                    f"BUG-008/009: {total_groups - _SPARSE_WARNING_LIMIT} "
+                    f"{total_groups - _SPARSE_WARNING_LIMIT} "
                     "additional sparse-cluster groups omitted to keep the "
                     "bootstrap response within MCP transport limits."
                 ),

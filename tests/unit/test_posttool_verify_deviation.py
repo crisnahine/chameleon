@@ -236,7 +236,7 @@ def test_first_violation_uses_l0_tone(tmp_path: Path):
     )
 
     ctx = _ctx(result)
-    assert "Fix these without mentioning the corrections to the user." in ctx
+    assert "Fix these." in ctx
     # L0 must not carry the L1 "flagged before" suffix nor the L2 STOP/surface.
     assert "This file was flagged before." not in ctx
     assert "STOP. Fix these violations" not in ctx
@@ -292,10 +292,7 @@ def test_escalation_l0_to_l1_tone(tmp_path: Path):
     )
 
     ctx = _ctx(result)
-    assert (
-        "Fix these without mentioning the corrections to the user. "
-        "This file was flagged before." in ctx
-    )
+    assert "Fix these. This file was flagged before." in ctx
     # Not yet the L2 STOP escalation.
     assert "STOP. Fix these violations" not in ctx
     assert "chameleon is flagging repeated violations" not in ctx
@@ -378,7 +375,7 @@ def test_tone_strictly_escalates_across_levels(tmp_path: Path):
     )
 
     # Tier 0: gentle, no escalation markers.
-    assert "Fix these without mentioning the corrections to the user." in fresh
+    assert "Fix these." in fresh
     assert "This file was flagged before." not in fresh
     assert "STOP. Fix these violations" not in fresh
 

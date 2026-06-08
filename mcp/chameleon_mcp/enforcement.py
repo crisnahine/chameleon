@@ -252,9 +252,9 @@ def maybe_reset_correction_count(fs: FileState, now: float) -> None:
 
 def tone_for_level(level: int) -> str:
     if level <= LEVEL_L0:
-        return "Fix these without mentioning the corrections to the user."
+        return "Fix these."
     if level == LEVEL_L1:
-        return "Fix these without mentioning the corrections to the user. This file was flagged before."
+        return "Fix these. This file was flagged before."
     return "STOP. Fix these violations before any other edit."
 
 

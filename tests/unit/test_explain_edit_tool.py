@@ -2,7 +2,8 @@
 
 explain_edit reads the most-recent decision_log row for a file and classifies
 why the gate stayed silent: coverage-gap (no archetype / fallback-or-none match
-quality) vs in-scope-miss (ast/exact match but nothing caught the defect), with
+quality), in-scope-miss (ast/exact match that raised nothing), or advised
+(ast/exact match that raised advisories but did not block), with
 blocked/overridden surfaced when the gate did fire. These drive the real tool
 entry point against an on-disk drift.db.
 
@@ -101,13 +102,21 @@ def test_coverage_gap_none_quality(repo):
     assert out["data"]["classification"] == "coverage-gap"
 
 
-def test_in_scope_miss_ast_match_no_block(repo):
-    # ast match, only advisory -> the shape was covered, nothing caught the miss.
+def test_advised_ast_match_with_violations(repo):
+    # ast match that RAISED advisories (but did not block) -> "advised", not a
+    # miss: the rules fired, they were advisory. Kept distinct from a true miss.
     _record("src/c.ts", match_quality="ast", outcome="advised", violations=2)
     out = explain_edit(str(repo), "src/c.ts")
     data = out["data"]
-    assert data["classification"] == "in-scope-miss"
+    assert data["classification"] == "advised"
     assert data["decision"]["violations_raised"] == 2
+
+
+def test_in_scope_miss_ast_match_silent(repo):
+    # ast match that raised NOTHING -> a true in-scope miss.
+    _record("src/c2.ts", match_quality="ast", outcome="advised", violations=0)
+    out = explain_edit(str(repo), "src/c2.ts")
+    assert out["data"]["classification"] == "in-scope-miss"
 
 
 def test_in_scope_miss_clean_exact_match(repo):

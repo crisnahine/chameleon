@@ -1243,7 +1243,21 @@ def _classify_profile_load_failure(profile_file: Path) -> str:
 def get_pattern_context(file_path: str) -> dict:
     """Collapsed call: archetype + canonical + rules + meta in one round trip.
 
-    Phase 2D: returns real archetype data when profile is present + trusted.
+    Returns real archetype data when the profile is present and trusted. The
+    archetype envelope carries provenance the caller must weigh:
+
+    - ``match_quality`` — ``none`` / ``fallback`` / ``exact`` / ``ast``, as
+      resolved at archetype-match time.
+    - ``match_basis`` — ``path_only`` when the resolution used the path alone
+      (the file does not exist on disk yet, e.g. a pre-write PreToolUse call) or
+      ``path_and_ast`` when the file's AST shape was also scored. ``confidence_band``
+      rests on a different scale per basis, so a nonexistent path can score
+      ``exact`` / ``high`` (path uniqueness) while a real file scores ``ast`` /
+      ``medium`` (AST agreement) — expected, not inverted.
+    - ``file_exists`` — whether the path is a real file. A phantom path still
+      returns a full canonical/rules/idioms envelope (so a pre-write call gets
+      priming), so a consumer that needs the file to exist must check this flag
+      itself rather than infer it from a populated envelope.
     """
     from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir
     from chameleon_mcp.profile.trust import trust_state_for
@@ -2305,6 +2319,29 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
         + style_violations
     )
 
+    # Stamp every violation an inline chameleon-ignore directive covers with
+    # ``ignored: True`` rather than dropping it: the posttool recorder reads this
+    # list to tally inline overrides for the shadow report, so the overridden
+    # hits must remain visible to that audit. A consumer that wants the effective
+    # set filters on ``not v.get("ignored")``. The eval-call / secret scans run
+    # before the convention lint and are not gated by the directive upstream, so
+    # without this flag they would read as un-suppressed on this tool surface.
+    try:
+        from chameleon_mcp.violation_class import (
+            build_ignore_index as _build_ignore_index,
+        )
+        from chameleon_mcp.violation_class import (
+            is_violation_ignored as _is_violation_ignored,
+        )
+
+        _ig_idx = _build_ignore_index(working_content, file_path=file_path)
+        if _ig_idx is not None:
+            for _v in violations:
+                if _is_violation_ignored(_v, _ig_idx):
+                    _v["ignored"] = True
+    except Exception:
+        pass
+
     out = {
         "stub": False,
         "stub_reason": None,
@@ -2748,7 +2785,16 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     # whose name shares no tokens with the original can only be paired by body
     # identity, so each new function is fingerprinted the same way the catalog
     # rows were at bootstrap.
-    from chameleon_mcp.function_catalog import _param_names, normalized_body_hash
+    from chameleon_mcp.function_catalog import (
+        _lang_from_path,
+        _param_names,
+        normalized_body_hash,
+    )
+
+    # Same language tag the catalog build used, so the param-normalized hash
+    # normalizes block parameters identically on both sides (else a refreshed
+    # catalog's block-normalized rows would never match the query hash).
+    query_lang = _lang_from_path(str(p))
 
     try:
         query_lines = p.read_bytes()[:1_000_000].decode("utf-8", errors="replace").splitlines()
@@ -2797,6 +2843,7 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
                         entry.get("start_line"),
                         entry.get("end_line"),
                         param_names=_param_names(params),
+                        language=query_lang,
                     ),
                 )
             )
@@ -3543,9 +3590,13 @@ def explain_edit(repo: str, file_path: str) -> dict:
       Route to ``/chameleon-refresh`` (re-derive archetypes) or ``/chameleon-teach``
       (capture the missing convention).
     - ``in-scope-miss`` — an ast/exact archetype matched and chameleon raised
-      nothing (or only advised) on the edit that later broke. The shape was
-      covered but no rule caught the defect; route to a new rule / idiom rather
-      than a refresh.
+      NOTHING on the edit that later broke. The shape was covered but no rule
+      fired; route to a new rule / idiom rather than a refresh.
+    - ``advised`` — an ast/exact archetype matched and chameleon raised advisory
+      violations (or shadow-logged a would-block) but did not block. The rules
+      fired; they were advisory. Route to enforce-mode calibration or a stronger
+      rule, not a refresh. Kept distinct from ``in-scope-miss`` so a raised
+      advisory is not misread as silence.
     - ``blocked`` / ``overridden`` — the gate did fire: it blocked, or a block was
       waved through with an inline ``chameleon-ignore``. Surfaced so a postmortem
       sees the gate was not silent.
@@ -3590,10 +3641,19 @@ def explain_edit(repo: str, file_path: str) -> dict:
 
     match_quality = decision.get("match_quality")
     outcome = decision.get("outcome")
+    try:
+        violations_raised = int(decision.get("violations_raised") or 0)
+    except (TypeError, ValueError):
+        violations_raised = 0
     if outcome in ("blocked", "overridden"):
         classification = outcome
     elif match_quality in (None, "none", "fallback"):
         classification = "coverage-gap"
+    elif violations_raised > 0:
+        # The gate was not silent: it raised advisories (or shadow-logged a
+        # would-block) but did not block. Not a miss — the rules fired, they were
+        # advisory — so a postmortem routes this apart from a true in-scope miss.
+        classification = "advised"
     else:
         classification = "in-scope-miss"
 
@@ -5146,23 +5206,32 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
                 except OSError:
                     pass
         row_stats = (row.get("archetype_count"), row.get("files_indexed"))
-        profiles.append(
-            {
-                "repo_id": repo_id,
-                "trust_state": trust_state,
-                "trusted_at": trust.granted_at if trust else None,
-                "trusted_by": trust.granted_by_user if trust else None,
-                "repo_root": row.get("repo_root"),
-                "archetype_count": row.get("archetype_count"),
-                "files_indexed": row.get("files_indexed"),
-                "bootstrap_ms": row.get("bootstrap_ms"),
-                "last_seen_at": row.get("last_seen_at"),
-                # A row with no stats is an aborted/incomplete bootstrap that
-                # persisted; flag it so a reader doesn't mistake it for a
-                # healthy profile with null metrics.
-                "incomplete": all(v is None for v in row_stats),
-            }
-        )
+        incomplete = all(v is None for v in row_stats)
+        profile_row: dict = {
+            "repo_id": repo_id,
+            "trust_state": trust_state,
+            "trusted_at": trust.granted_at if trust else None,
+            "trusted_by": trust.granted_by_user if trust else None,
+            "repo_root": row.get("repo_root"),
+            "archetype_count": row.get("archetype_count"),
+            "files_indexed": row.get("files_indexed"),
+            "bootstrap_ms": row.get("bootstrap_ms"),
+            "last_seen_at": row.get("last_seen_at"),
+            # A row with no stats is an aborted/incomplete bootstrap that
+            # persisted; flag it so a reader doesn't mistake it for a healthy
+            # profile with null metrics.
+            "incomplete": incomplete,
+        }
+        if incomplete and trust_state == "trusted":
+            # Legitimate but easy to misread as contradictory: the user trusted a
+            # profile dir whose bootstrap later aborted, so the trust record
+            # outlives a usable profile. Spell it out rather than leaving the two
+            # fields looking inconsistent.
+            profile_row["incomplete_note"] = (
+                "trusted record predates an aborted/incomplete bootstrap; "
+                "re-run /chameleon-init or /chameleon-refresh to complete it"
+            )
+        profiles.append(profile_row)
 
     return _envelope(
         {"profiles": profiles, "total_known": total_known},
@@ -6930,6 +6999,133 @@ def teach_competing_import(
     )
 
 
+def unteach_competing_import(
+    repo: str,
+    *,
+    archetype: str,
+    preferred: str,
+    over: str,
+) -> dict:
+    """Remove a taught wrapper-preference pair from an archetype.
+
+    The inverse of :func:`teach_competing_import`: deletes the matching
+    ``{preferred, over}`` entry from ``conventions.imports.<archetype>.competing``
+    so a pair taught in error stops driving the banned-import lint, without
+    hand-editing ``conventions.json``. Same in-place, flock-serialized, atomic
+    single-file write; touches no other artifact. A no-op (``removed: False``)
+    when the pair, archetype, or conventions file is absent.
+    """
+    from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+    from chameleon_mcp.profile.schema import ARCHETYPE_NAME_RE
+    from chameleon_mcp.profile.trust import repo_data_dir as _rdd
+    from chameleon_mcp.safe_open import safe_read_profile_artifact
+
+    if not isinstance(archetype, str) or not ARCHETYPE_NAME_RE.match(archetype):
+        return _envelope(
+            {
+                "status": "failed",
+                "error": f"archetype {archetype!r} must match {ARCHETYPE_NAME_RE.pattern!r}",
+            }
+        )
+    preferred = (preferred or "").strip() if isinstance(preferred, str) else ""
+    over = (over or "").strip() if isinstance(over, str) else ""
+    if not preferred or not over:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "both 'preferred' and 'over' are required and must be non-empty",
+            }
+        )
+
+    repo_path, _repo_id = _resolve_repo_arg(repo)
+    if repo_path is None:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "expected absolute repo path or 64-char repo_id hex digest",
+            }
+        )
+    profile_dir = repo_path / ".chameleon"
+    if not profile_dir.is_dir():
+        return _envelope(
+            {"status": "failed", "error": "no profile in this repo (run /chameleon-init)"}
+        )
+    conv_path = profile_dir / "conventions.json"
+    if not conv_path.is_file():
+        return _envelope(
+            {
+                "status": "success",
+                "archetype": archetype,
+                "removed": False,
+                "note": "no conventions.json; nothing to remove",
+            }
+        )
+
+    removed = False
+    lock_path = _rdd(_compute_repo_id(repo_path)) / ".conventions.lock"
+    try:
+        with acquire_advisory_lock(lock_path):
+            try:
+                conv = json.loads(safe_read_profile_artifact(conv_path))
+            except Exception:
+                return _envelope(
+                    {"status": "failed", "error": "conventions.json unreadable or invalid"}
+                )
+            if not isinstance(conv, dict):
+                return _envelope(
+                    {
+                        "status": "success",
+                        "archetype": archetype,
+                        "removed": False,
+                        "note": "conventions.json is not an object; nothing to remove",
+                    }
+                )
+            block = conv.get("conventions")
+            imports = block.get("imports") if isinstance(block, dict) else None
+            entry = imports.get(archetype) if isinstance(imports, dict) else None
+            competing = entry.get("competing") if isinstance(entry, dict) else None
+            if isinstance(competing, list):
+                kept = [
+                    c
+                    for c in competing
+                    if not (
+                        isinstance(c, dict)
+                        and c.get("preferred") == preferred
+                        and c.get("over") == over
+                    )
+                ]
+                if len(kept) != len(competing):
+                    entry["competing"] = kept
+                    removed = True
+            if removed:
+                # Atomic write, matching teach_competing_import: a truncated
+                # conventions.json bricks the whole profile on load.
+                _tmp = conv_path.with_suffix(".json.tmp")
+                _tmp.write_text(json.dumps(conv, indent=2, sort_keys=True), encoding="utf-8")
+                _tmp.replace(conv_path)
+    except LockHeldError as e:
+        return _envelope(
+            {"status": "failed", "error": f"another conventions write is in progress: {e}"}
+        )
+    except Exception as e:
+        return _envelope({"status": "failed", "error": f"conventions write failed: {e}"})
+
+    return _envelope(
+        {
+            "status": "success",
+            "archetype": archetype,
+            "competing": {"preferred": preferred, "over": over},
+            "removed": removed,
+            "note": (
+                "wrapper-preference removed from conventions.json; the profile hash "
+                "changed, so run /chameleon-trust if it shows as stale."
+                if removed
+                else "no matching wrapper-preference pair found; nothing changed"
+            ),
+        }
+    )
+
+
 def teach_profile_structured(
     repo: str,
     *,
@@ -7806,6 +8002,86 @@ def doctor() -> dict:
                 "detail": "CLAUDE_PLUGIN_ROOT not set; cannot locate hook scripts",
             }
         )
+
+    # Hook interpreter dependency probe. The hooks resolve a python via a
+    # fallback ladder that can land on a system interpreter lacking chameleon's
+    # third-party deps (xxhash et al.). The hot-path hooks are stdlib-only, but
+    # the hook-spawned auto-refresh imports the extractors and aborts on a
+    # depless interpreter — visible only in auto_refresh.log. Resolve the same
+    # ladder and confirm the winner imports the deps; the auto-refresh path falls
+    # back to `uv run` when it cannot, so a depless winner with uv present is a
+    # warn, without uv an error.
+    if plugin_root_env:
+        try:
+            import subprocess as _subp
+
+            mcp_dir = Path(plugin_root_env) / "mcp"
+            candidates: list[str] = []
+            for rel in (".venv/bin/python", ".venv/Scripts/python.exe"):
+                cand = mcp_dir / rel
+                if cand.exists():
+                    candidates.append(str(cand))
+            for name in ("python3.13", "python3.12", "python3.11", "python3", "python"):
+                found = shutil.which(name)
+                if found:
+                    candidates.append(found)
+            hook_py = candidates[0] if candidates else None
+            if hook_py is None:
+                checks.append(
+                    {
+                        "name": "hook_interpreter_deps",
+                        "status": "error",
+                        "detail": "no python interpreter resolves for the hooks",
+                    }
+                )
+            else:
+                probe = _subp.run(
+                    [hook_py, "-c", "import xxhash, chameleon_mcp"],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    env={**os.environ, "PYTHONPATH": str(mcp_dir)},
+                )
+                if probe.returncode == 0:
+                    checks.append(
+                        {
+                            "name": "hook_interpreter_deps",
+                            "status": "ok",
+                            "detail": f"{hook_py} imports chameleon deps",
+                        }
+                    )
+                elif shutil.which("uv"):
+                    checks.append(
+                        {
+                            "name": "hook_interpreter_deps",
+                            "status": "warn",
+                            "detail": (
+                                f"{hook_py} is missing deps (e.g. xxhash); the hook-spawned "
+                                "refresh falls back to `uv run`. Create mcp/.venv with the "
+                                "deps to remove the fallback."
+                            ),
+                        }
+                    )
+                else:
+                    checks.append(
+                        {
+                            "name": "hook_interpreter_deps",
+                            "status": "error",
+                            "detail": (
+                                f"{hook_py} cannot import chameleon deps and `uv` is not on "
+                                "PATH; hook-spawned refresh/bootstrap will fail. Install uv or "
+                                "create mcp/.venv with the deps."
+                            ),
+                        }
+                    )
+        except Exception as exc:
+            checks.append(
+                {
+                    "name": "hook_interpreter_deps",
+                    "status": "warn",
+                    "detail": f"could not probe hook interpreter: {type(exc).__name__}: {exc}",
+                }
+            )
 
     try:
         from chameleon_mcp.exec_log import _ensure_hmac_key

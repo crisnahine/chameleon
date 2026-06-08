@@ -559,6 +559,36 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
 _AUTO_REFRESH_COOLDOWN_FILENAME = ".auto_refresh_cooldown"
 
 
+def _refresh_interpreter_cmd() -> list[str] | None:
+    """Argv prefix for an interpreter that can import chameleon's runtime deps.
+
+    The hook scripts resolve a python via a fallback ladder (bundled ``.venv``,
+    then a system ``python3.x``). That winner can lack chameleon's third-party
+    deps (xxhash et al.). The hot-path hooks are stdlib-only and survive, but the
+    refresh/bootstrap path imports the extractors at module load, so a depless
+    interpreter aborts the spawned refresh with ModuleNotFoundError — surfaced
+    only in auto_refresh.log. Prefer the current interpreter when it already
+    imports the deps; otherwise fall back to ``uv run`` against the bundled mcp
+    project (the same resolver the MCP server uses via ``uvx``), which
+    materializes them. Returns None when neither is viable so the caller can log
+    an actionable line instead of spawning a child doomed to fail.
+    """
+    try:
+        import xxhash  # noqa: F401
+
+        return [sys.executable]
+    except Exception:
+        pass
+
+    import shutil
+
+    uv = shutil.which("uv")
+    if uv:
+        mcp_dir = Path(__file__).resolve().parent.parent
+        return [uv, "run", "--project", str(mcp_dir), "python"]
+    return None
+
+
 def _maybe_auto_refresh(repo_root: Path) -> None:
     """Fire ``refresh_repo`` in background when auto-refresh fires.
 
@@ -651,21 +681,43 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
 
         import subprocess as _sp
 
+        refresh_cmd = _refresh_interpreter_cmd()
         try:
-            _sp.Popen(
-                [
-                    sys.executable,
-                    "-c",
-                    (
-                        "import sys; from chameleon_mcp.tools import refresh_repo; "
-                        f"refresh_repo({str(resolved_root)!r})"
-                    ),
-                ],
-                stdout=log_fd if log_fd is not None else _sp.DEVNULL,
-                stderr=log_fd if log_fd is not None else _sp.DEVNULL,
-                stdin=_sp.DEVNULL,
-                start_new_session=True,
-            )
+            if refresh_cmd is None:
+                # No deps-complete interpreter resolves: the hook landed on a
+                # system python without chameleon's deps and `uv` is not on PATH.
+                # Spawning the child would just abort with ModuleNotFoundError, so
+                # log an actionable line and skip rather than fail silently.
+                if log_fd is not None:
+                    try:
+                        os.write(
+                            log_fd,
+                            (
+                                f"[{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}] "
+                                "auto-refresh skipped: the hook interpreter "
+                                f"({sys.executable}) cannot import chameleon's deps "
+                                "(e.g. xxhash) and `uv` is not on PATH. Install uv, or "
+                                "create the mcp/.venv, then run /chameleon-refresh. "
+                                "See /chameleon-doctor.\n"
+                            ).encode(),
+                        )
+                    except OSError:
+                        pass
+            else:
+                _sp.Popen(
+                    [
+                        *refresh_cmd,
+                        "-c",
+                        (
+                            "import sys; from chameleon_mcp.tools import refresh_repo; "
+                            f"refresh_repo({str(resolved_root)!r})"
+                        ),
+                    ],
+                    stdout=log_fd if log_fd is not None else _sp.DEVNULL,
+                    stderr=log_fd if log_fd is not None else _sp.DEVNULL,
+                    stdin=_sp.DEVNULL,
+                    start_new_session=True,
+                )
         finally:
             if log_fd is not None:
                 try:
@@ -2269,13 +2321,16 @@ def _posttool_no_archetype_advisory(
             pass
 
     try:
+        displayed = _displayable_violations(violations, _read_file_for_ignore(file_path), file_path)
+        if not displayed:
+            return False
         lines = []
-        for i, v in enumerate(violations):
+        for i, v in enumerate(displayed):
             msg = sanitize_for_chameleon_context(v.get("message", ""))
             lines.append(f"{i + 1}. {msg}")
         block = (
-            f"[🦎 chameleon: {len(violations)} "
-            f"violation{'s' if len(violations) != 1 else ''}]\n" + "\n".join(lines)
+            f"[🦎 chameleon: {len(displayed)} "
+            f"violation{'s' if len(displayed) != 1 else ''}]\n" + "\n".join(lines)
         )
         _emit_posttool_context(f"<chameleon-context>\n{block}\n</chameleon-context>")
         return True
@@ -2321,6 +2376,30 @@ def _read_file_for_ignore(file_path: str) -> str:
         return Path(file_path).read_bytes()[:100_000].decode("utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _displayable_violations(
+    violations: list[dict], content: str, file_path: str | None
+) -> list[dict]:
+    """Drop violations an inline chameleon-ignore directive covers, for display.
+
+    The block decision already filters its hard set through the same index, so a
+    directive that suppresses a rule must also stop chameleon re-surfacing it in
+    the advisory — otherwise the escape hatch reads as inert in shadow mode,
+    where nothing blocks. Convention rules are filtered upstream by the lint
+    engine; this additionally covers the content scans (eval-call, deterministic
+    secret) whose violations reach the advisory unfiltered. Fails open to the
+    full list so a parser error never hides real feedback.
+    """
+    try:
+        from chameleon_mcp.violation_class import build_ignore_index, is_violation_ignored
+
+        idx = build_ignore_index(content or "", file_path=file_path)
+        if idx is None:
+            return list(violations)
+        return [v for v in violations if not is_violation_ignored(v, idx)]
+    except Exception:
+        return list(violations)
 
 
 def posttool_verify() -> int:
@@ -2802,37 +2881,20 @@ def posttool_verify() -> int:
             except Exception:
                 pass
 
-            current_tone = "Fix these without mentioning the corrections to the user."
+            current_tone = "Fix these."
             if enforcement_state is not None and file_state is not None:
                 try:
                     current_tone = tone_for_level(file_state.level)
                 except Exception:
                     pass
 
-            violation_lines = []
-            for i, v in enumerate(violations):
-                msg = sanitize_for_chameleon_context(v.get("message", ""))
-                violation_lines.append(f"{i + 1}. {msg}")
-
-            block = (
-                f"[🦎 chameleon: {len(violations)} "
-                f"violation{'s' if len(violations) != 1 else ''}]\n"
-                + "\n".join(violation_lines)
-                + "\n"
-                + current_tone
-            )
-
-            if enforcement_state is not None and file_state is not None:
-                try:
-                    if should_surface_to_user(file_state):
-                        safe_path = sanitize_for_chameleon_context(file_path)
-                        block += (
-                            f"\n\nchameleon is flagging repeated violations "
-                            f"in {safe_path} — run /chameleon-teach if the "
-                            f"archetype doesn't fit this file."
-                        )
-                except Exception:
-                    pass
+            # An inline chameleon-ignore directive suppresses the block above; it
+            # must also stop the rule being re-surfaced in the advisory, so the
+            # escape hatch behaves consistently across every rule (convention
+            # rules are already dropped upstream by the lint engine; eval-call and
+            # the deterministic secret reach here unfiltered). The raw count still
+            # feeds the decision_log/override audit below.
+            displayed = _displayable_violations(violations, content, file_path)
 
             _record_edit_decision(
                 repo_id,
@@ -2846,11 +2908,42 @@ def posttool_verify() -> int:
                 outcome="overridden" if inline_overridden_hard else decision_outcome,
                 session_id=session_id,
             )
-            _emit_posttool_context(f"<chameleon-context>\n{block}\n</chameleon-context>")
-            _update_statusline(
-                f"{len(violations)} violation{'s' if len(violations) != 1 else ''}",
-                repo_root=repo_root,
-            )
+
+            if displayed:
+                violation_lines = []
+                for i, v in enumerate(displayed):
+                    msg = sanitize_for_chameleon_context(v.get("message", ""))
+                    violation_lines.append(f"{i + 1}. {msg}")
+
+                block = (
+                    f"[🦎 chameleon: {len(displayed)} "
+                    f"violation{'s' if len(displayed) != 1 else ''}]\n"
+                    + "\n".join(violation_lines)
+                    + "\n"
+                    + current_tone
+                )
+
+                if enforcement_state is not None and file_state is not None:
+                    try:
+                        if should_surface_to_user(file_state):
+                            safe_path = sanitize_for_chameleon_context(file_path)
+                            block += (
+                                f"\n\nchameleon is flagging repeated violations "
+                                f"in {safe_path} — run /chameleon-teach if the "
+                                f"archetype doesn't fit this file."
+                            )
+                    except Exception:
+                        pass
+
+                _emit_posttool_context(f"<chameleon-context>\n{block}\n</chameleon-context>")
+                _update_statusline(
+                    f"{len(displayed)} violation{'s' if len(displayed) != 1 else ''}",
+                    repo_root=repo_root,
+                )
+            else:
+                # Every fired rule was overridden by an inline directive; the
+                # override is recorded above, so surface nothing to the model.
+                _emit({})
 
             if enforcement_state is not None:
                 try:

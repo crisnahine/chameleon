@@ -456,6 +456,28 @@ def teach_competing_import(
 
 
 @mcp.tool()
+def unteach_competing_import(
+    repo: str,
+    archetype: str,
+    preferred: str,
+    over: str,
+) -> dict:
+    """Remove a taught wrapper-preference pair ("use `preferred`, not `over`").
+
+    The inverse of teach_competing_import: deletes the matching {preferred, over}
+    entry from conventions.imports.<archetype>.competing so a pair taught in error
+    stops driving the banned-import lint, without hand-editing conventions.json.
+    In-place, flock-serialized single-file write; no-op when the pair is absent.
+    """
+    return tools.unteach_competing_import(
+        repo,
+        archetype=archetype,
+        preferred=preferred,
+        over=over,
+    )
+
+
+@mcp.tool()
 def get_idiom_coverage(repo: str) -> dict:
     """Map of guidance chameleon ALREADY captures for a repo. Read-only.
 

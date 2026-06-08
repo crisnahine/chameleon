@@ -236,9 +236,14 @@ _ARCHETYPE_INDEPENDENT: frozenset[str] = frozenset({"phantom-import", "secret-de
 # hardcoded AKIA key safe, so it stays in the inline block set rather than being
 # listed here. Note the inline gate itself still requires the file to have
 # escalated to L2 — on a lower-escalation file a deterministic secret is
-# recorded as blockable_unresolved and the Stop backstop refuses the turn
-# instead, so the credential cannot leave the turn either way; only the
-# block's timing differs.
+# recorded as blockable_unresolved and, in enforce mode, the Stop backstop
+# refuses the turn instead, so under enforce the credential cannot leave the
+# turn either way; only the block's timing differs. In shadow mode (the
+# default) nothing blocks: the backstop records a would_block preview and the
+# turn ends, so this no-escape guarantee holds only under enforce. There is
+# also a per-session stop_block_cap: after that many backstop blocks the hook
+# goes advisory to avoid a stuck turn, so the no-escape guarantee is bounded by
+# that cap even under enforce.
 _DEFERRED_TO_TURN_END: frozenset[str] = frozenset({"phantom-import"})
 
 # The secret kinds precise enough to hard-block on. Each is a fixed-prefix or

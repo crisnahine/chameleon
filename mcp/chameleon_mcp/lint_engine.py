@@ -2524,7 +2524,15 @@ _RUBY_METHOD_DEF_LINT_RE = re.compile(
 _RUBY_CLASS_DECL_LINT_RE = re.compile(
     r"^[ \t]*(?:class|module)\s+(?!<<)([A-Za-z_][\w:]*)", re.MULTILINE
 )
-_RUBY_CONSTANT_ASSIGN_LINT_RE = re.compile(r"^[ \t]*([A-Z]\w*)\s*=[^=~]", re.MULTILINE)
+# Matches a constant assignment at line start. The LHS may be a single constant
+# (``CONST = 1``), a namespaced one (``Foo::BAR = 1``), or a multiple assignment
+# whose targets are ALL constants (``A, B = 1, 2``). Every segment must be
+# uppercase-led, so a mixed/destructuring LHS (``a, B = ...``) or a setter call
+# (``Foo.bar = ...``) never matches — a conservative miss beats a false flag on
+# the block-eligible naming rule.
+_RUBY_CONSTANT_ASSIGN_LINT_RE = re.compile(
+    r"^[ \t]*([A-Z]\w*(?:(?:::|\s*,\s*)[A-Z]\w*)*)\s*=[^=~]", re.MULTILINE
+)
 
 
 def _ruby_naming_violations(scan_content: str, naming: dict) -> list[Violation]:
@@ -2587,20 +2595,26 @@ def _ruby_naming_violations(scan_content: str, naming: dict) -> list[Violation]:
         and constant_entry.get("consistency", 0) >= 0.60
     ):
         for m in _RUBY_CONSTANT_ASSIGN_LINT_RE.finditer(scan_content):
-            name = m.group(1)
-            if _classify_ruby_constant_casing(name) == "other":
-                out.append(
-                    Violation(
-                        rule="naming-convention-violation",
-                        expected="SCREAMING_SNAKE_CASE",
-                        actual=name,
-                        severity="warning",
-                        message=(
-                            f"NAMING: constant {name} should use SCREAMING_SNAKE_CASE "
-                            f"({constant_entry['consistency']:.0%} convention)"
-                        ),
+            # One match may carry several constants (multiple assignment) and
+            # namespaced names; classify each defined constant by its trailing
+            # segment (``Foo::BAR`` defines ``BAR``).
+            for raw_name in m.group(1).split(","):
+                name = raw_name.strip().rsplit("::", 1)[-1]
+                if not name:
+                    continue
+                if _classify_ruby_constant_casing(name) == "other":
+                    out.append(
+                        Violation(
+                            rule="naming-convention-violation",
+                            expected="SCREAMING_SNAKE_CASE",
+                            actual=name,
+                            severity="warning",
+                            message=(
+                                f"NAMING: constant {name} should use SCREAMING_SNAKE_CASE "
+                                f"({constant_entry['consistency']:.0%} convention)"
+                            ),
+                        )
                     )
-                )
 
     return out
 
