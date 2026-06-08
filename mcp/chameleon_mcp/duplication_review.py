@@ -31,13 +31,21 @@ class CandidateIndex:
             self.by_pnorm.setdefault(body_hash_pnorm, entry)
 
     def lookup(self, fn, *, exclude_file: str):
-        for h, table in ((fn.body_hash, self.by_exact), (fn.body_hash_pnorm, self.by_pnorm)):
+        """Return (IndexEntry, match_type) or (None, None).
+
+        Tries the exact body-hash index first, then the pnorm index.
+        match_type is "exact" or "pnorm" depending on which index produced the hit.
+        """
+        for h, table, match_type in (
+            (fn.body_hash, self.by_exact, "exact"),
+            (fn.body_hash_pnorm, self.by_pnorm, "pnorm"),
+        ):
             if not h:
                 continue
             hit = table.get(h)
             if hit is not None and hit.file != exclude_file:
-                return hit
-        return None
+                return hit, match_type
+        return None, None
 
 
 def build_candidate_index(repo_root: Path, session_files: list[str]) -> CandidateIndex:
@@ -108,34 +116,37 @@ def _lang_of(path: str):
 
 
 def gather_body_match_findings(repo_root: Path, edited_files: list[str], index, lang) -> list:
-    from chameleon_mcp._thresholds import threshold_int
+    try:
+        from chameleon_mcp._thresholds import threshold_int
 
-    max_files = threshold_int("DUPLICATION_REVIEW_MAX_FILES")
-    max_findings = threshold_int("DUPLICATION_REVIEW_MAX_FINDINGS")
-    exact: list = []
-    pnorm: list = []
-    for path in edited_files[:max_files]:
-        if lang is not None and _lang_of(path) != lang:
-            continue
-        rel = _repo_rel(repo_root, path)
-        try:
-            parsed = _parse(repo_root, path)
-        except Exception:
-            continue
-        for pf in parsed:
-            hit = index.lookup(pf, exclude_file=rel)
-            if hit is None:
+        max_files = threshold_int("DUPLICATION_REVIEW_MAX_FILES")
+        max_findings = threshold_int("DUPLICATION_REVIEW_MAX_FINDINGS")
+        exact: list = []
+        pnorm: list = []
+        for path in edited_files[:max_files]:
+            if lang is not None and _lang_of(path) != lang:
                 continue
-            f = Finding(
-                new_name=pf.name,
-                new_file=rel,
-                line=pf.start_line if pf.start_line is not None else 0,
-                excerpt=pf.excerpt,
-                existing_name=hit.name,
-                existing_file=hit.file,
-            )
-            (exact if pf.body_hash else pnorm).append(f)
-    return (exact + pnorm)[:max_findings]
+            rel = _repo_rel(repo_root, path)
+            try:
+                parsed = _parse(repo_root, path)
+            except Exception:
+                continue
+            for pf in parsed:
+                hit, match_type = index.lookup(pf, exclude_file=rel)
+                if hit is None:
+                    continue
+                f = Finding(
+                    new_name=pf.name,
+                    new_file=rel,
+                    line=pf.start_line if pf.start_line is not None else 0,
+                    excerpt=pf.excerpt,
+                    existing_name=hit.name,
+                    existing_file=hit.file,
+                )
+                (exact if match_type == "exact" else pnorm).append(f)
+        return (exact + pnorm)[:max_findings]
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
