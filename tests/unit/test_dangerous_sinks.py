@@ -228,6 +228,27 @@ def test_ruby_find_by_sql_interpolation_flagged():
     assert "sql-string-interpolation" in _rules(violations)
 
 
+def test_ruby_connection_execute_interpolation_flagged():
+    # The rawest injection vector: raw SQL through the connection, bypassing the
+    # query builder. Must flag the same as where()/find_by_sql.
+    for snippet in (
+        'User.connection.execute("SELECT * FROM users WHERE id = #{id}")',
+        'ActiveRecord::Base.connection.exec_query("SELECT #{cols} FROM t")',
+        'conn.select_all("SELECT * FROM t WHERE k = #{key}")',
+        'conn.select_value("SELECT count(*) FROM t WHERE id = #{id}")',
+    ):
+        violations = scan_dangerous_sinks(snippet, language="ruby")
+        assert "sql-string-interpolation" in _rules(violations), snippet
+
+
+def test_ruby_execute_parameterized_clean():
+    # A non-interpolated execute is clean (no false positive).
+    violations = scan_dangerous_sinks(
+        'User.connection.execute("SELECT * FROM users")', language="ruby"
+    )
+    assert _rules(violations) == []
+
+
 def test_ruby_sql_rule_not_run_for_typescript():
     # `${...}` in a TS template is handled elsewhere; this Ruby-only rule must
     # not fire on TS interpolation syntax.

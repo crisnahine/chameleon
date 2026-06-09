@@ -216,6 +216,9 @@ def _complete_profile(tmp_path):
     pd.mkdir(exist_ok=True)
     for name in ("archetypes.json", "canonicals.json", "rules.json", "conventions.json"):
         pd.joinpath(name).write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+    pd.joinpath("profile.json").write_text(
+        json.dumps({"generation": 1, "schema_version": 8}), encoding="utf-8"
+    )
     pd.joinpath("profile.summary.md").write_text("# summary\n", encoding="utf-8")
     pd.joinpath("principles.md").write_text(
         "# principles\n\n## anti-hallucination protocol\n\n- x\n", encoding="utf-8"
@@ -245,6 +248,46 @@ def test_profile_needs_rederive_on_stale_principles(tmp_path):
     pd = _complete_profile(tmp_path)
     pd.joinpath("principles.md").write_text("# principles\n1. foo\n", encoding="utf-8")
     assert t._profile_needs_rederive(pd) is True
+
+
+def test_profile_needs_rederive_on_unsupported_schema_manifest(tmp_path):
+    # A too-new / unsupported schema_version in profile.json is rejected at read
+    # time; a plain refresh must REPAIR it (re-derive) rather than noop, or the
+    # user has no slash-command recovery path (BUG-A1).
+    pd = _complete_profile(tmp_path)
+    pd.joinpath("profile.json").write_text(
+        json.dumps({"generation": 1, "schema_version": 999}), encoding="utf-8"
+    )
+    assert t._profile_needs_rederive(pd) is True
+
+
+def test_profile_needs_rederive_on_corrupt_manifest(tmp_path):
+    pd = _complete_profile(tmp_path)
+    pd.joinpath("profile.json").write_text("{ not json", encoding="utf-8")
+    assert t._profile_needs_rederive(pd) is True
+
+
+def test_profile_needs_rederive_on_missing_manifest(tmp_path):
+    pd = _complete_profile(tmp_path)
+    pd.joinpath("profile.json").unlink()
+    assert t._profile_needs_rederive(pd) is True
+
+
+def test_profile_needs_rederive_on_noninteger_schema(tmp_path):
+    pd = _complete_profile(tmp_path)
+    pd.joinpath("profile.json").write_text(
+        json.dumps({"generation": 1, "schema_version": "999"}), encoding="utf-8"
+    )
+    assert t._profile_needs_rederive(pd) is True
+
+
+def test_profile_needs_rederive_false_for_supported_older_schema(tmp_path):
+    # An OLDER supported schema loads fine and must NOT force a re-derive.
+    pd = _complete_profile(tmp_path)
+    pd.joinpath("profile.json").write_text(
+        json.dumps({"generation": 1, "schema_version": 5}), encoding="utf-8"
+    )
+    assert t._profile_needs_rederive(pd) is False
 
 
 def test_maybe_preserve_trust_honors_always(tmp_path, monkeypatch):

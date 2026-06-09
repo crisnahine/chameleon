@@ -1159,7 +1159,11 @@ _SINK_SECURITY_KEYWORDS = re.compile(
 # single-quoted string handed to `where` is still suspicious enough to flag.
 _RUBY_SQL_METHODS = (
     r"where|having|order|group|select|joins|pluck|find_by_sql|"
-    r"exists\?|reorder|from|lock|distinct\.pluck"
+    r"exists\?|reorder|from|lock|distinct\.pluck|"
+    # Raw connection methods bypass the query builder entirely -- the rawest
+    # injection vector. Listed after the builder methods so the alternation
+    # matches the full name (e.g. select_all, not the select prefix).
+    r"exec_query|execute|select_all|select_value|select_rows|select_one"
 )
 _RUBY_SQL_INTERP_RE = re.compile(
     rf"""\.\s*(?:{_RUBY_SQL_METHODS})\s*\(?\s*"[^"]*\#\{{[^}}]+\}}[^"]*\"""",

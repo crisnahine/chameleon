@@ -50,11 +50,17 @@ def test_teach_competing_import_writes_and_is_idempotent(tmp_path, monkeypatch):
     assert "Use @/lib/http, not axios" in block
 
     # Idempotent: re-teaching the same pair doesn't duplicate it.
-    tools.teach_competing_import(
+    res2 = tools.teach_competing_import(
         str(repo), archetype="httpclient", preferred="@/lib/http", over="axios"
     )
     conv2 = json.loads((repo / ".chameleon" / "conventions.json").read_text())
     assert len(conv2["conventions"]["imports"]["httpclient"]["competing"]) == 1
+    # The no-op must NOT claim the profile hash changed / suggest re-trust, since
+    # nothing was written (mirrors unteach_competing_import's no-op note).
+    d2 = _data(res2)
+    assert d2["already_present"] is True
+    assert "nothing changed" in d2["note"]
+    assert "chameleon-trust" not in d2["note"]
 
 
 def test_teach_competing_import_rejects_bad_input(tmp_path, monkeypatch):

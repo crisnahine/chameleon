@@ -4,6 +4,27 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.0] - 2026-06-09
+
+Auto-pass routing and the FP-suppression feedback loop, plus nine fixes from a real-session QA pass over the live plugin: hooks, every MCP tool, the enforcement spine, the turn-end judges, schema migration, and all slash commands, driven against the real profiled repos. The headline fix: the correctness and duplication judges had silently never fired on any non-API-key install. Validated by the full unit suite (3,016), the bulletproof-react (56/56) and forem (63/63) batteries, cross-cutting (15/15), and hook simulation (6/6).
+
+### Added
+
+- **`get_autopass_verdict` MCP tool + auto-pass routing in `/chameleon-pr-review`.** Classifies a branch diff as routine-auto-pass-eligible or needs-a-human, with reasons: a grounded block finding, a security-sensitive surface (auth / payment / crypto / migration / infra), too large, high cross-file blast radius, or a file outside the profiled archetypes each route the change to a human. Advisory only, never blocks; fails open toward "needs human". Surfaced as a Step 3h routing line in the pr-review skill, separate from the BLOCK/FIX/NIT verdict.
+- **FP-suppression feedback loop.** A block rule the team keeps overriding in practice (overridden above a measured rate over enough fires) auto-demotes to advisory at refresh time, recomputed before the trust hash so it is never a runtime mutation of the trust-hashed verdict. The demotion and its measured override rate surface in `/chameleon-status`.
+
+### Fixed
+
+- **The correctness and duplication judges silently never fired on any standard install.** The turn-end judge spawned `claude -p` into an empty throwaway `CLAUDE_CONFIG_DIR` (to skip the user's hook stack), which strips OAuth / subscription auth -- the spawn returned "Not logged in", the judge returned nothing, and the once-per-session marker still wrote so it never retried. The failure was invisible (fail-open, no error-log line), so it passed any smoke test that did not assert a finding was produced. The judge now inherits the real config dir for auth and sets `CHAMELEON_DISABLE=1` so chameleon's own hooks no-op in the subprocess (no primer overhead, no Stop-hook recursion). Before this, the judges worked only on API-key-in-env installs.
+- **Destructuring exports were falsely reported as cross-file existence breaks at runtime.** 2.9.1 fixed the bootstrap export index for `export const { a, b } = fn()`, but the runtime re-parse (`_current_export_names`, read by `query_symbol_importers` / `get_crossfile_context`) still missed them, so on an unmodified repo it flagged every importer of a destructured export as a broken call site -- ten false high-confidence findings on one auth module, which pr-review relayed to the user. The live re-parse now walks object/array destructuring (renames, defaults, rest; nested patterns marked open) to match the bootstrap index.
+- **The Ruby SQL-interpolation detector missed `connection.execute`.** Interpolated raw SQL through `connection.execute` / `exec_query` / `select_all` / `select_value` -- the rawest injection vector -- was invisible, while the same interpolation through `where` / `find_by_sql` was flagged.
+- **A corrupt or unsupported-schema `profile.json` had no slash-command recovery.** `/chameleon-refresh` noop'd on unchanged sources (it never inspected the manifest), `/chameleon-init` deferred to refresh, and only an undocumented `force=true` repaired it. Refresh now re-derives when `profile.json` is missing, unparseable, or carries a non-integer / above-max `schema_version`; an older supported schema still loads without a rebuild.
+- **A non-integer `schema_version` was served as a healthy profile.** The too-new guard only checked integer versions, so a string `schema_version` bypassed it and read as `profile_present`. It now reports `profile_corrupted`.
+- **`get_status` misreported enforcement state when passed a repo_id.** It resolved the 64-hex id as a relative path, so `find_repo_root` walked up to the current directory's repo and reported ITS mode -- `/chameleon-status` could call an enforcing repo "shadow, 0 active rules". It now resolves ids through the index and returns `no_repo` for an unknown one. Blocking was never affected (the hooks resolve the repo from the edited file's path); this was an observability bug.
+- **A multi-witness archetype could show a canonical of the wrong AST shape.** Witness selection ranked only by directory-path overlap, so a plain `class ... < ApplicationController` controller was shown a module-wrapped witness when a class witness existed in the same archetype. Selection now prefers the witness whose recorded shape matches the edited file, with path overlap as the tiebreak.
+- **`get_duplication_candidates` could exceed the MCP response cap on a large file.** A file with hundreds of functions emitted an undeliverable payload (500KB+); the match list is now bounded and the truncation flagged.
+- **`teach_competing_import` claimed the profile changed on a no-op.** Re-teaching an already-present pair wrote nothing but still told the user to re-trust; the note is now gated on an actual write, matching `unteach_competing_import`.
+
 ## [2.9.2] - 2026-06-09
 
 CI fix on top of 2.9.1; no product change.

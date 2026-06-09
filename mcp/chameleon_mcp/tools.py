@@ -662,7 +662,12 @@ def detect_repo(file_path: str) -> dict:
             from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
 
             _sv = _peek.get("schema_version") if isinstance(_peek, dict) else None
-            if isinstance(_sv, int) and _sv > MAX_SUPPORTED_SCHEMA_VERSION:
+            if _sv is not None and (isinstance(_sv, bool) or not isinstance(_sv, int)):
+                # schema_version is present but not a plain integer: a malformed /
+                # hand-edited manifest. Report corrupt rather than serving it as a
+                # healthy profile (bootstrap always writes an int).
+                profile_corrupted = True
+            elif isinstance(_sv, int) and _sv > MAX_SUPPORTED_SCHEMA_VERSION:
                 profile_unsupported_schema = True
             # A profile from a NEWER engine is intact, just unreadable here;
             # "corrupted" would send the user chasing damage that isn't there,
@@ -796,22 +801,28 @@ def _prefix_overlap_fallback(rel_str: str, archetypes: dict) -> tuple[str | None
     return primary, alternatives
 
 
-def _nearest_canonical_entry(rel_str: str, entries: list) -> dict:
-    """Pick the canonical entry whose witness shares the most leading directory
-    segments with the edited file.
+def _nearest_canonical_entry(rel_str: str, entries: list, snapshot=None) -> dict:
+    """Pick the canonical entry whose witness best fits the edited file.
 
     A dense archetype can carry several merged sub-buckets (e.g. services across
-    amazon_s3/, hubspot/, llm/), each with its own canonical witness. Resolving
-    by nearest path means a hubspot/ edit is shown a hubspot/ witness instead of
-    always the first (e.g. amazon_s3/) one. Falls back to entries[0].
+    amazon_s3/, hubspot/, llm/), each with its own canonical witness. Ranking is
+    ``(shape_match, path_overlap)``: when the edited file's ``snapshot`` is known,
+    a witness whose recorded ``ast_query`` matches the file's shape wins, so a
+    ClassNode controller is not shown a ModuleNode witness from the same archetype;
+    leading-directory overlap is the tiebreak among equal-shape witnesses. With no
+    snapshot (or no shape data) shape is constant, so this is the prior pure
+    path-overlap behavior, ties keeping entries[0].
     """
     if not entries:
         return {}
+    from chameleon_mcp.lint_engine import canonical_confidence
+
     q_parts = _norm_rel_path(rel_str).split("/")[:-1]
     best = entries[0] or {}
-    best_overlap = -1
+    best_key = (-1.0, -1)
     for e in entries:
-        witness_rel = ((e or {}).get("witness") or {}).get("path") or ""
+        e = e or {}
+        witness_rel = (e.get("witness") or {}).get("path") or ""
         w_parts = _norm_rel_path(witness_rel).split("/")[:-1]
         overlap = 0
         for a, b in zip(q_parts, w_parts):  # noqa: B905
@@ -819,10 +830,41 @@ def _nearest_canonical_entry(rel_str: str, entries: list) -> dict:
                 overlap += 1
             else:
                 break
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best = e or {}
+        if snapshot is not None:
+            ast_query = (e.get("normative_shape") or {}).get("ast_query")
+            shape = canonical_confidence(snapshot, ast_query)
+        else:
+            shape = 0.0
+        key = (shape, overlap)
+        if key > best_key:
+            best_key = key
+            best = e
     return best
+
+
+def _file_shape_snapshot(p: Path, loaded):
+    """The edited file's AST dimension snapshot, for shape-aware witness choice.
+
+    Mirrors the content read + language detection in ``_get_archetype_with_loaded``
+    so the shape compared against witness ``ast_query`` is the same one archetype
+    scoring used. Returns None for an absent/unreadable file (the new-file case),
+    so witness selection falls back to path overlap.
+    """
+    from chameleon_mcp.lint_engine import detect_language, extract_dimensions
+
+    if not p.is_file():
+        return None
+    try:
+        content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    language = detect_language(str(p)) or loaded.profile.get("language")
+    if language not in ("typescript", "ruby"):
+        language = None
+    try:
+        return extract_dimensions(content, language=language)
+    except Exception:
+        return None
 
 
 def _witness_path_overlap(rel_str: str, canonicals: dict, archetype_name: str) -> int:
@@ -1317,7 +1359,11 @@ def get_pattern_context(file_path: str) -> dict:
                 rel_str = p.resolve().relative_to(repo_root.resolve()).as_posix()
             except (ValueError, OSError):
                 rel_str = p.name
-            first = _nearest_canonical_entry(rel_str, canonicals)
+            # Only extract the file's shape when there is more than one witness to
+            # choose between (cost-bounded to the multi-sub-bucket case); a single
+            # witness needs no shape comparison.
+            snapshot = _file_shape_snapshot(p, loaded) if len(canonicals) > 1 else None
+            first = _nearest_canonical_entry(rel_str, canonicals, snapshot=snapshot)
             witness_rel = first.get("witness", {}).get("path")
             if witness_rel and trust_state_str == "untrusted":
                 # Untrusted: the witness content is redacted below anyway, so
@@ -2888,6 +2934,17 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
 
     matches = select_candidates(catalog, new_functions, exclude_file=file_rel)
 
+    # Bound the response: a large file (hundreds of functions, each with up to
+    # DUPLICATION_MAX_CANDIDATES_PER_FN excerpts) would otherwise exceed the MCP
+    # token cap and return nothing usable. Keep the first N matches (already
+    # ranked by select_candidates) and flag the truncation so the caller knows
+    # the list is partial rather than complete.
+    max_matches = threshold_int("DUPLICATION_MAX_MATCHES")
+    total_matches = len(matches)
+    truncated = total_matches > max_matches
+    if truncated:
+        matches = matches[:max_matches]
+
     excerpt_lines = threshold_int("DUPLICATION_BODY_EXCERPT_LINES")
     for match in matches:
         fn = match["function"]
@@ -2900,13 +2957,15 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
             cand["file"] = _sanitize(cand["file"])
             cand["shared_tokens"] = [_sanitize(t) for t in cand.get("shared_tokens", [])]
 
-    return _envelope(
-        {
-            "found": True,
-            "file": _sanitize(file_rel) if file_rel else None,
-            "matches": matches,
-        }
-    )
+    out = {
+        "found": True,
+        "file": _sanitize(file_rel) if file_rel else None,
+        "matches": matches,
+    }
+    if truncated:
+        out["truncated"] = True
+        out["truncated_matches"] = total_matches - max_matches
+    return _envelope(out)
 
 
 def get_drift_status(repo: str) -> dict:
@@ -3094,6 +3153,44 @@ def _profile_requires_newer_engine(profile_dir: Path) -> str | None:
     return None
 
 
+def _partition_block_rules(
+    rules: dict, *, lang_inert, signal_inert
+) -> tuple[list[str], list[dict]]:
+    """Split persisted block-rule verdicts into the active set and the demoted
+    list for /chameleon-status, attaching the reason a rule is not blocking.
+
+    Two demotion axes are reported distinctly: capability ``inert_reason``
+    (no language signal / missing convention data, including a stale active=True
+    the read-time gates override) and the refresh-time ``demoted_reason``
+    (``high-override-rate``) with its measured ``override_rate``, so a lead can
+    tell "this rule cannot speak here" from "the team keeps overriding it".
+    """
+    active: list[str] = []
+    demoted: list[dict] = []
+    for rule, meta in rules.items():
+        if not isinstance(meta, dict):
+            continue
+        li = lang_inert(rule)
+        si = signal_inert(rule)
+        if meta.get("active") is True and not li and not si:
+            active.append(rule)
+        else:
+            entry = {"rule": rule, "fp_rate": meta.get("fp_rate")}
+            reason = meta.get("inert_reason")
+            if not reason and meta.get("active") is True:
+                reason = "missing-convention-data" if si else "no-signal-for-language"
+            if reason:
+                entry["inert_reason"] = reason
+            if meta.get("demoted_reason"):
+                entry["demoted_reason"] = meta["demoted_reason"]
+            if meta.get("override_rate") is not None:
+                entry["override_rate"] = meta["override_rate"]
+            demoted.append(entry)
+    active.sort()
+    demoted.sort(key=lambda d: d["rule"])
+    return active, demoted
+
+
 def get_status(repo: str) -> dict:
     """Report enforcement state for a repo's chameleon profile.
 
@@ -3126,10 +3223,17 @@ def get_status(repo: str) -> dict:
             }
         )
 
-    try:
-        repo_root = find_repo_root(Path(repo).expanduser())
-    except (OSError, ValueError):
-        repo_root = None
+    # A 64-hex repo_id that maps to no known repo must not be treated as a
+    # relative path: find_repo_root would walk up from the CWD and report some
+    # OTHER repo's enforcement state under the bogus id. Resolve ids via the
+    # index and signal no_repo when unknown, like the path branch does.
+    if _REPO_ID_RE.match(repo):
+        repo_root = _resolve_repo_root_by_id(repo)
+    else:
+        try:
+            repo_root = find_repo_root(Path(repo).expanduser())
+        except (OSError, ValueError):
+            repo_root = None
     if repo_root is None:
         return _envelope({"status": "no_repo"})
 
@@ -3170,34 +3274,16 @@ def get_status(repo: str) -> dict:
         rule_inert_missing_signal,
     )
 
-    active: list[str] = []
-    demoted: list[dict] = []
-    for rule, meta in load_block_rules(profile_dir).items():
-        if not isinstance(meta, dict):
-            continue
-        # A profile calibrated by an older engine can carry active=True for a
-        # rule that has no signal source in this profile's language, or whose
-        # driving convention data was never derived; the read-time gates keep
-        # that stale verdict out of the active list (the enforcement path
-        # applies the same gates) until a refresh recalibrates.
-        lang_inert = rule_inert_for_language(rule, profile_dir)
-        signal_inert = rule_inert_missing_signal(rule, profile_dir)
-        if meta.get("active") is True and not lang_inert and not signal_inert:
-            active.append(rule)
-        else:
-            entry = {"rule": rule, "fp_rate": meta.get("fp_rate")}
-            # Capability demotions carry a reason ("no-signal-for-language" /
-            # "missing-convention-data") so the status display can say the
-            # rule is inert for this repo rather than implying it was
-            # measured out.
-            reason = meta.get("inert_reason")
-            if not reason and meta.get("active") is True:
-                reason = "missing-convention-data" if signal_inert else "no-signal-for-language"
-            if reason:
-                entry["inert_reason"] = reason
-            demoted.append(entry)
-    active.sort()
-    demoted.sort(key=lambda d: d["rule"])
+    # A profile calibrated by an older engine can carry active=True for a rule
+    # that has no signal source in this profile's language, or whose driving
+    # convention data was never derived; the read-time gates keep that stale
+    # verdict out of the active list (the enforcement path applies the same
+    # gates) until a refresh recalibrates.
+    active, demoted = _partition_block_rules(
+        load_block_rules(profile_dir),
+        lang_inert=lambda r: rule_inert_for_language(r, profile_dir),
+        signal_inert=lambda r: rule_inert_missing_signal(r, profile_dir),
+    )
 
     # Live override-rate section. bootstrap fp_rate (above, calibration against
     # committed files) and the override rate (here, team contention on real AI
@@ -4652,6 +4738,8 @@ def _profile_needs_rederive(profile_dir) -> bool:
     """
     import json as _json
 
+    from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
+
     for name in ("archetypes.json", "canonicals.json", "rules.json", "conventions.json"):
         try:
             obj = _json.loads((profile_dir / name).read_text(encoding="utf-8"))
@@ -4659,6 +4747,26 @@ def _profile_needs_rederive(profile_dir) -> bool:
             return True
         if not isinstance(obj, dict):
             return True
+    # The manifest itself (profile.json) must exist, parse, and carry a schema
+    # version this engine supports. A corrupt or unsupported-schema (too-new /
+    # non-int) manifest is rejected at READ time, but a plain refresh would
+    # otherwise noop on unchanged sources and never repair it -- leaving the user
+    # with no slash-command recovery. An OLDER supported schema loads fine and is
+    # NOT a reason to re-derive; only a missing/corrupt manifest or one whose
+    # schema_version is non-int or above the supported max forces the rebuild.
+    try:
+        manifest = _json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    if not isinstance(manifest, dict):
+        return True
+    schema = manifest.get("schema_version")
+    if schema is not None and (
+        isinstance(schema, bool)
+        or not isinstance(schema, int)
+        or schema > MAX_SUPPORTED_SCHEMA_VERSION
+    ):
+        return True
     if not (profile_dir / "profile.summary.md").is_file():
         return True
     return _principles_incomplete(profile_dir)
@@ -4890,6 +4998,126 @@ def bootstrap_repo(
         return _envelope({"status": "failed", "error": f"could not write profile: {e}"})
 
 
+def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
+    """ADVISORY: is this branch's diff vs ``base_ref`` safe to auto-pass, or does
+    it need a human? Never gates -- it informs a review decision. The honest goal
+    is not "catch every bug" (no machine does) but to mark the routine slice that
+    is safe to skip and route the rest to a human with a reason.
+
+    Fails open toward "needs human": when a signal can't be read, the change is
+    treated as the more conservative case rather than waved through. Blast radius
+    is a TypeScript-only signal (the reverse index is TS); Ruby files contribute
+    0 importers, so a Ruby change is gated by the other signals, not fan-out.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.autopass import build_autopass_verdict
+    from chameleon_mcp.enforcement_calibration import active_block_rules
+    from chameleon_mcp.judge import _git_available, _run_git
+    from chameleon_mcp.safe_open import safe_read_text
+
+    def _degraded(reason: str, message: str) -> dict:
+        return _envelope(
+            {
+                "status": "degraded",
+                "reason": reason,
+                "auto_pass_eligible": False,
+                "risk": "high",
+                "reasons": [message],
+            }
+        )
+
+    repo_root, repo_id = _resolve_repo_arg(repo)
+    if repo_root is None:
+        return _degraded("repo_unresolved", "repo could not be resolved")
+    # No git work tree means no diff to assess; degrade to "needs human" rather
+    # than read git's empty output as "no changes, safe to auto-pass".
+    if not _git_available(repo_root):
+        return _degraded("not_a_git_worktree", "not a git work tree; cannot assess the change")
+    repo_arg = repo_id or str(repo_root)
+
+    def _git_out(args: list[str]) -> str:
+        res = _run_git(args, cwd=repo_root)
+        if res is None or res.returncode != 0:
+            return ""
+        return res.stdout or ""
+
+    numstat_text = _git_out(["diff", "--numstat", f"{base_ref}...HEAD"])
+    name_status_text = _git_out(["diff", "--name-status", f"{base_ref}...HEAD"])
+
+    try:
+        active = active_block_rules(repo_root / ".chameleon")
+    except Exception:
+        active = set()
+
+    def _archetype_of(rel: str):
+        try:
+            data = get_archetype(repo_arg, str(repo_root / rel)).get("data") or {}
+            return data.get("archetype"), data.get("match_quality")
+        except Exception:
+            return None, "none"
+
+    def is_unarchetyped(rel: str) -> bool:
+        arch, mq = _archetype_of(rel)
+        # No archetype, or only a fallback/no match: the engine has no canonical
+        # to vouch for the file, so it cannot be auto-passed.
+        return not arch or mq in ("none", "fallback")
+
+    def importers_of(rel: str) -> int:
+        try:
+            data = query_symbol_importers(repo_arg, str(repo_root / rel)).get("data") or {}
+            return sum(int(i.get("count", 0)) for i in (data.get("importers") or []))
+        except Exception:
+            return 0
+
+    def block_findings_for(rel: str) -> int:
+        if not active:
+            return 0
+        arch, _ = _archetype_of(rel)
+        if not arch:
+            return 0
+        try:
+            content = safe_read_text(repo_root, rel)
+            data = lint_file(repo_arg, arch, content, str(repo_root / rel)).get("data") or {}
+            return sum(1 for v in (data.get("violations") or []) if v.get("rule") in active)
+        except Exception:
+            return 0
+
+    verdict = build_autopass_verdict(
+        numstat_text,
+        name_status_text,
+        is_unarchetyped=is_unarchetyped,
+        importers_of=importers_of,
+        block_findings_for=block_findings_for,
+        max_files=threshold_int("AUTOPASS_MAX_FILES"),
+        max_lines=threshold_int("AUTOPASS_MAX_LINES"),
+        max_blast_radius=threshold_int("AUTOPASS_MAX_BLAST_RADIUS"),
+    )
+    verdict["advisory"] = True
+    verdict["base_ref"] = base_ref
+    return _envelope(verdict)
+
+
+def _override_rates_for_demotion(repo_id: str | None, window_days: int | None = None) -> dict:
+    """Per-rule override (dismissal) rate, shaped for apply_override_feedback_demotion.
+
+    Reuses the override-audit computation so the rate definition (overrides over
+    overrides+would_blocks) stays single-sourced. A rule below the audit's
+    min-events floor reports rate None there; it carries no evidence and is
+    omitted here so an unseen rule is never demoted.
+    """
+    from chameleon_mcp.review_ledger import build_override_audit
+
+    out: dict = {}
+    audit = build_override_audit(repo_id, window_days)
+    for rule, meta in (audit.get("rules") or {}).items():
+        rate = meta.get("override_rate")
+        if rate is None:
+            continue
+        events = int(meta.get("overrides", 0)) + int(meta.get("would_blocks", 0))
+        out[rule] = {"rate": rate, "events": events}
+    return out
+
+
 def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
     """Measure block-eligible rules against the repo's own files and persist the
     verdict to ``.chameleon/enforcement.json``.
@@ -4899,7 +5127,9 @@ def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
     which is the safe default.
     """
     try:
+        from chameleon_mcp._thresholds import threshold_float, threshold_int
         from chameleon_mcp.enforcement_calibration import (
+            apply_override_feedback_demotion,
             calibrate_block_rules,
             write_block_rules,
         )
@@ -4907,7 +5137,22 @@ def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
 
         profile_dir = repo_root / ".chameleon"
         loaded = load_profile_dir(profile_dir)
-        write_block_rules(profile_dir, calibrate_block_rules(repo_root, loaded))
+        verdicts = calibrate_block_rules(repo_root, loaded)
+        # Feed the team's lived override behavior back into the verdict: a rule the
+        # team keeps overriding in practice drops to advisory. Isolated so an
+        # unreadable override stream leaves the structural calibration untouched.
+        try:
+            rates = _override_rates_for_demotion(_compute_repo_id(repo_root))
+            if rates:
+                verdicts = apply_override_feedback_demotion(
+                    verdicts,
+                    rates,
+                    threshold=threshold_float("RULE_FP_DEMOTE_THRESHOLD"),
+                    min_events=threshold_int("OVERRIDE_AUDIT_MIN_EVENTS"),
+                )
+        except Exception:
+            pass
+        write_block_rules(profile_dir, verdicts)
     except Exception:
         pass
 
@@ -7043,8 +7288,12 @@ def teach_competing_import(
         "competing": {"preferred": preferred, "over": over},
         "already_present": already,
         "note": (
-            "wrapper-preference recorded in conventions.json; the profile hash "
-            "changed, so run /chameleon-trust if it shows as stale."
+            "this wrapper-preference pair was already present; nothing changed"
+            if already
+            else (
+                "wrapper-preference recorded in conventions.json; the profile hash "
+                "changed, so run /chameleon-trust if it shows as stale."
+            )
         ),
     }
     if warning:

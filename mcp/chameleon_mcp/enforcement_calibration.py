@@ -503,3 +503,39 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
             entry["inert_reason"] = "missing-convention-data"
         result[rule] = entry
     return result
+
+
+def apply_override_feedback_demotion(
+    verdicts: dict,
+    override_rates: dict,
+    *,
+    threshold: float,
+    min_events: int,
+) -> dict:
+    """Demote a calibrated-active rule the team keeps overriding in practice.
+
+    Calibration certifies a rule against the repo's *committed* files; it cannot
+    see that, once enforcing, the rule fires on code the team deliberately
+    overrides. A rule overridden in more than ``threshold`` of its fires over at
+    least ``min_events`` is fighting the team, not catching bugs, so it drops to
+    advisory here. The volume floor stops one override out of one fire from
+    nuking a rule. This runs at refresh time, before the trust hash is taken, so
+    the demotion lives in the trust-hashed artifact and is never a runtime
+    mutation of it. ``verdicts`` is not mutated in place.
+    """
+    out: dict = {}
+    for rule, meta in verdicts.items():
+        entry = dict(meta) if isinstance(meta, dict) else meta
+        stats = override_rates.get(rule)
+        if (
+            isinstance(entry, dict)
+            and entry.get("active") is True
+            and isinstance(stats, dict)
+            and stats.get("events", 0) >= min_events
+            and stats.get("rate", 0.0) > threshold
+        ):
+            entry["active"] = False
+            entry["demoted_reason"] = "high-override-rate"
+            entry["override_rate"] = stats["rate"]
+        out[rule] = entry
+    return out

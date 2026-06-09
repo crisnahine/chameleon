@@ -78,3 +78,14 @@ def test_status_reports_enforcement(make_trusted_repo):
     text = json.dumps(out)
     assert "enforcement" in text.lower()
     assert "shadow" in text.lower()
+
+
+def test_status_unknown_repo_id_returns_no_repo():
+    # A 64-hex repo_id that maps to no known repo must signal no_repo, not be
+    # treated as a relative path (which walks up to the CWD's repo and reports
+    # ITS enforcement state under the bogus id) (BUG-2).
+    from chameleon_mcp.tools import get_status
+
+    out = get_status("d" * 64)
+    assert out["data"]["status"] == "no_repo"
+    assert "mode" not in out["data"]

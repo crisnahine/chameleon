@@ -15,6 +15,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from chameleon_mcp import judge
 from chameleon_mcp.judge import Finding
 
@@ -266,6 +268,7 @@ def test_run_correctness_judge_no_files_returns_empty(tmp_path):
     assert findings == []
 
 
+@pytest.mark.real_judge_spawn
 def test_spawn_reviewer_timeout_returns_none(tmp_path):
     def raise_timeout(*a, **k):
         raise subprocess.TimeoutExpired(cmd="claude", timeout=1)
@@ -274,6 +277,7 @@ def test_spawn_reviewer_timeout_returns_none(tmp_path):
         assert judge._spawn_reviewer("prompt", tmp_path) is None
 
 
+@pytest.mark.real_judge_spawn
 def test_spawn_reviewer_nonzero_exit_returns_none(tmp_path):
     class FakeProc:
         returncode = 1
@@ -281,6 +285,31 @@ def test_spawn_reviewer_nonzero_exit_returns_none(tmp_path):
 
     with patch("subprocess.run", return_value=FakeProc()):
         assert judge._spawn_reviewer("prompt", tmp_path) is None
+
+
+@pytest.mark.real_judge_spawn
+def test_spawn_reviewer_inherits_auth_and_disables_chameleon(tmp_path):
+    # BUG-J1: a fresh empty CLAUDE_CONFIG_DIR strips OAuth/subscription auth, so
+    # the spawned judge returns "Not logged in" and silently never fires. The
+    # spawn must inherit the real config dir (auth) and set CHAMELEON_DISABLE=1 to
+    # stop chameleon's own hooks recursing into another judge spawn.
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+        stdout = ""
+
+    def fake_run(args, **kwargs):
+        captured["env"] = kwargs.get("env") or {}
+        return FakeProc()
+
+    with patch("subprocess.run", side_effect=fake_run):
+        judge._spawn_reviewer("prompt", tmp_path)
+
+    env = captured["env"]
+    assert env.get("CHAMELEON_DISABLE") == "1"
+    # Must NOT point CLAUDE_CONFIG_DIR at the empty throwaway dir that broke auth.
+    assert "chameleon-judge-" not in env.get("CLAUDE_CONFIG_DIR", "")
 
 
 def test_witness_for_none_archetype_empty():

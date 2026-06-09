@@ -100,6 +100,18 @@ def test_detect_repo(trusted_repo):
     _assert_envelope(tools.detect_repo(str(trusted_repo / WITNESS)))
 
 
+def test_detect_repo_flags_noninteger_schema_as_corrupt(trusted_repo):
+    # A non-integer schema_version is a malformed manifest; it must report
+    # corrupt, not be served as a healthy profile_present (BUG-A2).
+    pj = trusted_repo / ".chameleon" / "profile.json"
+    pj.write_text(
+        json.dumps({"generation": 1, "language": "typescript", "schema_version": "999"}),
+        encoding="utf-8",
+    )
+    res = tools.detect_repo(str(trusted_repo / WITNESS))
+    assert res["data"]["profile_status"] == "profile_corrupted"
+
+
 def test_get_pattern_context(trusted_repo):
     res = tools.get_pattern_context(str(trusted_repo / WITNESS))
     _assert_envelope(res)
@@ -354,6 +366,35 @@ def test_nearest_canonical_entry_resolves_by_subbucket():
     assert fallback["witness"]["path"] == "app/services/amazon_s3/create_download_link.rb"
     # empty -> {}
     assert tools._nearest_canonical_entry("x.rb", []) == {}
+
+
+def test_nearest_canonical_entry_prefers_matching_ast_shape():
+    """When the edited file's shape is known, a witness whose ast_query matches
+    that shape wins over a same-path-overlap witness of the wrong shape -- a
+    ClassNode controller must not be shown a ModuleNode witness."""
+    from chameleon_mcp.lint_engine import DimensionSnapshot
+
+    entries = [
+        {
+            "witness": {"path": "app/controllers/admin/badge_controller.rb"},
+            "normative_shape": {"ast_query": {"top_level_node_kinds": ["ModuleNode"]}},
+        },
+        {
+            "witness": {"path": "app/controllers/admin/redirects_controller.rb"},
+            "normative_shape": {"ast_query": {"top_level_node_kinds": ["ClassNode"]}},
+        },
+    ]
+    snap = DimensionSnapshot(top_level_node_kinds=["ClassNode"])
+    chosen = tools._nearest_canonical_entry(
+        "app/controllers/admin/reactions_controller.rb", entries, snapshot=snap
+    )
+    assert chosen["witness"]["path"] == "app/controllers/admin/redirects_controller.rb"
+
+    # Without a snapshot, behavior is unchanged (path-overlap, ties -> first).
+    chosen_nosnap = tools._nearest_canonical_entry(
+        "app/controllers/admin/reactions_controller.rb", entries
+    )
+    assert chosen_nosnap["witness"]["path"] == "app/controllers/admin/badge_controller.rb"
 
 
 def test_bootstrap_repo_blocked_when_lock_held(tmp_path, monkeypatch):
@@ -641,6 +682,56 @@ def test_get_duplication_candidates_surfaces_renamed_reimplementation(trusted_re
     assert cand["shared_tokens"] == ["date"]
     # The candidate body excerpt is read from disk as a citation aid.
     assert "formatDate" in cand["body_excerpt"]
+
+
+def test_get_duplication_candidates_caps_match_count(trusted_repo, monkeypatch):
+    # A large file would otherwise return hundreds of matches and blow the MCP
+    # token cap (a real bug on forem's article.rb: 519KB, undeliverable). The
+    # response must cap the match list and flag the truncation.
+    cham = trusted_repo / ".chameleon"
+    _write_function_catalog(
+        cham, {"fmt.ts": [{"name": "f", "kind": "function", "arity": 1, "required": 1}]}
+    )
+    new_file = trusted_repo / "x.ts"
+    new_file.write_text("export function g(a) {\n  return a;\n}\n", encoding="utf-8")
+    _stub_extractor(
+        monkeypatch,
+        new_file,
+        [
+            {
+                "name": "g",
+                "kind": "function",
+                "params": [{"name": "a", "optional": False, "kind": "positional"}],
+            }
+        ],
+    )
+    from chameleon_mcp import function_catalog
+
+    fake_matches = [
+        {
+            "function": {"name": f"fn{i}", "kind": "function", "arity": 1, "required": 1},
+            "candidates": [
+                {
+                    "name": f"c{i}",
+                    "file": "fmt.ts",
+                    "kind": "function",
+                    "arity": 1,
+                    "required": 1,
+                    "shared_tokens": ["x"],
+                }
+            ],
+        }
+        for i in range(20)
+    ]
+    monkeypatch.setattr(function_catalog, "select_candidates", lambda *a, **k: fake_matches)
+
+    res = tools.get_duplication_candidates(str(trusted_repo), str(new_file))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True
+    assert len(data["matches"]) == 15
+    assert data["truncated"] is True
+    assert data["truncated_matches"] == 5
 
 
 def test_get_duplication_candidates_no_catalog_found_false(trusted_repo):

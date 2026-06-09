@@ -97,6 +97,20 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # past wholesale rather than annotated per intentional deviation. Flagged
     # separately at or above this blanket share.
     "OVERRIDE_BLANKET_HIGH": 0.5,
+    # Refresh-time auto-demotion bar. A calibrated-active block rule the team
+    # overrides above this share of its fires (over OVERRIDE_AUDIT_MIN_EVENTS) is
+    # fighting the team, not catching bugs, so the next refresh demotes it to
+    # advisory. This is recomputed at refresh BEFORE the trust hash is taken, so
+    # the demotion lives in the trust-hashed enforcement.json and is never a
+    # runtime mutation of it. As a fraction of (overrides + would_blocks).
+    "RULE_FP_DEMOTE_THRESHOLD": 0.5,
+    # Auto-pass router bounds (advisory). A change stays auto-pass-eligible only
+    # while it is small and low-fan-out; past any of these it routes to a human.
+    # Conservative defaults for a "routine" change; an auth/payment/migration
+    # surface or a grounded block finding routes to a human regardless of size.
+    "AUTOPASS_MAX_FILES": 10,
+    "AUTOPASS_MAX_LINES": 150,
+    "AUTOPASS_MAX_BLAST_RADIUS": 10,
     # Lookback for the combined longitudinal health section (structural conformance
     # plus enforcement-outcome rates). Same horizon as the shadow / override
     # surfaces so a lead reads all three over the same recent-edit window.
@@ -242,6 +256,11 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # only narrows the search for the LLM judge, so a short ranked list is the
     # goal; the highest-overlap candidates are kept and the tail dropped.
     "DUPLICATION_MAX_CANDIDATES_PER_FN": 5,
+    # Cap on how many of the queried file's functions (matches) get_duplication_
+    # candidates returns. A large file (hundreds of functions x 5 candidates x a
+    # body excerpt) would otherwise blow the MCP response token cap and become
+    # undeliverable; over the cap the result is truncated and flagged.
+    "DUPLICATION_MAX_MATCHES": 15,
     # Caps for the turn-end body-hash duplication review gate. The file and
     # findings caps bound the parse fan-out and advisory length per turn. The
     # prompt-bytes cap keeps the judge prompt within the session budget. The

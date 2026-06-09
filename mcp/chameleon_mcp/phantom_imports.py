@@ -727,7 +727,57 @@ _TS_EXPORT_CLAUSE_RE = re.compile(r"\bexport\s*\{([^}]*)\}")
 # export set can't be trusted -- skip both cross-file checks for the file.
 _TS_EXPORT_STAR_RE = re.compile(r"\bexport\s*\*\s*from\b")
 _CLAUSE_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\s+as\s+([A-Za-z_$][\w$]*))?")
+# `export const|let|var { a, b: c, ...rest } = fn()` / `[a, , b] = arr`:
+# destructuring binds the names ts_dump.mjs records via Object/ArrayBindingPattern.
+# The live re-parse must extract them too, or an importer of a destructured export
+# is falsely flagged as a broken existence-break on an unmodified file.
+_TS_EXPORT_DESTRUCTURE_RE = re.compile(r"\bexport\s+(?:declare\s+)?(?:const|let|var)\s+([{\[])")
+_LEADING_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
 _MAX_EXPORT_NAMES = 1000
+
+
+def _balanced_pattern(stripped: str, open_idx: int) -> tuple[str | None, str | None]:
+    """Body inside the destructuring pattern opening at ``open_idx``, and its outer
+    bracket char. Counts both bracket families so ``{ a: [b] }`` balances; returns
+    ``(None, None)`` if unbalanced within a sane bound (caller treats as open)."""
+    outer = stripped[open_idx]
+    depth = 0
+    for i in range(open_idx, min(len(stripped), open_idx + 16_000)):
+        c = stripped[i]
+        if c in "{[":
+            depth += 1
+        elif c in "}]":
+            depth -= 1
+            if depth == 0:
+                return stripped[open_idx + 1 : i], outer
+    return None, None
+
+
+def _destructured_names(body: str, outer: str) -> tuple[set[str], bool]:
+    """Bound names from a FLAT destructuring pattern body, plus an open flag.
+
+    A nested pattern (a `{`/`[` inside the body) is not confidently enumerable
+    here, so it returns ``(set(), True)`` and the caller marks the whole file's
+    export set non-authoritative -- suppressing the broken-export check rather
+    than risking a false positive. For a flat object, ``prop: local`` binds the
+    local (right of `:`), defaults (`= x`) and rest (`...r`) are handled; array
+    holes (empty parts) are skipped."""
+    if "{" in body or "[" in body:
+        return set(), True
+    out: set[str] = set()
+    for part in body.split(","):
+        part = part.strip()
+        if not part:
+            continue  # array hole
+        if part.startswith("..."):
+            part = part[3:].strip()
+        lhs = part.split("=", 1)[0].strip()  # drop a default value
+        if outer == "{" and ":" in lhs:
+            lhs = lhs.split(":", 1)[1].strip()  # the bound local, not the property key
+        m = _LEADING_IDENT_RE.match(lhs)
+        if m:
+            out.add(m.group(0))
+    return out, False
 
 
 def _current_export_names(content: str) -> tuple[frozenset[str], bool]:
@@ -780,6 +830,19 @@ def _current_export_names(content: str) -> tuple[frozenset[str], bool]:
                 names.add(exported)
             if len(names) >= _MAX_EXPORT_NAMES:
                 return frozenset(names), False
+    for dm in _TS_EXPORT_DESTRUCTURE_RE.finditer(stripped):
+        if _masked(dm.start()):
+            continue
+        body, outer = _balanced_pattern(stripped, dm.start(1))
+        if body is None or outer is None:
+            # Unbalanced within bound: don't trust a partial parse, mark open.
+            return frozenset(), True
+        dnames, dopen = _destructured_names(body, outer)
+        if dopen:
+            return frozenset(), True
+        names.update(dnames)
+        if len(names) >= _MAX_EXPORT_NAMES:
+            return frozenset(names), False
     return frozenset(names), False
 
 

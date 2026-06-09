@@ -71,6 +71,7 @@ def test_skill_cited_tools_are_actually_registered_with_matching_params():
         "get_crossfile_context",
         "record_review_verdict",
         "get_review_history",
+        "get_autopass_verdict",
     ):
         assert name in text, f"skill stopped citing {name!r}"
         assert name in registered, f"{name!r} is cited by the skill but not a registered MCP tool"

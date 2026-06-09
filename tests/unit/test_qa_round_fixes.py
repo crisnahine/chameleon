@@ -3,9 +3,10 @@
 1. The enforce-promotion docs must spell out the two-step flow (edit
    config.json, then re-trust): config.json is trust-hashed, so the edit alone
    flips the profile to stale and silently disables enforcement.
-2. The correctness-judge spawn must isolate the child claude process from the
-   user's settings/plugins/hooks via a throwaway CLAUDE_CONFIG_DIR, or a
-   SessionStart hook stack can eat the whole timeout budget.
+2. The correctness-judge spawn must stay authenticated: it inherits the real
+   config dir (an empty throwaway CLAUDE_CONFIG_DIR strips OAuth/subscription
+   auth, so the judge silently never fired) and sets CHAMELEON_DISABLE=1 so
+   chameleon's own hooks don't recurse into another judge spawn.
 3. get_crossfile_context must cap low-confidence (open-set/barrel) rows
    separately so they cannot crowd genuine high-confidence existence breaks out
    of the response.
@@ -15,6 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,7 +38,12 @@ def test_status_skill_documents_two_step_promotion():
     assert "edit `config.json`, then `/chameleon-trust`" in text
 
 
-def test_judge_spawn_isolates_claude_config(monkeypatch, tmp_path):
+@pytest.mark.real_judge_spawn
+def test_judge_spawn_preserves_auth_and_disables_chameleon(monkeypatch, tmp_path):
+    # Corrected contract: the judge must NOT spawn into an empty throwaway
+    # CLAUDE_CONFIG_DIR (that stripped OAuth/subscription auth -> "Not logged in"
+    # -> the judge silently never fired). It inherits the real config dir for
+    # auth and sets CHAMELEON_DISABLE=1 so chameleon's own hooks don't recurse.
     from chameleon_mcp import judge
 
     captured: dict = {}
@@ -49,29 +57,21 @@ def test_judge_spawn_isolates_claude_config(monkeypatch, tmp_path):
     assert out == "[]"
     env = captured["env"]
     assert env is not None
-    cfg = env.get("CLAUDE_CONFIG_DIR")
-    assert cfg and "chameleon-judge-" in cfg
-    # The throwaway dir is removed after the spawn returns.
-    assert not Path(cfg).exists()
+    assert env.get("CHAMELEON_DISABLE") == "1"
+    # Must not point at the empty throwaway dir that broke auth.
+    assert "chameleon-judge-" not in (env.get("CLAUDE_CONFIG_DIR") or "")
 
 
-def test_judge_spawn_fails_open_when_tmpdir_unavailable(monkeypatch, tmp_path):
+@pytest.mark.real_judge_spawn
+def test_judge_spawn_fails_open_on_subprocess_error(monkeypatch, tmp_path):
     from chameleon_mcp import judge
 
-    def no_tmp(*a, **k):
-        raise OSError("no tmp")
+    def boom(*a, **k):
+        raise OSError("spawn failed")
 
-    captured: dict = {}
-
-    def fake_run(args, **kwargs):
-        captured["env"] = kwargs.get("env")
-        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
-
-    monkeypatch.setattr(judge.tempfile, "mkdtemp", no_tmp)
-    monkeypatch.setattr(judge.subprocess, "run", fake_run)
-    assert judge._spawn_reviewer("prompt", tmp_path) == "[]"
-    # Falls back to the inherited environment rather than refusing to spawn.
-    assert "CLAUDE_CONFIG_DIR" not in (captured["env"] or {}) or captured["env"] is not None
+    monkeypatch.setattr(judge.subprocess, "run", boom)
+    # A spawn error must fail open to no findings, never raise.
+    assert judge._spawn_reviewer("prompt", tmp_path) is None
 
 
 def test_crossfile_low_confidence_has_separate_cap():

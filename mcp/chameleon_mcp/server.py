@@ -134,6 +134,20 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
 
 
 @mcp.tool()
+def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
+    """ADVISORY: is this branch's diff vs base_ref safe to auto-pass, or human?
+
+    Classifies the change and returns {auto_pass_eligible, risk, reasons, facts,
+    changed_files}. Never gates -- it marks the routine slice safe to skip and
+    routes the rest to a human with a reason (grounded block finding, a
+    security-sensitive surface, too large, high blast radius, or a file outside
+    the profiled archetypes). Fails open toward "needs human" when a signal can't
+    be read. Blast radius is a TypeScript-only signal.
+    """
+    return tools.get_autopass_verdict(repo, base_ref)
+
+
+@mcp.tool()
 def get_crossfile_context(repo: str) -> dict:
     """Cross-file existence breaks across a TypeScript repo, for PR review.
 

@@ -64,6 +64,37 @@ class TestCurrentExportNames:
         names, _ = _current_export_names('const s = "export const fake = 1";\n')
         assert "fake" not in names
 
+    def test_object_destructuring_export(self):
+        # The real-world bug: `export const { a, b } = fn()` exports a and b, and
+        # ts_dump.mjs records them, so the live re-parse must too or importers of
+        # them are falsely flagged as broken existence-breaks.
+        names, open_set = _current_export_names(
+            "export const { useUser, useLogin, useLogout, AuthLoader } = "
+            "configureAuth(authConfig);\n"
+        )
+        assert open_set is False
+        assert {"useUser", "useLogin", "useLogout", "AuthLoader"} <= names
+
+    def test_object_destructuring_rename_binds_the_local(self):
+        # `export const { prop: local } = obj` exports `local`, not `prop`.
+        names, _ = _current_export_names("export const { foo: bar } = obj;\n")
+        assert "bar" in names
+        assert "foo" not in names
+
+    def test_object_destructuring_default_and_rest(self):
+        names, _ = _current_export_names("export const { a = 1, ...rest } = obj;\n")
+        assert {"a", "rest"} <= names
+
+    def test_array_destructuring_export(self):
+        names, _ = _current_export_names("export const [first, , third] = arr;\n")
+        assert {"first", "third"} <= names
+
+    def test_nested_destructuring_is_conservatively_open(self):
+        # Nested patterns are hard to enumerate confidently; mark the set open so
+        # the broken-export check is suppressed rather than risk a false positive.
+        _, open_set = _current_export_names("export const { a: { b } } = obj;\n")
+        assert open_set is True
+
 
 class TestCrossFileImporters:
     def test_reports_importer_count(self, tmp_path):

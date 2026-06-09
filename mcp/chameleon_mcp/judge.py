@@ -352,18 +352,18 @@ def _spawn_reviewer(prompt: str, cwd: Path) -> str | None:
         "--disallowedTools",
         "Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit",
     ]
-    # Spawn into an empty throwaway config dir so the judge inherits none of the
-    # user's settings, plugins, or hooks: a SessionStart hook stack alone can
-    # burn the whole wall-clock budget before the prompt is read. Auth still
-    # resolves from the environment/keychain, which the config dir does not own.
+    # Inherit the user's real config dir so the judge stays AUTHENTICATED. An
+    # empty throwaway CLAUDE_CONFIG_DIR (the prior approach) strips OAuth /
+    # subscription auth -- the spawn returns "Not logged in" and the judge
+    # silently never fires on any non-API-key install. Instead set
+    # CHAMELEON_DISABLE=1 so chameleon's own SessionStart/Stop hooks no-op in the
+    # subprocess: that avoids the primer overhead AND a Stop-hook recursion into
+    # another judge spawn, without touching auth. The wall-clock timeout still
+    # bounds any other inherited hooks. Sweep any config dirs the prior buggy
+    # version leaked.
     _sweep_stale_judge_dirs()
     env = dict(os.environ)
-    cfg_dir: str | None = None
-    try:
-        cfg_dir = tempfile.mkdtemp(prefix="chameleon-judge-")
-        env["CLAUDE_CONFIG_DIR"] = cfg_dir
-    except OSError:
-        cfg_dir = None  # fall back to the inherited config; the timeout still bounds us
+    env["CHAMELEON_DISABLE"] = "1"
     try:
         proc = subprocess.run(
             args,
@@ -376,9 +376,6 @@ def _spawn_reviewer(prompt: str, cwd: Path) -> str | None:
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
-    finally:
-        if cfg_dir is not None:
-            shutil.rmtree(cfg_dir, ignore_errors=True)
     if proc.returncode != 0:
         return None
     return proc.stdout or ""

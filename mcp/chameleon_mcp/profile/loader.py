@@ -442,6 +442,13 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         )
 
     declared_schema = profile.get("schema_version")
+    if declared_schema is not None and (
+        isinstance(declared_schema, bool) or not isinstance(declared_schema, int)
+    ):
+        raise ProfileLoadError(
+            f"profile schema_version {declared_schema!r} is not a valid integer; "
+            f"the profile manifest is corrupt"
+        )
     if isinstance(declared_schema, int) and declared_schema > MAX_SUPPORTED_SCHEMA_VERSION:
         raise ProfileLoadError(
             f"profile schema_version {declared_schema} is newer than this "

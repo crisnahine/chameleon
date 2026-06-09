@@ -384,6 +384,18 @@ Drop a source file from the list when a changed test file in this same diff is i
 
 Emit the result in the verdict block as an advisory summary line (the Coverage-delta section in Step 4). Do not anchor it to a line, do not call it a FIX or BLOCK, and state plainly that it is a heads-up, not a verified missing test.
 
+### Step 3h: Auto-pass routing (always, advisory only)
+
+The findings sections answer "is anything wrong with this change?" This step answers the different question they cannot: "is this change *routine* enough that, with a clean review, a human can skip it?" Call the `get_autopass_verdict` MCP tool once for the whole diff:
+
+```
+get_autopass_verdict(repo=<repo_id>, base_ref=<the PR base branch, or the branch's merge base; default "main">)
+```
+
+It returns `{auto_pass_eligible, risk, reasons, facts, changed_files}`. Report it verbatim as an advisory line (the Auto-pass routing section in Step 4). It is ADVISORY only: it never produces a BLOCK, FIX, or NIT and never changes the verdict. Its job is to mark the safe-to-skip slice and to name why a change is NOT in it (a security-sensitive surface, too large, high cross-file blast radius, a file outside the profiled archetypes, or a grounded block finding).
+
+Read it together with the findings verdict, never instead of it: a change is a credible "no human review needed" candidate only when the findings verdict is APPROVE AND `auto_pass_eligible` is true. A clean findings verdict on a change the router sent to a human (an auth/payment/migration surface, say) is NOT a skip candidate — state that plainly. If the tool is unavailable this session, skip this step and note it in one line, the same as the cross-file passes.
+
 ### Step 4: Output
 
 #### 4a. Hunk gate (apply before formatting any logic finding)
@@ -490,6 +502,22 @@ Source files in test-paired layers with no matching test added in this diff (hea
 
 When every changed source file in a test-paired layer has a matching test in the diff, say so in one line ("All changed source in test-paired layers has a test in this diff.") and omit the list. When the repo has no test archetypes, omit this section.
 
+### Auto-pass routing (advisory)
+
+One line from `get_autopass_verdict` (Step 3h). Never a BLOCK/FIX/NIT; it does not affect the verdict.
+
+```
+Auto-pass: ELIGIBLE — routine change, no security surface, within size/blast-radius bounds. With the APPROVE verdict above, this is a candidate to skip human review.
+```
+
+or, when routed to a human:
+
+```
+Auto-pass: NEEDS HUMAN (risk: high) — touches a security-sensitive surface; change too large (36 files / 694 lines). Not a skip candidate regardless of the findings verdict.
+```
+
+Render `auto_pass_eligible` as ELIGIBLE / NEEDS HUMAN, the `risk`, and the `reasons` list verbatim. If the tool was unavailable, write one line saying the auto-pass routing was skipped. Omit nothing: an ELIGIBLE verdict is only a skip candidate when the findings verdict is APPROVE — state that pairing explicitly.
+
 ### Per-file details
 
 #### `path/to/changed_file`
@@ -520,6 +548,7 @@ The cross-file findings (Step 2.8 co-change, Step 2.9 layering/duplication/exist
 - **APPROVE WITH NITS**: only NIT findings → APPROVE WITH NITS
 - **APPROVE**: zero findings → APPROVE
 - The coverage-delta view (Step 3g) is advisory and carries no severity. It never adds a BLOCK, FIX, or NIT and never changes the verdict; an untested-source heads-up alone still leaves an otherwise clean PR at APPROVE.
+- The auto-pass routing (Step 3h) is advisory and carries no severity. It never adds a finding and never changes the verdict. It is a separate signal: a change is a "no human review needed" candidate only when the verdict is APPROVE AND auto-pass is ELIGIBLE; a NEEDS-HUMAN routing on an otherwise-APPROVE change means a human should still look, and an ELIGIBLE routing never upgrades a NEEDS CHANGES/BLOCK verdict.
 - The cross-file findings (Step 2.8 co-change, Step 2.9 layering/duplication/existence-break) cap at FIX, so they can drive NEEDS CHANGES but never BLOCK. A high-confidence existence break is a real FIX; co-change, layering, and duplication are advisory FIX/NIT that the reviewer can confirm away.
 
 ### Step 5: Record the verdict in the review ledger
