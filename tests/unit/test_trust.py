@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+
+import pytest
 
 from chameleon_mcp.profile.trust import (
     TrustRecord,
@@ -300,3 +303,41 @@ class TestGrantsRoot:
         assert trust_state_for(repo_id).grants_root(ws) is True
         # root grant survives the workspace grant
         assert trust_state_for(repo_id).grants_root(root) is True
+
+
+class TestGrantTrustLockDeadline:
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="same-process lock conflict is not guaranteed under msvcrt; "
+        "a subprocess holder is needed to exercise this on Windows",
+    )
+    def test_held_trust_lock_raises_within_deadline(self, tmp_path: Path, monkeypatch):
+        # A holder that never releases must not wedge grant_trust indefinitely:
+        # past the deadline it raises LockHeldError, which the trust_profile
+        # tool surfaces as an error envelope and refresh-time trust
+        # preservation swallows.
+        import time as _time
+
+        from chameleon_mcp.locks import LockHeldError, portable_flock
+        from chameleon_mcp.profile.trust import repo_data_dir
+
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+        monkeypatch.setenv("CHAMELEON_TRUST_LOCK_TIMEOUT_SECONDS", "0.2")
+        repo_root = tmp_path / "repo"
+        profile_dir = _make_profile_dir(repo_root)
+        repo_id = "test-repo-lock-001"
+
+        lock_path = repo_data_dir(repo_id) / ".trust.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        holder_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            portable_flock(holder_fd, nonblocking=True)
+            start = _time.monotonic()
+            with pytest.raises(LockHeldError):
+                grant_trust(repo_id, profile_dir)
+            assert _time.monotonic() - start < 5.0
+        finally:
+            os.close(holder_fd)
+        # Released holder: the same grant now succeeds.
+        grant_trust(repo_id, profile_dir)
+        assert trust_state_for(repo_id) is not None

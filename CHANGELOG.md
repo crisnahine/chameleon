@@ -4,6 +4,16 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.11.1] - 2026-06-10
+
+Bounded the two remaining unbounded profile locks. Found by the v2.11.0 journey-harness run (38/40 PASS, 2 harness-side SKIPs, zero failures), where two acts stalled 68 and 35 minutes behind a daemon holding a lock mid-extraction; root-caused from the run's own transcripts. Pre-existing since the locks were written -- v2.11.0 code added no unbounded locks; the new canonical_ref act was simply the first to exercise this path under real daemon + MCP-server concurrency.
+
+### Fixed
+
+- **A held `.materialize.lock` could wedge every other reader of the same repo for the holder's whole lifetime.** `materialize_canonical` acquired its cache lock with an unbounded blocking flock, so one process grinding through a slow git-show extraction (typically the daemon, which lives 600 idle seconds across sessions) blocked all concurrent profile reads indefinitely -- observed as a 68-minute session stall. Acquisition is now deadline-bounded (`CHAMELEON_CANONICAL_MATERIALIZE_LOCK_TIMEOUT_SECONDS`, default 30s) and fails open to the working-tree profile through the existing fallback path, with the lock timeout named in the fallback log.
+- **`grant_trust` could block indefinitely on a held `.trust.lock`.** Same unbounded flock shape; now deadline-bounded (`CHAMELEON_TRUST_LOCK_TIMEOUT_SECONDS`, default 10s) and raises the existing `LockHeldError` on timeout, which the `trust_profile` tool surfaces as an error envelope and refresh-time trust preservation already swallows.
+- **Journey harness: cross-act daemon lifetime no longer amplifies lock contention.** The harness now pins `CHAMELEON_DAEMON_IDLE_TIMEOUT=60` so a daemon spawned in one act cannot sit on locks through later acts for its default 600-second idle window.
+
 ## [2.11.0] - 2026-06-10
 
 The zero-review P0 wave: the in-repo hardening phase of the zero-code-reviews architecture. Hard secrets now deny before they reach disk, the auto-pass router gains execution grounding (its first live typecheck caller) plus deterministic test-integrity and diff-content facts, every session writes a signed raise-only attestation of what ran and what did not, the correctness judge routes per turn instead of once per session, user prompts feed a secret-scanned intent signal to the judge, and a single author can no longer override a correct block rule into demotion. Hardened by a 10-charter hostile depth-QA pass (348 checks) whose 8 findings were all fixed and pinned in-session. Validated by the full unit suite (3,271), the bulletproof-react (56/56) and forem (63/63) batteries, cross-cutting (15/15), hook simulation (6/6), and an unregressed hot-path bench; the journey harness runs post-release.

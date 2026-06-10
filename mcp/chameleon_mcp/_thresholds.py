@@ -360,6 +360,16 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # Age at which session-start sweeps reap intent and judge session files,
     # matching the session-marker reaper horizon.
     "INTENT_RETENTION_DAYS": 7,
+    # Deadlines for the two cross-process profile locks. Both were unbounded
+    # blocking flocks: one daemon grinding through a slow git-show extraction
+    # held .materialize.lock while every other reader of the same repo wedged
+    # behind it for the holder's whole lifetime (observed: a 68-minute session
+    # stall). The materialize waiter fails OPEN to the working-tree profile on
+    # timeout; the trust waiter raises LockHeldError, which trust_profile
+    # surfaces as an error envelope and refresh-time trust preservation
+    # swallows.
+    "CANONICAL_MATERIALIZE_LOCK_TIMEOUT_SECONDS": 30.0,
+    "TRUST_LOCK_TIMEOUT_SECONDS": 10.0,
     # Caps for the turn-end session attestation. Files bounds governed +
     # ungoverned entries (and their digest reads) per record; overrides and
     # check events bound the embedded evidence lists, with the remainder

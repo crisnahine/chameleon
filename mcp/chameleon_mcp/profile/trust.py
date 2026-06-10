@@ -16,7 +16,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from chameleon_mcp.locks import portable_flock, portable_funlock
+from chameleon_mcp._thresholds import threshold_float
+from chameleon_mcp.locks import LockHeldError, portable_flock_deadline, portable_funlock
 from chameleon_mcp.safe_open import (
     UnsafeFileError,
     safe_read_profile_artifact_bytes,
@@ -327,7 +328,12 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
     lock_path = trust_path.with_suffix(".lock")
     lock_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        portable_flock(lock_fd, nonblocking=False)
+        # Bounded acquisition: an unbounded wait here can wedge a session
+        # behind whichever process holds the trust lock. Raising is correct
+        # for both callers: the trust_profile tool surfaces an error envelope
+        # and refresh-time trust preservation swallows it and skips.
+        if not portable_flock_deadline(lock_fd, threshold_float("TRUST_LOCK_TIMEOUT_SECONDS")):
+            raise LockHeldError(lock_path, None, None)
 
         existing = trust_state_for(repo_id)
         if existing is None:

@@ -71,6 +71,11 @@ def build_context(plugin_root: Path, results_root: Path) -> JourneyContext:
         "CHAMELEON_HMAC_KEY_PATH": str(hmac_key_path),
         "TMPDIR": str(tmpdir),
         "CHAMELEON_HOOK_ERROR_LOG": str(hook_error_log),
+        # A daemon spawned in one act outlives it (default idle timeout 600s)
+        # and can hold profile locks while later acts contend for them. A short
+        # idle window keeps cross-act daemon lifetime from amplifying any lock
+        # contention into a multi-act stall.
+        "CHAMELEON_DAEMON_IDLE_TIMEOUT": "60",
     }
 
     return JourneyContext(

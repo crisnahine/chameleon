@@ -381,8 +381,8 @@ def _effective_profile_dir(repo_root: Path) -> Path:
                 repo_root,
                 "canonical_unresolvable",
                 f"canonical_ref={cfg.canonical_ref!r} could not be materialized "
-                "(unresolvable ref / missing .chameleon at ref / scan-rejected); "
-                "falling back to working tree",
+                "(unresolvable ref / missing .chameleon at ref / scan-rejected / "
+                "materialize lock held past its deadline); falling back to working tree",
             )
             return working
         return canonical

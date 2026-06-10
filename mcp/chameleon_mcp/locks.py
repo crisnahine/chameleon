@@ -252,17 +252,16 @@ def acquire_advisory_lock(
         os.close(fd)
 
 
-def _acquire_blocking(fd: int, lock_path: Path, blocking_timeout: float | None) -> bool:
-    """Block-and-retry a non-blocking flock until acquired or the timeout lapses.
+def portable_flock_deadline(fd: int, timeout_seconds: float) -> bool:
+    """Exclusive lock on ``fd`` with a deadline: poll LOCK_NB until acquired.
 
-    Returns True once the lock is held, False if blocking_timeout is None (caller
-    wants fail-fast) or the deadline passed. Uses LOCK_NB polling rather than a
-    plain blocking flock so a holder that dies mid-wait cannot wedge the caller
-    indefinitely and so the deadline is honored on every platform.
+    Returns True once the lock is held, False when the deadline lapses. LOCK_NB
+    polling rather than a plain blocking flock keeps the wait bounded on every
+    platform, so a caller can fail open instead of wedging an entire session
+    behind one long-lived holder (a daemon mid-extraction, a stuck sibling).
+    Non-EAGAIN lock errors propagate.
     """
-    if blocking_timeout is None:
-        return False
-    deadline = time.time() + blocking_timeout
+    deadline = time.time() + timeout_seconds
     while True:
         try:
             portable_flock(fd, nonblocking=True)
@@ -273,3 +272,14 @@ def _acquire_blocking(fd: int, lock_path: Path, blocking_timeout: float | None) 
             if time.time() >= deadline:
                 return False
             time.sleep(0.01)
+
+
+def _acquire_blocking(fd: int, lock_path: Path, blocking_timeout: float | None) -> bool:
+    """Block-and-retry a non-blocking flock until acquired or the timeout lapses.
+
+    Returns True once the lock is held, False if blocking_timeout is None (caller
+    wants fail-fast) or the deadline passed.
+    """
+    if blocking_timeout is None:
+        return False
+    return portable_flock_deadline(fd, blocking_timeout)

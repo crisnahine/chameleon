@@ -32,7 +32,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from chameleon_mcp.locks import portable_flock, portable_funlock
+from chameleon_mcp._thresholds import threshold_float
+from chameleon_mcp.locks import portable_flock_deadline, portable_funlock
 
 _REQUIRED_ARTIFACTS: tuple[str, ...] = (
     "profile.json",
@@ -166,7 +167,15 @@ def materialize_canonical(repo_root: Path, repo_id: str, canonical_ref: str) -> 
         return None
 
     try:
-        portable_flock(lock_fd, nonblocking=False)
+        # Bounded acquisition: a concurrent materializer (often the daemon mid
+        # git-show extraction over a slow ref) can hold this lock for its whole
+        # call. An unbounded wait here wedged entire sessions behind one slow
+        # holder; failing open returns the working-tree profile instead, and
+        # the caller logs the fallback reason.
+        if not portable_flock_deadline(
+            lock_fd, threshold_float("CANONICAL_MATERIALIZE_LOCK_TIMEOUT_SECONDS")
+        ):
+            return None
         if _is_cache_valid(cache_dir):
             return cache_dir
 

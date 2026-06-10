@@ -409,3 +409,39 @@ class TestGcStaleCaches:
         removed = cl.gc_stale_caches("gc-repo3", keep_n=4)
         assert removed == 0
         assert junk.exists()
+
+
+class TestMaterializeLockDeadline:
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="same-process lock conflict is not guaranteed under msvcrt; "
+        "a subprocess holder is needed to exercise this on Windows",
+    )
+    def test_held_lock_fails_open_within_deadline(self, tmp_path: Path, monkeypatch):
+        # A holder that never releases (a daemon mid-extraction, a wedged
+        # sibling) must not block the caller indefinitely: past the deadline
+        # materialize fails open to None and the caller uses the working tree.
+        import time as _time
+
+        from chameleon_mcp.locks import portable_flock
+
+        monkeypatch.setenv("CHAMELEON_CANONICAL_MATERIALIZE_LOCK_TIMEOUT_SECONDS", "0.2")
+        repo = tmp_path / "repo"
+        sha = _make_repo(repo, _REQUIRED)
+
+        cache_dir = cl._cache_dir_for_ref("repo-lock-001", sha)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        holder_fd = os.open(str(cache_dir / cl._LOCK_FILENAME), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            portable_flock(holder_fd, nonblocking=True)
+            start = _time.monotonic()
+            assert cl.materialize_canonical(repo, "repo-lock-001", "HEAD") is None
+            assert _time.monotonic() - start < 5.0
+        finally:
+            os.close(holder_fd)
+
+    def test_uncontended_lock_still_materializes(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("CHAMELEON_CANONICAL_MATERIALIZE_LOCK_TIMEOUT_SECONDS", "0.2")
+        repo = tmp_path / "repo"
+        _make_repo(repo, _REQUIRED)
+        assert cl.materialize_canonical(repo, "repo-lock-002", "HEAD") is not None
