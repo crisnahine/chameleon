@@ -92,3 +92,68 @@ def test_type_errors_route_to_human():
     assert verdict["auto_pass_eligible"] is False
     assert verdict["risk"] == "high"
     assert any("type error" in r for r in verdict["reasons"])
+
+
+def test_unknown_blast_radius_routes_to_human_as_soft_reason():
+    verdict = classify_change(_facts(blast_radius_unknown=1))
+
+    assert verdict["auto_pass_eligible"] is False
+    assert verdict["risk"] == "elevated"
+    assert any("unknown" in r for r in verdict["reasons"])
+
+
+def test_removed_guard_lines_route_to_human_as_high_risk():
+    verdict = classify_change(_facts(removed_guard_lines=1))
+
+    assert verdict["auto_pass_eligible"] is False
+    assert verdict["risk"] == "high"
+    assert any("guard" in r for r in verdict["reasons"])
+
+
+def test_added_ignore_directives_route_to_human_as_high_risk():
+    verdict = classify_change(_facts(ignore_directives_added=1))
+
+    assert verdict["auto_pass_eligible"] is False
+    assert verdict["risk"] == "high"
+    assert any("chameleon-ignore" in r for r in verdict["reasons"])
+
+
+def test_test_weakening_alongside_source_change_routes_to_human():
+    verdict = classify_change(
+        _facts(deleted_test_files=1, added_skip_markers=2, source_files_changed=2)
+    )
+
+    assert verdict["auto_pass_eligible"] is False
+    assert verdict["risk"] == "high"
+    assert any("test weakening" in r for r in verdict["reasons"])
+
+
+def test_pure_test_weakening_without_source_change_stays_eligible():
+    # Same weakening facts, but the diff touched only test files: the facts are
+    # surfaced, no routing reason fires (only the combination defeats eligibility).
+    verdict = classify_change(
+        _facts(deleted_test_files=1, added_skip_markers=2, source_files_changed=0)
+    )
+
+    assert verdict["auto_pass_eligible"] is True
+    assert verdict["reasons"] == []
+
+
+def test_assertion_delta_above_floor_is_not_weakening():
+    verdict = classify_change(_facts(assertion_delta=-2, source_files_changed=2))
+
+    assert verdict["auto_pass_eligible"] is True
+
+
+def test_assertion_delta_at_floor_is_weakening():
+    verdict = classify_change(_facts(assertion_delta=-3, source_files_changed=2))
+
+    assert verdict["auto_pass_eligible"] is False
+    assert any("test weakening" in r for r in verdict["reasons"])
+
+
+def test_net_test_deletion_beyond_threshold_is_weakening():
+    verdict = classify_change(_facts(net_test_line_delta=-30, source_files_changed=1))
+
+    assert verdict["auto_pass_eligible"] is False
+    assert any("test weakening" in r for r in verdict["reasons"])

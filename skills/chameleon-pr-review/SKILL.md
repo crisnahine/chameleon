@@ -394,6 +394,8 @@ get_autopass_verdict(repo=<repo_id>, base_ref=<the PR base branch, or the branch
 
 It returns `{auto_pass_eligible, risk, reasons, facts, changed_files}`. Report it verbatim as an advisory line (the Auto-pass routing section in Step 4). It is ADVISORY only: it never produces a BLOCK, FIX, or NIT and never changes the verdict. Its job is to mark the safe-to-skip slice and to name why a change is NOT in it (a security-sensitive surface, too large, high cross-file blast radius, a file outside the profiled archetypes, or a grounded block finding).
 
+The verdict also carries `typecheck` (three-state) and deterministic test-integrity/content facts inside `facts` (`deleted_test_files`, `net_test_line_delta`, added skip markers, assertion delta, removed guard lines, chameleon-ignore directives added, `blast_radius_unknown`, `diff_scan_truncated`) — all engine-computed. Relay them verbatim; never recompute them by eyeballing the diff. This does NOT loosen the Step 3g integrity rule against hand-counting assertions: the assertion delta is now engine-grounded and arrives in the tool result, and the skill still never counts by hand. The three-state typecheck rule: `typecheck: unavailable` (the default — the runner is opt-in via `CHAMELEON_ALLOW_TSC`) is reported as one fact line and is NOT a needs-human reason; `errors` appears in `reasons` and routes needs-human.
+
 Read it together with the findings verdict, never instead of it: a change is a credible "no human review needed" candidate only when the findings verdict is APPROVE AND `auto_pass_eligible` is true. A clean findings verdict on a change the router sent to a human (an auth/payment/migration surface, say) is NOT a skip candidate — state that plainly. If the tool is unavailable this session, skip this step and note it in one line, the same as the cross-file passes.
 
 ### Step 4: Output
@@ -504,19 +506,28 @@ When every changed source file in a test-paired layer has a matching test in the
 
 ### Auto-pass routing (advisory)
 
-One line from `get_autopass_verdict` (Step 3h). Never a BLOCK/FIX/NIT; it does not affect the verdict.
+One line from `get_autopass_verdict` (Step 3h), plus an optional second line for the typecheck state. Never a BLOCK/FIX/NIT; it does not affect the verdict.
 
 ```
 Auto-pass: ELIGIBLE — routine change, no security surface, within size/blast-radius bounds. With the APPROVE verdict above, this is a candidate to skip human review.
+Typecheck: unavailable (opt-in not set)
 ```
 
 or, when routed to a human:
 
 ```
 Auto-pass: NEEDS HUMAN (risk: high) — touches a security-sensitive surface; change too large (36 files / 694 lines). Not a skip candidate regardless of the findings verdict.
+Typecheck: clean
 ```
 
-Render `auto_pass_eligible` as ELIGIBLE / NEEDS HUMAN, the `risk`, and the `reasons` list verbatim. If the tool was unavailable, write one line saying the auto-pass routing was skipped. Omit nothing: an ELIGIBLE verdict is only a skip candidate when the findings verdict is APPROVE — state that pairing explicitly.
+or, on a test-integrity routing:
+
+```
+Auto-pass: NEEDS HUMAN (risk: high) — test weakening (deleted tests / skip markers / assertion drop) alongside live-source changes.
+Typecheck: 2 changed file(s) with type errors
+```
+
+Render `auto_pass_eligible` as ELIGIBLE / NEEDS HUMAN, the `risk`, and the `reasons` list verbatim; render the `typecheck` field as `Typecheck: unavailable (<reason>)` / `Typecheck: clean` / `Typecheck: N changed file(s) with type errors`. If the tool was unavailable, write one line saying the auto-pass routing was skipped. Omit nothing: an ELIGIBLE verdict is only a skip candidate when the findings verdict is APPROVE — state that pairing explicitly.
 
 ### Per-file details
 

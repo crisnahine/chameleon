@@ -5,7 +5,9 @@ credential reached neither the PostToolUse advisory nor the Stop backstop.
 These tests assert the hook path now produces tagged secret violations and that
 only the deterministic high-precision kinds are block-eligible, with the rest
 (entropy/broad-fallback) staying advisory and an inline chameleon-ignore
-reaching the secret rule.
+reaching the secret rule. ``_content_has_hard_secret`` (the corrections-
+exhausted block gate) runs the regex-only hard scanner and honors only
+rule-NAMED directives: the deterministic hard class is blanket-immune.
 """
 
 from __future__ import annotations
@@ -102,6 +104,31 @@ def test_bare_chameleon_ignore_drops_secret(tmp_path):
     ign = ignored_rules(content) or set()
     surviving = [v for v in hard if not ({"", v.get("rule")} & ign)]
     assert surviving == []
+
+
+def test_content_has_hard_secret_true_under_bare_blanket_directive():
+    # The non-suppressible tier reaches the corrections-exhausted branch: a
+    # bare directive no longer hides the hard kind from the block gate.
+    content = f'const k = "{AWS_KEY}"; // chameleon-ignore\n'
+    assert hook_helper._content_has_hard_secret(content, "src/config.ts") is True
+
+
+def test_content_has_hard_secret_false_under_named_directive():
+    content = f'const k = "{AWS_KEY}"; // chameleon-ignore secret-detected-in-content\n'
+    assert hook_helper._content_has_hard_secret(content, "src/config.ts") is False
+
+
+def test_content_has_hard_secret_uses_fast_path(monkeypatch):
+    # Regression pin: after the rewire to scan_hard_secrets, the full
+    # detect-secrets pipeline must not run, and the AKIA fixture is still
+    # caught by the regex-only path.
+    import chameleon_mcp.lint_engine as le
+
+    def boom(*_a, **_k):
+        raise AssertionError("_content_has_hard_secret must not call scan_secrets")
+
+    monkeypatch.setattr(le, "scan_secrets", boom)
+    assert hook_helper._content_has_hard_secret(f'const k = "{AWS_KEY}";\n', "src/config.ts")
 
 
 def test_secret_scan_failure_is_contained(tmp_path, monkeypatch):

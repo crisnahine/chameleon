@@ -124,6 +124,49 @@ def _repo_rel(repo_root: Path | None, file_path: str | None) -> str | None:
         return None
 
 
+def _content_digest_16(content: str) -> str:
+    """16-hex-char sha256 digest of an edit's analyzed content window.
+
+    Pinned definition shared by the verify cooldown marker, the decision log's
+    replay key, and the per-turn judge routing: sha256 over the utf-8
+    re-encoding of the first 100,000 file bytes decoded with
+    ``errors="replace"``, hex-truncated to 16 chars. Every consumer must derive
+    the digest from that same window or the keys stop joining.
+    """
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+def _emit_check_event(
+    repo_id: str | None,
+    session_id: str | None,
+    check: str,
+    status: str,
+    reason: str | None = None,
+    file_rel: str | None = None,
+    detail: dict | None = None,
+) -> None:
+    """One guarded check-event write for the session attestation. Never raises.
+
+    The sidecar records that a turn-end check ran / was skipped / degraded so
+    the Stop attestation can attest it. The write is evidence, never control
+    flow: any failure is swallowed and the hook outcome is unchanged.
+    """
+    try:
+        from chameleon_mcp.exec_log import append_check_event
+
+        append_check_event(
+            repo_id or "",
+            session_id=session_id or "",
+            check=check,
+            status=status,
+            reason=reason,
+            file_rel=file_rel,
+            detail=detail,
+        )
+    except Exception:
+        pass
+
+
 def _record_overrides(
     repo_id: str | None,
     overridden: list[dict],
@@ -191,13 +234,16 @@ def _record_edit_decision(
     blockable_rules: list[str] | None,
     outcome: str,
     session_id: str | None,
+    content_digest: str | None = None,
 ) -> None:
     """Persist one decision_log row capturing what chameleon knew and did here.
 
     Written once per governed edit, after the outcome is resolved, so a
     postmortem can replay 'last time this file was edited, chameleon matched X at
-    quality Q and the gate did Y'. Keyed by a true repo-relative path. Best-effort
-    only: a logging failure must never break the hook.
+    quality Q and the gate did Y'. Keyed by a true repo-relative path plus the
+    content digest of the verified window, so a later replay resolves the row
+    that governed these exact bytes. Best-effort only: a logging failure must
+    never break the hook.
     """
     if not repo_id:
         return
@@ -214,6 +260,7 @@ def _record_edit_decision(
             blockable_rules=blockable_rules,
             outcome=outcome,
             session_id=session_id,
+            content_digest=content_digest,
         )
     except Exception:
         pass
@@ -998,6 +1045,26 @@ def session_start() -> int:
                     reap_stale_session_markers(repo_id)
                 except Exception:
                     pass
+                # Same lifecycle for the judge/intent session files, including
+                # the retired once-per-session .correctness_judged. markers.
+                try:
+                    from chameleon_mcp._thresholds import threshold_int
+                    from chameleon_mcp.intent_capture import reap_stale_prefixed
+
+                    reap_stale_prefixed(
+                        repo_data,
+                        (
+                            ".judge_pending.",
+                            ".judge_inflight.",
+                            ".judge_request.",
+                            ".corr_judged.",
+                            ".intent.",
+                            ".correctness_judged.",
+                        ),
+                        max_age_seconds=threshold_int("INTENT_RETENTION_DAYS") * 86400,
+                    )
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -1332,6 +1399,108 @@ def preflight_and_advise() -> int:
     trust_state = repo_info.get("trust_state")
     archetype_name = archetype_obj.get("archetype")
 
+    # PreToolUse deny, credential class: a deterministic hard-kind secret in
+    # the PROPOSED content (Write content / Edit new_string / NotebookEdit
+    # new_source) is denied before it reaches disk. This runs before the
+    # no-archetype early-return and carries no match-quality/confidence gate —
+    # a hardcoded credential is a credential no matter which archetype (if
+    # any) the file resolves to, and a brand-new unarchetyped config file is
+    # the most common leak target. The enforcement spine still applies: only a
+    # trusted profile may block, the rule must be calibration-active, enforce
+    # denies while shadow records the would-block row and falls through, and
+    # mode=off / CHAMELEON_ENFORCE=0 disable. would_block rows are emitted in
+    # BOTH shadow and enforce so the shadow report and /chameleon-explain see
+    # deny frequency. Fail-open: any error leaves the advisory path untouched.
+    # The active block set computed here is reused by the import deny below so
+    # the enforcement.json read is not doubled per edit.
+    active_rules: set[str] | None = None
+    try:
+        if (
+            os.environ.get("CHAMELEON_ENFORCE") != "0"
+            and trust_state == "trusted"
+            and repo_root_path is not None
+        ):
+            proposed = (
+                tool_input.get("new_string")
+                or tool_input.get("content")
+                or tool_input.get("new_source")
+                or ""
+            )
+            if proposed and isinstance(proposed, str):
+                from chameleon_mcp.enforcement_calibration import active_block_rules
+
+                profile_dir = repo_root_path / ".chameleon"
+                active_rules = active_block_rules(profile_dir)
+                if "secret-detected-in-content" in active_rules:
+                    session_id = payload.get("session_id")
+                    repo_id = repo_info.get("id") or repo_id_hint
+                    hard, named_suppressed = _proposed_hard_secret_violations(
+                        proposed,
+                        file_path,
+                        tool_name=str(payload.get("tool_name") or ""),
+                    )
+                    if named_suppressed:
+                        _record_overrides(
+                            repo_id,
+                            [{"rule": "secret-detected-in-content"}],
+                            archetype=archetype_name,
+                            file_rel=_repo_rel(repo_root_path, file_path),
+                            session_id=session_id,
+                            blanket=False,
+                        )
+                    if hard:
+                        from chameleon_mcp.profile.config import load_config
+                        from chameleon_mcp.violation_class import violation_line
+
+                        mode = load_config(profile_dir).enforcement.mode
+                        if mode in ("shadow", "enforce"):
+                            for v in hard[:3]:
+                                _metric(
+                                    advisory_emitted=(mode == "shadow"),
+                                    repo_id=repo_id,
+                                    archetype=archetype_name,
+                                    would_block=True,
+                                    rule="secret-detected-in-content",
+                                    file_rel=_repo_rel(repo_root_path, file_path),
+                                    line=violation_line(v),
+                                )
+                        if mode == "enforce":
+                            if archetype_name:
+                                # Same re-show rationale as the import deny: the
+                                # normal seen-set seeding below is skipped by this
+                                # early return.
+                                _seed_archetype_seen(repo_id, session_id, archetype_name)
+                            parts = []
+                            for v in hard[:3]:
+                                kind = v.get("secret_kind") or "credential"
+                                line = violation_line(v)
+                                parts.append(f"{kind} at line {line}" if line else kind)
+                            summary = "; ".join(parts)
+                            if len(hard) > 3:
+                                summary += f" (+{len(hard) - 3} more)"
+                            from chameleon_mcp.sanitization import (
+                                sanitize_for_chameleon_context,
+                            )
+
+                            # The summary carries only the secret kind and line —
+                            # scanner hits redact the matched token, so the deny
+                            # reason can never echo the credential back.
+                            _emit_pretool_deny(
+                                sanitize_for_chameleon_context(
+                                    "chameleon: hardcoded credential in the proposed "
+                                    f"content: {summary}. Rotate any real credential "
+                                    "and load it from an environment variable or "
+                                    "secret manager. If this is a known-fake fixture "
+                                    "value, add "
+                                    f"{_ignore_hint(file_path, 'secret-detected-in-content')} "
+                                    "on the offending line; a bare chameleon-ignore "
+                                    "does not cover credentials."
+                                )
+                            )
+                            return 0
+    except Exception:
+        pass
+
     if not archetype_name:
         repo_id = repo_info.get("id") or repo_id_hint
         _metric(advisory_emitted=False, repo_id=repo_id, trust_state=trust_state)
@@ -1416,13 +1585,18 @@ def preflight_and_advise() -> int:
             and trust_state == "trusted"
             and repo_root_path is not None
         ):
-            from chameleon_mcp.enforcement_calibration import active_block_rules
             from chameleon_mcp.lint_engine import detect_language
             from chameleon_mcp.prewrite_lint import banned_imports_in_content
             from chameleon_mcp.profile.config import load_config
 
             profile_dir = repo_root_path / ".chameleon"
-            if "import-preference-violation" in active_block_rules(profile_dir):
+            if active_rules is None:
+                # The secret deny above skipped its read (empty proposed
+                # content, or it raised); resolve the calibrated set here.
+                from chameleon_mcp.enforcement_calibration import active_block_rules
+
+                active_rules = active_block_rules(profile_dir)
+            if "import-preference-violation" in active_rules:
                 proposed = tool_input.get("new_string") or tool_input.get("content") or ""
                 # Gate on a confident archetype match. "ast" is the structural
                 # match on existing content; "exact" is the path-based match a
@@ -2363,11 +2537,15 @@ def _posttool_no_archetype_advisory(
 def _content_has_hard_secret(content: str, file_path: str | None = None) -> bool:
     """True when a deterministic-hard secret kind fires on this content.
 
-    Only the hard kinds count — the same set the Stop backstop blocks — and an
-    inline chameleon-ignore directive for the secret rule is honored, matching
-    the filtering the full lint path applies.
+    Only the hard kinds count — the same set the Stop backstop blocks — so the
+    scan runs the regex-only fast path (hard kinds only ever originate from
+    the deterministic fallback patterns, never from detect-secrets, so
+    skipping the full scanner loses nothing and avoids its per-line cost). A
+    rule-NAMED chameleon-ignore directive is honored, matching the filtering
+    the full lint path applies; the bare blanket form does not cover the hard
+    class.
     """
-    from chameleon_mcp.lint_engine import scan_secrets
+    from chameleon_mcp.lint_engine import scan_hard_secrets
     from chameleon_mcp.violation_class import (
         build_ignore_index,
         is_hard_class,
@@ -2375,7 +2553,7 @@ def _content_has_hard_secret(content: str, file_path: str | None = None) -> bool
         tag_secret_hardness,
     )
 
-    violations = [v.to_dict() for v in scan_secrets(content)]
+    violations = [v.to_dict() for v in scan_hard_secrets(content)]
     if not violations:
         return False
     tag_secret_hardness(violations)
@@ -2386,6 +2564,64 @@ def _content_has_hard_secret(content: str, file_path: str | None = None) -> bool
     if idx is not None:
         hard = [v for v in hard if not is_violation_ignored(v, idx)]
     return bool(hard)
+
+
+def _proposed_hard_secret_violations(
+    proposed: str, file_path: str, *, tool_name: str
+) -> tuple[list[dict], bool]:
+    """Hard-kind secret violations in proposed content, after ignore filtering.
+
+    Returns ``(violations, named_suppressed)``: the surviving deny-candidate
+    rows, plus whether a rule-NAMED directive suppressed at least one
+    otherwise-denying hit (the caller records that bypass as an auditable
+    override). The scan is capped at PREWRITE_SECRET_SCAN_MAX_CHARS — the same
+    100KB ceiling the on-disk lint reads use; content past the cap is left to
+    the PostToolUse/Stop scans of the written file. Only NAMED directives can
+    clear a hit: the deterministic hard class is blanket-immune (see
+    ``violation_class.is_violation_ignored``).
+
+    An Edit/NotebookEdit fragment is not the whole file, so a NAMED file-scope
+    directive in the on-disk target is honored too — a fixture file annotated
+    once must not deny every later fragment edit. The disk read is lazy
+    (deny-candidate path only, never on clean edits) and on-disk line-scoped
+    directives are not consulted: fragment line numbers do not map truthfully
+    onto file lines.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.lint_engine import scan_hard_secrets
+    from chameleon_mcp.violation_class import (
+        IgnoreIndex,
+        build_ignore_index,
+        is_hard_class,
+        is_violation_ignored,
+        tag_secret_hardness,
+    )
+
+    clipped = proposed[: threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS")]
+    violations = [v.to_dict() for v in scan_hard_secrets(clipped)]
+    if not violations:
+        return [], False
+    tag_secret_hardness(violations)
+    hard = [v for v in violations if is_hard_class(v)]
+    if not hard:
+        return [], False
+    named_suppressed = False
+    idx = build_ignore_index(clipped, file_path=file_path)
+    if idx is not None:
+        kept = [v for v in hard if not is_violation_ignored(v, idx)]
+        named_suppressed = len(kept) < len(hard)
+        hard = kept
+    if hard and tool_name in ("Edit", "NotebookEdit"):
+        disk_idx = build_ignore_index(_read_file_for_ignore(file_path), file_path=file_path)
+        if disk_idx is not None and (disk_idx.file_rules or disk_idx.named_anywhere):
+            file_scope = IgnoreIndex(
+                file_rules=disk_idx.file_rules,
+                named_anywhere=disk_idx.named_anywhere,
+            )
+            kept = [v for v in hard if not is_violation_ignored(v, file_scope)]
+            named_suppressed = named_suppressed or len(kept) < len(hard)
+            hard = kept
+    return hard, named_suppressed
 
 
 def _read_file_for_ignore(file_path: str) -> str:
@@ -2531,6 +2767,54 @@ def posttool_verify() -> int:
                 )
             except Exception:
                 indep = []
+            # Absence of coverage is never evidence of cleanliness: the
+            # turn-end attestation classifies every touched file as governed or
+            # ungoverned, so an archetype-less edit must still be recorded as
+            # touched -- an observation row, a decision row keyed by content
+            # digest, and a FileState entry so the Stop universe includes it.
+            # Each step is individually fail-open.
+            if repo_id:
+                try:
+                    from chameleon_mcp.drift.observations import record_edit_observation
+
+                    record_edit_observation(
+                        repo_id,
+                        rel_path=str(file_path),
+                        archetype=None,
+                        confidence_band=None,
+                        matched_canonical=False,
+                    )
+                except Exception:
+                    pass
+                try:
+                    _record_edit_decision(
+                        repo_id,
+                        repo_root,
+                        file_path,
+                        archetype=None,
+                        match_quality="none",
+                        confidence_band=None,
+                        violations_raised=len(indep),
+                        blockable_rules=None,
+                        outcome="advised" if indep else "clean",
+                        session_id=session_id,
+                        content_digest=_content_digest_16(content),
+                    )
+                except Exception:
+                    pass
+                try:
+                    from chameleon_mcp.enforcement import FileState, load_state, save_state
+
+                    _na_dir = _plugin_data_dir() / repo_id
+                    _na_state = load_state(_na_dir, session_id or "")
+                    if file_path not in _na_state.files:
+                        # last_verified_at stamps the entry so the recency-based
+                        # eviction ordering holds; an existing entry (e.g. one
+                        # already armed for the backstop) is never clobbered.
+                        _na_state.files[file_path] = FileState(last_verified_at=_started)
+                        save_state(_na_state, _na_dir, session_id or "")
+                except Exception:
+                    pass
             if indep:
                 # The advisory emits its own PostToolUse context object. Emitting
                 # _emit({}) afterward would write a second JSON object to stdout,
@@ -2654,7 +2938,7 @@ def posttool_verify() -> int:
         # session editing the same bytes inside the TTL.
         file_hash = hashlib.sha256(file_path.encode("utf-8")).hexdigest()[:16]
         marker = repo_data_dir / (f".verify_seen.{_safe_session_marker(session_id)}.{file_hash}")
-        content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+        content_digest = _content_digest_16(content)
 
         cooldown_ttl = _VERIFY_SEEN_TTL_SECONDS
         if enforcement_state is not None and file_state is not None:
@@ -2675,6 +2959,17 @@ def posttool_verify() -> int:
             and _marker_path_is_fresh(marker, cooldown_ttl)
             and _marker_digest_matches(marker, content_digest)
         ):
+            # The skip itself is attestable evidence: record that this content
+            # was deliberately not re-verified (cooldown) so the turn-end
+            # attestation can distinguish "skipped" from "never observed".
+            _emit_check_event(
+                repo_id,
+                session_id,
+                "posttool_verify",
+                "skipped",
+                reason="cooldown",
+                file_rel=_repo_rel(repo_root, file_path),
+            )
             _emit_posttool_context(
                 "<chameleon-context>\n"
                 "[🦎 chameleon: already verified this file — review previous feedback]\n"
@@ -2886,6 +3181,7 @@ def posttool_verify() -> int:
                             blockable_rules=[v.get("rule") for v in blockable_now],
                             outcome="blocked",
                             session_id=session_id,
+                            content_digest=content_digest,
                         )
                         _emit_posttool_block(
                             f"chameleon blocks this edit: {safe_rules}. "
@@ -2929,6 +3225,7 @@ def posttool_verify() -> int:
                 blockable_rules=[v.get("rule") for v in blockable_now],
                 outcome="overridden" if inline_overridden_hard else decision_outcome,
                 session_id=session_id,
+                content_digest=content_digest,
             )
 
             if displayed:
@@ -2996,6 +3293,7 @@ def posttool_verify() -> int:
             blockable_rules=None,
             outcome="clean",
             session_id=session_id,
+            content_digest=content_digest,
         )
 
         if had_prior_violation:
@@ -3065,12 +3363,83 @@ _MACHINE_BLOCK_RE = re.compile(
 )
 
 
-def callout_detector() -> int:
-    """UserPromptSubmit: frustration phrase reminder.
+def _pending_findings_block(repo_root: Path, repo_data: Path, session_id) -> str | None:
+    """Deliver findings a detached judge left pending, or None.
 
-    On detected frustration during a chameleon-active session, surface a
-    one-line hint about /chameleon-disable, /chameleon-pause-15m, and
-    /chameleon-teach as actionable next steps.
+    Consumes ``.judge_pending.<sid>.json`` (written by the async judge after the
+    Stop that spawned it already ended). A finding is dropped as stale when its
+    file's current first-1MB digest no longer matches the digest recorded at
+    review time, or the file is gone -- the review read code that has since
+    changed. The file is unlinked whether or not anything survives, so a stale
+    batch is consumed exactly once. Trust-hash verification is deliberately
+    skipped: this is a first-party plugin-data file this plugin wrote, not
+    repo-controlled content, and UserPromptSubmit must stay cheap.
+    """
+    from chameleon_mcp.optouts import _safe_session_marker
+
+    pending = repo_data / f".judge_pending.{_safe_session_marker(session_id)}.json"
+    if not pending.is_file():
+        return None
+    try:
+        data = json.loads(pending.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    try:
+        pending.unlink()
+    except OSError:
+        pass
+    if not isinstance(data, dict):
+        return None
+
+    recorded = data.get("digests") if isinstance(data.get("digests"), dict) else {}
+    live: list[dict] = []
+    for finding in data.get("findings") or []:
+        if not isinstance(finding, dict):
+            continue
+        rel = finding.get("file")
+        if isinstance(rel, str) and rel in recorded:
+            try:
+                raw = (repo_root / rel).read_bytes()[:1_000_000]
+            except OSError:
+                continue  # file gone since the review: stale
+            if hashlib.sha256(raw).hexdigest()[:16] != recorded.get(rel):
+                continue  # edited since the review: stale
+        live.append(finding)
+    if not live:
+        return None
+
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    n = len(live)
+    lines = [
+        f"[🦎 chameleon: independent review of your previous turn flagged "
+        f"{n} possible correctness issue{'s' if n != 1 else ''}]",
+        "These are advisory; verify each before acting, they may be wrong.",
+    ]
+    for finding in live:
+        rel = finding.get("file")
+        loc = sanitize_for_chameleon_context(str(rel)) if rel else "?"
+        line_no = finding.get("line")
+        if isinstance(line_no, int):
+            loc += f":{line_no}"
+        message = finding.get("message")
+        lines.append(f"- {loc}: {sanitize_for_chameleon_context(str(message or ''))}")
+    return "<chameleon-context>\n" + "\n".join(lines) + "\n</chameleon-context>"
+
+
+def callout_detector() -> int:
+    """UserPromptSubmit: frustration hint, intent capture, findings delivery.
+
+    Three individually fail-open stages share the hook. (1) On detected
+    frustration during a chameleon-active session, surface a one-line hint
+    about /chameleon-disable, /chameleon-pause-15m, and /chameleon-teach.
+    (2) Capture prompt-derived intent (extracted assertion tokens + digests,
+    hard-secret-scanned, never raw prose) for the Stop-path judge routing;
+    CHAMELEON_INTENT_CAPTURE=0 disables it. (3) Deliver findings a detached
+    judge left pending from a previous turn. Stages 2 and 3 operate on the
+    machine-block-stripped human remainder / first-party plugin data only, and
+    a suppressed session stays silent for both. The stage outputs compose into
+    a single additionalContext.
     """
     payload = _read_payload_dict()
     if payload is None:
@@ -3083,37 +3452,80 @@ def callout_detector() -> int:
         # re.search would raise TypeError. Fail open at the Python layer.
         _emit({})
         return 0
-    if not user_prompt:
+
+    # Harness-injected machine blocks are stripped so only the human-typed
+    # remainder is scanned for frustration or captured as intent.
+    scan_prompt = _MACHINE_BLOCK_RE.sub(" ", user_prompt) if user_prompt else ""
+    session_id = payload.get("session_id")
+    context_blocks: list[str] = []
+
+    if scan_prompt.strip():
+        chameleon_specific = any(p.search(scan_prompt) for p in _CHAMELEON_SPECIFIC_PATTERNS)
+        generic = any(p.search(scan_prompt) for p in _GENERIC_FRUSTRATION_PATTERNS)
+        mentions_chameleon = _CHAMELEON_MENTION_RE.search(scan_prompt) is not None
+        if chameleon_specific or (generic and mentions_chameleon):
+            context_blocks.append(
+                "<chameleon-context>\n"
+                "[🦎 chameleon: detected frustration phrase]\n"
+                "If chameleon is the issue, options:\n"
+                "  /chameleon-disable      — suppress for the rest of this session\n"
+                "  /chameleon-pause-15m    — pause for 15 minutes (auto-resume)\n"
+                "  /chameleon-teach <pattern>  — capture the missed pattern as an idiom\n"
+                "If chameleon is unrelated, ignore this note.\n"
+                "</chameleon-context>"
+            )
+
+    # Shared repo resolution for the capture + delivery stages. A suppressed
+    # (disabled/paused) session must stay silent, so both stages bail together.
+    repo_root: Path | None = None
+    repo_data: Path | None = None
+    try:
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.tools import _compute_repo_id
+
+        cwd_raw = payload.get("cwd")
+        repo_root = find_repo_root(
+            Path(cwd_raw) if isinstance(cwd_raw, str) and cwd_raw else Path(".")
+        )
+        if repo_root is not None:
+            repo_id = _compute_repo_id(repo_root)
+            if is_chameleon_suppressed(repo_root, repo_id, session_id) is not None:
+                repo_root = None
+            else:
+                repo_data = _plugin_data_dir() / repo_id
+    except Exception:
+        repo_root = None
+        repo_data = None
+
+    try:
+        if (
+            repo_data is not None
+            and scan_prompt.strip()
+            and os.environ.get("CHAMELEON_INTENT_CAPTURE") != "0"
+        ):
+            from chameleon_mcp import intent_capture
+
+            intent_capture.capture_intent(repo_data, session_id, scan_prompt)
+    except Exception:
+        pass
+
+    try:
+        if repo_root is not None and repo_data is not None:
+            block = _pending_findings_block(repo_root, repo_data, session_id)
+            if block:
+                context_blocks.append(block)
+    except Exception:
+        pass
+
+    if not context_blocks:
         _emit({})
         return 0
-
-    scan_prompt = _MACHINE_BLOCK_RE.sub(" ", user_prompt)
-    if not scan_prompt.strip():
-        _emit({})
-        return 0
-
-    chameleon_specific = any(p.search(scan_prompt) for p in _CHAMELEON_SPECIFIC_PATTERNS)
-    generic = any(p.search(scan_prompt) for p in _GENERIC_FRUSTRATION_PATTERNS)
-    mentions_chameleon = _CHAMELEON_MENTION_RE.search(scan_prompt) is not None
-    if not (chameleon_specific or (generic and mentions_chameleon)):
-        _emit({})
-        return 0
-
-    hint = (
-        "<chameleon-context>\n"
-        "[🦎 chameleon: detected frustration phrase]\n"
-        "If chameleon is the issue, options:\n"
-        "  /chameleon-disable      — suppress for the rest of this session\n"
-        "  /chameleon-pause-15m    — pause for 15 minutes (auto-resume)\n"
-        "  /chameleon-teach <pattern>  — capture the missed pattern as an idiom\n"
-        "If chameleon is unrelated, ignore this note.\n"
-        "</chameleon-context>"
-    )
     _emit(
         {
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
-                "additionalContext": hint,
+                "additionalContext": "\n\n".join(context_blocks),
             }
         }
     )
@@ -3266,7 +3678,16 @@ def _stop_file_still_blockable(
 _IDIOM_REVIEWED_FILENAME = ".idiom_reviewed.{session}"
 _IDIOM_CONTEXT_CHAR_CAP = 1500
 
-_CORRECTNESS_JUDGED_FILENAME = ".correctness_judged.{session}"
+# Judged-digest marker namespace for the correctness gate, kept disjoint from
+# the duplication gate's default ".dup_judged." namespace.
+_CORR_JUDGED_PREFIX = ".corr_judged."
+
+# Sink kinds from judge.run_correctness_judge that mean the reviewer produced
+# no usable verdict; the touched files stay unmarked so the next Stop can
+# retry under the session spawn cap.
+_JUDGE_FAILURE_KINDS = frozenset(
+    {"spawn_timeout", "spawn_exec_error", "spawn_nonzero_exit", "pipeline_error"}
+)
 
 
 def _is_source_for_test_signal(rel_path: str, *, language: str) -> bool:
@@ -3393,6 +3814,7 @@ def _idiom_review_gate(
             session=_safe_session_marker(session_id)
         )
         if marker.exists():
+            _emit_check_event(repo_id, session_id, "idiom_review", "skipped", "marker_exists")
             return None
 
         # Respect the shared stop cap so an idiom block cannot exceed the budget.
@@ -3488,6 +3910,7 @@ def _idiom_review_gate(
         except Exception:
             pass
 
+        _emit_check_event(repo_id, session_id, "idiom_review", "ran")
         return {"decision": "block", "reason": "\n".join(parts)}
     except Exception:
         return None
@@ -3526,7 +3949,7 @@ def _archetype_resolver(repo_root: Path, daemon_state: dict):
     return resolve
 
 
-def _correctness_judge_gate(
+def _correctness_judge_route(
     *,
     repo_root: Path,
     repo_id: str,
@@ -3535,27 +3958,46 @@ def _correctness_judge_gate(
     cfg,
     repo_data: Path,
     daemon_state: dict | None,
-) -> dict | None:
-    """Independent turn-end correctness review of the turn's edits (advisory).
+    is_subagent: bool,
+) -> dict:
+    """Decide whether this Stop spawns the correctness reviewer, and on what.
 
-    Reached only on the no-block stop path, after the idiom gate declined to
-    block. On by default (``enforcement.correctness_judge``, set false to opt
-    out) and mode-gated (shadow/enforce); runs AT MOST ONCE per session like
-    the idiom gate, so a per-turn spawn cost is never incurred. It spawns a separate reviewer model
-    that reads the turn's reconstructed diffs for correctness bugs.
+    Per-turn, digest-keyed routing: only files fresh at their current content
+    digest count, and fresh turns are routed by cheap risk facts -- security
+    surface, unarchetyped files, importer blast radius (unknown ESCALATES,
+    never reads as zero) -- under the per-session spawn budget. Captured intent
+    tokens force a spawn regardless of tier so a request's checkable specifics
+    always get a second read. SubagentStop never routes (a multi-subagent turn
+    would multiply spawns; the parent turn's Stop re-sees the edits). Every
+    skip is recorded as a check event so the attestation sees the un-run check
+    instead of inferring cleanliness. Fails open to no-spawn.
 
-    Returns a hook output dict carrying the findings as ``additionalContext``, or
-    None when the gate does not fire / found nothing (the caller then allows the
-    stop). It NEVER returns a block: the judge is stochastic and advisory, so its
-    findings are surfaced as context the model may act on, never a turn-trap. The
-    findings are shadow-logged for later human-labeled precision sampling. Fails
-    open: any error returns None.
+    Returns ``{"spawn", "fresh", "digests", "turn_key", "intent_tokens",
+    "skip_reason", "reason"}`` where ``fresh`` is absolute paths, ``digests``
+    maps repo-relative path -> 16-hex digest, and ``reason`` names the spawn
+    trigger for the event log.
     """
+    no_spawn: dict = {
+        "spawn": False,
+        "fresh": [],
+        "digests": {},
+        "turn_key": None,
+        "intent_tokens": [],
+        "skip_reason": None,
+        "reason": None,
+    }
     try:
-        if cfg.mode == "off" or not cfg.correctness_judge:
-            return None
+        if cfg.mode == "off":
+            _emit_check_event(repo_id, session_id, "correctness_judge", "skipped", "mode_off")
+            return {**no_spawn, "skip_reason": "mode_off"}
+        if not cfg.correctness_judge:
+            _emit_check_event(
+                repo_id, session_id, "correctness_judge", "skipped", "feature_disabled"
+            )
+            return {**no_spawn, "skip_reason": "feature_disabled"}
+        if is_subagent:
+            return {**no_spawn, "skip_reason": "subagent"}
 
-        from chameleon_mcp.optouts import _safe_session_marker
         from chameleon_mcp.violation_class import ignored_rules
 
         # An edited file that still exists, not opted out via an inline
@@ -3573,32 +4015,302 @@ def _correctness_judge_gate(
                 continue
             edited.append(path)
         if not edited:
-            return None
+            return {**no_spawn, "skip_reason": "no_edits"}
 
-        # Once-per-session marker. Written before the (potentially slow) spawn so
-        # a second turn never re-spawns even if this one is interrupted.
-        marker = repo_data / _CORRECTNESS_JUDGED_FILENAME.format(
-            session=_safe_session_marker(session_id)
+        from chameleon_mcp import duplication_review as dr
+
+        # Freshness: digest over the same first-1MB byte window the duplication
+        # gate keys its markers on, so the two judged-namespaces stay congruent.
+        fresh: list[str] = []
+        digests: dict[str, str] = {}
+        for path in edited:
+            try:
+                raw = Path(path).read_bytes()[:1_000_000]
+            except OSError:
+                continue
+            digest = hashlib.sha256(raw).hexdigest()[:16]
+            rel = dr._repo_rel(repo_root, path)
+            digests[rel] = digest
+            if not dr.already_judged(
+                repo_data, session_id or "", rel, digest, prefix=_CORR_JUDGED_PREFIX
+            ):
+                fresh.append(path)
+        if not fresh:
+            _emit_check_event(repo_id, session_id, "correctness_judge", "skipped_digest_dup")
+            return {**no_spawn, "digests": digests, "skip_reason": "digest_dup"}
+
+        fresh_rels = [dr._repo_rel(repo_root, p) for p in fresh]
+        pair_blob = "\x00".join(f"{rel}\x00{digests[rel]}" for rel in sorted(fresh_rels))
+        turn_key = hashlib.sha256(pair_blob.encode("utf-8")).hexdigest()[:32]
+
+        from chameleon_mcp._thresholds import threshold_int
+
+        if state.correctness_spawns >= threshold_int("CORRECTNESS_JUDGE_MAX_SPAWNS_PER_SESSION"):
+            _emit_check_event(
+                repo_id,
+                session_id,
+                "correctness_judge",
+                "skipped_session_cap",
+                detail={"turn_key": turn_key},
+            )
+            return {
+                **no_spawn,
+                "digests": digests,
+                "turn_key": turn_key,
+                "skip_reason": "session_cap",
+            }
+
+        try:
+            from chameleon_mcp import judge_async
+
+            if judge_async.is_inflight_fresh(repo_data, session_id or ""):
+                _emit_check_event(
+                    repo_id,
+                    session_id,
+                    "correctness_judge",
+                    "inflight_at_stop",
+                    detail={"turn_key": turn_key},
+                )
+                return {
+                    **no_spawn,
+                    "digests": digests,
+                    "turn_key": turn_key,
+                    "skip_reason": "inflight",
+                }
+        except Exception:
+            pass
+
+        # Intent trigger: checkable tokens or a security-lens hit captured since
+        # the last spawn force the review regardless of risk tier; the tokens
+        # also ride into the prompt.
+        intent_tokens: list[str] = []
+        security_intent = False
+        try:
+            from chameleon_mcp import intent_capture
+            from chameleon_mcp.exec_log import read_check_events
+
+            entries = intent_capture.read_intent(repo_data, session_id)
+            since_ts: float | None = None
+            try:
+                ev = read_check_events(
+                    repo_id, session_id or "", limit=threshold_int("ATTESTATION_MAX_CHECK_EVENTS")
+                )
+                spawn_ts = [
+                    e.get("ts")
+                    for e in ev.get("events") or []
+                    if e.get("check") == "correctness_judge"
+                    and e.get("status") == "spawned"
+                    and isinstance(e.get("ts"), (int, float))
+                ]
+                since_ts = max(spawn_ts) if spawn_ts else None
+            except Exception:
+                since_ts = None
+            intent_tokens = intent_capture.checkable_tokens(entries, since_ts)
+            security_intent = intent_capture.security_intent_seen(entries, since_ts)
+        except Exception:
+            intent_tokens = []
+            security_intent = False
+
+        base = {
+            "spawn": True,
+            "fresh": fresh,
+            "digests": digests,
+            "turn_key": turn_key,
+            "intent_tokens": intent_tokens,
+            "skip_reason": None,
+        }
+        if intent_tokens or security_intent:
+            return {**base, "reason": "intent_forced"}
+
+        # Risk facts over the fresh set, every leg fail-open toward spawning.
+        try:
+            from chameleon_mcp import autopass
+
+            security = bool(autopass.security_surface_categories(fresh_rels))
+        except Exception:
+            security = True
+
+        resolver = _archetype_resolver(repo_root, daemon_state or {"available": True})
+        unarchetyped = 0
+        for path in fresh:
+            try:
+                if resolver(path) is None:
+                    unarchetyped += 1
+            except Exception:
+                unarchetyped += 1
+
+        # Blast radius from the reverse index. UNKNOWN escalates: a missing
+        # index or a failed read must route toward review, never read as zero.
+        blast = 0
+        blast_unknown = False
+        try:
+            from chameleon_mcp.tools import query_symbol_importers
+
+            for path in fresh:
+                envelope = query_symbol_importers(str(repo_root), path)
+                data = (envelope.get("data") or {}) if isinstance(envelope, dict) else {}
+                if not data.get("found"):
+                    blast_unknown = True
+                    break
+                for imp in data.get("importers") or []:
+                    try:
+                        blast += int(imp.get("count") or 0)
+                    except (TypeError, ValueError):
+                        blast_unknown = True
+        except Exception:
+            blast_unknown = True
+
+        if security or blast_unknown or blast > threshold_int("AUTOPASS_MAX_BLAST_RADIUS"):
+            return {**base, "reason": "risk_high"}
+        if unarchetyped > 0 or len(fresh) > threshold_int("AUTOPASS_MAX_FILES"):
+            return {**base, "reason": "risk_elevated"}
+        # Low risk: the first routed turn of a session still spawns, preserving
+        # at-least-once coverage; later low-risk turns skip with a recorded
+        # event so the attestation sees the un-run check.
+        if state.correctness_spawns == 0:
+            return {**base, "reason": "first_low_risk"}
+        _emit_check_event(
+            repo_id,
+            session_id,
+            "correctness_judge",
+            "routed_skip_low_risk",
+            detail={"turn_key": turn_key},
         )
-        if marker.exists():
+        return {
+            **no_spawn,
+            "digests": digests,
+            "turn_key": turn_key,
+            "intent_tokens": intent_tokens,
+            "skip_reason": "routed_skip_low_risk",
+        }
+    except Exception:
+        return no_spawn
+
+
+def _correctness_judge_gate(
+    *,
+    repo_root: Path,
+    repo_id: str,
+    session_id: str | None,
+    state,
+    cfg,
+    repo_data: Path,
+    daemon_state: dict | None,
+    route: dict,
+) -> dict | None:
+    """Independent turn-end correctness review of the turn's edits (advisory).
+
+    Reached only on the no-block stop path, after the idiom gate declined to
+    block. The spawn decision was made by ``_correctness_judge_route`` (so the
+    duplication gate can defer before this runs); this executes it: the
+    per-session spawn counter is persisted BEFORE the reviewer runs so an
+    interrupted Stop still consumes budget, each fresh file is marked judged at
+    its captured digest only on a completed spawn (a failed spawn stays fresh
+    for retry under the cap), and with CHAMELEON_JUDGE_ASYNC=1 the spawn
+    detaches and the findings arrive on the next user prompt instead.
+
+    Returns a hook output dict carrying the findings as ``additionalContext``, or
+    None when the gate does not fire / found nothing (the caller then allows the
+    stop). It NEVER returns a block: the judge is stochastic and advisory, so its
+    findings are surfaced as context the model may act on, never a turn-trap. The
+    findings are shadow-logged for later human-labeled precision sampling. Fails
+    open: any error returns None.
+    """
+    try:
+        if not route.get("spawn"):
             return None
-        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+        from chameleon_mcp import duplication_review as dr
+        from chameleon_mcp import judge
+
+        turn_key = route.get("turn_key")
+        digests: dict = route.get("digests") or {}
+        fresh: list[str] = route.get("fresh") or []
+        intent_tokens: list[str] = route.get("intent_tokens") or []
+
+        # Spend a spawn: count it and persist BEFORE the (potentially slow)
+        # reviewer call so an interrupted Stop still consumes the budget and
+        # the session cap holds.
+        state.correctness_spawns += 1
         try:
-            os.chmod(marker.parent, 0o700)
-        except OSError:
-            pass
-        marker.touch(exist_ok=True)
-        try:
-            os.chmod(marker, 0o600)
-        except OSError:
+            from chameleon_mcp.enforcement import save_state
+
+            save_state(state, repo_data, session_id or "")
+        except Exception:
             pass
 
-        from chameleon_mcp import judge
+        _emit_check_event(
+            repo_id,
+            session_id,
+            "correctness_judge",
+            "spawned",
+            route.get("reason") or "started",
+            detail={"turn_key": turn_key},
+        )
+
+        if os.environ.get("CHAMELEON_JUDGE_ASYNC") == "1":
+            try:
+                from chameleon_mcp import judge_async
+
+                launched = judge_async.launch_async_judge(
+                    repo_root=repo_root,
+                    repo_data=repo_data,
+                    repo_id=repo_id,
+                    session_id=session_id or "",
+                    fresh_abs_paths=fresh,
+                    digests=digests,
+                    turn_key=turn_key,
+                    intent_tokens=intent_tokens,
+                )
+            except Exception:
+                launched = False
+            if launched:
+                # Findings arrive on the next UserPromptSubmit; the detached
+                # child marks the judged digests and records its own events.
+                return None
+
+        failures: list[str] = []
+
+        def _sink(kind: str, detail: str | None = None) -> None:
+            if kind in _JUDGE_FAILURE_KINDS:
+                failures.append(kind)
+            _emit_check_event(
+                repo_id,
+                session_id,
+                "correctness_judge",
+                "degraded_spawn",
+                kind,
+                detail={"turn_key": turn_key, "detail": detail},
+            )
 
         resolver = _archetype_resolver(repo_root, daemon_state or {"available": True})
         findings = judge.run_correctness_judge(
-            repo_root, repo_root / ".chameleon", edited, resolver
+            repo_root,
+            repo_root / ".chameleon",
+            fresh,
+            resolver,
+            intent_tokens=intent_tokens,
+            event_sink=_sink,
         )
+
+        if not failures:
+            _emit_check_event(
+                repo_id,
+                session_id,
+                "correctness_judge",
+                "spawned",
+                "completed",
+                detail={"turn_key": turn_key, "findings": len(findings)},
+            )
+            for path in fresh:
+                rel = dr._repo_rel(repo_root, path)
+                dr.mark_judged(
+                    repo_data,
+                    session_id or "",
+                    rel,
+                    digests.get(rel, ""),
+                    prefix=_CORR_JUDGED_PREFIX,
+                )
 
         # Shadow-log every finding so a lead can sample judge precision over time.
         # The judge never blocks, so would_block is always False; the row records
@@ -4032,6 +4744,7 @@ def _crossfile_existence_advisory_lines(
 def _duplication_advisory_lines(
     *,
     repo_root: Path,
+    repo_id: str | None = None,
     session_id: str | None,
     state,
     cfg,
@@ -4055,17 +4768,27 @@ def _duplication_advisory_lines(
     error.
     """
     try:
-        if not cfg.duplication_review or cfg.mode == "off":
+        if not cfg.duplication_review:
+            _emit_check_event(
+                repo_id, session_id, "duplication_review", "skipped", "feature_disabled"
+            )
+            return []
+        if cfg.mode == "off":
+            _emit_check_event(repo_id, session_id, "duplication_review", "skipped", "mode_off")
             return []
         # The correctness judge is the other heavy turn-end spawn; when it is
         # firing this Stop, defer the duplication spawn so a single turn never
         # pays for two reviewer model calls.
         if corr_spawning:
+            _emit_check_event(
+                repo_id, session_id, "duplication_review", "skipped", "corr_judge_active"
+            )
             return []
 
         from chameleon_mcp._thresholds import threshold_int
 
         if state.duplication_spawns >= threshold_int("DUPLICATION_REVIEW_MAX_SPAWNS_PER_SESSION"):
+            _emit_check_event(repo_id, session_id, "duplication_review", "skipped", "cap_reached")
             return []
 
         from chameleon_mcp import duplication_review as dr
@@ -4096,6 +4819,9 @@ def _duplication_advisory_lines(
             if not dr.already_judged(repo_data, session_id or "", rel, d):
                 fresh.append(p)
         if not fresh:
+            _emit_check_event(
+                repo_id, session_id, "duplication_review", "skipped", "digest_already_judged"
+            )
             return []
 
         findings = dr.gather_body_match_findings(repo_root, fresh, index, lang)
@@ -4112,6 +4838,7 @@ def _duplication_advisory_lines(
         except Exception:
             pass
 
+        _emit_check_event(repo_id, session_id, "duplication_review", "ran")
         confirmed = dr.judge_body_matches(repo_root, findings)
         # Mark every fresh file judged at its current digest so the next turn over
         # the same content is suppressed regardless of whether it was confirmed.
@@ -4124,77 +4851,46 @@ def _duplication_advisory_lines(
         return []
 
 
-def stop_backstop() -> int:
-    """Stop / SubagentStop: refuse to end the turn while a touched file holds an
-    unresolved hard-class violation, then run a once-per-session reflexive
-    idiom/principle review of the turn's edits. Fails open; bounded by a
-    per-session cap and the stop_hook_active flag so it can never trap the user
-    in a loop.
+def _stop_gates(
+    *,
+    payload: dict,
+    repo_root: Path,
+    repo_id: str,
+    session_id,
+    is_subagent: bool,
+    repo_data: Path,
+    daemon_state: dict | None = None,
+) -> dict:
+    """Run the turn-end gates and return the hook-output dict (never emits).
+
+    Mechanical extraction of stop_backstop's gate pipeline so the caller can
+    write the session attestation at a single site after every gate finished
+    and saved state. Ordering and blocking semantics are unchanged from when
+    this body lived inline. CHAMELEON_ENFORCE=0 is checked here rather than
+    before repo resolution so an enforce-off session still reaches the caller's
+    attestation write with its env state recorded; it returns {} immediately,
+    exactly as the old early return did. Fails open to {}.
     """
-    payload = _read_payload_dict()
-    if payload is None:
-        _emit({})
-        return 0
-    # Never re-block while already continuing due to a prior stop block.
-    if payload.get("stop_hook_active") is True:
-        _emit({})
-        return 0
-    if os.environ.get("CHAMELEON_ENFORCE") == "0":
-        _emit({})
-        return 0
-
-    session_id = payload.get("session_id")
-    # The Stop and SubagentStop events share this handler (hooks.json routes both
-    # to stop-backstop). The input payload's hook_event_name distinguishes them;
-    # the turn-end duplication spawn runs only on a top-level Stop, never per
-    # subagent, so a multi-subagent turn pays for it at most once.
-    is_subagent = payload.get("hook_event_name") == "SubagentStop"
-    cwd_raw = payload.get("cwd")
-    try:
-        cwd = Path(cwd_raw).expanduser() if isinstance(cwd_raw, str) and cwd_raw else Path.cwd()
-    except (OSError, ValueError):
-        cwd = Path.cwd()
-
     try:
         from chameleon_mcp.enforcement import load_state, save_state
-        from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.config import load_config
-        from chameleon_mcp.profile.loader import find_repo_root
-        from chameleon_mcp.profile.trust import hash_profile, trust_state_for
-        from chameleon_mcp.tools import _compute_repo_id
 
-        repo_root = find_repo_root(cwd)
-        if repo_root is None:
-            _emit({})
-            return 0
-        repo_id = _compute_repo_id(repo_root)
-        if is_chameleon_suppressed(repo_root, repo_id, session_id) is not None:
-            _emit({})
-            return 0
-        rec = trust_state_for(repo_id)
-        if rec is None or not rec.grants_root(repo_root):
-            _emit({})
-            return 0
-        # A "stale" grant (the profile hash drifted from the one the user trusted)
-        # only verifies; it never blocks the turn, mirroring the PreToolUse and
-        # PostToolUse gates.
-        if rec.hash_for_root(repo_root) != hash_profile(repo_root / ".chameleon"):
-            _emit({})
-            return 0
+        if os.environ.get("CHAMELEON_ENFORCE") == "0":
+            _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "enforce_env_off")
+            return {}
 
         cfg = load_config(repo_root / ".chameleon").enforcement
         if not cfg.stop_backstop:
-            _emit({})
-            return 0
+            _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "feature_disabled")
+            return {}
 
-        repo_data = _plugin_data_dir() / repo_id
         state = load_state(repo_data, session_id or "")
 
         # Cap reached: stay advisory and never block again this session, so a
         # violation the model can't resolve cannot trap the turn in a loop.
         if state.stop_hook_blocks >= cfg.stop_block_cap:
-            _emit({})
-            return 0
+            _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "cap_reached")
+            return {}
 
         # A candidate (L2 with the cached flag set) is only blocked after a LIVE
         # re-lint confirms an enforceable hard violation still stands; the cached
@@ -4228,8 +4924,11 @@ def stop_backstop() -> int:
 
         # Shared liveness flag for the per-file daemon fallback: once a daemon
         # call comes back empty, every later file skips the daemon and resolves
-        # the archetype in-process, so a hung daemon cannot stack timeouts.
-        daemon_state = {"available": True}
+        # the archetype in-process, so a hung daemon cannot stack timeouts. The
+        # caller shares the same flag with the attestation writer so the whole
+        # Stop pays for at most one failed daemon probe.
+        if daemon_state is None:
+            daemon_state = {"available": True}
 
         unresolved: list[str] = []
         # path -> enforceable hard rules still standing, so the shadow would_block
@@ -4275,6 +4974,10 @@ def stop_backstop() -> int:
             except Exception:
                 pass
 
+        # The candidate re-lint completed (possibly over zero candidates):
+        # record it so the attestation can attest the relint ran this Stop.
+        _emit_check_event(repo_id, session_id, "stop_relint", "ran")
+
         if not unresolved:
             # No lint block this stop: run the reflexive idiom/principle review
             # gate. It blocks once per session (enforce) to force a self-review of
@@ -4288,23 +4991,27 @@ def stop_backstop() -> int:
                 repo_data=repo_data,
             )
             if gate is not None:
-                _emit(gate)
-                return 0
+                return gate
             # Whether the correctness judge will spawn its reviewer THIS Stop,
-            # computed before the gate runs because the gate writes the
-            # once-per-session marker as a side effect. The duplication gate reads
-            # this to defer when the judge is already paying for a spawn, so a
-            # single turn never fires two reviewer models.
-            from chameleon_mcp.optouts import _safe_session_marker
-
-            corr_marker = repo_data / _CORRECTNESS_JUDGED_FILENAME.format(
-                session=_safe_session_marker(session_id)
+            # routed per turn (digest freshness + risk facts + session budget)
+            # before the gate runs. The duplication gate reads this to defer
+            # when the judge is already paying for a spawn, so a single turn
+            # never fires two reviewer models.
+            route = _correctness_judge_route(
+                repo_root=repo_root,
+                repo_id=repo_id,
+                session_id=session_id,
+                state=state,
+                cfg=cfg,
+                repo_data=repo_data,
+                daemon_state=daemon_state,
+                is_subagent=is_subagent,
             )
-            corr_spawning = cfg.correctness_judge and cfg.mode != "off" and not corr_marker.exists()
+            corr_spawning = bool(route.get("spawn"))
 
             # Idiom gate did not block: the turn is free to end. Run the
-            # independent correctness judge (on by default, advisory only, once
-            # per session). It never blocks; its findings ride out as
+            # independent correctness judge (on by default, advisory only,
+            # per-turn routed). It never blocks; its findings ride out as
             # additionalContext the model reads after the turn.
             judged = _correctness_judge_gate(
                 repo_root=repo_root,
@@ -4314,6 +5021,7 @@ def stop_backstop() -> int:
                 cfg=cfg,
                 repo_data=repo_data,
                 daemon_state=daemon_state,
+                route=route,
             )
 
             # Stale-test advisory: a turn that edited a paired source but left its
@@ -4358,6 +5066,7 @@ def stop_backstop() -> int:
             if not is_subagent:
                 dup_lines = _duplication_advisory_lines(
                     repo_root=repo_root,
+                    repo_id=repo_id,
                     session_id=session_id,
                     state=state,
                     cfg=cfg,
@@ -4388,17 +5097,13 @@ def stop_backstop() -> int:
                 )
 
             if context_blocks:
-                _emit(
-                    {
-                        "hookSpecificOutput": {
-                            "hookEventName": "Stop",
-                            "additionalContext": "\n\n".join(context_blocks),
-                        }
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "Stop",
+                        "additionalContext": "\n\n".join(context_blocks),
                     }
-                )
-            else:
-                _emit({})
-            return 0
+                }
+            return {}
 
         # Shadow mode records the would-have-blocked signal and allows the stop.
         if cfg.mode != "enforce":
@@ -4435,8 +5140,7 @@ def stop_backstop() -> int:
                     )
             except Exception:
                 pass
-            _emit({})
-            return 0
+            return {}
 
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
@@ -4446,16 +5150,400 @@ def stop_backstop() -> int:
             save_state(state, repo_data, session_id or "")
         except Exception:
             pass
-        _emit(
-            {
-                "decision": "block",
-                "reason": (
-                    f"chameleon: unresolved convention violations remain in {names}. "
-                    f"Fix them before ending, or add {_ignore_hint(unresolved[:5])} "
-                    f"on the offending line."
-                ),
-            }
+        return {
+            "decision": "block",
+            "reason": (
+                f"chameleon: unresolved convention violations remain in {names}. "
+                f"Fix them before ending, or add {_ignore_hint(unresolved[:5])} "
+                f"on the offending line."
+            ),
+        }
+    except Exception:
+        return {}
+
+
+def _build_session_attestation(
+    *,
+    repo_root: Path,
+    repo_id: str,
+    session_id,
+    repo_data: Path,
+    suppressed_reason: str | None,
+    daemon_state: dict | None = None,
+) -> dict:
+    """Assemble the Stop attestation payload from hook-observed evidence.
+
+    The attestation is self-signed and raise-only: nothing recorded in it may
+    ever lower scrutiny anywhere downstream; a consumer may use it only to
+    RAISE gate depth and to make post-incident replay honest.
+
+    Universe caveats, stated plainly: the touched-file list is what the hooks
+    observed (EnforcementState), so bash-written files that linted clean and
+    sessions run with the plugin disabled never enter it -- the record can
+    under-count but never over-claim. An expired pause window is not observable
+    after expiry (the marker self-deletes), so suppression captures only the
+    live state at this Stop. Files past the ATTESTATION_MAX_FILES cap are not
+    classified (classification costs a read plus an archetype resolve each);
+    they count toward ungoverned_truncated because unverified coverage must
+    raise scrutiny, never lower it.
+
+    Every section degrades independently: a failed read leaves that section at
+    its neutral value rather than aborting the payload.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+
+    verify_off = os.environ.get("CHAMELEON_VERIFY") == "0"
+    enforce_off = os.environ.get("CHAMELEON_ENFORCE") == "0"
+
+    payload: dict = {
+        "session_id": session_id,
+        "engine_version": None,
+        "profile_sha256": None,
+        "generation": None,
+        "schema_version": None,
+        "trust_state": None,
+        "enforcement_mode": None,
+        "env": {"verify_off": verify_off, "enforce_off": enforce_off},
+    }
+    try:
+        from chameleon_mcp import __version__ as engine_version
+
+        payload["engine_version"] = engine_version
+    except Exception:
+        pass
+    try:
+        from chameleon_mcp.tools import _peek_profile_provenance
+
+        prov = _peek_profile_provenance(repo_root, repo_id)
+        payload["generation"] = prov.get("generation")
+        payload["schema_version"] = prov.get("schema_version")
+        payload["trust_state"] = prov.get("trust_state")
+    except Exception:
+        pass
+    try:
+        from chameleon_mcp.profile.trust import hash_profile
+
+        payload["profile_sha256"] = hash_profile(repo_root / ".chameleon") or None
+    except Exception:
+        pass
+    try:
+        from chameleon_mcp.profile.config import load_config
+
+        payload["enforcement_mode"] = load_config(repo_root / ".chameleon").enforcement.mode
+    except Exception:
+        pass
+
+    suppression: dict = {
+        "reason": suppressed_reason,
+        "session_disabled_at": None,
+        "pause_until": None,
+    }
+    try:
+        from chameleon_mcp.optouts import _safe_session_marker
+
+        marker = repo_data / f".session_disabled.{_safe_session_marker(session_id)}"
+        if marker.is_file():
+            for line in marker.read_text(encoding="utf-8").splitlines():
+                if line.startswith("disabled-at="):
+                    suppression["session_disabled_at"] = line[len("disabled-at=") :].strip()
+                    break
+    except Exception:
+        pass
+    try:
+        pause_path = repo_data / ".pause_until"
+        if pause_path.is_file():
+            suppression["pause_until"] = pause_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    payload["suppression"] = suppression
+
+    # Checks: the per-session sidecar aggregated to (check, status, reason)
+    # counts, plus synthesized entries for env states under which the writers
+    # themselves never ran.
+    checks_agg: dict[tuple, int] = {}
+    unverified = 0
+    try:
+        from chameleon_mcp.exec_log import read_check_events
+
+        ev = read_check_events(
+            repo_id, session_id or "", limit=threshold_int("ATTESTATION_MAX_CHECK_EVENTS")
         )
+        unverified = int(ev.get("unverified") or 0)
+        for record in ev.get("events") or []:
+            key = (str(record.get("check")), str(record.get("status")), record.get("reason"))
+            checks_agg[key] = checks_agg.get(key, 0) + 1
+    except Exception:
+        pass
+    if verify_off:
+        key = ("posttool_verify", "skipped", "verify_env_off")
+        checks_agg[key] = checks_agg.get(key, 0) + 1
+    checks = [
+        {"check": c, "status": s, "reason": r, "count": n} for (c, s, r), n in checks_agg.items()
+    ]
+    checks.sort(key=lambda e: (e["check"], e["status"], e["reason"] or ""))
+    payload["checks"] = checks[: threshold_int("ATTESTATION_MAX_CHECK_EVENTS")]
+    payload["check_events_unverified"] = unverified
+
+    # Touched files: the hook-observed universe, newest-verified first, capped.
+    governed: list[dict] = []
+    ungoverned: list[dict] = []
+    governed_truncated = 0
+    ungoverned_truncated = 0
+    stop_hook_blocks = 0
+    duplication_spawns = 0
+    try:
+        from chameleon_mcp.enforcement import load_state
+
+        state = load_state(repo_data, session_id or "")
+        stop_hook_blocks = int(state.stop_hook_blocks or 0)
+        duplication_spawns = int(state.duplication_spawns or 0)
+
+        entries = sorted(
+            state.files.items(), key=lambda kv: kv[1].last_verified_at or 0, reverse=True
+        )
+        cap = threshold_int("ATTESTATION_MAX_FILES")
+        ungoverned_truncated = max(0, len(entries) - cap)
+
+        exports_index = None
+        try:
+            from chameleon_mcp import symbol_index
+
+            exports_index = symbol_index.load_exports_index(repo_root)
+        except Exception:
+            exports_index = None
+        # Shares the gates' daemon-liveness flag so a hung daemon costs the
+        # whole Stop at most one failed probe, not one per touched file.
+        resolver = _archetype_resolver(repo_root, daemon_state or {"available": True})
+
+        for path, _fs in entries[:cap]:
+            rel = _repo_rel(repo_root, path)
+            digest: str | None = None
+            try:
+                digest = _content_digest_16(
+                    Path(path).read_bytes()[:100_000].decode("utf-8", errors="replace")
+                )
+            except OSError:
+                digest = None  # unreadable file: still listed, digest unknown
+
+            # Ungoverned needs ALL THREE coverage legs absent: no archetype, no
+            # lint dimension for the extension, and no committed exports-index
+            # entry. Any one leg of coverage keeps the file governed (on a repo
+            # with no exports index every file fails that leg, which is why the
+            # conjunction is required).
+            archetype = None
+            try:
+                archetype = resolver(path)
+            except Exception:
+                archetype = None
+            language = None
+            try:
+                from chameleon_mcp.lint_engine import detect_language
+
+                language = detect_language(rel)
+            except Exception:
+                language = None
+            symbol_covered = False
+            try:
+                if exports_index is not None:
+                    from chameleon_mcp import symbol_index
+
+                    key = symbol_index.module_key_for_path(path, repo_root)
+                    symbol_covered = key is not None and exports_index.lookup(key) is not None
+            except Exception:
+                symbol_covered = False
+
+            if archetype is None and language is None and not symbol_covered:
+                ungoverned.append({"file": rel, "content_digest": digest})
+                continue
+
+            # The decision snapshot is embedded INLINE (not just the row id):
+            # drift.db's recency trim may drop the row long before the
+            # attestation is read, and a dangling id would make replay lie.
+            snap = None
+            try:
+                from chameleon_mcp.drift.observations import decision_snapshot_for
+
+                snap = decision_snapshot_for(
+                    repo_id, rel or "", digest or "", session_id=session_id
+                )
+            except Exception:
+                snap = None
+            governed.append(
+                {
+                    "file": rel,
+                    "content_digest": digest,
+                    "decision_log_id": snap.get("id") if snap else None,
+                    "archetype": snap.get("archetype") if snap else None,
+                    "match_quality": snap.get("match_quality") if snap else None,
+                    "outcome": snap.get("outcome") if snap else None,
+                    "observed_at": snap.get("observed_at") if snap else None,
+                }
+            )
+    except Exception:
+        pass
+    payload["governed_files"] = governed
+    payload["governed_truncated"] = governed_truncated
+    payload["ungoverned_files"] = ungoverned
+    payload["ungoverned_truncated"] = ungoverned_truncated
+    payload["stop_hook_blocks"] = stop_hook_blocks
+    payload["duplication_spawns"] = duplication_spawns
+
+    overrides: list[dict] = []
+    overrides_truncated = 0
+    try:
+        from chameleon_mcp.drift.observations import (
+            session_override_group_count,
+            session_override_rows,
+        )
+
+        ov_cap = threshold_int("ATTESTATION_MAX_OVERRIDES")
+        overrides = session_override_rows(repo_id, session_id or "", limit=ov_cap)
+        total_groups = session_override_group_count(repo_id, session_id or "")
+        overrides_truncated = max(0, total_groups - len(overrides))
+    except Exception:
+        overrides, overrides_truncated = [], 0
+    payload["overrides"] = overrides
+    payload["overrides_truncated"] = overrides_truncated
+
+    return payload
+
+
+def _write_session_attestation(
+    *,
+    repo_root: Path,
+    repo_id: str,
+    session_id,
+    repo_data: Path,
+    suppressed_reason: str | None,
+    daemon_state: dict | None = None,
+) -> None:
+    """Build and persist this session's Stop attestation. Strictly fail-open.
+
+    The attestation is self-signed and raise-only: nothing recorded in it may
+    ever lower scrutiny anywhere downstream; it exists only to RAISE gate depth
+    and make post-incident replay honest. It must never change the turn
+    outcome, so any exception is swallowed here (and again by the caller).
+    """
+    try:
+        payload = _build_session_attestation(
+            repo_root=repo_root,
+            repo_id=repo_id,
+            session_id=session_id,
+            repo_data=repo_data,
+            suppressed_reason=suppressed_reason,
+            daemon_state=daemon_state,
+        )
+        from chameleon_mcp.review_ledger import record_session_attestation
+
+        record_session_attestation(repo_id, payload)
+    except Exception:
+        pass
+
+
+def stop_backstop() -> int:
+    """Stop / SubagentStop: refuse to end the turn while a touched file holds an
+    unresolved hard-class violation, then run a once-per-session reflexive
+    idiom/principle review of the turn's edits. Fails open; bounded by a
+    per-session cap and the stop_hook_active flag so it can never trap the user
+    in a loop.
+
+    After the gates finish (see _stop_gates), a top-level Stop writes one
+    signed session attestation -- which checks ran/skipped/degraded, the
+    governed vs ungoverned touched files with pinned decision snapshots, the
+    session's inline overrides, and any observable disable/pause state. The
+    write happens strictly after the gates saved state and strictly before the
+    hook output is emitted, so it can never race the state it reads (no
+    concurrent Stop gate exists in-process and SubagentStop never writes).
+    CHAMELEON_ATTESTATION=0 disables the write. Sessions that never reach the
+    gates -- no repo, untrusted, stale profile hash, stop_hook_active, and
+    CHAMELEON_DISABLE=1 (the bash wrapper exits pre-python) -- write nothing:
+    that absence is itself the downstream signal. Paused/disabled and
+    enforce-off sessions DO write a minimal attestation, because the disable
+    window is exactly the scrutiny-relevant fact, with hook output unchanged.
+    """
+    payload = _read_payload_dict()
+    if payload is None:
+        _emit({})
+        return 0
+    # Never re-block while already continuing due to a prior stop block.
+    if payload.get("stop_hook_active") is True:
+        _emit({})
+        return 0
+
+    session_id = payload.get("session_id")
+    # The Stop and SubagentStop events share this handler (hooks.json routes both
+    # to stop-backstop). The input payload's hook_event_name distinguishes them;
+    # the turn-end duplication spawn runs only on a top-level Stop, never per
+    # subagent, so a multi-subagent turn pays for it at most once.
+    is_subagent = payload.get("hook_event_name") == "SubagentStop"
+    cwd_raw = payload.get("cwd")
+    try:
+        cwd = Path(cwd_raw).expanduser() if isinstance(cwd_raw, str) and cwd_raw else Path.cwd()
+    except (OSError, ValueError):
+        cwd = Path.cwd()
+
+    try:
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.profile.trust import hash_profile, trust_state_for
+        from chameleon_mcp.tools import _compute_repo_id
+
+        repo_root = find_repo_root(cwd)
+        if repo_root is None:
+            _emit({})
+            return 0
+        repo_id = _compute_repo_id(repo_root)
+        # Suppression no longer exits immediately: a paused or session-disabled
+        # session skips the gates (hook output stays {}) but still writes a
+        # minimal attestation below carrying the suppression state.
+        suppressed_reason = is_chameleon_suppressed(repo_root, repo_id, session_id)
+        rec = trust_state_for(repo_id)
+        if rec is None or not rec.grants_root(repo_root):
+            _emit({})
+            return 0
+        # A "stale" grant (the profile hash drifted from the one the user trusted)
+        # only verifies; it never blocks the turn, mirroring the PreToolUse and
+        # PostToolUse gates.
+        if rec.hash_for_root(repo_root) != hash_profile(repo_root / ".chameleon"):
+            _emit({})
+            return 0
+
+        repo_data = _plugin_data_dir() / repo_id
+        # One daemon-liveness flag for the whole Stop, shared between the gates
+        # and the attestation writer: a hung daemon costs at most one probe.
+        daemon_state = {"available": True}
+
+        if suppressed_reason is not None:
+            _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "suppressed")
+            output: dict = {}
+        else:
+            try:
+                output = _stop_gates(
+                    payload=payload,
+                    repo_root=repo_root,
+                    repo_id=repo_id,
+                    session_id=session_id,
+                    is_subagent=is_subagent,
+                    repo_data=repo_data,
+                    daemon_state=daemon_state,
+                )
+            except Exception:
+                output = {}
+
+        if not is_subagent and os.environ.get("CHAMELEON_ATTESTATION") != "0":
+            try:
+                _write_session_attestation(
+                    repo_root=repo_root,
+                    repo_id=repo_id,
+                    session_id=session_id,
+                    repo_data=repo_data,
+                    suppressed_reason=suppressed_reason,
+                    daemon_state=daemon_state,
+                )
+            except Exception:
+                pass
+
+        _emit(output)
         return 0
     except Exception:
         _emit({})

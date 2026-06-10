@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS rule_overrides (
 );
 CREATE INDEX IF NOT EXISTS idx_rule_overrides_at ON rule_overrides(observed_at);
 CREATE INDEX IF NOT EXISTS idx_rule_overrides_rule ON rule_overrides(rule, observed_at);
+-- The Stop-path attestation embeds this session's overrides, so the lookup
+-- keys by session rather than by time window.
+CREATE INDEX IF NOT EXISTS idx_rule_overrides_session ON rule_overrides(session_id);
 
 -- Per-edit decision log. When a defect escapes, a postmortem needs to
 -- reconstruct what chameleon knew and did when that file was last edited:
@@ -92,7 +95,11 @@ CREATE INDEX IF NOT EXISTS idx_rule_overrides_rule ON rule_overrides(rule, obser
 -- time; none/fallback marks a coverage gap directly. `blockable_rules` is a
 -- comma-joined list of the block-eligible rules that still stood on the file
 -- (empty when none). `outcome` is one of advised / would-block / blocked /
--- overridden / clean.
+-- overridden / clean. `content_digest` (16-hex sha256 of the verified content
+-- window) is the replay key: it pins the row to the exact bytes the verifier
+-- saw, so a snapshot reader resolves the decision that governed THIS content
+-- rather than whatever edit came last. NULL on rows written before the column
+-- existed; those are intentionally never matched by digest queries.
 CREATE TABLE IF NOT EXISTS decision_log (
   id INTEGER PRIMARY KEY,
   rel_path TEXT NOT NULL,
@@ -101,19 +108,53 @@ CREATE TABLE IF NOT EXISTS decision_log (
   confidence_band TEXT,
   violations_raised INTEGER NOT NULL DEFAULT 0,
   blockable_rules TEXT,
+  content_digest TEXT,
   outcome TEXT NOT NULL,
   session_id TEXT,
   observed_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_decision_log_at ON decision_log(observed_at);
 CREATE INDEX IF NOT EXISTS idx_decision_log_path ON decision_log(rel_path, observed_at);
+CREATE INDEX IF NOT EXISTS idx_decision_log_digest ON decision_log(rel_path, content_digest);
 """
+
+
+def _migrate_decision_log(conn: sqlite3.Connection) -> None:
+    """Add decision_log.content_digest in place on databases created before it.
+
+    decision_log (like rule_overrides) is durable postmortem history, so the
+    module's drop-and-recreate cache policy does not apply here: an ALTER
+    preserves the existing rows where a rebuild would destroy the record of
+    past escapes. Legacy rows keep a NULL digest on purpose -- a digest query
+    must never mis-join old content onto a new edit, so NULL rows are only
+    reachable through the explicit same-session fallback in the reader.
+
+    Runs under the short init busy_timeout. A sqlite3.OperationalError is
+    treated as done-or-skipped: "duplicate column name" means a concurrent
+    process won the ALTER race (which is success), and lock contention leaves
+    the column for a later open to add (the fail-open drift writers skip rows
+    until then).
+    """
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(decision_log)").fetchall()}
+        if not cols or "content_digest" in cols:
+            # Fresh database (SCHEMA_DDL creates the table with the column) or
+            # already migrated.
+            return
+        with conn:
+            conn.execute("ALTER TABLE decision_log ADD COLUMN content_digest TEXT")
+    except sqlite3.OperationalError:
+        return
 
 
 def _open_and_init(db_path: Path) -> sqlite3.Connection:
     """Open drift.db and run the schema-init write under a short busy_timeout."""
     conn = open_hardened(db_path)
     conn.execute(f"PRAGMA busy_timeout={_INIT_BUSY_TIMEOUT_MS}")
+    # Migrate BEFORE the DDL script: SCHEMA_DDL indexes
+    # decision_log(content_digest), and CREATE INDEX against a pre-migration
+    # table that still lacks the column would fail every open of a legacy db.
+    _migrate_decision_log(conn)
     conn.executescript(SCHEMA_DDL)
     # Commit before returning. Under isolation_level="" this INSERT opens an
     # implicit write transaction; left pending, a connection that only ever

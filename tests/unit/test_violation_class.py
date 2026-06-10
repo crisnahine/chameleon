@@ -381,3 +381,116 @@ def test_directive_in_ruby_percent_literal_does_not_activate():
 
     content = "X = %q{\n# chameleon-ignore phantom-import\n}\n"
     assert build_ignore_index(content, language="ruby") is None
+
+
+# --- blanket immunity: bare directives never cover the deterministic hard class
+
+
+def _tagged_secret(kind: str, line: int = 1) -> dict:
+    """A secret violation stamped through the real tagger, not by hand."""
+    s = secret(kind, location=f"line {line}")
+    tag_secret_hardness([s])
+    return s
+
+
+def _eval_violation(severity: str, line: int = 1) -> dict:
+    return {
+        "rule": "eval-call",
+        "severity": severity,
+        "expected": "<no dynamic eval>",
+        "actual": f"eval( at line {line}",
+        "message": "m",
+    }
+
+
+def _idx(content: str):
+    from chameleon_mcp.violation_class import build_ignore_index
+
+    return build_ignore_index(content, language="typescript")
+
+
+def test_bare_line_directive_does_not_suppress_hard_secret():
+    from chameleon_mcp.violation_class import is_violation_ignored
+
+    idx = _idx('const k = "x"; // chameleon-ignore\n')
+    assert not is_violation_ignored(_tagged_secret("aws_access_key", 1), idx)
+
+
+def test_bare_file_directive_does_not_suppress_hard_secret_named_does():
+    from chameleon_mcp.violation_class import is_violation_ignored
+
+    bare = _idx("// chameleon-ignore-file\nconst k = 'x';\n")
+    named = _idx("// chameleon-ignore-file secret-detected-in-content\nconst k = 'x';\n")
+    assert not is_violation_ignored(_tagged_secret("aws_access_key", 2), bare)
+    assert is_violation_ignored(_tagged_secret("aws_access_key", 2), named)
+
+
+def test_named_line_directive_still_suppresses_hard_secret():
+    from chameleon_mcp.violation_class import is_violation_ignored
+
+    idx = _idx('const k = "x"; // chameleon-ignore secret-detected-in-content\n')
+    assert is_violation_ignored(_tagged_secret("aws_access_key", 1), idx)
+
+
+def test_error_eval_call_requires_named_directive():
+    from chameleon_mcp.violation_class import is_violation_ignored
+
+    bare_line = _idx("eval(code); // chameleon-ignore\n")
+    bare_file = _idx("// chameleon-ignore-file\neval(code);\n")
+    named = _idx("eval(code); // chameleon-ignore eval-call\n")
+    assert not is_violation_ignored(_eval_violation("error", 1), bare_line)
+    assert not is_violation_ignored(_eval_violation("error", 2), bare_file)
+    assert is_violation_ignored(_eval_violation("error", 1), named)
+
+
+def test_warning_eval_call_stays_blanket_suppressible():
+    # The string-arg *_eval variants are advisory by design; a bare directive
+    # still covers them.
+    from chameleon_mcp.violation_class import is_violation_ignored
+
+    idx = _idx("thing; // chameleon-ignore\n")
+    assert is_violation_ignored(_eval_violation("warning", 1), idx)
+
+
+def test_entropy_secret_stays_blanket_suppressible():
+    from chameleon_mcp.violation_class import is_violation_ignored
+
+    idx = _idx('const k = "x"; // chameleon-ignore\n')
+    assert is_violation_ignored(_tagged_secret("possible_aws_secret", 1), idx)
+
+
+def test_untagged_secret_stays_blanket_suppressible():
+    # A secret hit that never passed tag_secret_hardness fails open toward the
+    # old blanket behavior (it is not hard-class, so it cannot block either).
+    from chameleon_mcp.violation_class import is_violation_ignored
+
+    idx = _idx('const k = "x"; // chameleon-ignore\n')
+    assert is_violation_ignored(secret("aws_access_key", location="line 1"), idx)
+
+
+def test_is_blanket_immune_truth_table():
+    from chameleon_mcp.violation_class import BLANKET_IMMUNE_RULES, is_blanket_immune
+
+    assert BLANKET_IMMUNE_RULES == frozenset({"secret-detected-in-content", "eval-call"})
+    assert is_blanket_immune(_tagged_secret("aws_access_key")) is True
+    assert is_blanket_immune(_eval_violation("error")) is True
+    # Deterministic rule, advisory variant: not immune.
+    assert is_blanket_immune(_tagged_secret("possible_aws_secret")) is False
+    assert is_blanket_immune(_eval_violation("warning")) is False
+    # Non-deterministic rules: not immune even when hard-class.
+    assert is_blanket_immune(v("phantom-import")) is False
+    assert is_blanket_immune(v("import-preference-violation")) is False
+
+
+def test_no_line_hard_secret_requires_named_anywhere_directive():
+    # A hard-kind violation with no line falls back to named_anywhere scope;
+    # the bare form no longer suffices there either.
+    from chameleon_mcp.violation_class import is_violation_ignored, violation_line
+
+    s = secret("aws_access_key", location="position 12")
+    tag_secret_hardness([s])
+    assert violation_line(s) is None
+    bare = _idx("const a = 1; // chameleon-ignore\n")
+    named = _idx("const a = 1; // chameleon-ignore secret-detected-in-content\n")
+    assert not is_violation_ignored(s, bare)
+    assert is_violation_ignored(s, named)

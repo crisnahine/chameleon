@@ -29,3 +29,24 @@ def test_mark_judged_idempotent(tmp_path):
     mark_judged(tmp_path, "s", "f.rb", "d")
     mark_judged(tmp_path, "s", "f.rb", "d")
     assert already_judged(tmp_path, "s", "f.rb", "d") is True
+
+
+def test_default_prefix_filename_is_stable(tmp_path):
+    # Pin the on-disk name: existing .dup_judged. markers from earlier sessions
+    # must stay valid across the prefix-parameter change.
+    import hashlib
+
+    mark_judged(tmp_path, "sess", "app/a.rb", "digest1")
+    key = hashlib.sha256(b"sess\x00app/a.rb\x00digest1").hexdigest()[:32]
+    assert (tmp_path / f".dup_judged.{key}").exists()
+
+
+def test_corr_and_dup_marker_namespaces_isolated(tmp_path):
+    mark_judged(tmp_path, "sess", "app/a.rb", "d1", prefix=".corr_judged.")
+    # Invisible to the default dup namespace and vice versa.
+    assert already_judged(tmp_path, "sess", "app/a.rb", "d1") is False
+    assert already_judged(tmp_path, "sess", "app/a.rb", "d1", prefix=".corr_judged.") is True
+
+    mark_judged(tmp_path, "sess", "app/b.rb", "d2")
+    assert already_judged(tmp_path, "sess", "app/b.rb", "d2", prefix=".corr_judged.") is False
+    assert already_judged(tmp_path, "sess", "app/b.rb", "d2") is True

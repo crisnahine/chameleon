@@ -80,6 +80,50 @@ def test_status_reports_enforcement(make_trusted_repo):
     assert "shadow" in text.lower()
 
 
+def test_status_surfaces_proposed_demotions_section(make_trusted_repo):
+    # A rule carrying a pending demotion proposal is surfaced in
+    # enforcement.proposed_demotions while staying in the active (blocking) list;
+    # the key is omitted entirely when no entry carries a proposal.
+    from chameleon_mcp.enforcement_calibration import write_block_rules
+    from chameleon_mcp.tools import get_status
+
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="shadow")
+    proposal = {
+        "reason": "high-override-rate",
+        "override_rate": 0.9,
+        "events": 12,
+        "distinct_sessions": 1,
+        "security_rule": False,
+    }
+    write_block_rules(
+        profile_dir,
+        {
+            "import-preference-violation": {
+                "active": True,
+                "fp_rate": 0.0,
+                "sampled": 9,
+                "demotion_proposed": proposal,
+            },
+            "phantom-import": {"active": True, "fp_rate": 0.0, "sampled": 9},
+        },
+    )
+
+    out = get_status(str(repo))
+    enforcement = out["data"]["enforcement"]
+    assert enforcement["proposed_demotions"] == [
+        {"rule": "import-preference-violation", **proposal}
+    ]
+    # Still blocking: a proposal never moves the rule out of the active set.
+    assert "import-preference-violation" in enforcement["active"]
+
+    write_block_rules(
+        profile_dir,
+        {"phantom-import": {"active": True, "fp_rate": 0.0, "sampled": 9}},
+    )
+    out = get_status(str(repo))
+    assert "proposed_demotions" not in out["data"]["enforcement"]
+
+
 def test_status_unknown_repo_id_returns_no_repo():
     # A 64-hex repo_id that maps to no known repo must signal no_repo, not be
     # treated as a relative path (which walks up to the CWD's repo and reports

@@ -278,23 +278,51 @@ def format_duplication_advisory(confirmed: list) -> list:
 # ---------------------------------------------------------------------------
 
 
-def _marker_path(repo_data: Path, session_id: str, file_rel: str, digest: str) -> Path:
+def _marker_path(
+    repo_data: Path,
+    session_id: str,
+    file_rel: str,
+    digest: str,
+    *,
+    prefix: str = ".dup_judged.",
+) -> Path:
     import hashlib
 
     key = hashlib.sha256(f"{session_id}\x00{file_rel}\x00{digest}".encode()).hexdigest()[:32]
-    return Path(repo_data) / f".dup_judged.{key}"
+    return Path(repo_data) / f"{prefix}{key}"
 
 
-def already_judged(repo_data: Path, session_id: str, file_rel: str, digest: str) -> bool:
+def already_judged(
+    repo_data: Path,
+    session_id: str,
+    file_rel: str,
+    digest: str,
+    *,
+    prefix: str = ".dup_judged.",
+) -> bool:
     try:
-        return _marker_path(repo_data, session_id, file_rel, digest).exists()
+        return _marker_path(repo_data, session_id, file_rel, digest, prefix=prefix).exists()
     except OSError:
         return False
 
 
-def mark_judged(repo_data: Path, session_id: str, file_rel: str, digest: str) -> None:
+def mark_judged(
+    repo_data: Path,
+    session_id: str,
+    file_rel: str,
+    digest: str,
+    *,
+    prefix: str = ".dup_judged.",
+) -> None:
+    """Record a (session, file, digest) as judged under a marker namespace.
+
+    ``prefix`` selects the namespace: the duplication gate uses the default
+    ``.dup_judged.`` (existing markers stay valid byte-for-byte) and the
+    correctness gate passes ``.corr_judged.`` so the two judged-sets never
+    collide.
+    """
     try:
-        p = _marker_path(repo_data, session_id, file_rel, digest)
+        p = _marker_path(repo_data, session_id, file_rel, digest, prefix=prefix)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.touch()
     except OSError:

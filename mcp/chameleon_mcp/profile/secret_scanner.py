@@ -140,8 +140,13 @@ def _try_detect_secrets(content: str) -> list[dict[str, Any]] | None:
     return hits
 
 
-def _fallback_scan(content: str) -> list[dict[str, Any]]:
-    """Regex-based scan when detect-secrets is unavailable."""
+def _scan_patterns(
+    content: str, patterns: list[tuple[re.Pattern[str], str]] | tuple
+) -> list[dict[str, Any]]:
+    """Linear regex scan over ``patterns``, one hit dict per match.
+
+    Shared machinery for the full fallback set and the hard-kind fast path.
+    """
     import bisect
 
     hits: list[dict[str, Any]] = []
@@ -168,7 +173,7 @@ def _fallback_scan(content: str) -> list[dict[str, Any]]:
             context_ok_by_line[idx] = cached
         return cached
 
-    for pattern, kind in _FALLBACK_PATTERNS:
+    for pattern, kind in patterns:
         for match in pattern.finditer(content):
             idx = _line_index(match.start())
             if kind in _CONTEXT_GATED_KINDS and not _credential_context_at(idx):
@@ -186,6 +191,41 @@ def _fallback_scan(content: str) -> list[dict[str, Any]]:
                 }
             )
     return hits
+
+
+def _fallback_scan(content: str) -> list[dict[str, Any]]:
+    """Regex-based scan when detect-secrets is unavailable."""
+    return _scan_patterns(content, _FALLBACK_PATTERNS)
+
+
+# Lazily-filtered subset of _FALLBACK_PATTERNS whose kinds may hard-block.
+# Resolved on first use because the kind set lives in violation_class, which
+# must stay importable without pulling this module (and vice versa).
+_HARD_PATTERNS: list[tuple[re.Pattern[str], str]] | None = None
+
+
+def scan_for_hard_secrets(content: str) -> list[dict[str, Any]]:
+    """Scan only for the deterministic hard-block secret kinds. Regex-only.
+
+    The fast path for latency-sensitive callers (the pre-write deny, the
+    corrections-exhausted block gate): never imports or runs detect-secrets,
+    whose per-line allowlist re-scan is quadratic on token-dense lines. This
+    loses nothing for the block decision — hard-blockable kinds only ever
+    originate from the fallback patterns (detect-secrets type strings never
+    parse into the deterministic kind set) — and no hard kind is context-gated,
+    so the credential-keyword gate in the shared scan never filters here.
+    Emits the same hit dict shape as ``_fallback_scan``.
+    """
+    global _HARD_PATTERNS
+    if _HARD_PATTERNS is None:
+        from chameleon_mcp.violation_class import _DETERMINISTIC_SECRET_KINDS
+
+        _HARD_PATTERNS = [
+            (pattern, kind)
+            for pattern, kind in _FALLBACK_PATTERNS
+            if kind in _DETERMINISTIC_SECRET_KINDS
+        ]
+    return _scan_patterns(content, _HARD_PATTERNS)
 
 
 def scan_for_secrets(content: str) -> list[dict[str, Any]]:

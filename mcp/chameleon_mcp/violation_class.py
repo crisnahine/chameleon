@@ -47,7 +47,10 @@ class IgnoreIndex:
     line of its own covers the line below it too. ``named_anywhere`` is the
     union of every plain directive in the file — the fallback scope for
     violations that carry no line number, which a line-scoped directive could
-    otherwise never suppress. The empty-string rule means "every rule".
+    otherwise never suppress. The empty-string rule means "every rule" — except
+    the deterministic-kind hard class (hard-kind secrets, error-severity
+    eval-call), which only a rule-named directive suppresses (see
+    ``is_violation_ignored``).
     """
 
     file_rules: frozenset[str] = frozenset()
@@ -145,10 +148,18 @@ def is_violation_ignored(violation: dict, idx: IgnoreIndex | None) -> bool:
     A ``-file`` directive covers everything. A plain directive covers only the
     line it annotates — except for violations that report no line, which any
     same-file plain directive may suppress (there is no line to target).
+
+    A bare (blanket) directive — no rule named — covers every rule except the
+    deterministic-kind hard class (hard-kind secrets, error-severity
+    eval-call). Those are runnable security facts, so silencing one must name
+    the rule explicitly; the named form stays available as the auditable
+    escape for legitimate fixtures.
     """
     if idx is None:
         return False
-    keys = {"", violation.get("rule") or ""}
+    keys = {violation.get("rule") or ""}
+    if not is_blanket_immune(violation):
+        keys.add("")
     if keys & idx.file_rules:
         return True
     line = violation_line(violation)
@@ -238,7 +249,10 @@ _ARCHETYPE_INDEPENDENT: frozenset[str] = frozenset({"phantom-import", "secret-de
 # about to make valid; the Stop backstop re-lints once the turn's edits settle.
 # A leaked credential is NOT deferrable: nothing a later edit does makes a
 # hardcoded AKIA key safe, so it stays in the inline block set rather than being
-# listed here. Note the inline gate itself still requires the file to have
+# listed here. In enforce mode the PreToolUse gate additionally denies a
+# hard-kind secret found in the proposed Edit/Write content before it reaches
+# disk, so the per-edit and turn-end gates are the second and third lines of
+# defense for that class. Note the inline gate itself still requires the file to have
 # escalated to L2 — on a lower-escalation file a deterministic secret is
 # recorded as blockable_unresolved and, in enforce mode, the Stop backstop
 # refuses the turn instead, so under enforce the credential cannot leave the
@@ -279,6 +293,28 @@ _DETERMINISTIC_SECRET_KINDS: frozenset[str] = frozenset(
         "private_key",
     }
 )
+
+# Rules whose deterministic (hard-class) variants a bare ``chameleon-ignore``
+# can never suppress. A hard-kind secret or an error-severity eval call is a
+# runnable security fact, not a style judgment; silencing one must name the
+# rule explicitly so the bypass is deliberate and auditable. The advisory
+# variants of the same rules (entropy/broad-fallback secret kinds, the
+# warning-severity string-arg ``*_eval`` forms) stay blanket-suppressible —
+# they are FP-prone by design and the blanket directive legitimately quiets
+# them in fixtures. This set is the shared vocabulary for "deterministic-kind"
+# across the enforcement surfaces; derive from it rather than redefining.
+BLANKET_IMMUNE_RULES: frozenset[str] = frozenset({"secret-detected-in-content", "eval-call"})
+
+
+def is_blanket_immune(violation: dict) -> bool:
+    """True when only a rule-NAMED ignore directive may suppress this violation.
+
+    Gated on ``is_hard_class`` so only the deterministic variants are immune:
+    a hard-kind secret (``secret_hard`` stamped by ``tag_secret_hardness``) or
+    an error-severity eval call. Untagged or advisory rows keep the blanket
+    semantics.
+    """
+    return violation.get("rule") in BLANKET_IMMUNE_RULES and is_hard_class(violation)
 
 
 def is_archetype_independent(rule: str) -> bool:

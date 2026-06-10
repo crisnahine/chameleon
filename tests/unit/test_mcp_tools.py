@@ -930,3 +930,33 @@ def test_merge_profiles_binary_input_fails_cleanly(tmp_path, monkeypatch):
     assert "UTF-8" in data["error"]
     # OURS is untouched so git keeps the conflict for manual resolution.
     assert ours.read_bytes() == b"\xff\xfe\x00\x01binary"
+
+
+def test_get_rules_flags_degraded_profile(trusted_repo, monkeypatch):
+    # A corrupt/unloadable profile must be distinguishable from a healthy repo
+    # with no configured lint rules.
+    def boom(profile_dir):
+        raise ValueError("corrupt artifact")
+
+    from chameleon_mcp.profile import loader
+
+    monkeypatch.setattr(loader, "load_profile_dir", boom)
+    data = tools.get_rules(str(trusted_repo))["data"]
+    assert data["rules"] == []
+    assert data["status"] == "degraded"
+    assert data["reason"] == "profile_unavailable"
+
+
+def test_get_canonical_excerpt_flags_degraded_profile(trusted_repo, monkeypatch):
+    # Profile load failure must not be shape-identical to the legitimate
+    # "archetype has no witness" empty result.
+    def boom(profile_dir):
+        raise ValueError("corrupt artifact")
+
+    from chameleon_mcp.profile import loader
+
+    monkeypatch.setattr(loader, "load_profile_dir", boom)
+    data = tools.get_canonical_excerpt(str(trusted_repo), ARCH)["data"]
+    assert data["status"] == "degraded"
+    assert data["reason"] == "profile_unavailable"
+    assert data["content"] == ""

@@ -1,7 +1,7 @@
-"""Two trust-facing read surfaces over a repo's chameleon history.
+"""Trust-facing audit surfaces over a repo's chameleon history.
 
-This module holds two unrelated audit reads that share only their consumer
-(the status surface a lead reads to reason about the gate):
+This module holds three audit surfaces that share only their consumer
+(the status/lead tooling that reasons about the gate):
 
 1. ``build_override_audit`` -- how often each block rule gets
    ``chameleon-ignore``d (see its own docstring).
@@ -10,6 +10,12 @@ This module holds two unrelated audit reads that share only their consumer
    ``/chameleon-pr-review`` verdict, written so a lead can later answer "which
    merged commits passed review, and did we ship any BLOCK over anyway?"
 
+3. The session-attestation ledger (``session_attestations.ndjson``): one
+   signed record per top-level Stop, capturing which turn-end checks ran /
+   were skipped / degraded, the governed-vs-ungoverned touched-file universe
+   with pinned decision snapshots, the session's inline overrides, and any
+   observable disable/pause state.
+
 The PR-review skill is chat-only by default and persists nothing, so a merged
 commit leaves no trace of whether chameleon ever looked at it. The ledger fills
 that hole. Each review run appends one record pinning the commit SHA, the exact
@@ -17,7 +23,16 @@ profile that reviewed it (``profile_sha256`` + generation + schema_version), the
 trust state at review time, the verdict, a findings-by-severity summary, the
 engine version, and the reviewing user.
 
-INTEGRITY SCOPE -- tamper-evident, NOT forgery-proof, NOT a CI gate.
+RAISE-ONLY DOCTRINE (session attestations). The attestation is self-signed and
+raise-only: nothing recorded in it may ever lower scrutiny anywhere downstream.
+A consumer may use it only to RAISE gate depth (skipped checks, degraded
+spawns, ungoverned files, disable windows escalate) and to make post-incident
+replay honest. The merge gate's floor is computed from diff facts alone and
+trusts none of this without re-verification; a forged-clean attestation
+therefore buys nothing.
+
+INTEGRITY SCOPE -- tamper-evident, NOT forgery-proof, NOT a CI gate. Covers the
+PR-review ledger AND the session-attestation ledger alike.
 
 The signing key is the same per-user local HMAC key the exec log uses
 (``CHAMELEON_HMAC_KEY_PATH``, owner-checked, 0600). That makes a record
@@ -294,19 +309,18 @@ def record_review(
     path = _ledger_path(repo_id)
     with open(path, "a", encoding="utf-8") as f:
         f.write(line)
-    _trim_ledger(path)
+    _trim_ledger(path, threshold_int("REVIEW_LEDGER_MAX_RECORDS"))
     return record
 
 
-def _trim_ledger(path: Path) -> None:
-    """Keep only the most-recent ``REVIEW_LEDGER_MAX_RECORDS`` lines.
+def _trim_ledger(path: Path, cap: int) -> None:
+    """Keep only the most-recent ``cap`` lines of an NDJSON ledger.
 
-    The ledger is never wiped by refresh, so without a cap it grows unbounded.
-    One record per review run keeps it small in practice; this trims by recency
+    Ledgers are never wiped by refresh, so without a cap they grow unbounded.
+    One record per event keeps them small in practice; this trims by recency
     only when the line count crosses the cap. Best-effort: any read/write error
     leaves the file untouched rather than risking data loss.
     """
-    cap = threshold_int("REVIEW_LEDGER_MAX_RECORDS")
     if cap <= 0:
         return
     try:
@@ -529,3 +543,319 @@ def _repo_root_for(repo_id: str) -> Path | None:
         return root if root.is_dir() else None
     except OSError:
         return None
+
+
+# --- Session attestations --------------------------------------------------------
+#
+# A SEPARATE per-repo NDJSON in the same data dir, sharing the review ledger's
+# signing and trim machinery. Keeping attestations out of review_ledger.ndjson
+# keeps the review surface byte-stable: read_review_history and
+# build_review_ledger_panel never see attestation rows, and the attestation
+# ledger trims independently.
+
+_ATTESTATION_FILENAME = "session_attestations.ndjson"
+_ATTESTATION_SCHEMA = 1
+
+# Top-level scalar fields of an attestation payload, by coercion. A value that
+# does not match its expected type is dropped to the field's neutral value
+# rather than stored raw, so a malformed payload can never corrupt the signed
+# shape (same stance as _normalize_findings).
+_ATTESTATION_STR_KEYS = (
+    "session_id",
+    "engine_version",
+    "profile_sha256",
+    "trust_state",
+    "enforcement_mode",
+)
+_ATTESTATION_OPT_INT_KEYS = ("generation", "schema_version")
+_ATTESTATION_COUNT_KEYS = (
+    "check_events_unverified",
+    "governed_truncated",
+    "ungoverned_truncated",
+    "overrides_truncated",
+    "stop_hook_blocks",
+    "duplication_spawns",
+)
+
+
+def _attestation_path(repo_id: str) -> Path:
+    """Return ``${PLUGIN_DATA}/<repo_id>/session_attestations.ndjson``."""
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    return repo_data_dir(repo_id) / _ATTESTATION_FILENAME
+
+
+def _opt_str(value) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _opt_int(value) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _count(value) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return n if n >= 0 else 0
+
+
+def _scalar_str(value) -> str | None:
+    """Scalar timestamps (ISO string or epoch number) normalized to a string."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
+def _norm_entries(value, required: dict, optional: dict) -> list[dict]:
+    """Coerce a list of payload entries into a fixed field shape.
+
+    ``required`` fields must coerce to a non-None value or the entry is
+    dropped; ``optional`` fields fall back to their coercer's neutral value.
+    Non-dict entries are dropped.
+    """
+    out: list[dict] = []
+    if not isinstance(value, list):
+        return out
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        coerced: dict = {}
+        ok = True
+        for field, coerce in required.items():
+            v = coerce(entry.get(field))
+            if v is None:
+                ok = False
+                break
+            coerced[field] = v
+        if not ok:
+            continue
+        for field, coerce in optional.items():
+            coerced[field] = coerce(entry.get(field))
+        out.append(coerced)
+    return out
+
+
+def _normalize_attestation_payload(payload: dict) -> dict:
+    """Coerce a free-form attestation payload into the signed record shape.
+
+    Mirrors ``_normalize_findings``: malformed values are dropped or coerced,
+    never trusted to be well-shaped, so a bad argument cannot corrupt the
+    signed record.
+    """
+    src = payload if isinstance(payload, dict) else {}
+    out: dict = {}
+    for key in _ATTESTATION_STR_KEYS:
+        out[key] = _opt_str(src.get(key))
+    for key in _ATTESTATION_OPT_INT_KEYS:
+        out[key] = _opt_int(src.get(key))
+    for key in _ATTESTATION_COUNT_KEYS:
+        out[key] = _count(src.get(key))
+
+    env = src.get("env") if isinstance(src.get("env"), dict) else {}
+    out["env"] = {
+        "verify_off": bool(env.get("verify_off")),
+        "enforce_off": bool(env.get("enforce_off")),
+    }
+
+    sup = src.get("suppression") if isinstance(src.get("suppression"), dict) else {}
+    out["suppression"] = {
+        "reason": _opt_str(sup.get("reason")),
+        "session_disabled_at": _scalar_str(sup.get("session_disabled_at")),
+        "pause_until": _opt_str(sup.get("pause_until")),
+    }
+
+    out["checks"] = _norm_entries(
+        src.get("checks"),
+        required={"check": _opt_str, "status": _opt_str},
+        optional={"reason": _opt_str, "count": _count},
+    )
+    out["governed_files"] = _norm_entries(
+        src.get("governed_files"),
+        required={"file": _opt_str},
+        optional={
+            "content_digest": _opt_str,
+            "decision_log_id": _opt_int,
+            "archetype": _opt_str,
+            "match_quality": _opt_str,
+            "outcome": _opt_str,
+            "observed_at": _opt_int,
+        },
+    )
+    out["ungoverned_files"] = _norm_entries(
+        src.get("ungoverned_files"),
+        required={"file": _opt_str},
+        optional={"content_digest": _opt_str},
+    )
+    out["overrides"] = _norm_entries(
+        src.get("overrides"),
+        required={"rule": _opt_str},
+        optional={"file": _opt_str, "blanket": lambda v: bool(v), "count": _count},
+    )
+    return out
+
+
+def _attestation_digest(body: dict) -> str:
+    """Payload digest for the per-session dedup marker.
+
+    Canonical JSON over the normalized body plus the schema stamp -- i.e.
+    everything except ``ts``, ``hmac``, and ``record_type`` -- so an unchanged
+    session state hashes identically across consecutive Stops.
+
+    Check-event COUNTS are excluded from the digest basis: the Stop relint
+    gate records one "ran" event per Stop, so counts grow even on an idle
+    session and would defeat the dedup entirely. A session reads as changed
+    when a new (check, status, reason) combination appears, not when an
+    existing one repeats; the appended record itself keeps the true counts.
+    """
+    src = dict(body)
+    checks = src.get("checks")
+    if isinstance(checks, list):
+        src["checks"] = [
+            {k: v for k, v in entry.items() if k != "count"} if isinstance(entry, dict) else entry
+            for entry in checks
+        ]
+    src["attestation_schema"] = _ATTESTATION_SCHEMA
+    canonical = json.dumps(src, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def record_session_attestation(repo_id: str, payload: dict) -> dict:
+    """Append one signed session attestation to ``repo_id``'s attestation ledger.
+
+    The attestation is self-signed and raise-only: nothing recorded in it may
+    ever lower scrutiny anywhere downstream. A consumer may use it only to
+    RAISE gate depth (skipped checks, degraded spawns, ungoverned files,
+    disable windows escalate) and to make post-incident replay honest. The
+    merge gate's floor is computed from diff facts alone and trusts none of
+    this without re-verification; a forged-clean attestation therefore buys
+    nothing.
+
+    The payload is defensively normalized before signing. Consecutive identical
+    payloads for the same session are deduped through a sidecar digest marker,
+    so an idle multi-Stop session writes one row and the NEWEST row per session
+    is authoritative by construction. The ledger trims to
+    ``ATTESTATION_LEDGER_MAX_RECORDS`` by recency. Signing failure does not
+    drop the record: it is written with ``"hmac": null`` so the reader flags it
+    (same stance as ``record_review``).
+
+    Returns ``{"appended": bool, "digest": str, "record": dict | None}``; on a
+    dedup skip ``record`` is None.
+    """
+    body = _normalize_attestation_payload(payload)
+    digest = _attestation_digest(body)
+
+    marker: Path | None = None
+    try:
+        from chameleon_mcp.optouts import _safe_session_marker
+        from chameleon_mcp.profile.trust import repo_data_dir
+
+        marker = repo_data_dir(repo_id) / (
+            f".attestation_last.{_safe_session_marker(body.get('session_id'))}"
+        )
+        if marker.is_file() and marker.read_text(encoding="utf-8").strip() == digest:
+            return {"appended": False, "digest": digest, "record": None}
+    except Exception:
+        marker = None
+
+    record: dict = {
+        "record_type": "session_attestation",
+        "attestation_schema": _ATTESTATION_SCHEMA,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        **body,
+    }
+    try:
+        record["hmac"] = _sign(record)
+    except Exception:
+        record["hmac"] = None
+
+    path = _attestation_path(repo_id)
+    line = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line)
+    if marker is not None:
+        try:
+            marker.write_text(digest, encoding="utf-8")
+        except OSError:
+            pass
+    _trim_ledger(path, threshold_int("ATTESTATION_LEDGER_MAX_RECORDS"))
+    return {"appended": True, "digest": digest, "record": record}
+
+
+def read_session_attestations(
+    repo_id: str | None,
+    *,
+    session_id: str | None = None,
+    limit: int = 10,
+) -> dict:
+    """Most-recent session attestations for ``repo_id``, newest first.
+
+    Optionally filtered to one ``session_id`` (the newest matching row is that
+    session's authoritative attestation). Each record carries ``verified`` (the
+    HMAC re-check) and ``unverified`` counts the returned records that failed
+    it -- the same tamper-evidence scope as the review ledger, see the module
+    docstring. Raise-only applies to every consumer: a verified-clean record
+    may never lower scrutiny; only skipped/degraded/ungoverned evidence in it
+    may raise it.
+
+    Fail-open: a missing or unreadable ledger returns an empty history; a
+    corrupt line is skipped, not fatal.
+    """
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 10
+    if limit <= 0:
+        limit = 10
+
+    empty = {"repo_id": repo_id, "records": [], "total": 0, "unverified": 0}
+    if not repo_id:
+        return empty
+
+    path = _attestation_path(repo_id)
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw_lines = f.readlines()
+    except OSError:
+        return empty
+
+    parsed: list[dict] = []
+    for line in raw_lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict):
+            continue
+        if session_id is not None and record.get("session_id") != session_id:
+            continue
+        parsed.append(record)
+
+    total = len(parsed)
+    recent = parsed[-limit:][::-1]
+    unverified = 0
+    out_records: list[dict] = []
+    for record in recent:
+        verified = _verify(record)
+        if not verified:
+            unverified += 1
+        enriched = dict(record)
+        enriched["verified"] = verified
+        out_records.append(enriched)
+
+    return {
+        "repo_id": repo_id,
+        "records": out_records,
+        "total": total,
+        "unverified": unverified,
+    }

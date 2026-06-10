@@ -32,3 +32,12 @@ def _no_real_judge_spawn(request, monkeypatch):
     except Exception:
         return
     monkeypatch.setattr(judge, "_spawn_reviewer", lambda *a, **k: None, raising=False)
+    # run_correctness_judge spawns through the status-returning variant; guard it
+    # too so an unmocked judge path degrades to a no-spawn failure, never a real
+    # subprocess.
+    monkeypatch.setattr(
+        judge,
+        "_spawn_reviewer_status",
+        lambda *a, **k: (None, "spawn_exec_error"),
+        raising=False,
+    )

@@ -20,8 +20,9 @@ Design constraints (every one fails open, returning no findings):
   - the spawn has a short hard wall-clock budget so a slow review never traps
     the turn;
   - the prompt and the parsed output are size-capped;
-  - it runs at most once per session, gated by a per-session marker the caller
-    owns (mirroring the idiom gate).
+  - spawns are routed per turn by the caller (digest-keyed freshness + risk
+    facts under a per-session budget), so an unchanged or low-risk turn never
+    pays for a reviewer.
 """
 
 from __future__ import annotations
@@ -55,6 +56,11 @@ _WITNESS_CHAR_CAP = 1500
 # Cap on idioms/principles text injected. Same rationale as the idiom gate's
 # own context cap: enough to ground the review, not the whole document.
 _GUIDANCE_CHAR_CAP = 1500
+
+# Cap on the joined intent-token list appended to the prompt. Intent is a hint
+# pointing the reviewer at the request's checkable specifics (constants,
+# identifiers, quoted strings), not a transcript.
+_INTENT_CHAR_CAP = 600
 
 
 @dataclass
@@ -176,13 +182,21 @@ def _witness_for(repo_root: Path, archetype: str | None) -> str:
     return ""
 
 
-def build_prompt(repo_root: Path, profile_dir: Path, diffs: list[FileDiff]) -> str:
+def build_prompt(
+    repo_root: Path,
+    profile_dir: Path,
+    diffs: list[FileDiff],
+    intent_tokens: list[str] | None = None,
+) -> str:
     """Assemble the reviewer prompt from diffs, witnesses, and guidance.
 
     The prompt is deliberately narrow: the reviewer is told it is a second pair
     of eyes looking only for correctness defects, and to return a strict JSON
     array of findings with self-rated confidence. Convention/style is explicitly
-    out of scope (the static engine already covers it).
+    out of scope (the static engine already covers it). ``intent_tokens`` are
+    checkable specifics extracted from the user's request (values, identifiers,
+    quoted strings); when present they are appended, sanitized and length-capped,
+    so the reviewer can cross-check the change against what was actually asked.
     """
     sections: list[str] = [
         "You are an independent code reviewer giving a finished change a second "
@@ -205,6 +219,19 @@ def build_prompt(repo_root: Path, profile_dir: Path, diffs: list[FileDiff]) -> s
         sections.append("Project guidance (context, not a checklist):")
         sections.append(guidance)
 
+    if intent_tokens:
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        joined = ", ".join(sanitize_for_chameleon_context(t) for t in intent_tokens)
+        sections.append("")
+        sections.append(
+            "The user's request for this work mentioned these specific values, "
+            "identifiers, and strings. Verify the changed code is consistent "
+            "with each one (a wrong constant, a renamed identifier, a "
+            "mismatched string is a finding):"
+        )
+        sections.append(joined[:_INTENT_CHAR_CAP])
+
     for fd in diffs:
         sections.append("")
         header = f"=== {fd.rel_path}"
@@ -224,14 +251,17 @@ def build_prompt(repo_root: Path, profile_dir: Path, diffs: list[FileDiff]) -> s
     return "\n".join(sections)
 
 
-def _parse_findings(stdout: str) -> list[Finding]:
-    """Parse the reviewer's stream-json output into findings.
+def _parse_findings_status(stdout: str) -> tuple[list[Finding], bool]:
+    """Parse the reviewer's stream-json output into ``(findings, parsed_ok)``.
 
     The reviewer is asked for a bare JSON array, but it speaks through
     ``claude -p --output-format stream-json``, so the array lands inside an
     assistant ``result``/``text`` block. This extracts the last JSON array found
     in any text the model emitted and coerces each element into a Finding.
-    Malformed or partial output yields no findings (fail open).
+    ``parsed_ok`` is True when a JSON array was extracted (including an explicit
+    ``[]`` meaning "reviewed, no bugs") and False when no text block yielded an
+    array -- the caller records that as a degraded review rather than treating
+    garbage output as a clean verdict.
     """
     texts: list[str] = []
     for line in stdout.splitlines():
@@ -260,8 +290,13 @@ def _parse_findings(stdout: str) -> list[Finding]:
             continue
         findings = _coerce_findings(arr)
         if findings or arr == []:
-            return findings
-    return []
+            return findings, True
+    return [], False
+
+
+def _parse_findings(stdout: str) -> list[Finding]:
+    """Findings-only view of ``_parse_findings_status`` (fail open to [])."""
+    return _parse_findings_status(stdout)[0]
 
 
 def _extract_json_array(text: str) -> list | None:
@@ -327,13 +362,16 @@ def _sweep_stale_judge_dirs(max_age_seconds: int = 3600) -> None:
         pass
 
 
-def _spawn_reviewer(prompt: str, cwd: Path) -> str | None:
-    """Spawn ``claude -p`` for a one-shot correctness review, returning stdout.
+def _spawn_reviewer_status(prompt: str, cwd: Path) -> tuple[str | None, str | None]:
+    """Spawn ``claude -p`` for a one-shot review, returning ``(stdout, reason)``.
 
     Runtime-owned spawn wrapper (the journey-harness wrapper under ``tests/`` is
     never importable by the shipped plugin). Hard wall-clock budget, no tools,
-    minimal turns, output captured. Returns None on timeout, a non-zero exit, or
-    any spawn error so the caller fails open to no findings.
+    minimal turns, output captured. On success returns ``(stdout, None)``; on
+    failure returns ``(None, reason)`` where reason is one of ``spawn_timeout``,
+    ``spawn_exec_error``, ``spawn_nonzero_exit`` so the caller can record WHY a
+    review silently produced nothing instead of collapsing every failure mode
+    into an indistinguishable None.
     """
     timeout_s = threshold_int("CORRECTNESS_JUDGE_TIMEOUT_SECONDS")
     args = [
@@ -374,11 +412,18 @@ def _spawn_reviewer(prompt: str, cwd: Path) -> str | None:
             timeout=timeout_s,
             check=False,
         )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
+    except subprocess.TimeoutExpired:
+        return None, "spawn_timeout"
+    except OSError:
+        return None, "spawn_exec_error"
     if proc.returncode != 0:
-        return None
-    return proc.stdout or ""
+        return None, "spawn_nonzero_exit"
+    return proc.stdout or "", None
+
+
+def _spawn_reviewer(prompt: str, cwd: Path) -> str | None:
+    """Stdout-only view of ``_spawn_reviewer_status`` (None on any failure)."""
+    return _spawn_reviewer_status(prompt, cwd)[0]
 
 
 def collect_file_diffs(
@@ -428,21 +473,47 @@ def run_correctness_judge(
     profile_dir: Path,
     abs_paths: list[str],
     archetype_for,
+    *,
+    intent_tokens: list[str] | None = None,
+    event_sink=None,
 ) -> list[Finding]:
     """Run the full judge pipeline for one turn, returning advisory findings.
 
     Reconstructs diffs, builds the prompt, spawns the reviewer, and parses
     findings. Every stage fails open: an empty file set, a spawn failure, a
     timeout, or unparseable output all return ``[]`` so the turn ends normally.
+
+    ``event_sink`` is an optional ``callable(kind, detail)`` that receives the
+    degradation reason whenever the pipeline produced nothing for a cause the
+    caller should record: the spawn failure reason (``spawn_timeout`` /
+    ``spawn_exec_error`` / ``spawn_nonzero_exit``), ``unparseable_output`` when
+    the reviewer ran but no JSON array could be extracted, and
+    ``pipeline_error`` with a repr-capped detail for any other exception. Each
+    sink call is guarded so a raising sink never changes the judge outcome.
+    ``intent_tokens`` ride into the prompt (see ``build_prompt``).
     """
+
+    def _sink(kind: str, detail: str | None = None) -> None:
+        if event_sink is None:
+            return
+        try:
+            event_sink(kind, detail)
+        except Exception:
+            pass
+
     try:
         diffs = collect_file_diffs(repo_root, abs_paths, archetype_for)
         if not diffs:
             return []
-        prompt = build_prompt(repo_root, profile_dir, diffs)
-        stdout = _spawn_reviewer(prompt, repo_root)
+        prompt = build_prompt(repo_root, profile_dir, diffs, intent_tokens=intent_tokens)
+        stdout, fail_reason = _spawn_reviewer_status(prompt, repo_root)
         if stdout is None:
+            _sink(fail_reason or "spawn_exec_error")
             return []
-        return _parse_findings(stdout)
-    except Exception:
+        findings, parsed_ok = _parse_findings_status(stdout)
+        if not parsed_ok:
+            _sink("unparseable_output")
+        return findings
+    except Exception as exc:
+        _sink("pipeline_error", repr(exc)[:200])
         return []

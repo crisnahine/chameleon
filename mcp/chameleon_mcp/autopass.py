@@ -9,10 +9,17 @@ that draws that line.
 A change is auto-pass-eligible only when ALL hold:
 
 - no grounded blocking finding fired (an active block-eligible rule on the diff),
+- it typechecks (no compiler error on a changed file, when a typecheck ran),
 - it touches no security-sensitive surface (auth / payment / crypto / migration /
   infra) — those always go to a human regardless of how clean they look,
+- its diff removes no auth/csrf guard line and adds no chameleon-ignore
+  directive (the deterministic content signals),
+- it does not weaken tests (deleted test files, net test deletion, added skip
+  markers, an assertion-count drop) while also changing live source — pure test
+  cleanup stays eligible, the combination does not,
 - it is small (within the file and line caps for a routine change),
-- its blast radius is bounded (few cross-file importers of the symbols it changed),
+- its blast radius is bounded AND known (few cross-file importers of the symbols
+  it changed; an unreadable fan-out routes to a human rather than reading as 0),
 - it stays inside profiled archetypes (a file the engine has no canonical for
   cannot be vouched for, so it is not auto-passable).
 
@@ -24,59 +31,68 @@ irreducible part of review the evidence says no machine removes.
 
 from __future__ import annotations
 
-# Path substrings that mark a security-sensitive surface, by category. A change
+import re
+
+from chameleon_mcp.conventions import _is_test_path
+from chameleon_mcp.violation_class import _IGNORE_RE
+
+# Path needles that mark a security-sensitive surface, by category. A change
 # touching any of these always goes to a human, however clean it looks: these are
 # the classes where a machine false-negative is most expensive (auth bypass, a bad
-# charge, a leaked secret, an irreversible migration, a broken deploy). Heuristic
-# and deliberately broad — a false "needs human" here only costs one review, while
-# a false "safe to auto-pass" on an auth file is exactly the failure to avoid.
-# Substrings are matched against the POSIX-normalized, lower-cased path.
-_SECURITY_SURFACE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+# charge, a leaked secret, an irreversible migration, a broken deploy). Matching
+# is word-boundary token based for precision (an AuthorCard.tsx is not an auth
+# surface); the diff-content signals below cover recall (a removed guard routes
+# even when no path matches). Each category carries three needle sets: exact
+# tokens, token prefixes, and structural substrings (needles spanning path
+# separators or extensions, matched against the POSIX-normalized lower-cased
+# path).
+_SECURITY_SURFACE_PATTERNS: tuple[
+    tuple[str, frozenset[str], tuple[str, ...], tuple[str, ...]], ...
+] = (
     (
         "auth",
-        (
-            "auth",
-            "session",
-            "login",
-            "password",
-            "/jwt",
-            "oauth",
-            "devise",
-            "authoriz",
-            "permission",
-            "/policies/",
-            "_policy",
-            "ability",
-        ),
+        # "auth" must stay exact-only: "author"/"authorship" defeat any prefix
+        # scheme, while the real prefixed forms are covered by authentic/authoriz.
+        frozenset({"auth", "jwt", "oauth", "sso", "acl", "rbac", "devise", "ability", "abilities"}),
+        ("authentic", "authoriz", "session", "login", "password", "permission", "polic"),
+        (),
     ),
     (
         "payment",
+        frozenset(),
         ("payment", "billing", "invoice", "charge", "stripe", "subscription", "checkout"),
+        (),
     ),
     (
         "crypto",
-        ("crypto", "encrypt", "decrypt", "secret", "credential", "lockbox", "vault", "signing"),
+        frozenset({"secret", "secrets", "vault", "lockbox", "signing"}),
+        ("crypto", "encrypt", "decrypt", "credential"),
+        (),
     ),
     (
         "migration",
-        ("db/migrate/", "schema.rb", "/migrations/", "structure.sql"),
+        frozenset(),
+        (),
+        ("db/migrate/", "/migrations/", "schema.rb", "structure.sql"),
     ),
     (
         "infra",
-        (
-            "dockerfile",
-            "docker-compose",
-            ".github/workflows/",
-            "terraform",
-            ".tf",
-            "kubernetes",
-            "k8s",
-            "/helm/",
-            "nginx",
-            "/deploy",
-        ),
+        frozenset({"dockerfile", "terraform", "kubernetes", "k8s", "helm", "nginx", "tf"}),
+        ("docker", "deploy"),
+        (".github/workflows/", "docker-compose"),
     ),
 )
+
+
+def _path_tokens(path: str) -> list[str]:
+    """Split a path into lower-cased word tokens for surface matching.
+
+    camelCase boundaries are split first so loginThrottler yields a "login"
+    token; everything non-alphanumeric (separators, dots, underscores) then
+    delimits tokens.
+    """
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(path))
+    return re.findall(r"[a-z0-9]+", spaced.lower())
 
 
 def classify_security_surface(path: str) -> str | None:
@@ -89,8 +105,13 @@ def classify_security_surface(path: str) -> str | None:
     if not path:
         return None
     norm = str(path).replace("\\", "/").lower()
-    for category, needles in _SECURITY_SURFACE_PATTERNS:
-        if any(n in norm for n in needles):
+    tokens = _path_tokens(path)
+    for category, exact, prefixes, structural in _SECURITY_SURFACE_PATTERNS:
+        if any(t in exact for t in tokens):
+            return category
+        if prefixes and any(t.startswith(prefixes) for t in tokens):
+            return category
+        if structural and any(n in norm for n in structural):
             return category
     return None
 
@@ -103,6 +124,163 @@ def security_surface_categories(paths) -> set[str]:
         if cat is not None:
             out.add(cat)
     return out
+
+
+# Guard constructs whose removal from a diff is a deterministic security signal.
+# Public: the intent-capture security lens uses the same removed-invariant
+# lexicon, defined once here. Matched against single diff lines. Underscores
+# are word characters, so \bbefore_action\b deliberately does NOT match
+# skip_before_action (that line trips the verify_ arm only when it names a
+# verify_* callback). Deliberately narrow, near-zero-FP tokens: TS middleware
+# guards (requireAuth wrappers, route-config flags) are out of scope here and
+# belong to the stochastic review lenses.
+GUARD_LEXICON: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bbefore_action\b"),
+    re.compile(r"\bverify_\w+"),
+    re.compile(r"\bauthoriz\w*"),
+    re.compile(r"\bcsrf\w*"),
+    re.compile(r"\bprotect_from_forgery\b"),
+    re.compile(r"\bauthenticate_\w+"),
+)
+
+# Test skip/disable markers, counted on added lines in test files only. The
+# test-file scoping plus the underscore word boundary keeps a source-side
+# skip_before_action out of the count.
+_SKIP_MARKER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:it|test|describe|context)\.(?:skip|todo)\b"),
+    re.compile(r"\bx(?:it|test|describe|specify|context)\b\s*[('\"]"),
+    re.compile(r"\bpending\b"),
+    re.compile(r"\bskip\b(?=\s*[(:'\"])"),
+)
+
+# Assertion tokens for the added-minus-removed delta over test-file diff lines.
+_ASSERTION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bexpect\s*\("),
+    re.compile(r"\bassert\w*\b"),
+    re.compile(r"\.should\b"),
+    re.compile(r"\bmust_\w+"),
+)
+
+
+def _is_test_file(path: str) -> bool:
+    """True when the path is a test/spec/story file under either language's
+    test-naming convention; scopes the test-integrity signals."""
+    p = str(path)
+    return _is_test_path(p, language="ruby") or _is_test_path(p, language="typescript")
+
+
+def _iter_diff_files(diff_text):
+    """Yield ``(path, added_lines, removed_lines)`` per file block of a unified diff.
+
+    A minimal splitter keyed on ``diff --git`` block starts and ``+++ b/<path>``
+    headers (falling back to the ``--- a/<path>`` side for deletions); content
+    lines are those starting with exactly one ``+``/``-``, the ``+++``/``---``
+    headers excluded. Malformed input yields nothing — this feeds an advisory
+    verdict that must fail open, the same discipline as parse_numstat.
+    """
+    blocks: list[tuple[str, list[str], list[str]]] = []
+    path: str | None = None
+    old_path: str | None = None
+    added: list[str] = []
+    removed: list[str] = []
+
+    def _close() -> None:
+        target = path or old_path
+        if target is not None and (added or removed):
+            blocks.append((target, added, removed))
+
+    for line in (diff_text or "").splitlines():
+        if line.startswith("diff --git "):
+            _close()
+            path = old_path = None
+            added, removed = [], []
+        elif line.startswith("+++ "):
+            target = line[4:].strip()
+            if target.startswith("b/"):
+                path = target[2:]
+            elif target and target != "/dev/null":
+                path = target
+        elif line.startswith("--- "):
+            target = line[4:].strip()
+            if target.startswith("a/"):
+                old_path = target[2:]
+        elif line.startswith("+") and not line.startswith("+++"):
+            added.append(line[1:])
+        elif line.startswith("-") and not line.startswith("---"):
+            removed.append(line[1:])
+    _close()
+    return iter(blocks)
+
+
+def _normalized(line: str) -> str:
+    return " ".join(line.split())
+
+
+def scan_diff_signals(
+    diff_text,
+    *,
+    test_deletion_net_lines: int = 10,
+    assertion_delta_floor: int = -3,
+) -> dict:
+    """Deterministic content signals over a unified diff (zero LLM, zero I/O).
+
+    Returns ``{removed_guard_lines, ignore_directives_added, added_skip_markers,
+    assertion_delta, test_weakening_markers}``. Guard and ignore-directive
+    counts are netted against whitespace-normalized reappearance on the diff's
+    other side: a moved ``before_action`` or relocated directive stays quiet,
+    a removed or swapped one counts — raw counting would route every refactor
+    that reorders callbacks. The directive scan matches added lines as-is
+    (no string blanking), so a string literal or prose comment naming the
+    directive counts; that false positive costs one human review, which is the
+    cheap direction. ``test_weakening_markers`` is the informational rollup of
+    the weakening arms detectable from diff content alone (skip markers, an
+    assertion drop at/below the floor, net test-line removal past the
+    threshold); the routing gate itself lives in ``classify_change``.
+    """
+    blocks = list(_iter_diff_files(diff_text))
+    added_norm = {_normalized(line) for _, added, _ in blocks for line in added}
+    removed_norm = {_normalized(line) for _, _, removed in blocks for line in removed}
+
+    removed_guards = 0
+    ignores_added = 0
+    skip_markers = 0
+    assertions_added = 0
+    assertions_removed = 0
+    test_lines_added = 0
+    test_lines_removed = 0
+
+    for path, added, removed in blocks:
+        for line in removed:
+            if any(rx.search(line) for rx in GUARD_LEXICON):
+                if _normalized(line) not in added_norm:
+                    removed_guards += 1
+        for line in added:
+            if _IGNORE_RE.search(line) and _normalized(line) not in removed_norm:
+                ignores_added += 1
+        if not _is_test_file(path):
+            continue
+        test_lines_added += len(added)
+        test_lines_removed += len(removed)
+        for line in added:
+            if any(rx.search(line) for rx in _SKIP_MARKER_PATTERNS):
+                skip_markers += 1
+            assertions_added += sum(len(rx.findall(line)) for rx in _ASSERTION_PATTERNS)
+        for line in removed:
+            assertions_removed += sum(len(rx.findall(line)) for rx in _ASSERTION_PATTERNS)
+
+    assertion_delta = assertions_added - assertions_removed
+    weakening_markers = bool(
+        skip_markers > 0
+        or assertion_delta <= assertion_delta_floor
+        or (test_lines_removed - test_lines_added) > test_deletion_net_lines
+    )
+    return {
+        "removed_guard_lines": removed_guards,
+        "ignore_directives_added": ignores_added,
+        "added_skip_markers": skip_markers,
+        "assertion_delta": assertion_delta,
+        "test_weakening_markers": weakening_markers,
+    }
 
 
 def parse_numstat(text: str) -> list[dict]:
@@ -156,6 +334,26 @@ def count_added_files(name_status_text: str) -> int:
     return count
 
 
+def count_deleted_test_files(name_status_text: str) -> int:
+    """Count deleted test files in ``git diff --name-status`` output.
+
+    Only status ``D`` rows whose path is a test file count. Renames (``R``) are
+    deliberately ignored: a moved spec still exists, and the weakening gate
+    cares about coverage that vanished, not coverage that moved.
+    """
+    count = 0
+    for line in (name_status_text or "").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if parts[0].strip()[:1] != "D":
+            continue
+        path = parts[1].strip() if len(parts) > 1 else ""
+        if path and _is_test_file(path):
+            count += 1
+    return count
+
+
 def build_autopass_verdict(
     numstat_text: str,
     name_status_text: str,
@@ -164,22 +362,40 @@ def build_autopass_verdict(
     importers_of,
     block_findings_for,
     type_error_files=None,
+    diff_text: str | None = None,
+    diff_truncated: bool = False,
     max_files: int = 10,
     max_lines: int = 150,
     max_blast_radius: int = 10,
+    test_deletion_net_lines: int = 10,
+    assertion_delta_floor: int = -3,
 ) -> dict:
     """End-to-end auto-pass verdict from a branch's raw git diff output.
 
-    Composes the pure pipeline (parse -> assemble -> classify) so the only thing
-    a caller supplies beyond the two git outputs is the three engine adapters
-    (archetype coverage, cross-file importers, active block findings). Returns the
-    classifier verdict plus the changed-file list and the assembled facts, so a
-    reviewer can see *what* drove the decision.
+    Composes the pure pipeline (parse -> scan -> assemble -> classify) so the
+    only thing a caller supplies beyond the git outputs is the three engine
+    adapters (archetype coverage, cross-file importers, active block findings).
+    ``diff_text`` (the unified diff) is optional: without it the content-signal
+    facts are zero and only the structural gates apply — the same fail-open
+    posture as a missing typecheck. ``diff_truncated`` records that the caller
+    capped the diff before handing it over, so the content scan covered a
+    prefix only. Returns the classifier verdict plus the changed-file list and
+    the assembled facts, so a reviewer can see *what* drove the decision.
     """
     rows = parse_numstat(numstat_text)
     changed = [r["path"] for r in rows]
     added = sum(r["added"] for r in rows)
     removed = sum(r["removed"] for r in rows)
+    diff_signals = (
+        scan_diff_signals(
+            diff_text,
+            test_deletion_net_lines=test_deletion_net_lines,
+            assertion_delta_floor=assertion_delta_floor,
+        )
+        if diff_text is not None
+        else None
+    )
+    net_test_line_delta = sum(r["added"] - r["removed"] for r in rows if _is_test_file(r["path"]))
     facts = assemble_facts(
         changed,
         added_lines=added,
@@ -189,12 +405,18 @@ def build_autopass_verdict(
         importers_of=importers_of,
         block_findings_for=block_findings_for,
         type_error_files=type_error_files,
+        deleted_test_files=count_deleted_test_files(name_status_text),
+        net_test_line_delta=net_test_line_delta,
+        diff_signals=diff_signals,
     )
+    facts["diff_scan_truncated"] = bool(diff_truncated)
     verdict = classify_change(
         facts,
         max_files=max_files,
         max_lines=max_lines,
         max_blast_radius=max_blast_radius,
+        test_deletion_net_lines=test_deletion_net_lines,
+        assertion_delta_floor=assertion_delta_floor,
     )
     return {"changed_files": changed, "facts": facts, **verdict}
 
@@ -209,6 +431,9 @@ def assemble_facts(
     importers_of,
     block_findings_for,
     type_error_files=None,
+    deleted_test_files: int = 0,
+    net_test_line_delta: int = 0,
+    diff_signals: dict | None = None,
 ) -> dict:
     """Turn a changeset into the fact dict ``classify_change`` consumes.
 
@@ -216,23 +441,54 @@ def assemble_facts(
     plumbing: ``is_unarchetyped(path)`` (the engine has no canonical to vouch for
     it), ``importers_of(path)`` (cross-file fan-out from the reverse index), and
     ``block_findings_for(path)`` (active block-eligible violations on the file).
-    ``type_error_files`` is the optional set of files a typecheck (R4 grounding)
-    reported errors in; only changed files in it count, so a change that does not
-    compile routes to a human. ``blast_radius`` is the worst single-file fan-out,
-    not the sum, so one widely-imported file in the set is what gates, not a count
-    inflated by many leaf files.
+    ``importers_of`` may return ``int | None`` — None (or a raise) means the
+    fan-out could not be determined, counted in ``blast_radius_unknown``. An
+    unknown fan-out must never read as 0: zero is the auto-pass direction and
+    exactly the wrong default for missing evidence. ``blast_radius`` is the
+    worst single KNOWN fan-out, not the sum, so one widely-imported file in the
+    set is what gates, not a count inflated by many leaf files.
+
+    ``type_error_files`` is the optional set of files a typecheck reported
+    errors in; only changed files in it count, so a change that does not compile
+    routes to a human. ``deleted_test_files`` and ``net_test_line_delta`` are
+    caller-computed from name-status/numstat; ``diff_signals`` is the
+    ``scan_diff_signals`` output, or None when no diff text was available — the
+    content facts then default to 0, since the absence of the scan must not
+    fabricate signals (the same convention as ``type_error_files=None``).
     """
     files = list(changed_files or ())
     type_errs = set(type_error_files or ())
+
+    known_fanouts: list[int] = []
+    unknown_fanouts = 0
+    for p in files:
+        try:
+            fanout = importers_of(p)
+        except Exception:
+            fanout = None
+        if fanout is None:
+            unknown_fanouts += 1
+        else:
+            known_fanouts.append(int(fanout))
+
+    signals = diff_signals or {}
     return {
         "files_changed": len(files),
         "lines_changed": int(added_lines) + int(removed_lines),
         "new_files": int(new_files),
         "unarchetyped_files": sum(1 for p in files if is_unarchetyped(p)),
-        "blast_radius": max((int(importers_of(p)) for p in files), default=0),
+        "blast_radius": max(known_fanouts, default=0),
+        "blast_radius_unknown": unknown_fanouts,
         "active_block_findings": sum(int(block_findings_for(p)) for p in files),
         "type_errors": sum(1 for p in files if p in type_errs),
         "security_surface": bool(security_surface_categories(files)),
+        "source_files_changed": sum(1 for p in files if not _is_test_file(p)),
+        "deleted_test_files": int(deleted_test_files),
+        "net_test_line_delta": int(net_test_line_delta),
+        "removed_guard_lines": int(signals.get("removed_guard_lines", 0) or 0),
+        "ignore_directives_added": int(signals.get("ignore_directives_added", 0) or 0),
+        "added_skip_markers": int(signals.get("added_skip_markers", 0) or 0),
+        "assertion_delta": int(signals.get("assertion_delta", 0) or 0),
     }
 
 
@@ -242,13 +498,17 @@ def classify_change(
     max_files: int = 10,
     max_lines: int = 150,
     max_blast_radius: int = 10,
+    test_deletion_net_lines: int = 10,
+    assertion_delta_floor: int = -3,
 ) -> dict:
     """Return an auto-pass verdict for one change.
 
     ``facts`` carries the assembled signals (files_changed, lines_changed,
-    new_files, unarchetyped_files, blast_radius, active_block_findings,
-    security_surface). Missing keys are treated as their safe default (0 / False),
-    so a partially-assembled fact set never silently auto-passes on absent data.
+    new_files, unarchetyped_files, blast_radius, blast_radius_unknown,
+    active_block_findings, security_surface, the content signals, and the
+    test-integrity counts). Missing keys are treated as their safe default
+    (0 / False), so a partially-assembled fact set never silently auto-passes
+    on absent data.
     """
     reasons: list[str] = []
 
@@ -269,6 +529,14 @@ def classify_change(
     if bool(facts.get("security_surface")):
         reasons.append("touches a security-sensitive surface")
 
+    removed_guards = _int("removed_guard_lines")
+    if removed_guards > 0:
+        reasons.append(f"{removed_guards} removed guard line(s) (auth/csrf content signal)")
+
+    ignores_added = _int("ignore_directives_added")
+    if ignores_added > 0:
+        reasons.append(f"adds {ignores_added} chameleon-ignore directive(s)")
+
     files = _int("files_changed")
     lines = _int("lines_changed")
     if files > max_files or lines > max_lines:
@@ -278,16 +546,48 @@ def classify_change(
     if blast > max_blast_radius:
         reasons.append(f"high blast radius ({blast} importers)")
 
+    blast_unknown = _int("blast_radius_unknown")
+    if blast_unknown > 0:
+        reasons.append(
+            f"blast radius unknown for {blast_unknown} file(s) (cross-file index unavailable)"
+        )
+
     unarchetyped = _int("unarchetyped_files")
     if unarchetyped > 0:
         reasons.append(f"{unarchetyped} file(s) outside profiled archetypes")
 
+    # Test weakening defeats eligibility only in COMBINATION with a live-source
+    # change: gutting a spec while touching source is the dangerous shape, while
+    # a pure test cleanup surfaces its facts without routing.
+    weakening = (
+        _int("deleted_test_files") > 0
+        or _int("added_skip_markers") > 0
+        or _int("assertion_delta") <= assertion_delta_floor
+        or -_int("net_test_line_delta") > test_deletion_net_lines
+    )
+    weakening_combo = weakening and _int("source_files_changed") > 0
+    if weakening_combo:
+        reasons.append(
+            "test weakening (deleted tests / skip markers / assertion drop) "
+            "alongside live-source changes"
+        )
+
     eligible = not reasons
     if eligible:
         risk = "low"
-    elif findings > 0 or type_errors > 0 or bool(facts.get("security_surface")):
-        # Grounded failures (a block finding, a type error) and the security
-        # surface are high-confidence reasons; size/blast/archetype are softer.
+    elif (
+        findings > 0
+        or type_errors > 0
+        or bool(facts.get("security_surface"))
+        or removed_guards > 0
+        or ignores_added > 0
+        or weakening_combo
+    ):
+        # Grounded failures (a block finding, a type error), the security
+        # surface, the deterministic content signals (a removed guard, an
+        # in-diff suppression directive), and the weakening combination are
+        # high-confidence reasons; size/blast/unknown-fanout/archetype are
+        # softer.
         risk = "high"
     else:
         risk = "elevated"

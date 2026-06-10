@@ -1044,7 +1044,43 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
         return []
     from chameleon_mcp.profile.secret_scanner import scan_for_secrets
 
-    hits = scan_for_secrets(content)
+    hits = _scan_with_concat_fold(content, scan_for_secrets)
+    if not hits:
+        return []
+    return _secret_hits_to_violations(hits, max_results)
+
+
+def scan_hard_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> list[Violation]:
+    """Like `scan_secrets`, restricted to the deterministic hard-block kinds.
+
+    The latency-sensitive callers (the PreToolUse pre-write deny, the
+    corrections-exhausted block gate) only act on hard-kind hits, and those
+    kinds only ever originate from the regex fallback patterns — so this path
+    skips detect-secrets entirely (see
+    `profile.secret_scanner.scan_for_hard_secrets`) while keeping the same
+    concat-fold pass, dedup keys, result cap, and violation shape. The cap
+    row carries no kind, so it never hard-blocks. Pure function — no I/O.
+    """
+    if not content:
+        return []
+    from chameleon_mcp.profile.secret_scanner import scan_for_hard_secrets
+
+    hits = _scan_with_concat_fold(content, scan_for_hard_secrets)
+    if not hits:
+        return []
+    return _secret_hits_to_violations(hits, max_results)
+
+
+def _scan_with_concat_fold(content: str, scan_fn) -> list[dict]:
+    """Run ``scan_fn`` on the content, then on its concat-folded form.
+
+    Shared by `scan_secrets` and `scan_hard_secrets` so the fold-bypass
+    coverage and the (type, line) dedup between the two passes cannot drift.
+    Fold-pass hits are marked ``concat_folded`` and dropped when the original
+    pass already reported the same (type, line) — or the same type, for hits
+    that carry no line.
+    """
+    hits = scan_fn(content)
 
     folded = _fold_string_concat(content)
     if folded != content:
@@ -1052,7 +1088,7 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
             (h.get("type"), h.get("line_number")) for h in hits if h.get("line_number") is not None
         }
         seen_types = {h.get("type") for h in hits}
-        for fh in scan_for_secrets(folded):
+        for fh in scan_fn(folded):
             key_line = (fh.get("type"), fh.get("line_number"))
             if fh.get("line_number") is not None and key_line in seen_types_lines:
                 continue
@@ -1061,10 +1097,17 @@ def scan_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) -> li
             fh = dict(fh)
             fh["concat_folded"] = True
             hits.append(fh)
+    return hits
 
-    if not hits:
-        return []
 
+def _secret_hits_to_violations(hits: list[dict], max_results: int) -> list[Violation]:
+    """Render scanner hit dicts into the canonical secret Violation shape.
+
+    Single emission point for both secret scanners, so the
+    ``"<kind> at line N"`` actual format that `tag_secret_hardness` /
+    `violation_line` parse cannot drift between them. Caps at ``max_results``
+    with a summary row that carries no kind (and therefore never hard-blocks).
+    """
     violations: list[Violation] = []
     capped = hits[:max_results]
     for hit in capped:

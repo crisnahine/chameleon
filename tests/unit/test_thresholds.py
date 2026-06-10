@@ -112,6 +112,13 @@ class TestDefaults:
         for k, v in _thresholds.DEFAULTS.items():
             assert not isinstance(v, bool), k
 
+    def test_prewrite_secret_scan_cap_default_and_override(self, monkeypatch):
+        # The pre-write hard-secret deny truncates proposed content at this
+        # cap, matching the 100KB read ceiling the on-disk lint paths use.
+        assert _thresholds.DEFAULTS["PREWRITE_SECRET_SCAN_MAX_CHARS"] == 100_000
+        monkeypatch.setenv("CHAMELEON_PREWRITE_SECRET_SCAN_MAX_CHARS", "5000")
+        assert _thresholds.threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS") == 5000
+
 
 # --- _env_name --------------------------------------------------------------
 

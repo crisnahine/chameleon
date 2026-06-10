@@ -72,6 +72,7 @@ class EnforcementState:
     files: dict[str, FileState] = field(default_factory=dict)
     stop_hook_blocks: int = 0
     duplication_spawns: int = 0
+    correctness_spawns: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -80,6 +81,7 @@ class EnforcementState:
             "files": {k: v.to_dict() for k, v in self.files.items()},
             "stop_hook_blocks": self.stop_hook_blocks,
             "duplication_spawns": self.duplication_spawns,
+            "correctness_spawns": self.correctness_spawns,
         }
 
     @classmethod
@@ -90,6 +92,7 @@ class EnforcementState:
             files={k: FileState.from_dict(v) for k, v in d.get("files", {}).items()},
             stop_hook_blocks=d.get("stop_hook_blocks", 0),
             duplication_spawns=d.get("duplication_spawns", 0),
+            correctness_spawns=d.get("correctness_spawns", 0),
         )
 
 
@@ -136,6 +139,7 @@ def _merge_states(disk: EnforcementState, mem: EnforcementState) -> EnforcementS
             merged.files[key] = mfs
     merged.stop_hook_blocks = max(disk.stop_hook_blocks, mem.stop_hook_blocks)
     merged.duplication_spawns = max(disk.duplication_spawns, mem.duplication_spawns)
+    merged.correctness_spawns = max(disk.correctness_spawns, mem.correctness_spawns)
     return merged
 
 

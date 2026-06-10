@@ -1595,8 +1595,13 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     try:
         loaded = load_profile_dir(_effective_profile_dir(repo_root))
     except Exception:
+        # Distinguish "profile failed to load" from the legitimate "archetype
+        # has no witness" empty result, which returns this same shape minus
+        # the degraded flag; without it corruption reads as a benign no-op.
         return _envelope(
             {
+                "status": "degraded",
+                "reason": "profile_unavailable",
                 "content": "",
                 "witness_path": None,
                 "truncated": False,
@@ -1843,7 +1848,10 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     try:
         loaded = load_profile_dir(_effective_profile_dir(repo_root))
     except Exception:
-        env = {"rules": []}
+        # A repo with no configured lint rules and a repo whose profile failed
+        # to load must not look identical: the caller needs the degraded flag
+        # to avoid reading corruption as "nothing to enforce".
+        env = {"rules": [], "status": "degraded", "reason": "profile_unavailable"}
         if deprecation_note:
             env["deprecation"] = deprecation_note
         return _envelope(env)
@@ -3191,6 +3199,19 @@ def _partition_block_rules(
     return active, demoted
 
 
+def _collect_demotion_proposals(rules: dict) -> list[dict]:
+    """Pending override-driven demotion proposals recorded in enforcement.json."""
+    out: list[dict] = []
+    for rule, meta in rules.items():
+        if not isinstance(meta, dict):
+            continue
+        prop = meta.get("demotion_proposed")
+        if isinstance(prop, dict):
+            out.append({"rule": rule, **prop})
+    out.sort(key=lambda d: d["rule"])
+    return out
+
+
 def get_status(repo: str) -> dict:
     """Report enforcement state for a repo's chameleon profile.
 
@@ -3202,6 +3223,9 @@ def get_status(repo: str) -> dict:
     - ``demoted`` — block rules calibration kept advisory, each with the
       false-positive rate that demoted it, so a user can see *why* a rule
       that blocks elsewhere is silent here.
+    - ``proposed_demotions`` (when non-empty) — rules whose override pressure
+      crossed the demotion bar without multi-session evidence (or that are
+      security-class), still blocking, awaiting a human decision.
     - ``idiom_review`` — whether the once-per-session Stop-hook idiom/principle
       self-review fires (default on in enforce mode).
     - ``idiom_judge`` — opt-in flag that strengthens the idiom-review directive.
@@ -3279,8 +3303,9 @@ def get_status(repo: str) -> dict:
     # convention data was never derived; the read-time gates keep that stale
     # verdict out of the active list (the enforcement path applies the same
     # gates) until a refresh recalibrates.
+    block_rules = load_block_rules(profile_dir)
     active, demoted = _partition_block_rules(
-        load_block_rules(profile_dir),
+        block_rules,
         lang_inert=lambda r: rule_inert_for_language(r, profile_dir),
         signal_inert=lambda r: rule_inert_missing_signal(r, profile_dir),
     )
@@ -3307,6 +3332,11 @@ def get_status(repo: str) -> dict:
         "idiom_review": idiom_review,
         "idiom_judge": idiom_judge,
     }
+    # A pending proposal means the rule is still blocking; it is reported on
+    # its own axis so a lead can act on the override evidence deliberately.
+    proposed = _collect_demotion_proposals(block_rules)
+    if proposed:
+        enforcement["proposed_demotions"] = proposed
     if overrides is not None:
         enforcement["overrides"] = overrides
 
@@ -3488,7 +3518,9 @@ def get_longitudinal_signals(repo: str, window_days: int | None = None) -> dict:
     return _envelope(signals)
 
 
-def get_review_history(repo: str, limit: int | None = None) -> dict:
+def get_review_history(
+    repo: str, limit: int | None = None, include_attestations: bool = False
+) -> dict:
     """Return the persisted PR-review verdict trail for a repo, newest first.
 
     Once human review is optional, ``/chameleon-pr-review`` is the system of
@@ -3505,6 +3537,16 @@ def get_review_history(repo: str, limit: int | None = None) -> dict:
     it is NOT forgery resistance against the reviewed developer (who holds the
     signing key) and CI cannot verify these records (no shared key). So treat
     the trail as an honest self-attested audit log, not a merge authority.
+
+    ``include_attestations`` additionally returns the most-recent session
+    attestations (``attestations`` key) from the sibling ledger. The
+    attestation is self-signed and raise-only: nothing recorded in it may ever
+    lower scrutiny anywhere downstream. A consumer may use it only to RAISE
+    gate depth (skipped checks, degraded spawns, ungoverned files, disable
+    windows escalate) and to make post-incident replay honest. The merge
+    gate's floor is computed from diff facts alone and trusts none of this
+    without re-verification; a forged-clean attestation therefore buys
+    nothing. Default off so existing callers' payloads are unchanged.
 
     ``limit`` defaults to ``CHAMELEON_REVIEW_HISTORY_DEFAULT_LIMIT``. Fail-open:
     a missing/unreadable ledger returns an empty history rather than raising.
@@ -3531,6 +3573,13 @@ def get_review_history(repo: str, limit: int | None = None) -> dict:
         history = read_review_history(repo_id, limit)
     except Exception:
         history = {"repo_id": repo_id, "records": [], "total": 0, "unverified": 0}
+    if include_attestations:
+        try:
+            from chameleon_mcp.review_ledger import read_session_attestations
+
+            history["attestations"] = read_session_attestations(repo_id, limit=10)["records"]
+        except Exception:
+            history["attestations"] = []
     return _envelope(history)
 
 
@@ -5006,9 +5055,18 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
 
     Fails open toward "needs human": when a signal can't be read, the change is
     treated as the more conservative case rather than waved through. Blast radius
-    is a TypeScript-only signal (the reverse index is TS); Ruby files contribute
-    0 importers, so a Ruby change is gated by the other signals, not fan-out.
+    covers the reverse index's JS/TS extensions: an unreadable fan-out on a
+    covered file reads as UNKNOWN and routes to a human, while files outside the
+    extension set (Ruby etc.) contribute 0 by design and are gated by the other
+    signals until a Ruby cross-file index ships.
+
+    The verdict envelope also carries a ``typecheck`` field (three-state:
+    unavailable / clean / errors via the opt-in repo-local tsc runner) and the
+    deterministic content/test-integrity facts scanned from the unified diff.
+    ``unavailable`` -- including the default opt-in-not-set case -- is a recorded
+    fact, never a routing reason; type errors on changed files route needs-human.
     """
+    from chameleon_mcp import typecheck
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.autopass import build_autopass_verdict
     from chameleon_mcp.enforcement_calibration import active_block_rules
@@ -5033,16 +5091,59 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     # than read git's empty output as "no changes, safe to auto-pass".
     if not _git_available(repo_root):
         return _degraded("not_a_git_worktree", "not a git work tree; cannot assess the change")
+    # An empty base_ref would make the range spec "...HEAD", which git accepts
+    # with empty output — reading as "no changes" and auto-passing anything.
+    if not isinstance(base_ref, str) or not base_ref.strip():
+        return _degraded("invalid_base_ref", "base_ref must be a non-empty ref name")
     repo_arg = repo_id or str(repo_root)
 
-    def _git_out(args: list[str]) -> str:
+    def _git_out(args: list[str]) -> str | None:
+        # None means the fetch FAILED (timeout, spawn error, or nonzero exit
+        # such as an unresolvable base_ref); "" means git succeeded and the
+        # diff is genuinely empty. Collapsing the two would let a bogus
+        # base_ref read as "no changes" and auto-pass — the unsafe direction.
         res = _run_git(args, cwd=repo_root)
         if res is None or res.returncode != 0:
-            return ""
+            return None
         return res.stdout or ""
 
     numstat_text = _git_out(["diff", "--numstat", f"{base_ref}...HEAD"])
     name_status_text = _git_out(["diff", "--name-status", f"{base_ref}...HEAD"])
+    if numstat_text is None or name_status_text is None:
+        return _degraded(
+            "git_diff_failed",
+            f"git diff against {base_ref!r} failed; the change set is unknown",
+        )
+    # The plain diff feeds the deterministic content signals (removed guards,
+    # in-diff ignore directives, skip markers, assertion delta). It rides the
+    # same short git timeout as the other fetches; a diff too big to return in
+    # time reads as empty here, and a branch that large already routes to a
+    # human on size, so the lost content signal changes nothing. (The numstat
+    # and name-status fetches above already proved the ref resolves.)
+    diff_text = _git_out(["diff", "--no-ext-diff", "--unified=0", f"{base_ref}...HEAD"]) or ""
+    diff_cap = threshold_int("AUTOPASS_MAX_DIFF_BYTES")
+    diff_truncated = len(diff_text) > diff_cap
+
+    # Typecheck is three-state: "unavailable" (the default when the opt-in is
+    # unset, and the fail-open for any runner error) is a recorded fact that
+    # never routes the change; only errors on changed files do.
+    typecheck_fact: dict = {
+        "status": "unavailable",
+        "reason": f"opt-in not set ({typecheck.ALLOW_ENV}=1)",
+    }
+    type_error_files = None
+    if typecheck.is_enabled():
+        try:
+            typecheck_fact = typecheck.run_tsc(repo_root)
+        except Exception as exc:
+            # The runner is written never to raise; this keeps an unexpected
+            # error from surfacing as a tool crash, mirroring dep_audit.
+            typecheck_fact = {
+                "status": "unavailable",
+                "reason": f"typecheck failed open: {type(exc).__name__}",
+            }
+        if typecheck_fact.get("status") in ("clean", "errors"):
+            type_error_files = set(typecheck_fact.get("files") or ())
 
     try:
         active = active_block_rules(repo_root / ".chameleon")
@@ -5062,12 +5163,24 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         # to vouch for the file, so it cannot be auto-passed.
         return not arch or mq in ("none", "fallback")
 
-    def importers_of(rel: str) -> int:
+    _REVERSE_INDEX_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+
+    def importers_of(rel: str) -> int | None:
+        # The reverse index covers the JS/TS module graph only. A file outside
+        # those extensions is uncovered by design and contributes 0 (not
+        # "unknown"); for a covered file, any unreadable answer -- untrusted
+        # profile, missing index, deleted/unreadable module, a raise -- returns
+        # None so the router counts it as UNKNOWN fan-out instead of assuming 0,
+        # which is the auto-pass direction and the wrong default.
+        if not str(rel).lower().endswith(_REVERSE_INDEX_EXTS):
+            return 0
         try:
             data = query_symbol_importers(repo_arg, str(repo_root / rel)).get("data") or {}
+            if not data.get("found"):
+                return None
             return sum(int(i.get("count", 0)) for i in (data.get("importers") or []))
         except Exception:
-            return 0
+            return None
 
     def block_findings_for(rel: str) -> int:
         if not active:
@@ -5088,12 +5201,18 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         is_unarchetyped=is_unarchetyped,
         importers_of=importers_of,
         block_findings_for=block_findings_for,
+        type_error_files=type_error_files,
+        diff_text=diff_text[:diff_cap],
+        diff_truncated=diff_truncated,
         max_files=threshold_int("AUTOPASS_MAX_FILES"),
         max_lines=threshold_int("AUTOPASS_MAX_LINES"),
         max_blast_radius=threshold_int("AUTOPASS_MAX_BLAST_RADIUS"),
+        test_deletion_net_lines=threshold_int("AUTOPASS_TEST_DELETION_NET_LINES"),
+        assertion_delta_floor=threshold_int("AUTOPASS_ASSERTION_DELTA_FLOOR"),
     )
     verdict["advisory"] = True
     verdict["base_ref"] = base_ref
+    verdict["typecheck"] = typecheck_fact
     return _envelope(verdict)
 
 
@@ -5103,7 +5222,9 @@ def _override_rates_for_demotion(repo_id: str | None, window_days: int | None = 
     Reuses the override-audit computation so the rate definition (overrides over
     overrides+would_blocks) stays single-sourced. A rule below the audit's
     min-events floor reports rate None there; it carries no evidence and is
-    omitted here so an unseen rule is never demoted.
+    omitted here so an unseen rule is never demoted. ``distinct_sessions``
+    counts the sessions whose inline overrides back the rate; the demotion
+    floor reads it so single-session evidence proposes rather than applies.
     """
     from chameleon_mcp.review_ledger import build_override_audit
 
@@ -5114,7 +5235,11 @@ def _override_rates_for_demotion(repo_id: str | None, window_days: int | None = 
         if rate is None:
             continue
         events = int(meta.get("overrides", 0)) + int(meta.get("would_blocks", 0))
-        out[rule] = {"rate": rate, "events": events}
+        out[rule] = {
+            "rate": rate,
+            "events": events,
+            "distinct_sessions": int(meta.get("distinct_sessions", 0) or 0),
+        }
     return out
 
 
@@ -5149,6 +5274,7 @@ def _calibrate_block_rules_for_repo(repo_root: Path) -> None:
                     rates,
                     threshold=threshold_float("RULE_FP_DEMOTE_THRESHOLD"),
                     min_events=threshold_int("OVERRIDE_AUDIT_MIN_EVENTS"),
+                    min_distinct_sessions=threshold_int("OVERRIDE_DEMOTION_MIN_SESSIONS"),
                 )
         except Exception:
             pass

@@ -12,6 +12,20 @@ Design notes:
   unsigned mode).
 - GC: logs older than RETENTION_DAYS days are purged opportunistically when a
   new session's log file is first created.
+
+Check-event sidecar (``<session>.checks.jsonl``, same directory): a second
+per-session NDJSON recording which turn-end checks ran, were skipped, or
+degraded; the Stop-path session attestation aggregates it. ``check`` is one of
+``correctness_judge``, ``duplication_review``, ``idiom_review``,
+``stop_relint``, ``posttool_verify``. ``status`` baseline is ``ran`` /
+``skipped`` / ``degraded``; richer per-check statuses are stored verbatim (the
+vocabulary is an open set). ``reason`` values defined so far: ``spawn_timeout``,
+``spawn_error``, ``spawn_nonzero_exit`` (degraded judge spawns, written by the
+judge path), ``in_flight_at_stop`` (an async spawn unfinished at Stop, recorded
+as a SKIPPED check), ``cooldown``, ``verify_env_off``, ``enforce_env_off``,
+``mode_off``, ``feature_disabled``, ``marker_exists``, ``cap_reached``,
+``corr_judge_active``, ``digest_already_judged``, ``suppressed``. Unknown
+reasons are stored verbatim.
 """
 
 from __future__ import annotations
@@ -329,6 +343,96 @@ def verify_exec_log_line(line: str) -> bool:
         return False
     actual = hmac.new(key, canonical, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, actual)
+
+
+def append_check_event(
+    repo_id: str,
+    *,
+    session_id: str,
+    check: str,
+    status: str,
+    reason: str | None = None,
+    file_rel: str | None = None,
+    detail: dict | None = None,
+) -> None:
+    """Append one HMAC-signed check event to the session's checks sidecar.
+
+    One line per turn-end check outcome. The field names are a cross-module
+    contract (the judge paths write degraded/in-flight events into the same
+    file the attestation reads): ``ts``, ``session_id``, ``check``, ``status``,
+    ``reason``, ``file_rel``, ``detail``, ``hmac``. Signing mirrors
+    ``append_exec_log``; when the HMAC key is unavailable the record is written
+    with ``"hmac": null`` rather than dropped, so the reader can flag it as
+    unverified instead of losing the event. Swallows every exception: this is
+    called from hook paths, where a logging failure must never change the hook
+    outcome.
+    """
+    try:
+        payload: dict = {
+            "ts": time.time(),
+            "session_id": session_id,
+            "check": check,
+            "status": status,
+            "reason": reason,
+            "file_rel": file_rel,
+            "detail": detail if isinstance(detail, dict) else None,
+        }
+        try:
+            key = _ensure_hmac_key()
+            canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            payload["hmac"] = hmac.new(key, canonical, hashlib.sha256).hexdigest()
+        except HMACKeyError:
+            payload["hmac"] = None
+
+        from chameleon_mcp.optouts import _safe_session_marker
+
+        log_path = _exec_log_dir(repo_id) / f"{_safe_session_marker(session_id)}.checks.jsonl"
+        new_file = not log_path.exists()
+        line = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
+        if new_file:
+            _gc_old_logs(log_path.parent)
+    except Exception:
+        return
+
+
+def read_check_events(repo_id: str, session_id: str, *, limit: int) -> dict:
+    """Read the newest ``limit`` check events for a session, HMAC-verified.
+
+    Returns ``{"events": [<verified records>], "unverified": <int>}``. A line
+    that fails verification (tampered, or written with a null hmac because no
+    key was available) is excluded from ``events`` and counted in
+    ``unverified``; corrupt (non-JSON) lines are skipped non-fatally. Fail-open
+    to the empty shape on any error: a missing sidecar reads as "no checks
+    observed", which the attestation's consumers treat as scrutiny-raising,
+    never as clean.
+    """
+    empty = {"events": [], "unverified": 0}
+    try:
+        from chameleon_mcp.optouts import _safe_session_marker
+
+        log_path = _exec_log_dir(repo_id) / f"{_safe_session_marker(session_id)}.checks.jsonl"
+        if not log_path.is_file():
+            return empty
+        with open(log_path, encoding="utf-8") as f:
+            raw_lines = [ln.strip() for ln in f if ln.strip()]
+        events: list[dict] = []
+        unverified = 0
+        for line in raw_lines[-max(0, int(limit)) :]:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            if verify_exec_log_line(line):
+                events.append(record)
+            else:
+                unverified += 1
+        return {"events": events, "unverified": unverified}
+    except Exception:
+        return {"events": [], "unverified": 0}
 
 
 def session_test_run_seen(repo_id: str, session_id: str) -> bool:

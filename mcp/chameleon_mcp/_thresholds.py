@@ -104,6 +104,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # the demotion lives in the trust-hashed enforcement.json and is never a
     # runtime mutation of it. As a fraction of (overrides + would_blocks).
     "RULE_FP_DEMOTE_THRESHOLD": 0.5,
+    # Minimum distinct sessions the override evidence must span before a
+    # refresh-time auto-demotion applies. Override telemetry is author-
+    # generated, so a single session's overrides must never be able to demote
+    # a correct block rule on their own; below the floor (and always for
+    # security-class rules) the demotion is recorded as a proposal for the
+    # status surface instead of being applied.
+    "OVERRIDE_DEMOTION_MIN_SESSIONS": 2,
     # Auto-pass router bounds (advisory). A change stays auto-pass-eligible only
     # while it is small and low-fan-out; past any of these it routes to a human.
     # Conservative defaults for a "routine" change; an auth/payment/migration
@@ -111,6 +118,25 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "AUTOPASS_MAX_FILES": 10,
     "AUTOPASS_MAX_LINES": 150,
     "AUTOPASS_MAX_BLAST_RADIUS": 10,
+    # Hard wall-clock budget for the opt-in repo-local `tsc --noEmit` grounding
+    # run (CHAMELEON_ALLOW_TSC). Tool-time only, never on a hook hot path; on
+    # timeout the typecheck reads "unavailable" — a recorded fact, never a
+    # failure and never a synthetic clean.
+    "AUTOPASS_TSC_TIMEOUT_SECONDS": 120,
+    # Cap on the unified-diff text scanned for the deterministic content
+    # signals (removed-guard lexicon, in-diff ignore directives, test skip
+    # markers, assertion delta). Past the cap the scan truncates and says so;
+    # a diff that large already routes needs-human on size alone.
+    "AUTOPASS_MAX_DIFF_BYTES": 2_000_000,
+    # Net removed lines across changed test files before the change reads as
+    # net test deletion in the test-integrity gate. Small consolidation
+    # refactors stay quiet; gutting a spec does not.
+    "AUTOPASS_TEST_DELETION_NET_LINES": 10,
+    # Assertion-count delta (added minus removed assertion tokens in changed
+    # test files) at or below this floor reads as test weakening. One or two
+    # consolidated assertions are the normal refactor shape; tighten to -1 via
+    # the env override for stricter repos.
+    "AUTOPASS_ASSERTION_DELTA_FLOOR": -3,
     # Lookback for the combined longitudinal health section (structural conformance
     # plus enforcement-outcome rates). Same horizon as the shadow / override
     # surfaces so a lead reads all three over the same recent-edit window.
@@ -314,6 +340,36 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # paste of foreign-style code must not flood the advisory list. Past the cap
     # a summary row reports the remainder, mirroring the secret-scan cap.
     "STYLE_RULE_VIOLATIONS_PER_FILE": 20,
+    # Cap on proposed-content characters the PreToolUse hard-secret deny
+    # scans, consistent with the 100KB ceiling every existing content scan
+    # shares. A secret placed past the cap escapes the pre-write deny but
+    # still meets the PostToolUse and Stop scans.
+    "PREWRITE_SECRET_SCAN_MAX_CHARS": 100_000,
+    # Hard per-session budget for the per-turn-routed correctness judge (the
+    # old behavior was exactly one spawn per session). Bounds cost and the
+    # worst-case cumulative Stop latency; once spent, further routed turns
+    # record a skipped check instead of spawning.
+    "CORRECTNESS_JUDGE_MAX_SPAWNS_PER_SESSION": 4,
+    # Cap on extracted assertion tokens persisted per user prompt by intent
+    # capture. Enough to carry the spec constants of a detailed prompt without
+    # storing the prompt itself.
+    "INTENT_MAX_TOKENS_PER_PROMPT": 40,
+    # Size cap on the per-session intent file; oldest entries trim first so a
+    # long session cannot grow the artifact unbounded.
+    "INTENT_FILE_MAX_BYTES": 32_768,
+    # Age at which session-start sweeps reap intent and judge session files,
+    # matching the session-marker reaper horizon.
+    "INTENT_RETENTION_DAYS": 7,
+    # Caps for the turn-end session attestation. Files bounds governed +
+    # ungoverned entries (and their digest reads) per record; overrides and
+    # check events bound the embedded evidence lists, with the remainder
+    # reported as truncated counts rather than dropped silently; the ledger
+    # cap is the recency trim for session_attestations.ndjson, mirroring
+    # REVIEW_LEDGER_MAX_RECORDS.
+    "ATTESTATION_MAX_FILES": 200,
+    "ATTESTATION_MAX_OVERRIDES": 100,
+    "ATTESTATION_MAX_CHECK_EVENTS": 200,
+    "ATTESTATION_LEDGER_MAX_RECORDS": 2_000,
 }
 
 

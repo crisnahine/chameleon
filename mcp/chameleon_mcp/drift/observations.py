@@ -219,6 +219,7 @@ def record_decision(
     outcome: str,
     session_id: str | None = None,
     observed_at: int | None = None,
+    content_digest: str | None = None,
 ) -> None:
     """Append one row to decision_log: what chameleon knew and did for an edit.
 
@@ -228,6 +229,9 @@ def record_decision(
     that raised nothing). ``rel_path`` must be a true repo-relative path so the
     log keys consistently across clones; ``blockable_rules`` is the set of
     block-eligible rules that still stood on the file (stored comma-joined).
+    ``content_digest`` pins the row to the exact content the verifier saw (the
+    16-hex digest of the verified window); callers without it store NULL, which
+    digest queries deliberately never match.
 
     Fail-open: any sqlite error is swallowed (decision logging is advisory, not
     load-bearing). ``repo_id``, ``rel_path``, and ``outcome`` are required; a
@@ -257,9 +261,9 @@ def record_decision(
             conn.execute(
                 """
                 INSERT INTO decision_log
-                  (rel_path, archetype, match_quality, confidence_band,
-                   violations_raised, blockable_rules, outcome, session_id, observed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (rel_path, archetype, match_quality, confidence_band, violations_raised,
+                   blockable_rules, content_digest, outcome, session_id, observed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rel_path,
@@ -268,6 +272,7 @@ def record_decision(
                     confidence_band,
                     int(violations_raised),
                     rules_joined,
+                    content_digest,
                     outcome,
                     session_id,
                     ts,
@@ -344,6 +349,139 @@ def latest_decision(repo_id: str, rel_path: str) -> dict | None:
         "session_id": row[7],
         "observed_at": int(row[8] or 0),
     }
+
+
+_DECISION_SNAPSHOT_SELECT = (
+    "SELECT id, rel_path, archetype, match_quality, confidence_band, violations_raised,"
+    " blockable_rules, outcome, session_id, observed_at, content_digest FROM decision_log "
+)
+
+
+def decision_snapshot_for(
+    repo_id: str,
+    rel_path: str,
+    content_digest: str,
+    *,
+    session_id: str | None = None,
+) -> dict | None:
+    """Newest decision_log row for exactly this (rel_path, content digest) pair.
+
+    The (content digest, file) pair is the replay key: a snapshot reader pins
+    the decision that governed the bytes it actually saw. Resolving by rel_path
+    alone shows whatever edit came LAST, which is exactly what post-incident
+    replay must never do. When no digest row matches and a ``session_id`` is
+    given, falls back to the newest NULL-digest row for (rel_path, session_id)
+    -- rows this same session wrote before the digest column existed -- and
+    returns None otherwise. Legacy NULL-digest rows are never matched by the
+    digest query itself, so old content cannot mis-join onto a new edit.
+
+    Dict shape mirrors ``latest_decision`` plus ``id`` and ``content_digest``.
+    Fail-open: any sqlite/OS error returns None.
+    """
+    if not repo_id or not rel_path:
+        return None
+    db_path = _drift_db_path(repo_id)
+    if not db_path.is_file():
+        return None
+    try:
+        conn = _get_drift_conn(repo_id)
+    except (sqlite3.Error, OSError):
+        return None
+    try:
+        row = None
+        if content_digest:
+            row = conn.execute(
+                _DECISION_SNAPSHOT_SELECT
+                + "WHERE rel_path = ? AND content_digest = ? "
+                + "ORDER BY observed_at DESC, id DESC LIMIT 1",
+                (rel_path, content_digest),
+            ).fetchone()
+        if row is None and session_id:
+            row = conn.execute(
+                _DECISION_SNAPSHOT_SELECT
+                + "WHERE rel_path = ? AND session_id = ? AND content_digest IS NULL "
+                + "ORDER BY observed_at DESC, id DESC LIMIT 1",
+                (rel_path, session_id),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    rules = [r for r in (row[6] or "").split(",") if r]
+    return {
+        "id": int(row[0]),
+        "rel_path": row[1],
+        "archetype": row[2],
+        "match_quality": row[3],
+        "confidence_band": row[4],
+        "violations_raised": int(row[5] or 0),
+        "blockable_rules": rules,
+        "outcome": row[7],
+        "session_id": row[8],
+        "observed_at": int(row[9] or 0),
+        "content_digest": row[10],
+    }
+
+
+def session_override_rows(repo_id: str, session_id: str, *, limit: int) -> list[dict]:
+    """Per-(rule, file, blanket) override tallies for one session, newest first.
+
+    Powers the attestation's override evidence: every inline chameleon-ignore
+    bypass recorded for this session shows up grouped with a count, capped at
+    ``limit``. Fail-open: any sqlite/OS error (or a missing db) returns [].
+    """
+    if not repo_id or not session_id:
+        return []
+    db_path = _drift_db_path(repo_id)
+    if not db_path.is_file():
+        return []
+    try:
+        conn = _get_drift_conn(repo_id)
+        rows = conn.execute(
+            """
+            SELECT rule, rel_path, blanket, COUNT(*)
+            FROM rule_overrides
+            WHERE session_id = ?
+            GROUP BY rule, rel_path, blanket
+            ORDER BY MAX(observed_at) DESC
+            LIMIT ?
+            """,
+            (session_id, int(limit)),
+        ).fetchall()
+    except (sqlite3.Error, OSError, TypeError, ValueError):
+        return []
+    return [
+        {"rule": str(r[0]), "file": r[1], "blanket": bool(r[2]), "count": int(r[3] or 0)}
+        for r in rows
+    ]
+
+
+def session_override_group_count(repo_id: str, session_id: str) -> int:
+    """Total distinct (rule, file, blanket) override groups for one session.
+
+    Lets the attestation report exactly how many groups its embed cap dropped,
+    instead of a saturated "more existed" flag. Fail-open: 0 on any error.
+    """
+    if not repo_id or not session_id:
+        return 0
+    db_path = _drift_db_path(repo_id)
+    if not db_path.is_file():
+        return 0
+    try:
+        conn = _get_drift_conn(repo_id)
+        (count,) = conn.execute(
+            """
+            SELECT COUNT(*) FROM (
+                SELECT 1 FROM rule_overrides
+                WHERE session_id = ?
+                GROUP BY rule, rel_path, blanket
+            )
+            """,
+            (session_id,),
+        ).fetchone()
+        return int(count or 0)
+    except (sqlite3.Error, OSError, TypeError, ValueError):
+        return 0
 
 
 def override_counts(

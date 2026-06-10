@@ -138,11 +138,21 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     """ADVISORY: is this branch's diff vs base_ref safe to auto-pass, or human?
 
     Classifies the change and returns {auto_pass_eligible, risk, reasons, facts,
-    changed_files}. Never gates -- it marks the routine slice safe to skip and
-    routes the rest to a human with a reason (grounded block finding, a
-    security-sensitive surface, too large, high blast radius, or a file outside
-    the profiled archetypes). Fails open toward "needs human" when a signal can't
-    be read. Blast radius is a TypeScript-only signal.
+    changed_files, typecheck}. Never gates -- it marks the routine slice safe to
+    skip and routes the rest to a human with a reason (grounded block finding, a
+    security-sensitive surface, too large, high blast radius, a file outside the
+    profiled archetypes, a removed guard line or in-diff chameleon-ignore
+    directive, test weakening alongside live-source changes, or an unknown blast
+    radius when the cross-file index cannot answer). The typecheck field is
+    three-state (unavailable / clean / errors): unavailable -- including the
+    default opt-in-not-set case -- is recorded as a fact and never forces
+    needs-human, while type errors on changed files do. facts also carries the
+    deterministic test-integrity and content signals (deleted/weakened tests,
+    added skip markers, assertion delta, removed guard lines, chameleon-ignore
+    added in-diff). Fails open toward "needs human" when a signal can't be read.
+    Blast radius covers TS/JS files; an unreadable fan-out on a covered file
+    routes to a human, and non-TS files are gated by the other signals until
+    Ruby cross-file parity ships. Still ADVISORY, never gates.
     """
     return tools.get_autopass_verdict(repo, base_ref)
 

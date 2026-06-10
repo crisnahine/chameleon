@@ -13,9 +13,22 @@ import threading
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_float, threshold_int
-from chameleon_mcp.violation_class import BLOCK_ELIGIBLE_RULES, BLOCK_RULE_LANGUAGES
+from chameleon_mcp.violation_class import (
+    BLANKET_IMMUNE_RULES,
+    BLOCK_ELIGIBLE_RULES,
+    BLOCK_RULE_LANGUAGES,
+)
 
 ARTIFACT = "enforcement.json"
+
+# Rules exempt from override-driven auto-demotion. Derived from the
+# blanket-immune deterministic set rather than redefined: the same two rules
+# (hard-kind secrets, eval/exec sinks) guard security facts, not
+# team-convention preferences, and calibration never runs content scans, so
+# their "active" verdict carries no false-positive measurement that override
+# pressure could legitimately contradict. A high override rate on one of these
+# is always recorded as a proposal for a human to act on, never applied.
+SECURITY_BLOCK_RULES: frozenset[str] = BLANKET_IMMUNE_RULES
 
 # Upper bound on the on-disk artifact we will read. enforcement.json is a tiny
 # per-rule verdict (a handful of small entries) in normal operation. A committed
@@ -511,6 +524,7 @@ def apply_override_feedback_demotion(
     *,
     threshold: float,
     min_events: int,
+    min_distinct_sessions: int,
 ) -> dict:
     """Demote a calibrated-active rule the team keeps overriding in practice.
 
@@ -519,9 +533,25 @@ def apply_override_feedback_demotion(
     overrides. A rule overridden in more than ``threshold`` of its fires over at
     least ``min_events`` is fighting the team, not catching bugs, so it drops to
     advisory here. The volume floor stops one override out of one fire from
-    nuking a rule. This runs at refresh time, before the trust hash is taken, so
-    the demotion lives in the trust-hashed artifact and is never a runtime
-    mutation of it. ``verdicts`` is not mutated in place.
+    nuking a rule.
+
+    Override evidence is author-generated, so a single session must not hold a
+    kill switch over a calibrated block rule: the demotion auto-applies only
+    when the supporting overrides span at least ``min_distinct_sessions``
+    distinct sessions (a missing or zero session count reads as zero — absent
+    evidence never weakens the gate). Below that floor, and always for
+    ``SECURITY_BLOCK_RULES``, the demotion is instead recorded as a
+    ``demotion_proposed`` field on the entry: the rule keeps blocking and
+    /chameleon-status surfaces the proposal for a human decision. A demoted
+    entry carries ``override_distinct_sessions`` so the multi-session evidence
+    that authorized it stays on record.
+
+    This runs at refresh time, before the trust hash is taken, so demotions and
+    proposals live in the trust-hashed artifact and are never a runtime
+    mutation of it. ``verdicts`` is not mutated in place. Proposals need no
+    explicit clearing: calibrate_block_rules rebuilds every entry fresh each
+    refresh, so a proposal that loses its evidence disappears on the next
+    refresh.
     """
     out: dict = {}
     for rule, meta in verdicts.items():
@@ -534,8 +564,19 @@ def apply_override_feedback_demotion(
             and stats.get("events", 0) >= min_events
             and stats.get("rate", 0.0) > threshold
         ):
-            entry["active"] = False
-            entry["demoted_reason"] = "high-override-rate"
-            entry["override_rate"] = stats["rate"]
+            ds = int(stats.get("distinct_sessions", 0) or 0)
+            if rule in SECURITY_BLOCK_RULES or ds < min_distinct_sessions:
+                entry["demotion_proposed"] = {
+                    "reason": "high-override-rate",
+                    "override_rate": stats["rate"],
+                    "events": stats["events"],
+                    "distinct_sessions": ds,
+                    "security_rule": rule in SECURITY_BLOCK_RULES,
+                }
+            else:
+                entry["active"] = False
+                entry["demoted_reason"] = "high-override-rate"
+                entry["override_rate"] = stats["rate"]
+                entry["override_distinct_sessions"] = ds
         out[rule] = entry
     return out

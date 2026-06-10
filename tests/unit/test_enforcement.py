@@ -302,6 +302,24 @@ def test_stop_hook_blocks_roundtrip_and_merge_max():
     assert merged.stop_hook_blocks == 5
 
 
+def test_correctness_spawns_roundtrip_default_and_merge_max():
+    from chameleon_mcp.enforcement import EnforcementState, _merge_states
+
+    s = EnforcementState()
+    s.correctness_spawns = 3
+    restored = EnforcementState.from_dict(s.to_dict())
+    assert restored.correctness_spawns == 3
+
+    # Old state files carry no key: default to 0, never crash.
+    legacy = EnforcementState.from_dict({"files": {}})
+    assert legacy.correctness_spawns == 0
+
+    disk = EnforcementState()
+    disk.correctness_spawns = 2
+    merged = _merge_states(disk, s)
+    assert merged.correctness_spawns == 3
+
+
 def test_concurrent_saves_do_not_lose_updates(tmp_path):
     """Threads sharing a session_id must not clobber each other's file entries.
 
