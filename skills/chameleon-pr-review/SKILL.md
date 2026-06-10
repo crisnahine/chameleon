@@ -23,7 +23,7 @@ Follow these steps in order. Do not skip steps.
 ### Step 1: Parse input
 
 Determine what to review:
-- **No args**: review current branch. Run `git diff main...HEAD --name-only` (or `production...HEAD` if main doesn't exist) to get changed files, then `git diff main...HEAD` (same base) to get the full unified diff.
+- **No args**: review current branch. The diff base is the locked production branch when one exists — read `production_ref` from `.chameleon/config.json`; otherwise use `main` (or `production` if main doesn't exist). Run `git diff <base>...HEAD --name-only` to get changed files, then `git diff <base>...HEAD` (same base) to get the full unified diff.
 - **Jira key** (matches `[A-Z]+-\d+`): note it for Step 3.
 - **PR URL** (contains `pullrequests` or `pull`): fetch the PR diff. For Bitbucket, use `bbcurl`. For GitHub, use `gh`. This already returns the full unified diff.
 - **Both**: use the PR diff and the Jira key.
@@ -389,7 +389,7 @@ Emit the result in the verdict block as an advisory summary line (the Coverage-d
 The findings sections answer "is anything wrong with this change?" This step answers the different question they cannot: "is this change *routine* enough that, with a clean review, a human can skip it?" Call the `get_autopass_verdict` MCP tool once for the whole diff:
 
 ```
-get_autopass_verdict(repo=<repo_id>, base_ref=<the PR base branch, or the branch's merge base; default "main">)
+get_autopass_verdict(repo=<repo_id>, base_ref=<the PR base branch, or the branch's merge base; use the locked production_ref from .chameleon/config.json when no PR base is known; default "main">)
 ```
 
 It returns `{auto_pass_eligible, risk, reasons, facts, changed_files}`. Report it verbatim as an advisory line (the Auto-pass routing section in Step 4). It is ADVISORY only: it never produces a BLOCK, FIX, or NIT and never changes the verdict. Its job is to mark the safe-to-skip slice and to name why a change is NOT in it (a security-sensitive surface, too large, high cross-file blast radius, a file outside the profiled archetypes, or a grounded block finding).

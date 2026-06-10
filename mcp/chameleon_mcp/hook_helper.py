@@ -488,6 +488,72 @@ def _emit_session_context(content: str) -> None:
 
 _DRIFT_BANNER_FILENAME = ".drift_banner.last"
 _ENGINE_BANNER_FILENAME = ".engine_banner.last"
+_PRODUCTION_BANNER_FILENAME = ".production_banner.last"
+
+
+def _production_tip_banner(repo_root: Path, session_id: str | None = None) -> str | None:
+    """One-line SessionStart advisory when the locked production ref's tip
+    moved past the profile's recorded derivation SHA.
+
+    For a production-pinned repo this is the real freshness signal — the
+    profile describes a commit the production branch has since left
+    behind. Same optout + TTL-marker discipline as the drift banner; tip
+    comparison reads the LOCAL ref (current as of the user's last fetch),
+    never the network. Best-effort: any failure returns None.
+    """
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.production_ref import resolve_production_ref
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.tools import (
+            _compute_repo_id,
+            _persisted_production_ref,
+            _recorded_derivation_sha,
+        )
+
+        resolved_root = find_repo_root(repo_root) or repo_root
+        profile_dir = resolved_root / ".chameleon"
+        if not profile_dir.is_dir():
+            return None
+        branch = _persisted_production_ref(resolved_root)
+        if not branch:
+            return None
+        recorded = _recorded_derivation_sha(profile_dir)
+        if not recorded:
+            return None
+        # Optout check BEFORE the git subprocess: a disabled/paused repo must
+        # not pay resolution cost on session start.
+        repo_id = _compute_repo_id(resolved_root)
+        if is_chameleon_suppressed(resolved_root, repo_id, session_id) is not None:
+            return None
+        # Short per-call timeout: this runs inside the session-start `timeout 3`
+        # wrapper; memoized so the auto-refresh trigger reuses the answer.
+        resolved = resolve_production_ref(resolved_root, branch, timeout_seconds=1, use_memo=True)
+        if resolved is None or resolved.sha == recorded:
+            return None
+
+        marker = _plugin_data_dir() / repo_id / _PRODUCTION_BANNER_FILENAME
+        if _marker_path_is_fresh(marker, threshold_int("DRIFT_BANNER_TTL_SECONDS")):
+            return None
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(marker.parent, 0o700)
+        except OSError:
+            pass
+        _atomic_write_text(marker, str(int(time.time())))
+        try:
+            os.chmod(marker, 0o600)
+        except OSError:
+            pass
+        return (
+            f"[🦎 chameleon: production drift] The locked production branch "
+            f"({resolved.ref}) has moved to {resolved.sha[:12]} since this profile "
+            f"was derived ({recorded[:12]}). Suggest /chameleon-refresh to re-derive "
+            "from the current production tree."
+        )
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> str | None:
@@ -548,6 +614,24 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
                     os.chmod(emarker, 0o600)
                 except OSError:
                     pass
+                # When auto-refresh is on, this same SessionStart triggers the
+                # re-derive itself — suggesting a manual /chameleon-refresh
+                # right after it already ran is stale advice.
+                auto_on = True
+                try:
+                    from chameleon_mcp.profile.config import load_config
+
+                    auto_on = load_config(resolved_root / ".chameleon").auto_refresh.enabled
+                except Exception:  # noqa: BLE001
+                    auto_on = True
+                if auto_on:
+                    return (
+                        "[🦎 chameleon: drift]\n"
+                        "The chameleon engine was upgraded since this profile was "
+                        "built; the profile auto-refresh has been triggered for "
+                        "this session. If guidance still looks stale next "
+                        "session, run **/chameleon-refresh**."
+                    )
                 return (
                     "[🦎 chameleon: drift]\n"
                     "The chameleon engine was upgraded since this profile was "
@@ -698,6 +782,34 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
                 should_fire = True
         except Exception:  # noqa: BLE001
             pass
+        if not should_fire:
+            # Production-pinned staleness: the locked ref's tip moved past the
+            # profile's recorded derivation SHA (or a locked repo's profile
+            # predates ref-pinned provenance entirely). This is THE freshness
+            # signal for pinned repos — working-tree drift below says nothing
+            # about the production tree. Tip comparison is against the local
+            # ref (origin/<branch> as of the user's last fetch); no network.
+            try:
+                from chameleon_mcp.production_ref import resolve_production_ref
+                from chameleon_mcp.tools import (
+                    _persisted_production_ref,
+                    _recorded_derivation_sha,
+                )
+
+                prod_branch = _persisted_production_ref(resolved_root)
+                if prod_branch:
+                    # Memoized: the tip banner usually resolved this same lock
+                    # moments earlier in this process; short timeout keeps the
+                    # session-start budget intact on a cold lookup.
+                    resolved_ref = resolve_production_ref(
+                        resolved_root, prod_branch, timeout_seconds=1, use_memo=True
+                    )
+                    if resolved_ref is not None:
+                        recorded_sha = _recorded_derivation_sha(profile_dir)
+                        if recorded_sha != resolved_ref.sha:
+                            should_fire = True
+            except Exception:  # noqa: BLE001
+                pass
         if not should_fire:
             try:
                 stats = compute_drift_stats(repo_id)
@@ -1228,6 +1340,10 @@ def session_start() -> int:
     if drift_banner:
         wrapped_parts.append("")
         wrapped_parts.append(drift_banner)
+    production_banner = _production_tip_banner(repo_root or Path.cwd(), session_id=session_id)
+    if production_banner:
+        wrapped_parts.append("")
+        wrapped_parts.append(production_banner)
     wrapped_parts.append("</chameleon-context>")
     wrapped = "\n".join(wrapped_parts)
 
@@ -1954,8 +2070,13 @@ def _extract_bash_write_targets(command: str) -> list[str]:
 
     if _SED_INPLACE_RE.search(command):
         # sed's mutated file is its last operand. Scan only the sed segment so a
-        # later piped command's argument is not mistaken for the file.
-        seg = re.split(r"[;&|]", command)
+        # later piped command's argument is not mistaken for the file. The split
+        # must ignore separators inside quotes: the most common sed scripts put
+        # `|` (alternate delimiter), `;` (chained commands), and `&` (matched-text
+        # backreference) INSIDE the quoted script, and splitting there used to
+        # hand back a script fragment instead of the file — leaving the written
+        # file invisible to the Stop backstop.
+        seg = _split_outside_quotes(command)
         for part in seg:
             if re.search(r"\bsed\b.*\s-i", part):
                 operands = _SED_OPERAND_RE.findall(part)
@@ -1963,6 +2084,44 @@ def _extract_bash_write_targets(command: str) -> list[str]:
                     _add(operands[-1])
 
     return targets
+
+
+def _split_outside_quotes(command: str) -> list[str]:
+    """Split a shell command on top-level ``;``/``&``/``|`` only.
+
+    Quoted spans (single or double) and backslash-escaped characters stay
+    intact, mirroring how the shell itself tokenizes — a separator inside a
+    quoted sed script is script content, not a command boundary.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for ch in command:
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            continue
+        if ch == "\\" and quote != "'":
+            buf.append(ch)
+            escaped = True
+            continue
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            continue
+        if ch in ";&|":
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return parts
 
 
 def _record_bash_write_mutations(
@@ -2685,8 +2844,9 @@ def posttool_verify() -> int:
     tool_input = _as_dict(payload.get("tool_input"))
     file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
     # A non-string path (malformed payload) must fail open silently here, not
-    # surface as a TypeError in the error log doctor reads.
-    if not isinstance(file_path, str) or not file_path:
+    # surface as a TypeError in the error log doctor reads. Same for an
+    # embedded NUL, which raises ValueError from Path() before any guard.
+    if not isinstance(file_path, str) or not file_path or "\x00" in file_path:
         _emit({})
         return 0
 
@@ -3011,6 +3171,22 @@ def posttool_verify() -> int:
 
         if not daemon_responded:
             violations = _lint_file_in_process(repo_root, archetype_name, content, file_path)
+
+        # Archetype-SHAPE rules presume the archetype actually fits the file.
+        # On a fallback/none-quality match (new directory, no structural
+        # sibling) a shape mismatch says "the guess was wrong", not "the file
+        # is wrong" — flagging it escalates files that were never wrong and
+        # invites restructuring working code. Content rules (secrets, sinks,
+        # conventions, imports) are archetype-independent and stay.
+        if decision_match_quality in ("fallback", "none"):
+            _SHAPE_RULES = {
+                "top-level-node-kinds-mismatch",
+                "default-export-kind-mismatch",
+                "named-export-count-bucket-mismatch",
+                "jsx-presence-mismatch",
+                "content-signal-mismatch",
+            }
+            violations = [v for v in violations if v.get("rule") not in _SHAPE_RULES]
 
         elapsed_ms = int((time.time() - _started) * 1000)
         try:
@@ -3832,12 +4008,39 @@ def _idiom_review_gate(
         except OSError:
             pass
 
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in edited[:5])
+        idioms_block = sanitize_for_chameleon_context(idioms_text.strip())[:_IDIOM_CONTEXT_CHAR_CAP]
+        principles_block = sanitize_for_chameleon_context(principles_text.strip())[
+            :_IDIOM_CONTEXT_CHAR_CAP
+        ]
+
+        body: list[str] = []
+        if no_test_for_source_edit:
+            body.append(
+                "No passing test run was recorded this turn while you changed source "
+                "files. Run the suite to confirm your changes pass before ending "
+                "(skip only if a watch process or CI is already running them)."
+            )
+        if idioms_block:
+            body.append("")
+            body.append("Team idioms:")
+            body.append(idioms_block)
+        if principles_block:
+            body.append("")
+            body.append("Principles:")
+            body.append(principles_block)
+
         if cfg.mode != "enforce":
             # Shadow: record the would-have-blocked signal and allow the stop.
             # This gate has no single rule (it nudges a once-per-session
             # self-review of the turn's edits), so it emits under its own hook
             # name with no rule. The shadow report counts it as a turn-level
-            # signal, never as a per-rule promotion candidate.
+            # signal, never as a per-rule promotion candidate. The review text
+            # itself still goes out as a non-blocking advisory: taught idioms
+            # are not in the verify lint path, so without this the default
+            # (shadow) config delivers NO turn-end idiom feedback at all.
             try:
                 from chameleon_mcp.metrics import emit_hook_metric
 
@@ -3860,35 +4063,29 @@ def _idiom_review_gate(
                     )
             except Exception:
                 pass
-            return None
-
-        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
-
-        names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in edited[:5])
-        idioms_block = sanitize_for_chameleon_context(idioms_text.strip())[:_IDIOM_CONTEXT_CHAR_CAP]
-        principles_block = sanitize_for_chameleon_context(principles_text.strip())[
-            :_IDIOM_CONTEXT_CHAR_CAP
-        ]
+            _emit_check_event(repo_id, session_id, "idiom_review", "ran")
+            advisory = [
+                "[🦎 chameleon: idiom self-review (advisory)]",
+                f"You edited {names} this turn. Review those changes against the "
+                "team idioms/principles below and fix any clear violation in your "
+                "next action. This is advisory; the turn ends normally.",
+                *body,
+            ]
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "Stop",
+                    "additionalContext": (
+                        "<chameleon-context>\n" + "\n".join(advisory) + "\n</chameleon-context>"
+                    ),
+                }
+            }
 
         parts = [
             f"chameleon: you edited {names} this turn. Before ending, verify those "
             "changes comply with the team idioms/principles below. Fix any clear "
             "violation; otherwise you may end.",
+            *body,
         ]
-        if no_test_for_source_edit:
-            parts.append(
-                "No passing test run was recorded this turn while you changed source "
-                "files. Run the suite to confirm your changes pass before ending "
-                "(skip only if a watch process or CI is already running them)."
-            )
-        if idioms_block:
-            parts.append("")
-            parts.append("Team idioms:")
-            parts.append(idioms_block)
-        if principles_block:
-            parts.append("")
-            parts.append("Principles:")
-            parts.append(principles_block)
         if cfg.idiom_judge:
             parts.append("")
             parts.append(
@@ -4990,8 +5187,13 @@ def _stop_gates(
                 cfg=cfg,
                 repo_data=repo_data,
             )
+            idiom_advisory: str | None = None
             if gate is not None:
-                return gate
+                if gate.get("decision") == "block":
+                    return gate
+                # Shadow mode hands back the review as a non-blocking advisory;
+                # fold it into this Stop's context with the other advisories.
+                idiom_advisory = (gate.get("hookSpecificOutput") or {}).get("additionalContext")
             # Whether the correctness judge will spawn its reviewer THIS Stop,
             # routed per turn (digest freshness + risk facts + session budget)
             # before the gate runs. The duplication gate reads this to defer
@@ -5075,6 +5277,8 @@ def _stop_gates(
                 )
 
             context_blocks: list[str] = []
+            if idiom_advisory:
+                context_blocks.append(idiom_advisory)
             if judged is not None:
                 jb = (judged.get("hookSpecificOutput") or {}).get("additionalContext")
                 if jb:

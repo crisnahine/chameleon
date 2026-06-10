@@ -509,11 +509,29 @@ def _merge_tsconfig_into(target: dict, source: dict) -> None:
 
 
 def _safe_rel(path: Path, repo_root: Path) -> str:
-    """Render a path relative to repo_root when possible, falling back to str."""
+    """Render a path relative to repo_root, ``../``-style when outside it.
+
+    A cross-package tsconfig extends in a monorepo workspace points outside
+    the workspace dir; the old absolute-string fallback persisted machine-
+    (and, under production-ref pinning, materialized-worktree-) specific
+    paths into committed rules.json. A bounded ``..`` walk-up stays
+    deterministic and resolves 1:1 in any checkout of the same layout.
+    """
     try:
         return str(path.resolve().relative_to(repo_root.resolve()))
     except (ValueError, OSError):
+        pass
+    try:
+        import os as _os
+
+        rel = _os.path.relpath(str(path.resolve()), str(repo_root.resolve()))
+    except (ValueError, OSError):
         return str(path)
+    # A target on another root/drive renders an absurd ../ chain; keep the
+    # absolute string for anything implausibly far above the workspace.
+    if rel.count("..") <= 8:
+        return rel
+    return str(path)
 
 
 def _parse_eslint_yaml(path: Path) -> tuple[dict | None, str | None]:

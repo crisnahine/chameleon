@@ -223,6 +223,8 @@ scripts/prune-plugin-cache.sh --apply   # delete every cached version except the
 
 **Upgrading from v0.1.x (one-time):** the profile format changed and old profiles are refused. In each repo, run `/chameleon-refresh` to rebuild, then `/chameleon-trust` again (the rebuilt profile has a new signature). Full detail in [CHANGELOG.md](../CHANGELOG.md#020--2026-05-11).
 
+**Upgrading to v2.12.0 on a team that commits `.chameleon/`: upgrade together.** The first 2.12.0 session writes a `production_ref` key into the committed `config.json`. Versions 2.11.1 and older reject unknown config keys, so a teammate who pulls that config before upgrading silently falls back to config defaults (canonical_ref pinning, enforcement mode, auto-refresh tuning) until they update — the only symptom is `config_invalid` noise in `/chameleon-doctor`. An old engine's `/chameleon-refresh` on a 2.12.0 profile also re-derives it from the working tree and drops the pin (it self-heals on the next 2.12.0 refresh). Either upgrade the team in one go, or hold off committing the changed `config.json` until everyone is on 2.12.0. From 2.12.0 onward unknown keys are tolerated, so this is the last version boundary with this failure shape.
+
 ---
 
 ## Uninstalling

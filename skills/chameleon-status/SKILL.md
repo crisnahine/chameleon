@@ -18,6 +18,7 @@ What's plumbed today (read straight from `.chameleon/` and `drift.db`):
 5. **Version coherence** — call `daemon_status` to get `running_version` (also returns `alive`, `pid`, `socket`, `uptime_s`, `last_request_at`). If the running version differs from the installed plugin version, surface "Running v<X>, installed v<Y> — restart Claude Code to pick up the new MCP."
 6. **Config** — surface the active config.json settings (or the built-in defaults when there is no file):
    - `canonical_ref` (and whether materialize is currently working, via `branch_pinning_enabled`)
+   - `production_ref` — the locked production branch the profile DERIVES from. When set, also surface `get_drift_status`'s `production_ref` block: `derived_sha` vs `tip_sha`, and when `tip_moved` is true print "Production branch <ref> moved N commit(s) past the profile — run /chameleon-refresh". Doctor's `production_ref` check reports whether the lock still resolves.
    - `auto_refresh.enabled` + `drift_threshold` + `max_age_hours`
    - `trust.auto_preserve_when`
    - `auto_rename`

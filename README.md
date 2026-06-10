@@ -37,7 +37,7 @@ chameleon clusters your actual code patterns (AST + statistical analysis), captu
 
 ## How it works
 
-1. **Bootstrap.** `/chameleon-init` runs an AST scan, clusters files into archetypes by a 7-tuple signature, picks a canonical example per archetype, and writes `.chameleon/profile.json` — committed to git, team-shared.
+1. **Bootstrap.** `/chameleon-init` locks the repo's production branch (auto-detected from the origin default branch; you're asked only when the signal is ambiguous), materializes that branch's tree from local git objects, runs an AST scan over it, clusters files into archetypes by a 7-tuple signature, picks a canonical example per archetype, and writes `.chameleon/profile.json` — committed to git, team-shared. The profile reflects the production line no matter which feature branch you happen to have checked out.
 
 2. **Trust.** `/chameleon-trust` is a per-user, per-repo approval gate. Same mental model as `git config --get user.signingkey`: the profile lives in the repo, the trust grant lives on your machine.
 
@@ -45,7 +45,7 @@ chameleon clusters your actual code patterns (AST + statistical analysis), captu
 
 4. **Teach.** `/chameleon-teach` captures idioms an AST can't infer — banned imports, mandatory wrappers, custom HTTP clients, internal conventions. Persisted to `.chameleon/idioms.md` and surfaced through the trust gate so reviewers see them before granting trust.
 
-5. **Drift detection.** Per-edit confidence is tracked in `~/.local/share/chameleon/<repo_id>/drift.db`. When the profile no longer matches reality, `/chameleon-status` escalates and recommends `/chameleon-refresh`.
+5. **Drift detection.** Per-edit confidence is tracked in `~/.local/share/chameleon/<repo_id>/drift.db`. When the profile no longer matches reality — or the locked production branch's tip moves past the commit the profile was derived from — `/chameleon-status` escalates and recommends `/chameleon-refresh`.
 
 Because the skills trigger automatically, you don't need to do anything special after install. Edits in a trusted, profiled repo just blend in.
 
@@ -65,7 +65,7 @@ The [Quickstart](#quickstart) above has the two commands for Claude Code. For th
 
 5. **`/chameleon-status`** — check profile state, drift score, and plugin health. High drift recommends `/chameleon-refresh` to re-cluster against the current code.
 
-6. **`/chameleon-refresh`** — re-run the bootstrap after meaningful team changes. Existing idioms are preserved; the trust grant must be re-issued because the profile SHA changes.
+6. **`/chameleon-refresh`** — re-derive the profile from the production branch's current tip. No need to checkout or pull that branch first: refresh reads your local `origin/<branch>` ref (current as of your last `git fetch`), materializes its tree, and re-derives — your feature-branch checkout stays untouched. Tip unchanged → instant noop. Existing idioms are preserved; the trust grant must be re-issued because the profile SHA changes.
 
 ## What's Inside
 

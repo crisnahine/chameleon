@@ -26,7 +26,12 @@ def test_branch_case_captures_full_unified_diff():
     """The no-args branch path must capture the full diff, not only file names."""
     text = _skill_text()
     # The full-diff command for the branch case (same base as --name-only).
-    assert "git diff main...HEAD" in text
+    # The base is production_ref-aware, so the command is written with a
+    # <base> placeholder — both invocations must share it.
+    assert "git diff <base>...HEAD --name-only" in text
+    assert "git diff <base>...HEAD` (same base)" in text
+    # The locked production branch is the preferred base.
+    assert "production_ref" in text
     # The bare name-only must no longer be the only diff the branch path runs:
     # there is an explicit instruction to also get the unified diff.
     assert "full unified diff" in text

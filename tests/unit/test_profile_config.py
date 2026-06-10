@@ -138,6 +138,34 @@ class TestValidParse:
         assert c.canonical_ref is None
         assert c.branch_pinning_enabled is False
 
+    def test_production_ref_parses_and_strips(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"production_ref": "  production  "})
+        c = load_config(d)
+        assert c.production_ref == "production"
+
+    def test_production_ref_defaults_to_none(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {})
+        assert load_config(d).production_ref is None
+
+    def test_production_ref_null_ok(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"production_ref": None})
+        assert load_config(d).production_ref is None
+
+    def test_production_ref_non_string_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"production_ref": 7})
+        with pytest.raises(ChameleonConfigError, match="production_ref"):
+            load_config(d)
+
+    def test_production_ref_empty_string_rejected(self, tmp_path: Path):
+        d = tmp_path / "profile"
+        _write(d, {"production_ref": "   "})
+        with pytest.raises(ChameleonConfigError, match="production_ref"):
+            load_config(d)
+
     def test_drift_threshold_int_coerced_to_float(self, tmp_path: Path):
         d = tmp_path / "profile"
         _write(d, {"auto_refresh": {"drift_threshold": 1}})
@@ -214,11 +242,14 @@ class TestMalformedJson:
 # Unknown keys (strict sections)
 # --------------------------------------------------------------------------
 class TestUnknownKeys:
-    def test_unknown_top_level_key_rejected(self, tmp_path: Path):
+    def test_unknown_top_level_key_tolerated(self, tmp_path: Path):
+        # config.json is committed and travels via git to teammates on older
+        # engines; an unknown top-level key from a newer engine must not brick
+        # every config feature for them. Known keys stay strictly validated.
         d = tmp_path / "profile"
-        _write(d, {"totally_unknown": 1})
-        with pytest.raises(ChameleonConfigError, match="unknown top-level key"):
-            load_config(d)
+        _write(d, {"totally_unknown": 1, "auto_rename": False})
+        cfg = load_config(d)
+        assert cfg.auto_rename is False
 
     def test_unknown_auto_refresh_key_rejected(self, tmp_path: Path):
         d = tmp_path / "profile"

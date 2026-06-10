@@ -10,10 +10,12 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import secrets
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -472,7 +474,9 @@ def _persist_repo_uuid_if_no_remote(repo_root: Path) -> None:
                 # A config malformed for some other feature must not block the
                 # uuid stamp; overwrite with a minimal valid document.
                 existing = {}
-        existing.setdefault("$schema", "chameleon-config-0.8.0")
+        from chameleon_mcp.profile.config import CURRENT_SCHEMA
+
+        existing.setdefault("$schema", CURRENT_SCHEMA)
         existing["repo_uuid"] = secrets.token_hex(16)
         text = json.dumps(existing, indent=2, sort_keys=True) + "\n"
         tmp = config_path.with_name(config_path.name + ".tmp")
@@ -480,6 +484,335 @@ def _persist_repo_uuid_if_no_remote(repo_root: Path) -> None:
         tmp.replace(config_path)
     except Exception:
         pass
+
+
+def _persisted_production_ref(repo_root: Path) -> str | None:
+    """Read ``.chameleon/config.json``'s ``production_ref`` if present.
+
+    Raw tolerant read (not the strict config loader) so a config malformed
+    for some unrelated feature still yields a usable lock. Fail-open: any
+    read/parse error returns None and derivation falls back to the
+    working tree.
+    """
+    try:
+        raw = (repo_root / ".chameleon" / "config.json").read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    ref = data.get("production_ref")
+    if isinstance(ref, str) and ref.strip():
+        return ref.strip()
+    return None
+
+
+def _production_ref_explicitly_disabled(repo_root: Path) -> bool:
+    """True when config.json carries an explicit ``"production_ref": null``.
+
+    An explicit null is the user's opt-out of production pinning; the
+    auto-lock migration must respect it instead of re-detecting. Distinct
+    from an ABSENT key (no decision yet — migration may lock). Fail-open
+    to False on any read error.
+    """
+    try:
+        raw = (repo_root / ".chameleon" / "config.json").read_text(encoding="utf-8")
+        data = json.loads(raw)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return False
+    return isinstance(data, dict) and "production_ref" in data and data["production_ref"] is None
+
+
+def _persist_production_ref(repo_root: Path, branch: str) -> None:
+    """Stamp ``production_ref`` into ``.chameleon/config.json``.
+
+    Same read-modify-write shape as the repo_uuid stamp: tolerant read that
+    preserves unknown keys, tmp-file + atomic replace, every failure
+    swallowed. Runs before the profile-hash snapshot so the trust mirror
+    captures the post-write config bytes.
+    """
+    try:
+        profile_dir = repo_root / ".chameleon"
+        if not profile_dir.is_dir():
+            return
+        config_path = profile_dir / "config.json"
+        existing: dict = {}
+        if config_path.is_file():
+            try:
+                parsed = json.loads(config_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    existing = parsed
+            except (OSError, json.JSONDecodeError, ValueError):
+                existing = {}
+        if existing.get("production_ref") == branch:
+            return
+        from chameleon_mcp.profile.config import CURRENT_SCHEMA
+
+        existing.setdefault("$schema", CURRENT_SCHEMA)
+        existing["production_ref"] = branch
+        text = json.dumps(existing, indent=2, sort_keys=True) + "\n"
+        tmp = config_path.with_name(config_path.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(config_path)
+    except Exception:
+        pass
+
+
+@dataclass
+class _ProductionDerivation:
+    """Resolved production-lock state for one bootstrap/refresh run."""
+
+    branch: str | None = None
+    source: str = "none"  # explicit | config | origin_head | named_production | default_name | none
+    conflict: bool = False
+    candidates: tuple[str, ...] = ()
+    ref: str | None = None
+    sha: str | None = None
+    tree: Path | None = None  # materialized analysis root (caller must release)
+    # The dir registered as a git worktree. For a subdirectory bootstrap the
+    # analysis root (`tree`) points INSIDE this dir; release must remove the
+    # registration root, not the analysis path.
+    worktree_root: Path | None = None
+    persist: bool = False  # write the lock into config.json on success
+    note: str | None = None
+
+    @property
+    def locked(self) -> bool:
+        return self.sha is not None
+
+    def derivation_source(self) -> dict | None:
+        if not self.locked:
+            return None
+        return {"mode": "production_ref", "branch": self.branch, "ref": self.ref, "sha": self.sha}
+
+    def envelope_block(self) -> dict:
+        block: dict = {
+            "locked": self.locked and self.tree is not None,
+            "branch": self.branch,
+            "source": self.source,
+        }
+        if self.ref:
+            block["ref"] = self.ref
+        if self.sha:
+            block["sha"] = self.sha
+        if self.conflict:
+            block["conflict"] = True
+        if self.candidates:
+            block["candidates"] = list(self.candidates)
+        if self.note:
+            block["note"] = self.note
+        return block
+
+
+def _prepare_production_derivation(
+    repo_root: Path, *, requested_ref: str | None = None
+) -> _ProductionDerivation:
+    """Decide which tree this derivation analyzes.
+
+    Precedence: explicit ``requested_ref`` (the init skill's confirmed
+    answer) > the persisted config lock > auto-detection. Auto-detection
+    engages the lock only when the answer is clean AND origin-backed; a
+    local-only repo keeps working-tree derivation and the envelope just
+    suggests the candidate. Every failure (no git, unresolvable ref,
+    worktree add failure) degrades to working-tree derivation with a note
+    — production pinning is best-effort, never a new hard dependency.
+    """
+    from chameleon_mcp.production_ref import (
+        detect_production_branch,
+        git_toplevel,
+        materialize_production_tree,
+        prune_stale_production_trees,
+        resolve_production_ref,
+    )
+
+    state = _ProductionDerivation()
+    try:
+        # A bootstrap root may be a SUBDIRECTORY of its git repo (the
+        # JS-sidecar flow: bootstrap_repo(<repo>/app/javascript)). git
+        # resolves refs against the containing repo, so the materialized
+        # tree is the toplevel's — analysis must re-base onto the same
+        # subdirectory or the sidecar profile gets derived from the whole
+        # repo (wrong language, dangling paths).
+        toplevel = git_toplevel(repo_root)
+        subdir_rel: Path | None = None
+        if toplevel is not None:
+            try:
+                rel = repo_root.resolve().relative_to(toplevel)
+            except (OSError, ValueError):
+                rel = Path(".")
+            if str(rel) not in ("", "."):
+                subdir_rel = rel
+
+        if requested_ref:
+            state.branch = requested_ref
+            state.source = "explicit"
+            state.persist = True
+        else:
+            configured = _persisted_production_ref(repo_root)
+            toplevel_configured = (
+                _persisted_production_ref(toplevel)
+                if subdir_rel is not None and toplevel is not None
+                else None
+            )
+            if configured:
+                state.branch = configured
+                state.source = "config"
+            elif _production_ref_explicitly_disabled(repo_root):
+                # Explicit "production_ref": null — the user opted out;
+                # never re-detect over their decision.
+                state.source = "disabled"
+                state.note = "production_ref is explicitly null (opt-out); working-tree derivation"
+                return state
+            elif (
+                subdir_rel is not None
+                and toplevel is not None
+                and _production_ref_explicitly_disabled(toplevel)
+            ):
+                # The repo-root profile opted out; a sidecar bootstrap must
+                # not auto-lock over that repo-level decision.
+                state.source = "disabled"
+                state.note = (
+                    "production_ref is explicitly null at the repo root (opt-out); "
+                    "working-tree derivation"
+                )
+                return state
+            elif toplevel_configured:
+                # Sidecar without its own lock inherits the repo root's, and
+                # persists it locally so refresh stays tip-keyed.
+                state.branch = toplevel_configured
+                state.source = "config"
+                state.persist = True
+            else:
+                det = detect_production_branch(repo_root)
+                state.conflict = det.conflict
+                state.candidates = det.candidates
+                state.source = det.source
+                state.branch = det.branch
+                lockable = bool(det.branch) and not det.conflict and det.from_origin
+                if not lockable:
+                    if det.conflict:
+                        state.note = (
+                            "ambiguous production branch (candidates: "
+                            f"{[det.branch, *det.candidates]!r}); not auto-locked"
+                        )
+                    elif det.branch:
+                        state.note = (
+                            f"detected candidate branch {det.branch!r} has no origin "
+                            "backing; not auto-locked (set production_ref to opt in)"
+                        )
+                    return state
+                state.persist = True
+
+        resolved = resolve_production_ref(repo_root, state.branch)
+        if resolved is None:
+            state.note = (
+                f"production_ref {state.branch!r} did not resolve to a commit; "
+                "analyzed the working tree instead"
+            )
+            state.persist = False
+            return state
+        state.ref = resolved.ref
+        state.sha = resolved.sha
+
+        repo_id = _compute_repo_id(repo_root)
+        from chameleon_mcp.profile.trust import repo_data_dir
+
+        container = repo_data_dir(repo_id) / "prodtree"
+        prune_stale_production_trees(repo_root, container)
+        dest = container / f"{resolved.sha[:12]}-{os.getpid()}"
+        tree = materialize_production_tree(repo_root, dest, resolved.sha)
+        if tree is None:
+            state.note = (
+                f"could not materialize {state.ref!r} (worktree add failed); "
+                "analyzed the working tree instead"
+            )
+            # A detected lock must not persist off a degraded run — this
+            # profile was derived from the working tree, and silently locking
+            # would make the next refresh treat it as production-derived. An
+            # EXPLICIT request still persists (the user's stated intent), and
+            # the missing derivation_source self-heals via a full re-derive
+            # on the next refresh.
+            if state.source != "explicit":
+                state.persist = False
+            return state
+        state.worktree_root = tree
+        if subdir_rel is not None:
+            sub = tree / subdir_rel
+            if sub.is_dir():
+                tree = sub
+            else:
+                # The sidecar dir does not exist at the production ref —
+                # deriving from the toplevel would write a whole-repo profile
+                # into the sidecar. Degrade to working-tree derivation.
+                from chameleon_mcp.production_ref import remove_production_tree
+
+                remove_production_tree(repo_root, state.worktree_root)
+                state.worktree_root = None
+                state.note = (
+                    f"{subdir_rel.as_posix()!r} does not exist in {state.ref!r}; "
+                    "analyzed the working tree instead"
+                )
+                if state.source != "explicit":
+                    state.persist = False
+                return state
+        state.tree = tree
+        return state
+    except Exception:  # noqa: BLE001 — pinning must never break bootstrap
+        state.note = "production-ref preparation failed; analyzed the working tree instead"
+        if state.worktree_root is not None:
+            try:
+                from chameleon_mcp.production_ref import remove_production_tree
+
+                remove_production_tree(repo_root, state.worktree_root)
+            except Exception:  # noqa: BLE001
+                pass
+            state.worktree_root = None
+        state.tree = None
+        # Same rule as the materialize/subdir degrades: a DETECTED lock must
+        # not persist off a run that fell back to the working tree (the sha
+        # may already be resolved, which alone satisfies the persist guard).
+        if state.source != "explicit":
+            state.persist = False
+        return state
+
+
+def _release_production_derivation(repo_root: Path, state: _ProductionDerivation) -> None:
+    """Remove the materialized tree, tolerating every failure."""
+    target = state.worktree_root if state.worktree_root is not None else state.tree
+    if target is not None:
+        try:
+            from chameleon_mcp.production_ref import remove_production_tree
+
+            remove_production_tree(repo_root, target)
+        except Exception:  # noqa: BLE001
+            pass
+        state.tree = None
+        state.worktree_root = None
+
+
+def _hash_profile_or_cached(profile_dir: Path, cached: dict) -> str | None:
+    """Fresh profile hash, falling back to the index.db mirror on failure."""
+    try:
+        from chameleon_mcp.profile.trust import hash_profile
+
+        return hash_profile(profile_dir)
+    except Exception:  # noqa: BLE001
+        return cached.get("profile_sha256")
+
+
+def _recorded_derivation_sha(profile_dir: Path) -> str | None:
+    """SHA the committed profile was derived from, or None (pre-feature or
+    working-tree profiles)."""
+    try:
+        data = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
+        src = data.get("derivation_source")
+        if isinstance(src, dict):
+            sha = src.get("sha")
+            if isinstance(sha, str) and sha:
+                return sha
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return None
 
 
 def _fs_is_case_insensitive(path: Path) -> bool:
@@ -562,6 +895,12 @@ def _legacy_path_repo_id(repo_root: Path) -> str:
 
 def detect_repo(file_path: str) -> dict:
     """Detect the repo a given file path belongs to.
+
+    The envelope also carries a ``production_branch`` block: for a locked
+    repo ``{locked: true, branch, resolvable}``; otherwise the detection
+    result ``{locked: false, branch, source, conflict, candidates,
+    from_origin}`` the init skill reads to decide whether to auto-lock,
+    ask, or skip.
 
     trust_state values:
     - "n/a"        — no repo root detected
@@ -743,6 +1082,42 @@ def detect_repo(file_path: str) -> dict:
         data["legacy_trust_hint"] = legacy_trust_hint_value
         if legacy_repo_id_value is not None:
             data["legacy_repo_id"] = legacy_repo_id_value
+    # Production-branch state for the init/refresh skill flows: the persisted
+    # lock when one exists, else what auto-detection would pick — so the skill
+    # can announce a clean zero-touch lock, or ask the user only when the
+    # signal is ambiguous (conflict) or absent. Best-effort: never fails the
+    # detect_repo call.
+    try:
+        from chameleon_mcp.production_ref import detect_production_branch
+
+        locked_branch = _persisted_production_ref(repo_root)
+        if locked_branch:
+            from chameleon_mcp.production_ref import resolve_production_ref
+
+            _det_resolved = resolve_production_ref(repo_root, locked_branch)
+            lock_block: dict = {
+                "locked": True,
+                "branch": locked_branch,
+                "resolvable": _det_resolved is not None,
+            }
+            if _det_resolved is None:
+                lock_block["note"] = (
+                    f"locked branch {locked_branch!r} does not resolve to a commit; "
+                    "derivation will fall back to the working tree (see /chameleon-doctor)"
+                )
+            data["production_branch"] = lock_block
+        else:
+            det = detect_production_branch(repo_root)
+            data["production_branch"] = {
+                "locked": False,
+                "branch": det.branch,
+                "source": det.source,
+                "conflict": det.conflict,
+                "candidates": list(det.candidates),
+                "from_origin": det.from_origin,
+            }
+    except Exception:  # noqa: BLE001
+        pass
     return _envelope(data)
 
 
@@ -2816,7 +3191,9 @@ def parse_edited_functions(repo_root, file_path: str) -> list[ParsedFn]:
             )
             excerpt = ""
             if has_span:
-                body = query_lines[start : min(end, len(query_lines))]
+                # start_line is 1-based; the slice must include the signature
+                # line or the judge sees a headless body.
+                body = query_lines[max(start - 1, 0) : min(end, len(query_lines))]
                 excerpt = "\n".join(body[:excerpt_cap])
             kind = entry.get("kind")
             out.append(
@@ -3084,6 +3461,54 @@ def get_drift_status(repo: str) -> dict:
         except (OSError, ValueError):
             schema_outdated = False
 
+    # Production-pinned freshness: when a production_ref lock exists, compare
+    # the profile's recorded derivation SHA with the locked ref's current tip
+    # (the LOCAL ref — current as of the user's last fetch; no network).
+    production_block: dict | None = None
+    production_tip_moved = False
+    if resolved_path is not None:
+        try:
+            from chameleon_mcp.production_ref import resolve_production_ref
+
+            _prod_branch = _persisted_production_ref(resolved_path)
+            if _prod_branch:
+                _prod_resolved = resolve_production_ref(resolved_path, _prod_branch)
+                _recorded = _recorded_derivation_sha(resolved_path / ".chameleon")
+                production_block = {
+                    "branch": _prod_branch,
+                    "ref": _prod_resolved.ref if _prod_resolved else None,
+                    "tip_sha": _prod_resolved.sha if _prod_resolved else None,
+                    "derived_sha": _recorded,
+                    "resolvable": _prod_resolved is not None,
+                }
+                if _prod_resolved is not None and _recorded != _prod_resolved.sha:
+                    production_tip_moved = True
+                    production_block["tip_moved"] = True
+                    # Always present when tip_moved — null when the old commit
+                    # is unreachable (gc'd) or the count fails.
+                    production_block["commits_ahead"] = None
+                    try:
+                        _count = subprocess.run(
+                            [
+                                "git",
+                                "-C",
+                                str(resolved_path),
+                                "rev-list",
+                                "--count",
+                                f"{_recorded}..{_prod_resolved.sha}",
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=2,
+                            check=False,
+                        )
+                        if _count.returncode == 0 and _count.stdout.strip().isdigit():
+                            production_block["commits_ahead"] = int(_count.stdout.strip())
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+        except Exception:  # noqa: BLE001
+            production_block = None
+
     if engine_version_mismatch:
         recommended = "engine upgraded since this profile was built; run /chameleon-refresh"
     elif schema_outdated:
@@ -3102,6 +3527,13 @@ def get_drift_status(repo: str) -> dict:
             recommended = "no profile found; run /chameleon-init first"
         else:
             recommended = "no trust grant found; run /chameleon-trust first"
+    elif production_tip_moved:
+        _ahead = (production_block or {}).get("commits_ahead")
+        _ahead_txt = f" ({_ahead} commit(s) ahead)" if isinstance(_ahead, int) else ""
+        recommended = (
+            f"production branch {(production_block or {}).get('ref')} moved past the "
+            f"profile's derivation commit{_ahead_txt}; run /chameleon-refresh"
+        )
     elif drift_score is not None and drift_score > 0.5:
         recommended = f"observed drift is high ({drift_score:.2f}); run /chameleon-refresh"
     elif days_since_refresh > 90:
@@ -3119,20 +3551,21 @@ def get_drift_status(repo: str) -> dict:
     # kept for backward compatibility with existing callers.
     from chameleon_mcp.shadow_report import CONFORMANCE_DISCLAIMER, SIGNAL_BLIND_SPOTS
 
-    return _envelope(
-        {
-            "repo_id": repo_id,
-            "days_since_refresh": days_since_refresh,
-            "observed_drift_score": drift_score,
-            "structural_conformance_score": drift_score,
-            "is_quality_bar": False,
-            "conformance_disclaimer": CONFORMANCE_DISCLAIMER,
-            "blind_spots": list(SIGNAL_BLIND_SPOTS),
-            "engine_version_mismatch": engine_version_mismatch,
-            "schema_outdated": schema_outdated,
-            "recommended_action": recommended,
-        }
-    )
+    drift_data = {
+        "repo_id": repo_id,
+        "days_since_refresh": days_since_refresh,
+        "observed_drift_score": drift_score,
+        "structural_conformance_score": drift_score,
+        "is_quality_bar": False,
+        "conformance_disclaimer": CONFORMANCE_DISCLAIMER,
+        "blind_spots": list(SIGNAL_BLIND_SPOTS),
+        "engine_version_mismatch": engine_version_mismatch,
+        "schema_outdated": schema_outdated,
+        "recommended_action": recommended,
+    }
+    if production_block is not None:
+        drift_data["production_ref"] = production_block
+    return _envelope(drift_data)
 
 
 def _profile_requires_newer_engine(profile_dir: Path) -> str | None:
@@ -4869,27 +5302,10 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     if not (cached and profile_path.is_file()):
         return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
-    try:
-        extractor = _select_extractor(repo_root)
-    except Exception:
-        extractor = None
-    if extractor is None:
-        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
-
-    try:
-        discovery_glob = persisted_pg or _glob_for_extractor(extractor)
-        candidates = discover_files(repo_root, glob=discovery_glob, paths_glob=persisted_pg)
-    except Exception:
-        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
-
     cached_files = cached.get("files_indexed") or 0
     last_seen_iso = cached.get("last_seen_at") or ""
     last_seen_epoch = _iso_to_epoch(last_seen_iso)
     idioms_path = profile_dir / "idioms.md"
-    refresh_inputs = list(candidates) + [idioms_path]
-    max_mtime = index_db.max_mtime_over(refresh_inputs)
-    cardinality_match = cached_files > 0 and len(candidates) == cached_files
-    nothing_newer = last_seen_epoch > 0.0 and max_mtime <= last_seen_epoch
 
     missing_artifacts = (
         not (profile_dir / "conventions.json").is_file()
@@ -4912,6 +5328,123 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     if _profile_needs_rederive(profile_dir):
         return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
 
+    # Production-pinned refresh: when a production_ref is locked (or an old
+    # profile migrates to one here), staleness is the REF TIP, not working-tree
+    # mtimes. The checkout is some feature branch whose churn says nothing
+    # about the production tree; conversely a moved tip must re-derive even
+    # though the checkout is untouched. Unresolvable refs fall through to the
+    # working-tree logic below — pinning degrades, it never blocks refresh.
+    prod_branch = _persisted_production_ref(repo_root)
+    if prod_branch is None and not _production_ref_explicitly_disabled(repo_root):
+        from chameleon_mcp.production_ref import (
+            detect_production_branch,
+            git_toplevel,
+            resolve_production_ref,
+        )
+
+        # A sidecar profile (bootstrap root below the git toplevel) follows
+        # the repo root's decision: its explicit null opt-out blocks the
+        # migration, and its configured lock is inherited instead of
+        # re-detected.
+        toplevel = git_toplevel(repo_root)
+        is_subdir = toplevel is not None and toplevel != repo_root.resolve()
+        if is_subdir and _production_ref_explicitly_disabled(toplevel):
+            pass
+        else:
+            inherited = _persisted_production_ref(toplevel) if is_subdir else None
+            if inherited:
+                _persist_production_ref(repo_root, inherited)
+                prod_branch = inherited
+            else:
+                det = detect_production_branch(repo_root)
+                if det.branch and not det.conflict and det.from_origin:
+                    if resolve_production_ref(repo_root, det.branch) is not None:
+                        # Old-profile migration: persist the lock so every later
+                        # refresh (and the session-start auto-refresh) is tip-keyed.
+                        _persist_production_ref(repo_root, det.branch)
+                        prod_branch = det.branch
+    elif prod_branch is None and _recorded_derivation_sha(profile_dir) is not None:
+        # Explicit opt-out, but the profile still carries production-pinned
+        # provenance from before the user disabled the lock. The noop paths
+        # preserve artifacts verbatim, so the stale "production-pinned"
+        # summary line and derivation_source would otherwise survive every
+        # refresh. One full working-tree re-derive re-stamps the profile.
+        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+    if prod_branch is not None:
+        from chameleon_mcp.production_ref import resolve_production_ref
+
+        resolved = resolve_production_ref(repo_root, prod_branch)
+        if resolved is not None:
+            recorded = _recorded_derivation_sha(profile_dir)
+            # idioms.md is user-authored, not derived: a taught idiom since
+            # the last derive must not be swallowed by the tip-unchanged noop
+            # (the re-derive folds it into summary/principles and re-snapshots
+            # the trust mirror).
+            idioms_newer = False
+            try:
+                if idioms_path.is_file() and last_seen_epoch > 0.0:
+                    idioms_newer = idioms_path.stat().st_mtime > last_seen_epoch
+            except OSError:
+                idioms_newer = False
+            if recorded == resolved.sha and not missing_artifacts and not idioms_newer:
+                index_db.upsert_repo(
+                    repo_id,
+                    str(repo_root),
+                    archetype_count=cached.get("archetype_count"),
+                    files_indexed=cached_files,
+                    bootstrap_ms=cached.get("bootstrap_ms"),
+                    # The migration above may have just rewritten config.json;
+                    # mirror the actual on-disk hash, not the cached one.
+                    profile_sha256=_hash_profile_or_cached(profile_dir, cached),
+                )
+                return _envelope(
+                    {
+                        "status": "noop",
+                        "reason": (
+                            f"production tip unchanged ({resolved.ref} @ "
+                            f"{resolved.sha[:12]}); working-tree changes do not "
+                            "affect a production-pinned profile"
+                        ),
+                        "archetypes_detected": cached.get("archetype_count") or 0,
+                        "files_processed": cached_files,
+                        "duration_ms": 0,
+                        "profile_path": str(profile_dir),
+                        "production_ref": {
+                            "locked": True,
+                            "branch": prod_branch,
+                            "ref": resolved.ref,
+                            "sha": resolved.sha,
+                            "source": "config",
+                        },
+                    }
+                )
+            # Tip moved (or pre-feature profile without recorded provenance):
+            # full re-derive from the new tip. The bootstrap path re-resolves
+            # the lock and materializes the tree itself.
+            return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+
+    # Working-tree staleness needs an extractor and a discovery pass; the
+    # production-pinned gate above deliberately runs first because it needs
+    # neither — a workspace-coordinator root (no root tsconfig/TS deps) has
+    # no root-level extractor, and the tip-keyed noop must still engage there.
+    try:
+        extractor = _select_extractor(repo_root)
+    except Exception:
+        extractor = None
+    if extractor is None:
+        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+
+    try:
+        discovery_glob = persisted_pg or _glob_for_extractor(extractor)
+        candidates = discover_files(repo_root, glob=discovery_glob, paths_glob=persisted_pg)
+    except Exception:
+        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+
+    refresh_inputs = list(candidates) + [idioms_path]
+    max_mtime = index_db.max_mtime_over(refresh_inputs)
+    cardinality_match = cached_files > 0 and len(candidates) == cached_files
+    nothing_newer = last_seen_epoch > 0.0 and max_mtime <= last_seen_epoch
+
     if cardinality_match and nothing_newer and not missing_artifacts:
         index_db.upsert_repo(
             repo_id,
@@ -4921,16 +5454,28 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
             bootstrap_ms=cached.get("bootstrap_ms"),
             profile_sha256=cached.get("profile_sha256"),
         )
-        return _envelope(
-            {
-                "status": "noop",
-                "reason": "no files changed since last refresh",
-                "archetypes_detected": cached.get("archetype_count") or 0,
-                "files_processed": cached_files,
-                "duration_ms": 0,
-                "profile_path": str(profile_dir),
+        noop_data: dict = {
+            "status": "noop",
+            "reason": "no files changed since last refresh",
+            "archetypes_detected": cached.get("archetype_count") or 0,
+            "files_processed": cached_files,
+            "duration_ms": 0,
+            "profile_path": str(profile_dir),
+        }
+        if prod_branch is not None:
+            # Reaching here with a lock means the ref did not resolve and the
+            # working-tree logic took over — say so instead of silently
+            # dropping the block this path's sibling envelope carries.
+            noop_data["production_ref"] = {
+                "locked": True,
+                "branch": prod_branch,
+                "resolvable": False,
+                "note": (
+                    f"production_ref {prod_branch!r} did not resolve; "
+                    "working-tree staleness was used for this refresh"
+                ),
             }
-        )
+        return _envelope(noop_data)
 
     prev_state = index_db.get_file_clusters(repo_id)
     if prev_state:
@@ -4987,11 +5532,17 @@ def _iso_to_epoch(ts: str) -> float:
         return 0.0
 
 
+# Branch/ref-name shape; ".." is additionally rejected (git refuses it in
+# refnames anyway — cheap defense in depth against path-looking input).
+_PRODUCTION_REF_ARG_RE = re.compile(r"^(?!.*\.\.)[0-9A-Za-z._/-]{1,200}$")
+
+
 def bootstrap_repo(
     path: str,
     paths_glob: str | None = None,
     force: bool = False,
     now: float | None = None,
+    production_ref: str | None = None,
 ) -> dict:
     """First-time analysis, serialized by a per-repo advisory lock.
 
@@ -5000,14 +5551,34 @@ def bootstrap_repo(
     lock is SEPARATE from ``.refresh.lock``: refresh calls this while holding
     its own lock, so the two distinct locks nest without re-entering the same
     flock (no deadlock). The actual work lives in ``_bootstrap_repo_unlocked``.
+
+    ``production_ref`` is the init skill's confirmed answer to "which branch
+    is production?": it pins this derivation to that branch's tree and
+    persists the lock in ``.chameleon/config.json``. Omitted, the lock comes
+    from the persisted config or (for origin-backed repos) auto-detection.
     """
     from chameleon_mcp.bootstrap.transaction import ProfileCommitError
     from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
 
+    if production_ref is not None:
+        if not isinstance(production_ref, str) or not _PRODUCTION_REF_ARG_RE.match(
+            production_ref.strip()
+        ):
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        "production_ref must be a branch or ref name "
+                        "([0-9A-Za-z._/-], at most 200 chars)"
+                    ),
+                }
+            )
+        production_ref = production_ref.strip()
+
     resolved_path, _ = _resolve_repo_arg(path)
     if resolved_path is None or not resolved_path.is_dir():
         # Degenerate input (or by-id): let the core emit the precise envelope.
-        return _bootstrap_repo_unlocked(path, paths_glob, force, now)
+        return _bootstrap_repo_unlocked(path, paths_glob, force, now, production_ref)
     try:
         repo_root = resolved_path.resolve()
     except (OSError, ValueError):
@@ -5019,7 +5590,7 @@ def bootstrap_repo(
     lock_dir.mkdir(parents=True, exist_ok=True)
     try:
         with acquire_advisory_lock(lock_dir / ".bootstrap.lock"):
-            result = _bootstrap_repo_unlocked(path, paths_glob, force, now)
+            result = _bootstrap_repo_unlocked(path, paths_glob, force, now, production_ref)
         # A successful (re-)derive re-baselines drift: observations were scored
         # against the now-superseded profile, so the drift window resets to
         # empty. Harmless on a first bootstrap (no observations exist yet).
@@ -5095,6 +5666,13 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     # with empty output — reading as "no changes" and auto-passing anything.
     if not isinstance(base_ref, str) or not base_ref.strip():
         return _degraded("invalid_base_ref", "base_ref must be a non-empty ref name")
+    # A caller leaving the "main" default on a production-pinned repo almost
+    # certainly means "the repo's mainline" — which the lock names better. An
+    # explicit non-default base_ref is always honored as given.
+    if base_ref == "main":
+        _locked = _persisted_production_ref(repo_root)
+        if _locked and _locked != "main":
+            base_ref = _locked
     repo_arg = repo_id or str(repo_root)
 
     def _git_out(args: list[str]) -> str | None:
@@ -5318,6 +5896,7 @@ def _bootstrap_repo_unlocked(
     paths_glob: str | None = None,
     force: bool = False,
     now: float | None = None,
+    production_ref: str | None = None,
 ) -> dict:
     """First-time analysis: AST scan + (Phase 2D interview) + atomic profile commit.
 
@@ -5450,71 +6029,102 @@ def _bootstrap_repo_unlocked(
                 already_data["nongit_parent_warning"] = nongit_parent_warning
             return _envelope(already_data)
 
-    report = _bootstrap(repo_root, paths_glob=paths_glob, now=now)
+    prod_state = _prepare_production_derivation(repo_root, requested_ref=production_ref)
+    # Snapshot the envelope block now: release() nulls the tree, and the
+    # block's `locked` must reflect what THIS run derived from.
+    prod_block = prod_state.envelope_block()
+    try:
+        report = _bootstrap(
+            repo_root,
+            paths_glob=paths_glob,
+            now=now,
+            analysis_root=prod_state.tree,
+            derivation_source=(prod_state.derivation_source() if prod_state.tree else None),
+        )
 
-    if report.status == "success":
-        # Stamp a stable uuid for no-remote repos so the id survives a move,
-        # then drop the cache so this repo resolves to the uuid-based id for the
-        # index/hash snapshot and every downstream call.
-        _persist_repo_uuid_if_no_remote(repo_root)
-        _clear_repo_id_cache()
-        repo_id = _compute_repo_id(repo_root)
-        # Calibrate before the hash snapshot: enforcement.json is part of the
-        # trust-hashed surface, so writing it first keeps the index.db mirror
-        # of profile_sha256 consistent with the hash a later trust grant
-        # captures (otherwise the repo would read stale by one artifact).
-        _calibrate_block_rules_for_repo(repo_root)
-        index_db.upsert_repo(
-            repo_id,
-            str(repo_root),
-            profile_sha256=hash_profile(repo_root / ".chameleon"),
-            archetype_count=report.archetypes_detected,
-            files_indexed=report.files_processed,
-            bootstrap_ms=report.duration_ms,
-        )
-        try:
-            file_cluster_rows = _compute_file_cluster_map(repo_root, paths_glob=paths_glob)
-        except Exception:
-            file_cluster_rows = None
-        if file_cluster_rows is not None:
-            index_db.delete_all_file_clusters(repo_id)
-            if file_cluster_rows:
-                index_db.upsert_file_clusters(repo_id, file_cluster_rows)
-    # Index successfully-bootstrapped workspaces regardless of the root's
-    # status: a coordinator-only root (non-standard package dir, no own
-    # language) still produces working workspace profiles above.
-    for ws in report.workspace_reports or []:
-        if ws.get("status") != "success":
-            continue
-        ws_root_str = ws.get("repo_root")
-        if not ws_root_str:
-            continue
-        ws_root = Path(ws_root_str)
-        _persist_repo_uuid_if_no_remote(ws_root)
-        _clear_repo_id_cache()
-        ws_repo_id = _compute_repo_id(ws_root)
-        # Calibrate before the hash snapshot so enforcement.json is included in
-        # the index.db mirror of profile_sha256 (see the root path above).
-        _calibrate_block_rules_for_repo(ws_root)
-        index_db.upsert_repo(
-            ws_repo_id,
-            str(ws_root),
-            profile_sha256=hash_profile(ws_root / ".chameleon"),
-            archetype_count=ws.get("archetypes_detected"),
-            files_indexed=ws.get("files_processed"),
-            bootstrap_ms=ws.get("duration_ms"),
-        )
-        try:
-            ws_rows = _compute_file_cluster_map(ws_root, paths_glob=paths_glob)
-        except Exception:
-            ws_rows = None
-        if ws_rows is not None:
-            index_db.delete_all_file_clusters(ws_repo_id)
-            if ws_rows:
-                index_db.upsert_file_clusters(ws_repo_id, ws_rows)
+        if report.status == "success":
+            # Stamp a stable uuid for no-remote repos so the id survives a move,
+            # then drop the cache so this repo resolves to the uuid-based id for the
+            # index/hash snapshot and every downstream call.
+            _persist_repo_uuid_if_no_remote(repo_root)
+            # Persist the production lock before the hash snapshot for the same
+            # reason as the uuid: config.json is trust-hashed, so the index.db
+            # mirror must capture the post-write bytes.
+            if prod_state.persist and prod_state.locked and prod_state.branch:
+                _persist_production_ref(repo_root, prod_state.branch)
+            _clear_repo_id_cache()
+            repo_id = _compute_repo_id(repo_root)
+            # Calibrate before the hash snapshot: enforcement.json is part of the
+            # trust-hashed surface, so writing it first keeps the index.db mirror
+            # of profile_sha256 consistent with the hash a later trust grant
+            # captures (otherwise the repo would read stale by one artifact).
+            _calibrate_block_rules_for_repo(repo_root)
+            index_db.upsert_repo(
+                repo_id,
+                str(repo_root),
+                profile_sha256=hash_profile(repo_root / ".chameleon"),
+                archetype_count=report.archetypes_detected,
+                files_indexed=report.files_processed,
+                bootstrap_ms=report.duration_ms,
+            )
+            try:
+                file_cluster_rows = _compute_file_cluster_map(
+                    prod_state.tree if prod_state.tree is not None else repo_root,
+                    paths_glob=paths_glob,
+                )
+            except Exception:
+                file_cluster_rows = None
+            if file_cluster_rows is not None:
+                index_db.delete_all_file_clusters(repo_id)
+                if file_cluster_rows:
+                    index_db.upsert_file_clusters(repo_id, file_cluster_rows)
+        # Index successfully-bootstrapped workspaces regardless of the root's
+        # status: a coordinator-only root (non-standard package dir, no own
+        # language) still produces working workspace profiles above.
+        for ws in report.workspace_reports or []:
+            if ws.get("status") != "success":
+                continue
+            ws_root_str = ws.get("repo_root")
+            if not ws_root_str:
+                continue
+            ws_root = Path(ws_root_str)
+            _persist_repo_uuid_if_no_remote(ws_root)
+            _clear_repo_id_cache()
+            ws_repo_id = _compute_repo_id(ws_root)
+            # Calibrate before the hash snapshot so enforcement.json is included in
+            # the index.db mirror of profile_sha256 (see the root path above).
+            _calibrate_block_rules_for_repo(ws_root)
+            index_db.upsert_repo(
+                ws_repo_id,
+                str(ws_root),
+                profile_sha256=hash_profile(ws_root / ".chameleon"),
+                archetype_count=ws.get("archetypes_detected"),
+                files_indexed=ws.get("files_processed"),
+                bootstrap_ms=ws.get("duration_ms"),
+            )
+            try:
+                # Hash the tree the workspace bootstrap actually analyzed; under
+                # a pinned derivation that is the materialized worktree, not the
+                # checkout (else every sha_hint describes the wrong bytes).
+                ws_scan_root = Path(ws.get("analysis_root") or ws_root_str)
+                ws_rows = _compute_file_cluster_map(ws_scan_root, paths_glob=paths_glob)
+            except Exception:
+                ws_rows = None
+            if ws_rows is not None:
+                index_db.delete_all_file_clusters(ws_repo_id)
+                if ws_rows:
+                    index_db.upsert_file_clusters(ws_repo_id, ws_rows)
+        # The per-ws analysis_root is internal plumbing for the indexing pass
+        # above; a disposable worktree path in the user-visible envelope only
+        # confuses. Drop it before serialization.
+        for ws in report.workspace_reports or []:
+            ws.pop("analysis_root", None)
+    finally:
+        _release_production_derivation(repo_root, prod_state)
 
     _notify_daemon_cache_invalidation()
     report_dict = report.to_dict()
+    report_dict["production_ref"] = prod_block
     if nongit_parent_warning is not None:
         report_dict["nongit_parent_warning"] = nongit_parent_warning
     return _envelope(report_dict)
@@ -5774,6 +6384,7 @@ _SAFE_TOP_LEVEL_KEYS = {
     "updated_at",
     "clustering_algorithm_version",
     "discovery",
+    "derivation_source",
 }
 
 
@@ -8540,7 +9151,13 @@ def doctor() -> dict:
     if log_env:
         log = Path(log_env)
     else:
-        log = Path.home() / ".local" / "share" / "chameleon" / ".hook_errors.log"
+        # Same precedence as the hook wrappers' LOG_DIR fallback: a
+        # CHAMELEON_PLUGIN_DATA override (tests, isolated sessions) keeps its
+        # hook errors out of the real data dir, and doctor reads where the
+        # wrappers wrote.
+        data_env = os.environ.get("CHAMELEON_PLUGIN_DATA")
+        base = Path(data_env) if data_env else Path.home() / ".local" / "share" / "chameleon"
+        log = base / ".hook_errors.log"
     if log.is_file():
         try:
             import re as _re
@@ -8605,6 +9222,7 @@ def doctor() -> dict:
                 "schema_version": cfg.schema_version,
                 "canonical_ref": cfg.canonical_ref,
                 "branch_pinning_enabled": cfg.branch_pinning_enabled,
+                "production_ref": cfg.production_ref,
                 "auto_refresh.enabled": cfg.auto_refresh.enabled,
                 "auto_refresh.drift_threshold": cfg.auto_refresh.drift_threshold,
                 "auto_refresh.max_age_hours": cfg.auto_refresh.max_age_hours,
@@ -8612,6 +9230,48 @@ def doctor() -> dict:
                 "auto_rename": cfg.auto_rename,
             }
             checks.append({"name": "config_json", "status": "ok", "detail": detail})
+            # A locked production_ref that no longer resolves means every
+            # bootstrap/refresh silently degrades to working-tree derivation
+            # — worth a loud check of its own (deleted branch, renamed
+            # remote, shallow clone without the ref).
+            if cfg.production_ref:
+                try:
+                    from chameleon_mcp.production_ref import resolve_production_ref
+
+                    _doctor_resolved = resolve_production_ref(Path.cwd(), cfg.production_ref)
+                    if _doctor_resolved is None:
+                        checks.append(
+                            {
+                                "name": "production_ref",
+                                "status": "warn",
+                                "detail": (
+                                    f"production_ref {cfg.production_ref!r} does not "
+                                    "resolve to a commit in this repo; derivation "
+                                    "falls back to the working tree. Fetch the "
+                                    "branch, fix the name in .chameleon/config.json, "
+                                    "or remove the key."
+                                ),
+                            }
+                        )
+                    else:
+                        checks.append(
+                            {
+                                "name": "production_ref",
+                                "status": "ok",
+                                "detail": (
+                                    f"locked to {_doctor_resolved.ref} @ "
+                                    f"{_doctor_resolved.sha[:12]}"
+                                ),
+                            }
+                        )
+                except Exception as _prod_exc:  # noqa: BLE001
+                    checks.append(
+                        {
+                            "name": "production_ref",
+                            "status": "warn",
+                            "detail": f"{type(_prod_exc).__name__}: {_prod_exc}",
+                        }
+                    )
         except ChameleonConfigError as cfg_exc:
             checks.append(
                 {
@@ -8642,8 +9302,10 @@ def doctor() -> dict:
                     "auto_refresh (drift_threshold=0.2, max_age_hours=168), "
                     "auto_rename, and trust.auto_preserve_when=always (a refresh "
                     "auto-re-grants trust, no re-prompt). OFF by default: "
-                    "canonical_ref (branch pinning). Add a config.json to change "
-                    'these, e.g. {"trust": {"auto_preserve_when": null}} to be '
+                    "canonical_ref (branch pinning) and production_ref (ref-pinned "
+                    "derivation; auto-locked at init/refresh for origin-backed "
+                    "repos). Add a config.json to change these, e.g. "
+                    '{"trust": {"auto_preserve_when": null}} to be '
                     "re-prompted for trust on each material refresh."
                 ),
             }

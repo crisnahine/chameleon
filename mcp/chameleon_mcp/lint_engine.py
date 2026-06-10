@@ -735,6 +735,41 @@ def _top_level_kinds_match(file_kinds: list[str], expected: list[str]) -> bool:
     return True
 
 
+def _namespace_local_base(class_name: str, known_bases: set[str], dominant: str) -> str:
+    """The known base whose namespace most deeply ENCLOSES ``class_name``.
+
+    A base is eligible only when its entire module path is a prefix of the
+    class's module path — a partially-shared prefix is a sibling namespace,
+    not an enclosing one (`Api::V1::BaseController` must never be suggested
+    for an `Api::V2::` controller just because both start with `Api`).
+    Falls back to the repo-wide dominant base when no eligible base is
+    deeper; dominant wins ties so the suggestion only diverges when an
+    enclosing namespace match is strictly deeper.
+    """
+    cls_ns = class_name.split("::")[:-1]
+    if not cls_ns:
+        return dominant
+
+    def enclosing_depth(base: str) -> int | None:
+        base_ns = base.split("::")[:-1]
+        if len(base_ns) > len(cls_ns):
+            return None
+        for a, b in zip(cls_ns, base_ns, strict=False):
+            if a != b:
+                return None
+        return len(base_ns)
+
+    best = dominant
+    best_depth = enclosing_depth(dominant)
+    if best_depth is None:
+        best_depth = -1
+    for base in known_bases:
+        depth = enclosing_depth(base)
+        if depth is not None and depth > best_depth:
+            best, best_depth = base, depth
+    return best
+
+
 def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]:
     """Compare a snapshot against the archetype's ast_query; return violations.
 
@@ -785,6 +820,12 @@ def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]
     expected_kinds = ast_query.get("top_level_node_kinds")
     if expected_kinds:
         if not _top_level_kinds_match(snapshot.top_level_node_kinds, list(expected_kinds)):
+            from collections import Counter
+
+            missing = Counter(_normalize_kind(k) for k in expected_kinds) - Counter(
+                _normalize_kind(k) for k in snapshot.top_level_node_kinds
+            )
+            missing_desc = ", ".join(sorted(missing)) or "(structural shape)"
             violations.append(
                 Violation(
                     rule="top-level-node-kinds-mismatch",
@@ -792,9 +833,11 @@ def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]
                     actual=repr(snapshot.top_level_node_kinds),
                     severity="warning",
                     message=(
-                        "file is missing one or more top-level constructs the "
-                        "archetype expects (multiset comparison; extras are ok, "
-                        "missing kinds are flagged)"
+                        f"file is missing top-level constructs the archetype "
+                        f"expects: {missing_desc} (extras are ok, missing kinds "
+                        "are flagged). If this file genuinely has a different "
+                        "shape, the archetype match may be wrong — do not "
+                        "restructure working code just to satisfy this."
                     ),
                 )
             )
@@ -1071,6 +1114,23 @@ def scan_hard_secrets(content: str, *, max_results: int = MAX_SECRETS_PER_FILE) 
     return _secret_hits_to_violations(hits, max_results)
 
 
+# An identifier assigned its own name as a string literal — route-key maps,
+# enum mirrors, redux action-type constants: `FORGET_PASSWORD: "FORGET_PASSWORD"`,
+# `export const KEY = 'KEY'`, `"KEY" => "KEY"`. A real credential's value never
+# equals its own key name, so these lines are never secrets no matter how
+# password-like the key reads. Declaration keywords before the key are part of
+# the canonical shape (`export const X = "X"`) and must not defeat the match.
+_SELF_ASSIGN_RE = re.compile(
+    r"""^\s*(?:(?:export|declare|const|let|var|readonly|static|public|private)\s+)*"""
+    r"""['"]?(?P<key>[A-Za-z_][A-Za-z0-9_]*)['"]?\s*(?:=>|:|=)\s*['"](?P<value>[^'"]*)['"]"""
+)
+
+
+def _is_self_assignment_line(line: str) -> bool:
+    m = _SELF_ASSIGN_RE.match(line)
+    return bool(m and m.group("key") == m.group("value"))
+
+
 def _scan_with_concat_fold(content: str, scan_fn) -> list[dict]:
     """Run ``scan_fn`` on the content, then on its concat-folded form.
 
@@ -1078,7 +1138,8 @@ def _scan_with_concat_fold(content: str, scan_fn) -> list[dict]:
     coverage and the (type, line) dedup between the two passes cannot drift.
     Fold-pass hits are marked ``concat_folded`` and dropped when the original
     pass already reported the same (type, line) — or the same type, for hits
-    that carry no line.
+    that carry no line. Hits whose line is a key-equals-value self-assignment
+    are dropped entirely (never credentials).
     """
     hits = scan_fn(content)
 
@@ -1097,6 +1158,17 @@ def _scan_with_concat_fold(content: str, scan_fn) -> list[dict]:
             fh = dict(fh)
             fh["concat_folded"] = True
             hits.append(fh)
+
+    if hits:
+        lines = content.splitlines()
+
+        def _on_self_assignment(h: dict) -> bool:
+            ln = h.get("line_number")
+            if not isinstance(ln, int) or not (1 <= ln <= len(lines)):
+                return False
+            return _is_self_assignment_line(lines[ln - 1])
+
+        hits = [h for h in hits if not _on_self_assignment(h)]
     return hits
 
 
@@ -1108,6 +1180,27 @@ def _secret_hits_to_violations(hits: list[dict], max_results: int) -> list[Viola
     `violation_line` parse cannot drift between them. Caps at ``max_results``
     with a summary row that carries no kind (and therefore never hard-blocks).
     """
+    # Overlapping detectors (e.g. "Secret Keyword" + "password_assignment")
+    # stack multiple findings on one line; one per line is enough to act on.
+    # Deterministic hard-block kinds win the slot so dedupe can never demote
+    # a blockable hit to an advisory-only kind.
+    from chameleon_mcp.violation_class import _DETERMINISTIC_SECRET_KINDS
+
+    by_line: dict[int, dict] = {}
+    no_line: list[dict] = []
+    for hit in hits:
+        ln = hit.get("line_number")
+        if not isinstance(ln, int):
+            no_line.append(hit)
+            continue
+        prev = by_line.get(ln)
+        if prev is None or (
+            str(hit.get("type")) in _DETERMINISTIC_SECRET_KINDS
+            and str(prev.get("type")) not in _DETERMINISTIC_SECRET_KINDS
+        ):
+            by_line[ln] = hit
+    hits = [h for h in hits if h in no_line or by_line.get(h.get("line_number")) is h]
+
     violations: list[Violation] = []
     capped = hits[:max_results]
     for hit in capped:
@@ -2927,13 +3020,23 @@ def lint_conventions(
                     superclass not in known_bases
                     and superclass.rsplit("::", 1)[-1] not in known_base_tails
                 ):
+                    # Suggest the known base sharing the deepest namespace with
+                    # the class, not blindly the repo-wide dominant: an
+                    # Api::V1::Admin:: controller belongs on the Admin base —
+                    # steering it to the parent namespace's base would route
+                    # around namespace-scoped auth.
+                    suggested = _namespace_local_base(class_name, known_bases, dominant_base)
+                    if suggested == dominant_base:
+                        detail = f"({inheritance['frequency']:.0%} convention)"
+                    else:
+                        detail = f"(namespace convention; repo-wide dominant: {dominant_base})"
                     violations.append(
                         Violation(
                             rule="inheritance-convention-violation",
-                            expected=dominant_base,
+                            expected=suggested,
                             actual=superclass or "none",
                             severity="warning",
-                            message=f"INHERITANCE: class {class_name} should inherit {dominant_base} ({inheritance['frequency']:.0%} convention)",
+                            message=f"INHERITANCE: class {class_name} should inherit {suggested} {detail}",
                         )
                     )
 

@@ -577,9 +577,10 @@ class TestGenerateArchetypeSummary:
             "content_signal": "active_record",
         }
         summary = o._generate_archetype_summary(entry, rb, "ruby")
-        # node kinds capped at the first 3; inheritance + signal appended
+        # node kinds humanized and capped at 3 labels; inheritance + signal appended
         assert summary == (
-            "app/models. ClassNode, ModuleNode, Method. active_record. inherits Api::V1::Base."
+            "app/models. typical shape: classes, modules, Method. "
+            "active_record. inherits Api::V1::Base."
         )
 
     def test_ts_extends_and_use_client(self, tmp_path: Path):
@@ -593,8 +594,8 @@ class TestGenerateArchetypeSummary:
         summary = o._generate_archetype_summary(entry, ts, "typescript")
         # content_signal "none" suppressed; both inherit + client component shown
         assert (
-            summary
-            == "src/components. ClassDeclaration. inherits React.Component. client component."
+            summary == "src/components. typical shape: classes. inherits React.Component. "
+            "client component."
         )
 
     def test_empty_entry_no_witness(self):
@@ -605,7 +606,7 @@ class TestGenerateArchetypeSummary:
 
     def test_node_kinds_truncated_to_three(self):
         entry = {"paths_pattern": "p", "top_level_node_kinds": ["A", "B", "C", "D", "E"]}
-        assert o._generate_archetype_summary(entry, None, "ruby") == "p. A, B, C."
+        assert o._generate_archetype_summary(entry, None, "ruby") == "p. typical shape: A, B, C."
 
     def test_display_pattern_preferred_over_raw(self):
         entry = {"paths_pattern": "raw", "paths_pattern_display": "shown"}
@@ -625,7 +626,7 @@ class TestGenerateArchetypeSummary:
             "content_signal": "active_record",
         }
         summary = o._generate_archetype_summary(entry, a_dir, "ruby")
-        assert summary == "app/models. ClassNode. active_record."
+        assert summary == "app/models. typical shape: classes. active_record."
         assert "inherits" not in summary
         assert "client component" not in summary
 

@@ -2150,7 +2150,15 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
             import zlib
 
             idx = zlib.crc32(archetype.encode("utf-8")) % len(p_lines)
-            parts.append(p_lines[idx][:80])
+            principle = p_lines[idx].rstrip()
+            if len(principle) > 80:
+                # Cut at a word boundary — a mid-word chop ("…over man.")
+                # reads as garble in the most frequent injection users see.
+                principle = principle[:80].rsplit(" ", 1)[0].rstrip(" ,;:.") + "..."
+            else:
+                # The joiner below adds ". "; avoid doubling a final period.
+                principle = principle.rstrip(".")
+            parts.append(principle)
 
     # Fixed anti-hallucination reminder, always present (not derived from
     # principles_text) so it shows on every edit regardless of the rotating

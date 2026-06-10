@@ -196,6 +196,9 @@ def hash_profile(profile_dir: Path) -> str:
       past trust unchanged (Bug H1).
     - ``canonicals.json`` — canonical witness mappings. Also rewritten by
       ``/chameleon-rename``.
+    - ``config.json`` — committed repo config (enforcement mode, canonical_ref,
+      production_ref). Hashed so flipping enforcement or re-pointing derivation
+      de-trusts the profile instead of slipping past unchanged.
     - ``enforcement.json`` — the block-rule calibration verdict. Hashed so a
       tampered or planted calibration (e.g. flipping a known-false-positive rule
       to "active") de-trusts the profile instead of slipping past unchanged.

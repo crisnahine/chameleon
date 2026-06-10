@@ -582,6 +582,65 @@ chameleon/
 
 ## Bootstrap mechanism
 
+### Production-ref derivation (which tree gets analyzed)
+
+Bootstrap and refresh derive the profile from the repo's **production
+branch tree**, not the checked-out working tree, whenever a production
+lock exists. The lock is `production_ref` in `.chameleon/config.json`
+(a branch name like `"production"`; resolution prefers `origin/<name>`
+over the local branch).
+
+How the lock is established, in precedence order:
+
+1. **Explicit**: `bootstrap_repo(production_ref=...)` — the init skill's
+   confirmed answer. Always wins, always persisted.
+2. **Persisted config**: an existing `production_ref` key.
+3. **Auto-detection** (init and refresh-migration): `git symbolic-ref
+   refs/remotes/origin/HEAD` (the remote's declared default branch, set
+   at clone time) → an origin branch literally named `production`/`prod`
+   → `main`/`master`/`trunk`. Auto-locking requires the answer to be
+   clean (no conflicting candidates) AND origin-backed; a local-only
+   repo's branch names never silently flip derivation semantics — the
+   envelope suggests the candidate and the skill asks instead.
+
+Mechanics: the locked ref's tip is resolved (`rev-parse`, local objects
+only — freshness is "as of the user's last fetch", never the network),
+the tree is materialized via `git worktree add --detach` under
+`${PLUGIN_DATA}/<repo_id>/prodtree/<sha12>-<pid>`, the whole
+discovery → parse → cluster → canonical → conventions pipeline runs
+against that tree, and the worktree is removed in a `finally`.
+Materialization passes `-c core.hooksPath=/dev/null`: `git worktree add`
+runs the repo's post-checkout hook by default, and a derivation that
+promises static analysis must never execute repo-controlled code.
+Leftover trees from crashed runs are swept at the next prepare, skipping
+any tree whose creating pid is still alive (a second checkout of the
+same remote shares the repo_id). An explicit `"production_ref": null` in
+config.json is a durable opt-out: neither init nor refresh-migration
+will auto-lock over it. The
+orchestrator splits **analysis root** (the materialized tree) from
+**write/identity root** (the real checkout): the profile dir, repo_id,
+drift baseline, and prior-profile carry-forward (idioms.md, renames,
+taught competing imports) all bind to the real root; persisted paths are
+repo-relative so artifacts apply 1:1 to the checkout. profile.json
+records `derivation_source` {mode, branch, ref, sha} as provenance.
+
+Refresh staleness for a pinned repo is the TIP SHA, not mtimes: recorded
+`derivation_source.sha` == current tip → `noop` (feature-branch churn is
+irrelevant); tip moved → full re-derive from the new tree. The
+session-start auto-refresh has a matching tip-moved trigger, and a
+`[🦎 chameleon: production drift]` banner (TTL-marked) surfaces the
+pending staleness. `get_drift_status` carries a `production_ref` block
+(derived_sha, tip_sha, tip_moved, commits_ahead) and a dedicated
+recommended-action rung; doctor checks that a locked ref still resolves.
+
+Every failure mode (no git, no origin, unresolvable ref, worktree add
+failure) degrades to the pre-existing working-tree derivation with a
+note in the envelope — the lock is best-effort, never a new hard
+dependency. `canonical_ref` (branch pinning of profile READS to a
+committed `.chameleon` snapshot at a ref) is orthogonal and unchanged:
+`production_ref` governs what analysis derives FROM; `canonical_ref`
+governs which committed profile hooks read.
+
 ```
 SessionStart hook fires (matcher: startup|resume|clear|compact)
  → run-hook.cmd session-start
@@ -1186,12 +1245,19 @@ On /chameleon-refresh:
 - Idempotent under fixed input (running twice on same repo state produces byte-identical profiles)
 - Stable: adding/removing a single file doesn't flip canonical selection unless that file IS the new canonical
 
+**Production-pinned repos** (`production_ref` locked): the change basis is
+the locked ref's TIP SHA, not per-file working-tree state. Tip unchanged →
+refresh is a `noop` (unless idioms.md was taught since the last derive);
+tip moved → full re-derive from the materialized new tree. The mtime/sha
+incremental paths above apply only to unpinned (working-tree) repos.
+
 ### Cache invalidation triggers (signature cache)
 
 - TS version bump → invalidate all cached sigs
 - `tsconfig.json` change affecting parse mode (`jsx`, `target`, `experimentalDecorators`) → invalidate all
 - Signature function version (in code, bumped on any change to `sig` definition) → invalidate all
 - Per-file: content_sha256 mismatch → invalidate that file's sig
+- Production-pinned: locked ref tip SHA != profile.json `derivation_source.sha` → full re-derive (file_clusters sha_hints are rebuilt from the new materialized tree)
 
 ### TS version handling
 
@@ -1211,7 +1277,7 @@ On /chameleon-refresh:
 
 ```
 .chameleon/ (committed, team-shared, atomic-write-protected)
- ├── profile.json # manifest (schema_version, engine_version, created_at, source)
+ ├── profile.json # manifest (schema_version, engine_version, created_at, source, derivation_source when production-pinned)
  ├── archetypes.json # path patterns + content_signal → archetype + cluster_size + outliers + recency_weight
  ├── rules.json # per-archetype rules + citations
  ├── canonicals.json # canonical references (witness + AST query + idiom annotations)
@@ -1773,7 +1839,7 @@ In v1, chameleon ships ONE thing: the engine plugin. Profiles are NOT distribute
 5. Once merged, every dev pulling gets the profile
 6. Each user runs `/chameleon-trust` once per repo (per-user, non-blocking)
 
-**Conflict resolution via merge_profiles:** when two devs run `/chameleon-refresh` on parallel branches and merge:
+**Conflict resolution via merge_profiles:** when two devs run `/chameleon-refresh` on parallel branches and merge. (Under a locked `production_ref` both sides derive from the SAME production tree, so refresh output is branch-independent and the JSON artifacts rarely conflict at all — the merge driver mostly handles idioms.md and pre-lock profiles. `derivation_source` is preserved through merges via `_SAFE_TOP_LEVEL_KEYS`.)
 
 ```bash
 # .gitattributes (shipped as template; see .gitattributes-template for the full file)

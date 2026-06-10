@@ -362,6 +362,28 @@ def _sweep_stale_judge_dirs(max_age_seconds: int = 3600) -> None:
         pass
 
 
+# Once-per-process probe; the spawn itself costs 30s+, so one bounded
+# `claude --help` to learn the flag set is noise.
+_BARE_SUPPORTED: bool | None = None
+
+
+def _bare_flag_supported() -> bool:
+    global _BARE_SUPPORTED
+    if _BARE_SUPPORTED is None:
+        try:
+            out = subprocess.run(
+                ["claude", "--help"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            _BARE_SUPPORTED = "--bare" in (out.stdout or "")
+        except Exception:  # noqa: BLE001
+            _BARE_SUPPORTED = False
+    return _BARE_SUPPORTED
+
+
 def _spawn_reviewer_status(prompt: str, cwd: Path) -> tuple[str | None, str | None]:
     """Spawn ``claude -p`` for a one-shot review, returning ``(stdout, reason)``.
 
@@ -390,6 +412,14 @@ def _spawn_reviewer_status(prompt: str, cwd: Path) -> tuple[str | None, str | No
         "--disallowedTools",
         "Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit",
     ]
+    # A one-shot JSON verdict needs none of the user's session environment.
+    # Without --bare the reviewer inherits every installed plugin's
+    # SessionStart hooks and CLAUDE.md discovery (~18k tokens of primer per
+    # spawn observed) — pure latency and cost for a reviewer that may not
+    # use tools anyway. --bare keeps Anthropic auth. Older CLIs without the
+    # flag get the plain spawn.
+    if _bare_flag_supported():
+        args.insert(1, "--bare")
     # Inherit the user's real config dir so the judge stays AUTHENTICATED. An
     # empty throwaway CLAUDE_CONFIG_DIR (the prior approach) strips OAuth /
     # subscription auth -- the spawn returns "Not logged in" and the judge

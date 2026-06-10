@@ -31,6 +31,7 @@ The user-invocable commands: `init`, `refresh`, `status`, `teach`, `auto-idiom`,
 - **Versioning**: `bump-version.sh <new-version>` keeps six manifest files in sync (see `.version-bump.json`).
 - **Locks**: `mcp/package-lock.json` and `mcp/uv.lock` are committed.
 - **Atomic transactions**: profile writes use `.chameleon/.tmp/<txn-id>/COMMITTED` sentinel + flock-serialized rename.
+- **Production-ref derivation**: when `.chameleon/config.json` has `production_ref` (auto-locked at init/refresh for origin-backed repos, or set explicitly), bootstrap/refresh analyze a materialized worktree of that ref instead of the checkout; refresh noop/staleness is tip-SHA-keyed. Local-only repos (most test fixtures) never auto-lock — they keep working-tree derivation. An explicit `"production_ref": null` is a durable opt-out (migration never re-locks over it). See `mcp/chameleon_mcp/production_ref.py` and docs/architecture.md "Production-ref derivation".
 
 ## Working on this codebase
 

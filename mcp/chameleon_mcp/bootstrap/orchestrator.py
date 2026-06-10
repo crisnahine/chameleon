@@ -968,6 +968,8 @@ def bootstrap_repo(
     paths_glob: str | None = None,
     profile_dir_name: str = ".chameleon",
     now: float | None = None,
+    analysis_root: Path | None = None,
+    derivation_source: dict | None = None,
 ) -> BootstrapReport:
     """Run the full bootstrap pipeline on a repo.
 
@@ -986,19 +988,29 @@ def bootstrap_repo(
         repo_root: absolute path to repo root (resolved before passing in)
         paths_glob: optional user-supplied scope override
         profile_dir_name: name of the committed profile dir (default ".chameleon")
+        analysis_root: when set, the tree that is DISCOVERED/PARSED (a
+            materialized production-ref worktree) while every write —
+            profile dir, repo identity, drift baseline — stays bound to
+            ``repo_root``. Persisted paths are repo-relative, so artifacts
+            derived from the analysis tree apply 1:1 to the real checkout.
+        derivation_source: provenance dict stamped into profile.json
+            (branch/ref/sha) when derivation is pinned to a ref.
 
     Returns:
         BootstrapReport summarizing the run. `workspace_reports` lists the
         per-workspace outcomes when applicable.
     """
+    scan_root = analysis_root if analysis_root is not None else repo_root
     report = _bootstrap_single(
-        repo_root,
+        scan_root,
         paths_glob=paths_glob,
         profile_dir_name=profile_dir_name,
         now=now,
+        write_root=repo_root if analysis_root is not None else None,
+        derivation_source=derivation_source,
     )
 
-    workspace = detect_workspace(repo_root)
+    workspace = detect_workspace(scan_root)
     # Surface glob-expansion diagnostics even when no packages resolved: a
     # brace-typo or a manifest-less directory is exactly the case where
     # has_workspaces is False, and dropping it silently is the bug.
@@ -1020,25 +1032,58 @@ def bootstrap_repo(
 
     workspace_reports: list[dict] = []
     workspace_skipped: list[str] = []
-    for ws_path in workspace.workspace_paths:
+    # The fanout cap must bound THIS loop, not just the scripts-only fallback
+    # scan: a manifest-driven workspace list (pnpm-workspace.yaml, package.json
+    # "workspaces") arrives here uncapped, and under a pinned analysis tree
+    # every fanout also pays a per-workspace indexing pass. Truncation is
+    # recorded (flag + skipped labels), never silent.
+    from chameleon_mcp import _thresholds as _th
+
+    _fanout_cap = _th.threshold_int("WORKSPACE_FANOUT_CAP")
+    capped_ws_paths = list(workspace.workspace_paths)
+    if len(capped_ws_paths) > _fanout_cap:
+        report.fanout_capped = True
+        for dropped in capped_ws_paths[_fanout_cap:]:
+            try:
+                workspace_skipped.append(str(dropped.relative_to(scan_root)) + " (over fanout cap)")
+            except ValueError:
+                workspace_skipped.append(str(dropped) + " (over fanout cap)")
+        capped_ws_paths = capped_ws_paths[:_fanout_cap]
+    for ws_path in capped_ws_paths:
         # resolve() can raise on a workspace path that contains a broken/looping
         # symlink (OSError, or RuntimeError for a detected symlink loop). Skip the
         # offending package and record it rather than aborting the whole fan-out.
         try:
             ws_root = ws_path.resolve()
-            if ws_root == repo_root.resolve():
+            if ws_root == scan_root.resolve():
                 continue
         except (OSError, RuntimeError):
             try:
-                skipped_label = str(ws_path.relative_to(repo_root))
+                skipped_label = str(ws_path.relative_to(scan_root))
             except ValueError:
                 skipped_label = str(ws_path)
             workspace_skipped.append(skipped_label)
             continue
         try:
-            parent_ws_path = ws_root.relative_to(repo_root.resolve()).as_posix()
+            parent_ws_path = ws_root.relative_to(scan_root.resolve()).as_posix()
         except ValueError:
             parent_ws_path = str(ws_path)
+        # Under a pinned analysis tree, the workspace was detected inside the
+        # materialized worktree; its profile must still land in the REAL
+        # checkout's matching workspace dir. A workspace that exists at the
+        # ref but not in the checkout has nowhere to write — skip it.
+        ws_write_root: Path | None = None
+        if analysis_root is not None:
+            try:
+                ws_rel = ws_root.relative_to(scan_root.resolve())
+                candidate_write = (repo_root / ws_rel).resolve()
+            except (ValueError, OSError, RuntimeError):
+                workspace_skipped.append(parent_ws_path)
+                continue
+            if not candidate_write.is_dir():
+                workspace_skipped.append(parent_ws_path)
+                continue
+            ws_write_root = candidate_write
         ws_report = _bootstrap_single(
             ws_root,
             paths_glob=paths_glob,
@@ -1046,21 +1091,27 @@ def bootstrap_repo(
             now=now,
             parent_repo_id=root_repo_id,
             parent_workspace_path=parent_ws_path,
+            write_root=ws_write_root,
+            derivation_source=derivation_source,
         )
 
-        workspace_reports.append(
-            {
-                "workspace_path": str(ws_path),
-                "repo_root": str(ws_root),
-                "repo_id": _id(ws_root),
-                "profile_dir": (str(ws_report.profile_path) if ws_report.profile_path else None),
-                "status": ws_report.status,
-                "archetypes_detected": ws_report.archetypes_detected,
-                "files_processed": ws_report.files_processed,
-                "duration_ms": ws_report.duration_ms,
-                "error": ws_report.error,
-            }
-        )
+        ws_identity_root = ws_write_root if ws_write_root is not None else ws_root
+        ws_entry = {
+            "workspace_path": (str(ws_path) if ws_write_root is None else str(ws_identity_root)),
+            "repo_root": str(ws_identity_root),
+            "repo_id": _id(ws_identity_root),
+            "profile_dir": (str(ws_report.profile_path) if ws_report.profile_path else None),
+            "status": ws_report.status,
+            "archetypes_detected": ws_report.archetypes_detected,
+            "files_processed": ws_report.files_processed,
+            "duration_ms": ws_report.duration_ms,
+            "error": ws_report.error,
+        }
+        if ws_write_root is not None:
+            # The tree the second indexing pass must hash (same tree the
+            # bootstrap analyzed), distinct from the identity/write root.
+            ws_entry["analysis_root"] = str(ws_root)
+        workspace_reports.append(ws_entry)
 
     if workspace_skipped:
         report.workspace_skipped_warnings = workspace_skipped
@@ -1171,6 +1222,38 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
             (txn_dir / "renames.json").write_text(renames_text, encoding="utf-8")
 
 
+# Plain-word labels for the AST node kinds that lead the Tier 1 pointer —
+# "imports, declarations" reads; "ImportDeclaration, FirstStatement" is
+# parser jargon in the single most frequent injection a user sees.
+_KIND_LABELS: dict[str, str] = {
+    "ImportDeclaration": "imports",
+    "ExportDeclaration": "exports",
+    "ExportNamedDeclaration": "exports",
+    "ExportAssignment": "default export",
+    "FunctionDeclaration": "functions",
+    "ClassDeclaration": "classes",
+    "InterfaceDeclaration": "interfaces",
+    "TypeAliasDeclaration": "type aliases",
+    "EnumDeclaration": "enums",
+    "VariableStatement": "declarations",
+    "FirstStatement": "declarations",
+    "CodeDeclaration": "declarations",
+    "ExpressionStatement": "statements",
+    "ClassNode": "classes",
+    "ModuleNode": "modules",
+    "DefNode": "methods",
+    "CallNode": "method calls",
+    "ConstantWriteNode": "constant assignments",
+    "LocalVariableWriteNode": "assignments",
+}
+
+
+def _humanize_kind(kind: str) -> str:
+    if kind.startswith("DslCall:"):
+        return kind.split(":", 1)[1] + " calls"
+    return _KIND_LABELS.get(kind, kind)
+
+
 def _generate_archetype_summary(
     entry: dict,
     canonical_witness_path: Path | None,
@@ -1184,7 +1267,8 @@ def _generate_archetype_summary(
 
     kinds = entry.get("top_level_node_kinds", [])
     if kinds:
-        parts.append(", ".join(kinds[:3]))
+        labels = list(dict.fromkeys(_humanize_kind(k) for k in kinds[:5]))
+        parts.append("typical shape: " + ", ".join(labels[:3]))
 
     signal = entry.get("content_signal", "none")
     if signal and signal != "none":
@@ -1218,6 +1302,8 @@ def _bootstrap_single(
     now: float | None = None,
     parent_repo_id: str | None = None,
     parent_workspace_path: str | None = None,
+    write_root: Path | None = None,
+    derivation_source: dict | None = None,
 ) -> BootstrapReport:
     """The original single-target bootstrap pipeline.
 
@@ -1231,9 +1317,18 @@ def _bootstrap_single(
     persisted in ``profile.json.workspace.parent`` so a workspace profile
     back-references the catalog the root holds in ``profile.json.workspaces``;
     downstream tools can then walk either direction of the tree.
+
+    ``write_root`` splits derivation from persistence: when set,
+    ``repo_root`` is only the tree that gets discovered/parsed (a
+    materialized production-ref worktree) while the profile dir, repo
+    identity, prior-profile carry-forward (idioms.md, renames, taught
+    competing imports), and the drift baseline all bind to ``write_root``
+    — the real checkout. Stored paths are relative to the analysis tree,
+    which maps 1:1 onto the checkout.
     """
     started_at = time.time()
-    profile_dir = repo_root / profile_dir_name
+    target_root = write_root if write_root is not None else repo_root
+    profile_dir = target_root / profile_dir_name
 
     workspace = detect_workspace(repo_root)
 
@@ -1326,15 +1421,23 @@ def _bootstrap_single(
                     js_dir_display = str(js_dir.relative_to(repo_root))
                 except ValueError:
                     js_dir_display = str(js_dir)
+                # The hint is persisted in profile.json, so its path must point
+                # at the REAL checkout: under a pinned derivation js_dir lives
+                # in the disposable analysis worktree and would dangle after
+                # cleanup. Map it through the relative path; same below.
+                try:
+                    js_dir_persisted = target_root / js_dir.relative_to(repo_root)
+                except ValueError:
+                    js_dir_persisted = js_dir
                 language_hint = {
                     "primary": "ruby",
                     "secondary_detected": "typescript",
                     "secondary_file_count": secondary_count,
-                    "secondary_path": str(js_dir),
+                    "secondary_path": str(js_dir_persisted),
                     "note": (
                         "Ruby-with-frontend repo detected; JS sidecar in "
                         f"{js_dir_display}/ not scanned by this bootstrap. "
-                        f"Run bootstrap_repo({js_dir}) for the JS half."
+                        f"Run bootstrap_repo({js_dir_persisted}) for the JS half."
                     ),
                 }
     elif extractor.language == "typescript" and (repo_root / "Gemfile").is_file():
@@ -1344,7 +1447,7 @@ def _bootstrap_single(
                 "primary": "typescript",
                 "secondary_detected": "ruby",
                 "secondary_file_count": ruby_count,
-                "secondary_path": str(repo_root),
+                "secondary_path": str(target_root),
                 "note": (
                     "TypeScript signals took precedence at the repo root, "
                     "but a Gemfile and a substantive Ruby tree were also "
@@ -1485,7 +1588,7 @@ def _bootstrap_single(
     canonicals_skipped_failed_scans = len(selection.clusters_with_only_failing_canonicals)
 
     generation = _generation_counter(now=started_at)
-    repo_id = _compute_repo_id(repo_root)
+    repo_id = _compute_repo_id(target_root)
 
     archetypes_data: dict = {
         "schema_version": PROFILE_SCHEMA_VERSION,
@@ -1750,6 +1853,13 @@ def _bootstrap_single(
 
     if paths_glob is not None:
         profile_data["discovery"] = {"paths_glob": paths_glob}
+
+    if derivation_source is not None:
+        # Provenance of a ref-pinned derivation: which branch/ref/commit the
+        # analyzed tree came from. Refresh compares this SHA against the
+        # current ref tip to decide noop vs re-derive; absent for plain
+        # working-tree derivations. Optional key — older engines ignore it.
+        profile_data["derivation_source"] = dict(derivation_source)
 
     if tool_configs.prettier:
         rules_data["rules"]["formatting"] = {

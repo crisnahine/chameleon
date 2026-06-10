@@ -141,8 +141,13 @@ def render_summary_md(
         f"Source: {profile_meta.get('source', 'bootstrap')}",
         f"Generation: {profile_meta.get('generation', '')}",
         f"Schema version: {profile_meta.get('schema_version', '')}",
-        "",
     ]
+    derivation = profile_meta.get("derivation_source")
+    if isinstance(derivation, dict) and derivation.get("sha"):
+        ref = derivation.get("ref") or derivation.get("branch") or ""
+        sha = str(derivation.get("sha"))[:12]
+        lines.append(f"Derived from: {ref} @ {sha} (production-pinned)")
+    lines.append("")
 
     hint = profile_meta.get("language_hint")
     if isinstance(hint, dict) and hint.get("secondary_detected"):

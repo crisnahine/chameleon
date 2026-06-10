@@ -726,6 +726,11 @@ _TS_EXPORT_CLAUSE_RE = re.compile(r"\bexport\s*\{([^}]*)\}")
 # `export * from './m'` (no `as`): pulls in an unenumerable set, so the current
 # export set can't be trusted -- skip both cross-file checks for the file.
 _TS_EXPORT_STAR_RE = re.compile(r"\bexport\s*\*\s*from\b")
+# `export * as ns from './m'`: unlike the bare star form this exports exactly
+# ONE enumerable name (the namespace alias). Missing it made the export set
+# both incomplete AND closed, so importers of the alias read as existence
+# breaks on pristine files.
+_TS_EXPORT_STAR_AS_RE = re.compile(r"\bexport\s*\*\s*as\s+([A-Za-z_$][\w$]*)\s+from\b")
 _CLAUSE_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\s+as\s+([A-Za-z_$][\w$]*))?")
 # `export const|let|var { a, b: c, ...rest } = fn()` / `[a, , b] = arr`:
 # destructuring binds the names ts_dump.mjs records via Object/ArrayBindingPattern.
@@ -802,6 +807,12 @@ def _current_export_names(content: str) -> tuple[frozenset[str], bool]:
     if star and not _masked(star.start()):
         return frozenset(), True
     names: set[str] = set()
+    for m in _TS_EXPORT_STAR_AS_RE.finditer(stripped):
+        if _masked(m.start()):
+            continue
+        names.add(m.group(1))
+        if len(names) >= _MAX_EXPORT_NAMES:
+            return frozenset(names), False
     for m in _TS_EXPORT_DECL_RE.finditer(stripped):
         if _masked(m.start()):
             continue

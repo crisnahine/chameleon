@@ -9,8 +9,10 @@ Schema (all fields optional, all have safe defaults):
 
 ```jsonc
 {
-  "$schema": "chameleon-config-0.8.0",
-  "canonical_ref": "origin/main",          // branch pinning
+  "$schema": "chameleon-config-0.9.0",
+  "canonical_ref": "origin/main",          // branch pinning (reads)
+  "production_ref": "production",          // branch the profile derives from
+                                           // (explicit null = opt out of auto-locking)
   "auto_refresh": {                         // drift-triggered refresh
     "enabled": true,
     "drift_threshold": 0.2,
@@ -39,7 +41,9 @@ from pathlib import Path
 from typing import Any
 
 CONFIG_FILENAME = "config.json"
-CURRENT_SCHEMA = "chameleon-config-0.8.0"
+# 0.9.0: production_ref + unknown-top-level-key tolerance. Older schema
+# strings remain accepted; $schema is informational, never a gate.
+CURRENT_SCHEMA = "chameleon-config-0.9.0"
 
 
 class ChameleonConfigError(ValueError):
@@ -122,6 +126,12 @@ class EnforcementConfig:
 class ChameleonConfig:
     schema_version: str = CURRENT_SCHEMA
     canonical_ref: str | None = None
+    # Branch the profile DERIVES from: bootstrap/refresh analyze this ref's
+    # tree (materialized, no network) instead of the checked-out working tree,
+    # so the profile reflects the canonical line regardless of which feature
+    # branch is checked out. Distinct from canonical_ref, which only redirects
+    # profile READS to a committed .chameleon snapshot at a ref.
+    production_ref: str | None = None
     auto_refresh: AutoRefreshConfig = field(default_factory=AutoRefreshConfig)
     trust: TrustConfig = field(default_factory=TrustConfig)
     enforcement: EnforcementConfig = field(default_factory=EnforcementConfig)
@@ -312,21 +322,14 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
     if not isinstance(raw, dict):
         raise ChameleonConfigError(f"{path}: top-level must be an object, got {type(raw).__name__}")
 
-    allowed_top = {
-        "$schema",
-        "canonical_ref",
-        "auto_refresh",
-        "trust",
-        "enforcement",
-        "auto_rename",
-        "repo_uuid",
-    }
-    unknown_top = set(raw.keys()) - allowed_top
-    if unknown_top:
-        raise ChameleonConfigError(
-            f"{path}: unknown top-level key(s): {sorted(unknown_top)!r}; "
-            f"allowed: {sorted(allowed_top)!r}"
-        )
+    # Unknown TOP-LEVEL keys are tolerated (ignored), not rejected — the same
+    # compat posture as the enforcement section: config.json is committed and
+    # trust-hashed, so it travels via git to teammates who may run a different
+    # chameleon version. A newer engine that adds a top-level key must not
+    # brick branch pinning / auto-refresh / enforcement reads for a teammate
+    # still on an older engine. Known keys are still strictly type-validated
+    # below, so a typo in a known key's VALUE raises; only a key this engine
+    # does not recognize is skipped.
 
     schema = raw.get("$schema", CURRENT_SCHEMA)
     if not isinstance(schema, str):
@@ -336,6 +339,14 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
     if canonical_ref is not None and not (isinstance(canonical_ref, str) and canonical_ref.strip()):
         raise ChameleonConfigError(
             f"`canonical_ref` must be a non-empty string or null, got {canonical_ref!r}"
+        )
+
+    production_ref = raw.get("production_ref")
+    if production_ref is not None and not (
+        isinstance(production_ref, str) and production_ref.strip()
+    ):
+        raise ChameleonConfigError(
+            f"`production_ref` must be a non-empty string or null, got {production_ref!r}"
         )
 
     auto_rename = raw.get("auto_rename", True)
@@ -351,6 +362,7 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
     return ChameleonConfig(
         schema_version=schema,
         canonical_ref=canonical_ref.strip() if canonical_ref else None,
+        production_ref=production_ref.strip() if production_ref else None,
         auto_refresh=_coerce_auto_refresh(raw.get("auto_refresh")),
         trust=_coerce_trust(raw.get("trust")),
         enforcement=_coerce_enforcement(raw.get("enforcement")),

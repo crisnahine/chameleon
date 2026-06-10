@@ -907,6 +907,54 @@ def _parse_idioms_for_merge(text: str) -> dict[str, dict[str, str]]:
     return sections
 
 
+# Placeholder lines the empty-section template emits; never user content.
+_IDIOM_PLACEHOLDERS = frozenset({"_(no idioms yet)_", "_(none)_"})
+
+
+def _parse_loose_for_merge(text: str) -> dict[str, list[str]]:
+    """Per-section lines that live OUTSIDE any ``### slug`` block.
+
+    idioms.md is user-authored; hand-written bullets without a ``### slug``
+    header are plausible and must survive a merge — silently dropping them
+    is data loss. Fence-aware like the block parser; placeholders, blank
+    lines, and the section/file headers themselves are not loose content.
+    """
+    loose: dict[str, list[str]] = {"active": [], "deprecated": []}
+    section = "active"
+    in_block = False
+    in_fence = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            if not in_block:
+                loose[section].append(line)
+            continue
+        if in_fence:
+            if not in_block:
+                loose[section].append(line)
+            continue
+        if stripped == "## active":
+            section = "active"
+            in_block = False
+            continue
+        if stripped == "## deprecated":
+            section = "deprecated"
+            in_block = False
+            continue
+        if stripped.startswith("### "):
+            in_block = True
+            continue
+        if in_block:
+            continue
+        if not stripped or stripped in _IDIOM_PLACEHOLDERS:
+            continue
+        if re.match(r"#\s*(team\s+)?idioms\b", stripped, re.IGNORECASE):
+            continue
+        loose[section].append(line)
+    return loose
+
+
 def merge_idioms_markdown(base_text: str, ours_text: str, theirs_text: str) -> str:
     """Three-way union merge for idioms.md, by slug, per section.
 
@@ -921,11 +969,26 @@ def merge_idioms_markdown(base_text: str, ours_text: str, theirs_text: str) -> s
     base = _parse_idioms_for_merge(base_text)
     ours = _parse_idioms_for_merge(ours_text)
     theirs = _parse_idioms_for_merge(theirs_text)
+    base_loose = _parse_loose_for_merge(base_text)
+    ours_loose = _parse_loose_for_merge(ours_text)
+    theirs_loose = _parse_loose_for_merge(theirs_text)
 
     out_parts: list[str] = ["# idioms", ""]
     for section in ("active", "deprecated"):
         out_parts.append(f"## {section}")
         out_parts.append("")
+        # Hand-written content outside ### blocks unions first (same
+        # never-lose rule as the slugs; line-deduped, order preserved).
+        loose_merged: list[str] = []
+        loose_seen: set[str] = set()
+        for source_loose in (base_loose[section], ours_loose[section], theirs_loose[section]):
+            for line in source_loose:
+                if line not in loose_seen:
+                    loose_seen.add(line)
+                    loose_merged.append(line)
+        if loose_merged:
+            out_parts.extend(loose_merged)
+            out_parts.append("")
         merged_order: list[str] = []
         seen: set[str] = set()
         for source in (base[section], ours[section], theirs[section]):
@@ -934,8 +997,9 @@ def merge_idioms_markdown(base_text: str, ours_text: str, theirs_text: str) -> s
                     seen.add(slug)
                     merged_order.append(slug)
         if not merged_order:
-            out_parts.append("_(none)_" if section == "deprecated" else "_(no idioms yet)_")
-            out_parts.append("")
+            if not loose_merged:
+                out_parts.append("_(none)_" if section == "deprecated" else "_(no idioms yet)_")
+                out_parts.append("")
             continue
         for slug in merged_order:
             block = ours[section].get(slug) or theirs[section].get(slug) or base[section].get(slug)

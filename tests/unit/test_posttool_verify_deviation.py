@@ -196,7 +196,7 @@ def test_violating_file_emits_real_deviation_feedback(tmp_path: Path):
         "archetype expects default export of kind 'ClassDeclaration'; "
         "file has 'FunctionDeclaration'" in ctx
     )
-    assert "file is missing one or more top-level constructs the archetype expects" in ctx
+    assert "file is missing top-level constructs the archetype expects" in ctx
     # Numbered list shape.
     assert "1. archetype expects default export of kind 'ClassDeclaration'" in ctx
     assert ctx.startswith("<chameleon-context>")

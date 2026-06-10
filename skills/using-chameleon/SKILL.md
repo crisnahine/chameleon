@@ -13,7 +13,7 @@ Chameleon enforces codebase conventions through hooks. You don't call MCP tools 
 
 ## Hook lifecycle
 
-**SessionStart**: injects this skill + an optional drift banner. If you see `[🦎 chameleon: drift]`, the profile may be outdated - suggest `/chameleon-refresh` when appropriate.
+**SessionStart**: injects this skill + an optional drift banner. If you see `[🦎 chameleon: drift]`, the profile may be outdated - suggest `/chameleon-refresh` when appropriate. A `[🦎 chameleon: production drift]` banner means the locked production branch moved past the commit the profile was derived from - suggest `/chameleon-refresh` (it re-derives from the production tree directly; no need to checkout or pull that branch).
 
 **PreToolUse** (Edit/Write/NotebookEdit): tiered injection. Tier 1 (seen archetypes) injects a short pointer with pattern name and summary. Tier 2 (new or previously violated archetypes) injects the full canonical excerpt, confidence band, match quality, and team idioms. The header looks like:
 

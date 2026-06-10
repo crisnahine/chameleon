@@ -24,10 +24,26 @@ Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Whe
 1. Confirm `.chameleon/profile.json` exists. If missing, suggest `/chameleon-init`.
 2. Call `chameleon-mcp::refresh_repo(repo=<absolute path>)`.
 3. The tool acquires an OS-level flock on `.chameleon/.refresh.lock` (per-PID + start timestamp; concurrent invocations fail with stale-lock detection at 1 hour).
-4. Re-discovers files (with same exclusions as init), re-parses changed files via cached `file_clusters` in `index.db`.
-5. Re-clusters from current signatures. New archetypes may appear; old ones may disappear.
-6. Atomic profile commit — old profile remains valid until `COMMITTED` sentinel is rolled in.
-7. Reports diff: archetypes added/removed, canonicals updated, file count delta.
+4. **Production-pinned repos** (`production_ref` in `.chameleon/config.json`,
+   set at init or migrated below): staleness is the locked ref's TIP SHA,
+   not working-tree changes. Tip unchanged → `noop` (your feature-branch
+   edits don't affect a production-pinned profile). Tip moved → full
+   re-derive from a materialization of the new production tree — no need to
+   checkout or pull the production branch first; the local
+   `origin/<branch>` ref (current as of your last `git fetch`) is used.
+   **Old-profile migration**: a profile without the lock gets one
+   automatically here when detection is clean and origin-backed
+   (origin default branch, or an origin branch named production/prod);
+   the refresh envelope's `production_ref` block reports it. An explicit
+   `"production_ref": null` in config.json is the opt-out — migration
+   never re-locks over it. If the block
+   instead carries `conflict: true` or a non-origin candidate, surface the
+   note and offer to set the lock: re-run with the user's answer via
+   `bootstrap_repo(production_ref=..., force=true)`.
+5. **Unpinned repos**: re-discovers files (with same exclusions as init), re-parses changed files via cached `file_clusters` in `index.db`.
+6. Re-clusters from current signatures. New archetypes may appear; old ones may disappear.
+7. Atomic profile commit — old profile remains valid until `COMMITTED` sentinel is rolled in.
+8. Reports diff: archetypes added/removed, canonicals updated, file count delta.
 
 ## Trust + material change
 
@@ -41,7 +57,8 @@ Exception: structurally-identical refreshes (only the generation counter bumped,
 |---|---|
 | `lock_held` | Another `/chameleon-refresh` is in progress (PID + timestamp shown). Wait or kill that PID. |
 | `failed_too_many_files` | Repo grew past 200k file ceiling since init. Ask user for `paths_glob`. |
-| `noop` | No files changed since the last refresh. Nothing to do. |
+| `noop` | No files changed since the last refresh (unpinned), or the locked production tip is unchanged (pinned). Nothing to do. |
+| `production_ref` unresolvable (note in the envelope's `production_ref` block) | The locked branch no longer resolves (deleted branch, renamed remote, shallow clone). Derivation fell back to the working tree. Suggest `git fetch origin <branch>`, fixing the name in `.chameleon/config.json`, or removing the key; `/chameleon-doctor` has a dedicated check. |
 | `partial_refresh` | <= 10% of files changed; partial refresh was used (faster). |
 | `archetypes_changed` is large (>50%) | Surface as warning: "X archetypes added, Y removed; review profile.summary.md before /chameleon-trust." This is unusual — probably a major refactor or the previous profile was wrong. |
 

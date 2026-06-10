@@ -100,6 +100,11 @@ class Finding:
     excerpt: str
     existing_name: str
     existing_file: str
+    # Body of the matched existing function, read from disk at gather time.
+    # The judge is told to omit "merely similar" items, so without the
+    # existing body to compare against it conservatively omits everything —
+    # even byte-for-byte copies.
+    existing_excerpt: str = ""
 
 
 def _parse(repo_root: Path, path: str):
@@ -135,6 +140,18 @@ def gather_body_match_findings(repo_root: Path, edited_files: list[str], index, 
                 hit, match_type = index.lookup(pf, exclude_file=rel)
                 if hit is None:
                     continue
+                try:
+                    from chameleon_mcp._thresholds import threshold_int as _ti
+                    from chameleon_mcp.tools import _candidate_body_excerpt
+
+                    existing_excerpt = _candidate_body_excerpt(
+                        Path(repo_root),
+                        hit.file,
+                        hit.name,
+                        _ti("DUPLICATION_BODY_EXCERPT_LINES"),
+                    )
+                except Exception:
+                    existing_excerpt = ""
                 f = Finding(
                     new_name=pf.name,
                     new_file=rel,
@@ -142,6 +159,7 @@ def gather_body_match_findings(repo_root: Path, edited_files: list[str], index, 
                     excerpt=pf.excerpt,
                     existing_name=hit.name,
                     existing_file=hit.file,
+                    existing_excerpt=existing_excerpt,
                 )
                 (exact if match_type == "exact" else pnorm).append(f)
         return (exact + pnorm)[:max_findings]
@@ -171,10 +189,12 @@ def build_duplication_prompt(findings: list) -> str:
     used = len(header)
     for f in findings:
         excerpt = sanitize_for_chameleon_context(f.excerpt)
+        existing_excerpt = sanitize_for_chameleon_context(f.existing_excerpt or "")
         block = (
             f"### new: {f.new_name} ({f.new_file}:{f.line})\n"
+            f"new body:\n{excerpt}\n"
             f"existing: {f.existing_name} ({f.existing_file})\n"
-            f"new body:\n{excerpt}\n\n"
+            f"existing body:\n{existing_excerpt or '(source unavailable)'}\n\n"
         )
         if used + len(block) > budget:
             break

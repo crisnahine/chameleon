@@ -22,16 +22,36 @@ running init twice would overwrite the existing profile.
 
 1. Confirm the repo's language: TypeScript (`tsconfig.json` or TS in `package.json` deps)
    or Ruby on Rails (`Gemfile` with rails, or `config/application.rb`).
-2. Call `chameleon-mcp::bootstrap_repo(path=<repo_root>)`.
-3. The tool runs the full pipeline (workspace detection, tool config reading,
+2. **Determine the production branch** (the branch the profile derives
+   from, regardless of what is checked out). Call
+   `chameleon-mcp::detect_repo(file_path=<repo_root>)` and read its
+   `production_branch` block:
+   - `locked: true` — a lock already exists; just mention it.
+   - clean detection (`branch` set, `conflict: false`, `from_origin: true`)
+     — zero-touch: announce "production branch: `<branch>` (auto-detected
+     from the origin default; will be locked)". Do NOT ask.
+   - `conflict: true` — ask ONE short question: "Which branch is
+     production? (detected: `<branch>`, also found: `<candidates>`)". Pass
+     the answer as `bootstrap_repo(production_ref=<answer>)`.
+   - no branch / `from_origin: false` — local-only or unrecognized layout.
+     Ask once: "Which branch should chameleon treat as production? (Enter
+     to skip — the working tree will be analyzed instead)". Pass a
+     non-empty answer via `production_ref`; on skip just proceed.
+3. Call `chameleon-mcp::bootstrap_repo(path=<repo_root>)` (plus
+   `production_ref=<answer>` when step 2 asked). With a lock, the pipeline
+   analyzes the production branch's tree — a detached materialization of
+   the locked ref — NOT the current checkout; feature-branch noise never
+   shapes the profile. Without one it analyzes the working tree as before.
+4. The tool runs the full pipeline (workspace detection, tool config reading,
    discovery, AST parse, clustering, canonical selection, atomic profile
    commit). Archetypes start out with heuristic names like `controller`,
    `react-component`, `service`, `migration`.
-4. **Auto-apply rename proposals** (see below) so cluster-* / class-* /
+5. **Auto-apply rename proposals** (see below) so cluster-* / class-* /
    numeric-suffix fallback names get replaced with the team's vocabulary.
-5. Report the BootstrapReport to the user: archetype count, files
-   processed, duration, profile path, and what got renamed.
-6. Suggest the user run `/chameleon-trust` to approve the profile for
+6. Report the BootstrapReport to the user: archetype count, files
+   processed, duration, profile path, the production-branch lock (the
+   envelope's `production_ref` block), and what got renamed.
+7. Suggest the user run `/chameleon-trust` to approve the profile for
    their session.
 
 ## Default: auto-apply renames (no user interview)
@@ -92,13 +112,16 @@ Invalid names get one re-ask with the regex hint
 
 ## What to tell the user before running bootstrap
 
-> chameleon will scan your repo's source files, cluster them into archetypes
-> (e.g. "next-server-component", "service", "controller", "rails-controller"),
+> chameleon will scan the production branch's tree (when a production
+> branch is locked or auto-detected — your current checkout doesn't have to
+> be on it), cluster the files into archetypes (e.g. "next-server-component",
+> "service", "controller", "rails-controller"),
 > and pick a canonical example for each. After bootstrap, archetype renames are applied automatically.
 > It will write a
 > `.chameleon/` directory you should commit. This usually takes under 10
 > seconds for repos under 5,000 files; under 1 minute for repos up to
-> 200,000 files. No LLM cost.
+> 200,000 files. No LLM cost, no network (the production tree comes from
+> your local git objects, current as of your last fetch).
 
 If the repo has > 50,000 source files, the tool refuses by default. Ask
 the user for an explicit `paths_glob` (e.g., `src/**/*.ts` or `app/**/*.rb`).
@@ -121,6 +144,7 @@ Profile created at .chameleon/
 - Rules extracted: M
 - Files processed: X (Y skipped: generated, Z skipped: parse errors)
 - Duration: Tms
+- Production branch: <branch> (locked — derivation pinned to <ref> @ <sha12>)
 - Renames applied: K  (auto-rename)
 
 Next steps:

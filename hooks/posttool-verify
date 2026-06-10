@@ -36,7 +36,7 @@ if [ -n "${CHAMELEON_HOOK_ERROR_LOG:-}" ]; then
     LOG_FILE="${CHAMELEON_HOOK_ERROR_LOG}"
     LOG_DIR="$(dirname "${LOG_FILE}")"
 else
-    LOG_DIR="${HOME:-${TMPDIR:-/tmp}}/.local/share/chameleon"
+    LOG_DIR="${CHAMELEON_PLUGIN_DATA:-${HOME:-${TMPDIR:-/tmp}}/.local/share/chameleon}"
     LOG_FILE="${LOG_DIR}/.hook_errors.log"
 fi
 mkdir -p "${LOG_DIR}" 2>/dev/null || true
