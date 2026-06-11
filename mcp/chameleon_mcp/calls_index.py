@@ -35,6 +35,19 @@ Grades:
   self.new`` (the override owns construction; mapping through it is
   unprovable).
 
+Known limitations (accepted imprecision, by design):
+
+- Binding shadowing: a parameter or local variable that shadows an
+  imported binding can yield a false ``import`` edge. Call-site
+  identifiers are matched against the import map with no scope analysis.
+- Barrel re-export attribution: a named re-export barrel
+  (``export { x } from './impl'``) has a closed export set, so edges
+  attribute to the barrel module, not the file that defines the
+  implementation. Only wildcard barrels (``export * from``) are open sets
+  that yield no edge.
+- Metaprogrammed calls (Ruby ``send``/``define_method``, Rails dynamic
+  finders) are invisible to the dumpers and simply record no edge.
+
 Two halves live here so the build (bootstrap-time, populates the artifact)
 and the read (query-time, consumes it) share one key scheme and can't drift:
 :func:`build_calls_index` turns parsed files into the artifact payload;

@@ -203,8 +203,10 @@ def _parse_changed_file(repo_root: Path, path: str):
     return parse_edited_functions(repo_root, path)
 
 
+# "Committed callers", not "cross-file": same_file-grade rows list callers
+# from the changed file itself, so a cross-file claim would oversell them.
 _FACTS_HEADER = (
-    "Cross-file callers of the changed functions "
+    "Committed callers of the changed functions "
     "(snapshot at profile derivation; deterministic grades only):"
 )
 
@@ -220,11 +222,13 @@ def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
     unused, or dynamic/unsupported call paths: absence of an edge is never
     evidence of dead code. A changed callable is one whose current on-disk span
     (the same parse the duplication gate uses) intersects the diff's new-side
-    hunk ranges; a whole-file diff counts every parsed callable. Returns ""
-    when the index is absent or nothing changed resolves, so the consumer
-    records a skipped check event instead of feeding the reviewer an empty
-    section. Fails open everywhere: any exception inside per-file processing
-    skips that file's facts, never raises.
+    hunk ranges; a whole-file diff counts every parsed callable. When the char
+    cap forces callable lines out, the block ends with a "(+N more changed
+    callables not shown)" tail inside the cap, so a shortened list never reads
+    as complete. Returns "" when the index is absent or nothing changed
+    resolves, so the consumer records a skipped check event instead of feeding
+    the reviewer an empty section. Fails open everywhere: any exception inside
+    per-file processing skips that file's facts, never raises.
     """
     try:
         from chameleon_mcp.calls_index import load_calls_index
@@ -309,13 +313,21 @@ def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
     if listed == 0:
         return ""
     # Char cap bites at a line boundary: drop whole fact lines from the end
-    # until the block fits; a block reduced to its bare header carries no fact
+    # until the block fits, reserving room for a tail that says how many
+    # callable lines were dropped (a silently shortened list would read as
+    # the complete set). A block reduced to its bare header carries no fact
     # and reads as absent.
-    while len(lines) > 1 and len("\n".join(lines)) > char_cap:
+    dropped = 0
+
+    def _tail() -> list[str]:
+        return [f"(+{dropped} more changed callables not shown)"] if dropped else []
+
+    while len(lines) > 1 and len("\n".join(lines + _tail())) > char_cap:
         lines.pop()
+        dropped += 1
     if len(lines) == 1:
         return ""
-    return "\n".join(lines)
+    return "\n".join(lines + _tail())
 
 
 def build_prompt(
@@ -334,7 +346,7 @@ def build_prompt(
     checkable specifics extracted from the user's request (values, identifiers,
     quoted strings); when present they are appended, sanitized and length-capped,
     so the reviewer can cross-check the change against what was actually asked.
-    ``caller_facts`` is the pre-built (already bounded and labeled) cross-file
+    ``caller_facts`` is the pre-built (already bounded and labeled) committed-
     caller block from :func:`caller_facts_for_diffs`; when present it rides
     above the diffs so the reviewer reads each change with its consumers in
     view instead of guessing the blast radius.
@@ -688,8 +700,8 @@ def run_correctness_judge(
         diffs = collect_file_diffs(repo_root, abs_paths, archetype_for)
         if not diffs:
             return []
-        # Cross-file caller facts from the committed calls snapshot ground the
-        # review in the change's consumers. Gated on
+        # Committed caller facts from the calls snapshot ground the review in
+        # the change's consumers. Gated on
         # enforcement.judge_crossfile_facts (default on; an unreadable config
         # fails open to on); the sink records exactly one judge_facts_* outcome
         # per run so the attestation distinguishes a grounded review from a

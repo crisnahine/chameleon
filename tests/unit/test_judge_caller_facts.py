@@ -24,7 +24,7 @@ from chameleon_mcp.function_catalog import ParsedFn
 from chameleon_mcp.judge import FileDiff
 
 HEADER = (
-    "Cross-file callers of the changed functions "
+    "Committed callers of the changed functions "
     "(snapshot at profile derivation; deterministic grades only):"
 )
 
@@ -322,7 +322,7 @@ def test_callable_cap_spans_all_files(tmp_path, monkeypatch):
 # --- char cap ----------------------------------------------------------------
 
 
-def test_char_cap_truncates_at_line_boundary(tmp_path, monkeypatch):
+def test_char_cap_truncates_at_line_boundary_with_tail(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     _write_calls_index(
@@ -339,18 +339,64 @@ def test_char_cap_truncates_at_line_boundary(tmp_path, monkeypatch):
         "_parse_changed_file",
         lambda root, path: [_fn("first", 1, 2), _fn("second", 3, 4)],
     )
-    cap = (
-        len(HEADER)
-        + 1
-        + len("- first() in a.ts: no committed callers found (new, unused, or called dynamically)")
+    first_line = (
+        "- first() in a.ts: no committed callers found (new, unused, or called dynamically)"
     )
+    tail = "(+1 more changed callables not shown)"
+    # Room for header + first fact + the tail: the tail is reserved within the
+    # cap, never appended over it.
+    cap = len(HEADER) + 1 + len(first_line) + 1 + len(tail)
     monkeypatch.setenv("CHAMELEON_JUDGE_FACTS_CHAR_CAP", str(cap))
     block = judge.caller_facts_for_diffs(repo, [_diff("a.ts", "", whole=True)])
     assert len(block) <= cap
     assert "first()" in block
     assert "second()" not in block
-    # Every surviving line is whole: the cut happened at a line boundary.
-    assert block.splitlines()[-1].endswith("(new, unused, or called dynamically)")
+    # Every surviving line is whole (line-boundary cut) and the block says how
+    # many callable lines the cap dropped.
+    assert block.splitlines() == [HEADER, first_line, tail]
+
+
+def test_char_cap_tail_counts_all_dropped_lines(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_calls_index(
+        repo,
+        {
+            "a.ts": {
+                "first": {"callers": [], "total": 0, "truncated": False},
+                "second": {"callers": [], "total": 0, "truncated": False},
+                "third": {"callers": [], "total": 0, "truncated": False},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        judge,
+        "_parse_changed_file",
+        lambda root, path: [_fn("first", 1, 2), _fn("second", 3, 4), _fn("third", 5, 6)],
+    )
+    first_line = (
+        "- first() in a.ts: no committed callers found (new, unused, or called dynamically)"
+    )
+    tail = "(+2 more changed callables not shown)"
+    cap = len(HEADER) + 1 + len(first_line) + 1 + len(tail)
+    monkeypatch.setenv("CHAMELEON_JUDGE_FACTS_CHAR_CAP", str(cap))
+    block = judge.caller_facts_for_diffs(repo, [_diff("a.ts", "", whole=True)])
+    assert len(block) <= cap
+    assert block.splitlines()[-1] == tail
+    assert "second()" not in block and "third()" not in block
+
+
+def test_no_tail_when_nothing_dropped(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_calls_index(
+        repo,
+        {"a.ts": {"first": {"callers": [], "total": 0, "truncated": False}}},
+    )
+    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("first", 1, 2)])
+    block = judge.caller_facts_for_diffs(repo, [_diff("a.ts", "", whole=True)])
+    assert "first()" in block
+    assert "more changed callables not shown" not in block
 
 
 def test_char_cap_too_small_for_any_fact_returns_empty(tmp_path, monkeypatch):
@@ -381,7 +427,7 @@ def test_build_prompt_omits_facts_when_none(tmp_path):
     profile = tmp_path / ".chameleon"
     profile.mkdir()
     prompt = judge.build_prompt(tmp_path, profile, [_diff("a.ts", "+x\n")], caller_facts=None)
-    assert "Cross-file callers" not in prompt
+    assert "Committed callers" not in prompt
 
 
 # --- config flag ---------------------------------------------------------------
