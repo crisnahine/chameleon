@@ -11,6 +11,9 @@ MAX_FILE_SIZE = 1_000_000
 # A real source file declares a few dozen methods; cap the recorded headers so
 # one outlier file cannot bloat the dump record (consensus needs a sample).
 MAX_CALLABLE_SIGNATURES = 200
+# One file's recorded call sites are capped so a generated megafile cannot
+# bloat the dump; the true total is preserved for honest truncation.
+MAX_CALL_SITES = 2000
 
 def kind_name(node)
   node.class.name.split('::').last
@@ -33,6 +36,26 @@ def call_to_import(node)
   when 'autoload'
     target = string_value(args[1]) if args.length >= 2
     target ? [target, 'named'] : nil
+  end
+end
+
+# Classify one CallNode into the dump's call-site shape, or nil for callees the
+# index can never resolve (a chained call result's name becomes the member
+# receiver; send/public_send and other metaprogramming stay invisible by design).
+def call_site_of(node)
+  return nil unless node.is_a?(Prism::CallNode)
+  name = node.name.to_s
+  recv = node.receiver
+  if recv.nil?
+    { name: name, receiver: nil, kind: 'bare' }
+  elsif recv.is_a?(Prism::SelfNode)
+    { name: name, receiver: 'self', kind: 'self' }
+  elsif (const = constant_name(recv))
+    { name: name, receiver: const, kind: 'constant' }
+  elsif recv.respond_to?(:name) && recv.name
+    { name: name, receiver: recv.name.to_s, kind: 'member' }
+  else
+    nil
   end
 end
 
@@ -219,6 +242,9 @@ def extract_file(file_path)
   import_specifiers = []
   function_scopes = []
   callable_signatures = []
+  call_sites = []
+  call_sites_total = 0
+  call_sites_truncated = false
   ast_node_count = 0
   walk_error = nil
   # Active body-shape frames, innermost last. Each frame tracks its own max
@@ -229,6 +255,9 @@ def extract_file(file_path)
   # is defined in plus that class's superclass so a later override comparison can
   # tell which base contract the method belongs to without a second parse.
   class_stack = []
+  # Enclosing def names, innermost last. Call sites read this to record which
+  # method they were invoked from.
+  def_stack = []
 
   walker = lambda do |node|
     ast_node_count += 1
@@ -239,6 +268,19 @@ def extract_file(file_path)
 
     imp = call_to_import(node)
     import_specifiers << imp if imp
+
+    site = call_site_of(node)
+    if site
+      call_sites_total += 1
+      if call_sites.length < MAX_CALL_SITES
+        call_sites << site.merge(
+          line: line_of(node.location),
+          caller: def_stack.last || '<module>'
+        )
+      else
+        call_sites_truncated = true
+      end
+    end
 
     pushed_class = false
     if node.is_a?(Prism::ClassNode)
@@ -260,6 +302,7 @@ def extract_file(file_path)
         branch_count: 0,
         depth: 0
       })
+      def_stack.push(node.name.to_s)
       # An instance method `def foo` carries no explicit receiver; a class
       # method `def self.foo` does. The contract treats them separately so a
       # class-method override is not compared against an instance signature.
@@ -292,6 +335,7 @@ def extract_file(file_path)
     node.compact_child_nodes.each { |child| walker.call(child) }
 
     if is_fn
+      def_stack.pop
       frame = frame_stack.pop
       function_scopes << {
         start_line: frame[:start_line],
@@ -329,7 +373,10 @@ def extract_file(file_path)
     has_jsx: false,
     parse_diagnostics_count: diagnostics,
     function_scopes: function_scopes,
-    callable_signatures: callable_signatures
+    callable_signatures: callable_signatures,
+    call_sites: call_sites,
+    call_sites_total: call_sites_total,
+    call_sites_truncated: call_sites_truncated
   }
 end
 
