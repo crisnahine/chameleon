@@ -37,9 +37,20 @@ def python_venv_present(plugin_root: Path) -> Path:
     return p
 
 
-def fixtures_present(plugin_root: Path) -> dict[str, Path]:
-    fixtures_root = plugin_root / "tests" / "journey" / "fixtures"
-    required = ["ts_basic", "rails_basic", "ts_monorepo", "ts_with_rails_sidecar"]
+def fixtures_present(
+    plugin_root: Path,
+    fixtures_root: Path | None = None,
+    required: list[str] | None = None,
+) -> dict[str, Path]:
+    """Check committed seed fixtures exist and are non-empty.
+
+    Defaults preserve the journey behavior; the effectiveness runner passes its
+    own fixtures_root + required list.
+    """
+    if fixtures_root is None:
+        fixtures_root = plugin_root / "tests" / "journey" / "fixtures"
+    if required is None:
+        required = ["ts_basic", "rails_basic", "ts_monorepo", "ts_with_rails_sidecar"]
     found: dict[str, Path] = {}
     missing: list[str] = []
     for name in required:
