@@ -21,13 +21,19 @@ Grades:
   specifier machinery as the reverse index; the callee must exist in the
   target's CLOSED export set. An open (barrel) set proves nothing, so it
   yields no edge.
-- ``constant_receiver`` - Ruby only: Const.method where Const names exactly
-  one class across the dump AND the matched member is class-level (kind
-  ``singleton_method``: ``def self.x`` or a ``class << self`` def) -- an
-  instance def with the same name is undispatchable from a constant
-  receiver, so it yields no edge. ``new`` maps to the INSTANCE
-  ``initialize`` when the target defines it, and is skipped (never
-  invented) when it does not.
+- ``constant_receiver`` - Ruby only: Const.method where Const matches a
+  class key exactly. Keys are fully qualified (``enclosing_class_path``,
+  module nesting included; old dumps fall back to the lexical class name),
+  so a bare receiver matches a top-level class only and a namespaced class
+  is reachable only through its qualified name. The matched key must name
+  exactly one defining file across the dump AND the matched member must be
+  class-level (kind ``singleton_method``: ``def self.x`` or a ``class <<
+  self`` def) -- an instance def with the same name is undispatchable from
+  a constant receiver, so it yields no edge. ``new`` maps to the INSTANCE
+  ``initialize`` when the target defines it, is skipped (never invented)
+  when it does not, and is also skipped when the class overrides ``def
+  self.new`` (the override owns construction; mapping through it is
+  unprovable).
 
 Two halves live here so the build (bootstrap-time, populates the artifact)
 and the read (query-time, consumes it) share one key scheme and can't drift:
@@ -126,7 +132,12 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             if not isinstance(name, str) or not name:
                 continue
             callables.setdefault(rel, set()).add(name)
-            cls = row.get("enclosing_class")
+            # Ruby dumps carry the fully qualified class path (module nesting
+            # joined with "::"); keying on it stops a short class name from
+            # matching across namespaces. Rows without it (old dumps, TS) fall
+            # back to the lexical class name.
+            path = row.get("enclosing_class_path")
+            cls = path if isinstance(path, str) and path else row.get("enclosing_class")
             if isinstance(cls, str) and cls:
                 kinds = (
                     class_members.setdefault(rel, {}).setdefault(cls, {}).setdefault(name, set())
@@ -278,12 +289,27 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                 if language != "ruby":
                     continue
                 receiver = site.get("receiver")
+                # Class keys are fully qualified, so a receiver matches only on
+                # exact equality: a bare receiver can match a top-level class
+                # only, never a namespaced one. A bare name CAN lexically
+                # resolve to a namespaced class from inside its namespace, but
+                # call sites carry no lexical context, so asserting that edge
+                # would be a guess; the bare form stays unmatched (accepted
+                # undercoverage).
                 defs = class_defs.get(receiver) if isinstance(receiver, str) else None
                 if not defs or len(defs) != 1:
                     continue
                 (target_rel,) = defs
-                callee_name = "initialize" if name == "new" else name
                 members = (class_members.get(target_rel) or {}).get(receiver) or {}
+                if name == "new":
+                    # A `def self.new` override owns construction: whether and
+                    # how it reaches initialize is not provable statically, so
+                    # the new->initialize map is suppressed entirely.
+                    if "singleton_method" in (members.get("new") or set()):
+                        continue
+                    callee_name = "initialize"
+                else:
+                    callee_name = name
                 kinds = members.get(callee_name) or set()
                 # Const.method dispatches on the class object: only a
                 # class-level member proves the edge. Const.new constructs an

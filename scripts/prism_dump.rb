@@ -256,8 +256,16 @@ def extract_file(file_path)
   frame_stack = []
   # Enclosing class frames, innermost last. A method header records the class it
   # is defined in plus that class's superclass so a later override comparison can
-  # tell which base contract the method belongs to without a second parse.
+  # tell which base contract the method belongs to without a second parse. Each
+  # frame also carries the class's fully qualified path (module/class nesting
+  # joined with "::") so call-edge derivation can key the class unambiguously.
   class_stack = []
+  # Lexical module/class name segments, outermost first. Modules are not class
+  # frames (a def directly inside a module has no enclosing class), but they
+  # qualify the names of classes nested in them. A compact path keeps its own
+  # "::" (class Utils::Helper), so joining the stack yields the full constant
+  # path.
+  nesting_stack = []
   # Enclosing def names, innermost last. Call sites read this to record which
   # method they were invoked from.
   def_stack = []
@@ -286,10 +294,23 @@ def extract_file(file_path)
     end
 
     pushed_class = false
+    pushed_nesting = false
     if node.is_a?(Prism::ClassNode)
-      class_stack.push({ name: constant_name(node.constant_path),
-                         superclass: constant_name(node.superclass) })
+      name = constant_name(node.constant_path)
+      class_stack.push({ name: name,
+                         superclass: constant_name(node.superclass),
+                         path: name ? (nesting_stack + [name]).join('::') : nil })
       pushed_class = true
+      if name
+        nesting_stack.push(name)
+        pushed_nesting = true
+      end
+    elsif node.is_a?(Prism::ModuleNode)
+      name = constant_name(node.constant_path)
+      if name
+        nesting_stack.push(name)
+        pushed_nesting = true
+      end
     elsif node.is_a?(Prism::SingletonClassNode) && node.expression.is_a?(Prism::SelfNode)
       # `class << self` reopens the enclosing class's singleton class: defs
       # inside dispatch on the class object itself, exactly like `def self.x`,
@@ -299,6 +320,7 @@ def extract_file(file_path)
       enclosing = class_stack.last
       class_stack.push({ name: enclosing && enclosing[:name],
                          superclass: enclosing && enclosing[:superclass],
+                         path: enclosing && enclosing[:path],
                          singleton: true })
       pushed_class = true
     end
@@ -331,6 +353,10 @@ def extract_file(file_path)
           params: param_shapes(node),
           is_default_export: false,
           enclosing_class: enclosing && enclosing[:name],
+          # The fully qualified constant path of the enclosing class (module
+          # nesting included). enclosing_class stays the lexical class name;
+          # consumers that need an unambiguous class key read this field.
+          enclosing_class_path: enclosing && enclosing[:path],
           base_class: enclosing && enclosing[:superclass],
           # Body span for the duplication catalog's body-hash fallback: a
           # body-exact clone whose name shares no tokens with the original
@@ -366,6 +392,7 @@ def extract_file(file_path)
     end
 
     class_stack.pop if pushed_class
+    nesting_stack.pop if pushed_nesting
   end
 
   begin

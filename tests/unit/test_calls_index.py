@@ -61,8 +61,11 @@ def _write_index(repo: Path, payload) -> None:
     (cham / CALLS_INDEX_FILENAME).write_text(body, encoding="utf-8")
 
 
-def _sig(name, enclosing_class=None, kind="function"):
-    return {"name": name, "kind": kind, "enclosing_class": enclosing_class}
+def _sig(name, enclosing_class=None, kind="function", enclosing_class_path=None):
+    row = {"name": name, "kind": kind, "enclosing_class": enclosing_class}
+    if enclosing_class_path is not None:
+        row["enclosing_class_path"] = enclosing_class_path
+    return row
 
 
 def _site(name, receiver, kind, line, caller):
@@ -537,6 +540,92 @@ class TestConstantReceiver:
         idx = build_calls_index([target, caller], tmp_path, "ruby")
         assert idx["callees"] == {}
 
+    def test_bare_receiver_does_not_match_namespaced_key(self, tmp_path):
+        # `Settings.get` from some other namespace cannot lexically reach
+        # A::Settings even when the short name is globally unique; matching it
+        # would fabricate an edge (runtime would NameError unless a same-named
+        # reachable constant exists).
+        target = FakeParsed(
+            tmp_path / "app" / "lib" / "namespace_a.rb",
+            {
+                "callable_signatures": [
+                    _sig(
+                        "get",
+                        enclosing_class="Settings",
+                        kind="singleton_method",
+                        enclosing_class_path="A::Settings",
+                    )
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "app" / "x.rb",
+            {"call_sites": [_site("get", "Settings", "constant", 4, "run")]},
+        )
+        idx = build_calls_index([target, caller], tmp_path, "ruby")
+        assert idx["callees"] == {}
+
+    def test_qualified_receiver_matches_namespaced_key(self, tmp_path):
+        target = FakeParsed(
+            tmp_path / "app" / "lib" / "namespace_a.rb",
+            {
+                "callable_signatures": [
+                    _sig(
+                        "get",
+                        enclosing_class="Settings",
+                        kind="singleton_method",
+                        enclosing_class_path="A::Settings",
+                    )
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "app" / "x.rb",
+            {"call_sites": [_site("get", "A::Settings", "constant", 4, "run")]},
+        )
+        idx = build_calls_index([target, caller], tmp_path, "ruby")
+        entry = idx["callees"]["app/lib/namespace_a.rb"]["get"]
+        assert entry["callers"][0]["grade"] == "constant_receiver"
+
+    def test_rows_without_path_fall_back_to_enclosing_class(self, tmp_path):
+        # Old dumps carry no enclosing_class_path; the lexical class name is
+        # still the key so existing profiles keep their top-level edges.
+        target = FakeParsed(
+            tmp_path / "app" / "models" / "billing.rb",
+            {
+                "callable_signatures": [
+                    _sig("charge", enclosing_class="Billing", kind="singleton_method")
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "app" / "x.rb",
+            {"call_sites": [_site("charge", "Billing", "constant", 4, "pay")]},
+        )
+        idx = build_calls_index([target, caller], tmp_path, "ruby")
+        entry = idx["callees"]["app/models/billing.rb"]["charge"]
+        assert entry["callers"][0]["grade"] == "constant_receiver"
+
+    def test_self_new_override_suppresses_initialize_map(self, tmp_path):
+        # A `def self.new` override owns construction: whether and how it
+        # reaches initialize is not provable, so Three.new records no edge at
+        # all (neither to initialize nor to the override).
+        target = FakeParsed(
+            tmp_path / "app" / "models" / "three.rb",
+            {
+                "callable_signatures": [
+                    _sig("initialize", enclosing_class="Three", kind="method"),
+                    _sig("new", enclosing_class="Three", kind="singleton_method"),
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "app" / "x.rb",
+            {"call_sites": [_site("new", "Three", "constant", 8, "create")]},
+        )
+        idx = build_calls_index([target, caller], tmp_path, "ruby")
+        assert idx["callees"] == {}
+
     def test_constant_grade_is_ruby_only(self, tmp_path):
         target = FakeParsed(
             tmp_path / "src" / "svc.ts",
@@ -935,6 +1024,152 @@ class TestRealDumperAliasedImports:
             {"path": "page.ts", "caller": "go", "line": 5, "grade": "import"}
         ]
         assert "y" not in idx["callees"].get("b.ts", {})
+
+
+class TestRealDumperMemberChains:
+    @pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+    def test_member_chain_through_namespace_yields_no_edge(self, tmp_path):
+        # api.utils.helper() is not api.helper(): the call dispatches through
+        # a property of the namespace, which the export set proves nothing
+        # about (runtime: api.utils is undefined here). Only the depth-1 form
+        # may edge to the namespace target.
+        from chameleon_mcp.extractors.typescript import TypeScriptExtractor
+
+        (tmp_path / "m.ts").write_text("export function helper() { return 1 }\n", encoding="utf-8")
+        (tmp_path / "chaintrap.ts").write_text(
+            "import * as api from './m';\n"
+            "export function chainTrap() {\n"
+            "  api.helper();\n"
+            "  api.utils.helper();\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        pr = TypeScriptExtractor().parse_repo(repo_root=tmp_path, glob="**/*.ts")
+        idx = build_calls_index(pr.files, tmp_path, "typescript")
+        # Exactly one edge: the depth-1 call on line 3. The chained call on
+        # line 4 must not be collapsed into a second (fabricated) edge.
+        assert idx["callees"]["m.ts"]["helper"]["callers"] == [
+            {"path": "chaintrap.ts", "caller": "chainTrap", "line": 3, "grade": "import"}
+        ]
+
+
+class TestRealDumperRubyNamespaces:
+    @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+    def test_short_constant_cross_namespace_yields_no_edge(self, tmp_path):
+        # Settings.get inside module B resolves lexically from B, which never
+        # reaches A::Settings; the short-name match was a fabrication.
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        (tmp_path / "namespace_a.rb").write_text(
+            "module A\n  class Settings\n    def self.get\n      1\n    end\n  end\nend\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "namespace_b.rb").write_text(
+            "module B\n  class Consumer\n    def run\n      Settings.get\n    end\n  end\nend\n",
+            encoding="utf-8",
+        )
+        pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+        idx = build_calls_index(pr.files, tmp_path, "ruby")
+        assert "namespace_a.rb" not in idx["callees"]
+
+    @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+    def test_qualified_constant_receiver_records_edge(self, tmp_path):
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        (tmp_path / "namespace_a.rb").write_text(
+            "module A\n  class Settings\n    def self.get\n      1\n    end\n  end\nend\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "caller.rb").write_text(
+            "class Caller\n  def run\n    A::Settings.get\n  end\nend\n",
+            encoding="utf-8",
+        )
+        pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+        idx = build_calls_index(pr.files, tmp_path, "ruby")
+        assert idx["callees"]["namespace_a.rb"]["get"]["callers"] == [
+            {"path": "caller.rb", "caller": "run", "line": 3, "grade": "constant_receiver"}
+        ]
+
+    @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+    def test_bare_receiver_still_matches_top_level_class(self, tmp_path):
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        (tmp_path / "billing.rb").write_text(
+            "class Billing\n  def self.charge\n    1\n  end\nend\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "caller.rb").write_text(
+            "class Caller\n  def run\n    Billing.charge\n  end\nend\n",
+            encoding="utf-8",
+        )
+        pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+        idx = build_calls_index(pr.files, tmp_path, "ruby")
+        assert idx["callees"]["billing.rb"]["charge"]["callers"] == [
+            {"path": "caller.rb", "caller": "run", "line": 3, "grade": "constant_receiver"}
+        ]
+
+    @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+    def test_bare_receiver_inside_same_module_yields_no_edge(self, tmp_path):
+        # Settings.get from inside ANOTHER file's `module A` context WOULD
+        # lexically resolve to A::Settings, but call sites carry no lexical
+        # context, so the edge is unprovable. Pinned as accepted undercoverage.
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        (tmp_path / "namespace_a.rb").write_text(
+            "module A\n  class Settings\n    def self.get\n      1\n    end\n  end\nend\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "other_a.rb").write_text(
+            "module A\n  class Helper\n    def run\n      Settings.get\n    end\n  end\nend\n",
+            encoding="utf-8",
+        )
+        pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+        idx = build_calls_index(pr.files, tmp_path, "ruby")
+        assert "namespace_a.rb" not in idx["callees"]
+
+    @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+    def test_compact_path_class_matches_qualified_receiver(self, tmp_path):
+        # `class Utils::Helper` keys as "Utils::Helper" (constant_path already
+        # qualified, empty nesting stack), so the qualified receiver matches.
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        (tmp_path / "utils_helper.rb").write_text(
+            "class Utils::Helper\n  def self.assist\n    1\n  end\nend\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "caller.rb").write_text(
+            "class Caller\n  def run\n    Utils::Helper.assist\n  end\nend\n",
+            encoding="utf-8",
+        )
+        pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+        idx = build_calls_index(pr.files, tmp_path, "ruby")
+        assert idx["callees"]["utils_helper.rb"]["assist"]["callers"] == [
+            {"path": "caller.rb", "caller": "run", "line": 3, "grade": "constant_receiver"}
+        ]
+
+    @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+    def test_self_new_override_yields_no_edge_via_real_dump(self, tmp_path):
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        (tmp_path / "three.rb").write_text(
+            "class Three\n"
+            "  def self.new\n"
+            "    42\n"
+            "  end\n"
+            "\n"
+            "  def initialize\n"
+            "    @x = 1\n"
+            "  end\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "caller.rb").write_text(
+            "class Caller\n  def run\n    Three.new\n  end\nend\n",
+            encoding="utf-8",
+        )
+        pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+        idx = build_calls_index(pr.files, tmp_path, "ruby")
+        assert "three.rb" not in idx["callees"]
 
 
 class TestRealDumperRubySingletonScope:

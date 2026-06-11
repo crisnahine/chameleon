@@ -52,6 +52,65 @@ end
 def helper; end
 """
 
+FIXTURE_NAMESPACED = """
+module A
+  class Settings
+    def self.get
+      1
+    end
+  end
+end
+
+module Outer
+  module Inner
+    class Deep
+      def run
+        1
+      end
+    end
+  end
+end
+
+class Utils::Helper
+  def self.assist
+    1
+  end
+end
+
+class TopLevel
+  def plain
+    1
+  end
+end
+
+module Util
+  def self.helper
+    1
+  end
+
+  class Worker
+    class << self
+      def go
+        1
+      end
+    end
+  end
+end
+"""
+
+
+def _dump(path):
+    import subprocess
+
+    out = subprocess.run(
+        ["ruby", str(_PRISM_DUMP)],
+        input=str(path) + "\n",
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
 
 @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
 def test_ruby_call_sites(tmp_path):
@@ -101,3 +160,62 @@ def test_operator_sends_excluded(tmp_path):
     # call_sites_total counts only what the helper returns (identifier sends);
     # operator sends are nil from the helper and never reach the counter.
     assert rec["call_sites_total"] == len(rec["call_sites"])
+
+
+@pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+def test_enclosing_class_path_is_fully_qualified(tmp_path):
+    # enclosing_class stays the lexical class name (the conventions derivation
+    # consumes it); enclosing_class_path is additive and joins the live
+    # module/class nesting, so "Settings" inside module A keys as "A::Settings".
+    f = tmp_path / "namespaced.rb"
+    f.write_text(FIXTURE_NAMESPACED, encoding="utf-8")
+    rec = _dump(f)
+    sigs = {s["name"]: s for s in rec["callable_signatures"]}
+
+    get = sigs["get"]
+    assert get["enclosing_class"] == "Settings"
+    assert get["enclosing_class_path"] == "A::Settings"
+    assert get["kind"] == "singleton_method"
+
+    run = sigs["run"]
+    assert run["enclosing_class"] == "Deep"
+    assert run["enclosing_class_path"] == "Outer::Inner::Deep"
+
+    plain = sigs["plain"]
+    assert plain["enclosing_class"] == "TopLevel"
+    assert plain["enclosing_class_path"] == "TopLevel"
+
+
+@pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+def test_compact_constant_path_class_keeps_full_name(tmp_path):
+    # `class Utils::Helper` at the top level: constant_path already carries the
+    # qualified name, and the empty nesting stack adds nothing.
+    f = tmp_path / "namespaced.rb"
+    f.write_text(FIXTURE_NAMESPACED, encoding="utf-8")
+    rec = _dump(f)
+    sigs = {s["name"]: s for s in rec["callable_signatures"]}
+    assist = sigs["assist"]
+    assert assist["enclosing_class"] == "Utils::Helper"
+    assert assist["enclosing_class_path"] == "Utils::Helper"
+    assert assist["kind"] == "singleton_method"
+
+
+@pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+def test_module_level_def_and_singleton_class_paths(tmp_path):
+    # A def directly inside a module has no enclosing class, so both fields
+    # stay nil; a `class << self` scope keeps the enclosing class's qualified
+    # path exactly as it keeps its name.
+    f = tmp_path / "namespaced.rb"
+    f.write_text(FIXTURE_NAMESPACED, encoding="utf-8")
+    rec = _dump(f)
+    sigs = {s["name"]: s for s in rec["callable_signatures"]}
+
+    helper = sigs["helper"]
+    assert helper["enclosing_class"] is None
+    assert helper["enclosing_class_path"] is None
+    assert helper["kind"] == "singleton_method"
+
+    go = sigs["go"]
+    assert go["enclosing_class"] == "Worker"
+    assert go["enclosing_class_path"] == "Util::Worker"
+    assert go["kind"] == "singleton_method"

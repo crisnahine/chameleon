@@ -264,10 +264,12 @@ function callSiteOf(node) {
     if (recv.kind === ts.SyntaxKind.SuperKeyword) {
       return { name, receiver: "super", kind: "super" };
     }
-    // Leftmost identifier of the receiver chain (svc.api.sync() -> svc).
-    let left = recv;
-    while (left.kind === ts.SyntaxKind.PropertyAccessExpression) left = left.expression;
-    const receiver = left.kind === ts.SyntaxKind.Identifier ? left.text : null;
+    // The receiver carries the identifier only for a depth-1 chain
+    // (svc.sync() -> svc). A deeper chain (api.utils.helper()) dispatches
+    // through a property of the receiver, about which the receiver's export
+    // set proves nothing, so it records no receiver (still kind member/new,
+    // unresolvable by design).
+    const receiver = recv.kind === ts.SyntaxKind.Identifier ? recv.text : null;
     return { name, receiver, kind: isNew ? "new" : "member" };
   }
   return null;

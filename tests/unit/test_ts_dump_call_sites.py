@@ -23,6 +23,7 @@ class Repo {
 export function main() {
   const u = getUser();
   svc.sync(u);
+  svc.api.deep.sync2(u);
   const r = new Repo();
   r.save();
   helper();
@@ -61,6 +62,20 @@ def test_call_sites_extracted(tmp_path):
     member = next(s for s in rec["call_sites"] if s["name"] == "sync")
     assert member["receiver"] == "svc"
     assert isinstance(member["line"], int)
+
+
+@pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+def test_member_chain_deeper_than_one_hop_records_no_receiver(tmp_path):
+    # svc.api.deep.sync2() dispatches through properties of svc, not svc
+    # itself; collapsing the chain to its leftmost identifier made it dump
+    # identically to svc.sync2(), which fabricated namespace-import edges.
+    # The receiver carries the identifier only for a depth-1 chain.
+    rec = _dump(tmp_path)
+    deep = next(s for s in rec["call_sites"] if s["name"] == "sync2")
+    assert deep["kind"] == "member"
+    assert deep["receiver"] is None
+    shallow = next(s for s in rec["call_sites"] if s["name"] == "sync")
+    assert shallow["receiver"] == "svc"
 
 
 @pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
