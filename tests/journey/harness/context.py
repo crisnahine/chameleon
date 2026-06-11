@@ -52,10 +52,17 @@ class JourneyContext:
         return self.cost_so_far_usd + sum(remaining_act_ceilings)
 
 
-def build_context(plugin_root: Path, results_root: Path) -> JourneyContext:
-    """Create a new run_dir with all subdirs and env overrides."""
+def build_context(
+    plugin_root: Path, results_root: Path, run_prefix: str = "journey"
+) -> JourneyContext:
+    """Create a new run_dir with all subdirs and env overrides.
+
+    ``run_prefix`` names the run directory (``<prefix>_<ts>``) so non-journey
+    runners (the effectiveness eval) can share this isolation builder without
+    their runs colliding with or masquerading as journey runs.
+    """
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = results_root / f"journey_{timestamp}"
+    run_dir = results_root / f"{run_prefix}_{timestamp}"
     run_dir.mkdir(parents=True, exist_ok=False)
 
     for sub in ("chameleon_data", "tmp", "working", "checkpoints", "transcripts", "snapshots"):

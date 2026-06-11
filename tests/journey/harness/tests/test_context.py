@@ -52,3 +52,17 @@ def test_fast_forward_marker_ages_mtime(tmp_path: Path) -> None:
 
     age = ctx.now() - marker.stat().st_mtime
     assert age >= 3600, f"expected mtime aged >= 3600s, got {age}"
+
+
+def test_build_context_honors_run_prefix(tmp_path: Path) -> None:
+    """A non-journey caller gets its own run-dir prefix; default stays journey_."""
+    plugin_root = tmp_path / "chameleon"
+    plugin_root.mkdir()
+
+    ctx_default = build_context(plugin_root, tmp_path / "r1")
+    assert ctx_default.run_dir.name.startswith("journey_")
+
+    ctx_eff = build_context(plugin_root, tmp_path / "r2", run_prefix="effectiveness")
+    assert ctx_eff.run_dir.name.startswith("effectiveness_")
+    assert (ctx_eff.run_dir / "chameleon_data").exists()
+    assert ctx_eff.env["CHAMELEON_PLUGIN_DATA"].startswith(str(ctx_eff.run_dir))
