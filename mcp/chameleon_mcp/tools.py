@@ -9619,6 +9619,192 @@ def doctor() -> dict:
             }
         )
 
+    # Dead-install detectors: an install can pass every plumbing check above
+    # while chameleon does nothing — generated artifacts missing so resolution
+    # is degenerate, every turn-end reviewer spawn failing, or a trusted repo
+    # whose edits never resolve an archetype. Each detector fails open: absence
+    # of a profile / attestations / metrics is healthy-unknown, never a warn.
+    cwd_root = Path.cwd()
+    cwd_profile_dir = cwd_root / ".chameleon"
+    try:
+        cwd_repo_id: str | None = _compute_repo_id(cwd_root)
+    except Exception:
+        cwd_repo_id = None
+
+    try:
+        if (cwd_profile_dir / "profile.json").is_file():
+            import json as _json
+
+            try:
+                _lang = _json.loads(
+                    (cwd_profile_dir / "profile.json").read_text(encoding="utf-8")
+                ).get("language")
+            except Exception:
+                _lang = None
+            expected_artifacts = ["calls_index.json", "function_catalog.json"]
+            if _lang == "typescript":
+                expected_artifacts += ["exports_index.json", "reverse_index.json"]
+            artifact_problems: list[str] = []
+            for art in expected_artifacts:
+                apath = cwd_profile_dir / art
+                if not apath.is_file():
+                    artifact_problems.append(f"{art} missing")
+                    continue
+                try:
+                    _json.loads(apath.read_text(encoding="utf-8"))
+                except Exception:
+                    artifact_problems.append(f"{art} corrupt")
+            if artifact_problems:
+                checks.append(
+                    {
+                        "name": "profile_artifacts",
+                        "status": "warn",
+                        "detail": (
+                            "generated profile artifacts unhealthy: "
+                            + "; ".join(artifact_problems)
+                            + ". Cross-file facts and duplication checks degrade "
+                            "without them; run /chameleon-refresh to regenerate."
+                        ),
+                    }
+                )
+            else:
+                checks.append(
+                    {
+                        "name": "profile_artifacts",
+                        "status": "ok",
+                        "detail": (
+                            f"{len(expected_artifacts)} generated artifacts present and parseable"
+                        ),
+                    }
+                )
+        else:
+            checks.append(
+                {
+                    "name": "profile_artifacts",
+                    "status": "ok",
+                    "detail": "no profile in the current directory",
+                }
+            )
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "profile_artifacts",
+                "status": "ok",
+                "detail": f"could not inspect: {type(exc).__name__}: {exc}",
+            }
+        )
+
+    try:
+        from chameleon_mcp.profile.trust import plugin_data_dir as _pdd
+
+        judge_detail = "no attested sessions for this repo"
+        judge_warn = False
+        # The .is_dir() guard keeps doctor read-only here: the attestation
+        # reader's path resolution would otherwise CREATE the repo data dir.
+        if cwd_repo_id and (_pdd() / cwd_repo_id).is_dir():
+            from chameleon_mcp.review_ledger import read_session_attestations
+
+            _hist = read_session_attestations(cwd_repo_id, limit=5)
+            _records = _hist.get("records") or []
+            judge_events = [
+                e
+                for rec in _records
+                for e in (rec.get("checks") or [])
+                if isinstance(e, dict) and e.get("check") == "correctness_judge"
+            ]
+            degraded = [e for e in judge_events if e.get("status") == "degraded_spawn"]
+            # Every spawn attempt logs "spawned/started"; only "spawned/completed"
+            # marks a reviewer that actually ran. Degradations with no completion
+            # anywhere in the window mean the turn-end review layer is dead.
+            completed = [
+                e
+                for e in judge_events
+                if e.get("status") == "spawned" and e.get("reason") == "completed"
+            ]
+            if degraded and not completed:
+                judge_warn = True
+                _reasons = sorted({str(e.get("reason") or "unknown") for e in degraded})
+                judge_detail = (
+                    f"turn-end reviewer failing to spawn ({', '.join(_reasons)}) across the "
+                    f"last {len(_records)} attested session(s); correctness review is not "
+                    "running. Check the claude binary/auth, then verify with a new session."
+                )
+            elif judge_events:
+                judge_detail = "reviewer spawning normally in recent sessions"
+        checks.append(
+            {
+                "name": "judge_spawn_health",
+                "status": "warn" if judge_warn else "ok",
+                "detail": judge_detail,
+            }
+        )
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "judge_spawn_health",
+                "status": "ok",
+                "detail": f"could not inspect: {type(exc).__name__}: {exc}",
+            }
+        )
+
+    try:
+        from chameleon_mcp.metrics import _metrics_path
+        from chameleon_mcp.shadow_report import _iter_rows
+
+        # Rows usually carry file_rel=None (it is only attributed at the block
+        # gates); when present, a non-source attribution (README edits) is a
+        # normal null-archetype row, so it is excluded rather than counted.
+        _source_exts = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".rb")
+        recent_rows: list[dict] = []
+        if cwd_repo_id:
+            for _row in _iter_rows(_metrics_path()):
+                if _row.get("hook") != "preflight-and-advise":
+                    continue
+                if _row.get("repo_id") != cwd_repo_id:
+                    continue
+                if _row.get("trust_state") != "trusted":
+                    continue
+                _fr = _row.get("file_rel")
+                if isinstance(_fr, str) and not _fr.endswith(_source_exts):
+                    continue
+                recent_rows.append(_row)
+                if len(recent_rows) > 30:
+                    recent_rows.pop(0)
+        null_count = sum(1 for r in recent_rows if r.get("archetype") is None)
+        if len(recent_rows) >= 5 and null_count == len(recent_rows):
+            checks.append(
+                {
+                    "name": "advisory_emission",
+                    "status": "warn",
+                    "detail": (
+                        f"advisories are not firing: the last {len(recent_rows)} trusted "
+                        "edits in this repo resolved no archetype; archetype resolution "
+                        "may be broken. Run /chameleon-refresh and /chameleon-status."
+                    ),
+                }
+            )
+        else:
+            checks.append(
+                {
+                    "name": "advisory_emission",
+                    "status": "ok",
+                    "detail": (
+                        "no trusted preflight rows recorded for this repo"
+                        if not recent_rows
+                        else f"{len(recent_rows) - null_count}/{len(recent_rows)} recent "
+                        "trusted edits resolved an archetype"
+                    ),
+                }
+            )
+    except Exception as exc:
+        checks.append(
+            {
+                "name": "advisory_emission",
+                "status": "ok",
+                "detail": f"could not inspect: {type(exc).__name__}: {exc}",
+            }
+        )
+
     try:
         from chameleon_mcp import index_db as _index_db_mod
 

@@ -8,7 +8,7 @@ description: Use when the user explicitly invokes /chameleon-doctor to get a tri
 Run the chameleon-mcp `doctor` MCP tool. It returns a structured envelope:
 
 - `overall`: ok | warn | error
-- `checks`: a list of subsystem checks (python version, bash on PATH, timeout(1) on PATH, plugin data writable, hook scripts present and executable, HMAC key sane, daemon liveness, recent hook errors, per-repo profile/trust state, config_json validation, production_ref resolvability when a lock is set)
+- `checks`: a list of subsystem checks (python version, bash on PATH, timeout(1) on PATH, plugin data writable, hook scripts present and executable, HMAC key sane, daemon liveness, recent hook errors, per-repo profile/trust state, config_json validation, production_ref resolvability when a lock is set, plus three dead-install detectors for the current repo: `profile_artifacts` (generated artifacts exist and parse), `judge_spawn_health` (turn-end reviewer spawns are not all failing), `advisory_emission` (trusted edits actually resolve archetypes))
 - `summary`: counts
 
 ## The flow
@@ -19,6 +19,9 @@ Run the chameleon-mcp `doctor` MCP tool. It returns a structured envelope:
 3. Roll-up interpretation:
    - If `overall` is `ok`: confirm the install is healthy.
    - If `overall` is `warn`: surface the warn-status checks as informational, note that they typically don't block operation.
+     - `profile_artifacts` warn: a generated artifact is missing or corrupt; suggest `/chameleon-refresh` to regenerate.
+     - `judge_spawn_health` warn: every recent correctness-judge spawn failed; the turn-end review layer is dead. Check the `claude` binary and auth.
+     - `advisory_emission` warn: trusted edits are not resolving archetypes, so per-edit advisories are silent; suggest `/chameleon-refresh` then `/chameleon-status`.
    - If `overall` is `error`: call out each error-status check as a blocker and suggest the relevant fix:
      - `python_version` error: upgrade Python to >= 3.11.
      - `bash_on_path` error: install bash or ensure it is on `$PATH` for the hooks to work.
