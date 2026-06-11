@@ -4,6 +4,30 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.1] - 2026-06-12
+
+Remediation of the qa28 real-user campaign: ~80 live `claude -p` sessions drove every tool, command, and hook from scratch on never-profiled GitHub clones (vercel/swr, thoughtbot/administrate), plus an A/B effectiveness battery and a v2.12.0 upgrade simulation. The campaign confirmed the upgrade path loses nothing for existing users, and found five P1s that no scripted test layer had caught; all ship fixed here, each regression-verified from its original repro. Full unit suite 3,544 passing.
+
+### Fixed
+
+- **Production-ref derivation silently died behind symlinked paths.** Extractors emit symlink-resolved file paths while the prodtree scan root was used unresolved, so any symlinked data-dir component (macOS `/tmp`, relocated `~/.local/share`) made every `relative_to` fail: archetype buckets became absolute-path garbage, per-edit advisories never fired, and bootstrap, doctor, and status all reported healthy. The prodtree root is now resolved before derivation, and a pinned test asserts no committed artifact may ever carry a prodtree path fragment.
+- **`apply_archetype_renames` deleted `calls_index.json`.** The rename transaction re-emitted every artifact except the calls index, and the protocol-file posture drops whatever is not re-emitted - so `/chameleon-init`'s auto-rename shipped fresh profiles without caller facts. The transaction now carries the artifact forward verbatim, like the partial-refresh path.
+- **The correctness judge was dead on OAuth/subscription installs.** `claude --bare` no longer inherits OAuth credentials, so every reviewer spawn exited "Not logged in" with only the attestation file aware. The first bare spawn now doubles as a functional auth probe (cached 24h); on failure the judge retries without `--bare`, and because that spawn pays the session primer and cannot fit the 45s sync budget, known bare-auth failure auto-routes the spawn through the detached async path (new `CORRECTNESS_JUDGE_FALLBACK_TIMEOUT_SECONDS`, default 180) with findings delivered at the next prompt. `CHAMELEON_JUDGE_ASYNC=0` still forces sync.
+- **A failing judge starved the duplication gate forever.** Deferral now requires a spawn that actually produced a reviewable result; degraded spawns run the duplication review in the same turn.
+- **`bootstrap_repo` and `refresh_repo` bypassed the unsafe-root guard.** Both now refuse temp/world-writable roots with the same policy as the hooks and name the `CHAMELEON_ALLOW_TMP_REPO=1` opt-out; `detect_repo` carries the refusal reason instead of a bare `no_repo`.
+- **Doctor passed dead installs.** Three new checks, each failing open: generated-artifact completeness for the profile's language, judge-spawn health from recent attestations, and advisory-emission sanity (trusted edits resolving no archetype). A failed reviewer spawn also surfaces as a one-line SessionStart banner instead of living only in the attestation ledger.
+- **Every edit wrote two drift rows** (preflight and verify both recorded), doubling drift statistics and banner pressure; only the verify-side row remains.
+
+## [2.13.0] - 2026-06-11
+
+Calls index and judge caller facts (released to main, superseded by 2.13.1 before tagging; install 2.13.1).
+
+### Added
+
+- **Committed calls index.** Both dumpers extract raw call sites (TS: bare/member/this/super/new with depth-1 receivers, namespace-import aliases, enclosing class; Ruby: identifier-named sends with self/constant receivers, singleton-scope aware); a new builder grades them into `.chameleon/calls_index.json` with exactly three deterministic grades (`same_file`, `import`, `constant_receiver`), honest caps and truncation totals, as the 14th trust-hashed artifact. Name-only matches are deliberately never stored. Generated-index merge posture (never routed to the merge driver); refresh-noop heals a missing index.
+- **Judge caller facts (default on).** At turn end the correctness judge's prompt carries a bounded block of committed callers for the callables the diff actually changed, with the snapshot and dynamic-dispatch caveats stated inline; kill switch `enforcement.judge_crossfile_facts`; attestation check events record included/skipped per spawn. New `get_callers` tool and a pr-review blast-radius step expose the same lookup.
+- **Housekeeping.** `.dup_judged.` session markers are reaped at SessionStart; a deleted canonical witness now surfaces a one-line refresh hint instead of a silent empty excerpt; ts_dump drains stdout before exit (records over 64 KB were silently truncated).
+
 ## [2.12.0] - 2026-06-11
 
 Production-ref derivation: bootstrap and refresh now analyze the repo's production branch tree instead of whatever feature branch is checked out, plus the qa26 full-surface QA campaign (5 specialized squads + a human-style effectiveness session over real hooks; ~30 verified findings, every P1/P2 fixed in-release, each fix regression-verified from its original repro). Validated by the full unit suite (3,344 incl. 25 regression pins), both real-repo batteries (TS 56/56, Ruby 63/63), cross-cutting (15/15), hook simulation (6/6), and a full journey-harness run (real `claude -p` sessions, 19 acts, 40/40 phases PASS, $19.25).
