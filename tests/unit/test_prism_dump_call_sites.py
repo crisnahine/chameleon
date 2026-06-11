@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
@@ -46,5 +45,7 @@ def test_ruby_call_sites(tmp_path):
     # Api::Client.new.post: the .post call's receiver is the result of .new
     # (a CallNode). The helper returns nil for chained-call receivers, so
     # "post" must not appear as a constant-kind site.
-    constant_posts = [s for s in rec["call_sites"] if s["name"] == "post" and s["kind"] == "constant"]
+    constant_posts = [
+        s for s in rec["call_sites"] if s["name"] == "post" and s["kind"] == "constant"
+    ]
     assert constant_posts == []

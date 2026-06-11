@@ -468,9 +468,12 @@ function extractFile(filePath) {
       }
       collectImportSymbols(stmt, result.import_symbols, sourceFile);
       // Capture `import * as alias from 'module'` for namespace-call resolution.
+      // Type-only namespace imports (`import type * as T from '...'`) have no
+      // runtime value and must not seed call-edge resolution.
       const clause = stmt.importClause;
       if (
         clause &&
+        !clause.isTypeOnly &&
         clause.namedBindings &&
         clause.namedBindings.kind === ts.SyntaxKind.NamespaceImport &&
         clause.namedBindings.name &&
@@ -547,14 +550,25 @@ function extractFile(filePath) {
 
     // Track enclosing class so method signatures can record which class they
     // belong to. ClassExpression covers `const C = class Foo {}` patterns.
-    const isClass =
+    // Unnamed ClassDeclaration/ClassExpression and ObjectLiteralExpression push
+    // a null sentinel so methods defined inside them do not inherit the
+    // lexically-enclosing named class — they have no named class of their own.
+    const isNamedClass =
       (node.kind === ts.SyntaxKind.ClassDeclaration ||
         node.kind === ts.SyntaxKind.ClassExpression ||
         node.kind === ts.SyntaxKind.InterfaceDeclaration) &&
       node.name &&
       typeof node.name.text === "string";
-    if (isClass) {
+    const isClassSentinel =
+      !isNamedClass &&
+      (node.kind === ts.SyntaxKind.ClassDeclaration ||
+        node.kind === ts.SyntaxKind.ClassExpression ||
+        node.kind === ts.SyntaxKind.ObjectLiteralExpression);
+    const isClass = isNamedClass || isClassSentinel;
+    if (isNamedClass) {
       classStack.push(node.name.text);
+    } else if (isClassSentinel) {
+      classStack.push(null);
     }
 
     const isFn = isFunctionLike(node);
