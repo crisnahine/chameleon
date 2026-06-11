@@ -6,6 +6,7 @@ deliberately absent. The loader mirrors the symbol-index loaders: fail-open
 None on any ambiguity, mtime+size cache token, schema check.
 """
 
+import itertools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,7 +44,13 @@ def _sig(name, enclosing_class=None):
 
 
 def _site(name, receiver, kind, line, caller):
-    return {"name": name, "receiver": receiver, "kind": kind, "line": line, "caller": caller}
+    return {
+        "name": name,
+        "receiver": receiver,
+        "kind": kind,
+        "line": line,
+        "caller": caller,
+    }
 
 
 class TestSameFile:
@@ -51,7 +58,10 @@ class TestSameFile:
         pf = FakeParsed(
             tmp_path / "src" / "svc.ts",
             {
-                "callable_signatures": [_sig("helper"), _sig("run", enclosing_class="Svc")],
+                "callable_signatures": [
+                    _sig("helper"),
+                    _sig("run", enclosing_class="Svc"),
+                ],
                 "call_sites": [_site("helper", None, "bare", 10, "run")],
             },
         )
@@ -218,7 +228,10 @@ class TestImportGrade:
             },
         )
         idx = build_calls_index([target, caller], tmp_path, "typescript")
-        assert idx["callees"]["src/page.ts"]["fetchUser"]["callers"][0]["grade"] == "same_file"
+        assert (
+            idx["callees"]["src/page.ts"]["fetchUser"]["callers"][0]["grade"]
+            == "same_file"
+        )
         assert "src/api.ts" not in idx["callees"]
 
 
@@ -232,7 +245,9 @@ class TestNamespaceImport:
         caller = FakeParsed(
             tmp_path / "src" / "page.ts",
             {
-                "namespace_imports": [{"alias": "utils", "module": "./utils", "line": 1}],
+                "namespace_imports": [
+                    {"alias": "utils", "module": "./utils", "line": 1}
+                ],
                 "call_sites": [_site("fmtDate", "utils", "member", 4, "render")],
             },
         )
@@ -251,7 +266,9 @@ class TestNamespaceImport:
         caller = FakeParsed(
             tmp_path / "src" / "page.ts",
             {
-                "namespace_imports": [{"alias": "utils", "module": "./utils", "line": 1}],
+                "namespace_imports": [
+                    {"alias": "utils", "module": "./utils", "line": 1}
+                ],
                 "call_sites": [_site("fmtDate", "other", "member", 4, "render")],
             },
         )
@@ -379,7 +396,9 @@ class TestCaps:
             tmp_path / "src" / "svc.ts",
             {
                 "callable_signatures": [_sig("helper")],
-                "call_sites": [_site("helper", None, "bare", n, "run") for n in range(1, 6)],
+                "call_sites": [
+                    _site("helper", None, "bare", n, "run") for n in range(1, 6)
+                ],
             },
         )
         idx = build_calls_index([pf], tmp_path, "typescript")
@@ -407,6 +426,30 @@ class TestCaps:
         assert len(callee["alpha"]["callers"]) == 1
         assert callee["beta"]["callers"] == []
         assert callee["beta"]["total"] == 1
+        assert callee["beta"]["truncated"] is True
+
+    def test_global_cap_partial_slice_second_entry(self, tmp_path, monkeypatch):
+        # Global cap 3 with two callees of 2 rows each: alpha keeps 2, beta
+        # keeps 1 (the partial slice), total stored 3, beta truncated True.
+        monkeypatch.setenv("CHAMELEON_CALLS_INDEX_MAX_TOTAL_EDGES", "3")
+        pf = FakeParsed(
+            tmp_path / "src" / "svc.ts",
+            {
+                "callable_signatures": [_sig("alpha"), _sig("beta")],
+                "call_sites": [
+                    _site("alpha", None, "bare", 1, "run"),
+                    _site("alpha", None, "bare", 2, "run"),
+                    _site("beta", None, "bare", 3, "run"),
+                    _site("beta", None, "bare", 4, "run"),
+                ],
+            },
+        )
+        idx = build_calls_index([pf], tmp_path, "typescript")
+        callee = idx["callees"]["src/svc.ts"]
+        assert len(callee["alpha"]["callers"]) == 2
+        assert callee["alpha"]["truncated"] is False
+        assert len(callee["beta"]["callers"]) == 1
+        assert callee["beta"]["total"] == 2
         assert callee["beta"]["truncated"] is True
 
 
@@ -448,6 +491,20 @@ class TestDeterminism:
         first = build_calls_index([target, a, b], tmp_path, "typescript")
         second = build_calls_index([b, target, a], tmp_path, "typescript")
         assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
+
+    def test_all_permutations_byte_identical(self, tmp_path):
+        # All 6 orderings of the 3-file fixture must produce the same payload.
+        files = list(self._files(tmp_path))
+        canonical = json.dumps(
+            build_calls_index(files, tmp_path, "typescript"), sort_keys=True
+        )
+        for perm in itertools.permutations(files):
+            result = json.dumps(
+                build_calls_index(list(perm), tmp_path, "typescript"), sort_keys=True
+            )
+            assert result == canonical, (
+                f"ordering {[f.path.name for f in perm]} diverged"
+            )
 
     def test_duplicate_sites_deduped(self, tmp_path):
         pf = FakeParsed(
@@ -522,7 +579,12 @@ class TestLoad:
         entry = idx.callers_of("src/api.ts", "fetchUser")
         assert entry == {
             "callers": [
-                {"path": "src/page.ts", "caller": "<module>", "line": 9, "grade": "import"}
+                {
+                    "path": "src/page.ts",
+                    "caller": "<module>",
+                    "line": 9,
+                    "grade": "import",
+                }
             ],
             "total": 1,
             "truncated": False,

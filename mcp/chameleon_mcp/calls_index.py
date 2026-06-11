@@ -11,14 +11,14 @@ Grades:
 - ``same_file`` - callee defined in the caller's own file: bare calls to a
   file-local callable, and this./self. calls to a member of any class
   defined in the same file (call sites carry no enclosing-class field, so
-  per-class scoping is impossible). v1 keeps the member lookup file-scoped:
-  cross-file inheritance is out of scope, so a this-call whose method lives
-  on a base class in another file yields no edge rather than a guess.
-- ``import`` - TS only: a bare or new call of a named import, or
-  ns.member() through a runtime namespace import, resolved with the same
-  specifier machinery as the reverse index; the callee must exist in the
-  target's CLOSED export set. An open (barrel) set proves nothing, so it
-  yields no edge.
+  per-class scoping is impossible). The member lookup is file-scoped: a
+  this-call whose method lives on a base class in another file yields no
+  edge rather than a guess (cross-file inheritance is out of scope).
+- ``import`` - TS only: a bare, new, or new ns.Foo() call of a named
+  import, or ns.member() through a runtime namespace import, resolved with
+  the same specifier machinery as the reverse index; the callee must exist
+  in the target's CLOSED export set. An open (barrel) set proves nothing,
+  so it yields no edge.
 - ``constant_receiver`` - Ruby only: Const.method where Const names exactly
   one class across the dump; ``new`` maps to ``initialize`` when the
   target defines it, and is skipped (never invented) when it does not.
@@ -135,13 +135,19 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
         if isinstance(raw_sites, list) and raw_sites:
             sites_by_rel.setdefault(rel, []).extend(r for r in raw_sites if isinstance(r, dict))
 
-    def _resolved_closed_target(rel: str, module: str, name: str) -> str | None:
-        """Target rel iff ``module`` resolves in-repo AND its CLOSED export
-        set contains ``name``; None otherwise (open set, unparsed target,
-        bare package -- all non-assertable)."""
-        target_rel = resolve_module(module, file_dir[rel])
-        if target_rel is None:
-            return None
+    # Per-build memo for module resolution: keyed (module_specifier, importer_dir)
+    # so each distinct specifier is probed exactly once across all files.
+    _resolve_memo: dict[tuple[str, Path], str | None] = {}
+
+    def _resolved_module(module: str, importer_dir: Path) -> str | None:
+        """Module rel iff the specifier resolves to an in-repo file; None otherwise."""
+        key = (module, importer_dir)
+        if key not in _resolve_memo:
+            _resolve_memo[key] = resolve_module(module, importer_dir)
+        return _resolve_memo[key]
+
+    def _closed_target(target_rel: str, name: str) -> str | None:
+        """``target_rel`` iff its CLOSED export set contains ``name``; None otherwise."""
         exp = exports.get(target_rel)
         if exp is None or exp[1] or name not in exp[0]:
             return None
@@ -166,6 +172,17 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             own_members |= members
         own_imports = import_map.get(rel) or {}
         own_aliases = ns_aliases.get(rel) or {}
+        fdir = file_dir[rel]
+
+        # Resolve each DISTINCT module specifier once per file. The site loop
+        # below does dict lookups only -- zero resolve_module calls inside it.
+        import_targets: dict[str, str | None] = {
+            imp_name: _resolved_module(module_spec, fdir)
+            for imp_name, module_spec in own_imports.items()
+        }
+        alias_targets: dict[str, str | None] = {
+            alias: _resolved_module(module_spec, fdir) for alias, module_spec in own_aliases.items()
+        }
 
         for site in sites:
             name = site.get("name")
@@ -180,10 +197,10 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                 # name with no local definition is checked against imports.
                 if name in own_callables:
                     _add(rel, name, rel, caller_fn, line, "same_file")
-                elif language == "typescript" and name in own_imports:
-                    target_rel = _resolved_closed_target(rel, own_imports[name], name)
-                    if target_rel is not None:
-                        _add(target_rel, name, rel, caller_fn, line, "import")
+                elif language == "typescript" and name in import_targets:
+                    t = import_targets[name]
+                    if t is not None and _closed_target(t, name) is not None:
+                        _add(t, name, rel, caller_fn, line, "import")
             elif kind in ("this", "self"):
                 if name in own_members:
                     _add(rel, name, rel, caller_fn, line, "same_file")
@@ -198,19 +215,18 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                     # resolve here: `new ns.Foo()` carries a receiver, and its
                     # property name coinciding with a named import proves
                     # nothing about the receiver.
-                    if name in own_imports:
-                        target_rel = _resolved_closed_target(rel, own_imports[name], name)
-                        if target_rel is not None:
-                            _add(target_rel, name, rel, caller_fn, line, "import")
+                    if name in import_targets:
+                        t = import_targets[name]
+                        if t is not None and _closed_target(t, name) is not None:
+                            _add(t, name, rel, caller_fn, line, "import")
                     continue
                 # `obj.member()` or `new ns.Foo()`: resolvable only when the
                 # receiver names a runtime namespace import, against the alias
                 # target's closed export set.
-                module = own_aliases.get(receiver) if isinstance(receiver, str) else None
-                if module is not None:
-                    target_rel = _resolved_closed_target(rel, module, name)
-                    if target_rel is not None:
-                        _add(target_rel, name, rel, caller_fn, line, "import")
+                if isinstance(receiver, str) and receiver in alias_targets:
+                    t = alias_targets[receiver]
+                    if t is not None and _closed_target(t, name) is not None:
+                        _add(t, name, rel, caller_fn, line, "import")
             elif kind == "constant":
                 if language != "ruby":
                     continue

@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -244,8 +245,11 @@ class Importer:
     line: int | None
 
 
-def make_module_resolver(root: Path):
+def make_module_resolver(root: Path) -> Callable[[str, Path], str | None]:
     """Return ``resolve(module, importer_dir) -> rel_key | None`` for ``root``.
+
+    ``root`` must be pre-resolved (``Path.resolve()``); passing a relative or
+    symlinked path produces incorrect relative-to results.
 
     One resolver instance per build: relative specifiers join onto the
     importer's directory (the same probe the path check uses), and tsconfig/
