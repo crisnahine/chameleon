@@ -2979,6 +2979,126 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
     )
 
 
+def get_callers(repo: str, file_path: str, function_name: str) -> dict:
+    """Who calls a function, from the committed calls snapshot (deterministic grades only).
+
+    Reads the prebuilt ``calls_index.json`` artifact and returns the recorded
+    caller rows for ``function_name`` defined in the file at ``file_path``.
+
+    Grades are deterministic: ``same_file`` (bare call to a file-local name or
+    ``this.``/``self.`` to a class member defined in the same file),
+    ``import`` (TypeScript named-import or namespace-import call, closed export
+    set only), ``constant_receiver`` (Ruby ``Const.method`` with exactly one
+    defining class). Name-only / dynamic / inheritance-based call paths are
+    deliberately absent -- the index asserts only what is unambiguous.
+
+    Interpretation note: absence of callers is NOT evidence of dead code.
+    Dynamic dispatch, unsupported call patterns (superclass chains, runtime
+    reflection, metaprogramming), and callers added after the last bootstrap
+    are all invisible. The result is a grounding fact for deterministic review,
+    not a reachability oracle. The snapshot reflects the profile derivation
+    point; run ``/chameleon-refresh`` to update it.
+
+    Fails open with ``found: False`` on any ambiguity: unresolvable / untrusted
+    repo, missing artifact, path outside the repo. Never fabricates a caller.
+    """
+    from chameleon_mcp.calls_index import load_calls_index
+    from chameleon_mcp.profile.loader import find_repo_root
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+    from chameleon_mcp.symbol_index import module_key_for_path
+
+    empty = {
+        "found": False,
+        "module": None,
+        "function": None,
+        "callers": [],
+        "total": 0,
+        "truncated": False,
+    }
+
+    if not _validate_file_path_arg(file_path):
+        return _envelope(dict(empty))
+
+    p = Path(file_path).expanduser()
+    repo_root = find_repo_root(p)
+    if repo_root is None:
+        return _envelope(dict(empty))
+
+    # The repo arg must agree with the file's own repo, mirroring
+    # query_symbol_importers' cross-arg consistency check.
+    expected_repo_id = _compute_repo_id(repo_root)
+    if isinstance(repo, str) and _REPO_ID_RE.match(repo):
+        if repo != expected_repo_id:
+            return _envelope(dict(empty))
+    else:
+        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
+        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
+            return _envelope(dict(empty))
+
+    # Trust-gate: the calls index is a committed artifact whose caller paths
+    # must not reach the model surface from an untrusted profile.
+    gate = _trust_state_for(expected_repo_id)
+    if gate is None or not gate.grants_root(repo_root):
+        out = dict(empty)
+        out["status"] = "untrusted"
+        return _envelope(out)
+
+    index = load_calls_index(repo_root)
+    if index is None:
+        out = dict(empty)
+        out["reason"] = "no-calls-index"
+        return _envelope(out)
+
+    rel = module_key_for_path(p, repo_root)
+    if rel is None:
+        out = dict(empty)
+        out["reason"] = "no-calls-index"
+        return _envelope(out)
+
+    entry = index.callers_of(rel, function_name)
+    if entry is None:
+        # The (file, name) pair was not recorded -- a known-absent callee is a
+        # real answer (no deterministic callers at derivation time), not an error.
+        return _envelope(
+            {
+                "found": True,
+                "module": rel,
+                "function": function_name,
+                "callers": [],
+                "total": 0,
+                "truncated": False,
+            }
+        )
+
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
+
+    clean_callers = []
+    for row in entry["callers"]:
+        clean_callers.append(
+            {
+                "path": _sanitize(row["path"])
+                if isinstance(row.get("path"), str)
+                else row.get("path"),
+                "caller": _sanitize(row["caller"])
+                if isinstance(row.get("caller"), str)
+                else row.get("caller"),
+                "line": row.get("line"),
+                "grade": row.get("grade"),
+            }
+        )
+
+    return _envelope(
+        {
+            "found": True,
+            "module": _sanitize(rel),
+            "function": _sanitize(function_name),
+            "callers": clean_callers,
+            "total": entry["total"],
+            "truncated": entry["truncated"],
+        }
+    )
+
+
 def _name_still_referenced(repo_root: Path, importer_rel: str, name: str, line: int | None) -> bool:
     """Cheap regex presence check: does ``importer_rel`` still name ``name``?
 

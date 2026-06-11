@@ -135,6 +135,22 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
 
 
 @mcp.tool()
+def get_callers(repo: str, file_path: str, function_name: str) -> dict:
+    """Who calls this function, from the committed calls snapshot (deterministic grades only).
+
+    Reads the prebuilt calls_index.json artifact. Returns the recorded caller
+    rows for ``function_name`` defined in the file at ``file_path``. Grades are
+    deterministic: same_file, import (TypeScript only), constant_receiver
+    (Ruby only). Dynamic/unsupported call paths are absent by design.
+
+    Absence of callers is NOT evidence of dead code -- dynamic dispatch and
+    callers added after the last bootstrap are invisible. Fails open with
+    found=False on any ambiguity. Never fabricates a caller.
+    """
+    return tools.get_callers(repo, file_path, function_name)
+
+
+@mcp.tool()
 def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     """ADVISORY: is this branch's diff vs base_ref safe to auto-pass, or human?
 

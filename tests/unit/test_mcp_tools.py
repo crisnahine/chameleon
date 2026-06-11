@@ -33,6 +33,7 @@ REGISTERED_TOOLS = [
     "get_rules",
     "lint_file",
     "query_symbol_importers",
+    "get_callers",
     "get_crossfile_context",
     "get_duplication_candidates",
     "get_drift_status",
