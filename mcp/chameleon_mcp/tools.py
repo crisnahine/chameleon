@@ -7905,6 +7905,8 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     - conventions.json: rename the per-archetype keys under each section
     - profile.summary.md: regenerate from the renamed data
     - principles.md: preserved verbatim (not archetype-keyed)
+    - calls_index.json: preserved verbatim (keyed by file paths and callable
+      names, never archetype names)
 
     Uses atomic_profile_commit so a crash mid-write leaves the previous
     profile untouched. Returns status, renames_applied, new_profile_sha256.
@@ -8009,6 +8011,28 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         principles_path.read_text(encoding="utf-8") if principles_path.is_file() else None
     )
 
+    # calls_index.json is a protocol file too, so the swap deletes whatever
+    # the txn does not re-emit. A rename never invalidates caller facts (the
+    # index is keyed by file paths and callable names, not archetype names),
+    # so carry the artifact forward verbatim — same posture and 16MB ceiling
+    # as the partial-refresh path.
+    calls_index_text: str | None = None
+    calls_index_path = profile_dir / "calls_index.json"
+    if calls_index_path.is_file():
+        from chameleon_mcp.safe_open import (
+            UnsafeFileError as _UnsafeFileErrorRn,
+        )
+        from chameleon_mcp.safe_open import (
+            safe_read_profile_artifact as _safe_read_profile_artifact_rn,
+        )
+
+        try:
+            calls_index_text = _safe_read_profile_artifact_rn(
+                calls_index_path, max_bytes=16_000_000
+            )
+        except (OSError, FileNotFoundError, _UnsafeFileErrorRn):
+            calls_index_text = None
+
     idioms_path = profile_dir / "idioms.md"
     idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
 
@@ -8071,6 +8095,8 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
                 )
             if principles_text is not None:
                 (txn_dir / "principles.md").write_text(principles_text, encoding="utf-8")
+            if calls_index_text is not None:
+                (txn_dir / "calls_index.json").write_text(calls_index_text, encoding="utf-8")
             (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
             (txn_dir / "profile.summary.md").write_text(summary_md, encoding="utf-8")
             (txn_dir / "renames.json").write_text(
