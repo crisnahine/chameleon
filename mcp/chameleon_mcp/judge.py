@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -182,11 +183,130 @@ def _witness_for(repo_root: Path, archetype: str | None) -> str:
     return ""
 
 
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.M)
+
+
+def _changed_lines(diff_text: str) -> list[tuple[int, int]]:
+    """New-side line ranges from unified-diff hunk headers."""
+    out = []
+    for m in _HUNK_RE.finditer(diff_text or ""):
+        start = int(m.group(1))
+        count = int(m.group(2)) if m.group(2) else 1
+        out.append((start, start + max(count - 1, 0)))
+    return out
+
+
+def _parse_changed_file(repo_root: Path, path: str):
+    """Indirection over the duplication gate's per-file parse so tests can stub it."""
+    from chameleon_mcp.tools import parse_edited_functions
+
+    return parse_edited_functions(repo_root, path)
+
+
+_FACTS_HEADER = (
+    "Cross-file callers of the changed functions "
+    "(snapshot at profile derivation; deterministic grades only):"
+)
+
+
+def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
+    """Bounded caller-facts block for the callables this turn changed, or ''.
+
+    Honest by construction: every caller row comes from the committed calls
+    snapshot, whose grades are deterministic only (same_file / import /
+    constant_receiver -- name-only matches are never stored, so none can appear
+    here), and the header labels the data a snapshot at profile derivation, not
+    a live scan. A "no committed callers found" line explicitly allows new,
+    unused, or dynamic/unsupported call paths: absence of an edge is never
+    evidence of dead code. A changed callable is one whose current on-disk span
+    (the same parse the duplication gate uses) intersects the diff's new-side
+    hunk ranges; a whole-file diff counts every parsed callable. Returns ""
+    when the index is absent or nothing changed resolves, so the consumer
+    records a skipped check event instead of feeding the reviewer an empty
+    section. Fails open everywhere: any exception inside per-file processing
+    skips that file's facts, never raises.
+    """
+    try:
+        from chameleon_mcp.calls_index import load_calls_index
+
+        index = load_calls_index(repo_root)
+    except Exception:
+        return ""
+    if index is None:
+        return ""
+
+    max_callables = threshold_int("JUDGE_FACTS_MAX_CALLABLES")
+    max_sites = threshold_int("JUDGE_FACTS_MAX_SITES")
+    char_cap = threshold_int("JUDGE_FACTS_CHAR_CAP")
+
+    lines: list[str] = [_FACTS_HEADER]
+    listed = 0
+    for fd in diffs:
+        if listed >= max_callables:
+            break
+        try:
+            fns = _parse_changed_file(repo_root, str(repo_root / fd.rel_path))
+            ranges = _changed_lines(fd.diff_text) if not fd.is_whole_file else []
+            seen: set[str] = set()
+            for fn in fns:
+                if listed >= max_callables:
+                    break
+                if fn.name in seen:
+                    continue
+                if not fd.is_whole_file:
+                    # Span intersection against the hunks; a span-less entry
+                    # (old dump) cannot be located, so it is never claimed as
+                    # changed by a partial diff.
+                    if fn.start_line is None or fn.end_line is None:
+                        continue
+                    if not any(fn.start_line <= hi and fn.end_line >= lo for lo, hi in ranges):
+                        continue
+                seen.add(fn.name)
+                entry = index.callers_of(fd.rel_path, fn.name)
+                if entry is None or not entry["callers"]:
+                    lines.append(
+                        f"- {fn.name}() in {fd.rel_path}: no committed callers found "
+                        "(new, unused, or called dynamically)"
+                    )
+                else:
+                    shown = entry["callers"][:max_sites]
+                    sites = ", ".join(
+                        (f"{r['path']}:{r['line']}" if r["line"] is not None else r["path"])
+                        + f" ({r['caller']})"
+                        for r in shown
+                    )
+                    total = entry["total"]
+                    line = (
+                        f"- {fn.name}() in {fd.rel_path}: {total} committed "
+                        f"caller{'s' if total != 1 else ''}, e.g. {sites}"
+                    )
+                    if total > len(shown):
+                        line += f" [+{total - len(shown)} more]"
+                    if entry["truncated"]:
+                        line += " (count is a lower bound)"
+                    lines.append(line)
+                listed += 1
+        except Exception:
+            continue
+
+    if listed == 0:
+        return ""
+    # Char cap bites at a line boundary: drop whole fact lines from the end
+    # until the block fits; a block reduced to its bare header carries no fact
+    # and reads as absent.
+    while len(lines) > 1 and len("\n".join(lines)) > char_cap:
+        lines.pop()
+    if len(lines) == 1:
+        return ""
+    return "\n".join(lines)
+
+
 def build_prompt(
     repo_root: Path,
     profile_dir: Path,
     diffs: list[FileDiff],
     intent_tokens: list[str] | None = None,
+    caller_facts: str | None = None,
 ) -> str:
     """Assemble the reviewer prompt from diffs, witnesses, and guidance.
 
@@ -197,6 +317,10 @@ def build_prompt(
     checkable specifics extracted from the user's request (values, identifiers,
     quoted strings); when present they are appended, sanitized and length-capped,
     so the reviewer can cross-check the change against what was actually asked.
+    ``caller_facts`` is the pre-built (already bounded and labeled) cross-file
+    caller block from :func:`caller_facts_for_diffs`; when present it rides
+    above the diffs so the reviewer reads each change with its consumers in
+    view instead of guessing the blast radius.
     """
     sections: list[str] = [
         "You are an independent code reviewer giving a finished change a second "
@@ -231,6 +355,10 @@ def build_prompt(
             "mismatched string is a finding):"
         )
         sections.append(joined[:_INTENT_CHAR_CAP])
+
+    if caller_facts:
+        sections.append("")
+        sections.append(caller_facts)
 
     for fd in diffs:
         sections.append("")
@@ -521,6 +649,14 @@ def run_correctness_judge(
     ``pipeline_error`` with a repr-capped detail for any other exception. Each
     sink call is guarded so a raising sink never changes the judge outcome.
     ``intent_tokens`` ride into the prompt (see ``build_prompt``).
+
+    The sink also receives exactly one ``judge_facts_*`` kind per run, naming
+    the caller-facts outcome -- ``judge_facts_included`` (block fed to the
+    prompt), ``judge_facts_skipped_no_calls_index`` (feature on, no block:
+    index absent or nothing changed resolves), or
+    ``judge_facts_skipped_disabled`` (``enforcement.judge_crossfile_facts``
+    off). These are informational, never failure kinds: the review proceeds
+    identically with or without facts.
     """
 
     def _sink(kind: str, detail: str | None = None) -> None:
@@ -535,7 +671,33 @@ def run_correctness_judge(
         diffs = collect_file_diffs(repo_root, abs_paths, archetype_for)
         if not diffs:
             return []
-        prompt = build_prompt(repo_root, profile_dir, diffs, intent_tokens=intent_tokens)
+        # Cross-file caller facts from the committed calls snapshot ground the
+        # review in the change's consumers. Gated on
+        # enforcement.judge_crossfile_facts (default on; an unreadable config
+        # fails open to on); the sink records exactly one judge_facts_* outcome
+        # per run so the attestation distinguishes a grounded review from a
+        # blind one.
+        caller_facts: str | None = None
+        facts_enabled = True
+        try:
+            from chameleon_mcp.profile.config import load_config
+
+            facts_enabled = load_config(profile_dir).enforcement.judge_crossfile_facts
+        except Exception:
+            facts_enabled = True
+        if not facts_enabled:
+            _sink("judge_facts_skipped_disabled")
+        else:
+            block = caller_facts_for_diffs(repo_root, diffs)
+            caller_facts = block or None
+            _sink("judge_facts_included" if block else "judge_facts_skipped_no_calls_index")
+        prompt = build_prompt(
+            repo_root,
+            profile_dir,
+            diffs,
+            intent_tokens=intent_tokens,
+            caller_facts=caller_facts,
+        )
         stdout, fail_reason = _spawn_reviewer_status(prompt, repo_root)
         if stdout is None:
             _sink(fail_reason or "spawn_exec_error")

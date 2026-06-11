@@ -258,6 +258,36 @@ def test_main_spawn_failure_does_not_mark_judged(tmp_path):
     assert not pending.exists()
 
 
+def test_main_translates_judge_facts_sink_kind(tmp_path):
+    repo_root = tmp_path / "repo"
+    (repo_root / "src").mkdir(parents=True)
+    f = repo_root / "src" / "a.ts"
+    f.write_text("x\n", encoding="utf-8")
+    repo_data = tmp_path / "data"
+    req = _write_request(repo_root, repo_data, str(f))
+
+    def facts_judge(*a, **k):
+        sink = k.get("event_sink")
+        if sink is not None:
+            sink("judge_facts_included", None)
+        return []
+
+    with patch("chameleon_mcp.judge.run_correctness_judge", side_effect=facts_judge):
+        assert judge_async.main([str(req)]) == 0
+
+    from chameleon_mcp.exec_log import read_check_events
+
+    events = read_check_events(REPO_ID, SID, limit=50)["events"]
+    # Same translation as the sync gate: own check name, not a degradation.
+    assert any(e["check"] == "judge_facts" and e["status"] == "included" for e in events)
+    assert not any(
+        e["check"] == "correctness_judge"
+        and e["status"] == "degraded_spawn"
+        and str(e.get("reason", "")).startswith("judge_facts")
+        for e in events
+    )
+
+
 def test_main_missing_request_fails_cleanly(tmp_path):
     assert judge_async.main([str(tmp_path / "no-such-request.json")]) != 0
     assert judge_async.main([]) != 0

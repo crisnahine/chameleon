@@ -4480,6 +4480,19 @@ def _correctness_judge_gate(
         failures: list[str] = []
 
         def _sink(kind: str, detail: str | None = None) -> None:
+            # The caller-facts outcome rides the same sink but is its own
+            # check, not a degradation: one judge_facts event per spawn
+            # attempt (included / skipped_no_calls_index / skipped_disabled)
+            # so the attestation can tell a grounded review from a blind one.
+            if kind.startswith("judge_facts_"):
+                _emit_check_event(
+                    repo_id,
+                    session_id,
+                    "judge_facts",
+                    kind[len("judge_facts_") :],
+                    detail={"turn_key": turn_key},
+                )
+                return
             if kind in _JUDGE_FAILURE_KINDS:
                 failures.append(kind)
             _emit_check_event(

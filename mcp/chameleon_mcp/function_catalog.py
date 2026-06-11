@@ -567,7 +567,9 @@ class ParsedFn:
 
     ``arity`` / ``required`` mirror the signature shape so callers can map
     directly to NewFunction without a second pass over the params list.
-    ``start_line`` is None for entries whose dump predates span recording.
+    ``start_line`` / ``end_line`` are None for entries whose dump predates span
+    recording; ``end_line`` (1-based, inclusive) lets span consumers intersect
+    a function with diff hunks without re-parsing.
     """
 
     name: str
@@ -578,6 +580,7 @@ class ParsedFn:
     body_hash: str | None
     body_hash_pnorm: str | None
     excerpt: str
+    end_line: int | None = None
 
 
 def select_candidates(

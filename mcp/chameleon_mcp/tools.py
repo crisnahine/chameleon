@@ -3299,13 +3299,13 @@ def _candidate_body_excerpt(repo_root: Path, rel_path: str, name: str, max_lines
 
 
 def parse_edited_functions(repo_root, file_path: str) -> list[ParsedFn]:
-    """Parse one edited file into ParsedFn rows (name, kind, arity, required, line, hashes, excerpt).
+    """Parse one edited file into ParsedFn rows (name, kind, arity, required, span, hashes, excerpt).
 
     Shares the exact parse get_duplication_candidates uses; the only additions are
-    start_line and a bounded body excerpt. Returns [] on any parse error.
-    Entries whose dump predates span recording are included with start_line=None
-    and None hashes so get_duplication_candidates can still build NewFunction rows
-    for name-token matching.
+    the start/end line span and a bounded body excerpt. Returns [] on any parse
+    error. Entries whose dump predates span recording are included with None
+    start/end lines and None hashes so get_duplication_candidates can still build
+    NewFunction rows for name-token matching.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.bootstrap.orchestrator import resolve_extractor
@@ -3383,6 +3383,7 @@ def parse_edited_functions(repo_root, file_path: str) -> list[ParsedFn]:
                     body_hash=body_hash,
                     body_hash_pnorm=body_hash_pnorm,
                     excerpt=excerpt,
+                    end_line=end if has_span else None,
                 )
             )
     return out

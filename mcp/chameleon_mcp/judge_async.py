@@ -192,14 +192,19 @@ def main(argv: list[str] | None = None) -> int:
     abs_paths = [str(p) for p in raw.get("abs_paths") or []]
     intent_tokens = [str(t) for t in raw.get("intent_tokens") or []]
 
-    def _event(status: str, reason: str | None = None, detail: dict | None = None) -> None:
+    def _event(
+        status: str,
+        reason: str | None = None,
+        detail: dict | None = None,
+        check: str = "correctness_judge",
+    ) -> None:
         try:
             from chameleon_mcp.exec_log import append_check_event
 
             append_check_event(
                 repo_id,
                 session_id=session_id,
-                check="correctness_judge",
+                check=check,
                 status=status,
                 reason=reason,
                 detail=detail,
@@ -221,6 +226,15 @@ def main(argv: list[str] | None = None) -> int:
         failures: list[str] = []
 
         def _sink(kind: str, detail: str | None = None) -> None:
+            # Caller-facts outcome: its own check event (mirroring the sync
+            # gate's translation), never a degradation of the spawn itself.
+            if kind.startswith("judge_facts_"):
+                _event(
+                    kind[len("judge_facts_") :],
+                    detail={"turn_key": turn_key},
+                    check="judge_facts",
+                )
+                return
             if kind in _FAILURE_KINDS:
                 failures.append(kind)
             _event("degraded_spawn", kind, {"turn_key": turn_key, "detail": detail})

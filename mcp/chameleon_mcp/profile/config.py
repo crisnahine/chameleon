@@ -120,6 +120,13 @@ class EnforcementConfig:
     # this session, surface an advisory naming the original so the author can reuse
     # it. Confirmed by a bounded judge spawn; advisory only, never a block.
     duplication_review: bool = True
+    # judge_crossfile_facts: on by default. When True, the correctness judge's
+    # prompt carries a bounded block of committed caller facts (deterministic
+    # grades only, from the calls_index.json snapshot) for the callables the
+    # turn changed, so the reviewer reads each diff with its consumers in view.
+    # Purely additive prompt grounding: a missing or stale index just means the
+    # judge reviews without the block. Set false to opt out.
+    judge_crossfile_facts: bool = True
 
 
 @dataclass(frozen=True)
@@ -219,6 +226,12 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
     duplication_review = raw.get("duplication_review", True)
     if not isinstance(duplication_review, bool):
         raise ChameleonConfigError("enforcement.duplication_review must be a boolean")
+    judge_crossfile_facts = raw.get("judge_crossfile_facts", True)
+    if not isinstance(judge_crossfile_facts, bool):
+        raise ChameleonConfigError(
+            "`enforcement.judge_crossfile_facts` must be bool, got "
+            f"{type(judge_crossfile_facts).__name__}"
+        )
     return EnforcementConfig(
         mode=mode,
         stop_backstop=stop_backstop,
@@ -230,6 +243,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         changeset_completeness=changeset_completeness,
         crossfile_existence_advisory=crossfile_existence_advisory,
         duplication_review=duplication_review,
+        judge_crossfile_facts=judge_crossfile_facts,
     )
 
 

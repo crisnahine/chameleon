@@ -360,6 +360,32 @@ def test_spawn_failure_leaves_files_unmarked_for_retry(make_trusted_repo):
     assert mock2.call_count == 1
 
 
+def test_judge_facts_sink_kind_recorded_as_own_check(make_trusted_repo):
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+
+    def facts_judge(*a, **k):
+        sink = k.get("event_sink")
+        if sink is not None:
+            sink("judge_facts_included", None)
+        return []
+
+    _run_stop(_payload(repo, sid), env={"CHAMELEON_ENFORCE": "1"}, side_effect=facts_judge)
+
+    from chameleon_mcp.exec_log import read_check_events
+
+    all_events = read_check_events(REPO_ID, sid, limit=200)["events"]
+    # The facts outcome lands under its own check name, never as a spawn
+    # degradation of correctness_judge.
+    assert any(e["check"] == "judge_facts" and e["status"] == "included" for e in all_events)
+    assert not any(
+        e["check"] == "correctness_judge"
+        and e["status"] == "degraded_spawn"
+        and str(e.get("reason", "")).startswith("judge_facts")
+        for e in all_events
+    )
+
+
 def test_correctness_spawns_persisted_before_spawn(make_trusted_repo):
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
     _touch_edited_file(file_path, data_dir, sid)
