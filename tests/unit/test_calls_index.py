@@ -228,10 +228,7 @@ class TestImportGrade:
             },
         )
         idx = build_calls_index([target, caller], tmp_path, "typescript")
-        assert (
-            idx["callees"]["src/page.ts"]["fetchUser"]["callers"][0]["grade"]
-            == "same_file"
-        )
+        assert idx["callees"]["src/page.ts"]["fetchUser"]["callers"][0]["grade"] == "same_file"
         assert "src/api.ts" not in idx["callees"]
 
 
@@ -245,9 +242,7 @@ class TestNamespaceImport:
         caller = FakeParsed(
             tmp_path / "src" / "page.ts",
             {
-                "namespace_imports": [
-                    {"alias": "utils", "module": "./utils", "line": 1}
-                ],
+                "namespace_imports": [{"alias": "utils", "module": "./utils", "line": 1}],
                 "call_sites": [_site("fmtDate", "utils", "member", 4, "render")],
             },
         )
@@ -266,9 +261,7 @@ class TestNamespaceImport:
         caller = FakeParsed(
             tmp_path / "src" / "page.ts",
             {
-                "namespace_imports": [
-                    {"alias": "utils", "module": "./utils", "line": 1}
-                ],
+                "namespace_imports": [{"alias": "utils", "module": "./utils", "line": 1}],
                 "call_sites": [_site("fmtDate", "other", "member", 4, "render")],
             },
         )
@@ -396,9 +389,7 @@ class TestCaps:
             tmp_path / "src" / "svc.ts",
             {
                 "callable_signatures": [_sig("helper")],
-                "call_sites": [
-                    _site("helper", None, "bare", n, "run") for n in range(1, 6)
-                ],
+                "call_sites": [_site("helper", None, "bare", n, "run") for n in range(1, 6)],
             },
         )
         idx = build_calls_index([pf], tmp_path, "typescript")
@@ -495,16 +486,12 @@ class TestDeterminism:
     def test_all_permutations_byte_identical(self, tmp_path):
         # All 6 orderings of the 3-file fixture must produce the same payload.
         files = list(self._files(tmp_path))
-        canonical = json.dumps(
-            build_calls_index(files, tmp_path, "typescript"), sort_keys=True
-        )
+        canonical = json.dumps(build_calls_index(files, tmp_path, "typescript"), sort_keys=True)
         for perm in itertools.permutations(files):
             result = json.dumps(
                 build_calls_index(list(perm), tmp_path, "typescript"), sort_keys=True
             )
-            assert result == canonical, (
-                f"ordering {[f.path.name for f in perm]} diverged"
-            )
+            assert result == canonical, f"ordering {[f.path.name for f in perm]} diverged"
 
     def test_duplicate_sites_deduped(self, tmp_path):
         pf = FakeParsed(
@@ -629,3 +616,16 @@ class TestLoad:
         idx = load_calls_index(tmp_path)
         entry = idx.callers_of("src/api.ts", "fetchUser")
         assert len(entry["callers"]) == 1
+
+    def test_unknown_grade_rows_skipped(self, tmp_path):
+        # The grade set is closed: a row carrying anything outside
+        # same_file/import/constant_receiver is malformed, not a new tier.
+        payload = self._payload()
+        payload["callees"]["src/api.ts"]["fetchUser"]["callers"].append(
+            {"path": "src/other.ts", "caller": "run", "line": 3, "grade": "name_only"}
+        )
+        _write_index(tmp_path, payload)
+        idx = load_calls_index(tmp_path)
+        entry = idx.callers_of("src/api.ts", "fetchUser")
+        assert len(entry["callers"]) == 1
+        assert entry["callers"][0]["grade"] == "import"

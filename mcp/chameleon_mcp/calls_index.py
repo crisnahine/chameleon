@@ -42,6 +42,11 @@ from chameleon_mcp.symbol_index import make_module_resolver
 CALLS_INDEX_FILENAME = "calls_index.json"
 SCHEMA_VERSION = 1
 
+# The closed grade set build_calls_index emits. A row carrying any other
+# grade is malformed (hand-edited or future-schema) and is skipped on load
+# like every other malformed row.
+VALID_GRADES = frozenset({"same_file", "import", "constant_receiver"})
+
 
 def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
     """Build the ``calls_index.json`` payload from parsed source files.
@@ -368,7 +373,7 @@ def load_calls_index(repo_root: Path | str | None) -> CallsIndex | None:
                     continue
                 p = r.get("path")
                 g = r.get("grade")
-                if not isinstance(p, str) or not isinstance(g, str):
+                if not isinstance(p, str) or not isinstance(g, str) or g not in VALID_GRADES:
                     continue
                 fn = r.get("caller")
                 ln = r.get("line")

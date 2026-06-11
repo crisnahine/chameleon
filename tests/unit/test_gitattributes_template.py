@@ -70,5 +70,10 @@ def test_every_routed_artifact_is_in_template():
 
 def test_generated_index_artifacts_not_routed_to_driver():
     entries = _template_merge_entries()
-    for artifact in ("exports_index.json", "reverse_index.json", "function_catalog.json"):
+    for artifact in (
+        "exports_index.json",
+        "reverse_index.json",
+        "function_catalog.json",
+        "calls_index.json",
+    ):
         assert artifact not in entries

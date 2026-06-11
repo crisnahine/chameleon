@@ -3052,7 +3052,7 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     rel = module_key_for_path(p, repo_root)
     if rel is None:
         out = dict(empty)
-        out["reason"] = "no-calls-index"
+        out["reason"] = "file-outside-repo"
         return _envelope(out)
 
     entry = index.callers_of(rel, function_name)
@@ -6658,14 +6658,16 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
         )
 
     # The merge driver runs per-file over profile.json / archetypes.json /
-    # rules.json / canonicals.json / calls_index.json (each a different shape).
-    # Branch on the data key the file actually carries instead of assuming
-    # "archetypes" — otherwise a canonicals.json/rules.json conflict gets
-    # filtered to _SAFE_TOP_LEVEL_KEYS (which lacks 'canonicals'/'rules'),
-    # wiping the real payload, and a profile.json conflict gets its
-    # archetype_count zeroed.
+    # rules.json / canonicals.json (each a different shape). Branch on the
+    # data key the file actually carries instead of assuming "archetypes" —
+    # otherwise a canonicals.json/rules.json conflict gets filtered to
+    # _SAFE_TOP_LEVEL_KEYS (which lacks 'canonicals'/'rules'), wiping the
+    # real payload, and a profile.json conflict gets its archetype_count
+    # zeroed. Generated indexes (exports_index/reverse_index/function_catalog/
+    # calls_index) are deliberately NOT routed here: accept either side and
+    # /chameleon-refresh regenerates them.
     data_key = None
-    for key in ("archetypes", "canonicals", "rules", "conventions", "callees"):
+    for key in ("archetypes", "canonicals", "rules", "conventions"):
         if isinstance(ours_data.get(key), dict) or isinstance(theirs_data.get(key), dict):
             data_key = key
             break
@@ -6729,17 +6731,6 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
             merged_data = dict(ours_data)
         merged_data[data_key] = merged_payload
         payload_count = len(merged_payload)
-        ours_count = len(ours_payload)
-        theirs_count = len(theirs_payload)
-    elif data_key == "callees":
-        # calls_index.json: a bootstrap-derived snapshot keyed by callee path.
-        # Merging at the edge level would require re-running the full build pass;
-        # take theirs wholesale (the incoming branch's fresher derivation) so the
-        # committed artifact is always a coherent single-run snapshot.
-        merged_data = dict(theirs_data)
-        ours_payload = ours_data.get("callees") or {}
-        theirs_payload = theirs_data.get("callees") or {}
-        payload_count = len(theirs_payload)
         ours_count = len(ours_payload)
         theirs_count = len(theirs_payload)
     else:

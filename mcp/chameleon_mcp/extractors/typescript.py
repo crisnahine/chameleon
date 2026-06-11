@@ -506,6 +506,15 @@ def _extras_from_record(record: dict) -> dict:
             )
         if rows:
             extras["import_symbols"] = rows
+    # Call sites + runtime namespace imports feed the calls-index builder
+    # (caller -> callee edges). Row-level validation lives in the builder,
+    # which skips anything malformed, so the lists are carried as-is.
+    call_sites = record.get("call_sites")
+    if isinstance(call_sites, list) and call_sites:
+        extras["call_sites"] = call_sites
+    namespace_imports = record.get("namespace_imports")
+    if isinstance(namespace_imports, list) and namespace_imports:
+        extras["namespace_imports"] = namespace_imports
     return extras
 
 

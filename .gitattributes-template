@@ -34,11 +34,11 @@
 .chameleon/profile.summary.md merge=chameleon
 
 # Generated index artifacts (exports_index.json, reverse_index.json,
-# function_catalog.json) are intentionally NOT routed to the merge driver:
-# they have no structural merge, and the correct resolution for a conflict
-# on them is to accept either side and run /chameleon-refresh, which
-# regenerates all three from the merged repo state. A conflict on them is
-# harmless to the runtime: markers break the JSON parse and every loader
+# function_catalog.json, calls_index.json) are intentionally NOT routed to
+# the merge driver: they have no structural merge, and the correct resolution
+# for a conflict on them is to accept either side and run /chameleon-refresh,
+# which regenerates all four from the merged repo state. A conflict on them
+# is harmless to the runtime: markers break the JSON parse and every loader
 # fails open.
 
 # To register the merge driver, run once in your repo (or globally with --global):

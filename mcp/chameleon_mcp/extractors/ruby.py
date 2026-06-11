@@ -178,4 +178,10 @@ def _extras_from_record(record: dict) -> dict:
     signatures = record.get("callable_signatures")
     if isinstance(signatures, list) and signatures:
         extras["callable_signatures"] = signatures
+    # Call sites feed the calls-index builder (caller -> callee edges).
+    # Row-level validation lives in the builder, which skips anything
+    # malformed, so the list is carried as-is.
+    call_sites = record.get("call_sites")
+    if isinstance(call_sites, list) and call_sites:
+        extras["call_sites"] = call_sites
     return extras
