@@ -245,8 +245,13 @@ function callableKindOf(node) {
 }
 
 // Classify a call/new expression's callee into the dump's call-site shape.
-// Returns null for callees the index can never resolve deterministically
-// (computed member access obj[k](), immediately-invoked expressions, etc.).
+// Returns null for callees the index can never resolve deterministically:
+// computed member access obj[k](), immediately-invoked expressions, and any
+// PropertyAccess whose direct receiver is not an Identifier/this/super (a
+// multi-hop chain like api.utils.helper() or new api.utils.Klass() is
+// statically unresolvable — the callee is a property of a property, not a
+// direct export of any named module — so the site is dropped, the same stance
+// as computed access and operator sends).
 function callSiteOf(node) {
   const isNew = node.kind === ts.SyntaxKind.NewExpression;
   const callee = node.expression;
@@ -264,13 +269,14 @@ function callSiteOf(node) {
     if (recv.kind === ts.SyntaxKind.SuperKeyword) {
       return { name, receiver: "super", kind: "super" };
     }
-    // The receiver carries the identifier only for a depth-1 chain
-    // (svc.sync() -> svc). A deeper chain (api.utils.helper()) dispatches
-    // through a property of the receiver, about which the receiver's export
-    // set proves nothing, so it records no receiver (still kind member/new,
-    // unresolvable by design).
-    const receiver = recv.kind === ts.SyntaxKind.Identifier ? recv.text : null;
-    return { name, receiver, kind: isNew ? "new" : "member" };
+    // Only depth-1 chains (svc.sync(), new api.Klass()) carry a resolvable
+    // receiver identifier. A deeper chain (api.utils.helper()) dispatches
+    // through a property of the receiver; the receiver's export set proves
+    // nothing about the callee, so the site is dropped rather than emitted
+    // with receiver=null (which is byte-identical to a true receiver-less site
+    // and lets the builder fabricate import edges).
+    if (recv.kind !== ts.SyntaxKind.Identifier) return null;
+    return { name, receiver: recv.text, kind: isNew ? "new" : "member" };
   }
   return null;
 }

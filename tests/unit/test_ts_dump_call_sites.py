@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 
-_NODE_MODULES = Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "typescript"
+_NODE_MODULES = (
+    Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "typescript"
+)
 _TS_DUMP = Path(__file__).resolve().parents[2] / "scripts" / "ts_dump.mjs"
 _HAVE_TS = shutil.which("node") is not None and _NODE_MODULES.is_dir()
 
@@ -65,17 +67,74 @@ def test_call_sites_extracted(tmp_path):
 
 
 @pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
-def test_member_chain_deeper_than_one_hop_records_no_receiver(tmp_path):
-    # svc.api.deep.sync2() dispatches through properties of svc, not svc
-    # itself; collapsing the chain to its leftmost identifier made it dump
-    # identically to svc.sync2(), which fabricated namespace-import edges.
-    # The receiver carries the identifier only for a depth-1 chain.
+def test_member_chain_deeper_than_one_hop_is_dropped(tmp_path):
+    # svc.api.deep.sync2() is statically unresolvable: the callee is a property
+    # of a property, so no receiver identifier names the direct namespace.
+    # Emitting receiver=null made it byte-identical to a true receiver-less site
+    # and let the builder fabricate import edges. The fix: drop such sites at
+    # extraction, the same stance as computed access.
     rec = _dump(tmp_path)
-    deep = next(s for s in rec["call_sites"] if s["name"] == "sync2")
-    assert deep["kind"] == "member"
-    assert deep["receiver"] is None
+    names = {s["name"] for s in rec["call_sites"]}
+    assert "sync2" not in names, "multi-hop member chain must be dropped, not emitted"
+    # Depth-1 member call is still recorded with its receiver.
     shallow = next(s for s in rec["call_sites"] if s["name"] == "sync")
     assert shallow["receiver"] == "svc"
+
+
+_FIXTURE_MULTI_HOP = """\
+import * as api from './m';
+import { Klass } from './k';
+export function go() {
+  api.utils.helper();
+  new api.utils.Klass();
+  api.helper();
+  new api.Klass();
+}
+"""
+
+
+@pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+def test_multi_hop_call_and_new_are_dropped(tmp_path):
+    # api.utils.helper() and new api.utils.Klass() both require chaining through
+    # at least two receiver hops before reaching the callee; neither can resolve
+    # deterministically against the import set.
+    rec = _dump_src(tmp_path, _FIXTURE_MULTI_HOP, "multi.ts")
+    names = {s["name"] for s in rec["call_sites"]}
+    assert "helper" not in names or all(
+        s["receiver"] == "api" for s in rec["call_sites"] if s["name"] == "helper"
+    ), "multi-hop api.utils.helper() must be dropped; depth-1 api.helper() may remain"
+    # The multi-hop new must not appear at all; the depth-1 new should appear
+    # with receiver 'api'.
+    klass_sites = [s for s in rec["call_sites"] if s["name"] == "Klass"]
+    for site in klass_sites:
+        assert site["receiver"] == "api", (
+            f"only depth-1 new api.Klass() should appear; got receiver={site['receiver']!r}"
+        )
+
+
+@pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+def test_multi_hop_call_produces_no_row(tmp_path):
+    # Precise: api.utils.helper() emits NO row for 'helper'; only the depth-1
+    # api.helper() row (receiver='api') survives.
+    rec = _dump_src(tmp_path, _FIXTURE_MULTI_HOP, "multi.ts")
+    helper_sites = [s for s in rec["call_sites"] if s["name"] == "helper"]
+    assert len(helper_sites) == 1, (
+        f"expected exactly 1 helper row (depth-1 api.helper()); got {helper_sites}"
+    )
+    assert helper_sites[0]["receiver"] == "api"
+
+
+@pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+def test_multi_hop_new_produces_no_row(tmp_path):
+    # Precise: new api.utils.Klass() emits NO row for 'Klass'; only the
+    # depth-1 new api.Klass() row (receiver='api') survives.
+    rec = _dump_src(tmp_path, _FIXTURE_MULTI_HOP, "multi.ts")
+    klass_sites = [s for s in rec["call_sites"] if s["name"] == "Klass"]
+    assert len(klass_sites) == 1, (
+        f"expected exactly 1 Klass row (depth-1 new api.Klass()); got {klass_sites}"
+    )
+    assert klass_sites[0]["receiver"] == "api"
+    assert klass_sites[0]["kind"] == "new"
 
 
 @pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")

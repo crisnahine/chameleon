@@ -320,7 +320,8 @@ def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
     dropped = 0
 
     def _tail() -> list[str]:
-        return [f"(+{dropped} more changed callables not shown)"] if dropped else []
+        noun = "callable" if dropped == 1 else "callables"
+        return [f"(+{dropped} more changed {noun} not shown)"] if dropped else []
 
     while len(lines) > 1 and len("\n".join(lines + _tail())) > char_cap:
         lines.pop()
