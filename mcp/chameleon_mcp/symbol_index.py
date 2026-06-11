@@ -244,6 +244,61 @@ class Importer:
     line: int | None
 
 
+def make_module_resolver(root: Path):
+    """Return ``resolve(module, importer_dir) -> rel_key | None`` for ``root``.
+
+    One resolver instance per build: relative specifiers join onto the
+    importer's directory (the same probe the path check uses), and tsconfig/
+    jsconfig path-alias specifiers (``~/utils/x``, ``@app/y``) map through the
+    importer's NEAREST tsconfig so a monorepo where two apps bind the same
+    ``~/*`` to different roots resolves each importer against its own config.
+    The per-tsconfig-dir alias map is resolved lazily and cached on the closure
+    (None marks a dir with no usable alias config), so the cache lives exactly
+    as long as the build that needs it. Bare-package and out-of-repo
+    specifiers resolve to None.
+
+    Shared by the reverse index and the calls index so both resolve a
+    specifier identically -- a target the one can see, the other can too.
+    """
+    # Imported lazily: phantom_imports imports this module for
+    # resolve_index_key, so a top-level import here would be circular.
+    from chameleon_mcp.phantom_imports import (
+        _alias_targets,
+        _load_tsconfig_paths,
+        _nearest_tsconfig_dir,
+    )
+
+    alias_cache: dict[Path, tuple[Path, dict] | None] = {}
+
+    def _alias_config_for(importer_dir: Path) -> tuple[Path, dict] | None:
+        ts_dir = _nearest_tsconfig_dir(importer_dir, root)
+        if ts_dir is None:
+            return None
+        cached = alias_cache.get(ts_dir, False)
+        if cached is not False:
+            return cached
+        _, norm = _load_tsconfig_paths(str(ts_dir))
+        paths = {k: list(v) for k, v in norm} if norm else {}
+        result = (ts_dir, paths) if paths else None
+        alias_cache[ts_dir] = result
+        return result
+
+    def _resolve_module(module: str, importer_dir: Path) -> str | None:
+        if module.startswith("."):
+            return resolve_index_key(importer_dir / module, root)
+        cfg = _alias_config_for(importer_dir)
+        if cfg is None:
+            return None
+        ts_dir, paths = cfg
+        for base in _alias_targets(module, paths, ts_dir):
+            key = resolve_index_key(base, root)
+            if key is not None:
+                return key
+        return None
+
+    return _resolve_module
+
+
 def build_reverse_index(files, repo_root: Path | str) -> dict:
     """Build the ``reverse_index.json`` payload from parsed TypeScript/JS files.
 
@@ -268,44 +323,7 @@ def build_reverse_index(files, repo_root: Path | str) -> dict:
     except OSError:
         root = Path(repo_root)
 
-    # Per-tsconfig-dir alias map, resolved lazily and cached: a monorepo anchors
-    # each alias to the importer's nearest tsconfig, so two apps can map the same
-    # `~/*` to different roots. None marks a dir with no usable alias config.
-    from chameleon_mcp.phantom_imports import (
-        _alias_targets,
-        _load_tsconfig_paths,
-        _nearest_tsconfig_dir,
-    )
-
-    alias_cache: dict[Path, tuple[Path, dict] | None] = {}
-
-    def _alias_config_for(importer_dir: Path) -> tuple[Path, dict] | None:
-        ts_dir = _nearest_tsconfig_dir(importer_dir, root)
-        if ts_dir is None:
-            return None
-        cached = alias_cache.get(ts_dir, False)
-        if cached is not False:
-            return cached
-        _, norm = _load_tsconfig_paths(str(ts_dir))
-        paths = {k: list(v) for k, v in norm} if norm else {}
-        result = (ts_dir, paths) if paths else None
-        alias_cache[ts_dir] = result
-        return result
-
-    def _resolve_module(module: str, importer_dir: Path) -> str | None:
-        # Relative specifiers join onto the importer directory, same as the path
-        # check. Alias specifiers map through the tsconfig `paths` entries.
-        if module.startswith("."):
-            return resolve_index_key(importer_dir / module, root)
-        cfg = _alias_config_for(importer_dir)
-        if cfg is None:
-            return None
-        ts_dir, paths = cfg
-        for base in _alias_targets(module, paths, ts_dir):
-            key = resolve_index_key(base, root)
-            if key is not None:
-                return key
-        return None
+    _resolve_module = make_module_resolver(root)
 
     # target_rel -> name -> set of (importer_rel, line)
     accum: dict[str, dict[str, set[tuple[str, int | None]]]] = {}
