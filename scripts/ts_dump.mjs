@@ -25,6 +25,9 @@ const MAX_FILE_SIZE = 1_000_000;
 // can declare thousands. Cap the recorded headers so one outlier file cannot
 // bloat the dump record (the consensus only needs a representative sample).
 const MAX_CALLABLE_SIGNATURES = 200;
+// One file's recorded call sites are capped so a generated megafile cannot
+// bloat the dump; the true total is preserved for honest truncation.
+const MAX_CALL_SITES = 2000;
 
 function getScriptKind(filePath) {
   if (filePath.endsWith(".tsx")) return ts.ScriptKind.TSX;
@@ -239,6 +242,35 @@ function callableKindOf(node) {
   }
 }
 
+// Classify a call/new expression's callee into the dump's call-site shape.
+// Returns null for callees the index can never resolve deterministically
+// (computed member access obj[k](), immediately-invoked expressions, etc.).
+function callSiteOf(node) {
+  const isNew = node.kind === ts.SyntaxKind.NewExpression;
+  const callee = node.expression;
+  if (!callee) return null;
+  if (callee.kind === ts.SyntaxKind.Identifier) {
+    return { name: callee.text, receiver: null, kind: isNew ? "new" : "bare" };
+  }
+  if (callee.kind === ts.SyntaxKind.PropertyAccessExpression) {
+    const name = callee.name && callee.name.text;
+    if (!name) return null;
+    const recv = callee.expression;
+    if (recv.kind === ts.SyntaxKind.ThisKeyword) {
+      return { name, receiver: "this", kind: "this" };
+    }
+    if (recv.kind === ts.SyntaxKind.SuperKeyword) {
+      return { name, receiver: "super", kind: "super" };
+    }
+    // Leftmost identifier of the receiver chain (svc.api.sync() -> svc).
+    let left = recv;
+    while (left.kind === ts.SyntaxKind.PropertyAccessExpression) left = left.expression;
+    const receiver = left.kind === ts.SyntaxKind.Identifier ? left.text : null;
+    return { name, receiver, kind: isNew ? "new" : "member" };
+  }
+  return null;
+}
+
 // Structured parameter shape for one callable: each entry carries the binding
 // name (or a placeholder for a destructured/rest binding), whether it is
 // optional (a `?` marker or a default value makes it droppable), and its kind.
@@ -387,10 +419,14 @@ function extractFile(filePath) {
     export_set_open: false,
     import_specifiers: [],
     import_symbols: [],
+    namespace_imports: [],
     has_jsx: false,
     parse_diagnostics_count: diagnostics.length,
     function_scopes: [],
     callable_signatures: [],
+    call_sites: [],
+    call_sites_total: 0,
+    call_sites_truncated: false,
   };
 
   const exportNameSet = new Set();
@@ -431,6 +467,28 @@ function extractFile(filePath) {
         result.import_specifiers.push([moduleName, importKindFor(stmt.importClause)]);
       }
       collectImportSymbols(stmt, result.import_symbols, sourceFile);
+      // Capture `import * as alias from 'module'` for namespace-call resolution.
+      const clause = stmt.importClause;
+      if (
+        clause &&
+        clause.namedBindings &&
+        clause.namedBindings.kind === ts.SyntaxKind.NamespaceImport &&
+        clause.namedBindings.name &&
+        typeof clause.namedBindings.name.text === "string" &&
+        moduleName
+      ) {
+        let line = null;
+        try {
+          line = sourceFile.getLineAndCharacterOfPosition(stmt.getStart(sourceFile)).line + 1;
+        } catch (e) {
+          line = null;
+        }
+        result.namespace_imports.push({
+          alias: clause.namedBindings.name.text,
+          module: moduleName,
+          line,
+        });
+      }
     }
   }
 
@@ -446,6 +504,12 @@ function extractFile(filePath) {
   // nesting depth and branch count so a helper closure nested inside a method
   // is measured independently of its enclosing function.
   const frameStack = [];
+  // Enclosing class names, innermost last. Method signatures read this to record
+  // which class they belong to without a second parse.
+  const classStack = [];
+  // Enclosing callable names, innermost last. Call sites read this to record
+  // which function they were invoked from.
+  const callerStack = [];
 
   function startLineOf(node) {
     try {
@@ -481,6 +545,18 @@ function extractFile(filePath) {
       result.has_jsx = true;
     }
 
+    // Track enclosing class so method signatures can record which class they
+    // belong to. ClassExpression covers `const C = class Foo {}` patterns.
+    const isClass =
+      (node.kind === ts.SyntaxKind.ClassDeclaration ||
+        node.kind === ts.SyntaxKind.ClassExpression ||
+        node.kind === ts.SyntaxKind.InterfaceDeclaration) &&
+      node.name &&
+      typeof node.name.text === "string";
+    if (isClass) {
+      classStack.push(node.name.text);
+    }
+
     const isFn = isFunctionLike(node);
     if (isFn) {
       const start = startLineOf(node);
@@ -498,6 +574,7 @@ function extractFile(filePath) {
       // only. Anonymous inline callbacks have no stable name to anchor a
       // signature contract, so they are skipped rather than recorded as noise.
       const callableName = callableNameOf(node);
+      callerStack.push(callableName ?? "<anonymous>");
       if (callableName !== null && result.callable_signatures.length < MAX_CALLABLE_SIGNATURES) {
         result.callable_signatures.push({
           name: callableName,
@@ -509,6 +586,15 @@ function extractFile(filePath) {
           // can only be paired by body identity.
           start_line: start,
           end_line: end,
+          // Methods and accessors belong to the enclosing class; top-level
+          // functions do not and carry null so callers can distinguish them.
+          enclosing_class:
+            callableKindOf(node) === "method" ||
+            node.kind === ts.SyntaxKind.Constructor ||
+            node.kind === ts.SyntaxKind.GetAccessor ||
+            node.kind === ts.SyntaxKind.SetAccessor
+              ? classStack[classStack.length - 1] ?? null
+              : null,
         });
       }
     } else if (frameStack.length > 0) {
@@ -524,9 +610,29 @@ function extractFile(filePath) {
       }
     }
 
+    if (
+      node.kind === ts.SyntaxKind.CallExpression ||
+      node.kind === ts.SyntaxKind.NewExpression
+    ) {
+      const site = callSiteOf(node);
+      if (site !== null) {
+        result.call_sites_total++;
+        if (result.call_sites.length < MAX_CALL_SITES) {
+          result.call_sites.push({
+            ...site,
+            line: startLineOf(node),
+            caller: callerStack.length > 0 ? callerStack[callerStack.length - 1] : "<module>",
+          });
+        } else {
+          result.call_sites_truncated = true;
+        }
+      }
+    }
+
     ts.forEachChild(node, visit);
 
     if (isFn) {
+      callerStack.pop();
       const frame = frameStack.pop();
       result.function_scopes.push({
         start_line: frame.start_line,
@@ -538,6 +644,10 @@ function extractFile(filePath) {
       });
     } else if (frameStack.length > 0 && isNestingNode(node)) {
       frameStack[frameStack.length - 1].depth--;
+    }
+
+    if (isClass) {
+      classStack.pop();
     }
   }
   try {
@@ -576,5 +686,9 @@ rl.on("line", (line) => {
 });
 
 rl.on("close", () => {
-  process.exit(0);
+  // Drain stdout before exiting so large records (e.g. files with thousands of
+  // call sites) are not silently truncated by a premature process.exit().
+  process.stdout.write("", () => {
+    process.exit(0);
+  });
 });
