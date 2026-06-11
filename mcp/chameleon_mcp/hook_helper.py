@@ -4409,13 +4409,17 @@ def _correctness_judge_gate(
     """Independent turn-end correctness review of the turn's edits (advisory).
 
     Reached only on the no-block stop path, after the idiom gate declined to
-    block. The spawn decision was made by ``_correctness_judge_route`` (so the
-    duplication gate can defer before this runs); this executes it: the
-    per-session spawn counter is persisted BEFORE the reviewer runs so an
-    interrupted Stop still consumes budget, each fresh file is marked judged at
-    its captured digest only on a completed spawn (a failed spawn stays fresh
-    for retry under the cap), and with CHAMELEON_JUDGE_ASYNC=1 the spawn
-    detaches and the findings arrive on the next user prompt instead.
+    block. The spawn decision was made by ``_correctness_judge_route``; this
+    executes it: the per-session spawn counter is persisted BEFORE the
+    reviewer runs so an interrupted Stop still consumes budget, each fresh
+    file is marked judged at its captured digest only on a completed spawn (a
+    failed spawn stays fresh for retry under the cap), and with
+    CHAMELEON_JUDGE_ASYNC=1 the spawn detaches and the findings arrive on the
+    next user prompt instead. The sync path writes the spawn outcome back
+    into ``route["spawn_failed"]`` so the duplication gate (which runs after
+    this) defers only to a spawn that produced a reviewable result; a
+    detached async spawn leaves the key unset (outcome unknown this Stop, the
+    deferral holds).
 
     Returns a hook output dict carrying the findings as ``additionalContext``, or
     None when the gate does not fire / found nothing (the caller then allows the
@@ -4478,6 +4482,13 @@ def _correctness_judge_gate(
                 return None
 
         failures: list[str] = []
+        # Every non-facts sink kind (spawn failure, pipeline error, or
+        # unparseable output) means the reviewer produced no reviewable
+        # verdict this Stop. The duplication gate reads the aggregate through
+        # route["spawn_failed"]: deferring behind a review that never
+        # happened would starve duplication review for as long as the
+        # reviewer stays broken.
+        degraded: list[str] = []
 
         def _sink(kind: str, detail: str | None = None) -> None:
             # The caller-facts outcome rides the same sink but is its own
@@ -4495,6 +4506,7 @@ def _correctness_judge_gate(
                 return
             if kind in _JUDGE_FAILURE_KINDS:
                 failures.append(kind)
+            degraded.append(kind)
             _emit_check_event(
                 repo_id,
                 session_id,
@@ -4503,6 +4515,11 @@ def _correctness_judge_gate(
                 kind,
                 detail={"turn_key": turn_key, "detail": detail},
             )
+
+        # Pessimistic until the run completes: if anything below dies before
+        # the outcome is known, the spawn must read as failed, never as a
+        # review the duplication gate should keep deferring to.
+        route["spawn_failed"] = True
 
         resolver = _archetype_resolver(repo_root, daemon_state or {"available": True})
         findings = judge.run_correctness_judge(
@@ -4513,6 +4530,7 @@ def _correctness_judge_gate(
             intent_tokens=intent_tokens,
             event_sink=_sink,
         )
+        route["spawn_failed"] = bool(degraded)
 
         if not failures:
             _emit_check_event(
@@ -4981,12 +4999,13 @@ def _duplication_advisory_lines(
     structural coincidence, before it is surfaced. Advisory only, never a block.
 
     Heavily gated so it costs at most one extra model spawn per session and never
-    repeats work: it stays silent when the correctness judge is already spawning
-    this Stop (``corr_spawning``), when the per-session spawn cap is reached, and
-    for any (file, content-digest) already judged. The spawn is counted and
-    persisted BEFORE it runs so a timeout cannot slip past the cap. Returns
-    sanitized lines ready to fold into the Stop context; fails open to [] on any
-    error.
+    repeats work: it stays silent when the correctness judge spawned a reviewer
+    that produced a reviewable result this Stop (``corr_spawning`` -- the caller
+    clears it when that spawn degraded, so a broken reviewer never starves this
+    gate), when the per-session spawn cap is reached, and for any (file,
+    content-digest) already judged. The spawn is counted and persisted BEFORE it
+    runs so a timeout cannot slip past the cap. Returns sanitized lines ready to
+    fold into the Stop context; fails open to [] on any error.
     """
     try:
         if not cfg.duplication_review:
@@ -5285,9 +5304,13 @@ def _stop_gates(
             # Turn-end duplication: a function this turn introduced whose body
             # matches an existing one (catalog or earlier this session) gets named
             # so the author can reuse the original. Confirmed by a bounded judge
-            # spawn, skipped on a SubagentStop and when the correctness judge is
-            # already spawning this Stop, so a turn fires at most one reviewer.
-            # Advisory only, folded into the same Stop context.
+            # spawn, skipped on a SubagentStop and when the correctness judge
+            # spawned a working reviewer this Stop, so a turn fires at most one
+            # reviewer. A DEGRADED judge spawn (nonzero exit, timeout, parse
+            # failure -- route["spawn_failed"], written by the gate above) does
+            # not defer: a permanently broken reviewer must not starve
+            # duplication review forever. Advisory only, folded into the same
+            # Stop context.
             dup_lines: list[str] = []
             if not is_subagent:
                 dup_lines = _duplication_advisory_lines(
@@ -5297,7 +5320,7 @@ def _stop_gates(
                     state=state,
                     cfg=cfg,
                     repo_data=repo_data,
-                    corr_spawning=corr_spawning,
+                    corr_spawning=corr_spawning and not route.get("spawn_failed"),
                 )
 
             context_blocks: list[str] = []
