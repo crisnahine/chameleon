@@ -524,6 +524,28 @@ def _sweep_stale_judge_dirs(max_age_seconds: int = 3600) -> None:
 # `claude --help` to learn the flag set is noise.
 _BARE_SUPPORTED: bool | None = None
 
+# Whether a --bare spawn keeps working credentials on this install. Flag
+# existence is not enough: current CLIs strip OAuth/keychain auth under
+# --bare (the spawn exits nonzero with a not-logged-in message) while the
+# identical plain spawn works. None = unknown (the next spawn doubles as the
+# probe), True = bare spawns authenticate, False = bare loses auth here.
+_BARE_AUTH_OK: bool | None = None
+
+_BARE_AUTH_MARKER = ".bare_auth_failed"
+# Re-try --bare after a day: a login-mode change (an API key appearing in the
+# environment) or a CLI fix can restore bare auth, and the re-probe costs one
+# fast-failing spawn at most once per window.
+_BARE_AUTH_TTL_SECONDS = 86_400
+
+_NOT_LOGGED_IN_RE = re.compile(
+    r"not logged in"
+    r"|please run /login"
+    r"|invalid api key"
+    r"|authentication[_ ]error"
+    r"|oauth token (?:is )?(?:expired|revoked|invalid)",
+    re.IGNORECASE,
+)
+
 
 def _bare_flag_supported() -> bool:
     global _BARE_SUPPORTED
@@ -540,6 +562,60 @@ def _bare_flag_supported() -> bool:
         except Exception:  # noqa: BLE001
             _BARE_SUPPORTED = False
     return _BARE_SUPPORTED
+
+
+def _bare_auth_marker_path() -> Path:
+    from chameleon_mcp.plugin_paths import plugin_data_dir
+
+    return plugin_data_dir() / _BARE_AUTH_MARKER
+
+
+def _bare_auth_known_failed() -> bool:
+    """True when a prior spawn proved --bare loses credentials on this install.
+
+    Process cache first, then the data-dir TTL marker, so each session pays
+    the discovery (one fast-failing bare spawn) at most once. An expired or
+    unreadable marker reads as unknown: the next spawn re-probes --bare.
+    """
+    global _BARE_AUTH_OK
+    if _BARE_AUTH_OK is not None:
+        return not _BARE_AUTH_OK
+    try:
+        marker = _bare_auth_marker_path()
+        raw = marker.read_text(encoding="utf-8").strip()
+        if time.time() - float(raw or 0) < _BARE_AUTH_TTL_SECONDS:
+            _BARE_AUTH_OK = False
+            return True
+        marker.unlink()
+    except (OSError, ValueError):
+        pass
+    return False
+
+
+def _record_bare_auth(ok: bool) -> None:
+    """Cache a bare-spawn auth outcome: process-wide, plus the failure marker."""
+    global _BARE_AUTH_OK
+    _BARE_AUTH_OK = ok
+    try:
+        marker = _bare_auth_marker_path()
+        if ok:
+            if marker.is_file():
+                marker.unlink()
+            return
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker.write_text(str(int(time.time())), encoding="utf-8")
+        try:
+            os.chmod(marker, 0o600)
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+
+def _spawn_lost_auth(proc) -> bool:
+    """True when a failed spawn's output matches the not-logged-in shape."""
+    blob = f"{getattr(proc, 'stdout', '') or ''}\n{getattr(proc, 'stderr', '') or ''}"
+    return bool(_NOT_LOGGED_IN_RE.search(blob))
 
 
 def _spawn_reviewer_status(prompt: str, cwd: Path) -> tuple[str | None, str | None]:
@@ -574,36 +650,62 @@ def _spawn_reviewer_status(prompt: str, cwd: Path) -> tuple[str | None, str | No
     # Without --bare the reviewer inherits every installed plugin's
     # SessionStart hooks and CLAUDE.md discovery (~18k tokens of primer per
     # spawn observed) — pure latency and cost for a reviewer that may not
-    # use tools anyway. --bare keeps Anthropic auth. Older CLIs without the
-    # flag get the plain spawn.
-    if _bare_flag_supported():
+    # use tools anyway. But on current CLIs --bare also drops OAuth/keychain
+    # credentials (the spawn exits nonzero with "Not logged in"), so the flag
+    # is gated on a FUNCTIONAL probe, not existence: the first bare spawn is
+    # the probe, an auth-shaped failure falls back to a plain spawn within
+    # this same call, and the outcome is cached (process + TTL marker) so
+    # later spawns skip the dead flag. The plain spawn stays isolated where
+    # it matters: CHAMELEON_DISABLE=1 no-ops every chameleon hook in the
+    # child (no Stop-hook recursion into another judge), all tools are
+    # disallowed, and the wall-clock timeout bounds any other inherited
+    # hooks. Older CLIs without the flag get the plain spawn directly.
+    use_bare = _bare_flag_supported() and not _bare_auth_known_failed()
+    if use_bare:
         args.insert(1, "--bare")
     # Inherit the user's real config dir so the judge stays AUTHENTICATED. An
     # empty throwaway CLAUDE_CONFIG_DIR (the prior approach) strips OAuth /
     # subscription auth -- the spawn returns "Not logged in" and the judge
-    # silently never fires on any non-API-key install. Instead set
-    # CHAMELEON_DISABLE=1 so chameleon's own SessionStart/Stop hooks no-op in the
-    # subprocess: that avoids the primer overhead AND a Stop-hook recursion into
-    # another judge spawn, without touching auth. The wall-clock timeout still
-    # bounds any other inherited hooks. Sweep any config dirs the prior buggy
-    # version leaked.
+    # silently never fires on any non-API-key install. Sweep any config dirs
+    # the prior buggy version leaked.
     _sweep_stale_judge_dirs()
     env = dict(os.environ)
     env["CHAMELEON_DISABLE"] = "1"
-    try:
-        proc = subprocess.run(
-            args,
-            cwd=str(cwd),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return None, "spawn_timeout"
-    except OSError:
-        return None, "spawn_exec_error"
+    deadline = time.monotonic() + timeout_s
+
+    def _run(spawn_args: list[str], budget: float):
+        try:
+            return (
+                subprocess.run(
+                    spawn_args,
+                    cwd=str(cwd),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=budget,
+                    check=False,
+                ),
+                None,
+            )
+        except subprocess.TimeoutExpired:
+            return None, "spawn_timeout"
+        except OSError:
+            return None, "spawn_exec_error"
+
+    proc, fail = _run(args, timeout_s)
+    if use_bare and proc is not None:
+        if proc.returncode == 0:
+            _record_bare_auth(ok=True)
+        elif _spawn_lost_auth(proc):
+            # The functional probe's verdict: --bare stripped the credentials.
+            # Remember it and retry plain within the remaining wall budget.
+            _record_bare_auth(ok=False)
+            proc, fail = _run(
+                [a for a in args if a != "--bare"],
+                max(1.0, deadline - time.monotonic()),
+            )
+    if proc is None:
+        return None, fail
     if proc.returncode != 0:
         return None, "spawn_nonzero_exit"
     return proc.stdout or "", None
