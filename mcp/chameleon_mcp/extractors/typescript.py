@@ -483,9 +483,12 @@ def _extras_from_record(record: dict) -> dict:
         extras["named_export_names"] = [str(n) for n in names if isinstance(n, str)]
     if record.get("export_set_open"):
         extras["export_set_open"] = True
-    # Named-import bindings (name + source module + line) drive the reverse
-    # index symbol -> importers. Only well-formed rows survive; a malformed
-    # entry is dropped rather than aborting the file's record.
+    # Named-import bindings (exported name + local binding + source module +
+    # line) drive the reverse index symbol -> importers (keyed on `name`) and
+    # the calls index import grade (matched on `local`). Only well-formed rows
+    # survive; a malformed entry is dropped rather than aborting the file's
+    # record. A missing/invalid `local` (old dump) falls back to the exported
+    # name, which is also the local binding when no `as` alias is present.
     import_symbols = record.get("import_symbols")
     if isinstance(import_symbols, list) and import_symbols:
         rows: list[dict] = []
@@ -496,10 +499,12 @@ def _extras_from_record(record: dict) -> dict:
             module = sym.get("module")
             if not isinstance(name, str) or not isinstance(module, str):
                 continue
+            local = sym.get("local")
             line = sym.get("line")
             rows.append(
                 {
                     "name": name,
+                    "local": local if isinstance(local, str) and local else name,
                     "module": module,
                     "line": int(line) if isinstance(line, int) else None,
                 }

@@ -8,8 +8,11 @@ None on any ambiguity, mtime+size cache token, schema check.
 
 import itertools
 import json
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import pytest
 
 from chameleon_mcp.calls_index import (
     CALLS_INDEX_FILENAME,
@@ -17,6 +20,9 @@ from chameleon_mcp.calls_index import (
     build_calls_index,
     load_calls_index,
 )
+
+_NODE_MODULES = Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "typescript"
+_HAVE_TS = shutil.which("node") is not None and _NODE_MODULES.is_dir()
 
 
 @dataclass
@@ -212,6 +218,90 @@ class TestImportGrade:
         )
         idx = build_calls_index([target, caller], tmp_path, "typescript")
         assert idx["callees"] == {}
+
+    def test_aliased_import_collision_keys_on_local_binding(self, tmp_path):
+        # import { x } from './a'; import { x as y } from './b': the call x()
+        # must edge to a.ts ONLY, and y() must edge to b.ts under the exported
+        # name x. Keying the import map on the exported name collided the two
+        # rows (x() edged to whichever import came last) and dropped y()
+        # entirely, because call-site identifiers are LOCAL binding names.
+        _touch(tmp_path, "src/a.ts")
+        _touch(tmp_path, "src/b.ts")
+        a = FakeParsed(
+            tmp_path / "src" / "a.ts",
+            {"named_export_names": ["x"], "export_set_open": False},
+        )
+        b = FakeParsed(
+            tmp_path / "src" / "b.ts",
+            {"named_export_names": ["x"], "export_set_open": False},
+        )
+        caller = FakeParsed(
+            tmp_path / "src" / "page.ts",
+            {
+                "import_symbols": [
+                    {"name": "x", "local": "x", "module": "./a", "line": 1},
+                    {"name": "x", "local": "y", "module": "./b", "line": 2},
+                ],
+                "call_sites": [
+                    _site("x", None, "bare", 5, "go"),
+                    _site("y", None, "bare", 6, "go"),
+                ],
+            },
+        )
+        idx = build_calls_index([a, b, caller], tmp_path, "typescript")
+        assert idx["callees"]["src/a.ts"]["x"]["callers"] == [
+            {"path": "src/page.ts", "caller": "go", "line": 5, "grade": "import"}
+        ]
+        assert idx["callees"]["src/b.ts"]["x"]["callers"] == [
+            {"path": "src/page.ts", "caller": "go", "line": 6, "grade": "import"}
+        ]
+
+    def test_aliased_new_records_under_exported_name(self, tmp_path):
+        # new Alias() for import { Klass as Alias }: the local alias resolves,
+        # and the edge records under the exported name the target declares.
+        target = self._target(tmp_path, ["Klass"])
+        caller = FakeParsed(
+            tmp_path / "src" / "page.ts",
+            {
+                "import_symbols": [
+                    {"name": "Klass", "local": "Alias", "module": "./api", "line": 1}
+                ],
+                "call_sites": [_site("Alias", None, "new", 4, "boot")],
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "typescript")
+        entry = idx["callees"]["src/api.ts"]["Klass"]
+        assert entry["callers"] == [
+            {"path": "src/page.ts", "caller": "boot", "line": 4, "grade": "import"}
+        ]
+        assert "Alias" not in idx["callees"]["src/api.ts"]
+
+    def test_aliased_call_on_exported_name_yields_no_edge(self, tmp_path):
+        # import { x as y } binds ONLY y; a bare x() in the same file is some
+        # other (unknown) name, never the aliased import.
+        target = self._target(tmp_path, ["x"])
+        caller = FakeParsed(
+            tmp_path / "src" / "page.ts",
+            {
+                "import_symbols": [{"name": "x", "local": "y", "module": "./api", "line": 1}],
+                "call_sites": [_site("x", None, "bare", 5, "go")],
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "typescript")
+        assert idx["callees"] == {}
+
+    def test_rows_without_local_fall_back_to_exported_name(self, tmp_path):
+        # Old dumps carry no `local`; the exported name doubles as the binding.
+        target = self._target(tmp_path, ["fetchUser"])
+        caller = FakeParsed(
+            tmp_path / "src" / "page.ts",
+            {
+                "import_symbols": [{"name": "fetchUser", "module": "./api", "line": 1}],
+                "call_sites": [_site("fetchUser", None, "bare", 9, "<module>")],
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "typescript")
+        assert idx["callees"]["src/api.ts"]["fetchUser"]["callers"][0]["grade"] == "import"
 
     def test_local_definition_wins_over_import(self, tmp_path):
         # A name both defined in-file and present in the import map grades as
@@ -737,6 +827,36 @@ class TestLoad:
 
         cr = idx.callers_of("app/models/user.rb", "find_by_slug")
         assert cr is not None and cr["callers"][0]["grade"] == "constant_receiver"
+
+
+class TestRealDumperAliasedImports:
+    @pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+    def test_aliased_import_edges_via_real_dump(self, tmp_path):
+        # End-to-end through ts_dump.mjs and the extractor passthrough: the
+        # dump must carry the local binding so the builder can separate the
+        # colliding exported names.
+        from chameleon_mcp.extractors.typescript import TypeScriptExtractor
+
+        (tmp_path / "a.ts").write_text("export function x() { return 1 }\n", encoding="utf-8")
+        (tmp_path / "b.ts").write_text("export function x() { return 2 }\n", encoding="utf-8")
+        (tmp_path / "page.ts").write_text(
+            "import { x } from './a';\n"
+            "import { x as y } from './b';\n"
+            "export function go() {\n"
+            "  x();\n"
+            "  y();\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        pr = TypeScriptExtractor().parse_repo(repo_root=tmp_path, glob="**/*.ts")
+        idx = build_calls_index(pr.files, tmp_path, "typescript")
+        assert idx["callees"]["a.ts"]["x"]["callers"] == [
+            {"path": "page.ts", "caller": "go", "line": 4, "grade": "import"}
+        ]
+        assert idx["callees"]["b.ts"]["x"]["callers"] == [
+            {"path": "page.ts", "caller": "go", "line": 5, "grade": "import"}
+        ]
+        assert "y" not in idx["callees"].get("b.ts", {})
 
 
 class TestDumpTimeTruncation:

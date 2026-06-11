@@ -159,10 +159,13 @@ function importKindFor(importClause) {
 }
 
 // Pull the IMPORTED binding names off a single `import { a, b as c } from './m'`
-// statement and push `{ name, module, line }` rows into `out`. The recorded
-// `name` is the name as the SOURCE module exports it (the left side of `as`),
-// which is what the reverse index keys on: who-imports-`editPrice` does not care
-// what the importer locally calls it. Type-only imports (`import type { T }`
+// statement and push `{ name, local, module, line }` rows into `out`. The
+// recorded `name` is the name as the SOURCE module exports it (the left side of
+// `as`), which is what the reverse index keys on: who-imports-`editPrice` does
+// not care what the importer locally calls it. `local` is the binding the
+// importer's own code uses at call sites (the right side of `as`; identical to
+// `name` when no alias is present), which is what the calls index matches
+// identifiers against. Type-only imports (`import type { T }`
 // and inline `import { type T }`) are skipped -- they reference a type position,
 // not a value binding, so removing the export does not break them at runtime.
 // Default and namespace imports carry no named binding here and are ignored.
@@ -187,13 +190,12 @@ function collectImportSymbols(node, out, sourceFile) {
     if (el.isTypeOnly) continue; // `import { type Foo }` -> type position
     // `propertyName` is the source-exported name when an `as` alias is present;
     // otherwise `name` is both the imported and local name.
+    const local = el.name && typeof el.name.text === "string" ? el.name.text : null;
     const exported = el.propertyName && typeof el.propertyName.text === "string"
       ? el.propertyName.text
-      : el.name && typeof el.name.text === "string"
-        ? el.name.text
-        : null;
+      : local;
     if (!exported || exported === "default") continue;
-    out.push({ name: exported, module: moduleName, line });
+    out.push({ name: exported, local: local ?? exported, module: moduleName, line });
   }
 }
 

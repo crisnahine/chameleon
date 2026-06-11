@@ -14,11 +14,13 @@ Grades:
   per-class scoping is impossible). The member lookup is file-scoped: a
   this-call whose method lives on a base class in another file yields no
   edge rather than a guess (cross-file inheritance is out of scope).
-- ``import`` - TS only: a bare, new, or new ns.Foo() call of a named
-  import, or ns.member() through a runtime namespace import, resolved with
-  the same specifier machinery as the reverse index; the callee must exist
-  in the target's CLOSED export set. An open (barrel) set proves nothing,
-  so it yields no edge.
+- ``import`` - TS only: a bare or new call of a named import (matched on
+  its LOCAL binding name -- ``import { x as y }`` binds ``y`` -- with the
+  edge recorded under the EXPORTED name it resolves to), or ns.member() /
+  new ns.Foo() through a runtime namespace import, resolved with the same
+  specifier machinery as the reverse index; the callee must exist in the
+  target's CLOSED export set. An open (barrel) set proves nothing, so it
+  yields no edge.
 - ``constant_receiver`` - Ruby only: Const.method where Const names exactly
   one class across the dump; ``new`` maps to ``initialize`` when the
   target defines it, and is skipped (never invented) when it does not.
@@ -79,7 +81,11 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
     callables: dict[str, set[str]] = {}
     class_members: dict[str, dict[str, set[str]]] = {}
     exports: dict[str, tuple[set[str], bool]] = {}
-    import_map: dict[str, dict[str, str]] = {}
+    # rel -> local binding name -> (module specifier, exported name). Keyed on
+    # the LOCAL binding because that is what call-site identifiers carry
+    # (``import { x as y }`` binds y); the exported name rides along because
+    # the target's closed export set and the recorded edge both use it.
+    import_map: dict[str, dict[str, tuple[str, str]]] = {}
     ns_aliases: dict[str, dict[str, str]] = {}
     file_dir: dict[str, Path] = {}
     sites_by_rel: dict[str, list[dict]] = {}
@@ -134,7 +140,11 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             name = row.get("name")
             module = row.get("module")
             if isinstance(name, str) and name and isinstance(module, str) and module:
-                import_map.setdefault(rel, {})[name] = module
+                # Old dumps carry no `local`; without an alias the exported
+                # name IS the local binding, so falling back is exact.
+                local = row.get("local")
+                binding = local if isinstance(local, str) and local else name
+                import_map.setdefault(rel, {})[binding] = (module, name)
 
         for row in extras.get("namespace_imports") or ():
             if not isinstance(row, dict):
@@ -195,9 +205,10 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
 
         # Resolve each DISTINCT module specifier once per file. The site loop
         # below does dict lookups only -- zero resolve_module calls inside it.
-        import_targets: dict[str, str | None] = {
-            imp_name: _resolved_module(module_spec, fdir)
-            for imp_name, module_spec in own_imports.items()
+        # local binding -> (resolved target rel | None, exported name).
+        import_targets: dict[str, tuple[str | None, str]] = {
+            binding: (_resolved_module(module_spec, fdir), exported)
+            for binding, (module_spec, exported) in own_imports.items()
         }
         alias_targets: dict[str, str | None] = {
             alias: _resolved_module(module_spec, fdir) for alias, module_spec in own_aliases.items()
@@ -214,12 +225,14 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             if kind == "bare":
                 # A file-local definition is the deterministic anchor; only a
                 # name with no local definition is checked against imports.
+                # The site identifier is a LOCAL binding; the closed-set check
+                # and the recorded edge use the exported name it resolves to.
                 if name in own_callables:
                     _add(rel, name, rel, caller_fn, line, "same_file")
                 elif language == "typescript" and name in import_targets:
-                    t = import_targets[name]
-                    if t is not None and _closed_target(t, name) is not None:
-                        _add(t, name, rel, caller_fn, line, "import")
+                    t, exported = import_targets[name]
+                    if t is not None and _closed_target(t, exported) is not None:
+                        _add(t, exported, rel, caller_fn, line, "import")
             elif kind in ("this", "self"):
                 if name in own_members:
                     _add(rel, name, rel, caller_fn, line, "same_file")
@@ -228,16 +241,17 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                     continue
                 receiver = site.get("receiver")
                 if kind == "new" and receiver is None:
-                    # `new Foo()` of a named import: the imported name IS the
-                    # callee key (the index keys on exported names, not
-                    # constructors). Only a receiver-less construction may
-                    # resolve here: `new ns.Foo()` carries a receiver, and its
-                    # property name coinciding with a named import proves
-                    # nothing about the receiver.
+                    # `new Foo()` of a named import: the EXPORTED name the
+                    # local binding resolves to is the callee key (the index
+                    # keys on exported names, not constructors or aliases).
+                    # Only a receiver-less construction may resolve here:
+                    # `new ns.Foo()` carries a receiver, and its property name
+                    # coinciding with a named import proves nothing about the
+                    # receiver.
                     if name in import_targets:
-                        t = import_targets[name]
-                        if t is not None and _closed_target(t, name) is not None:
-                            _add(t, name, rel, caller_fn, line, "import")
+                        t, exported = import_targets[name]
+                        if t is not None and _closed_target(t, exported) is not None:
+                            _add(t, exported, rel, caller_fn, line, "import")
                     continue
                 # `obj.member()` or `new ns.Foo()`: resolvable only when the
                 # receiver names a runtime namespace import, against the alias

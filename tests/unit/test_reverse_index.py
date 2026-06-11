@@ -103,6 +103,24 @@ class TestBuild:
         idx = build_reverse_index([importer], tmp_path)
         assert idx["targets"] == {}
 
+    def test_aliased_row_keys_on_exported_name(self, tmp_path):
+        # import { editPrice as renamed }: the reverse index keys on the
+        # exported name (who-imports-editPrice ignores the importer's local
+        # alias); the `local` field the calls index consumes is ignored here.
+        _touch(tmp_path, "src/pricing.ts")
+        importer = FakeParsed(
+            tmp_path / "src" / "cart.ts",
+            {
+                "import_symbols": [
+                    {"name": "editPrice", "local": "renamed", "module": "./pricing", "line": 3}
+                ]
+            },
+        )
+        idx = build_reverse_index([importer], tmp_path)
+        rows = idx["targets"]["src/pricing.ts"]["editPrice"]
+        assert rows == [{"path": "src/cart.ts", "line": 3}]
+        assert "renamed" not in idx["targets"]["src/pricing.ts"]
+
     def test_malformed_rows_dropped(self, tmp_path):
         _touch(tmp_path, "m.ts")
         importer = FakeParsed(

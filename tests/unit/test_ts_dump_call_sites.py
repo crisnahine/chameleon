@@ -90,6 +90,23 @@ def test_call_sites_cap(tmp_path):
     assert rec["call_sites_total"] >= 2500
 
 
+_FIXTURE_ALIASED_IMPORTS = """\
+import { getUser } from './api';
+import { getUser as fetchLegacy } from './legacy';
+export function go() { getUser(); fetchLegacy(); }
+"""
+
+
+@pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+def test_import_symbols_carry_local_binding(tmp_path):
+    # `name` stays the source-exported name (the reverse index keys on it);
+    # `local` is the binding the importer's call sites actually use.
+    rec = _dump_src(tmp_path, _FIXTURE_ALIASED_IMPORTS, "alias.ts")
+    rows = {(r["name"], r["local"], r["module"]) for r in rec["import_symbols"]}
+    assert ("getUser", "getUser", "./api") in rows
+    assert ("getUser", "fetchLegacy", "./legacy") in rows
+
+
 @pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
 def test_namespace_imports(tmp_path):
     rec = _dump(tmp_path)
