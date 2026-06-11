@@ -489,6 +489,21 @@ def _emit_session_context(content: str) -> None:
 _DRIFT_BANNER_FILENAME = ".drift_banner.last"
 _ENGINE_BANNER_FILENAME = ".engine_banner.last"
 _PRODUCTION_BANNER_FILENAME = ".production_banner.last"
+_JUDGE_HEALTH_BANNER_FILENAME = ".judge_health_banner.last"
+
+# Degradation reasons the judge paths write into check events. The banner
+# echoes the reason into injected context, so anything outside this set reads
+# as "unknown" -- the injection surface stays allowlisted even if the ledger
+# text was tampered with.
+_JUDGE_DEGRADED_REASONS = frozenset(
+    {
+        "spawn_timeout",
+        "spawn_exec_error",
+        "spawn_nonzero_exit",
+        "pipeline_error",
+        "unparseable_output",
+    }
+)
 
 
 def _production_tip_banner(repo_root: Path, session_id: str | None = None) -> str | None:
@@ -688,6 +703,77 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
             )
         except Exception:  # noqa: BLE001
             pass
+        return None
+
+
+def _judge_spawn_health_banner(repo_root: Path, session_id: str | None = None) -> str | None:
+    """One-line SessionStart advisory when the previous session's attestation
+    recorded a degraded correctness-judge spawn.
+
+    A failed reviewer spawn otherwise lives only in the attestation ledger:
+    the turn-end review layer can be silently dead (broken auth, missing
+    binary) for weeks with no user-visible signal. Reads the NEWEST ledger
+    row -- the last session that attested -- and skips a row from the current
+    session so a resumed session never warns about its own in-progress state.
+    Same optout + TTL-marker discipline as the drift banner. Best-effort: any
+    failure returns None.
+    """
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.review_ledger import read_session_attestations
+        from chameleon_mcp.tools import _compute_repo_id
+
+        resolved_root = find_repo_root(repo_root) or repo_root
+        repo_id = _compute_repo_id(resolved_root)
+        if is_chameleon_suppressed(resolved_root, repo_id, session_id) is not None:
+            return None
+
+        # No data dir means no prior session attested here; bail before the
+        # ledger read, whose path resolution would CREATE the dir (session
+        # start for an unprofiled repo must stay side-effect free).
+        if not (_plugin_data_dir() / repo_id).is_dir():
+            return None
+
+        records = read_session_attestations(repo_id, limit=1).get("records") or []
+        if not records:
+            return None
+        latest = records[0]
+        if session_id and latest.get("session_id") == session_id:
+            return None
+        reason: str | None = None
+        for entry in latest.get("checks") or []:
+            if not isinstance(entry, dict):
+                continue
+            if (
+                entry.get("check") == "correctness_judge"
+                and entry.get("status") == "degraded_spawn"
+            ):
+                raw = entry.get("reason")
+                reason = raw if raw in _JUDGE_DEGRADED_REASONS else "unknown"
+                break
+        if reason is None:
+            return None
+
+        marker = _plugin_data_dir() / repo_id / _JUDGE_HEALTH_BANNER_FILENAME
+        if _marker_path_is_fresh(marker, threshold_int("DRIFT_BANNER_TTL_SECONDS")):
+            return None
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(marker.parent, 0o700)
+        except OSError:
+            pass
+        _atomic_write_text(marker, str(int(time.time())))
+        try:
+            os.chmod(marker, 0o600)
+        except OSError:
+            pass
+        return (
+            f"[🦎 chameleon: turn-end reviewer failed to spawn last session "
+            f"({reason}); run /chameleon-doctor]"
+        )
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -1337,6 +1423,10 @@ def session_start() -> int:
     if production_banner:
         wrapped_parts.append("")
         wrapped_parts.append(production_banner)
+    judge_health_banner = _judge_spawn_health_banner(repo_root or Path.cwd(), session_id=session_id)
+    if judge_health_banner:
+        wrapped_parts.append("")
+        wrapped_parts.append(judge_health_banner)
     wrapped_parts.append("</chameleon-context>")
     wrapped = "\n".join(wrapped_parts)
 
@@ -1618,19 +1708,10 @@ def preflight_and_advise() -> int:
 
     repo_id = repo_info.get("id")
     confidence_band = archetype_obj.get("confidence_band")
-    if repo_id:
-        try:
-            from chameleon_mcp.drift.observations import record_edit_observation
-
-            record_edit_observation(
-                repo_id=repo_id,
-                rel_path=str(file_path),
-                archetype=archetype_name,
-                confidence_band=confidence_band,
-                matched_canonical=bool(canonical.get("witness_path")),
-            )
-        except Exception:
-            pass
+    # The drift observation for this edit is recorded ONCE, by posttool_verify:
+    # the post-edit hook sees the file as actually written (this hook fires
+    # even when the edit is subsequently denied or fails) and also covers the
+    # no-archetype branch. Recording here too doubled every drift statistic.
 
     session_id = payload.get("session_id")
     if trust_state == "untrusted" and repo_id:
