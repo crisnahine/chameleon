@@ -240,11 +240,11 @@ Restrict this to files the diff ADDS (status `A` in the diff, a brand-new path).
 
 Cap this at FIX, never BLOCK. A partial change may legitimately defer its companion to a follow-up commit, so this is a "confirm the companion isn't needed" prompt, not a confirmed gap. The trigger path is the witnessed fact each finding cites: the added file is in the diff and matches a curated rule, and no companion is present in the change-set.
 
-### Step 2.9: Cross-file passes (layering, duplication, existence breaks)
+### Step 2.9: Cross-file passes (layering, duplication, existence breaks, caller blast radius)
 
-These three passes see across files, which the per-file convention loop cannot. Each is grounded in a concrete chameleon artifact or tool result; a finding with no backing entry is dropped by the integrity rule like any other.
+These four passes see across files, which the per-file convention loop cannot. Each is grounded in a concrete chameleon artifact or tool result; a finding with no backing entry is dropped by the integrity rule like any other.
 
-The two tool-backed passes below (2.9b duplication, 2.9c existence breaks) depend on an MCP tool. If a tool is not available in this session, skip that pass and note it in one line ("cross-file existence-break pass skipped: `get_crossfile_context` unavailable") rather than failing the review. A missing cross-file tool removes a signal; it never blocks the rest of the review or forces a verdict.
+The three tool-backed passes below (2.9b duplication, 2.9c existence breaks, 2.9d caller blast radius) depend on an MCP tool. If a tool is not available in this session, skip that pass and note it in one line ("cross-file existence-break pass skipped: `get_crossfile_context` unavailable") rather than failing the review. A missing cross-file tool removes a signal; it never blocks the rest of the review or forces a verdict.
 
 #### 2.9a. Layering / cycle violations (NIT or FIX, advisory)
 
@@ -271,6 +271,16 @@ get_crossfile_context(repo=<repo_id>)
 It returns ONLY existence-break findings: an export that the indexed importer set still references by name is now gone from the module that used to export it, so the importer's call site is broken. Each finding carries a `high_confidence` flag.
 
 Relay a finding as a **FIX** ONLY when `high_confidence` is true, citing the removed/renamed symbol, the module that no longer exports it, and the importer file:line the tool reported. Drop every finding without `high_confidence=true`: a leaky resolver can produce a finding that cites a real-looking entry but resolved wrong (a barrel re-export, a same-name collision, a dynamic import), and relaying it would launder a wrong inference past the integrity rule. The tool is the witnessed fact here; do not add your own cross-file existence claims on top of what it returns.
+
+#### 2.9d. Caller blast radius for MODIFIED functions (context, not a finding)
+
+For each function the diff modifies, call the `get_callers` MCP tool:
+```
+get_callers(repo=<repo_id>, file_path=<abs_path_of_changed_file>, function_name=<function>)
+```
+List the returned caller sites with their grades as blast-radius context for the finding pass: a signature, contract, or behavior change to a function with recorded callers is judged against those call sites, not in isolation. Grades are deterministic (`same_file` / `import` / `constant_receiver`), read from the committed calls snapshot at profile derivation, so each cited site is a real recorded call, not an inference.
+
+Absence of callers is NOT evidence of dead code: dynamic and unsupported call paths (reflection, metaprogramming, superclass chains) are invisible to the index, as is anything added after the last refresh. Never raise an "unused function" finding from an empty result. Name-token candidates from `get_duplication_candidates` may be listed separately alongside this context, but must be labeled non-deterministic; they never carry the deterministic grades above.
 
 ### Step 3: Logic review (only when Jira ticket provided)
 
@@ -595,5 +605,5 @@ This is a best-effort final step. If the tool call fails (no ledger, no signing 
 - Skip auto-generated files: `schema.rb`, `*.generated.*`, vendored files. These produce false positives. Lockfiles (`*.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`) are skipped for archetype/lint/canonical review but NOT for the dependency-change review (Step 2.5).
 - Dependency findings come from the diff parse only (Step 2.5). Do not run a security audit, hit a network, or install packages during the review.
 - Large utility files (helpers, concerns, base classes) often have different shapes than the canonical — use judgment, not blind flagging.
-- The cross-file tools (`get_duplication_candidates`, `get_crossfile_context`) read prebuilt profile artifacts; they make no network call and run no repo code. Do not relay a duplication finding without a returned candidate, or an existence break without `high_confidence`.
+- The cross-file tools (`get_duplication_candidates`, `get_crossfile_context`, `get_callers`) read prebuilt profile artifacts; they make no network call and run no repo code. Do not relay a duplication finding without a returned candidate, or an existence break without `high_confidence`, and never read an empty `get_callers` result as dead code.
 - After the verdict is shown, append it to the ledger via `record_review_verdict` (Step 5). It is best-effort and never blocks the review. The ledger is tamper-evident, not forgery-proof, and CI cannot verify it; past verdicts are queryable with `get_review_history`.
