@@ -76,8 +76,6 @@ def test_get_pattern_context_missing_witness_flag(tmp_path, monkeypatch):
     derived AST shapes not present in a minimal fixture) so this test focuses on
     the canonical-lookup and file-read path within get_pattern_context itself.
     """
-    from unittest.mock import patch as _patch
-
     from chameleon_mcp.tools import get_pattern_context
 
     repo = _repo_with_witness(tmp_path, monkeypatch)
@@ -98,7 +96,7 @@ def test_get_pattern_context_missing_witness_flag(tmp_path, monkeypatch):
 
     # Sanity: witness present -> content flows through the collapsed call too.
     file_path = str(repo / WITNESS)
-    with _patch("chameleon_mcp.tools._get_archetype_with_loaded", return_value=_arch_result):
+    with patch("chameleon_mcp.tools._get_archetype_with_loaded", return_value=_arch_result):
         res_before = get_pattern_context(file_path)["data"]["canonical_excerpt"]
     assert res_before.get("content"), "expected content before deletion"
     assert not res_before.get("missing"), "missing flag must be absent before deletion"
@@ -106,19 +104,20 @@ def test_get_pattern_context_missing_witness_flag(tmp_path, monkeypatch):
     # Remove the witness to simulate post-derivation deletion.
     (repo / WITNESS).unlink()
 
-    with _patch("chameleon_mcp.tools._get_archetype_with_loaded", return_value=_arch_result):
+    with patch("chameleon_mcp.tools._get_archetype_with_loaded", return_value=_arch_result):
         res = get_pattern_context(file_path)["data"]["canonical_excerpt"]
     assert res.get("content") == "", f"content must be empty, got {res.get('content')!r}"
     assert res.get("missing") is True, f"missing flag must be True, got {res.get('missing')!r}"
     assert res.get("witness_path") == WITNESS
 
 
-def _run_preflight_with_missing_witness(tmp_path: Path, repo: Path) -> dict:
+def _run_preflight_with_missing_witness(
+    tmp_path: Path, repo: Path, witness_path: str = WITNESS
+) -> dict:
     """Drive preflight_and_advise with a get_pattern_context result that reports missing=True.
 
     The mock injects the missing-witness canonical_excerpt data so the render
-    path at hook_helper.py:1882-1886 is exercised directly, independent of
-    real file-system setup inside the hook.
+    path is exercised directly, independent of real file-system setup inside the hook.
     """
     repo_id = "dead_witness_test_repo"
     result = {
@@ -133,7 +132,7 @@ def _run_preflight_with_missing_witness(tmp_path: Path, repo: Path) -> dict:
             },
             "canonical_excerpt": {
                 "content": "",
-                "witness_path": WITNESS,
+                "witness_path": witness_path,
                 "truncated": False,
                 "missing": True,
             },
@@ -184,3 +183,29 @@ def test_hook_render_missing_witness_notice(tmp_path, monkeypatch):
     assert "missing on disk; run /chameleon-refresh" in context, (
         f"expected missing-witness notice in additionalContext, got: {context!r}"
     )
+
+
+def test_hook_render_missing_witness_sanitizes_path(tmp_path, monkeypatch):
+    """sanitize_for_chameleon_context is called on the witness_path before it enters the block.
+
+    A hostile path containing ANSI color escapes and a NUL byte must not leak
+    those bytes into additionalContext, while the refresh hint still appears.
+    """
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    repo = tmp_path / "repo"
+    (repo / ".chameleon").mkdir(parents=True)
+
+    # ESC byte (\x1b) starts ANSI CSI sequences; NUL (\x00) is a C0 control.
+    # sanitize_for_chameleon_context strips both before the path reaches the block.
+    hostile_path = "src/\x1b[31mevil\x1b[0m\x00service.ts"
+
+    out = _run_preflight_with_missing_witness(tmp_path, repo, witness_path=hostile_path)
+    hso = out.get("hookSpecificOutput", {})
+    context = hso.get("additionalContext", "")
+
+    assert "missing on disk; run /chameleon-refresh" in context, (
+        f"refresh hint absent from additionalContext: {context!r}"
+    )
+    assert "\x1b" not in context, "ESC byte must be stripped by sanitize_for_chameleon_context"
+    assert "\x00" not in context, "NUL byte must be stripped by sanitize_for_chameleon_context"

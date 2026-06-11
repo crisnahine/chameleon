@@ -1882,7 +1882,7 @@ def preflight_and_advise() -> int:
     if canonical.get("missing"):
         block += (
             f"(canonical witness {sanitize_for_chameleon_context(str(canonical.get('witness_path')))} is "
-            "missing on disk; run /chameleon-refresh to re-select)\n"
+            "missing on disk; run /chameleon-refresh to re-select)\n\n"
         )
     if has_idioms:
         # Inline the team idioms (already loaded + sanitized by get_pattern_context)
