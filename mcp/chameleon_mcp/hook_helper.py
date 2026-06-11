@@ -4476,6 +4476,34 @@ def _correctness_judge_route(
         return no_spawn
 
 
+def _judge_async_mode() -> str | None:
+    """Which detached-judge route this Stop should try, or None for sync.
+
+    ``CHAMELEON_JUDGE_ASYNC=1`` is the operator opt-in; ``=0`` is the operator
+    override that forces sync even when bare auth is known failed (the sync
+    plain spawn then likely times out, which the SessionStart judge-health
+    banner and doctor surface). Unset, a known bare-auth failure auto-prefers
+    the detached path: the plain fallback spawn pays the full session primer
+    and cannot fit the sync Stop budget (the stop-backstop wrapper caps the
+    hook at 55s), so detaching is the only spawn shape that can finish. The
+    POSIX-only platform gate stays inside ``launch_async_judge``; on other
+    platforms the launch returns False and the caller falls back to sync.
+    """
+    env = os.environ.get("CHAMELEON_JUDGE_ASYNC")
+    if env == "0":
+        return None
+    if env == "1":
+        return "async_opt_in"
+    try:
+        from chameleon_mcp.judge import _bare_auth_known_failed
+
+        if _bare_auth_known_failed():
+            return "async_auto_bare_fallback"
+    except Exception:
+        pass
+    return None
+
+
 def _correctness_judge_gate(
     *,
     repo_root: Path,
@@ -4494,13 +4522,14 @@ def _correctness_judge_gate(
     executes it: the per-session spawn counter is persisted BEFORE the
     reviewer runs so an interrupted Stop still consumes budget, each fresh
     file is marked judged at its captured digest only on a completed spawn (a
-    failed spawn stays fresh for retry under the cap), and with
-    CHAMELEON_JUDGE_ASYNC=1 the spawn detaches and the findings arrive on the
-    next user prompt instead. The sync path writes the spawn outcome back
-    into ``route["spawn_failed"]`` so the duplication gate (which runs after
-    this) defers only to a spawn that produced a reviewable result; a
-    detached async spawn leaves the key unset (outcome unknown this Stop, the
-    deferral holds).
+    failed spawn stays fresh for retry under the cap), and when the async
+    route is selected (``_judge_async_mode``: operator opt-in, or
+    automatically on a known bare-auth failure) the spawn detaches and the
+    findings arrive on the next user prompt instead. The sync path writes the
+    spawn outcome back into ``route["spawn_failed"]`` so the duplication gate
+    (which runs after this) defers only to a spawn that produced a reviewable
+    result; a detached async spawn leaves the key unset (outcome unknown this
+    Stop, the deferral holds).
 
     Returns a hook output dict carrying the findings as ``additionalContext``, or
     None when the gate does not fire / found nothing (the caller then allows the
@@ -4532,16 +4561,9 @@ def _correctness_judge_gate(
         except Exception:
             pass
 
-        _emit_check_event(
-            repo_id,
-            session_id,
-            "correctness_judge",
-            "spawned",
-            route.get("reason") or "started",
-            detail={"turn_key": turn_key},
-        )
-
-        if os.environ.get("CHAMELEON_JUDGE_ASYNC") == "1":
+        async_mode = _judge_async_mode()
+        launched = False
+        if async_mode is not None:
             try:
                 from chameleon_mcp import judge_async
 
@@ -4557,10 +4579,22 @@ def _correctness_judge_gate(
                 )
             except Exception:
                 launched = False
-            if launched:
-                # Findings arrive on the next UserPromptSubmit; the detached
-                # child marks the judged digests and records its own events.
-                return None
+
+        # The mode rides the spawn event so an attestation replay can tell an
+        # auto-detached spawn (bare auth known failed) from the operator
+        # opt-in and from a plain synchronous run.
+        _emit_check_event(
+            repo_id,
+            session_id,
+            "correctness_judge",
+            "spawned",
+            route.get("reason") or "started",
+            detail={"turn_key": turn_key, "mode": async_mode if launched else "sync"},
+        )
+        if launched:
+            # Findings arrive on the next UserPromptSubmit; the detached
+            # child marks the judged digests and records its own events.
+            return None
 
         failures: list[str] = []
         # Every non-facts sink kind (spawn failure, pipeline error, or

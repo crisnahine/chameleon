@@ -35,6 +35,9 @@ def _reset_bare_caches(monkeypatch, tmp_path):
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
     monkeypatch.setattr(judge, "_BARE_SUPPORTED", True)
     monkeypatch.setattr(judge, "_BARE_AUTH_OK", None)
+    # These tests pin the synchronous spawn shape; the detached-child flag
+    # would silently switch the budget when the auth cache reads failed.
+    monkeypatch.setattr(judge, "_RUNNING_DETACHED", False)
 
 
 def _fake_run_auth_broken(calls):

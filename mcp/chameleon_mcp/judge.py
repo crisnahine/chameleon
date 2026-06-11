@@ -18,7 +18,8 @@ Design constraints (every one fails open, returning no findings):
   - the diff is reconstructed via ``git diff`` against HEAD, falling back to
     whole-file content when git is unavailable or the path is untracked;
   - the spawn has a short hard wall-clock budget so a slow review never traps
-    the turn;
+    the turn (only the detached async child, which holds no turn open, may use
+    the longer fallback budget);
   - the prompt and the parsed output are size-capped;
   - spawns are routed per turn by the caller (digest-keyed freshness + risk
     facts under a per-session budget), so an unchanged or low-risk turn never
@@ -618,6 +619,41 @@ def _spawn_lost_auth(proc) -> bool:
     return bool(_NOT_LOGGED_IN_RE.search(blob))
 
 
+# True only inside the detached judge_async child process. Only that child may
+# take the generous fallback budget below: a spawn inside the Stop hook never
+# can, because the stop-backstop wrapper caps the whole hook at 55s and the
+# host kills hooks at 60s regardless of any threshold override.
+_RUNNING_DETACHED = False
+
+
+def mark_detached_run() -> None:
+    """Record that this process is the detached async judge child."""
+    global _RUNNING_DETACHED
+    _RUNNING_DETACHED = True
+
+
+def detached_spawn_budget_seconds() -> int:
+    """Wall-clock budget the detached judge child applies to its reviewer spawn.
+
+    With bare auth known failed the child runs the plain (non --bare) spawn,
+    which pays the full session primer before it can review and cannot finish
+    inside the short sync budget; running detached, it can afford the generous
+    fallback budget instead. Also readable from the parent process: the async
+    in-flight orphan-sweep window scales with the same number.
+    """
+    if _bare_auth_known_failed():
+        return threshold_int("CORRECTNESS_JUDGE_FALLBACK_TIMEOUT_SECONDS")
+    return threshold_int("CORRECTNESS_JUDGE_TIMEOUT_SECONDS")
+
+
+def _reviewer_timeout_seconds() -> int:
+    """Effective budget for one reviewer spawn: synchronous spawns keep the
+    short budget; only the detached child may take the fallback budget."""
+    if _RUNNING_DETACHED:
+        return detached_spawn_budget_seconds()
+    return threshold_int("CORRECTNESS_JUDGE_TIMEOUT_SECONDS")
+
+
 def _spawn_reviewer_status(prompt: str, cwd: Path) -> tuple[str | None, str | None]:
     """Spawn ``claude -p`` for a one-shot review, returning ``(stdout, reason)``.
 
@@ -629,7 +665,7 @@ def _spawn_reviewer_status(prompt: str, cwd: Path) -> tuple[str | None, str | No
     review silently produced nothing instead of collapsing every failure mode
     into an indistinguishable None.
     """
-    timeout_s = threshold_int("CORRECTNESS_JUDGE_TIMEOUT_SECONDS")
+    timeout_s = _reviewer_timeout_seconds()
     args = [
         "claude",
         "-p",

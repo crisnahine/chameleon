@@ -209,6 +209,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # turn; on timeout the judge fails open to no findings. Kept short because
     # the user is waiting on the turn to end.
     "CORRECTNESS_JUDGE_TIMEOUT_SECONDS": 45,
+    # Wall-clock budget for the reviewer spawn inside the DETACHED async judge
+    # child when bare auth is known failed. The plain (non --bare) spawn pays
+    # the full session primer before it can review, which cannot fit the short
+    # sync budget above; the child runs detached from the Stop hook, so the
+    # budget is generous. Synchronous spawns always keep the short budget.
+    "CORRECTNESS_JUDGE_FALLBACK_TIMEOUT_SECONDS": 180,
     # Cap on the total bytes of reconstructed diff the judge prompt carries. A
     # large refactor can produce a huge diff; past this the diff is truncated so
     # the prompt stays bounded and the spawn stays within its time budget. Sized

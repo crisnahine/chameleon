@@ -1,20 +1,32 @@
-"""Opt-in detached post-Stop correctness-judge runner (CHAMELEON_JUDGE_ASYNC=1).
+"""Detached post-Stop correctness-judge runner.
+
+Two routes lead here: the operator opt-in (``CHAMELEON_JUDGE_ASYNC=1``) and
+the automatic preference when a prior spawn proved ``claude --bare`` loses
+credentials on this install -- the plain fallback spawn pays the full session
+primer and cannot fit the synchronous Stop budget, so the route detaches even
+without the variable. An explicit ``CHAMELEON_JUDGE_ASYNC=0`` forces sync
+regardless (accepting the likely spawn timeout, which the SessionStart
+judge-health banner and /chameleon-doctor surface).
 
 The synchronous judge spawn pays its wall-clock budget inside the Stop hook.
 This module moves that cost off the turn: the gate writes a request file plus
 an in-flight marker and detaches a ``python -m chameleon_mcp.judge_async``
 child (``start_new_session=True`` so a process-group kill at hook exit cannot
-reap it), then returns immediately. The child runs the same judge pipeline,
-writes its findings to a per-session pending file, and the next
-UserPromptSubmit delivers them -- dropping any finding whose file was edited
-again in between (digest mismatch). POSIX-only: ``launch_async_judge`` returns
-False elsewhere and the caller falls back to the synchronous spawn.
+reap it), then returns immediately. The child runs the same judge pipeline
+(under the generous ``CORRECTNESS_JUDGE_FALLBACK_TIMEOUT_SECONDS`` spawn
+budget when bare auth is known failed), writes its findings to a per-session
+pending file, and the next UserPromptSubmit delivers them -- dropping any
+finding whose file was edited again in between (digest mismatch). POSIX-only:
+``launch_async_judge`` returns False elsewhere and the caller falls back to
+the synchronous spawn -- so on Windows a bare-auth-failed install keeps the
+sync spawn with the short budget, and the resulting timeout stays visible
+through the judge-health banner and doctor.
 
 Failure modes and their mitigations:
 
 - Orphan child (host killed it before completion): the in-flight marker goes
-  stale; ``is_inflight_fresh`` unlinks markers older than twice the judge
-  timeout, and the child itself is bounded by the spawn's own wall clock.
+  stale; ``is_inflight_fresh`` unlinks markers older than twice the child's
+  spawn budget, and the child itself is bounded by the spawn's own wall clock.
 - Partial writes: every file here is written tmp + ``os.replace``, so a reader
   never sees partial JSON.
 - Stale findings: the pending file records each reviewed file's content
@@ -130,13 +142,29 @@ def launch_async_judge(
         return False
 
 
+def _child_spawn_budget_seconds() -> int:
+    """Spawn budget the detached child is running under, read from the parent.
+
+    The orphan-sweep window below is twice this, so a legitimately slow
+    fallback child (bare auth failed, generous budget) is not swept mid-run
+    and then double-spawned. Falls back to the short sync budget if the judge
+    module cannot answer.
+    """
+    try:
+        from chameleon_mcp.judge import detached_spawn_budget_seconds
+
+        return detached_spawn_budget_seconds()
+    except Exception:
+        return threshold_int("CORRECTNESS_JUDGE_TIMEOUT_SECONDS")
+
+
 def is_inflight_fresh(repo_data: Path, session_id: str) -> bool:
     """True while a detached judge for this session is plausibly still running.
 
-    A marker older than twice the judge timeout is an orphan (the child was
-    killed before its finally-block cleanup) and is unlinked on read, as is a
-    corrupt marker, so one dead child can never suppress reviews for the rest
-    of the session.
+    A marker older than twice the child's spawn budget is an orphan (the child
+    was killed before its finally-block cleanup) and is unlinked on read, as
+    is a corrupt marker, so one dead child can never suppress reviews for the
+    rest of the session.
     """
     path = _inflight_path(repo_data, session_id)
     try:
@@ -150,7 +178,7 @@ def is_inflight_fresh(repo_data: Path, session_id: str) -> bool:
         except OSError:
             pass
         return False
-    if time.time() - started < 2 * threshold_int("CORRECTNESS_JUDGE_TIMEOUT_SECONDS"):
+    if time.time() - started < 2 * _child_spawn_budget_seconds():
         return True
     try:
         path.unlink()
@@ -222,6 +250,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         from chameleon_mcp import judge
+
+        # This process is the detached child: its reviewer spawn may take the
+        # generous fallback budget when bare auth is known failed.
+        judge.mark_detached_run()
 
         failures: list[str] = []
 

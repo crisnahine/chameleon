@@ -31,6 +31,14 @@ def _isolate(tmp_path, monkeypatch):
     key_file.chmod(0o600)
     monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(key_file))
     monkeypatch.setenv("TMPDIR", str(tmp_path))
+    # The in-flight freshness window scales with the bare-auth state; isolate
+    # the marker dir and the process cache so the developer's real marker can
+    # never widen (or shrink) a window under test.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "plugin-data"))
+    from chameleon_mcp import judge
+
+    monkeypatch.setattr(judge, "_BARE_AUTH_OK", None)
+    monkeypatch.setattr(judge, "_RUNNING_DETACHED", False)
     yield
 
 
