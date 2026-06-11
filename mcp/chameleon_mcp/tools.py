@@ -1827,8 +1827,30 @@ def get_pattern_context(file_path: str) -> dict:
                         "oversize": True,
                         "sha_hint": first.get("witness", {}).get("sha_hint"),
                     }
-                except (UnsafeFileError, FileNotFoundError, OSError):
-                    # Security rejection (traversal/symlink) or read error: leave empty.
+                except FileNotFoundError:
+                    # Witness deleted or renamed since derivation. Do not serve a
+                    # silent empty excerpt: flag it so the hook and direct
+                    # callers can tell the user to refresh.
+                    canonical_data = {
+                        "content": "",
+                        "witness_path": witness_rel,
+                        "truncated": False,
+                        "missing": True,
+                        "sha_hint": first.get("witness", {}).get("sha_hint"),
+                    }
+                except UnsafeFileError as e:
+                    if isinstance(e.__cause__, FileNotFoundError):
+                        # safe_open_fd wraps FileNotFoundError; treat it the same way.
+                        canonical_data = {
+                            "content": "",
+                            "witness_path": witness_rel,
+                            "truncated": False,
+                            "missing": True,
+                            "sha_hint": first.get("witness", {}).get("sha_hint"),
+                        }
+                    # Security rejection (traversal/symlink): leave canonical_data empty.
+                except OSError:
+                    # Read error (e.g. mid-read change detection): leave empty.
                     pass
 
     idioms_text = loaded.idioms_text or ""
@@ -2097,7 +2119,42 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
                 "sha_hint": witness.get("sha_hint"),
             }
         )
-    except (UnsafeFileError, FileNotFoundError, OSError):
+    except FileNotFoundError:
+        # Witness deleted or never created on this working tree. Flag it so
+        # callers can tell the user to refresh rather than silently degrading
+        # to an empty excerpt with no signal.
+        return _envelope(
+            {
+                "content": "",
+                "witness_path": witness_rel,
+                "truncated": False,
+                "missing": True,
+                "sha_hint": witness.get("sha_hint"),
+            }
+        )
+    except UnsafeFileError as e:
+        if isinstance(e.__cause__, FileNotFoundError):
+            # safe_open wraps FileNotFoundError; treat it the same way.
+            return _envelope(
+                {
+                    "content": "",
+                    "witness_path": witness_rel,
+                    "truncated": False,
+                    "missing": True,
+                    "sha_hint": witness.get("sha_hint"),
+                }
+            )
+        # Security rejection (traversal, symlink, etc.): leave content empty.
+        return _envelope(
+            {
+                "content": "",
+                "witness_path": witness_rel,
+                "truncated": False,
+                "sha_hint": witness.get("sha_hint"),
+            }
+        )
+    except OSError:
+        # Read error or other I/O failure: leave content empty.
         return _envelope(
             {
                 "content": "",
