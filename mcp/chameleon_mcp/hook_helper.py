@@ -1165,14 +1165,7 @@ def session_start() -> int:
 
                     reap_stale_prefixed(
                         repo_data,
-                        (
-                            ".judge_pending.",
-                            ".judge_inflight.",
-                            ".judge_request.",
-                            ".corr_judged.",
-                            ".intent.",
-                            ".correctness_judged.",
-                        ),
+                        SESSION_REAP_PREFIXES,
                         max_age_seconds=threshold_int("INTENT_RETENTION_DAYS") * 86400,
                     )
                 except Exception:
@@ -1886,6 +1879,11 @@ def preflight_and_advise() -> int:
         block += "Canonical witness:\n```\n"
         block += excerpt_content
         block += "\n```\n\n"
+    if canonical.get("missing"):
+        block += (
+            f"(canonical witness {canonical.get('witness_path')} is "
+            "missing on disk; run /chameleon-refresh to re-select)\n"
+        )
     if has_idioms:
         # Inline the team idioms (already loaded + sanitized by get_pattern_context)
         # instead of pointing at another tool call — they are the highest-signal,
@@ -3857,6 +3855,19 @@ _IDIOM_CONTEXT_CHAR_CAP = 1500
 # Judged-digest marker namespace for the correctness gate, kept disjoint from
 # the duplication gate's default ".dup_judged." namespace.
 _CORR_JUDGED_PREFIX = ".corr_judged."
+
+# Per-session marker prefixes reaped at SessionStart. No SessionEnd hook
+# exists, so anything session-scoped must age out here. .dup_judged. and
+# .corr_judged. are per-(session,file,digest) dedup touch markers.
+SESSION_REAP_PREFIXES: tuple[str, ...] = (
+    ".judge_pending.",
+    ".judge_inflight.",
+    ".judge_request.",
+    ".corr_judged.",
+    ".dup_judged.",
+    ".intent.",
+    ".correctness_judged.",
+)
 
 # Sink kinds from judge.run_correctness_judge that mean the reviewer produced
 # no usable verdict; the touched files stay unmarked so the next Stop can
