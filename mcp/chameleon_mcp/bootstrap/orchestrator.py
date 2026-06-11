@@ -1141,10 +1141,11 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
 
     Wraps the rewrite in the same atomic_profile_commit transaction the
     initial bootstrap used so concurrent loaders never see a half-written
-    profile. The other four JSON artifacts + idioms.md + summary are
-    re-read from the existing committed profile and re-emitted verbatim
-    inside the new txn so the generation counter stays consistent across
-    files (the loader's double-fstat check requires it).
+    profile. Every other protocol artifact the root bootstrap wrote (the
+    JSON artifacts, idioms.md, summary, renames, calls index) is re-read
+    from the existing committed profile and re-emitted verbatim inside the
+    new txn so the generation counter stays consistent across files (the
+    loader's double-fstat check requires it).
     """
     profile_path = profile_dir / "profile.json"
     if not profile_path.is_file():
@@ -1210,6 +1211,19 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
         except OSError:
             renames_text = None
 
+    # calls_index.json is a protocol file (a failed full rebuild drops it
+    # rather than serving stale judge facts), so the commit will not carry it
+    # forward on its own. This rewrite only adds the workspaces array to a
+    # profile the root bootstrap just derived, so re-emit the index verbatim
+    # or every monorepo root would lose it moments after it was written.
+    calls_index_path = profile_dir / "calls_index.json"
+    calls_index_text: str | None = None
+    if calls_index_path.is_file():
+        try:
+            calls_index_text = calls_index_path.read_text(encoding="utf-8")
+        except OSError:
+            calls_index_text = None
+
     with atomic_profile_commit(profile_dir) as txn_dir:
         (txn_dir / "profile.json").write_text(
             json.dumps(profile_data, indent=2, sort_keys=True), encoding="utf-8"
@@ -1220,6 +1234,8 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
         (txn_dir / "profile.summary.md").write_text(summary_text, encoding="utf-8")
         if renames_text is not None:
             (txn_dir / "renames.json").write_text(renames_text, encoding="utf-8")
+        if calls_index_text is not None:
+            (txn_dir / "calls_index.json").write_text(calls_index_text, encoding="utf-8")
 
 
 # Plain-word labels for the AST node kinds that lead the Tier 1 pointer —

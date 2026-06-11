@@ -257,6 +257,13 @@ def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
                     break
                 if fn.name in seen:
                     continue
+                # The index records `new Klass()` under the exported class
+                # name, never under "constructor"; a constructor row would
+                # render a false "no committed callers" line, so it renders
+                # nothing. Kind-keyed: a plain function NAMED constructor is
+                # indexed under that name and still renders.
+                if fn.kind == "constructor":
+                    continue
                 if not fd.is_whole_file:
                     # Span intersection against the hunks; a span-less entry
                     # (old dump) cannot be located, so it is never claimed as

@@ -274,6 +274,99 @@ def test_partial_refresh_preserves_conventions_and_principles(tmp_path, monkeypa
     assert (cham / "principles.md").read_text().startswith("# principles")
 
 
+def test_partial_refresh_preserves_calls_index(tmp_path, monkeypatch):
+    """A successful partial refresh must carry calls_index.json forward.
+
+    calls_index.json is a protocol file, so the atomic commit does not copy
+    it forward on its own; without an explicit re-emit every partial refresh
+    silently wiped the judge's caller facts (and the next refresh then forced
+    a full rebuild to heal the hole).
+    """
+    repo_root = tmp_path / "repo"
+    cham = repo_root / ".chameleon"
+    cham.mkdir(parents=True)
+    src = repo_root / "src"
+    src.mkdir()
+
+    files = []
+    for i in range(20):
+        p = src / f"f{i}.ts"
+        p.write_text(f"export const v{i} = {i};\n")
+        files.append(p)
+
+    (cham / "profile.json").write_text(
+        json.dumps({"schema_version": 7, "generation": 1, "language": "typescript"})
+    )
+    (cham / "archetypes.json").write_text(
+        json.dumps(
+            {
+                "generation": 1,
+                "archetypes": {"svc": {"cluster_id": "C1", "cluster_size": 20}},
+            }
+        )
+    )
+    (cham / "canonicals.json").write_text(
+        json.dumps(
+            {
+                "generation": 1,
+                "canonicals": {"svc": [{"witness": {"path": "src/witness.ts", "sha_hint": "zz"}}]},
+            }
+        )
+    )
+    (cham / "rules.json").write_text(json.dumps({"generation": 1, "rules": {}}))
+    (cham / "conventions.json").write_text(json.dumps({"generation": 1, "conventions": {}}))
+    (cham / "principles.md").write_text("# principles\n")
+    (cham / "idioms.md").write_text("# idioms\n")
+    (cham / "profile.summary.md").write_text("# summary\n")
+    calls_payload = {
+        "schema_version": 1,
+        "callees": {
+            "src/f1.ts": {
+                "v1": {
+                    "callers": [
+                        {"path": "src/f2.ts", "caller": "<module>", "line": 1, "grade": "import"}
+                    ],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
+    }
+    (cham / "calls_index.json").write_text(json.dumps(calls_payload))
+    (cham / "COMMITTED").touch()
+
+    repo_id = tools._compute_repo_id(repo_root)
+
+    def _rel(i):
+        return f"src/f{i}.ts"
+
+    prev_state = {}
+    for i in range(20):
+        prev_state[_rel(i)] = {
+            "cluster_id": "C1",
+            "sha_hint": ("old-sha" if i == 0 else f"sha-{i}"),
+        }
+
+    def _sha(p):
+        i = int(p.name[1:].split(".")[0])
+        return "new-sha" if i == 0 else f"sha-{i}"
+
+    monkeypatch.setattr(
+        tools,
+        "_reparse_changed_files",
+        lambda _root, _paths: {_rel(0): ("C1", "new-sha")},
+    )
+    monkeypatch.setattr(tools, "_content_sha_hint", _sha)
+    monkeypatch.setattr(tools, "_calibrate_block_rules_for_repo", lambda _root: None)
+
+    env = tools._attempt_partial_refresh(repo_root, repo_id, cham, files, prev_state, 1000.0)
+    assert env is not None, "expected a successful partial refresh"
+    assert env["data"]["status"] == "partial_refresh"
+
+    assert (cham / "calls_index.json").is_file(), "partial refresh dropped calls_index.json"
+    assert json.loads((cham / "calls_index.json").read_text()) == calls_payload
+
+
 # ---- witness-path overlap tolerates backslash-authored profiles ----
 
 

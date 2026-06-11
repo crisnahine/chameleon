@@ -48,6 +48,7 @@ from chameleon_mcp.tools import (  # noqa: E402
     detect_repo,
     doctor,
     get_archetype,
+    get_callers,
     get_canonical_excerpt,
     get_drift_status,
     get_pattern_context,
@@ -438,6 +439,67 @@ try:
     )
 except Exception as exc:
     record("doctor", False, f"EXCEPTION: {exc}")
+
+
+print("\n=== Test 11: get_callers ===")
+try:
+    import json as _json
+
+    # Pick a (file, function) pair the committed index actually records so the
+    # round trip asserts real data; fall back to the fail-open path when the
+    # profile predates the calls index or recorded no edges.
+    callers_target = None
+    _idx_path = os.path.join(REPO_PATH, ".chameleon", "calls_index.json")
+    if os.path.isfile(_idx_path):
+        try:
+            with open(_idx_path, encoding="utf-8") as fh:
+                _idx = _json.load(fh)
+            for _rel in sorted(_idx.get("callees") or {}):
+                _names = _idx["callees"][_rel]
+                if isinstance(_names, dict) and _names:
+                    callers_target = (_rel, sorted(_names)[0])
+                    break
+        except Exception:
+            callers_target = None
+
+    if callers_target:
+        _rel, _fn_name = callers_target
+        gc = get_callers(REPO_PATH, os.path.join(REPO_PATH, _rel), _fn_name)
+        gd = gc.get("data", {})
+        record(
+            "get_callers.found",
+            gd.get("found") is True,
+            f"target={_rel}::{_fn_name}, found={gd.get('found')!r}, reason={gd.get('reason')!r}",
+        )
+        record(
+            "get_callers.shape",
+            isinstance(gd.get("callers"), list)
+            and isinstance(gd.get("total"), int)
+            and isinstance(gd.get("truncated"), bool),
+            f"callers={len(gd.get('callers') or [])}, total={gd.get('total')}",
+        )
+        record(
+            "get_callers.row_grades",
+            all(
+                isinstance(r, dict)
+                and r.get("grade") in ("same_file", "import", "constant_receiver")
+                for r in (gd.get("callers") or [])
+            ),
+            "every row carries a deterministic grade",
+        )
+    elif TEST_FILES:
+        gc = get_callers(REPO_PATH, TEST_FILES[0], "nonexistentFunction")
+        gd = gc.get("data", {})
+        record(
+            "get_callers.fail_open_without_index",
+            isinstance(gd, dict) and isinstance(gd.get("found"), bool),
+            f"found={gd.get('found')!r}, reason={gd.get('reason')!r} "
+            "(profile has no calls_index edges; refresh to populate)",
+        )
+    else:
+        record("get_callers", False, "SKIP: no test files")
+except Exception as exc:
+    record("get_callers", False, f"EXCEPTION: {exc}")
 
 
 print("\n" + "=" * 60)

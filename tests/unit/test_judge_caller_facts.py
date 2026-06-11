@@ -177,6 +177,69 @@ def test_parse_exception_skips_file_never_raises(tmp_path, monkeypatch):
     assert "- g() in b.ts: 1 committed caller" in block
 
 
+def test_constructor_kind_rows_are_skipped(tmp_path, monkeypatch):
+    # The TS index records `new Klass()` under the exported class name, never
+    # under "constructor"; rendering a "constructor() ... no committed callers"
+    # line for a changed constructor would be a false claim about a row the
+    # index keys differently, so constructor-kind rows say nothing at all.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_calls_index(
+        repo,
+        {
+            "src/k.ts": {
+                "Klass": {
+                    "callers": [_caller("src/use.ts", "boot")],
+                    "total": 1,
+                    "truncated": False,
+                },
+                "helper": {"callers": [], "total": 0, "truncated": False},
+            }
+        },
+    )
+    ctor = ParsedFn("constructor", "constructor", 0, 0, 2, None, None, "", end_line=4)
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [ctor, _fn("helper", 6, 8)]
+    )
+    block = judge.caller_facts_for_diffs(repo, [_diff("src/k.ts", "", whole=True)])
+    assert "constructor()" not in block
+    assert "helper()" in block
+
+
+def test_only_constructor_changed_returns_empty(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_calls_index(
+        repo,
+        {"src/k.ts": {"Klass": {"callers": [], "total": 0, "truncated": False}}},
+    )
+    ctor = ParsedFn("constructor", "constructor", 0, 0, 2, None, None, "", end_line=4)
+    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [ctor])
+    assert judge.caller_facts_for_diffs(repo, [_diff("src/k.ts", "", whole=True)]) == ""
+
+
+def test_function_merely_named_constructor_still_renders(tmp_path, monkeypatch):
+    # The skip keys on kind, not name: a plain function someone named
+    # "constructor" IS indexed under that name, so its facts still render.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_calls_index(
+        repo,
+        {
+            "src/k.ts": {
+                "constructor": {
+                    "callers": [_caller("src/k.ts", "boot", 7, "same_file")],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("constructor", 1, 3)])
+    block = judge.caller_facts_for_diffs(repo, [_diff("src/k.ts", "", whole=True)])
+    assert "- constructor() in src/k.ts: 1 committed caller" in block
+
+
 # --- changed-callable selection ----------------------------------------------
 
 

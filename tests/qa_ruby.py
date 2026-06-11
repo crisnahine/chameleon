@@ -75,6 +75,7 @@ from chameleon_mcp.tools import (  # noqa: E402
     detect_repo,
     doctor,
     get_archetype,
+    get_callers,
     get_canonical_excerpt,
     get_drift_status,
     get_pattern_context,
@@ -540,6 +541,64 @@ try:
     )
 except Exception as exc:
     record("doctor: call succeeded", False, f"{type(exc).__name__}: {exc}")
+
+
+section("11. get_callers")
+
+try:
+    # Pick a (file, function) pair the committed index actually records so the
+    # round trip asserts real data; fall back to the fail-open path when the
+    # profile predates the calls index or recorded no edges.
+    callers_target = None
+    _idx_path = Path(REPO_PATH) / ".chameleon" / "calls_index.json"
+    if _idx_path.is_file():
+        try:
+            _idx = json.loads(_idx_path.read_text(encoding="utf-8"))
+            for _rel in sorted(_idx.get("callees") or {}):
+                _names = _idx["callees"][_rel]
+                if isinstance(_names, dict) and _names:
+                    callers_target = (_rel, sorted(_names)[0])
+                    break
+        except Exception:
+            callers_target = None
+
+    if callers_target:
+        _rel, _fn_name = callers_target
+        result = get_callers(REPO_PATH, str(Path(REPO_PATH) / _rel), _fn_name)
+        data = result.get("data", {})
+        record(
+            "get_callers: recorded callee found",
+            data.get("found") is True,
+            f"target={_rel}::{_fn_name}, found={data.get('found')!r}, "
+            f"reason={data.get('reason')!r}",
+        )
+        record(
+            "get_callers: result shape",
+            isinstance(data.get("callers"), list)
+            and isinstance(data.get("total"), int)
+            and isinstance(data.get("truncated"), bool),
+            f"callers={len(data.get('callers') or [])}, total={data.get('total')}",
+        )
+        record(
+            "get_callers: rows carry deterministic grades",
+            all(
+                isinstance(r, dict)
+                and r.get("grade") in ("same_file", "import", "constant_receiver")
+                for r in (data.get("callers") or [])
+            ),
+            "grades within same_file/import/constant_receiver",
+        )
+    else:
+        result = get_callers(REPO_PATH, MODEL_FILE, "nonexistent_method")
+        data = result.get("data", {})
+        record(
+            "get_callers: fails open without index",
+            isinstance(data, dict) and isinstance(data.get("found"), bool),
+            f"found={data.get('found')!r}, reason={data.get('reason')!r} "
+            "(profile has no calls_index edges; refresh to populate)",
+        )
+except Exception as exc:
+    record("get_callers: call succeeded", False, f"{type(exc).__name__}: {exc}")
 
 
 print(f"\n{'=' * 60}")

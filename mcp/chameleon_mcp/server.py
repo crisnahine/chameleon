@@ -70,7 +70,8 @@ def get_pattern_context(file_path: str) -> dict:
             "archetype": {"archetype": str, "alternatives": [str], "confidence_band": str,
                           "content_signal_match": str, "match_quality": str, "sub_buckets_count": int},
             "canonical_excerpt": {"content": str, "witness_path": str, "truncated": bool, "sha_hint": str,
-                                   "missing": bool, "oversize": bool},
+                                   "missing": bool (only when the witness file is gone),
+                                   "oversize": bool (only when the witness exceeds the size ceiling)},
             "rules": [(source_key, config_dict), ...],
             "idioms": str | None,
             "meta": {"mtime_token": str, "computed_at": str}

@@ -4808,6 +4808,30 @@ def _attempt_partial_refresh(
         except OSError:
             principles_text = ""
 
+    # calls_index.json is a protocol file because a FAILED full rebuild must
+    # drop it rather than serve stale judge facts. A partial refresh is not a
+    # failed rebuild: the committed snapshot stays valid as "callers at last
+    # derivation" (exactly like the non-protocol indexes the commit carries
+    # forward on its own), so re-emit it verbatim instead of wiping it.
+    calls_index_text: str | None = None
+    calls_index_path_partial = profile_dir / "calls_index.json"
+    if calls_index_path_partial.is_file():
+        from chameleon_mcp.safe_open import (
+            UnsafeFileError as _UnsafeFileErrorCI,
+        )
+        from chameleon_mcp.safe_open import (
+            safe_read_profile_artifact as _safe_read_profile_artifact_ci,
+        )
+
+        try:
+            # Same ceiling the calls-index loader accepts, so any artifact it
+            # would serve also survives a partial refresh.
+            calls_index_text = _safe_read_profile_artifact_ci(
+                calls_index_path_partial, max_bytes=16_000_000
+            )
+        except (OSError, FileNotFoundError, _UnsafeFileErrorCI):
+            calls_index_text = None
+
     try:
         with atomic_profile_commit(profile_dir) as txn_dir:
             (txn_dir / "profile.json").write_text(
@@ -4833,6 +4857,8 @@ def _attempt_partial_refresh(
                 (txn_dir / "renames.json").write_text(renames_text, encoding="utf-8")
             if conventions_text is not None:
                 (txn_dir / "conventions.json").write_text(conventions_text, encoding="utf-8")
+            if calls_index_text is not None:
+                (txn_dir / "calls_index.json").write_text(calls_index_text, encoding="utf-8")
     except Exception:
         return None
 
@@ -5390,6 +5416,11 @@ def _profile_needs_rederive(profile_dir) -> bool:
 
     - ``archetypes/canonicals/rules/conventions.json`` must exist and parse as
       JSON objects;
+    - the generated indexes must exist and parse as JSON objects:
+      ``calls_index.json`` and ``function_catalog.json`` for every supported
+      language, plus ``exports_index.json`` / ``reverse_index.json`` when the
+      manifest says the profile is TypeScript (a Ruby profile never writes
+      the symbol indexes, so their absence must not force a rebuild there);
     - ``profile.summary.md`` must exist;
     - ``principles.md`` must carry the anti-hallucination protocol.
 
@@ -5427,6 +5458,21 @@ def _profile_needs_rederive(profile_dir) -> bool:
         or schema > MAX_SUPPORTED_SCHEMA_VERSION
     ):
         return True
+    # Generated index artifacts: the noop paths preserve the profile dir
+    # verbatim, so a deleted or corrupt index would otherwise stay missing
+    # forever -- the loaders fail open to "no facts", silently degrading the
+    # judge caller facts, the duplication prefilter, and the phantom-symbol /
+    # cross-file checks.
+    index_names = ["calls_index.json", "function_catalog.json"]
+    if manifest.get("language") == "typescript":
+        index_names += ["exports_index.json", "reverse_index.json"]
+    for name in index_names:
+        try:
+            obj = _json.loads((profile_dir / name).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return True
+        if not isinstance(obj, dict):
+            return True
     if not (profile_dir / "profile.summary.md").is_file():
         return True
     return _principles_incomplete(profile_dir)

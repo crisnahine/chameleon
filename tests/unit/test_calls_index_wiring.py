@@ -129,6 +129,110 @@ def test_bootstrap_writes_calls_index(tmp_path):
     } in rows
 
 
+# ---------------------------------------------------------------------------
+# Refresh heals a missing generated index instead of noop-preserving the hole
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_heals_missing_generated_indexes(tmp_path):
+    repo = _make_ts_repo(tmp_path / "repo")
+    assert tools.bootstrap_repo(str(repo))["data"]["status"] == "success"
+    cham = repo / ".chameleon"
+
+    # Control: with all artifacts intact an immediate refresh noops.
+    assert tools.refresh_repo(str(repo))["data"]["status"] == "noop"
+
+    # A deleted calls_index.json must force a re-derive, not a noop that
+    # preserves the hole forever (the loader fails open to "no facts").
+    (cham / "calls_index.json").unlink()
+    healed = tools.refresh_repo(str(repo))
+    assert healed["data"]["status"] != "noop"
+    assert (cham / "calls_index.json").is_file(), "refresh did not restore calls_index.json"
+
+    # Same gap, same fix, for the TS-only symbol indexes.
+    assert tools.refresh_repo(str(repo))["data"]["status"] == "noop"
+    (cham / "exports_index.json").unlink()
+    healed = tools.refresh_repo(str(repo))
+    assert healed["data"]["status"] != "noop"
+    assert (cham / "exports_index.json").is_file(), "refresh did not restore exports_index.json"
+
+
+def test_needs_rederive_index_checks(tmp_path):
+    # Direct checks on the shared repair predicate: missing calls_index forces
+    # a rebuild for every language; the symbol indexes only bind TS profiles
+    # (a Ruby profile never writes them, so their absence must not force a
+    # perpetual rebuild).
+    cham = tmp_path / ".chameleon"
+    cham.mkdir(parents=True)
+    for name in (
+        "archetypes.json",
+        "canonicals.json",
+        "rules.json",
+        "conventions.json",
+        "calls_index.json",
+        "function_catalog.json",
+    ):
+        (cham / name).write_text("{}", encoding="utf-8")
+    (cham / "profile.json").write_text(json.dumps({"language": "ruby"}), encoding="utf-8")
+    (cham / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
+    (cham / "principles.md").write_text("anti-hallucination protocol\n", encoding="utf-8")
+
+    assert tools._profile_needs_rederive(cham) is False
+
+    (cham / "calls_index.json").unlink()
+    assert tools._profile_needs_rederive(cham) is True
+    (cham / "calls_index.json").write_text("{not json", encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is True
+    (cham / "calls_index.json").write_text("{}", encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is False
+
+    (cham / "function_catalog.json").unlink()
+    assert tools._profile_needs_rederive(cham) is True
+    (cham / "function_catalog.json").write_text("{}", encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is False
+
+    # TS profiles additionally require the two symbol indexes.
+    (cham / "profile.json").write_text(json.dumps({"language": "typescript"}), encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is True
+    (cham / "exports_index.json").write_text("{}", encoding="utf-8")
+    (cham / "reverse_index.json").write_text("{}", encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is False
+
+
+# ---------------------------------------------------------------------------
+# The workspace-root amend must not drop calls_index.json
+# ---------------------------------------------------------------------------
+
+
+def test_amend_root_profile_preserves_calls_index(tmp_path, monkeypatch):
+    # calls_index.json is a protocol file (not auto-carried by the atomic
+    # commit), so the workspaces amend must re-emit it verbatim or every
+    # monorepo root would lose it right after bootstrap wrote it.
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    from chameleon_mcp.bootstrap.orchestrator import _amend_root_profile_with_workspaces
+
+    cham = tmp_path / ".chameleon"
+    cham.mkdir(parents=True)
+    for name in ("archetypes.json", "canonicals.json", "rules.json", "conventions.json"):
+        (cham / name).write_text("{}", encoding="utf-8")
+    (cham / "profile.json").write_text(json.dumps({"language": "typescript"}), encoding="utf-8")
+    (cham / "principles.md").write_text("p\n", encoding="utf-8")
+    (cham / "idioms.md").write_text("i\n", encoding="utf-8")
+    (cham / "profile.summary.md").write_text("s\n", encoding="utf-8")
+    payload = {"schema_version": 1, "callees": {}}
+    (cham / "calls_index.json").write_text(json.dumps(payload), encoding="utf-8")
+    (cham / "COMMITTED").touch()
+
+    _amend_root_profile_with_workspaces(
+        cham,
+        [{"workspace_path": "apps/web", "repo_id": "x", "profile_dir": "d", "status": "success"}],
+    )
+
+    amended = json.loads((cham / "profile.json").read_text(encoding="utf-8"))
+    assert amended["workspaces"][0]["workspace_path"] == "apps/web"
+    assert json.loads((cham / "calls_index.json").read_text(encoding="utf-8")) == payload
+
+
 def _have_prism() -> bool:
     if not shutil.which("ruby"):
         return False
