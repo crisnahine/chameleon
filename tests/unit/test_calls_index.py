@@ -698,7 +698,12 @@ class TestLoad:
                 "src/api.ts": {
                     "fetchUser": {
                         "callers": [
-                            {"path": "src/page.ts", "caller": "<module>", "line": 9, "grade": "import"}
+                            {
+                                "path": "src/page.ts",
+                                "caller": "<module>",
+                                "line": 9,
+                                "grade": "import",
+                            }
                         ],
                         "total": 1,
                         "truncated": False,

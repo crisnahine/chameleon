@@ -65,8 +65,7 @@ def test_typescript_extras_fields_present(tmp_path):
     # Extractor must surface call_sites and namespace_imports so the
     # calls-index builder receives the fields it grades edges from.
     (tmp_path / "caller.ts").write_text(
-        "import * as utils from './utils';\n"
-        "export function run() { return utils.fmt(); }\n"
+        "import * as utils from './utils';\nexport function run() { return utils.fmt(); }\n"
     )
     pr = TypeScriptExtractor().parse_repo(repo_root=tmp_path, glob="**/*.ts")
     extras = pr.files[0].extras
