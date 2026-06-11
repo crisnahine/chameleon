@@ -717,7 +717,14 @@ def _prepare_production_derivation(
         repo_id = _compute_repo_id(repo_root)
         from chameleon_mcp.profile.trust import repo_data_dir
 
-        container = repo_data_dir(repo_id) / "prodtree"
+        # The materialized tree becomes the extractors' scan root, and the
+        # extractors emit fully symlink-resolved file paths. Resolve the
+        # container BEFORE the worktree is created so the two prefixes agree:
+        # a symlinked data-dir component (macOS /tmp -> /private/tmp, a linked
+        # ~/.local/share) would otherwise make every relative_to() against the
+        # tree fail, and clustering would commit absolute-path buckets that no
+        # per-edit lookup ever matches.
+        container = (repo_data_dir(repo_id) / "prodtree").resolve()
         prune_stale_production_trees(repo_root, container)
         dest = container / f"{resolved.sha[:12]}-{os.getpid()}"
         tree = materialize_production_tree(repo_root, dest, resolved.sha)

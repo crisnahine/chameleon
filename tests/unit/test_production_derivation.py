@@ -467,3 +467,116 @@ class TestSurfacing:
         assert "/chameleon-refresh" in banner
         # TTL marker suppresses an immediate repeat
         assert hook_helper._production_tip_banner(repo) is None
+
+
+class TestSymlinkedDataDir:
+    """Symlinked data-dir components must not poison committed artifacts.
+
+    The extractors emit fully RESOLVED file paths, so the prodtree scan
+    root must be resolved too. When CHAMELEON_PLUGIN_DATA traverses a
+    symlink (macOS /tmp -> /private/tmp, a linked ~/.local/share), an
+    unresolved scan root makes every relative_to() fail, clustering falls
+    back to absolute paths, and the profile commits garbage buckets that
+    no per-edit lookup ever matches — while bootstrap still reports
+    success. These tests pin the contract from the outside: committed
+    buckets are repo-relative and no artifact ever carries a prodtree
+    path fragment, regardless of data-dir symlinks or the deriving PID.
+    """
+
+    def _symlinked_data_dir(self, tmp_path: Path, monkeypatch) -> Path:
+        data_real = tmp_path / "data_real"
+        data_real.mkdir()
+        data_link = tmp_path / "data_link"
+        data_link.symlink_to(data_real, target_is_directory=True)
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(data_link))
+        return data_link
+
+    def _origin_backed_clone(self, tmp_path: Path) -> Path:
+        """Clone of a local source repo: origin-backed, so the production
+        ref auto-locks and derivation runs through the prodtree."""
+        source = _make_production_repo(tmp_path / "src")
+        clone = tmp_path / "clone"
+        subprocess.run(
+            ["git", "clone", "-q", str(source), str(clone)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return clone
+
+    def _assert_no_prodtree_fragments(self, repo: Path) -> None:
+        """No committed artifact may carry a prodtree path fragment."""
+        for artifact in sorted((repo / ".chameleon").rglob("*")):
+            if not artifact.is_file():
+                continue
+            text = artifact.read_text(encoding="utf-8", errors="replace")
+            assert "prodtree" not in text, f"prodtree fragment in {artifact.name}"
+
+    def test_buckets_stay_repo_relative_through_symlinked_data_dir(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        self._symlinked_data_dir(tmp_path, monkeypatch)
+        clone = self._origin_backed_clone(tmp_path)
+
+        env = tools.bootstrap_repo(str(clone))
+        data = env["data"]
+        assert data["status"] == "success"
+        assert data["production_ref"]["locked"] is True
+
+        arch = json.loads((clone / ".chameleon" / "archetypes.json").read_text(encoding="utf-8"))
+        archetypes = arch["archetypes"]
+        assert archetypes, "expected at least one archetype from the service fixture"
+        for name, body in archetypes.items():
+            pattern = body.get("paths_pattern", "")
+            assert not pattern.startswith("/"), (name, pattern)
+            assert "prodtree" not in pattern, (name, pattern)
+            assert "private" not in pattern, (name, pattern)
+            assert pattern.startswith("src"), (name, pattern)
+            for sub in body.get("sub_buckets") or {}:
+                assert not sub.startswith("/"), (name, sub)
+                assert "prodtree" not in sub, (name, sub)
+
+        self._assert_no_prodtree_fragments(clone)
+
+        # The whole point of repo-relative buckets: a real checkout file
+        # resolves to a live archetype at edit time.
+        target = clone / "src" / "services" / "alphaService.ts"
+        res = tools.get_archetype(str(clone), str(target))["data"]
+        assert res["archetype"] is not None
+        assert res["match_quality"] != "none"
+
+    def test_refresh_is_idempotent_and_pid_free_under_symlinked_data_dir(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        import os as _os
+
+        self._symlinked_data_dir(tmp_path, monkeypatch)
+        clone = self._origin_backed_clone(tmp_path)
+        assert tools.bootstrap_repo(str(clone))["data"]["status"] == "success"
+
+        env = tools.refresh_repo(str(clone), force=True)
+        assert env["data"]["status"] == "success"
+        first = json.loads((clone / ".chameleon" / "archetypes.json").read_text(encoding="utf-8"))
+
+        # Re-derive under a DIFFERENT pid: the prodtree dirname embeds the
+        # deriving PID, and committed keys must never depend on it.
+        real_pid = _os.getpid()
+
+        class _OsProxy:
+            def __getattr__(self, name):
+                return getattr(_os, name)
+
+            @staticmethod
+            def getpid() -> int:
+                return real_pid + 1
+
+        monkeypatch.setattr(tools, "os", _OsProxy())
+        env = tools.refresh_repo(str(clone), force=True)
+        assert env["data"]["status"] == "success"
+        second = json.loads((clone / ".chameleon" / "archetypes.json").read_text(encoding="utf-8"))
+
+        first.pop("generation", None)
+        second.pop("generation", None)
+        assert first == second
+
+        self._assert_no_prodtree_fragments(clone)

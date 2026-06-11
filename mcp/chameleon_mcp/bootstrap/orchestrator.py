@@ -1000,7 +1000,20 @@ def bootstrap_repo(
         BootstrapReport summarizing the run. `workspace_reports` lists the
         per-workspace outcomes when applicable.
     """
-    scan_root = analysis_root if analysis_root is not None else repo_root
+    # The scan root must be symlink-resolved: the extractors emit resolved
+    # file paths, and every downstream relative_to() against this root has
+    # to agree on the prefix or persisted paths degrade to absolute.
+    # repo_root arrives resolved per the contract above; an analysis_root
+    # is re-resolved here so no caller can hand the pipeline a symlinked
+    # scan root.
+    if analysis_root is not None:
+        try:
+            analysis_root = analysis_root.resolve()
+        except (OSError, RuntimeError):
+            pass
+        scan_root = analysis_root
+    else:
+        scan_root = repo_root
     report = _bootstrap_single(
         scan_root,
         paths_glob=paths_glob,
