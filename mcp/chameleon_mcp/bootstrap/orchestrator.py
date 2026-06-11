@@ -2037,6 +2037,23 @@ def _bootstrap_single(
             )
         except Exception:
             pass
+        # The calls index backs the judge's cross-file caller facts. Both
+        # languages carry call_sites extras; hashed into the trust SHA, so it
+        # is written inside this same atomic transaction. Best-effort: a build
+        # failure must not abort the commit.
+        try:
+            from chameleon_mcp.calls_index import build_calls_index
+
+            (txn_dir / "calls_index.json").write_text(
+                json.dumps(
+                    build_calls_index(parse_result.files, repo_root, language=extractor.language),
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
         if idioms_raw_bytes is not None:
             (txn_dir / "idioms.md").write_bytes(idioms_raw_bytes)
         else:

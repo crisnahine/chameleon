@@ -165,6 +165,7 @@ class TrustRecord:
 _HASHED_ARTIFACTS: tuple[str, ...] = (
     ".archetype_renames.json",
     "archetypes.json",
+    "calls_index.json",
     "canonicals.json",
     "config.json",
     "conventions.json",

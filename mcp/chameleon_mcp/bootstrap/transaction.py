@@ -54,6 +54,7 @@ _PROTOCOL_FILES = frozenset(
         COMMITTED_SENTINEL,
         "profile.json",
         "archetypes.json",
+        "calls_index.json",
         "canonicals.json",
         "conventions.json",
         "principles.md",
