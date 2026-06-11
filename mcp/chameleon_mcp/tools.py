@@ -201,6 +201,33 @@ _MAX_PATH_LEN = 4096
 _NAME_MAX_BYTES = 255
 
 
+def _unsafe_root_message(reason: str) -> str:
+    """One refusal string for every unsafe-root surface, naming the opt-out.
+
+    The guard itself lives in profile.loader (find_repo_root applies it for
+    the hooks); this is the user-facing rendering the write tools and
+    detect_repo share so a refused repo is never a bare, unexplained no_repo.
+    """
+    from chameleon_mcp.profile.loader import ALLOW_TMP_REPO_ENV
+
+    return f"unsafe_root: {reason}; set {ALLOW_TMP_REPO_ENV}=1 to opt in"
+
+
+def _unsafe_root_refusal(repo_root: Path) -> str | None:
+    """Refusal message if ``repo_root`` fails the unsafe-root guard, else None.
+
+    bootstrap_repo and refresh_repo resolve their path argument directly
+    (never through find_repo_root), so they must apply the same guard
+    explicitly — otherwise they write profiles the hooks then refuse to load.
+    """
+    from chameleon_mcp.profile.loader import _is_unsafe_repo_root
+
+    reason = _is_unsafe_repo_root(repo_root)
+    if reason is None:
+        return None
+    return _unsafe_root_message(reason)
+
+
 def _validate_file_path_arg(file_path: object) -> bool:
     """Return True if `file_path` is a safe-to-process string.
 
@@ -939,7 +966,7 @@ def detect_repo(file_path: str) -> dict:
        matches current_repo_root) deliberately does NOT surface the hint
        — that branch is already covered by the standard stale messaging.
     """
-    from chameleon_mcp.profile.loader import find_repo_root
+    from chameleon_mcp.profile.loader import find_repo_root_with_refusal
     from chameleon_mcp.profile.trust import is_material_change, trust_state_for
 
     if not _validate_file_path_arg(file_path):
@@ -953,16 +980,19 @@ def detect_repo(file_path: str) -> dict:
         )
 
     p = Path(file_path).expanduser()
-    repo_root = find_repo_root(p)
+    repo_root, root_refusal = find_repo_root_with_refusal(p)
     if repo_root is None:
-        return _envelope(
-            {
-                "repo_id": None,
-                "repo_root": None,
-                "profile_status": "no_repo",
-                "trust_state": "n/a",
-            }
-        )
+        no_repo: dict = {
+            "repo_id": None,
+            "repo_root": None,
+            "profile_status": "no_repo",
+            "trust_state": "n/a",
+        }
+        # A guard-refused root must say WHY: a bare no_repo on a repo that
+        # visibly exists reads as a dead install with zero explanation.
+        if root_refusal is not None:
+            no_repo["reason"] = _unsafe_root_message(root_refusal)
+        return _envelope(no_repo)
 
     try:
         home = Path.home().resolve()
@@ -4982,6 +5012,12 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             }
         )
 
+    # refresh resolves its path directly (never through find_repo_root), so it
+    # must apply the unsafe-root guard itself — same hole bootstrap_repo had.
+    refusal = _unsafe_root_refusal(repo_path)
+    if refusal is not None:
+        return _envelope({"status": "failed", "error": refusal})
+
     # Lock lives in plugin-data, NOT inside .chameleon/: atomic_profile_commit
     # renames the whole .chameleon/ dir away during refresh, which orphaned a
     # lock held inside it — a second /chameleon-refresh starting after the rename
@@ -5814,6 +5850,11 @@ def bootstrap_repo(
         repo_root = resolved_path.resolve()
     except (OSError, ValueError):
         repo_root = resolved_path
+    # Same policy find_repo_root enforces for the hooks: refuse before any
+    # lock-dir side effect, so a refused repo leaves zero plugin-data state.
+    refusal = _unsafe_root_refusal(repo_root)
+    if refusal is not None:
+        return _envelope({"status": "failed", "error": refusal})
     from chameleon_mcp.profile.trust import repo_data_dir
 
     repo_id = _compute_repo_id(repo_root)
@@ -6177,6 +6218,13 @@ def _bootstrap_repo_unlocked(
                 "error": f"path is not a directory: {path}",
             }
         )
+
+    # Defense in depth for every bootstrap path (including the degenerate
+    # delegation from the locked wrapper): a profile written under a temp or
+    # world-writable root would be unloadable by the hooks, a dead install.
+    refusal = _unsafe_root_refusal(repo_root)
+    if refusal is not None:
+        return _envelope({"status": "failed", "error": refusal})
 
     git_children = _nongit_parent_with_git_children(repo_root)
     nongit_parent_warning: dict | None = None

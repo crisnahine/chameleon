@@ -29,7 +29,15 @@ from chameleon_mcp.safe_open import (
 
 MAX_SUPPORTED_SCHEMA_VERSION = 8
 
-_REPO_ROOT_CACHE: dict[str, Path | None] = {}
+# The single explicit opt-out for the unsafe-root guard; every refusal message
+# names it so a dead-looking install always explains how to proceed.
+ALLOW_TMP_REPO_ENV = "CHAMELEON_ALLOW_TMP_REPO"
+
+# Cache value is (resolved_root, refusal_reason): exactly one side is non-None
+# when the walk found a candidate, both are None when no marker was found at
+# all. Carrying the refusal lets detect_repo say WHY a root was rejected
+# instead of reporting a bare no_repo.
+_REPO_ROOT_CACHE: dict[str, tuple[Path | None, str | None]] = {}
 
 
 def clear_repo_root_cache() -> None:
@@ -146,7 +154,7 @@ def _is_unsafe_repo_root(root: Path) -> str | None:
     would silently drop the guard outside the operator's control. Opting out must
     stay an explicit per-invocation choice.
     """
-    if os.environ.get("CHAMELEON_ALLOW_TMP_REPO") == "1":
+    if os.environ.get(ALLOW_TMP_REPO_ENV) == "1":
         return None
     try:
         resolved = root.resolve(strict=False)
@@ -228,6 +236,18 @@ def find_repo_root(file_path: Path) -> Path | None:
 
     Returns the marker directory, or None.
     """
+    return find_repo_root_with_refusal(file_path)[0]
+
+
+def find_repo_root_with_refusal(file_path: Path) -> tuple[Path | None, str | None]:
+    """Like :func:`find_repo_root`, but also reports WHY resolution failed.
+
+    Returns ``(root, None)`` on success, ``(None, reason)`` when the walk found
+    a candidate root that the unsafe-root guard refused (temp dir,
+    world-writable), and ``(None, None)`` when no repo marker exists at all.
+    Callers that surface "no repo here" to a user should prefer this variant so
+    a guard refusal is never silently indistinguishable from a markerless tree.
+    """
     current = file_path.expanduser()
     try:
         if current.is_file():
@@ -237,7 +257,7 @@ def find_repo_root(file_path: Path) -> Path | None:
         # ENAMETOOLONG (errno 63) on an over-NAME_MAX component escapes
         # is_file()/resolve() (pathlib's _IGNORED_ERRORS excludes it); fail
         # closed to None instead of bubbling an uncaught OSError to the caller.
-        return None
+        return None, None
 
     cache_key = str(current)
     if cache_key in _REPO_ROOT_CACHE:
@@ -248,14 +268,16 @@ def find_repo_root(file_path: Path) -> Path | None:
     return result
 
 
-def _accept_root(root: Path) -> Path | None:
-    """Return ``root`` unless it fails the unsafe-repo-root guard, else None."""
-    if _is_unsafe_repo_root(root) is not None:
-        return None
-    return root
+def _accept_root(root: Path) -> tuple[Path | None, str | None]:
+    """``(root, None)`` unless the unsafe-repo-root guard refuses it, else
+    ``(None, reason)``."""
+    reason = _is_unsafe_repo_root(root)
+    if reason is not None:
+        return None, reason
+    return root, None
 
 
-def _find_repo_root_uncached(current: Path) -> Path | None:
+def _find_repo_root_uncached(current: Path) -> tuple[Path | None, str | None]:
     """Filesystem walk implementation for find_repo_root (uncached).
 
     Single upward walk. ``.chameleon`` at a level wins immediately (nearest
@@ -263,6 +285,8 @@ def _find_repo_root_uncached(current: Path) -> Path | None:
     becomes the root and the walk stops, so a profiled parent never shadows a
     git child. Any other language marker is held as a fallback while the walk
     keeps climbing for a ``.chameleon``.
+
+    Returns ``(root, refusal_reason)`` per :func:`_accept_root`.
     """
     fallback_marker_ancestor: Path | None = None
     walker = current
@@ -292,7 +316,7 @@ def _find_repo_root_uncached(current: Path) -> Path | None:
 
     if fallback_marker_ancestor is not None:
         return _accept_root(fallback_marker_ancestor)
-    return None
+    return None, None
 
 
 def _compute_mtime_token(
