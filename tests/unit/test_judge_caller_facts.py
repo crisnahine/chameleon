@@ -41,7 +41,9 @@ def _write_calls_index(repo: Path, callees: dict) -> None:
     )
 
 
-def _caller(path: str, caller: str, line: int | None = 3, grade: str = "import") -> dict:
+def _caller(
+    path: str, caller: str, line: int | None = 3, grade: str = "import"
+) -> dict:
     return {"path": path, "caller": caller, "line": line, "grade": grade}
 
 
@@ -95,11 +97,19 @@ def test_block_lists_sites_more_count_and_lower_bound(tmp_path, monkeypatch):
     ]
     _write_calls_index(
         repo,
-        {"src/util.ts": {"formatDate": {"callers": callers, "total": 7, "truncated": True}}},
+        {
+            "src/util.ts": {
+                "formatDate": {"callers": callers, "total": 7, "truncated": True}
+            }
+        },
     )
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("formatDate", 8, 14)])
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [_fn("formatDate", 8, 14)]
+    )
 
-    block = judge.caller_facts_for_diffs(repo, [_diff("src/util.ts", "@@ -8,3 +10,2 @@\n+x\n")])
+    block = judge.caller_facts_for_diffs(
+        repo, [_diff("src/util.ts", "@@ -8,3 +10,2 @@\n+x\n")]
+    )
 
     assert block.splitlines()[0] == HEADER
     assert "- formatDate() in src/util.ts: 7 committed callers, e.g. " in block
@@ -136,7 +146,9 @@ def test_block_no_callers_wording_for_unrecorded_and_empty(tmp_path, monkeypatch
 def test_absent_index_returns_empty(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("f", 1, 2)])
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [_fn("f", 1, 2)]
+    )
     assert judge.caller_facts_for_diffs(repo, [_diff("a.ts", "", whole=True)]) == ""
 
 
@@ -144,16 +156,22 @@ def test_corrupt_index_returns_empty(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     (repo / ".chameleon").mkdir(parents=True)
     (repo / ".chameleon" / "calls_index.json").write_text("{not json", encoding="utf-8")
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("f", 1, 2)])
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [_fn("f", 1, 2)]
+    )
     assert judge.caller_facts_for_diffs(repo, [_diff("a.ts", "", whole=True)]) == ""
 
 
 def test_no_changed_callables_returns_empty(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
-    _write_calls_index(repo, {"a.ts": {"f": {"callers": [], "total": 0, "truncated": False}}})
+    _write_calls_index(
+        repo, {"a.ts": {"f": {"callers": [], "total": 0, "truncated": False}}}
+    )
     monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [])
-    assert judge.caller_facts_for_diffs(repo, [_diff("a.ts", "@@ -1 +1 @@\n+x\n")]) == ""
+    assert (
+        judge.caller_facts_for_diffs(repo, [_diff("a.ts", "@@ -1 +1 @@\n+x\n")]) == ""
+    )
 
 
 def test_parse_exception_skips_file_never_raises(tmp_path, monkeypatch):
@@ -161,7 +179,11 @@ def test_parse_exception_skips_file_never_raises(tmp_path, monkeypatch):
     repo.mkdir()
     _write_calls_index(
         repo,
-        {"b.ts": {"g": {"callers": [_caller("c.ts", "h")], "total": 1, "truncated": False}}},
+        {
+            "b.ts": {
+                "g": {"callers": [_caller("c.ts", "h")], "total": 1, "truncated": False}
+            }
+        },
     )
 
     def boom_then_fn(root, path):
@@ -197,7 +219,9 @@ def test_function_outside_hunks_is_excluded(tmp_path, monkeypatch):
         "_parse_changed_file",
         lambda root, path: [_fn("untouched", 1, 5), _fn("edited", 10, 12)],
     )
-    block = judge.caller_facts_for_diffs(repo, [_diff("a.ts", "@@ -10,2 +10,2 @@\n+x\n")])
+    block = judge.caller_facts_for_diffs(
+        repo, [_diff("a.ts", "@@ -10,2 +10,2 @@\n+x\n")]
+    )
     assert "edited()" in block
     assert "untouched()" not in block
 
@@ -227,10 +251,16 @@ def test_whole_file_diff_includes_all_functions(tmp_path, monkeypatch):
 def test_spanless_function_excluded_from_hunk_diff(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
-    _write_calls_index(repo, {"a.ts": {"two": {"callers": [], "total": 0, "truncated": False}}})
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("two", None, None)])
+    _write_calls_index(
+        repo, {"a.ts": {"two": {"callers": [], "total": 0, "truncated": False}}}
+    )
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [_fn("two", None, None)]
+    )
     # No span -> cannot intersect -> not claimed as changed.
-    assert judge.caller_facts_for_diffs(repo, [_diff("a.ts", "@@ -1 +1 @@\n+x\n")]) == ""
+    assert (
+        judge.caller_facts_for_diffs(repo, [_diff("a.ts", "@@ -1 +1 @@\n+x\n")]) == ""
+    )
 
 
 def test_callable_cap_spans_all_files(tmp_path, monkeypatch):
@@ -279,7 +309,9 @@ def test_char_cap_truncates_at_line_boundary(tmp_path, monkeypatch):
     cap = (
         len(HEADER)
         + 1
-        + len("- first() in a.ts: no committed callers found (new, unused, or called dynamically)")
+        + len(
+            "- first() in a.ts: no committed callers found (new, unused, or called dynamically)"
+        )
     )
     monkeypatch.setenv("CHAMELEON_JUDGE_FACTS_CHAR_CAP", str(cap))
     block = judge.caller_facts_for_diffs(repo, [_diff("a.ts", "", whole=True)])
@@ -293,8 +325,12 @@ def test_char_cap_truncates_at_line_boundary(tmp_path, monkeypatch):
 def test_char_cap_too_small_for_any_fact_returns_empty(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
-    _write_calls_index(repo, {"a.ts": {"f": {"callers": [], "total": 0, "truncated": False}}})
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("f", 1, 2)])
+    _write_calls_index(
+        repo, {"a.ts": {"f": {"callers": [], "total": 0, "truncated": False}}}
+    )
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [_fn("f", 1, 2)]
+    )
     monkeypatch.setenv("CHAMELEON_JUDGE_FACTS_CHAR_CAP", "10")
     assert judge.caller_facts_for_diffs(repo, [_diff("a.ts", "", whole=True)]) == ""
 
@@ -317,7 +353,9 @@ def test_build_prompt_includes_caller_facts_block(tmp_path):
 def test_build_prompt_omits_facts_when_none(tmp_path):
     profile = tmp_path / ".chameleon"
     profile.mkdir()
-    prompt = judge.build_prompt(tmp_path, profile, [_diff("a.ts", "+x\n")], caller_facts=None)
+    prompt = judge.build_prompt(
+        tmp_path, profile, [_diff("a.ts", "+x\n")], caller_facts=None
+    )
     assert "Cross-file callers" not in prompt
 
 
@@ -336,7 +374,10 @@ def test_config_judge_crossfile_facts_default_on():
 def test_config_judge_crossfile_facts_explicit_off():
     from chameleon_mcp.profile.config import _coerce_enforcement
 
-    assert _coerce_enforcement({"judge_crossfile_facts": False}).judge_crossfile_facts is False
+    assert (
+        _coerce_enforcement({"judge_crossfile_facts": False}).judge_crossfile_facts
+        is False
+    )
 
 
 def test_config_judge_crossfile_facts_type_validated():
@@ -348,7 +389,9 @@ def test_config_judge_crossfile_facts_type_validated():
 
 # --- real extractor end-to-end -------------------------------------------------
 
-_NODE_MODULES = Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "typescript"
+_NODE_MODULES = (
+    Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "typescript"
+)
 
 
 def _have_ts() -> bool:
@@ -357,7 +400,9 @@ def _have_ts() -> bool:
     return shutil.which("node") is not None and _NODE_MODULES.is_dir()
 
 
-@pytest.mark.skipif(not _have_ts(), reason="node + typescript node_modules not available")
+@pytest.mark.skipif(
+    not _have_ts(), reason="node + typescript node_modules not available"
+)
 def test_real_parse_spans_intersect_hunks(tmp_path):
     # No parse stub: the real ts_dump extraction supplies the spans, proving
     # end_line flows through parse_edited_functions into the intersection.
@@ -388,8 +433,13 @@ def test_real_parse_spans_intersect_hunks(tmp_path):
         },
     )
     # Hunk covers only formatDate's body (lines 5-7).
-    block = judge.caller_facts_for_diffs(repo, [_diff("src/util.ts", "@@ -5,3 +5,3 @@\n+x\n")])
-    assert "- formatDate() in src/util.ts: 1 committed caller, e.g. src/a.ts:3 (render)" in block
+    block = judge.caller_facts_for_diffs(
+        repo, [_diff("src/util.ts", "@@ -5,3 +5,3 @@\n+x\n")]
+    )
+    assert (
+        "- formatDate() in src/util.ts: 1 committed caller, e.g. src/a.ts:3 (render)"
+        in block
+    )
     assert "untouched()" not in block
 
 
@@ -410,19 +460,33 @@ def test_run_judge_passes_facts_to_prompt_and_sinks_included(tmp_path, monkeypat
     repo, profile, src = _wired_repo(tmp_path)
     _write_calls_index(
         repo,
-        {"util.ts": {"fmt": {"callers": [_caller("b.ts", "use")], "total": 1, "truncated": False}}},
+        {
+            "util.ts": {
+                "fmt": {
+                    "callers": [_caller("b.ts", "use")],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
     )
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)])
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)]
+    )
     captured = {}
 
-    def fake_build(repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None):
+    def fake_build(
+        repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None
+    ):
         captured["caller_facts"] = caller_facts
         return "prompt"
 
     events = []
     with (
         patch.object(judge, "build_prompt", side_effect=fake_build),
-        patch.object(judge, "_spawn_reviewer_status", return_value=(_result_line("[]"), None)),
+        patch.object(
+            judge, "_spawn_reviewer_status", return_value=(_result_line("[]"), None)
+        ),
     ):
         judge.run_correctness_judge(
             repo,
@@ -443,19 +507,33 @@ def test_run_judge_config_off_sinks_skipped_disabled(tmp_path, monkeypatch):
     )
     _write_calls_index(
         repo,
-        {"util.ts": {"fmt": {"callers": [_caller("b.ts", "use")], "total": 1, "truncated": False}}},
+        {
+            "util.ts": {
+                "fmt": {
+                    "callers": [_caller("b.ts", "use")],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
     )
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)])
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)]
+    )
     captured = {}
 
-    def fake_build(repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None):
+    def fake_build(
+        repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None
+    ):
         captured["caller_facts"] = caller_facts
         return "prompt"
 
     events = []
     with (
         patch.object(judge, "build_prompt", side_effect=fake_build),
-        patch.object(judge, "_spawn_reviewer_status", return_value=(_result_line("[]"), None)),
+        patch.object(
+            judge, "_spawn_reviewer_status", return_value=(_result_line("[]"), None)
+        ),
     ):
         judge.run_correctness_judge(
             repo,
@@ -471,7 +549,9 @@ def test_run_judge_config_off_sinks_skipped_disabled(tmp_path, monkeypatch):
 
 def test_run_judge_no_index_sinks_skipped_and_still_reviews(tmp_path, monkeypatch):
     repo, profile, src = _wired_repo(tmp_path)
-    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)])
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)]
+    )
     stream = _result_line(json.dumps([{"message": "bug", "confidence": 0.8}]))
     events = []
     with patch.object(judge, "_spawn_reviewer_status", return_value=(stream, None)):
@@ -491,7 +571,15 @@ def test_run_judge_facts_failure_never_blocks_review(tmp_path, monkeypatch):
     repo, profile, src = _wired_repo(tmp_path)
     _write_calls_index(
         repo,
-        {"util.ts": {"fmt": {"callers": [_caller("b.ts", "use")], "total": 1, "truncated": False}}},
+        {
+            "util.ts": {
+                "fmt": {
+                    "callers": [_caller("b.ts", "use")],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
     )
 
     def boom(root, path):
@@ -500,5 +588,56 @@ def test_run_judge_facts_failure_never_blocks_review(tmp_path, monkeypatch):
     monkeypatch.setattr(judge, "_parse_changed_file", boom)
     stream = _result_line(json.dumps([{"message": "bug", "confidence": 0.8}]))
     with patch.object(judge, "_spawn_reviewer_status", return_value=(stream, None)):
-        findings = judge.run_correctness_judge(repo, profile, [str(src)], lambda _p: None)
+        findings = judge.run_correctness_judge(
+            repo, profile, [str(src)], lambda _p: None
+        )
     assert [f.message for f in findings] == ["bug"]
+
+
+# --- hostile-content sanitization --------------------------------------------
+
+
+def test_caller_facts_strips_esc_and_newline_from_index_strings(tmp_path, monkeypatch):
+    """Artifact-derived strings (path, caller name) are sanitized before entering the facts block.
+
+    ESC (\x1b) is a C0 control stripped by sanitize_for_chameleon_context; a bare
+    newline (\n) is explicitly preserved by the sanitizer (it is valid whitespace),
+    so the line must remain intact even when the caller path contains one. Both
+    characters are picked from what sanitization.py genuinely strips/preserves.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    # ESC byte in the caller path; newline in the caller name.
+    hostile_path = "src/\x1bevil.ts"
+    hostile_caller = "render\ninjected"
+    _write_calls_index(
+        repo,
+        {
+            "src/util.ts": {
+                "doWork": {
+                    "callers": [
+                        {
+                            "path": hostile_path,
+                            "caller": hostile_caller,
+                            "line": 5,
+                            "grade": "import",
+                        }
+                    ],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        judge, "_parse_changed_file", lambda root, path: [_fn("doWork", 1, 3)]
+    )
+
+    block = judge.caller_facts_for_diffs(repo, [_diff("src/util.ts", "", whole=True)])
+
+    # ESC byte must be stripped.
+    assert "\x1b" not in block, "ESC byte leaked into facts block"
+    # The sanitized path still contributes to the line (safe chars preserved).
+    assert "src/evil.ts" in block
+    # The line is intact (not split mid-output by the injected newline).
+    assert "doWork() in src/util.ts" in block

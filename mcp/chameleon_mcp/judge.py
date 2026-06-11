@@ -235,6 +235,10 @@ def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
     if index is None:
         return ""
 
+    # The index is trust-hashed, but every other artifact-derived string entering
+    # a prompt is sanitized; keep the invariant uniform.
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
     max_callables = threshold_int("JUDGE_FACTS_MAX_CALLABLES")
     max_sites = threshold_int("JUDGE_FACTS_MAX_SITES")
     char_cap = threshold_int("JUDGE_FACTS_CHAR_CAP")
@@ -263,21 +267,27 @@ def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
                         continue
                 seen.add(fn.name)
                 entry = index.callers_of(fd.rel_path, fn.name)
+                s_fn_name = sanitize_for_chameleon_context(fn.name)
+                s_rel_path = sanitize_for_chameleon_context(fd.rel_path)
                 if entry is None or not entry["callers"]:
                     lines.append(
-                        f"- {fn.name}() in {fd.rel_path}: no committed callers found "
+                        f"- {s_fn_name}() in {s_rel_path}: no committed callers found "
                         "(new, unused, or called dynamically)"
                     )
                 else:
                     shown = entry["callers"][:max_sites]
                     sites = ", ".join(
-                        (f"{r['path']}:{r['line']}" if r["line"] is not None else r["path"])
-                        + f" ({r['caller']})"
+                        (
+                            f"{sanitize_for_chameleon_context(r['path'])}:{r['line']}"
+                            if r["line"] is not None
+                            else sanitize_for_chameleon_context(r["path"])
+                        )
+                        + f" ({sanitize_for_chameleon_context(r['caller'])})"
                         for r in shown
                     )
                     total = entry["total"]
                     line = (
-                        f"- {fn.name}() in {fd.rel_path}: {total} committed "
+                        f"- {s_fn_name}() in {s_rel_path}: {total} committed "
                         f"caller{'s' if total != 1 else ''}, e.g. {sites}"
                     )
                     if total > len(shown):
