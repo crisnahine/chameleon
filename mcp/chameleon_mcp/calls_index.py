@@ -9,8 +9,9 @@ asserts only what is deterministic.
 Grades:
 
 - ``same_file`` - callee defined in the caller's own file: bare calls to a
-  file-local callable, and this./self. calls to a method of the same
-  enclosing class in this file. v1 keeps the member lookup file-scoped:
+  file-local callable, and this./self. calls to a member of any class
+  defined in the same file (call sites carry no enclosing-class field, so
+  per-class scoping is impossible). v1 keeps the member lookup file-scoped:
   cross-file inheritance is out of scope, so a this-call whose method lives
   on a base class in another file yields no edge rather than a guess.
 - ``import`` - TS only: a bare or new call of a named import, or
@@ -19,7 +20,7 @@ Grades:
   target's CLOSED export set. An open (barrel) set proves nothing, so it
   yields no edge.
 - ``constant_receiver`` - Ruby only: Const.method where Const names exactly
-  one class/module across the dump; ``new`` maps to ``initialize`` when the
+  one class across the dump; ``new`` maps to ``initialize`` when the
   target defines it, and is skipped (never invented) when it does not.
 
 Two halves live here so the build (bootstrap-time, populates the artifact)
@@ -186,18 +187,25 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             elif kind in ("this", "self"):
                 if name in own_members:
                     _add(rel, name, rel, caller_fn, line, "same_file")
-            elif kind == "new":
-                # `new Foo()` of a named import: the imported name IS the
-                # callee key (the index keys on exported names, not
-                # constructors).
-                if language == "typescript" and name in own_imports:
-                    target_rel = _resolved_closed_target(rel, own_imports[name], name)
-                    if target_rel is not None:
-                        _add(target_rel, name, rel, caller_fn, line, "import")
-            elif kind == "member":
+            elif kind in ("new", "member"):
                 if language != "typescript":
                     continue
                 receiver = site.get("receiver")
+                if kind == "new" and receiver is None:
+                    # `new Foo()` of a named import: the imported name IS the
+                    # callee key (the index keys on exported names, not
+                    # constructors). Only a receiver-less construction may
+                    # resolve here: `new ns.Foo()` carries a receiver, and its
+                    # property name coinciding with a named import proves
+                    # nothing about the receiver.
+                    if name in own_imports:
+                        target_rel = _resolved_closed_target(rel, own_imports[name], name)
+                        if target_rel is not None:
+                            _add(target_rel, name, rel, caller_fn, line, "import")
+                    continue
+                # `obj.member()` or `new ns.Foo()`: resolvable only when the
+                # receiver names a runtime namespace import, against the alias
+                # target's closed export set.
                 module = own_aliases.get(receiver) if isinstance(receiver, str) else None
                 if module is not None:
                     target_rel = _resolved_closed_target(rel, module, name)

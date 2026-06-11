@@ -158,6 +158,25 @@ class TestImportGrade:
         entry = idx["callees"]["src/api.ts"]["ApiClient"]
         assert entry["callers"][0]["grade"] == "import"
 
+    def test_new_with_receiver_does_not_resolve_via_named_imports(self, tmp_path):
+        # `new winston.Logger()` constructs a property of `winston`; the
+        # property name coinciding with `import { Logger } from './logger'`
+        # proves nothing about the receiver, so no edge is asserted.
+        _touch(tmp_path, "src/logger.ts")
+        target = FakeParsed(
+            tmp_path / "src" / "logger.ts",
+            {"named_export_names": ["Logger"], "export_set_open": False},
+        )
+        caller = FakeParsed(
+            tmp_path / "src" / "page.ts",
+            {
+                "import_symbols": [{"name": "Logger", "module": "./logger", "line": 1}],
+                "call_sites": [_site("Logger", "winston", "new", 4, "boot")],
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "typescript")
+        assert idx["callees"] == {}
+
     def test_open_export_set_yields_no_edge(self, tmp_path):
         # A barrel target (`export * from`) has a non-authoritative export set;
         # the edge cannot be asserted deterministically, so it is skipped.
@@ -234,6 +253,41 @@ class TestNamespaceImport:
             {
                 "namespace_imports": [{"alias": "utils", "module": "./utils", "line": 1}],
                 "call_sites": [_site("fmtDate", "other", "member", 4, "render")],
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "typescript")
+        assert idx["callees"] == {}
+
+    def test_new_via_namespace_alias_resolves_against_alias_target(self, tmp_path):
+        _touch(tmp_path, "src/svc.ts")
+        target = FakeParsed(
+            tmp_path / "src" / "svc.ts",
+            {"named_export_names": ["Client"], "export_set_open": False},
+        )
+        caller = FakeParsed(
+            tmp_path / "src" / "page.ts",
+            {
+                "namespace_imports": [{"alias": "ns", "module": "./svc", "line": 1}],
+                "call_sites": [_site("Client", "ns", "new", 4, "boot")],
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "typescript")
+        entry = idx["callees"]["src/svc.ts"]["Client"]
+        assert entry["callers"] == [
+            {"path": "src/page.ts", "caller": "boot", "line": 4, "grade": "import"}
+        ]
+
+    def test_new_via_namespace_alias_absent_name_yields_no_edge(self, tmp_path):
+        _touch(tmp_path, "src/svc.ts")
+        target = FakeParsed(
+            tmp_path / "src" / "svc.ts",
+            {"named_export_names": ["Client"], "export_set_open": False},
+        )
+        caller = FakeParsed(
+            tmp_path / "src" / "page.ts",
+            {
+                "namespace_imports": [{"alias": "ns", "module": "./svc", "line": 1}],
+                "call_sites": [_site("Ghost", "ns", "new", 4, "boot")],
             },
         )
         idx = build_calls_index([target, caller], tmp_path, "typescript")
