@@ -629,3 +629,136 @@ class TestLoad:
         entry = idx.callers_of("src/api.ts", "fetchUser")
         assert len(entry["callers"]) == 1
         assert entry["callers"][0]["grade"] == "import"
+
+    def test_all_grades_roundtrip(self, tmp_path):
+        # Build a payload that exercises all three grades, write it to a real
+        # .chameleon dir, and verify every built row survives the load intact.
+        _touch(tmp_path, "src/api.ts")
+        _touch(tmp_path, "app/models/user.rb")
+        target_ts = FakeParsed(
+            tmp_path / "src" / "api.ts",
+            {"named_export_names": ["fetchUser"], "export_set_open": False},
+        )
+        caller_ts = FakeParsed(
+            tmp_path / "src" / "page.ts",
+            {
+                "callable_signatures": [_sig("helper")],
+                "import_symbols": [{"name": "fetchUser", "module": "./api", "line": 1}],
+                "call_sites": [
+                    _site("helper", None, "bare", 1, "<module>"),
+                    _site("fetchUser", None, "bare", 2, "<module>"),
+                ],
+            },
+        )
+        target_rb = FakeParsed(
+            tmp_path / "app" / "models" / "user.rb",
+            {
+                "callable_signatures": [
+                    _sig("find_by_slug", enclosing_class="User"),
+                ],
+            },
+        )
+        caller_rb = FakeParsed(
+            tmp_path / "app" / "controllers" / "users_controller.rb",
+            {
+                "call_sites": [_site("find_by_slug", "User", "constant", 3, "show")],
+            },
+        )
+        payload = build_calls_index([target_ts, caller_ts, target_rb, caller_rb], tmp_path, "ruby")
+        # ruby language: same_file + constant_receiver grades only (no import grade)
+        cham = tmp_path / ".chameleon"
+        cham.mkdir(parents=True, exist_ok=True)
+        (cham / CALLS_INDEX_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+        idx = load_calls_index(tmp_path)
+        assert idx is not None
+
+        same_file_entry = idx.callers_of("src/page.ts", "helper")
+        assert same_file_entry is not None
+        assert same_file_entry["callers"][0]["grade"] == "same_file"
+
+        const_entry = idx.callers_of("app/models/user.rb", "find_by_slug")
+        assert const_entry is not None
+        assert const_entry["callers"][0]["grade"] == "constant_receiver"
+
+    def test_all_three_grades_roundtrip_typescript(self, tmp_path):
+        # Build a payload with all three grades present in the artifact, then
+        # write it to a real .chameleon dir and verify load preserves each row.
+        payload = {
+            "schema_version": SCHEMA_VERSION,
+            "callees": {
+                "src/svc.ts": {
+                    "helper": {
+                        "callers": [
+                            {"path": "src/svc.ts", "caller": "run", "line": 1, "grade": "same_file"}
+                        ],
+                        "total": 1,
+                        "truncated": False,
+                    }
+                },
+                "src/api.ts": {
+                    "fetchUser": {
+                        "callers": [
+                            {"path": "src/page.ts", "caller": "<module>", "line": 9, "grade": "import"}
+                        ],
+                        "total": 1,
+                        "truncated": False,
+                    }
+                },
+                "app/models/user.rb": {
+                    "find_by_slug": {
+                        "callers": [
+                            {
+                                "path": "app/controllers/users_controller.rb",
+                                "caller": "show",
+                                "line": 3,
+                                "grade": "constant_receiver",
+                            }
+                        ],
+                        "total": 1,
+                        "truncated": False,
+                    }
+                },
+            },
+        }
+        _write_index(tmp_path, payload)
+        idx = load_calls_index(tmp_path)
+        assert idx is not None
+
+        sf = idx.callers_of("src/svc.ts", "helper")
+        assert sf is not None and sf["callers"][0]["grade"] == "same_file"
+
+        imp = idx.callers_of("src/api.ts", "fetchUser")
+        assert imp is not None and imp["callers"][0]["grade"] == "import"
+
+        cr = idx.callers_of("app/models/user.rb", "find_by_slug")
+        assert cr is not None and cr["callers"][0]["grade"] == "constant_receiver"
+
+
+class TestDumpTimeTruncation:
+    def test_dump_capped_file_marks_contributed_entries_truncated(self, tmp_path):
+        # A file with call_sites_truncated True in its extras signals that the
+        # dumper capped its site list; every callee entry it contributed to
+        # must be marked truncated (the recorded sites are a lower bound).
+        pf = FakeParsed(
+            tmp_path / "src" / "big.ts",
+            {
+                "callable_signatures": [_sig("helper")],
+                "call_sites": [_site("helper", None, "bare", 1, "run")],
+                "call_sites_truncated": True,
+            },
+        )
+        idx = build_calls_index([pf], tmp_path, "typescript")
+        entry = idx["callees"]["src/big.ts"]["helper"]
+        assert entry["truncated"] is True
+
+    def test_non_capped_file_does_not_set_truncated(self, tmp_path):
+        pf = FakeParsed(
+            tmp_path / "src" / "small.ts",
+            {
+                "callable_signatures": [_sig("helper")],
+                "call_sites": [_site("helper", None, "bare", 1, "run")],
+            },
+        )
+        idx = build_calls_index([pf], tmp_path, "typescript")
+        entry = idx["callees"]["src/small.ts"]["helper"]
+        assert entry["truncated"] is False

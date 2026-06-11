@@ -49,6 +49,10 @@ class ProfileCommitError(Exception):
 # stall a bootstrap/refresh if a writer wedges the lock.
 RECOVERY_LOCK_TIMEOUT_SECONDS = 10.0
 
+# calls_index.json uses the opposite failure posture from the other index
+# artifacts: a failed rebuild DROPS the old copy rather than carrying it
+# forward. Serving stale caller facts to the judge is worse than serving
+# none, so absence fails open (no facts block) instead of silently lying.
 _PROTOCOL_FILES = frozenset(
     {
         COMMITTED_SENTINEL,

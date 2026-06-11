@@ -61,6 +61,20 @@ def test_typescript_extractor_golden(tmp_path):
 
 
 @pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+def test_typescript_extras_fields_present(tmp_path):
+    # Extractor must surface call_sites and namespace_imports so the
+    # calls-index builder receives the fields it grades edges from.
+    (tmp_path / "caller.ts").write_text(
+        "import * as utils from './utils';\n"
+        "export function run() { return utils.fmt(); }\n"
+    )
+    pr = TypeScriptExtractor().parse_repo(repo_root=tmp_path, glob="**/*.ts")
+    extras = pr.files[0].extras
+    assert "call_sites" in extras
+    assert "namespace_imports" in extras
+
+
+@pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
 def test_typescript_function_scopes(tmp_path):
     (tmp_path / "shape.ts").write_text(
         "export function flat(a, b, c) {\n"
@@ -149,6 +163,17 @@ def test_ruby_extractor_golden(tmp_path):
     files = {f.path.name: f for f in pr.files}
     assert "svc.rb" in files
     assert "ClassNode" in files["svc.rb"].top_level_node_kinds
+
+
+@pytest.mark.skipif(not _have_prism(), reason="ruby + prism not available")
+def test_ruby_extras_fields_present(tmp_path):
+    # Extractor must surface call_sites so the calls-index builder receives
+    # the field it grades edges from.
+    (tmp_path / "caller.rb").write_text(
+        "class Svc\n  def run\n    helper\n  end\n  def helper; end\nend\n"
+    )
+    pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+    assert "call_sites" in pr.files[0].extras
 
 
 @pytest.mark.skipif(not _have_prism(), reason="ruby + prism not available")

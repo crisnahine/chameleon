@@ -512,6 +512,12 @@ def _extras_from_record(record: dict) -> dict:
     call_sites = record.get("call_sites")
     if isinstance(call_sites, list) and call_sites:
         extras["call_sites"] = call_sites
+    call_sites_total = record.get("call_sites_total")
+    if isinstance(call_sites_total, int):
+        extras["call_sites_total"] = call_sites_total
+    call_sites_truncated = record.get("call_sites_truncated")
+    if call_sites_truncated:
+        extras["call_sites_truncated"] = True
     namespace_imports = record.get("namespace_imports")
     if isinstance(namespace_imports, list) and namespace_imports:
         extras["namespace_imports"] = namespace_imports

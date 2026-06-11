@@ -28,6 +28,9 @@ and the read (query-time, consumes it) share one key scheme and can't drift:
 :func:`build_calls_index` turns parsed files into the artifact payload;
 :func:`load_calls_index` reads the committed artifact, cached on mtime so a
 mid-session refresh is picked up without re-reading every call.
+
+``total`` in each emitted entry is a true count of graded sites (a lower
+bound when a contributing file hit the dump-time cap).
 """
 
 from __future__ import annotations
@@ -60,8 +63,9 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
 
     Every call site that does not meet one grade's full conditions is
     skipped, never downgraded to a fuzzy match. Caps keep the artifact
-    bounded while ``total`` stays the true edge count, so a capped entry
-    reads as "N callers, M shown" rather than silently lying.
+    bounded while ``total`` stays the true count of graded sites (a lower
+    bound when a contributing file hit the dump-time cap), so a capped
+    entry reads as "N callers, M shown" rather than silently lying.
     """
     try:
         root = Path(repo_root).resolve()
@@ -79,6 +83,10 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
     ns_aliases: dict[str, dict[str, str]] = {}
     file_dir: dict[str, Path] = {}
     sites_by_rel: dict[str, list[dict]] = {}
+    # Caller files whose site list was capped at dump time. Every entry that
+    # file contributed callers to is marked truncated: its recorded sites are
+    # a lower bound on the real call count.
+    dump_capped_rels: set[str] = set()
     # class name -> rels that define it, across the whole dump. The
     # constant_receiver grade only fires when this set has exactly one
     # member: an ambiguous constant proves nothing.
@@ -139,6 +147,8 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
         raw_sites = extras.get("call_sites")
         if isinstance(raw_sites, list) and raw_sites:
             sites_by_rel.setdefault(rel, []).extend(r for r in raw_sites if isinstance(r, dict))
+        if bool(extras.get("call_sites_truncated")):
+            dump_capped_rels.add(rel)
 
     # Per-build memo for module resolution: keyed (module_specifier, importer_dir)
     # so each distinct specifier is probed exactly once across all files.
@@ -164,6 +174,10 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
     accum: dict[str, dict[str, set[tuple[str, str, int | None, str]]]] = {}
 
     def _add(callee_rel: str, callee_name: str, caller_rel: str, caller_fn, line, grade) -> None:
+        # The loader enforces the same closed set; an unknown grade must never
+        # be emitted from the builder so the two halves can't drift.
+        if grade not in VALID_GRADES:
+            return
         fn = caller_fn if isinstance(caller_fn, str) and caller_fn else "<module>"
         ln = line if isinstance(line, int) else None
         accum.setdefault(callee_rel, {}).setdefault(callee_name, set()).add(
@@ -270,6 +284,11 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                 keep = keep[: max(0, global_cap - stored)]
                 truncated = True
             stored += len(keep)
+            # A contributing file that hit the dump-time site cap means the
+            # recorded callers from it are a lower bound; mark the entry so
+            # consumers know the total may undercount.
+            if not truncated and any(p in dump_capped_rels for p, *_ in keep):
+                truncated = True
             names_out[callee_name] = {
                 "callers": [
                     {"path": p, "caller": fn, "line": ln, "grade": g} for p, fn, ln, g in keep
