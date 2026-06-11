@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 _NODE_MODULES = Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "typescript"
+_TS_DUMP = Path(__file__).resolve().parents[2] / "scripts" / "ts_dump.mjs"
 _HAVE_TS = shutil.which("node") is not None and _NODE_MODULES.is_dir()
 
 FIXTURE = """
@@ -30,17 +31,21 @@ function helper() {}
 """
 
 
-def _dump(tmp_path: Path) -> dict:
-    f = tmp_path / "main.ts"
-    f.write_text(FIXTURE, encoding="utf-8")
+def _dump_src(tmp_path: Path, src: str, name: str = "mod.ts") -> dict:
+    f = tmp_path / name
+    f.write_text(src, encoding="utf-8")
     out = subprocess.run(
-        ["node", "scripts/ts_dump.mjs"],
+        ["node", str(_TS_DUMP)],
         input=str(f) + "\n",
         capture_output=True,
         text=True,
         check=True,
     )
     return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def _dump(tmp_path: Path) -> dict:
+    return _dump_src(tmp_path, FIXTURE, "main.ts")
 
 
 @pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
@@ -73,7 +78,7 @@ def test_call_sites_cap(tmp_path):
     f = tmp_path / "many.ts"
     f.write_text(many, encoding="utf-8")
     out = subprocess.run(
-        ["node", "scripts/ts_dump.mjs"],
+        ["node", str(_TS_DUMP)],
         input=str(f) + "\n",
         capture_output=True,
         text=True,
@@ -92,28 +97,13 @@ def test_namespace_imports(tmp_path):
     assert rec["namespace_imports"] == [{"alias": "svc", "module": "./svc", "line": 3}]
 
 
-# ---------------------------------------------------------------------------
-# Fix 2: type-only namespace imports must not appear in namespace_imports
-# ---------------------------------------------------------------------------
+# type-only namespace imports must not appear in namespace_imports
 
 _FIXTURE_TYPE_NS = """\
 import * as svc from './svc';
 import type * as tns from './types';
 export function run() { svc.go(); }
 """
-
-
-def _dump_src(tmp_path: Path, src: str, name: str = "mod.ts") -> dict:
-    f = tmp_path / name
-    f.write_text(src, encoding="utf-8")
-    out = subprocess.run(
-        ["node", "scripts/ts_dump.mjs"],
-        input=str(f) + "\n",
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return json.loads(out.stdout.strip().splitlines()[-1])
 
 
 @pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
@@ -124,9 +114,7 @@ def test_type_only_namespace_import_excluded(tmp_path):
     assert "tns" not in aliases, "type-only namespace import must not be recorded"
 
 
-# ---------------------------------------------------------------------------
-# Fix 3: anonymous class expressions and object literals shadow enclosing class
-# ---------------------------------------------------------------------------
+# anonymous class expressions and object literals must shadow the enclosing class
 
 _FIXTURE_ANON_CLASS = """\
 class Outer {

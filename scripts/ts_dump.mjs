@@ -552,7 +552,7 @@ function extractFile(filePath) {
     // belong to. ClassExpression covers `const C = class Foo {}` patterns.
     // Unnamed ClassDeclaration/ClassExpression and ObjectLiteralExpression push
     // a null sentinel so methods defined inside them do not inherit the
-    // lexically-enclosing named class — they have no named class of their own.
+    // lexically-enclosing named class -- they have no named class of their own.
     const isNamedClass =
       (node.kind === ts.SyntaxKind.ClassDeclaration ||
         node.kind === ts.SyntaxKind.ClassExpression ||
@@ -600,13 +600,12 @@ function extractFile(filePath) {
           // can only be paired by body identity.
           start_line: start,
           end_line: end,
-          // Methods and accessors belong to the enclosing class; top-level
-          // functions do not and carry null so callers can distinguish them.
+          // Methods, constructors, and accessors belong to the enclosing class;
+          // plain functions do not and carry null so callers can distinguish them.
+          // callableKindOf returns "function" for FunctionDeclaration/Expression/Arrow
+          // and a distinct kind for every class-member shape, so != "function" covers all.
           enclosing_class:
-            callableKindOf(node) === "method" ||
-            node.kind === ts.SyntaxKind.Constructor ||
-            node.kind === ts.SyntaxKind.GetAccessor ||
-            node.kind === ts.SyntaxKind.SetAccessor
+            callableKindOf(node) !== "function"
               ? classStack[classStack.length - 1] ?? null
               : null,
         });
@@ -700,8 +699,10 @@ rl.on("line", (line) => {
 });
 
 rl.on("close", () => {
-  // Drain stdout before exiting so large records (e.g. files with thousands of
-  // call sites) are not silently truncated by a premature process.exit().
+  // Drain stdout before exiting: writes past the kernel pipe buffer sit in the
+  // process-side write queue, and process.exit() discards that queue. The empty
+  // write's callback fires only after the queue drains, so large records (e.g.
+  // files with thousands of call sites) are not silently truncated.
   process.stdout.write("", () => {
     process.exit(0);
   });

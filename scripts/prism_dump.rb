@@ -45,6 +45,9 @@ end
 def call_site_of(node)
   return nil unless node.is_a?(Prism::CallNode)
   name = node.name.to_s
+  # Operator sends (+, <<, [], !) can never be index-resolved and would crowd
+  # identifier calls out of the per-file cap; record identifier-named sends only.
+  return nil unless name.match?(/\A[a-z_]/i)
   recv = node.receiver
   if recv.nil?
     { name: name, receiver: nil, kind: 'bare' }
