@@ -153,6 +153,57 @@ def test_ruby_callable_signatures(tmp_path):
 
 
 @pytest.mark.skipif(not _have_prism(), reason="ruby + prism not available")
+def test_ruby_singleton_class_scope_kinds(tmp_path):
+    # `class << self` reopens the class's singleton class: defs inside
+    # dispatch on the class object, exactly like `def self.x`. A class
+    # defined INSIDE the singleton scope restores instance semantics for
+    # its own defs.
+    (tmp_path / "mailer.rb").write_text(
+        "class Mailer\n"
+        "  class << self\n"
+        "    def deliver(msg)\n"
+        "      msg\n"
+        "    end\n"
+        "\n"
+        "    class Inner\n"
+        "      def run\n"
+        "        1\n"
+        "      end\n"
+        "    end\n"
+        "  end\n"
+        "\n"
+        "  def self.ping\n"
+        "    2\n"
+        "  end\n"
+        "\n"
+        "  def render\n"
+        "    3\n"
+        "  end\n"
+        "end\n"
+    )
+    pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+    sigs = {s["name"]: s for s in pr.files[0].extras["callable_signatures"]}
+    assert sigs["deliver"]["kind"] == "singleton_method"
+    assert sigs["deliver"]["enclosing_class"] == "Mailer"
+    assert sigs["ping"]["kind"] == "singleton_method"
+    assert sigs["render"]["kind"] == "method"
+    assert sigs["run"]["kind"] == "method"
+    assert sigs["run"]["enclosing_class"] == "Inner"
+
+
+@pytest.mark.skipif(not _have_prism(), reason="ruby + prism not available")
+def test_ruby_non_self_singleton_class_defs_stay_methods(tmp_path):
+    # `class << some_expr` retargets to another object; only the literal-self
+    # form is tracked, so these defs keep today's plain-method kind.
+    (tmp_path / "weird.rb").write_text(
+        "class Holder\n  class << Holder\n    def odd\n      1\n    end\n  end\nend\n"
+    )
+    pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+    sigs = {s["name"]: s for s in pr.files[0].extras["callable_signatures"]}
+    assert sigs["odd"]["kind"] == "method"
+
+
+@pytest.mark.skipif(not _have_prism(), reason="ruby + prism not available")
 def test_ruby_extractor_golden(tmp_path):
     (tmp_path / "svc.rb").write_text(
         "class Svc < ApplicationRecord\n  validates :name\n  def call; end\nend\n"

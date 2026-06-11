@@ -290,6 +290,17 @@ def extract_file(file_path)
       class_stack.push({ name: constant_name(node.constant_path),
                          superclass: constant_name(node.superclass) })
       pushed_class = true
+    elsif node.is_a?(Prism::SingletonClassNode) && node.expression.is_a?(Prism::SelfNode)
+      # `class << self` reopens the enclosing class's singleton class: defs
+      # inside dispatch on the class object itself, exactly like `def self.x`,
+      # so the frame keeps the enclosing class identity and marks the scope
+      # singleton. Only the literal-self form is tracked; `class << some_expr`
+      # retargets to another object and its defs stay plain methods.
+      enclosing = class_stack.last
+      class_stack.push({ name: enclosing && enclosing[:name],
+                         superclass: enclosing && enclosing[:superclass],
+                         singleton: true })
+      pushed_class = true
     end
 
     is_fn = is_function_like?(node)
@@ -307,14 +318,16 @@ def extract_file(file_path)
       })
       def_stack.push(node.name.to_s)
       # An instance method `def foo` carries no explicit receiver; a class
-      # method `def self.foo` does. The contract treats them separately so a
+      # method `def self.foo` does, and a def inside a `class << self` scope
+      # is class-level without one. The contract treats them separately so a
       # class-method override is not compared against an instance signature.
       receiver = node.respond_to?(:receiver) && node.receiver ? 'self' : nil
       enclosing = class_stack.last
+      singleton = receiver || (enclosing && enclosing[:singleton])
       if callable_signatures.length < MAX_CALLABLE_SIGNATURES
         callable_signatures << {
           name: node.name.to_s,
-          kind: receiver ? 'singleton_method' : 'method',
+          kind: singleton ? 'singleton_method' : 'method',
           params: param_shapes(node),
           is_default_export: false,
           enclosing_class: enclosing && enclosing[:name],

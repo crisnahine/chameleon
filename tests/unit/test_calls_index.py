@@ -25,6 +25,22 @@ _NODE_MODULES = Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "
 _HAVE_TS = shutil.which("node") is not None and _NODE_MODULES.is_dir()
 
 
+def _have_prism() -> bool:
+    import subprocess
+
+    if not shutil.which("ruby"):
+        return False
+    try:
+        return (
+            subprocess.run(
+                ["ruby", "-e", "require 'prism'"], capture_output=True, timeout=15
+            ).returncode
+            == 0
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 @dataclass
 class FakeParsed:
     path: Path
@@ -45,8 +61,8 @@ def _write_index(repo: Path, payload) -> None:
     (cham / CALLS_INDEX_FILENAME).write_text(body, encoding="utf-8")
 
 
-def _sig(name, enclosing_class=None):
-    return {"name": name, "kind": "function", "enclosing_class": enclosing_class}
+def _sig(name, enclosing_class=None, kind="function"):
+    return {"name": name, "kind": kind, "enclosing_class": enclosing_class}
 
 
 def _site(name, receiver, kind, line, caller):
@@ -400,8 +416,8 @@ class TestConstantReceiver:
             tmp_path / "app" / "models" / "user.rb",
             {
                 "callable_signatures": [
-                    _sig("initialize", enclosing_class="User"),
-                    _sig("find_by_slug", enclosing_class="User"),
+                    _sig("initialize", enclosing_class="User", kind="method"),
+                    _sig("find_by_slug", enclosing_class="User", kind="singleton_method"),
                 ],
             },
         )
@@ -434,11 +450,19 @@ class TestConstantReceiver:
         # definition, so no edge is asserted for either.
         a = FakeParsed(
             tmp_path / "app" / "models" / "user.rb",
-            {"callable_signatures": [_sig("find_by_slug", enclosing_class="User")]},
+            {
+                "callable_signatures": [
+                    _sig("find_by_slug", enclosing_class="User", kind="singleton_method")
+                ]
+            },
         )
         b = FakeParsed(
             tmp_path / "lib" / "legacy" / "user.rb",
-            {"callable_signatures": [_sig("find_by_slug", enclosing_class="User")]},
+            {
+                "callable_signatures": [
+                    _sig("find_by_slug", enclosing_class="User", kind="singleton_method")
+                ]
+            },
         )
         caller = FakeParsed(
             tmp_path / "app" / "x.rb",
@@ -450,7 +474,61 @@ class TestConstantReceiver:
     def test_new_without_initialize_yields_no_edge(self, tmp_path):
         target = FakeParsed(
             tmp_path / "app" / "models" / "user.rb",
-            {"callable_signatures": [_sig("find_by_slug", enclosing_class="User")]},
+            {
+                "callable_signatures": [
+                    _sig("find_by_slug", enclosing_class="User", kind="singleton_method")
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "app" / "x.rb",
+            {"call_sites": [_site("new", "User", "constant", 8, "create")]},
+        )
+        idx = build_calls_index([target, caller], tmp_path, "ruby")
+        assert idx["callees"] == {}
+
+    def test_constant_call_to_instance_method_yields_no_edge(self, tmp_path):
+        # Mailer.deliver can only dispatch to a class-level method; an
+        # instance `def deliver` is unreachable from a constant receiver, so
+        # matching it would fabricate an edge.
+        target = FakeParsed(
+            tmp_path / "app" / "mailers" / "mailer.rb",
+            {"callable_signatures": [_sig("deliver", enclosing_class="Mailer", kind="method")]},
+        )
+        caller = FakeParsed(
+            tmp_path / "app" / "x.rb",
+            {"call_sites": [_site("deliver", "Mailer", "constant", 4, "notify")]},
+        )
+        idx = build_calls_index([target, caller], tmp_path, "ruby")
+        assert idx["callees"] == {}
+
+    def test_constant_call_to_singleton_method_records_edge(self, tmp_path):
+        target = FakeParsed(
+            tmp_path / "app" / "mailers" / "mailer.rb",
+            {
+                "callable_signatures": [
+                    _sig("deliver", enclosing_class="Mailer", kind="singleton_method")
+                ]
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "app" / "x.rb",
+            {"call_sites": [_site("deliver", "Mailer", "constant", 4, "notify")]},
+        )
+        idx = build_calls_index([target, caller], tmp_path, "ruby")
+        entry = idx["callees"]["app/mailers/mailer.rb"]["deliver"]
+        assert entry["callers"][0]["grade"] == "constant_receiver"
+
+    def test_new_requires_instance_initialize(self, tmp_path):
+        # Const.new dispatches to the INSTANCE initialize; a (pathological)
+        # singleton-only initialize proves nothing about construction.
+        target = FakeParsed(
+            tmp_path / "app" / "models" / "user.rb",
+            {
+                "callable_signatures": [
+                    _sig("initialize", enclosing_class="User", kind="singleton_method")
+                ]
+            },
         )
         caller = FakeParsed(
             tmp_path / "app" / "x.rb",
@@ -744,7 +822,7 @@ class TestLoad:
             tmp_path / "app" / "models" / "user.rb",
             {
                 "callable_signatures": [
-                    _sig("find_by_slug", enclosing_class="User"),
+                    _sig("find_by_slug", enclosing_class="User", kind="singleton_method"),
                 ],
             },
         )
@@ -857,6 +935,49 @@ class TestRealDumperAliasedImports:
             {"path": "page.ts", "caller": "go", "line": 5, "grade": "import"}
         ]
         assert "y" not in idx["callees"].get("b.ts", {})
+
+
+class TestRealDumperRubySingletonScope:
+    @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
+    def test_constant_edges_respect_member_kinds_via_real_dump(self, tmp_path):
+        # End-to-end through prism_dump.rb: a `class << self` def must grade
+        # a constant-receiver edge, an instance def with the same name must
+        # not, and Const.new must still resolve to the instance initialize.
+        from chameleon_mcp.extractors.ruby import RubyExtractor
+
+        (tmp_path / "mailer.rb").write_text(
+            "class Mailer\n  class << self\n    def deliver(msg)\n      msg\n    end\n  end\nend\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "notifier.rb").write_text(
+            "class Notifier\n  def deliver(msg)\n    msg\n  end\nend\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "alpha_service.rb").write_text(
+            "class AlphaService\n  def initialize(x)\n    @x = x\n  end\nend\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "caller.rb").write_text(
+            "class Caller\n"
+            "  def run\n"
+            "    Mailer.deliver(1)\n"
+            "    Notifier.deliver(2)\n"
+            "    AlphaService.new(3)\n"
+            "  end\n"
+            "end\n",
+            encoding="utf-8",
+        )
+        pr = RubyExtractor().parse_repo(repo_root=tmp_path, glob="**/*.rb")
+        idx = build_calls_index(pr.files, tmp_path, "ruby")
+        assert idx["callees"]["mailer.rb"]["deliver"]["callers"] == [
+            {"path": "caller.rb", "caller": "run", "line": 3, "grade": "constant_receiver"}
+        ]
+        # Notifier#deliver is instance-only: Notifier.deliver cannot dispatch
+        # to it, so no edge may be recorded.
+        assert "notifier.rb" not in idx["callees"]
+        assert idx["callees"]["alpha_service.rb"]["initialize"]["callers"] == [
+            {"path": "caller.rb", "caller": "run", "line": 5, "grade": "constant_receiver"}
+        ]
 
 
 class TestDumpTimeTruncation:

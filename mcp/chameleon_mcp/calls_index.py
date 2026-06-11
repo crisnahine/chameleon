@@ -22,8 +22,12 @@ Grades:
   target's CLOSED export set. An open (barrel) set proves nothing, so it
   yields no edge.
 - ``constant_receiver`` - Ruby only: Const.method where Const names exactly
-  one class across the dump; ``new`` maps to ``initialize`` when the
-  target defines it, and is skipped (never invented) when it does not.
+  one class across the dump AND the matched member is class-level (kind
+  ``singleton_method``: ``def self.x`` or a ``class << self`` def) -- an
+  instance def with the same name is undispatchable from a constant
+  receiver, so it yields no edge. ``new`` maps to the INSTANCE
+  ``initialize`` when the target defines it, and is skipped (never
+  invented) when it does not.
 
 Two halves live here so the build (bootstrap-time, populates the artifact)
 and the read (query-time, consumes it) share one key scheme and can't drift:
@@ -79,7 +83,12 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
     # Pass 1: per-file fact tables. A rel appearing twice merges, mirroring
     # the reverse index's dedupe stance.
     callables: dict[str, set[str]] = {}
-    class_members: dict[str, dict[str, set[str]]] = {}
+    # rel -> class name -> member name -> kinds recorded for that member.
+    # Kinds matter to the constant_receiver grade only: Const.method can
+    # dispatch only to a class-level (singleton_method) member, Const.new
+    # only to an instance initialize. The this/self grade matches on names
+    # alone (call sites carry no class-vs-instance context).
+    class_members: dict[str, dict[str, dict[str, set[str]]]] = {}
     exports: dict[str, tuple[set[str], bool]] = {}
     # rel -> local binding name -> (module specifier, exported name). Keyed on
     # the LOCAL binding because that is what call-site identifiers carry
@@ -119,7 +128,12 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             callables.setdefault(rel, set()).add(name)
             cls = row.get("enclosing_class")
             if isinstance(cls, str) and cls:
-                class_members.setdefault(rel, {}).setdefault(cls, set()).add(name)
+                kinds = (
+                    class_members.setdefault(rel, {}).setdefault(cls, {}).setdefault(name, set())
+                )
+                kind = row.get("kind")
+                if isinstance(kind, str) and kind:
+                    kinds.add(kind)
                 class_defs.setdefault(cls, set()).add(rel)
 
         names_raw = extras.get("named_export_names")
@@ -198,7 +212,7 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
         own_callables = callables.get(rel) or set()
         own_members: set[str] = set()
         for members in (class_members.get(rel) or {}).values():
-            own_members |= members
+            own_members |= members.keys()
         own_imports = import_map.get(rel) or {}
         own_aliases = ns_aliases.get(rel) or {}
         fdir = file_dir[rel]
@@ -269,8 +283,13 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                     continue
                 (target_rel,) = defs
                 callee_name = "initialize" if name == "new" else name
-                members = (class_members.get(target_rel) or {}).get(receiver) or set()
-                if callee_name in members:
+                members = (class_members.get(target_rel) or {}).get(receiver) or {}
+                kinds = members.get(callee_name) or set()
+                # Const.method dispatches on the class object: only a
+                # class-level member proves the edge. Const.new constructs an
+                # instance, so it requires the instance initialize.
+                required_kind = "method" if name == "new" else "singleton_method"
+                if required_kind in kinds:
                     _add(target_rel, callee_name, rel, caller_fn, line, "constant_receiver")
             # Every other kind (super, unresolvable member chains) is skipped.
 
