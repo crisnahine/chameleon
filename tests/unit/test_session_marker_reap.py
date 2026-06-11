@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import time
-from pathlib import Path
 
 
 def test_dup_judged_markers_are_reaped(tmp_path, monkeypatch):

@@ -1881,7 +1881,7 @@ def preflight_and_advise() -> int:
         block += "\n```\n\n"
     if canonical.get("missing"):
         block += (
-            f"(canonical witness {canonical.get('witness_path')} is "
+            f"(canonical witness {sanitize_for_chameleon_context(str(canonical.get('witness_path')))} is "
             "missing on disk; run /chameleon-refresh to re-select)\n"
         )
     if has_idioms:
