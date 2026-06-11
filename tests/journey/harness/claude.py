@@ -29,6 +29,16 @@ class ParsedSession:
     # use this to assert a command actually called a given MCP tool. Backward
     # compatible: defaults to an empty list for callers that ignore it.
     tool_uses: list[str] = dataclasses.field(default_factory=list)
+    # First session_id seen on any event object. Hooks key per-session state
+    # (exec log, enforcement markers) on this id; scorers need it to read those
+    # records back. Empty when no event carried one.
+    session_id: str = ""
+    # Final result text from the terminal "result" event ("" when absent).
+    # Lets a caller read a one-turn judge's answer without re-parsing raw lines.
+    result_text: str = ""
+    # Commands of every Bash tool_use block, in order. Used to detect test
+    # invocations on transcripts where hooks (and so the exec log) were disabled.
+    bash_commands: list[str] = dataclasses.field(default_factory=list)
 
 
 def parse_stream_json(stream: str) -> ParsedSession:
@@ -37,6 +47,9 @@ def parse_stream_json(stream: str) -> ParsedSession:
     hook_events: list[HookEvent] = []
     raw_lines: list[str] = []
     tool_uses: list[str] = []
+    session_id = ""
+    result_text = ""
+    bash_commands: list[str] = []
 
     for line in stream.splitlines():
         line = line.strip()
@@ -50,8 +63,16 @@ def parse_stream_json(stream: str) -> ParsedSession:
         except json.JSONDecodeError:
             continue
 
+        if not session_id:
+            sid = obj.get("session_id")
+            if isinstance(sid, str) and sid:
+                session_id = sid
+
         if obj.get("type") == "result":
             cost = float(obj.get("total_cost_usd", 0.0))
+            text = obj.get("result")
+            if isinstance(text, str):
+                result_text = text
         elif obj.get("type") == "system" and obj.get("subtype") == "hook_response":
             hook_events.append(
                 HookEvent(
@@ -68,12 +89,19 @@ def parse_stream_json(stream: str) -> ParsedSession:
                         name = block.get("name")
                         if isinstance(name, str) and name:
                             tool_uses.append(name)
+                        if name == "Bash":
+                            cmd = (block.get("input") or {}).get("command")
+                            if isinstance(cmd, str):
+                                bash_commands.append(cmd)
 
     return ParsedSession(
         cost_usd=cost,
         hook_events=hook_events,
         raw_lines=raw_lines,
         tool_uses=tool_uses,
+        session_id=session_id,
+        result_text=result_text,
+        bash_commands=bash_commands,
     )
 
 
@@ -85,6 +113,11 @@ class ClaudeSession:
     returncode: int
     # Tool-use block names the assistant emitted, in order (see ParsedSession).
     tool_uses: list[str] = dataclasses.field(default_factory=list)
+    # See ParsedSession for the semantics of these three; the timeout path
+    # returns the empty defaults because no parse happened.
+    session_id: str = ""
+    result_text: str = ""
+    bash_commands: list[str] = dataclasses.field(default_factory=list)
 
 
 def spawn_claude(
@@ -156,4 +189,7 @@ def spawn_claude(
         transcript_path=transcript_path,
         returncode=proc.returncode,
         tool_uses=parsed.tool_uses,
+        session_id=parsed.session_id,
+        result_text=parsed.result_text,
+        bash_commands=parsed.bash_commands,
     )

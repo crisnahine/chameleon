@@ -51,3 +51,36 @@ def test_parse_tool_uses_empty_when_no_tool_use() -> None:
     )
     parsed = parse_stream_json(stream)
     assert parsed.tool_uses == []
+
+
+def test_parser_extracts_session_id_and_result_text() -> None:
+    stream = "\n".join(
+        [
+            '{"type": "system", "subtype": "init", "session_id": "sess-abc123"}',
+            '{"type": "result", "total_cost_usd": 0.42, "result": "WINNER: A\\nbecause it reuses the helper."}',
+        ]
+    )
+    parsed = parse_stream_json(stream)
+    assert parsed.session_id == "sess-abc123"
+    assert parsed.result_text.startswith("WINNER: A")
+    assert parsed.cost_usd == 0.42
+
+
+def test_parser_extracts_bash_commands() -> None:
+    stream = "\n".join(
+        [
+            '{"type": "assistant", "message": {"content": ['
+            '{"type": "tool_use", "name": "Bash", "input": {"command": "npm test"}},'
+            '{"type": "tool_use", "name": "Edit", "input": {"file_path": "/x.ts"}}]}}',
+        ]
+    )
+    parsed = parse_stream_json(stream)
+    assert parsed.bash_commands == ["npm test"]
+    assert parsed.tool_uses == ["Bash", "Edit"]
+
+
+def test_parser_defaults_for_streams_without_new_fields() -> None:
+    parsed = parse_stream_json('{"type": "result", "total_cost_usd": 0.1}')
+    assert parsed.session_id == ""
+    assert parsed.result_text == ""
+    assert parsed.bash_commands == []
