@@ -380,6 +380,19 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "ATTESTATION_MAX_OVERRIDES": 100,
     "ATTESTATION_MAX_CHECK_EVENTS": 200,
     "ATTESTATION_LEDGER_MAX_RECORDS": 2_000,
+    # Cap on caller rows stored per callee in calls_index.json; mirrors the
+    # reverse index's per-symbol cap rationale (one hot helper must not bloat
+    # the committed artifact). The true total is always recorded.
+    "CALLS_INDEX_MAX_CALLERS_PER_CALLEE": 100,
+    # Hard cap on total edges in calls_index.json; past this the builder stops
+    # adding rows and every further-affected entry reads as truncated.
+    "CALLS_INDEX_MAX_TOTAL_EDGES": 200_000,
+    # Caps for the judge's cross-file caller-facts block: callables listed,
+    # sites shown per callable, and total characters. The block is grounding
+    # context, not the review itself, so it stays small.
+    "JUDGE_FACTS_MAX_CALLABLES": 5,
+    "JUDGE_FACTS_MAX_SITES": 5,
+    "JUDGE_FACTS_CHAR_CAP": 1200,
 }
 
 

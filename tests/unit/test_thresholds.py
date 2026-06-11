@@ -112,6 +112,14 @@ class TestDefaults:
         for k, v in _thresholds.DEFAULTS.items():
             assert not isinstance(v, bool), k
 
+    def test_calls_index_and_judge_facts_thresholds_are_registered(self):
+        d = _thresholds.DEFAULTS
+        assert d["CALLS_INDEX_MAX_CALLERS_PER_CALLEE"] == 100
+        assert d["CALLS_INDEX_MAX_TOTAL_EDGES"] == 200_000
+        assert d["JUDGE_FACTS_MAX_CALLABLES"] == 5
+        assert d["JUDGE_FACTS_MAX_SITES"] == 5
+        assert d["JUDGE_FACTS_CHAR_CAP"] == 1200
+
     def test_prewrite_secret_scan_cap_default_and_override(self, monkeypatch):
         # The pre-write hard-secret deny truncates proposed content at this
         # cap, matching the 100KB read ceiling the on-disk lint paths use.
