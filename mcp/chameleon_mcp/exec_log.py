@@ -65,7 +65,10 @@ _TEST_RUNNER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:\S*/)?rspec\b"),
     re.compile(r"^(?:\S*/)?rails\s+test\b"),
     re.compile(r"^(?:\S*/)?rake\s+(?:test|spec)\b"),
-    re.compile(r"^(?:\S*/)?ruby\b.*\b(?:-Itest|minitest)\b"),
+    # `-Itest` needs the explicit whitespace lookbehind: `\b` never matches
+    # between a space and `-` (both non-word), so `\b-Itest` is unreachable in
+    # the standard `ruby -Itest ...` invocation.
+    re.compile(r"^(?:\S*/)?ruby\b.*(?:(?<=\s)-Itest\b|\bminitest\b)"),
     # Go / Rust / Elixir.
     re.compile(r"^(?:\S*/)?go\s+test\b"),
     re.compile(r"^(?:\S*/)?cargo\s+(?:test|nextest)\b"),

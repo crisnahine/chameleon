@@ -35,6 +35,8 @@ from chameleon_mcp.exec_log import classify_test_command
         "rails test test/models",
         "bundle exec rake test",
         "rake spec",
+        "ruby -Itest tests/run_tests.rb",
+        "ruby -Itest -e 'require \"minitest/autorun\"'",
         "go test ./...",
         "cargo test",
         "cargo nextest run",
