@@ -61,17 +61,52 @@ CROSSFILE_UNAVAILABLE = {
     "data": {"found": False, "findings": [], "reason": "no-reverse-index"},
 }
 
+RAILS_CALLS_INDEX = {
+    "schema_version": 1,
+    "callees": {
+        "app/lib/money_formatter.rb": {
+            "format": {
+                "callers": [
+                    {
+                        "path": "app/controllers/orders_controller.rb",
+                        "caller": "index",
+                        "line": 5,
+                        "grade": "constant_receiver",
+                    },
+                    {
+                        "path": "tests/run_tests.rb",
+                        "caller": "<module>",
+                        "line": 11,
+                        "grade": "constant_receiver",
+                    },
+                ],
+                "total": 2,
+                "truncated": False,
+            }
+        }
+    },
+}
+
+RAILS_TARGET = {
+    "module": "app/lib/money_formatter.rb",
+    "function": "format",
+    "new_name": "display",
+    "old_needle": "MoneyFormatter.format",
+}
+
 
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
 
 
-def _repo_with_index(tmp_path: Path, caller_texts: dict[str, str]) -> tuple[Path, str]:
+def _repo_with_index(
+    tmp_path: Path, caller_texts: dict[str, str], calls_index: dict
+) -> tuple[Path, str]:
     repo = tmp_path / "repo"
     (repo / ".chameleon").mkdir(parents=True)
-    (repo / ".chameleon" / "calls_index.json").write_text(json.dumps(CALLS_INDEX))
-    (repo / "src").mkdir()
+    (repo / ".chameleon" / "calls_index.json").write_text(json.dumps(calls_index))
     for rel, text in caller_texts.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         (repo / rel).write_text(text)
     _git(repo, "init", "-q")
     _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A")
@@ -82,17 +117,20 @@ def _repo_with_index(tmp_path: Path, caller_texts: dict[str, str]) -> tuple[Path
     return repo, sha
 
 
-def _make_ctx(tmp_path, monkeypatch, caller_texts, crossfile_resp):
-    repo, sha = _repo_with_index(tmp_path, caller_texts)
+def _make_ctx(tmp_path, monkeypatch, caller_texts, crossfile_resp, calls_index=None, target=None):
+    repo, sha = _repo_with_index(tmp_path, caller_texts, calls_index or CALLS_INDEX)
     monkeypatch.setattr(crossfile, "_crossfile_context", lambda repo_path: crossfile_resp)
     ctx = _ctx(tmp_path)
     ctx.worktree = repo
     ctx.baseline_sha = sha
-    ctx.pack.crossfile_targets[ctx.task.task_id] = {
-        "module": "src/utils/format_money.ts",
-        "function": "formatMoney",
-        "new_name": "formatCurrency",
-    }
+    ctx.pack.crossfile_targets[ctx.task.task_id] = dict(
+        target
+        or {
+            "module": "src/utils/format_money.ts",
+            "function": "formatMoney",
+            "new_name": "formatCurrency",
+        }
+    )
     return ctx
 
 
@@ -137,6 +175,76 @@ def test_missing_calls_index_is_unscored(tmp_path, monkeypatch):
     out = crossfile.score(ctx)
     assert set(out) == {"unscored"}
     assert "calls_index" in out["unscored"]
+
+
+def test_old_needle_ignores_bare_word_outside_call_form(tmp_path, monkeypatch):
+    # The Rails fixture's test labels contain the bare word "format"; with
+    # the qualified old_needle a PERFECT rename must score zero stale.
+    ctx = _make_ctx(
+        tmp_path,
+        monkeypatch,
+        {
+            "app/controllers/orders_controller.rb": (
+                "def index\n  MoneyFormatter.display(123)\nend\n"
+            ),
+            "tests/run_tests.rb": (
+                'require_relative "../app/lib/money_formatter"\n'
+                'check(failures, "format positive", MoneyFormatter.display(123_456))\n'
+                'check(failures, "format negative", MoneyFormatter.display(-5))\n'
+            ),
+        },
+        CROSSFILE_UNAVAILABLE,
+        calls_index=RAILS_CALLS_INDEX,
+        target=RAILS_TARGET,
+    )
+    out = crossfile.score(ctx)
+    assert out["callers_updated"] == 2
+    assert out["callers_stale"] == 0
+
+
+def test_old_needle_still_catches_genuinely_stale_caller(tmp_path, monkeypatch):
+    ctx = _make_ctx(
+        tmp_path,
+        monkeypatch,
+        {
+            "app/controllers/orders_controller.rb": (
+                "def index\n  MoneyFormatter.format(123)\nend\n"
+            ),
+            "tests/run_tests.rb": (
+                'check(failures, "format positive", MoneyFormatter.display(123_456))\n'
+            ),
+        },
+        CROSSFILE_UNAVAILABLE,
+        calls_index=RAILS_CALLS_INDEX,
+        target=RAILS_TARGET,
+    )
+    out = crossfile.score(ctx)
+    assert out["callers_updated"] == 1
+    assert out["callers_stale"] == 1
+
+
+def test_old_needle_call_form_for_ts(tmp_path, monkeypatch):
+    # "formatMoney(" must boundary-guard only its leading edge: it matches a
+    # real call but not a longer identifier like "myformatMoney(".
+    ctx = _make_ctx(
+        tmp_path,
+        monkeypatch,
+        {
+            "src/a.ts": "formatCurrency(1);\n// myformatMoney(2) is unrelated\n",
+            "src/b.ts": "formatCurrency(2);\n",
+            "src/c.ts": "formatMoney(3);\n",
+        },
+        CROSSFILE_UNAVAILABLE,
+        target={
+            "module": "src/utils/format_money.ts",
+            "function": "formatMoney",
+            "new_name": "formatCurrency",
+            "old_needle": "formatMoney(",
+        },
+    )
+    out = crossfile.score(ctx)
+    assert out["callers_updated"] == 2
+    assert out["callers_stale"] == 1
 
 
 def test_no_target_declared_skips_caller_half(tmp_path, monkeypatch):

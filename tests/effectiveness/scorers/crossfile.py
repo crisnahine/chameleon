@@ -7,8 +7,10 @@
 (b) Callers-updated: for the task's declared target function, every caller
     site recorded in the calls_index AT THE BASELINE COMMIT (git show, so a
     session that edits .chameleon cannot move the goalposts) must reference
-    the new name in the final tree. Word-bounded grep — deterministic, no
-    parser, mirroring the tool's own presence checks.
+    the new name in the final tree. Deterministic grep, no parser. Staleness
+    checks the target's qualified old_needle call form ("MoneyFormatter.format",
+    "formatMoney(") — the bare old name appears in prose like test labels,
+    which would brand a perfect rename stale in every arm.
 
 Fully unscored only when the caller half was requested but the baseline
 calls_index lacks the target (spec: missing calls_index -> unscored with
@@ -33,6 +35,15 @@ def _crossfile_context(repo_path: str) -> dict:
 
 def _word_re(name: str) -> re.Pattern[str]:
     return re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
+
+
+def _needle_re(needle: str) -> re.Pattern[str]:
+    """Boundary-guard only the ends of the needle that are identifier
+    characters, so "MoneyFormatter.format" or "formatMoney(" matches a real
+    call site but never a longer identifier around either edge."""
+    prefix = r"(?<![A-Za-z0-9_$])" if re.match(r"[A-Za-z0-9_$]", needle) else ""
+    suffix = r"(?![A-Za-z0-9_$])" if re.search(r"[A-Za-z0-9_$]$", needle) else ""
+    return re.compile(prefix + re.escape(needle) + suffix)
 
 
 def score(ctx: ScoreContext) -> dict:
@@ -69,7 +80,11 @@ def score(ctx: ScoreContext) -> dict:
                 f"calls_index at baseline lacks target {target['module']}::{target['function']}"
             )
         new_name_re = _word_re(target["new_name"])
-        old_name_re = _word_re(target["function"])
+        old_needle = target.get("old_needle")
+        # Staleness needs the qualified call form; the bare-name fallback
+        # exists only for targets that predate old_needle and can
+        # false-positive on prose containing the word.
+        old_name_re = _needle_re(old_needle) if old_needle else _word_re(target["function"])
         updated = 0
         stale = 0
         for row in entry["callers"]:

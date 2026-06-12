@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.effectiveness.arms import parse_arms
-from tests.effectiveness.worktrees import changed_files, prepare_cell
+from tests.effectiveness.worktrees import changed_files, prepare_cell, session_diff
 from tests.journey.harness.bash import run_bash
 from tests.journey.harness.fixtures import setup_fixture
 
@@ -68,6 +68,25 @@ def test_changed_files_tracks_modified_and_untracked_not_chameleon(tmp_path):
     (wt / "src" / "new.ts").write_text("export const n = 1;\n")
     (wt / ".chameleon" / "scratch.json").write_text("{}\n")
     assert changed_files(wt, baseline) == ["src/a.ts", "src/new.ts"]
+
+
+def test_claude_dir_excluded_from_changed_files_and_diff(tmp_path):
+    # .claude/ session-runtime files carry the cell name (which encodes the
+    # arm); they must never reach the scorers or the blind panel's diff.
+    repo = _seed_repo(tmp_path)
+    shadow = parse_arms("shadow", None)[0]
+    wt = tmp_path / "wt4"
+    baseline = prepare_cell(
+        fixture_repo=repo, dest=wt, arm=shadow, setup_fn=None, trust_fn=lambda p: "rid"
+    )
+    (wt / ".claude").mkdir()
+    (wt / ".claude" / "whatever").write_text('{"name": "task__shadow__r1"}\n')
+    (wt / "src" / "a.ts").write_text("export const a = 2;\n")
+    assert changed_files(wt, baseline) == ["src/a.ts"]
+    diff = session_diff(wt, baseline)
+    assert ".claude" not in diff
+    assert "task__shadow__r1" not in diff
+    assert "src/a.ts" in diff
 
 
 def test_two_arms_same_task_do_not_contaminate(tmp_path):

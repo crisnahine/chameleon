@@ -4,7 +4,10 @@ A task is a frozen EffTask (shape fixed by the spec). Packs are plain modules
 exposing:
   TASKS: list[EffTask]                       (required)
   RUBRICS: dict[task_id, callable]           (optional; worktree: Path -> dict)
-  CROSSFILE_TARGETS: dict[task_id, dict]     (optional; {"module","function","new_name"})
+  CROSSFILE_TARGETS: dict[task_id, dict]     (optional;
+                                              {"module","function","new_name","old_needle"};
+                                              old_needle is the qualified call form the
+                                              staleness grep matches, e.g. "formatMoney(")
   DUPLICATION_TARGETS: dict[task_id, dict]   (optional; {"existing_name","existing_file","needle"})
   SETUPS: dict[name, callable]               (optional; worktree: Path -> None)
   RUNTIME_TARGET_RESOLVERS: dict[task_id, callable]  (optional; repo_root -> dict | None,

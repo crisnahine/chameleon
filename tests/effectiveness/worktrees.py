@@ -60,17 +60,26 @@ def changed_files(worktree: Path, baseline_sha: str) -> list[str]:
 
     `.chameleon/` paths are excluded — profile artifacts are harness state,
     not task output (a session that edits them is visible in the raw diff
-    artifact, but scorers must not lint them).
+    artifact, but scorers must not lint them). `.claude/` paths are excluded
+    for the same harness-state reason plus blinding: session-runtime files
+    there (statusline cache, local settings) carry the cell name, which
+    encodes the arm.
     """
     tracked = _git(worktree, f"diff --name-only {baseline_sha}").splitlines()
     untracked = _git(worktree, "ls-files --others --exclude-standard").splitlines()
     merged = {p.strip() for p in tracked + untracked if p.strip()}
-    return sorted(p for p in merged if not p.startswith(".chameleon/"))
+    return sorted(p for p in merged if not p.startswith((".chameleon/", ".claude/")))
 
 
 def session_diff(worktree: Path, baseline_sha: str) -> str:
-    """Unified diff of everything the session did (for artifacts + the panel)."""
+    """Unified diff of everything the session did (for artifacts + the panel).
+
+    `.claude/` is excluded for the same reason changed_files() excludes it:
+    its files name the cell (and therefore the arm), and this diff is what
+    the blind judge panel reads. `.chameleon/` stays visible here as the
+    forensic record of profile edits; scorers never read this diff.
+    """
     _git(worktree, f"{_GIT_ID} add -A")  # stage untracked so diff covers them
-    diff = _git(worktree, f"diff --cached {baseline_sha}", timeout_s=120)
+    diff = _git(worktree, f"diff --cached {baseline_sha} -- . ':(exclude).claude'", timeout_s=120)
     _git(worktree, "reset -q")  # leave the tree as the session left it
     return diff

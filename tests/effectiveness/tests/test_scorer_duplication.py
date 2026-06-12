@@ -91,6 +91,16 @@ def test_reuse_credit_when_existing_helper_referenced(tmp_path, monkeypatch):
     assert out["reuse_credit"] is True
 
 
+def test_reuse_credit_only_from_source_files(tmp_path, monkeypatch):
+    # A harness artifact or doc that mentions the helper must never mint
+    # reuse credit; only source files count.
+    ctx = _make_ctx(tmp_path, monkeypatch, {"src/components/Card.tsx": []})
+    (tmp_path / "notes.md").write_text("we should call slugify here\n")
+    ctx.changed_files = sorted(ctx.changed_files + ["notes.md"])
+    out = duplication.score(ctx)
+    assert out["reuse_credit"] is False
+
+
 def test_existing_catalog_function_not_counted_as_added(tmp_path, monkeypatch):
     ctx = _make_ctx(
         tmp_path,

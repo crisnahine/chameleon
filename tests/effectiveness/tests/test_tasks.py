@@ -133,6 +133,7 @@ def test_runtime_resolver_picks_deterministically(tmp_path):
         "module": "src/a.ts",
         "function": "alpha",
         "new_name": "alphaRenamed",
+        "old_needle": "alpha(",
     }
 
 
@@ -140,3 +141,54 @@ def test_runtime_resolver_returns_none_without_index(tmp_path):
     from tests.effectiveness.tasks.tier2_ts import _resolve_ts_crossfile_target
 
     assert _resolve_ts_crossfile_target(tmp_path) is None
+
+
+def test_ruby_runtime_resolver_emits_qualified_old_needle(tmp_path):
+    import json
+
+    from tests.effectiveness.tasks.tier2_rails import _resolve_ruby_crossfile_target
+
+    cham = tmp_path / ".chameleon"
+    cham.mkdir()
+    (cham / "calls_index.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "callees": {
+                    "app/lib/money_formatter.rb": {
+                        "format": {
+                            "callers": [
+                                {
+                                    "path": "app/a.rb",
+                                    "caller": "a",
+                                    "line": 1,
+                                    "grade": "constant_receiver",
+                                },
+                                {
+                                    "path": "app/b.rb",
+                                    "caller": "b",
+                                    "line": 1,
+                                    "grade": "constant_receiver",
+                                },
+                                {
+                                    "path": "app/c.rb",
+                                    "caller": "c",
+                                    "line": 1,
+                                    "grade": "constant_receiver",
+                                },
+                            ],
+                            "total": 3,
+                            "truncated": False,
+                        }
+                    }
+                },
+            }
+        )
+    )
+    target = _resolve_ruby_crossfile_target(tmp_path)
+    assert target == {
+        "module": "app/lib/money_formatter.rb",
+        "function": "format",
+        "new_name": "format_renamed",
+        "old_needle": "MoneyFormatter.format",
+    }

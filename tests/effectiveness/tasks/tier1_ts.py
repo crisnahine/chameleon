@@ -73,6 +73,9 @@ CROSSFILE_TARGETS = {
         "module": "src/utils/format_money.ts",
         "function": "formatMoney",
         "new_name": "formatCurrency",
+        # Qualified call form for the staleness grep: the bare name also
+        # appears in prose (test labels), which must never read as stale.
+        "old_needle": "formatMoney(",
     },
 }
 

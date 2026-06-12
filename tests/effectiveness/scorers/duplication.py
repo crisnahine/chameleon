@@ -3,9 +3,10 @@
 Parses functions in the session-changed files (the same parse the turn-end
 duplication gate uses), counts the ones absent from the fixture's committed
 function catalog as "added", and counts body-hash matches against catalog
-entries in OTHER files as duplicates. Reuse credit: any changed file (other
-than the bait's own file) references the task's declared existing helper by
-word-bounded grep.
+entries in OTHER files as duplicates. Reuse credit: any changed SOURCE file
+(other than the bait's own file) references the task's declared existing
+helper by word-bounded grep — non-source files (docs, harness artifacts)
+must never mint the credit.
 
 Unscored when the catalog is missing (nothing to compare against) or when
 the parse extractor is unavailable (parsing the changed files would silently
@@ -89,7 +90,7 @@ def score(ctx: ScoreContext) -> dict:
     if target is not None:
         needle = _word_re(target.get("needle") or target["existing_name"])
         reuse = False
-        for rel in ctx.changed_files:
+        for rel in changed_source:
             if rel == target["existing_file"]:
                 continue
             abs_path = ctx.worktree / rel

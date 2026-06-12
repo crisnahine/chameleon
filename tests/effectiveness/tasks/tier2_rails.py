@@ -92,10 +92,17 @@ def _resolve_ruby_crossfile_target(repo_root: Path) -> dict | None:
             body = by_name[function]
             if isinstance(body, dict) and isinstance(body.get("total"), int):
                 if body["total"] >= 3 and function.replace("_", "").isalnum():
+                    # Constant name from the file basename, mirroring Rails
+                    # autoload naming; the qualified "Constant.method" form is
+                    # what the staleness grep matches (the bare method name
+                    # may appear in prose). Matches namespaced call sites too:
+                    # "Orders::CreateOrder.call" contains "CreateOrder.call".
+                    constant = "".join(p.capitalize() for p in Path(module).stem.split("_"))
                     return {
                         "module": module,
                         "function": function,
                         "new_name": f"{function}_renamed",
+                        "old_needle": f"{constant}.{function}",
                     }
     return None
 

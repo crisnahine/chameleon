@@ -100,6 +100,9 @@ def _resolve_ts_crossfile_target(repo_root: Path) -> dict | None:
                         "module": module,
                         "function": function,
                         "new_name": f"{function}Renamed",
+                        # Qualified call form for the staleness grep; the
+                        # bare name may appear in prose.
+                        "old_needle": f"{function}(",
                     }
     return None
 

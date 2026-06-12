@@ -66,6 +66,10 @@ CROSSFILE_TARGETS = {
         "module": "app/lib/money_formatter.rb",
         "function": "format",
         "new_name": "display",
+        # Qualified call form for the staleness grep: the fixture's test
+        # labels contain the bare word "format", which must never read as
+        # a stale caller.
+        "old_needle": "MoneyFormatter.format",
     },
 }
 

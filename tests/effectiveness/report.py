@@ -31,8 +31,11 @@ def aggregate(cells: list[dict]) -> dict[str, dict]:
 
     findings_per_task = mean of (convention violations + crossfile
     broken_exports + crossfile callers_stale) over cells where at least one
-    component scored. verification_rate uses the transcript-side signal (the
-    only one comparable across arms — the off arm has no exec log).
+    component scored; kept for baseline continuity. The per-component means
+    (conv_violations_mean, broken_exports_mean, callers_stale_mean) are what
+    run.md reports — a blended sum hides which scorer moved.
+    verification_rate uses the transcript-side signal (the only one
+    comparable across arms — the off arm has no exec log).
     duplication_rate = share of duplication-scored cells that either added a
     body-hash duplicate or failed to reference the existing helper.
     """
@@ -41,6 +44,9 @@ def aggregate(cells: list[dict]) -> dict[str, dict]:
     for cat, arm in sorted({(c["category"], c["arm"]) for c in ok}):
         group = [c for c in ok if c["category"] == cat and c["arm"] == arm]
         findings: list[float] = []
+        conv_vals: list[float] = []
+        broken_vals: list[float] = []
+        stale_vals: list[float] = []
         verify: list[float] = []
         dup: list[float] = []
         cost: list[float] = []
@@ -52,11 +58,13 @@ def aggregate(cells: list[dict]) -> dict[str, dict]:
             conv = s.get("convention") or {}
             if isinstance(conv.get("violations"), int):
                 total += conv["violations"]
+                conv_vals.append(float(conv["violations"]))
                 have = True
             cf = s.get("crossfile") or {}
-            for key in ("broken_exports", "callers_stale"):
+            for key, bucket in (("broken_exports", broken_vals), ("callers_stale", stale_vals)):
                 if isinstance(cf.get(key), int):
                     total += cf[key]
+                    bucket.append(float(cf[key]))
                     have = True
             if have:
                 findings.append(float(total))
@@ -75,6 +83,9 @@ def aggregate(cells: list[dict]) -> dict[str, dict]:
         out[f"{cat}|{arm}"] = {
             "cells": len(group),
             "findings_per_task": _mean(findings),
+            "conv_violations_mean": _mean(conv_vals),
+            "broken_exports_mean": _mean(broken_vals),
+            "callers_stale_mean": _mean(stale_vals),
             "verification_rate": _mean(verify),
             "duplication_rate": _mean(dup),
             "cost_usd_mean": _mean(cost),
@@ -159,8 +170,9 @@ def render_run_md(
         "",
         "## Aggregates",
         "",
-        "| category | arm | cells | findings/task | verify rate | dup rate | $ mean | wall s |",
-        "|---|---|---|---|---|---|---|---|",
+        "| category | arm | cells | conv viol | broken exp | stale callers "
+        "| verify rate | dup rate | $ mean | wall s |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for key, m in sorted(aggregates.items()):
         cat, arm = key.split("|", 1)
@@ -169,7 +181,8 @@ def render_run_md(
             return "-" if v is None else f"{v}"
 
         lines.append(
-            f"| {cat} | {arm} | {m['cells']} | {fmt(m['findings_per_task'])} | "
+            f"| {cat} | {arm} | {m['cells']} | {fmt(m.get('conv_violations_mean'))} | "
+            f"{fmt(m.get('broken_exports_mean'))} | {fmt(m.get('callers_stale_mean'))} | "
             f"{fmt(m['verification_rate'])} | {fmt(m['duplication_rate'])} | "
             f"{fmt(m['cost_usd_mean'])} | {fmt(m['wall_seconds_mean'])} |"
         )

@@ -79,6 +79,172 @@ def test_aggregate_excludes_errors_and_unscored():
     assert aggs["convention|off"]["findings_per_task"] == 4.0  # unscored excluded from mean
 
 
+def test_aggregate_component_breakout():
+    cells = [
+        _cell(
+            "off",
+            category="crossfile",
+            scores={
+                "convention": {"violations": 7},
+                "crossfile": {
+                    "broken_exports": 1,
+                    "callers_total": 8,
+                    "callers_updated": 6,
+                    "callers_stale": 2,
+                },
+            },
+        ),
+        _cell(
+            "off",
+            category="crossfile",
+            scores={
+                "convention": {"violations": 0},
+                "crossfile": {
+                    "broken_exports_unscored": "typescript-only",
+                    "callers_total": 7,
+                    "callers_updated": 7,
+                    "callers_stale": 0,
+                },
+            },
+        ),
+    ]
+    aggs = aggregate(cells)
+    m = aggs["crossfile|off"]
+    # findings_per_task stays (baseline continuity) ...
+    assert m["findings_per_task"] == 5.0  # ((7+1+2) + (0+0)) / 2
+    # ... and each component is reported on its own.
+    assert m["conv_violations_mean"] == 3.5
+    assert m["broken_exports_mean"] == 1.0  # only the cell that scored it
+    assert m["callers_stale_mean"] == 1.0
+
+
+def test_run_md_breaks_findings_out_per_scorer():
+    cells = [
+        _cell(
+            "off",
+            category="crossfile",
+            scores={
+                "convention": {"violations": 7},
+                "crossfile": {"broken_exports": 1, "callers_stale": 2},
+            },
+        ),
+    ]
+    md = render_run_md(
+        run_id="effectiveness_x",
+        tier="ci",
+        arms=["off"],
+        model="sonnet",
+        toggle=None,
+        cells=cells,
+        aggregates=aggregate(cells),
+        deltas=[],
+        panel_rows=[],
+        total_cost_usd=0.2,
+    )
+    assert "| conv viol | broken exp | stale callers |" in md
+    assert "findings/task" not in md
+    # The crossfile|off row carries the per-scorer values, not one blended sum.
+    assert "| crossfile | off | 1 | 7.0 | 1.0 | 2.0 |" in md
+
+
+def test_real_scorer_shapes_flow_into_aggregate(tmp_path, monkeypatch):
+    """Contract: feed every REAL scorer's output through aggregate, so a
+    scorer-side metric-key rename breaks this test instead of silently
+    emptying run.md columns."""
+    from tests.effectiveness.scorers import convention, cost, verification
+    from tests.effectiveness.tests.test_scorer_base import _ctx
+    from tests.effectiveness.tests.test_scorer_crossfile import (
+        CROSSFILE_TWO_HIGH,
+    )
+    from tests.effectiveness.tests.test_scorer_crossfile import (
+        _make_ctx as _crossfile_ctx,
+    )
+    from tests.effectiveness.tests.test_scorer_duplication import (
+        _make_ctx as _dup_ctx,
+    )
+    from tests.effectiveness.tests.test_scorer_duplication import (
+        _pf,
+    )
+
+    # convention: one real violation through the real scorer.
+    conv_ctx = _ctx(tmp_path / "conv")
+    (tmp_path / "conv" / "src").mkdir(parents=True)
+    (tmp_path / "conv" / "src" / "A.tsx").write_text("export const A = 1;\n")
+    conv_ctx.changed_files = ["src/A.tsx"]
+    monkeypatch.setattr(
+        convention,
+        "_pattern_context",
+        lambda path: {"data": {"archetype": {"archetype": "component"}}},
+    )
+    monkeypatch.setattr(
+        convention,
+        "_lint",
+        lambda **kw: {"data": {"violations": [{"rule": "x", "severity": "warning"}]}},
+    )
+    conv_out = convention.score(conv_ctx)
+
+    # crossfile: real scorer over a real tmp repo (one stale caller).
+    cf_ctx = _crossfile_ctx(
+        tmp_path / "cf",
+        monkeypatch,
+        {
+            "src/a.ts": "formatCurrency(1);\n",
+            "src/b.ts": "formatCurrency(2);\n",
+            "src/c.ts": "formatMoney(3);\n",
+        },
+        CROSSFILE_TWO_HIGH,
+    )
+    from tests.effectiveness.scorers import crossfile as crossfile_mod
+
+    cf_out = crossfile_mod.score(cf_ctx)
+
+    # duplication: real scorer, one body-hash clone, no reuse.
+    dup_ctx = _dup_ctx(
+        tmp_path / "dup",
+        monkeypatch,
+        {"src/components/Card.tsx": [_pf("makeSlug", "aaaa000011112222", "zzzz")]},
+    )
+    from tests.effectiveness.scorers import duplication as duplication_mod
+
+    dup_out = duplication_mod.score(dup_ctx)
+
+    # verification: real scorer with a classifying test command.
+    ver_ctx = _ctx(tmp_path / "ver")
+    ver_ctx.bash_commands = ["npm test"]
+    monkeypatch.setattr(verification, "_session_test_run_seen", lambda r, s: True)
+    ver_out = verification.score(ver_ctx)
+
+    # cost: real scorer.
+    cost_out = cost.score(_ctx(tmp_path / "cost"))
+
+    for out in (conv_out, cf_out, dup_out, ver_out, cost_out):
+        assert "unscored" not in out, out
+
+    cells = [
+        _cell(
+            "shadow",
+            category="crossfile",
+            scores={
+                "convention": conv_out,
+                "crossfile": cf_out,
+                "verification": ver_out,
+                "cost": cost_out,
+            },
+        ),
+        _cell("shadow", category="duplication", scores={"duplication": dup_out}),
+    ]
+    aggs = aggregate(cells)
+    m = aggs["crossfile|shadow"]
+    assert m["findings_per_task"] == 4.0  # 1 violation + 2 broken + 1 stale
+    assert m["conv_violations_mean"] == 1.0
+    assert m["broken_exports_mean"] == 2.0
+    assert m["callers_stale_mean"] == 1.0
+    assert m["verification_rate"] == 1.0
+    assert m["cost_usd_mean"] is not None
+    assert m["wall_seconds_mean"] is not None
+    assert aggs["duplication|shadow"]["duplication_rate"] == 1.0
+
+
 def test_duplication_rate_definition():
     cells = [
         _cell(
