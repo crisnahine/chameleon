@@ -32,6 +32,15 @@ from chameleon_mcp.enforcement import EnforcementState, FileState, save_state
 @pytest.fixture(autouse=True)
 def _isolate_metrics(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "metrics-isolated"))
+    # A known bare-auth failure routes the judge through launch_async_judge,
+    # so the sync run_correctness_judge mock would never fire. The marker dir
+    # is already isolated above; also reset the process-global cache, which an
+    # earlier test in the same process can poison from its own marker read.
+    monkeypatch.delenv("CHAMELEON_JUDGE_ASYNC", raising=False)
+    from chameleon_mcp import judge
+
+    monkeypatch.setattr(judge, "_BARE_AUTH_OK", None, raising=False)
+    monkeypatch.setattr(judge, "_RUNNING_DETACHED", False, raising=False)
 
 
 @pytest.fixture

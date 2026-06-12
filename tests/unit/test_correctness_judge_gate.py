@@ -40,6 +40,18 @@ def _event_isolation(tmp_path, monkeypatch):
     key_file.chmod(0o600)
     monkeypatch.setenv("CHAMELEON_HMAC_KEY_PATH", str(key_file))
     monkeypatch.setenv("TMPDIR", str(tmp_path))
+    # A known bare-auth failure routes the judge through launch_async_judge,
+    # so the sync run_correctness_judge mock would never fire. Isolate the
+    # marker dir (judge reads plugin_paths.plugin_data_dir directly, not the
+    # hook_helper alias patched below) and reset the process-global cache so
+    # the developer's real marker can never flip these tests to the async
+    # route.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path))
+    monkeypatch.delenv("CHAMELEON_JUDGE_ASYNC", raising=False)
+    from chameleon_mcp import judge
+
+    monkeypatch.setattr(judge, "_BARE_AUTH_OK", None, raising=False)
+    monkeypatch.setattr(judge, "_RUNNING_DETACHED", False, raising=False)
     yield
 
 
