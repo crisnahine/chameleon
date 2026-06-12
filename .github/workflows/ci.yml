@@ -94,7 +94,7 @@ jobs:
         working-directory: mcp
         env:
           PYTHONPATH: '.:..'
-        run: .venv/bin/python -m pytest ../tests/unit/ ../tests/journey/harness/tests/ -v
+        run: .venv/bin/python -m pytest ../tests/unit/ ../tests/journey/harness/tests/ ../tests/effectiveness/tests/ -v
 
   test-windows:
     name: test-windows (py${{ matrix.python-version }})

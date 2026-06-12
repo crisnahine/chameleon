@@ -55,6 +55,9 @@ tests/dogfood/results/dogfood_*.md
 
 # Journey harness run output (per-run ephemeral dirs)
 tests/journey/results/
+
+# Effectiveness eval run output (per-run ephemeral dirs)
+tests/effectiveness/results/
 # Pytest cache for harness library tests
 tests/journey/harness/tests/__pycache__/
 tests/journey/harness/tests/.pytest_cache/
