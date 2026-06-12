@@ -103,5 +103,14 @@ def apply_arm_config(spec: ArmSpec, worktree: Path) -> None:
     enforcement["mode"] = spec.base_mode
     if spec.toggle_key is not None:
         enforcement[spec.toggle_key] = spec.toggle_value
+    # Cells must be hermetic: the arm-setup commit makes the cloned profile
+    # look stale, and a mid-session auto-refresh then re-derives it, polluting
+    # the session diff with profile churn and charging one arm a re-derivation
+    # the other never pays. Same-cell comparability beats realism here.
+    auto_refresh = data.get("auto_refresh")
+    if not isinstance(auto_refresh, dict):
+        auto_refresh = {}
+        data["auto_refresh"] = auto_refresh
+    auto_refresh["enabled"] = False
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")

@@ -77,3 +77,19 @@ def test_apply_arm_config_creates_config_when_missing(tmp_path):
     apply_arm_config(spec, tmp_path)
     data = json.loads((tmp_path / ".chameleon" / "config.json").read_text())
     assert data["enforcement"]["mode"] == "shadow"
+
+
+def test_apply_arm_config_disables_auto_refresh(tmp_path):
+    """The arm-setup commit makes the cloned profile look stale; a mid-session
+    auto-refresh would pollute the session diff with profile churn and charge
+    one arm a re-derivation the other never pays. Every arm pins it off."""
+    cham = tmp_path / ".chameleon"
+    cham.mkdir()
+    (cham / "config.json").write_text(
+        json.dumps({"auto_refresh": {"enabled": True, "drift_threshold": 0.2}})
+    )
+    spec = parse_arms("shadow", None)[0]
+    apply_arm_config(spec, tmp_path)
+    data = json.loads((cham / "config.json").read_text())
+    assert data["auto_refresh"]["enabled"] is False
+    assert data["auto_refresh"]["drift_threshold"] == 0.2  # sibling keys preserved
