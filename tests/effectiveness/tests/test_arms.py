@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from tests.effectiveness.arms import ArmError, apply_arm_config, arm_env, parse_arms
 
 

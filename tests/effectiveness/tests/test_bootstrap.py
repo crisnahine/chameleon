@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from tests.effectiveness import bootstrap
 from tests.journey.harness.bash import run_bash
 from tests.journey.harness.fixtures import setup_fixture

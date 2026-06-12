@@ -10,8 +10,8 @@ they are the forensic record run.md points at.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from tests.effectiveness.arms import ArmSpec, apply_arm_config
 from tests.journey.harness.bash import run_bash

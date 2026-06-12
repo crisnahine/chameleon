@@ -154,9 +154,7 @@ def test_small_worsening_not_flagged():
     }
     baselines = {
         "schema_version": 1,
-        "baselines": {
-            "ci": {"convention": {"shadow": {"findings_per_task": 2.0, "run_id": "r0"}}}
-        },
+        "baselines": {"ci": {"convention": {"shadow": {"findings_per_task": 2.0, "run_id": "r0"}}}},
     }
     rows = compare_to_baseline(aggs, baselines, tier="ci")
     assert rows[0]["regression"] is False  # +10% within tolerance
