@@ -78,6 +78,13 @@ def test_valid_metrics_pass_through(tmp_path, monkeypatch):
     assert out == {"violations": 3, "rate": 0.5, "seen": True, "why": "x"}
 
 
+def test_mixed_unscored_and_metrics_collapses_to_unscored(tmp_path, monkeypatch):
+    monkeypatch.setitem(SCORERS, "mixed", lambda ctx: {"unscored": "partial", "x": 1})
+    out = run_scorer("mixed", _ctx(tmp_path))
+    assert set(out) == {"unscored"}
+    assert "mixed" in out["unscored"]
+
+
 def test_registry_names_match_spec():
     assert set(SCORERS) == {"convention", "crossfile", "duplication", "verification", "cost"}
     assert PANEL_SCORER == "judge_panel"

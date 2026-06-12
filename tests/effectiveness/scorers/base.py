@@ -67,6 +67,10 @@ def run_scorer(name: str, ctx: ScoreContext) -> dict:
         return unscored(f"scorer {name!r} returned non-dict or empty result")
     if set(out) == {"unscored"}:
         return unscored(out["unscored"])
+    if "unscored" in out:
+        # EITHER/OR contract: a scorer may not hedge with metrics AND an
+        # unscored marker — an ambiguous row would poison aggregation.
+        return unscored(f"scorer {name!r} mixed 'unscored' with metrics")
     bad = [k for k, v in out.items() if not isinstance(k, str) or not _valid_value(v)]
     if bad:
         return unscored(f"scorer {name!r} produced non-scalar/non-finite metric(s): {bad}")
