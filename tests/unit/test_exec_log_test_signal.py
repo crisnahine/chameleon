@@ -77,6 +77,9 @@ def test_classify_recognizes_runners(command: str):
         "rm -rf tests/",
         "docker build -t app .",
         "grep -r testfoo src/",
+        "ruby --Itest",  # not the -Itest flag
+        "ruby x-Itest",  # flag must follow whitespace, not ride another token
+        "ruby -Itestfoo",  # -Itest must end at a word boundary
     ],
 )
 def test_classify_rejects_non_runners(command: str):

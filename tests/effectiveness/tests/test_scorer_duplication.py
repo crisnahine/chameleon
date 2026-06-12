@@ -108,3 +108,15 @@ def test_missing_catalog_is_unscored(tmp_path, monkeypatch):
     out = duplication.score(ctx)
     assert set(out) == {"unscored"}
     assert "catalog" in out["unscored"]
+
+
+def test_dead_extractor_probe_is_unscored(tmp_path, monkeypatch):
+    # The probe file (the catalog's first entry) exists on disk but parses to
+    # nothing: the extractor is unavailable and a zero would be fabricated.
+    ctx = _make_ctx(tmp_path, monkeypatch, {"src/components/Card.tsx": []})
+    probe = tmp_path / "src/utils/slugify.ts"
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text("export function slugify(s: string) { return s; }\n")
+    out = duplication.score(ctx)
+    assert set(out) == {"unscored"}
+    assert "parse unavailable" in out["unscored"]
