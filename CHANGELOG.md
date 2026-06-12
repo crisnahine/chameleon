@@ -4,6 +4,18 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.2] - 2026-06-12
+
+The effectiveness eval harness (arc 2): a repeatable A/B measurement of whether chameleon improves agent output, plus one runtime fix it surfaced. First measurement run (24 cells, $8.58, zero errors) is seeded as the tier-ci baseline.
+
+### Added
+
+- **Effectiveness eval harness** (`tests/effectiveness/`, local-only, never CI). Real `claude -p` sessions run identical task prompts under matched arms (off / shadow / enforce, plus `--toggle <enforcement key>` paired arms for feature-level experiments), in per-cell git worktrees with bootstrap-once profile cloning. Deterministic-first scoring (convention lint, crossfile callers-updated from the calls index, duplication body-hash, verification from the exec log) under a strict metrics-or-unscored contract; a blind pairwise judge panel for the subjective remainder; run.json / run.md scoreboards with committed baselines and a direction-aware regression banner. Two committed convention-rich fixtures (TS + Rails) carry 8 ci tasks; tier-full task packs target the env-pointed real repos. See `tests/effectiveness/README.md`.
+
+### Fixed
+
+- **`ruby -Itest` was never classified as a test command.** The exec-log classifier's `\b(?:-Itest|minitest)\b` had an unreachable first branch (no word boundary between whitespace and `-`), so the standard minitest invocation never recorded `test_command_seen` and the Stop-gate test nudge fired even after a passing suite. The pattern now uses a lookbehind, with negative cases pinned.
+
 ## [2.13.1] - 2026-06-12
 
 Remediation of the qa28 real-user campaign: ~80 live `claude -p` sessions drove every tool, command, and hook from scratch on never-profiled GitHub clones (vercel/swr, thoughtbot/administrate), plus an A/B effectiveness battery and a v2.12.0 upgrade simulation. The campaign confirmed the upgrade path loses nothing for existing users, and found five P1s that no scripted test layer had caught; all ship fixed here, each regression-verified from its original repro. Full unit suite 3,544 passing.
