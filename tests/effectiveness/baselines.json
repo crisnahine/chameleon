@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "updated": null,
+  "comment": "Headline metrics per (tier, category, arm), updated manually at release. Shape: baselines.<tier>.<category>.<arm> = {findings_per_task, verification_rate, duplication_rate, cost_usd_mean, wall_seconds_mean, run_id}.",
+  "baselines": {}
+}
