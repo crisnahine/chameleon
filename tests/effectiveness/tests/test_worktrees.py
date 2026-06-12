@@ -5,7 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from tests.effectiveness.arms import parse_arms
-from tests.effectiveness.worktrees import changed_files, prepare_cell, session_diff
+from tests.effectiveness.worktrees import (
+    changed_files,
+    prepare_cell,
+    remove_cell_worktree,
+    session_diff,
+)
 from tests.journey.harness.bash import run_bash
 from tests.journey.harness.fixtures import setup_fixture
 
@@ -23,18 +28,10 @@ def _seed_repo(tmp_path: Path) -> Path:
 def test_prepare_cell_creates_isolated_worktree(tmp_path):
     repo = _seed_repo(tmp_path)
     shadow = parse_arms("shadow", None)[0]
-    granted = []
     wt = tmp_path / "wt1"
-    baseline = prepare_cell(
-        fixture_repo=repo,
-        dest=wt,
-        arm=shadow,
-        setup_fn=None,
-        trust_fn=lambda p: granted.append(p) or "rid",
-    )
+    baseline = prepare_cell(fixture_repo=repo, dest=wt, arm=shadow, setup_fn=None)
     assert (wt / "src" / "a.ts").is_file()
     assert (wt / ".chameleon" / "config.json").is_file()
-    assert granted == [wt]
     # arm-setup commit means the worktree diff vs baseline is empty
     assert changed_files(wt, baseline) == []
     # editing the worktree never touches the fixture repo
@@ -50,9 +47,7 @@ def test_setup_mutation_is_committed_not_diffed(tmp_path):
         (worktree / "src" / "planted.ts").write_text("export const bug = true;\n")
 
     wt = tmp_path / "wt2"
-    baseline = prepare_cell(
-        fixture_repo=repo, dest=wt, arm=shadow, setup_fn=plant, trust_fn=lambda p: "rid"
-    )
+    baseline = prepare_cell(fixture_repo=repo, dest=wt, arm=shadow, setup_fn=plant)
     assert (wt / "src" / "planted.ts").is_file()
     assert changed_files(wt, baseline) == []  # planted BEFORE baseline
 
@@ -61,13 +56,24 @@ def test_changed_files_tracks_modified_and_untracked_not_chameleon(tmp_path):
     repo = _seed_repo(tmp_path)
     shadow = parse_arms("shadow", None)[0]
     wt = tmp_path / "wt3"
-    baseline = prepare_cell(
-        fixture_repo=repo, dest=wt, arm=shadow, setup_fn=None, trust_fn=lambda p: "rid"
-    )
+    baseline = prepare_cell(fixture_repo=repo, dest=wt, arm=shadow, setup_fn=None)
     (wt / "src" / "a.ts").write_text("export const a = 2;\n")
     (wt / "src" / "new.ts").write_text("export const n = 1;\n")
     (wt / ".chameleon" / "scratch.json").write_text("{}\n")
     assert changed_files(wt, baseline) == ["src/a.ts", "src/new.ts"]
+
+
+def test_remove_cell_worktree_unregisters(tmp_path):
+    # Env-pointed (tier-full) repos are the user's real repos: a completed
+    # cell must leave no worktree registration behind.
+    repo = _seed_repo(tmp_path)
+    shadow = parse_arms("shadow", None)[0]
+    wt = tmp_path / "wt-remove"
+    prepare_cell(fixture_repo=repo, dest=wt, arm=shadow, setup_fn=None)
+    assert "wt-remove" in run_bash("git worktree list", cwd=repo).stdout
+    remove_cell_worktree(repo, wt)
+    assert not wt.exists()
+    assert "wt-remove" not in run_bash("git worktree list", cwd=repo).stdout
 
 
 def test_claude_dir_excluded_from_changed_files_and_diff(tmp_path):
@@ -76,9 +82,7 @@ def test_claude_dir_excluded_from_changed_files_and_diff(tmp_path):
     repo = _seed_repo(tmp_path)
     shadow = parse_arms("shadow", None)[0]
     wt = tmp_path / "wt4"
-    baseline = prepare_cell(
-        fixture_repo=repo, dest=wt, arm=shadow, setup_fn=None, trust_fn=lambda p: "rid"
-    )
+    baseline = prepare_cell(fixture_repo=repo, dest=wt, arm=shadow, setup_fn=None)
     (wt / ".claude").mkdir()
     (wt / ".claude" / "whatever").write_text('{"name": "task__shadow__r1"}\n')
     (wt / "src" / "a.ts").write_text("export const a = 2;\n")
@@ -93,10 +97,8 @@ def test_two_arms_same_task_do_not_contaminate(tmp_path):
     repo = _seed_repo(tmp_path)
     off, shadow = parse_arms("off,shadow", None)
     wt_off, wt_shadow = tmp_path / "wt-off", tmp_path / "wt-shadow"
-    prepare_cell(fixture_repo=repo, dest=wt_off, arm=off, setup_fn=None, trust_fn=lambda p: "rid")
-    prepare_cell(
-        fixture_repo=repo, dest=wt_shadow, arm=shadow, setup_fn=None, trust_fn=lambda p: "rid"
-    )
+    prepare_cell(fixture_repo=repo, dest=wt_off, arm=off, setup_fn=None)
+    prepare_cell(fixture_repo=repo, dest=wt_shadow, arm=shadow, setup_fn=None)
     (wt_off / "src" / "a.ts").write_text("OFF EDIT\n")
     assert (wt_shadow / "src" / "a.ts").read_text() == "export const a = 1;\n"
     r = run_bash("git worktree list", cwd=repo)

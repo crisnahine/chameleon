@@ -38,7 +38,12 @@ from tests.effectiveness.scorers.judge_panel import (  # noqa: E402
     run_panel,
 )
 from tests.effectiveness.tasks import collect_tasks, load_packs  # noqa: E402
-from tests.effectiveness.worktrees import changed_files, prepare_cell, session_diff  # noqa: E402
+from tests.effectiveness.worktrees import (  # noqa: E402
+    changed_files,
+    prepare_cell,
+    remove_cell_worktree,
+    session_diff,
+)
 from tests.journey.harness import preflight as journey_preflight  # noqa: E402
 from tests.journey.harness.claude import spawn_claude  # noqa: E402
 from tests.journey.harness.context import build_context  # noqa: E402
@@ -54,6 +59,7 @@ SESSION_TOOLS = ["Bash", "Read", "Edit", "Write", "Grep", "Glob"]
 
 # Seams (tests monkeypatch these module attributes).
 _prepare_cell = prepare_cell
+_remove_worktree = remove_cell_worktree
 _grant_trust = grant_worktree_trust
 _changed_files = changed_files
 _session_diff = session_diff
@@ -95,6 +101,15 @@ def _select_tasks(args) -> list:
         if missing:
             raise SystemExit2(f"unknown task id(s): {missing}")
         tasks = [by_id[w] for w in wanted]
+        for t in tasks:
+            if t.tier != args.tier:
+                # Explicit selection wins, but the run's baselines are
+                # tier-keyed — comparing this task against them is suspect.
+                print(
+                    f"WARNING: selected task {t.task_id} is tier '{t.tier}' but this run "
+                    f"compares against tier '{args.tier}' baselines",
+                    file=sys.stderr,
+                )
     return tasks
 
 
@@ -223,6 +238,7 @@ def _execute(args, tasks, arms, cells) -> int:
     cell_rows: list[dict] = []
     diffs_by_task: dict[str, dict[str, str]] = {}
     cells_by_task: dict[str, list[dict]] = {}
+    leaked_env_repos: dict[str, Path] = {}
     cost_so_far = 0.0
 
     for idx, (task, arm, rep) in enumerate(cells):
@@ -244,10 +260,21 @@ def _execute(args, tasks, arms, cells) -> int:
         cost_so_far += (row.get("session") or {}).get("cost_usd") or 0.0
         if row["status"] == "ok":
             cells_by_task.setdefault(task.task_id, []).append(row)
+            # Keyed (task, arm): with repeats > 1 the LAST repeat's diff
+            # wins. The panel judges one representative diff per arm, not a
+            # per-repeat census — pinned by test, revisit if repeats grow.
             diffs_by_task.setdefault(task.task_id, {})[arm.name] = row.pop("_diff", "")
+        _cleanup_env_worktree(ctx, fixture_roots, leaked_env_repos, task, arm, rep, row)
         print(
             f"[{idx + 1}/{len(cells)}] {task.task_id} | {arm.name} | r{rep} -> "
             f"{row['status']} (cumulative ${cost_so_far:.2f})",
+            file=sys.stderr,
+        )
+
+    for root in sorted(set(leaked_env_repos.values())):
+        print(
+            f"NOTE: kept (error/unremovable) cell worktrees are still registered in {root}; "
+            f"after inspecting them, delete the dirs and run `git -C {root} worktree prune`.",
             file=sys.stderr,
         )
 
@@ -282,6 +309,29 @@ def _execute(args, tasks, arms, cells) -> int:
     return 0 if ran_ok else 1
 
 
+def _cell_id(task, arm, rep) -> str:
+    return f"{task.task_id}__{arm.name}__r{rep}".replace("/", "_")
+
+
+def _cleanup_env_worktree(ctx, fixture_roots, leaked_env_repos, task, arm, rep, row) -> None:
+    """Tier-full cells run inside the user's REAL repo: unregister the
+    worktree once the cell scored ok. Error cells keep theirs for forensics;
+    the run-end summary then names the repo that needs a manual prune.
+    Committed-fixture (tier-ci) clones are exempt — retention is their
+    forensic record."""
+    if task.fixture in FIXTURE_SEEDS or task.fixture not in fixture_roots:
+        return
+    dest = ctx.run_dir / "worktrees" / _cell_id(task, arm, rep)
+    if row["status"] == "ok":
+        try:
+            _remove_worktree(fixture_roots[task.fixture], dest)
+        except Exception as exc:  # noqa: BLE001 - cleanup must not sink the run
+            print(f"WARN: could not remove worktree {dest}: {exc}", file=sys.stderr)
+            leaked_env_repos[task.fixture] = fixture_roots[task.fixture]
+    elif dest.exists():
+        leaked_env_repos[task.fixture] = fixture_roots[task.fixture]
+
+
 def _cell_row(task, arm, rep, status, reason=None, session=None, scores=None) -> dict:
     return {
         "task_id": task.task_id,
@@ -311,7 +361,7 @@ def _resolve_prompt(task, pack, repo_root) -> tuple[str | None, str | None]:
 def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
     from tests.effectiveness.arms import arm_env
 
-    cell_id = f"{task.task_id}__{arm.name}__r{rep}".replace("/", "_")
+    cell_id = _cell_id(task, arm, rep)
     dest = ctx.run_dir / "worktrees" / cell_id
     try:
         prompt, skip_reason = _resolve_prompt(task, pack, fixture_repo)
@@ -323,8 +373,10 @@ def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
             dest=dest,
             arm=arm,
             setup_fn=setup_fn,
-            trust_fn=_grant_trust,
         )
+        # Single trust grant per cell, for EVERY arm: the off arm's session
+        # ignores the profile via CHAMELEON_DISABLE, but post-session
+        # scoring still needs trusted reads (and the repo_id below).
         repo_id = _grant_trust(dest)
         transcript = ctx.run_dir / "transcripts" / f"{cell_id}.txt"
         t0 = time.monotonic()

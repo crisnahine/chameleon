@@ -57,7 +57,38 @@ def test_unknown_task_id_is_an_error(stub_tasks, capsys):
 def test_tasks_filter_selects_subset(stub_tasks, capsys):
     rc = runner.main(["--dry-run", "--tasks", "t1-stub-conv", "--arms", "off,shadow"])
     assert rc == 0
-    assert "cells: 2" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "cells: 2" in err
+    assert "WARNING" not in err  # selected task matches --tier
+
+
+def test_cross_tier_task_selection_warns(monkeypatch, capsys):
+    tasks = [
+        EffTask(
+            task_id="t1-stub-conv",
+            tier="ci",
+            fixture="ts",
+            prompt="p1",
+            category="convention",
+            scorers=("convention", "cost"),
+        ),
+        EffTask(
+            task_id="t2-stub-full",
+            tier="full",
+            fixture="env-ts",
+            prompt="p2",
+            category="convention",
+            scorers=("convention", "cost"),
+        ),
+    ]
+    monkeypatch.setattr(runner, "_collect_tasks", lambda: tasks)
+    rc = runner.main(["--dry-run", "--tasks", "t2-stub-full", "--tier", "ci", "--arms", "off"])
+    assert rc == 0  # explicit selection still runs ...
+    err = capsys.readouterr().err
+    # ... but the cross-tier baseline mismatch is flagged.
+    assert "WARNING" in err
+    assert "t2-stub-full" in err
+    assert "tier" in err
 
 
 def test_repeats_override(stub_tasks, capsys):

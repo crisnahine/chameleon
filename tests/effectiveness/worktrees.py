@@ -4,8 +4,11 @@ Each cell runs in a fresh detached worktree of the bootstrapped fixture repo
 so arms can never contaminate each other. Arm config flip + task setup are
 committed as an "arm setup" commit BEFORE the session, so changed_files()
 sees only what the session itself did. Worktrees live under the run dir
-(gitignored, per-run ephemeral) and are deliberately NOT removed afterwards:
-they are the forensic record run.md points at.
+(gitignored, per-run ephemeral). Committed-fixture clones keep their
+worktrees afterwards — they are the forensic record run.md points at — but
+cells on env-pointed REAL repos are unregistered on success via
+remove_cell_worktree(), so a run never accumulates registrations in the
+user's own repo.
 """
 
 from __future__ import annotations
@@ -36,13 +39,13 @@ def prepare_cell(
     dest: Path,
     arm: ArmSpec,
     setup_fn: Callable[[Path], None] | None,
-    trust_fn: Callable[[Path], str],
 ) -> str:
-    """Create the cell's worktree, apply arm + setup, commit, grant trust.
+    """Create the cell's worktree, apply arm + setup, commit.
 
-    Returns the baseline commit SHA (post-setup HEAD). Trust is granted for
-    EVERY arm — the off arm's session ignores the profile via
-    CHAMELEON_DISABLE, but post-session scoring still needs trusted reads.
+    Returns the baseline commit SHA (post-setup HEAD). Trust is granted by
+    the runner (which needs the repo_id for scoring), AFTER this returns —
+    the config flip must precede the grant because config.json is part of
+    the trust hash.
     """
     _git(fixture_repo, f'worktree add --detach "{dest}" HEAD')
     apply_arm_config(arm, dest)
@@ -50,9 +53,18 @@ def prepare_cell(
         setup_fn(dest)
     _git(dest, f"{_GIT_ID} add -A")
     _git(dest, f'{_GIT_ID} commit -q --allow-empty -m "arm setup: {arm.name}"')
-    baseline_sha = _git(dest, "rev-parse HEAD").strip()
-    trust_fn(dest)
-    return baseline_sha
+    return _git(dest, "rev-parse HEAD").strip()
+
+
+def remove_cell_worktree(fixture_repo: Path, dest: Path) -> None:
+    """Unregister and delete one cell worktree from its fixture repo.
+
+    Env-pointed (tier-full) repos are the user's REAL repos; a leaked
+    registration would sit in them until a manual `git worktree prune`.
+    Committed-fixture clones never call this — their worktrees are retained
+    as the forensic record.
+    """
+    _git(fixture_repo, f'worktree remove --force "{dest}"')
 
 
 def changed_files(worktree: Path, baseline_sha: str) -> list[str]:

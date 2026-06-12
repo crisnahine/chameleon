@@ -9,7 +9,9 @@ and always run on dev machines.
 
 from __future__ import annotations
 
+import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -25,6 +27,23 @@ needs_node = pytest.mark.skipif(
 needs_ruby = pytest.mark.skipif(
     shutil.which("ruby") is None,
     reason="ruby required to bootstrap the Rails fixture",
+)
+
+
+def _node_supports_strip_types() -> bool:
+    """The TS fixture's suite runs via --experimental-strip-types (node 22.6+).
+    On older node the suite fails even pristine, which would make the
+    planted-bug assertion pass for the wrong reason."""
+    if shutil.which("node") is None:
+        return False
+    out = subprocess.run(["node", "--version"], capture_output=True, text=True)
+    m = re.match(r"v(\d+)\.(\d+)", out.stdout.strip())
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= (22, 6)
+
+
+needs_strip_types = pytest.mark.skipif(
+    not _node_supports_strip_types(),
+    reason="node >= 22.6 required to run the TS fixture suite (--experimental-strip-types)",
 )
 
 
@@ -97,28 +116,32 @@ def test_eff_rails_duplication_bait_in_catalog_and_idioms_survive(tmp_path):
     assert "services-return-result-never-raise" in idioms
 
 
-def test_setups_mutate_then_fixture_tests_fail(tmp_path):
-    """Each planted bug must make the fixture's own test command fail —
-    otherwise the verification prompt lies and the task measures nothing."""
-    import subprocess
-
-    from tests.effectiveness.tasks import tier1_rails, tier1_ts
+@needs_strip_types
+def test_ts_setup_mutates_then_fixture_tests_fail(tmp_path):
+    """The planted bug must make the fixture's own test command fail —
+    otherwise the verification prompt lies and the task measures nothing.
+    Pristine must pass FIRST: a suite that fails before the bug is planted
+    would make the failure assertion pass for the wrong reason."""
+    from tests.effectiveness.tasks import tier1_ts
 
     ts_copy = tmp_path / "eff_ts"
     shutil.copytree(FIXTURES / "eff_ts", ts_copy)
+    r = subprocess.run(["npm", "test", "--silent"], cwd=ts_copy, capture_output=True, text=True)
+    assert r.returncode == 0, f"pristine fixture suite must pass: {r.stdout}{r.stderr}"
     tier1_ts.SETUPS["plant_clamp_bug"](ts_copy)
-    if shutil.which("node") is not None:
-        r = subprocess.run(["npm", "test", "--silent"], cwd=ts_copy, capture_output=True, text=True)
-        assert r.returncode != 0, "planted clamp bug did not fail the fixture tests"
+    r = subprocess.run(["npm", "test", "--silent"], cwd=ts_copy, capture_output=True, text=True)
+    assert r.returncode != 0, "planted clamp bug did not fail the fixture tests"
+
+
+@needs_ruby
+def test_rails_setup_mutates_then_fixture_tests_fail(tmp_path):
+    from tests.effectiveness.tasks import tier1_rails
 
     rails_copy = tmp_path / "eff_rails"
     shutil.copytree(FIXTURES / "eff_rails", rails_copy)
+    cmd = ["ruby", "-Itest", "tests/run_tests.rb"]
+    r = subprocess.run(cmd, cwd=rails_copy, capture_output=True, text=True)
+    assert r.returncode == 0, f"pristine fixture suite must pass: {r.stdout}{r.stderr}"
     tier1_rails.SETUPS["plant_refund_bug"](rails_copy)
-    if shutil.which("ruby") is not None:
-        r = subprocess.run(
-            ["ruby", "-Itest", "tests/run_tests.rb"],
-            cwd=rails_copy,
-            capture_output=True,
-            text=True,
-        )
-        assert r.returncode != 0, "planted refund bug did not fail the fixture tests"
+    r = subprocess.run(cmd, cwd=rails_copy, capture_output=True, text=True)
+    assert r.returncode != 0, "planted refund bug did not fail the fixture tests"
