@@ -1,8 +1,10 @@
-"""Arm construction for the effectiveness eval (extended in a later task)."""
+"""Arm construction for the effectiveness eval."""
 
 from __future__ import annotations
 
 import dataclasses
+import json
+from pathlib import Path
 
 
 class ArmError(Exception):
@@ -67,3 +69,39 @@ def parse_arms(arms_csv: str, toggle: str | None) -> list[ArmSpec]:
             )
         )
     return specs
+
+
+def arm_env(spec: ArmSpec, base_env: dict[str, str]) -> dict[str, str]:
+    """Per-arm session env: copy of the run env, plus the off arm's kill switch."""
+    env = dict(base_env)
+    if spec.disable_env:
+        env["CHAMELEON_DISABLE"] = "1"
+    return env
+
+
+def apply_arm_config(spec: ArmSpec, worktree: Path) -> None:
+    """Write the arm's enforcement mode (and toggle flip) into the worktree config.
+
+    Read-modify-write so every other committed key (production_ref,
+    canonical_ref, auto_refresh, repo_uuid) is preserved. MUST run before the
+    worktree's trust grant: config.json is part of the trust hash, so flipping
+    it afterwards would de-trust the profile mid-cell.
+    """
+    cfg_path = worktree / ".chameleon" / "config.json"
+    data: dict = {}
+    if cfg_path.is_file():
+        try:
+            loaded = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except ValueError:
+            data = {}
+    enforcement = data.get("enforcement")
+    if not isinstance(enforcement, dict):
+        enforcement = {}
+        data["enforcement"] = enforcement
+    enforcement["mode"] = spec.base_mode
+    if spec.toggle_key is not None:
+        enforcement[spec.toggle_key] = spec.toggle_value
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
