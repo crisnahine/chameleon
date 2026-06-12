@@ -1,0 +1,14 @@
+{
+  "name": "eff-ts-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types tests/run_tests.mjs"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "typescript": "^5.4.0",
+    "react": "^18.2.0"
+  }
+}
