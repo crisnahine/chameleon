@@ -4,6 +4,25 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.1] - 2026-06-16
+
+Remediation of the QA-30 full-surface campaign: a complete plugin inventory plus a five-lane hostile QA pass (failure/recovery, language depth, enforcement, upgrade/migration, regression) over the real bootstrapped repos. No P0/P1 survived independent verification — the calibration demotion, dual ignore-layers, init-skill sparse handling, and git-committed artifacts each downgraded a claimed P1 to P2 — but eight real defects ship fixed, each regression-pinned. Full unit suite 3,622 passing.
+
+### Fixed
+
+- **Multi-lens turn-end review could exceed the Stop hook's wall-clock cap.** When `enforcement.multi_lens_review` is on, the correctness and duplication lenses ran sequentially, each spawning a reviewer with its own ~45s budget — a worst case of ~90s that the 55s `stop-backstop` `timeout` would SIGKILL, losing the review while the per-session budget was already spent. `run_lenses` now runs the lenses concurrently, so the pass costs the slowest single lens (~45s), staying under the cap; per-lens fail-open and lens-ordered synthesis are preserved.
+- **Ignore directives using the full rule name did not silence the advisory for naming / file-naming / inheritance violations.** The lint-engine gates checked only the short token (`naming-convention`) while the emitted rule — and the name the violation message tells users to copy — is the long form (`naming-convention-violation`); only `import-preference` accepted both. The block was already overridable (the block path matches the long name), but the advisory kept firing. All four gates now accept both forms, matching `import-preference`.
+- **Inheritance-convention check flagged classes that ARE an established base.** A class whose own name is one of the archetype's known bases (e.g. `BaseController` told to inherit `Api::V1::BaseController` — itself), or a Rails application root (`ApplicationController`/`ApplicationRecord`/`ApplicationJob`/`ApplicationMailer`), is now exempt. On a real Rails repo this removed 5 false positives, lowering a calibration fp_rate that had demoted the rule; a genuinely wrong base still flags.
+- **A leading UTF-8 BOM skewed the runtime dimension snapshot.** The regex lint extractors (`_extract_typescript` / `_extract_ruby`) missed a first-line declaration when the file began with U+FEFF, producing spurious dimension-mismatch advisories on BOM-prefixed files (the dumper bootstrap path was already immune). Both extractors now strip a single leading BOM.
+- **`%(...)` percent-literals with a nested paren were not blanked.** A Ruby `%(eval(x))` string literal leaked its `eval(` into the dangerous-sink scan because the bracket-pair delimiter arms were non-nesting, risking an `eval-call` false positive. The four bracket-pair arms now accept one level of balanced nesting (`x % (a + b)` modulo is still correctly left alone).
+- **Refreshing after `idioms.md` was deleted silently emptied it.** A corrupt idioms.md warned and was preserved, but a deleted one wrote the empty template with no warning — surprising for the one user-authored artifact. Re-deriving over an existing profile with idioms.md absent now warns to restore from git before the empty template is committed.
+- **`bundle exec minitest` (and a bare `minitest`) was not classified as a test command**, so the Stop-gate test nudge could fire after a passing minitest run. Added a standalone `minitest` runner pattern alongside the `ruby -Itest` form.
+- **`profile.summary.md` reported "0 rule(s)" for the TypeScript config.** `count_config_rules` only counted a nested `rules` sub-key; the tsconfig/typescript block stores its settings (`strict`, `target`, ...) at the top level, so it now counts those minus the wrapper keys.
+
+### Documentation
+
+- Documented `CHAMELEON_JUDGE_MODEL` (the model the turn-end reviewers spawn; default `sonnet`) in CLAUDE.md, and corrected a stale "20 tools" docstring in `tools.py` (the surface is 37 tools).
+
 ## [2.14.0] - 2026-06-16
 
 Turn-end review gets a semantic duplication pass and a deterministic test-integrity advisory; the auto-pass router now grades each change into a complexity tier and records it; and an opt-in multi-lens turn-end review lands behind a default-off flag. The duplication change is the first one measured causally on real repos: a powered A/B (46 mined tasks, two passes, n=44 paired) shows it cuts the duplicate/fail-to-reuse rate from 86.4% to 67.0%, paired bootstrap 95% CI [+0.08, +0.31] (stable across seeds), sign test p=0.0072 — judge-free.

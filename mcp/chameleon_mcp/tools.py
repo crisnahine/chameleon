@@ -1,6 +1,6 @@
 """MCP tool implementations for chameleon.
 
-All 20 tools are fully implemented. Each tool returns the standard API
+Each registered MCP tool is fully implemented and returns the standard API
 versioning envelope:
 { "api_version": "1", "data": {...}, "truncated"?: bool, "next_cursor"?: str }
 """

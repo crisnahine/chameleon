@@ -1972,6 +1972,18 @@ def _bootstrap_single(
                     "unchanged, but taught idioms cannot be read until it is "
                     "repaired (restore from git history)."
                 )
+    elif (profile_dir / "profile.json").is_file():
+        # Re-deriving over an existing profile, but idioms.md is gone: it was
+        # deleted (or lost to a torn write) since the last derivation. A fresh
+        # template gets written below, dropping any idioms that lived only here.
+        # Warn so the user can restore from git before the empty template is
+        # committed -- without this, deletion silently empties the one
+        # user-authored artifact while a corrupt file (above) correctly warns.
+        idiom_warnings.append(
+            "idioms.md was missing; a fresh template was written. If idioms "
+            "were previously taught here, restore the file from git history "
+            "before they are lost."
+        )
     if idioms_raw_bytes is None:
         from chameleon_mcp.idiom_coverage import parse_idiom_blocks
 

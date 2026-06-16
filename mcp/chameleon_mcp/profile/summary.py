@@ -54,6 +54,17 @@ _CONFIG_META_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# Wrapper keys the orchestrator adds to a tool block alongside the real config
+# (provenance + parse diagnostics). Stripped before counting a flat top-level
+# config so they never inflate the "N rule(s) extracted" summary line.
+_TOOL_BLOCK_WRAPPER_KEYS: frozenset[str] = frozenset(
+    {
+        "source",
+        "extends_chain",
+        "parse_warning",
+    }
+)
+
 
 def count_config_rules(tool_block: dict) -> int:
     """Count the cop/rule KEYS a tool config declares, not its config leaves.
@@ -75,8 +86,18 @@ def count_config_rules(tool_block: dict) -> int:
         return 0
     inner = tool_block.get("rules")
     if not isinstance(inner, dict):
-        # No nested config payload (e.g. a parse-warning-only block).
-        return 0
+        # The tsconfig/typescript block stores its settings at the tool-block top
+        # level (``strict``, ``target``, ``noImplicitAny``, ...) rather than under
+        # a ``rules`` sub-key, so a missing ``rules`` is not an empty config.
+        # Count the top-level setting keys minus the orchestrator's wrapper keys
+        # (``source``/``extends_chain``/``parse_warning``) and the shared config
+        # scaffolding, so the summary does not read "0 rule(s)" for a real config.
+        return sum(
+            1
+            for k in tool_block
+            if str(k).lower() not in _CONFIG_META_KEYS
+            and str(k).lower() not in _TOOL_BLOCK_WRAPPER_KEYS
+        )
     nested = inner.get("rules")
     if isinstance(nested, dict):
         # eslint shape: the real rule map is one level down.

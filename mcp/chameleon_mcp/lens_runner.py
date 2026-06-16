@@ -87,13 +87,36 @@ def run_lenses(lenses, *, max_lenses: int = 4, min_confidence: float = 0.7) -> l
     confidence, surface}`` per ``synthesize_lens_findings``: a finding two lenses
     independently raised (agreement >= 2) or one lens raised at/above
     ``min_confidence`` has ``surface = True``. A lens that raises is skipped.
+
+    The lenses run CONCURRENTLY. Each lens thunk typically spawns its own
+    reviewer subprocess with an independent wall-clock budget, so running them
+    sequentially sums those budgets — two ~45s spawns can blow past the Stop
+    hook's hard ``timeout`` cap, get SIGKILLed, and lose the whole review. Run
+    them in parallel so the pass costs the slowest single lens, not the sum.
+    Results are collected in lens order so synthesis (and tests) stay
+    deterministic; a lens that raises contributes nothing.
     """
-    raw: list[dict] = []
-    for lens in list(lenses)[:max_lenses]:
+    selected = list(lenses)[:max_lenses]
+
+    def _safe_run(lens: Lens) -> list:
         try:
-            findings = lens.run() or []
+            return lens.run() or []
         except Exception:
-            continue
+            return []
+
+    if len(selected) <= 1:
+        # Single (or zero) lens: run inline, no thread, no executor overhead.
+        results = [(lens, _safe_run(lens)) for lens in selected]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=len(selected)) as ex:
+            # ex.map preserves input order and yields one result per input, so
+            # `results` stays lens-ordered and the zip lengths always match.
+            results = list(zip(selected, ex.map(_safe_run, selected), strict=True))
+
+    raw: list[dict] = []
+    for lens, findings in results:
         for f in findings:
             if not isinstance(f, dict):
                 continue

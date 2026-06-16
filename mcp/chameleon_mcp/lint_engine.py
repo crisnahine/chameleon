@@ -313,6 +313,12 @@ def _extract_typescript(content: str) -> DimensionSnapshot:
     them before the export scan because most exports are on lines that are
     unlikely to begin inside a string literal.
     """
+    # A UTF-8 BOM on line 1 prefixes the first token with U+FEFF, so the
+    # ``^``-anchored declaration regexes miss the first-line export/declaration
+    # and skew the snapshot. The dumper bootstrap path strips it (the TS
+    # compiler does); this regex runtime path did not. Drop one leading BOM so
+    # line 1 parses like every other line.
+    content = content[1:] if content.startswith("﻿") else content
     stripped = _strip_ts_strings_and_comments(content)
 
     default_export_kind: str | None = None
@@ -437,25 +443,27 @@ def _blank_ruby_heredocs(content: str) -> str:
 # sink scan does not false-positive on the embedded text and an embedded
 # directive cannot suppress a real violation. The typed forms (q/Q/w/W/i/I/r/s/x)
 # accept any delimiter; the bare form is restricted to bracket pairs so a modulo
-# expression (`a % b`, `a%[0]`) is not mistaken for a literal. Non-nesting: the
-# first matching close delimiter ends the literal, so a blanking miss fails
-# closed (the violation still fires, the directive deactivates), never open. The
-# two inner alternatives are disjoint (`\\.` vs a class excluding `\\`), so the
+# expression (`a % b`, `a%[0]`) is not mistaken for a literal. The bracket-pair
+# arms accept one level of balanced nesting (`%(eval(x))` is the string
+# "eval(x)", not a literal that ends at the inner `)`); a deeper nest is rare and
+# fails closed (the violation still fires, the directive deactivates), never
+# open. The three inner alternatives are first-char disjoint (`\` for `\\.`, the
+# open delimiter for the nested pair, everything else for the class), so the
 # match is linear with no catastrophic backtracking.
 _RUBY_PCT_DELIMS_ALL = (
-    r"\{(?:\\.|[^\\{}])*\}"
-    r"|\[(?:\\.|[^\\\[\]])*\]"
-    r"|\((?:\\.|[^\\()])*\)"
-    r"|<(?:\\.|[^\\<>])*>"
+    r"\{(?:\\.|[^\\{}]|\{[^{}]*\})*\}"
+    r"|\[(?:\\.|[^\\\[\]]|\[[^\[\]]*\])*\]"
+    r"|\((?:\\.|[^\\()]|\([^()]*\))*\)"
+    r"|<(?:\\.|[^\\<>]|<[^<>]*>)*>"
     r"|\|(?:\\.|[^\\|])*\|"
     r"|!(?:\\.|[^\\!])*!"
     r"|/(?:\\.|[^\\/])*/"
 )
 _RUBY_PCT_DELIMS_BRACKET = (
-    r"\{(?:\\.|[^\\{}])*\}"
-    r"|\[(?:\\.|[^\\\[\]])*\]"
-    r"|\((?:\\.|[^\\()])*\)"
-    r"|<(?:\\.|[^\\<>])*>"
+    r"\{(?:\\.|[^\\{}]|\{[^{}]*\})*\}"
+    r"|\[(?:\\.|[^\\\[\]]|\[[^\[\]]*\])*\]"
+    r"|\((?:\\.|[^\\()]|\([^()]*\))*\)"
+    r"|<(?:\\.|[^\\<>]|<[^<>]*>)*>"
 )
 _RUBY_PERCENT_LITERAL = re.compile(
     rf"%(?:[qQwWiIrsx](?:{_RUBY_PCT_DELIMS_ALL})|(?:{_RUBY_PCT_DELIMS_BRACKET}))",
@@ -538,6 +546,10 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
     - Include calls (IncludeCall:Sidekiq::Job)
     - DSL calls (DslCall:validates, DslCall:belongs_to)
     """
+    # Drop a single leading UTF-8 BOM so a class/module/def on line 1 is not
+    # hidden behind U+FEFF from the column-0 match (Prism strips it for the
+    # bootstrap path; this regex runtime path did not).
+    content = content[1:] if content.startswith("﻿") else content
     stripped = _strip_ruby_strings_and_comments(content)
 
     top_level: list[str] = []
@@ -2830,6 +2842,21 @@ def _ruby_naming_violations(scan_content: str, naming: dict) -> list[Violation]:
     return out
 
 
+# The Rails-convention application root base classes. Each inherits a framework
+# root (ActionController::API, ActiveRecord::Base, ...) rather than an
+# archetype's dominant base, so the inheritance-convention check must exempt
+# them: a profile whose controllers descend from Api::V1::BaseController would
+# otherwise tell ApplicationController to inherit a class that descends FROM it.
+_RAILS_APP_ROOT_BASES: frozenset[str] = frozenset(
+    {
+        "ApplicationController",
+        "ApplicationRecord",
+        "ApplicationJob",
+        "ApplicationMailer",
+    }
+)
+
+
 def lint_conventions(
     content: str,
     conventions: dict | None,
@@ -2939,7 +2966,9 @@ def lint_conventions(
                     )
                 )
 
-    if language == "typescript" and "naming-convention" not in ignored_rules:
+    if language == "typescript" and not (
+        ignored_rules & {"naming-convention", "naming-convention-violation"}
+    ):
         naming = conventions.get("naming") or {}
         prefix_entry = naming.get("interface_prefix")
         if prefix_entry and prefix_entry.get("consistency", 0) >= 0.60:
@@ -2962,7 +2991,9 @@ def lint_conventions(
                         )
                     )
 
-    if language == "ruby" and "naming-convention" not in ignored_rules:
+    if language == "ruby" and not (
+        ignored_rules & {"naming-convention", "naming-convention-violation"}
+    ):
         violations.extend(_ruby_naming_violations(scan_content, conventions.get("naming") or {}))
 
     if language == "typescript" and "then-without-catch" not in ignored_rules:
@@ -2972,13 +3003,17 @@ def lint_conventions(
     # file's basename casing/suffix against the archetype's dominant pattern.
     # Skipped when the caller passed no file_path (content-only lint) or the
     # archetype has no derived file-naming convention.
-    if file_path and "file-naming-convention" not in ignored_rules:
+    if file_path and not (
+        ignored_rules & {"file-naming-convention", "file-naming-convention-violation"}
+    ):
         naming = conventions.get("naming") or {}
         fn = naming.get("file_naming")
         if isinstance(fn, dict):
             violations.extend(_file_naming_violations(file_path, fn))
 
-    if language == "ruby" and "inheritance-convention" not in ignored_rules:
+    if language == "ruby" and not (
+        ignored_rules & {"inheritance-convention", "inheritance-convention-violation"}
+    ):
         inheritance = conventions.get("inheritance") or {}
         dominant_base = inheritance.get("dominant_base")
         if dominant_base and inheritance.get("frequency", 0) >= 0.60:
@@ -3016,6 +3051,21 @@ def lint_conventions(
                 min_class_indent = (
                     indent if min_class_indent is None else min(min_class_indent, indent)
                 )
+                # A class that IS one of the archetype's established bases defines
+                # the convention boundary: it inherits the framework root
+                # (ActionController::API), intentionally absent from known_bases
+                # because the root appears once. Flagging it — telling
+                # BaseController to inherit Api::V1::BaseController, i.e. itself —
+                # is a false positive that inflates the rule's calibration fp_rate
+                # and erodes trust. Skip any class whose own name (or tail) is a
+                # known base.
+                class_tail = class_name.rsplit("::", 1)[-1]
+                if (
+                    class_name in known_bases
+                    or class_tail in known_base_tails
+                    or class_tail in _RAILS_APP_ROOT_BASES
+                ):
+                    continue
                 if superclass is None or (
                     superclass not in known_bases
                     and superclass.rsplit("::", 1)[-1] not in known_base_tails

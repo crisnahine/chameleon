@@ -69,6 +69,11 @@ _TEST_RUNNER_PATTERNS: tuple[re.Pattern[str], ...] = (
     # between a space and `-` (both non-word), so `\b-Itest` is unreachable in
     # the standard `ruby -Itest ...` invocation.
     re.compile(r"^(?:\S*/)?ruby\b.*(?:(?<=\s)-Itest\b|\bminitest\b)"),
+    # The minitest CLI invoked directly (or via `bundle exec minitest`, which the
+    # wrapper peel above reduces to a bare `minitest`): the `ruby ...` arm only
+    # fires when `ruby` leads the segment, so a standalone runner needs its own
+    # anchored pattern.
+    re.compile(r"^(?:\S*/)?minitest\b"),
     # Go / Rust / Elixir.
     re.compile(r"^(?:\S*/)?go\s+test\b"),
     re.compile(r"^(?:\S*/)?cargo\s+(?:test|nextest)\b"),
