@@ -167,24 +167,159 @@ def gather_body_match_findings(repo_root: Path, edited_files: list[str], index, 
         return []
 
 
+def gather_semantic_findings(repo_root: Path, edited_files: list[str], catalog, lang) -> list:
+    """Name/shape-prefiltered duplication candidates from the committed catalog.
+
+    The body-hash gate only sees byte-identical (or param-renamed) clones. This
+    pass reuses the pr-review prefilter (``select_candidates``: name-token overlap
+    + signature shape, with body-identical matches ranked first) so a helper that
+    re-implements an existing one with a DIFFERENT body is surfaced too. One
+    Finding per new function, against its top-ranked candidate. Fails open to [].
+
+    Scoped to the committed catalog only (not this session's earlier functions);
+    within-session re-implementations stay the body-hash gate's job.
+    """
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.function_catalog import NewFunction, select_candidates
+
+        if catalog is None:
+            return []
+        max_files = threshold_int("DUPLICATION_REVIEW_MAX_FILES")
+        max_findings = threshold_int("DUPLICATION_REVIEW_MAX_FINDINGS")
+        excerpt_lines = threshold_int("DUPLICATION_BODY_EXCERPT_LINES")
+        min_shared = threshold_int("DUPLICATION_SEMANTIC_MIN_SHARED_TOKENS")
+        out: list = []
+        for path in edited_files[:max_files]:
+            if lang is not None and _lang_of(path) != lang:
+                continue
+            rel = _repo_rel(repo_root, path)
+            try:
+                parsed = _parse(repo_root, path)
+            except Exception:
+                continue
+            # Map ParsedFn -> NewFunction, deduplicating overload sets on (name,
+            # arity, required) exactly as get_duplication_candidates does; keep
+            # the first ParsedFn per name so the Finding can cite its line/body.
+            new_functions: list = []
+            by_name: dict = {}
+            seen: set = set()
+            for pf in parsed:
+                by_name.setdefault(pf.name, pf)
+                key = (pf.name, pf.arity, pf.required)
+                if key in seen:
+                    continue
+                seen.add(key)
+                new_functions.append(
+                    NewFunction(
+                        name=pf.name,
+                        kind=pf.kind,
+                        arity=pf.arity,
+                        required=pf.required,
+                        body_hash=pf.body_hash,
+                        body_hash_pnorm=pf.body_hash_pnorm,
+                    )
+                )
+            if not new_functions:
+                continue
+            for match in select_candidates(catalog, new_functions, exclude_file=rel):
+                candidates = match.get("candidates") or []
+                if not candidates:
+                    continue
+                pf = by_name.get(match["function"]["name"])
+                if pf is None:
+                    continue
+                top = candidates[0]
+                # Precision gate: turn-end nags mid-edit, so a body-identical
+                # clone always qualifies but a name-only lead must clear a higher
+                # shared-token bar than the looser pr-review prefilter. A single
+                # shared token (state, address, sales) is overwhelmingly noise.
+                if not top.get("body_match") and len(top.get("shared_tokens") or []) < min_shared:
+                    continue
+                try:
+                    from chameleon_mcp.tools import _candidate_body_excerpt
+
+                    existing_excerpt = _candidate_body_excerpt(
+                        Path(repo_root), top["file"], top["name"], excerpt_lines
+                    )
+                except Exception:
+                    existing_excerpt = ""
+                out.append(
+                    Finding(
+                        new_name=pf.name,
+                        new_file=rel,
+                        line=pf.start_line if pf.start_line is not None else 0,
+                        excerpt=pf.excerpt,
+                        existing_name=top["name"],
+                        existing_file=top["file"],
+                        existing_excerpt=existing_excerpt,
+                    )
+                )
+        return out[:max_findings]
+    except Exception:
+        return []
+
+
+def gather_findings(repo_root: Path, edited_files: list[str], *, index, catalog, lang) -> list:
+    """Body-hash matches UNION name/shape semantic candidates, deduped and capped.
+
+    The body-hash pass (catalog + this session's earlier functions) keeps the
+    within-session and byte-identical detection; the semantic pass adds the
+    different-body / same-intent case from the committed catalog. Body-hash
+    findings come first so an exact match is preferred over a looser candidate
+    for the same pair. Deduped on (new_name, new_file, existing_name,
+    existing_file); capped at DUPLICATION_REVIEW_MAX_FINDINGS. Fails open to [].
+    """
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+
+        body = gather_body_match_findings(repo_root, edited_files, index, lang)
+        semantic = gather_semantic_findings(repo_root, edited_files, catalog, lang)
+        merged: list = []
+        seen: set = set()
+        for f in [*body, *semantic]:
+            key = (f.new_name, f.new_file, f.existing_name, f.existing_file)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(f)
+        return merged[: threshold_int("DUPLICATION_REVIEW_MAX_FINDINGS")]
+    except Exception:
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Task 7: Judge prompt, coercer, and judge_body_matches
 # ---------------------------------------------------------------------------
 
 
-def build_duplication_prompt(findings: list) -> str:
+def build_duplication_prompt(findings: list, semantic: bool = False) -> str:
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
     budget = threshold_int("DUPLICATION_REVIEW_MAX_PROMPT_BYTES")
-    header = (
-        "You are reviewing whether newly-edited functions re-implement existing "
-        "ones. For each item, the NEW function body is shown with the EXISTING "
-        "function it body-matched. Return ONLY a JSON array; one object per item "
-        'that is a real re-implementation: {"new_name": "<name>", "is_duplicate": '
-        "true}. Omit items that merely look similar but are not the same intent. "
-        "No prose outside the JSON array.\n\n"
-    )
+    if semantic:
+        # The semantic candidates were surfaced by name/shape similarity (or an
+        # identical body), so their bodies may DIFFER. Ask the judge to confirm
+        # only those that re-implement the existing function's intent.
+        header = (
+            "You are reviewing whether newly-edited functions re-implement "
+            "existing ones. Each item pairs a NEW function with an EXISTING "
+            "candidate surfaced by name/shape similarity; their bodies may "
+            "differ. Return ONLY a JSON array; one object per item that "
+            're-implements the same intent: {"new_name": "<name>", '
+            '"is_duplicate": true}. Omit items that merely look similar but do '
+            "a different job. No prose outside the JSON array.\n\n"
+        )
+    else:
+        header = (
+            "You are reviewing whether newly-edited functions re-implement existing "
+            "ones. For each item, the NEW function body is shown with the EXISTING "
+            "function it body-matched. Return ONLY a JSON array; one object per item "
+            'that is a real re-implementation: {"new_name": "<name>", "is_duplicate": '
+            "true}. Omit items that merely look similar but are not the same intent. "
+            "No prose outside the JSON array.\n\n"
+        )
     parts = [header]
     used = len(header)
     for f in findings:
@@ -252,13 +387,15 @@ def _stream_texts(stdout: str):
     return list(reversed(texts))
 
 
-def judge_body_matches(repo_root: Path, findings: list) -> list:
+def judge_body_matches(repo_root: Path, findings: list, semantic: bool = False) -> list:
     if not findings:
         return []
     try:
         from chameleon_mcp import judge
 
-        stdout = judge._spawn_reviewer(build_duplication_prompt(findings), Path(repo_root))
+        stdout = judge._spawn_reviewer(
+            build_duplication_prompt(findings, semantic=semantic), Path(repo_root)
+        )
         if not stdout:
             return []
         arr = None

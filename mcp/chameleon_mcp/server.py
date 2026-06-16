@@ -294,6 +294,7 @@ def record_review_verdict(
     findings_count: int | None = None,
     commit_sha: str | None = None,
     pr_id: str | None = None,
+    complexity_tier: str | None = None,
 ) -> dict:
     """Append a /chameleon-pr-review verdict to the repo's signed review ledger.
 
@@ -301,7 +302,9 @@ def record_review_verdict(
     lead can later audit which reviewed commits shipped (and whether any BLOCK
     merged anyway). Args: `verdict` (the rendered verdict string),
     `findings_count` (total BLOCK+FIX+NIT count), `commit_sha` (reviewed HEAD),
-    optional `pr_id`.
+    optional `pr_id`, optional `complexity_tier` (the change's structural tier
+    easy/medium/hard/complex from get_autopass_verdict, so per-tier review-clean
+    rates are trackable over the ledger).
 
     Stamps profile provenance (profile_sha256 + generation + schema_version),
     trust state, engine version, and reviewer onto the record. Best-effort: a
@@ -315,6 +318,7 @@ def record_review_verdict(
         findings_count=findings_count,
         commit_sha=commit_sha,
         pr_id=pr_id,
+        complexity_tier=complexity_tier,
     )
 
 

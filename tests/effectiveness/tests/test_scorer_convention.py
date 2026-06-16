@@ -60,9 +60,80 @@ def _prep(tmp_path: Path, monkeypatch, pattern_resp, lint_resp):
 def test_counts_violations_per_changed_file(tmp_path, monkeypatch):
     ctx = _prep(tmp_path, monkeypatch, PATTERN_OK, LINT_TWO_VIOLATIONS)
     out = convention.score(ctx)
+    # No baseline version resolvable (tmp_path is not a git repo) -> all current
+    # violations are counted as introduced.
     assert out["violations"] == 2
     assert out["files_scored"] == 1
     assert out["files_unresolved"] == 0
+
+
+_V_EXPORT = {"rule": "export-shape", "severity": "warn", "message": "default export"}
+_V_NAMING = {"rule": "naming", "severity": "warn", "message": "snake_case component"}
+_V_NEW = {"rule": "style-rule-violation", "severity": "info", "message": "line 9 too long"}
+
+
+def _lint_with(rows):
+    return {"api_version": "1", "data": {"stub": False, "violations": rows}}
+
+
+def test_preexisting_violations_not_counted(tmp_path, monkeypatch):
+    # The baseline file already had both violations; the change added none -> the
+    # net introduced count is 0, even though the absolute count is 2.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "Widget.tsx").write_text("CURRENT\n")
+    monkeypatch.setattr(convention, "_pattern_context", lambda path: PATTERN_OK)
+    monkeypatch.setattr(convention, "_baseline_content", lambda wt, sha, rel: "BASELINE")
+
+    def fake_lint(**kw):
+        # Same two violations in both the baseline and current versions.
+        return _lint_with([_V_EXPORT, _V_NAMING])
+
+    monkeypatch.setattr(convention, "_lint", fake_lint)
+    ctx = _ctx(tmp_path)
+    ctx.changed_files = ["src/Widget.tsx"]
+    out = convention.score(ctx)
+    assert out["violations"] == 0
+    assert out["violations_baseline"] == 2
+
+
+def test_only_net_new_violations_counted(tmp_path, monkeypatch):
+    # Baseline had 2; current has those 2 plus 1 new -> net introduced is 1.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "Widget.tsx").write_text("CURRENT\n")
+    monkeypatch.setattr(convention, "_pattern_context", lambda path: PATTERN_OK)
+    monkeypatch.setattr(convention, "_baseline_content", lambda wt, sha, rel: "BASELINE")
+
+    def fake_lint(**kw):
+        if kw.get("content") == "BASELINE":
+            return _lint_with([_V_EXPORT, _V_NAMING])
+        return _lint_with([_V_EXPORT, _V_NAMING, _V_NEW])
+
+    monkeypatch.setattr(convention, "_lint", fake_lint)
+    ctx = _ctx(tmp_path)
+    ctx.changed_files = ["src/Widget.tsx"]
+    out = convention.score(ctx)
+    assert out["violations"] == 1
+    assert out["violations_baseline"] == 2
+
+
+def test_change_that_fixes_violations_counts_zero_introduced(tmp_path, monkeypatch):
+    # Baseline had 2; current fixed one -> introduced 0 (a removed violation is not
+    # negative; the metric is net NEW violations, floored at 0).
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "Widget.tsx").write_text("CURRENT\n")
+    monkeypatch.setattr(convention, "_pattern_context", lambda path: PATTERN_OK)
+    monkeypatch.setattr(convention, "_baseline_content", lambda wt, sha, rel: "BASELINE")
+
+    def fake_lint(**kw):
+        if kw.get("content") == "BASELINE":
+            return _lint_with([_V_EXPORT, _V_NAMING])
+        return _lint_with([_V_EXPORT])
+
+    monkeypatch.setattr(convention, "_lint", fake_lint)
+    ctx = _ctx(tmp_path)
+    ctx.changed_files = ["src/Widget.tsx"]
+    out = convention.score(ctx)
+    assert out["violations"] == 0
 
 
 def test_unresolved_archetype_counted_not_fatal(tmp_path, monkeypatch):

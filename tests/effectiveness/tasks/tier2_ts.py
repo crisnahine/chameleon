@@ -28,7 +28,7 @@ TASKS = [
         ),
         category="convention",
         scorers=("convention", "duplication", "verification", "cost"),
-        max_turns=16,
+        max_turns=30,
     ),
     EffTask(
         task_id="t2-ts-crossfile-rename",
@@ -42,7 +42,7 @@ TASKS = [
         ),
         category="crossfile",
         scorers=("crossfile", "convention", "verification", "cost"),
-        max_turns=16,
+        max_turns=30,
     ),
     EffTask(
         task_id="t2-ts-duplication-helper",
@@ -57,7 +57,7 @@ TASKS = [
         ),
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=16,
+        max_turns=30,
     ),
     EffTask(
         task_id="t2-ts-verification-regression",
@@ -71,7 +71,7 @@ TASKS = [
         ),
         category="verification",
         scorers=("verification", "convention", "cost"),
-        max_turns=16,
+        max_turns=30,
     ),
 ]
 

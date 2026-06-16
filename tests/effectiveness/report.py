@@ -94,6 +94,39 @@ def aggregate(cells: list[dict]) -> dict[str, dict]:
     return out
 
 
+def paired_preference_cis(panel_rows: list[dict]) -> list[dict]:
+    """Per arm-pair, the paired cluster-bootstrap CI on the judge's preference for
+    the non-'off' (treatment) arm. winner==treatment -> 1, ==control -> 0,
+    tie -> 0.5; resampled by TASK so repeats are not pseudo-replicates. A causal
+    preference is established only when the CI lower bound > 0.5.
+    """
+    from tests.effectiveness.stats import group_by_task, paired_bootstrap_ci
+
+    by_pair: dict[tuple, list[dict]] = {}
+    for p in panel_rows:
+        pair = tuple(p.get("pair") or ())
+        if len(pair) != 2:
+            continue
+        by_pair.setdefault(pair, []).append(p)
+
+    out: list[dict] = []
+    for pair, rows in by_pair.items():
+        control = "off" if "off" in pair else pair[0]
+        treatment = pair[1] if pair[0] == control else pair[0]
+        scored: list[dict] = []
+        for r in rows:
+            w = r.get("panel_winner")
+            if w not in (treatment, control, "tie"):
+                continue  # unscored / no valid majority
+            win = 1.0 if w == treatment else (0.5 if w == "tie" else 0.0)
+            scored.append({"task": r["task_id"], "win": win})
+        if not scored:
+            continue
+        ci = paired_bootstrap_ci(group_by_task(scored, task_key="task", win_key="win"))
+        out.append({"control": control, "treatment": treatment, **ci})
+    return out
+
+
 def load_baselines(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -200,6 +233,28 @@ def render_run_md(
                 f"{p.get('panel_winner', 'unscored')} | "
                 f"{p.get('panel_votes_valid', 0)} | {p.get('panel_cost_usd', 0.0)} |"
             )
+        cis = paired_preference_cis(panel_rows)
+        if cis:
+            lines += [
+                "",
+                "### Causal preference (paired cluster-bootstrap 95% CI)",
+                "",
+                "Preference for the treatment arm over control; resampled by TASK. "
+                "A causal win requires the CI lower bound > 0.5.",
+                "",
+                "| control | treatment | preference | 95% CI | n_tasks | verdict |",
+                "|---|---|---|---|---|---|",
+            ]
+            for c in cis:
+                rate = "n/a" if c["rate"] is None else f"{c['rate']:.3f}"
+                ci = "n/a" if c["lo"] is None else f"[{c['lo']:.3f}, {c['hi']:.3f}]"
+                verdict = (
+                    "CAUSAL WIN" if (c["lo"] is not None and c["lo"] > 0.5) else "not established"
+                )
+                lines.append(
+                    f"| {c['control']} | {c['treatment']} | {rate} | {ci} | "
+                    f"{c['n_tasks']} | {verdict} |"
+                )
     if deltas:
         lines += [
             "",

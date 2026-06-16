@@ -4279,7 +4279,11 @@ def _correctness_judge_route(
         if cfg.mode == "off":
             _emit_check_event(repo_id, session_id, "correctness_judge", "skipped", "mode_off")
             return {**no_spawn, "skip_reason": "mode_off"}
-        if not cfg.correctness_judge:
+        # multi_lens_review consumes this same route (it replaces the correctness
+        # gate), so the route still computes a spawn decision when EITHER review
+        # is enabled -- gating only on correctness_judge would silently disable
+        # the multi-lens pass.
+        if not cfg.correctness_judge and not getattr(cfg, "multi_lens_review", False):
             _emit_check_event(
                 repo_id, session_id, "correctness_judge", "skipped", "feature_disabled"
             )
@@ -5179,7 +5183,17 @@ def _duplication_advisory_lines(
             )
             return []
 
-        findings = dr.gather_body_match_findings(repo_root, fresh, index, lang)
+        # The committed catalog feeds the semantic pass (different-body,
+        # same-intent re-implementations the body-hash index cannot see); loaded
+        # from cache, None on any issue -> the semantic pass contributes nothing.
+        try:
+            from chameleon_mcp.function_catalog import load_function_catalog
+
+            catalog = load_function_catalog(repo_root)
+        except Exception:
+            catalog = None
+
+        findings = dr.gather_findings(repo_root, fresh, index=index, catalog=catalog, lang=lang)
         if not findings:
             return []
 
@@ -5194,7 +5208,7 @@ def _duplication_advisory_lines(
             pass
 
         _emit_check_event(repo_id, session_id, "duplication_review", "ran")
-        confirmed = dr.judge_body_matches(repo_root, findings)
+        confirmed = dr.judge_body_matches(repo_root, findings, semantic=True)
         # Mark every fresh file judged at its current digest so the next turn over
         # the same content is suppressed regardless of whether it was confirmed.
         for p in fresh:
@@ -5202,6 +5216,213 @@ def _duplication_advisory_lines(
                 repo_data, session_id or "", dr._repo_rel(repo_root, p), digests.get(p, "")
             )
         return dr.format_duplication_advisory(confirmed)
+    except Exception:
+        return []
+
+
+def _test_integrity_advisory_lines(
+    *,
+    repo_root: Path,
+    repo_id: str | None = None,
+    session_id: str | None,
+    state,
+    cfg,
+    repo_data: Path,
+) -> list[str]:
+    """Turn-end test-integrity advisory, or [].
+
+    When the turn changed live source AND weakened tests (added skip markers,
+    dropped assertions, net test deletion -- the deterministic signals the
+    auto-pass router already computes), name what was weakened so the author
+    restores coverage before the PR. Deterministic, zero model spawn. Deduped per
+    (session, diff-digest) so an unchanged weakening does not re-nag every later
+    turn that touches the file. Advisory only; fails open to [].
+    """
+    try:
+        if not getattr(cfg, "test_integrity_review", True):
+            _emit_check_event(
+                repo_id, session_id, "test_integrity_review", "skipped", "feature_disabled"
+            )
+            return []
+        if cfg.mode == "off":
+            _emit_check_event(repo_id, session_id, "test_integrity_review", "skipped", "mode_off")
+            return []
+
+        from chameleon_mcp import test_integrity as ti
+
+        edited = list(state.files)
+        if not edited:
+            return []
+        diff_text = ti.build_turn_diff(repo_root, edited)
+        assessment = ti.assess_test_weakening(diff_text, edited)
+        if not assessment:
+            return []
+
+        # Dedup per (session, diff-digest): the same weakening left in place must
+        # not re-fire on every later turn. Reuses the duplication gate's marker
+        # helpers under a distinct namespace so the two judged-sets never collide.
+        digest = hashlib.sha256((diff_text or "").encode()).hexdigest()[:16]
+        from chameleon_mcp import duplication_review as dr
+
+        if dr.already_judged(
+            repo_data, session_id or "", "testint", digest, prefix=".testint_judged."
+        ):
+            _emit_check_event(
+                repo_id, session_id, "test_integrity_review", "skipped", "digest_already_emitted"
+            )
+            return []
+        dr.mark_judged(repo_data, session_id or "", "testint", digest, prefix=".testint_judged.")
+        _emit_check_event(repo_id, session_id, "test_integrity_review", "ran")
+        return ti.format_test_integrity_advisory(assessment)
+    except Exception:
+        return []
+
+
+def _multi_lens_review_lines(
+    *,
+    repo_root: Path,
+    repo_id: str | None = None,
+    session_id: str | None,
+    state,
+    cfg,
+    repo_data: Path,
+    daemon_state: dict | None,
+    route: dict,
+) -> list[str]:
+    """Opt-in coordinated multi-lens turn-end review, or [].
+
+    When ``enforcement.multi_lens_review`` is on, this replaces the separate
+    correctness-judge and duplication gates: it runs both as lenses (no mutual
+    defer, so duplication is not starved) and merges their findings through
+    ``lens_synthesis`` -- a finding two lenses raise independently surfaces on
+    agreement, a lone lens only at high confidence. Reuses the correctness route's
+    spawn decision (cap + per-file digest dedup) as the trigger, spends one review
+    budget unit for the pass, and marks the fresh digests judged so an unchanged
+    turn does not re-fire. Advisory only, never a block; fails open to [].
+
+    The lenses assemble their inputs lazily (inside the thunks) so nothing heavy
+    runs until ``run_lenses`` actually invokes a lens.
+    """
+    try:
+        if not getattr(cfg, "multi_lens_review", False):
+            return []
+        if cfg.mode == "off":
+            _emit_check_event(repo_id, session_id, "multi_lens_review", "skipped", "mode_off")
+            return []
+        if not route.get("spawn"):
+            _emit_check_event(
+                repo_id,
+                session_id,
+                "multi_lens_review",
+                "skipped",
+                route.get("reason") or "no_spawn",
+            )
+            return []
+
+        from chameleon_mcp import duplication_review as dr
+        from chameleon_mcp import judge, lens_runner
+
+        fresh: list[str] = route.get("fresh") or []
+        intent_tokens: list[str] = route.get("intent_tokens") or []
+        digests: dict = route.get("digests") or {}
+        if not fresh:
+            return []
+
+        def _run_correctness():
+            resolver = _archetype_resolver(repo_root, daemon_state or {"available": True})
+            return judge.run_correctness_judge(
+                repo_root,
+                repo_root / ".chameleon",
+                fresh,
+                resolver,
+                intent_tokens=intent_tokens,
+            )
+
+        def _run_duplication():
+            edited = [p for p in state.files if Path(p).is_file()]
+            if not edited:
+                return []
+            lang = dr._lang_of(edited[0])
+            index = dr.build_candidate_index(repo_root, edited)
+            try:
+                from chameleon_mcp.function_catalog import load_function_catalog
+
+                catalog = load_function_catalog(repo_root)
+            except Exception:
+                catalog = None
+            findings = dr.gather_findings(repo_root, fresh, index=index, catalog=catalog, lang=lang)
+            if not findings:
+                return []
+            return dr.judge_body_matches(repo_root, findings, semantic=True)
+
+        # Honor the per-lens enforcement flags: multi_lens replaces the gates but
+        # must not resurrect a lens the operator turned off (duplication_review /
+        # correctness_judge). A lens left out simply does not run.
+        lenses = []
+        ran_duplication = False
+        if getattr(cfg, "correctness_judge", True):
+            lenses.append(lens_runner.correctness_lens(_run_correctness))
+        if getattr(cfg, "duplication_review", True):
+            lenses.append(lens_runner.duplication_lens(_run_duplication))
+            ran_duplication = True
+        if not lenses:
+            _emit_check_event(repo_id, session_id, "multi_lens_review", "skipped", "no_lenses")
+            return []
+
+        # Spend the review budget and persist BEFORE the (slow) lens spawns so an
+        # interrupted Stop still consumes the budget and the session cap holds.
+        # correctness_spawns is the route's budget counter, so it always advances
+        # (the pass is the unit it caps); duplication_spawns advances too when the
+        # duplication lens ran, so a later turn with multi_lens off sees the
+        # duplication budget already spent rather than double-reviewing.
+        state.correctness_spawns += 1
+        if ran_duplication:
+            state.duplication_spawns += 1
+        try:
+            from chameleon_mcp.enforcement import save_state
+
+            save_state(state, repo_data, session_id or "")
+        except Exception:
+            pass
+
+        _emit_check_event(
+            repo_id,
+            session_id,
+            "multi_lens_review",
+            "ran",
+            detail={"turn_key": route.get("turn_key")},
+        )
+        synthesized = lens_runner.run_lenses(lenses, max_lenses=2)
+
+        # Mark fresh files judged at their captured digest so the next turn over
+        # the same content does not re-spawn (shared with the correctness gate's
+        # namespace -- the two never both run a turn).
+        for path in fresh:
+            rel = dr._repo_rel(repo_root, path)
+            dr.mark_judged(
+                repo_data, session_id or "", rel, digests.get(rel, ""), prefix=_CORR_JUDGED_PREFIX
+            )
+
+        surfaced = [f for f in synthesized if f.get("surface")]
+        if not surfaced:
+            return []
+
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        n = len(surfaced)
+        lines = [
+            f"[🦎 chameleon: multi-lens review flagged {n} possible issue{'s' if n != 1 else ''}]",
+            "A coordinated review (correctness + duplication) read this turn's changes. "
+            "These are advisory; verify each before acting, they may be wrong.",
+        ]
+        for f in surfaced:
+            loc = sanitize_for_chameleon_context(str(f.get("file"))) if f.get("file") else "?"
+            if f.get("line") is not None:
+                loc += f":{f.get('line')}"
+            lens_tag = sanitize_for_chameleon_context("+".join(f.get("lenses") or []))
+            claim = sanitize_for_chameleon_context(str(f.get("claim", "")))
+            lines.append(f"- {loc} [{lens_tag}]: {claim}")
+        return lines
     except Exception:
         return []
 
@@ -5373,16 +5594,35 @@ def _stop_gates(
             # independent correctness judge (on by default, advisory only,
             # per-turn routed). It never blocks; its findings ride out as
             # additionalContext the model reads after the turn.
-            judged = _correctness_judge_gate(
-                repo_root=repo_root,
-                repo_id=repo_id,
-                session_id=session_id,
-                state=state,
-                cfg=cfg,
-                repo_data=repo_data,
-                daemon_state=daemon_state,
-                route=route,
-            )
+            #
+            # When the opt-in multi-lens review is on (default off), ONE
+            # coordinated pass runs the correctness + duplication lenses together
+            # (no mutual defer) and REPLACES both the correctness gate here and
+            # the duplication gate below. Subagents keep the standard gate.
+            multilens_lines: list[str] = []
+            judged = None
+            if cfg.multi_lens_review and not is_subagent:
+                multilens_lines = _multi_lens_review_lines(
+                    repo_root=repo_root,
+                    repo_id=repo_id,
+                    session_id=session_id,
+                    state=state,
+                    cfg=cfg,
+                    repo_data=repo_data,
+                    daemon_state=daemon_state,
+                    route=route,
+                )
+            else:
+                judged = _correctness_judge_gate(
+                    repo_root=repo_root,
+                    repo_id=repo_id,
+                    session_id=session_id,
+                    state=state,
+                    cfg=cfg,
+                    repo_data=repo_data,
+                    daemon_state=daemon_state,
+                    route=route,
+                )
 
             # Stale-test advisory: a turn that edited a paired source but left its
             # existing test untouched gets a coverage nudge. Advisory only, folded
@@ -5426,8 +5666,10 @@ def _stop_gates(
             # not defer: a permanently broken reviewer must not starve
             # duplication review forever. Advisory only, folded into the same
             # Stop context.
+            # Skipped when multi_lens_review owns duplication this turn (the lens
+            # pass above already ran it).
             dup_lines: list[str] = []
-            if not is_subagent:
+            if not is_subagent and not cfg.multi_lens_review:
                 dup_lines = _duplication_advisory_lines(
                     repo_root=repo_root,
                     repo_id=repo_id,
@@ -5437,6 +5679,19 @@ def _stop_gates(
                     repo_data=repo_data,
                     corr_spawning=corr_spawning and not route.get("spawn_failed"),
                 )
+
+            # Turn-end test integrity: a turn that changed live source while
+            # weakening tests (added skips, dropped assertions, deleted tests)
+            # gets a deterministic advisory naming what was weakened. Zero model
+            # spawn, folded into the same Stop context.
+            testint_lines = _test_integrity_advisory_lines(
+                repo_root=repo_root,
+                repo_id=repo_id,
+                session_id=session_id,
+                state=state,
+                cfg=cfg,
+                repo_data=repo_data,
+            )
 
             context_blocks: list[str] = []
             if idiom_advisory:
@@ -5460,6 +5715,14 @@ def _stop_gates(
             if dup_lines:
                 context_blocks.append(
                     "<chameleon-context>\n" + "\n".join(dup_lines) + "\n</chameleon-context>"
+                )
+            if multilens_lines:
+                context_blocks.append(
+                    "<chameleon-context>\n" + "\n".join(multilens_lines) + "\n</chameleon-context>"
+                )
+            if testint_lines:
+                context_blocks.append(
+                    "<chameleon-context>\n" + "\n".join(testint_lines) + "\n</chameleon-context>"
                 )
 
             if context_blocks:

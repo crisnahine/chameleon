@@ -268,6 +268,7 @@ def record_review(
     trust_state: str | None = None,
     engine_version: str | None = None,
     pr_id: str | None = None,
+    complexity_tier: str | None = None,
 ) -> dict:
     """Append one signed PR-review record to ``repo_id``'s ledger.
 
@@ -296,6 +297,10 @@ def record_review(
         "schema_version": schema_version if isinstance(schema_version, int) else None,
         "trust_state": str(trust_state) if trust_state else None,
         "engine_version": str(engine_version) if engine_version else None,
+        # The change's structural complexity tier (easy / medium / hard /
+        # complex) at review time, so per-tier review-clean rates are trackable
+        # over the ledger; None for records written before it was captured.
+        "complexity_tier": str(complexity_tier) if complexity_tier else None,
         "reviewer": _reviewer(),
     }
     try:

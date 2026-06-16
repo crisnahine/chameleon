@@ -4,6 +4,25 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.0] - 2026-06-16
+
+Turn-end review gets a semantic duplication pass and a deterministic test-integrity advisory; the auto-pass router now grades each change into a complexity tier and records it; and an opt-in multi-lens turn-end review lands behind a default-off flag. The duplication change is the first one measured causally on real repos: a powered A/B (46 mined tasks, two passes, n=44 paired) shows it cuts the duplicate/fail-to-reuse rate from 86.4% to 67.0%, paired bootstrap 95% CI [+0.08, +0.31] (stable across seeds), sign test p=0.0072 — judge-free.
+
+### Added
+
+- **Semantic duplication at turn-end.** The turn-end duplication advisory previously matched only byte-identical (body-hash) re-implementations; it now also runs the name-token + signature-shape semantic engine (the same one `/chameleon-pr-review` uses), so a helper re-implemented with a different body but the same intent is caught and the existing one named for reuse. Gated for precision: a body-identical match always qualifies, a name-only lead must share at least two domain tokens (`DUPLICATION_SEMANTIC_MIN_SHARED_TOKENS`, default 2), which cut name-overlap noise ~53% on a real-repo sweep. Within-session body-hash detection is preserved.
+- **Test-integrity advisory** (`enforcement.test_integrity_review`, default on). At turn end, when a turn changed live source AND weakened tests (added skip markers, dropped assertions, net test deletion — the deterministic signals the auto-pass router already computes), it surfaces a one-line advisory naming what was weakened. Deterministic, zero model spawn; advisory only, never a block; per-session digest-deduped so it does not re-nag.
+- **Complexity tier on the auto-pass verdict.** `classify_complexity_tier` grades a change easy / medium / hard / complex from diff facts alone (size, new files, cross-file blast, security surface) — structural, independent of whether the change is clean. The tier rides on `get_autopass_verdict`, is rendered by `/chameleon-pr-review`, and is recorded in the signed review ledger so per-tier review-clean rates can be tracked over time.
+- **Multi-lens turn-end review** (`enforcement.multi_lens_review`, default OFF — opt-in). When enabled, one coordinated pass runs the correctness and duplication lenses together (no mutual single-spawn defer) and merges their findings through `lens_synthesis` (cross-lens agreement surfaces; a lone lens only at high confidence). Off by default because it lifts the per-turn reviewer-spawn budget above one; measure in shadow before enabling. Honest status: not yet shown to add over the base gates — ships dormant for measurement.
+
+### Changed
+
+- **Effectiveness convention scorer is now delta-based.** It lints each changed file's baseline version too and counts only the violations the change INTRODUCED, instead of charging a session for the pre-existing violations in whatever file it touched (which confounded the A/B by file choice).
+
+### Tooling (local eval, not shipped to plugin users)
+
+- Statistics module (`tests/effectiveness/stats.py`: Wilson lower bound, Cohen's kappa, paired cluster-bootstrap CI) so effectiveness claims report confidence bounds, not bare percentages; a `dup` task tier with a 46-task mined-and-verified duplication corpus; a paired-preference CI in the run report; and read-only PR-outcome / tier-distribution measurement scripts that correlate the router's verdict with real review-comment history.
+
 ## [2.13.2] - 2026-06-12
 
 The effectiveness eval harness (arc 2): a repeatable A/B measurement of whether chameleon improves agent output, plus one runtime fix it surfaced. First measurement run (24 cells, $8.58, zero errors) is seeded as the tier-ci baseline.

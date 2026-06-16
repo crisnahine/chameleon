@@ -492,6 +492,66 @@ def assemble_facts(
     }
 
 
+def classify_complexity_tier(
+    facts: dict,
+    *,
+    max_files: int = 10,
+    max_lines: int = 150,
+    max_blast_radius: int = 10,
+) -> str:
+    """Grade a change's inherent complexity from diff facts: easy → complex.
+
+    This is STRUCTURAL (size / novelty / cross-file reach / security surface),
+    distinct from ``classify_change``'s ``risk`` (which rates review-cleanliness
+    confidence) and from ``auto_pass_eligible`` (whether anything is wrong). A
+    clean change and a broken change of the same shape share a tier; the tier is
+    what lets per-tier review-clean rates be tracked and the hard/complex residual
+    routed to humans. Deterministic, zero LLM.
+
+    - complex: a security surface, an unknown or large cross-file blast radius,
+      many files outside profiled archetypes, or a change past the size caps --
+      the classes a machine gate cannot vouch for review-clean.
+    - hard: a new file, any unarchetyped file, or a mid-size change.
+    - medium: a small multi-file or multi-line change with bounded reach.
+    - easy: a tiny, in-pattern, single-spot change.
+
+    Missing keys default to 0 / False, so a partial fact set grades DOWN to easy
+    on absent data rather than inventing risk; callers that need the safe-up
+    direction gate on ``auto_pass_eligible``, not the tier.
+    """
+
+    def _int(key: str) -> int:
+        try:
+            return int(facts.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    files = _int("files_changed")
+    lines = _int("lines_changed")
+    blast = _int("blast_radius")
+
+    if (
+        bool(facts.get("security_surface"))
+        or _int("blast_radius_unknown") > 0
+        or blast > max_blast_radius
+        or _int("unarchetyped_files") > 2
+        or files > max_files
+        or lines > max_lines
+    ):
+        return "complex"
+    if (
+        _int("new_files") > 0
+        or _int("unarchetyped_files") > 0
+        or files > 5
+        or lines > 80
+        or blast > 5
+    ):
+        return "hard"
+    if files > 2 or lines > 30 or blast > 0:
+        return "medium"
+    return "easy"
+
+
 def classify_change(
     facts: dict,
     *,
@@ -592,4 +652,15 @@ def classify_change(
     else:
         risk = "elevated"
 
-    return {"auto_pass_eligible": eligible, "risk": risk, "reasons": reasons}
+    tier = classify_complexity_tier(
+        facts,
+        max_files=max_files,
+        max_lines=max_lines,
+        max_blast_radius=max_blast_radius,
+    )
+    return {
+        "auto_pass_eligible": eligible,
+        "risk": risk,
+        "complexity_tier": tier,
+        "reasons": reasons,
+    }

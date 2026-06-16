@@ -159,3 +159,27 @@ def test_failopen_on_corrupt_metrics(monkeypatch, tmp_path: Path):
     audit = build_override_audit(REPO_A)
     assert audit["rules"]["import-preference-violation"]["overrides"] == 2
     assert audit["rules"]["import-preference-violation"]["would_blocks"] == 0
+
+
+def test_record_review_persists_complexity_tier_and_verifies():
+    """The verdict ledger carries the change's complexity tier (per-tier
+    review-clean tracking) and the signed record still verifies with the field."""
+    from chameleon_mcp.review_ledger import _verify, record_review
+
+    rec = record_review(
+        REPO_A,
+        commit_sha="abc123",
+        verdict="APPROVE",
+        findings={"total": 0},
+        complexity_tier="medium",
+    )
+    assert rec["complexity_tier"] == "medium"
+    assert _verify(rec) is True
+
+
+def test_record_review_tier_optional_defaults_none():
+    from chameleon_mcp.review_ledger import _verify, record_review
+
+    rec = record_review(REPO_A, commit_sha="def456", verdict="APPROVE")
+    assert rec["complexity_tier"] is None
+    assert _verify(rec) is True

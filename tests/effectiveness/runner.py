@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m tests.effectiveness.runner")
     p.add_argument("--list", action="store_true", help="List tasks and exit")
     p.add_argument("--dry-run", action="store_true", help="Print the cell plan; no spawn")
-    p.add_argument("--tier", choices=["ci", "full"], default="ci")
+    p.add_argument("--tier", choices=["ci", "full", "dup"], default="ci")
     p.add_argument("--tasks", default="", help="Comma-separated task ids (default: whole tier)")
     p.add_argument("--arms", default="off,shadow", help="Comma-separated: off,shadow,enforce")
     p.add_argument(

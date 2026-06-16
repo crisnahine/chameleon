@@ -54,10 +54,12 @@ def test_empty_prompt_rejected():
 
 
 def test_collect_tasks_returns_validated_registry():
+    from tests.effectiveness.tasks import VALID_TIERS
+
     tasks = collect_tasks()
     ids = [t.task_id for t in tasks]
     assert len(ids) == len(set(ids))
-    assert all(t.tier in ("ci", "full") for t in tasks)
+    assert all(t.tier in VALID_TIERS for t in tasks)
     # Tier-ci target from the spec: 8 tasks, 2 per category.
     ci = [t for t in tasks if t.tier == "ci"]
     assert len(ci) == 8

@@ -402,7 +402,7 @@ The findings sections answer "is anything wrong with this change?" This step ans
 get_autopass_verdict(repo=<repo_id>, base_ref=<the PR base branch, or the branch's merge base; use the locked production_ref from .chameleon/config.json when no PR base is known; default "main">)
 ```
 
-It returns `{auto_pass_eligible, risk, reasons, facts, changed_files}`. Report it verbatim as an advisory line (the Auto-pass routing section in Step 4). It is ADVISORY only: it never produces a BLOCK, FIX, or NIT and never changes the verdict. Its job is to mark the safe-to-skip slice and to name why a change is NOT in it (a security-sensitive surface, too large, high cross-file blast radius, a file outside the profiled archetypes, or a grounded block finding).
+It returns `{auto_pass_eligible, risk, complexity_tier, reasons, facts, changed_files}`. Report it verbatim as an advisory line (the Auto-pass routing section in Step 4). It is ADVISORY only: it never produces a BLOCK, FIX, or NIT and never changes the verdict. Its job is to mark the safe-to-skip slice, grade the change's inherent complexity (`complexity_tier`: easy / medium / hard / complex — structural, independent of cleanliness), and name why a change is NOT in the skip slice (a security-sensitive surface, too large, high cross-file blast radius, a file outside the profiled archetypes, or a grounded block finding).
 
 The verdict also carries `typecheck` (three-state) and deterministic test-integrity/content facts inside `facts` (`deleted_test_files`, `net_test_line_delta`, added skip markers, assertion delta, removed guard lines, chameleon-ignore directives added, `blast_radius_unknown`, `diff_scan_truncated`) — all engine-computed. Relay them verbatim; never recompute them by eyeballing the diff. This does NOT loosen the Step 3g integrity rule against hand-counting assertions: the assertion delta is now engine-grounded and arrives in the tool result, and the skill still never counts by hand. The three-state typecheck rule: `typecheck: unavailable` (the default — the runner is opt-in via `CHAMELEON_ALLOW_TSC`) is reported as one fact line and is NOT a needs-human reason; `errors` appears in `reasons` and routes needs-human.
 
@@ -516,9 +516,10 @@ When every changed source file in a test-paired layer has a matching test in the
 
 ### Auto-pass routing (advisory)
 
-One line from `get_autopass_verdict` (Step 3h), plus an optional second line for the typecheck state. Never a BLOCK/FIX/NIT; it does not affect the verdict.
+One line from `get_autopass_verdict` (Step 3h), a tier line, plus an optional line for the typecheck state. Never a BLOCK/FIX/NIT; it does not affect the verdict.
 
 ```
+Tier: easy — 1 file / 12 lines, in-pattern, bounded reach.
 Auto-pass: ELIGIBLE — routine change, no security surface, within size/blast-radius bounds. With the APPROVE verdict above, this is a candidate to skip human review.
 Typecheck: unavailable (opt-in not set)
 ```
@@ -526,6 +527,7 @@ Typecheck: unavailable (opt-in not set)
 or, when routed to a human:
 
 ```
+Tier: complex — touches a security-sensitive surface; change too large (36 files / 694 lines).
 Auto-pass: NEEDS HUMAN (risk: high) — touches a security-sensitive surface; change too large (36 files / 694 lines). Not a skip candidate regardless of the findings verdict.
 Typecheck: clean
 ```
@@ -533,11 +535,12 @@ Typecheck: clean
 or, on a test-integrity routing:
 
 ```
+Tier: hard — multi-file change with a new file.
 Auto-pass: NEEDS HUMAN (risk: high) — test weakening (deleted tests / skip markers / assertion drop) alongside live-source changes.
 Typecheck: 2 changed file(s) with type errors
 ```
 
-Render `auto_pass_eligible` as ELIGIBLE / NEEDS HUMAN, the `risk`, and the `reasons` list verbatim; render the `typecheck` field as `Typecheck: unavailable (<reason>)` / `Typecheck: clean` / `Typecheck: N changed file(s) with type errors`. If the tool was unavailable, write one line saying the auto-pass routing was skipped. Omit nothing: an ELIGIBLE verdict is only a skip candidate when the findings verdict is APPROVE — state that pairing explicitly.
+Render the `complexity_tier` field as `Tier: <easy|medium|hard|complex>` with a short reason drawn from the facts, then `auto_pass_eligible` as ELIGIBLE / NEEDS HUMAN, the `risk`, and the `reasons` list verbatim; render the `typecheck` field as `Typecheck: unavailable (<reason>)` / `Typecheck: clean` / `Typecheck: N changed file(s) with type errors`. If the tool was unavailable, write one line saying the auto-pass routing was skipped. Omit nothing: an ELIGIBLE verdict is only a skip candidate when the findings verdict is APPROVE — state that pairing explicitly. The tier is the change's inherent complexity (structural), independent of whether it is clean: an `easy`/`medium` change that is APPROVE + ELIGIBLE is the review-clean routine slice; `hard`/`complex` changes carry an irreducible human-judgment residual even when the findings verdict is clean.
 
 ### Per-file details
 
@@ -576,9 +579,9 @@ The cross-file findings (Step 2.8 co-change, Step 2.9 layering/duplication/exist
 
 After the verdict is rendered and shown to the user, append it to the review ledger by calling the `record_review_verdict` MCP tool:
 ```
-record_review_verdict(repo=<repo_id>, verdict=<the verdict string>, findings_count=<total BLOCK+FIX+NIT count>, commit_sha=<reviewed HEAD sha>)
+record_review_verdict(repo=<repo_id>, verdict=<the verdict string>, findings_count=<total BLOCK+FIX+NIT count>, commit_sha=<reviewed HEAD sha>, complexity_tier=<the complexity_tier from get_autopass_verdict in Step 3h, or omit if that step was skipped>)
 ```
-Pass the verdict exactly as rendered (`APPROVE`, `APPROVE WITH NITS`, `NEEDS CHANGES`, or `BLOCK`), the total finding count across all severities, and the commit SHA the review covered (the branch HEAD for the no-args case, or the PR head commit). The ledger stamps the rest of the provenance itself (the profile that reviewed it, the trust state, the engine version, the reviewer, a UTC timestamp).
+Pass the verdict exactly as rendered (`APPROVE`, `APPROVE WITH NITS`, `NEEDS CHANGES`, or `BLOCK`), the total finding count across all severities, the commit SHA the review covered (the branch HEAD for the no-args case, or the PR head commit), and the `complexity_tier` from Step 3h's auto-pass routing (so a lead can later read the review-clean rate per tier — the routine easy/medium slice versus the hard/complex residual). The ledger stamps the rest of the provenance itself (the profile that reviewed it, the trust state, the engine version, the reviewer, a UTC timestamp).
 
 Once review is optional, the skill is the system of record for "this change was checked", but the chat output disappears. The ledger is the durable trail: past verdicts are queryable with `get_review_history`, and a lead can see which BLOCK verdicts shipped anyway. State the scope honestly when the ledger comes up: it is tamper-evident (a third local user editing a line makes it fail verification), NOT forgery-proof. The reviewed developer holds the signing key and CI cannot verify the records, so the ledger is an honest self-attested audit log, not a merge authority.
 

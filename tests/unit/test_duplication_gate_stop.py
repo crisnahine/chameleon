@@ -46,6 +46,7 @@ def make_trusted_repo(tmp_path):
         mode: str = "shadow",
         duplication_review: bool = True,
         correctness_judge: bool = False,
+        multi_lens_review: bool = False,
     ):
         repo_id = "dup_repo_id"
         repo = tmp_path / "repo"
@@ -64,6 +65,7 @@ def make_trusted_repo(tmp_path):
                         # defers when the correctness judge fires this Stop).
                         "correctness_judge": correctness_judge,
                         "duplication_review": duplication_review,
+                        "multi_lens_review": multi_lens_review,
                     }
                 }
             ),
@@ -138,19 +140,25 @@ def _run_stop(
     env,
     *,
     findings=None,
+    semantic_findings=None,
     confirm=True,
 ):
-    """Drive stop_backstop with the body-match gather and the judge spawn mocked.
+    """Drive stop_backstop with the duplication gathers and judge spawn mocked.
 
-    ``findings`` is the list gather returns (default: none -> clean turn).
-    ``confirm`` controls the mocked reviewer verdict for those findings.
+    ``findings`` is the body-hash gather's list; ``semantic_findings`` is the
+    semantic gather's list (both default none -> clean turn). ``confirm`` controls
+    the mocked reviewer verdict for every gathered finding.
     Returns (emitted_json, spawn_mock, raw_emit_count).
     """
     cap = []
     findings = findings if findings is not None else []
+    semantic_findings = semantic_findings if semantic_findings is not None else []
     # The reviewer confirms each finding by new_name when ``confirm`` is True.
     verdict = json.dumps(
-        [{"new_name": f.new_name, "is_duplicate": bool(confirm)} for f in findings]
+        [
+            {"new_name": f.new_name, "is_duplicate": bool(confirm)}
+            for f in [*findings, *semantic_findings]
+        ]
     )
     with (
         patch("sys.stdin", io.StringIO(json.dumps(payload))),
@@ -160,6 +168,10 @@ def _run_stop(
         patch(
             "chameleon_mcp.duplication_review.gather_body_match_findings",
             return_value=findings,
+        ),
+        patch(
+            "chameleon_mcp.duplication_review.gather_semantic_findings",
+            return_value=semantic_findings,
         ),
         patch("chameleon_mcp.duplication_review.build_candidate_index", return_value=MagicMock()),
         patch("chameleon_mcp.judge._spawn_reviewer", return_value=_result_line(verdict)) as spawn,
@@ -207,6 +219,103 @@ def test_duplication_advisory_fires_and_single_emit(make_trusted_repo):
     spawn.assert_called_once()
     # Exactly one JSON object emitted for the whole Stop.
     assert emit_count == 1
+
+
+def test_semantic_finding_surfaces_when_body_hash_blind(make_trusted_repo):
+    # The body-hash gather finds nothing (different body), but the semantic
+    # gather surfaces a same-intent re-implementation -- the hook must still fire.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _seed_edited(file_path, data_dir, sid)
+    rel = Path(file_path).resolve().relative_to(Path(repo).resolve()).as_posix()
+    semantic = [
+        DupFinding(
+            new_name="stripWidgetAttributes",
+            new_file=rel,
+            line=3,
+            excerpt="return s.trim()",
+            existing_name="stripAttributes",
+            existing_file="src/sanitize.ts",
+        )
+    ]
+
+    out, spawn, emit_count = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+        findings=[],  # body-hash blind
+        semantic_findings=semantic,
+        confirm=True,
+    )
+
+    assert out.get("decision") != "block"
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "re-implements" in ctx
+    assert "stripWidgetAttributes" in ctx
+    assert "stripAttributes" in ctx
+    spawn.assert_called_once()
+    assert emit_count == 1
+
+
+def test_multi_lens_review_replaces_separate_gates(make_trusted_repo, monkeypatch):
+    # With enforcement.multi_lens_review on, the Stop path runs the coordinated
+    # lens pass and surfaces its synthesized findings, and does NOT call the
+    # separate correctness-judge or duplication gates.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(multi_lens_review=True)
+    _seed_edited(file_path, data_dir, sid)
+    rel = Path(file_path).resolve().relative_to(Path(repo).resolve()).as_posix()
+
+    fake_route = {
+        "spawn": True,
+        "fresh": [file_path],
+        "intent_tokens": [],
+        "digests": {rel: "deadbeef"},
+        "turn_key": "tk",
+        "reason": "edited",
+        "skip_reason": None,
+    }
+    surfaced = [
+        {
+            "file": rel,
+            "line": 3,
+            "claim": "missing nil guard",
+            "lenses": ["correctness"],
+            "agreement": 1,
+            "confidence": 0.9,
+            "surface": True,
+        }
+    ]
+    corr_gate = MagicMock()
+    dup_gate = MagicMock(return_value=[])
+
+    cap = []
+    with (
+        patch(
+            "sys.stdin",
+            io.StringIO(
+                json.dumps({"session_id": sid, "cwd": str(repo), "stop_hook_active": False})
+            ),
+        ),
+        patch("sys.stdout") as out,
+        patch.dict(os.environ, {"CHAMELEON_ENFORCE": "1"}, clear=False),
+        patch("chameleon_mcp.hook_helper._stop_file_still_blockable", return_value=False),
+        patch("chameleon_mcp.hook_helper._correctness_judge_route", return_value=fake_route),
+        patch("chameleon_mcp.hook_helper._correctness_judge_gate", corr_gate),
+        patch("chameleon_mcp.hook_helper._duplication_advisory_lines", dup_gate),
+        patch("chameleon_mcp.lens_runner.run_lenses", return_value=surfaced),
+    ):
+        out.write = cap.append
+        from chameleon_mcp.hook_helper import stop_backstop
+
+        stop_backstop()
+
+    raw = "".join(cap).strip()
+    result = json.loads(raw) if raw else {}
+    ctx = (result.get("hookSpecificOutput") or {}).get("additionalContext", "")
+    assert "multi-lens review flagged" in ctx
+    assert "missing nil guard" in ctx
+    # The separate gates are bypassed when the lens pass owns the turn.
+    corr_gate.assert_not_called()
+    dup_gate.assert_not_called()
+    assert result.get("decision") != "block"
 
 
 def test_subagentstop_skips_no_spawn(make_trusted_repo):

@@ -301,6 +301,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # turns every turn into a billable spawn).
     "DUPLICATION_REVIEW_MAX_FILES": 12,
     "DUPLICATION_REVIEW_MAX_FINDINGS": 8,
+    # Precision bar for the turn-end SEMANTIC duplication pass (different-body,
+    # same-intent candidates from select_candidates). Turn-end nags mid-edit, so
+    # it needs higher precision than the pr-review prefilter: a body-identical
+    # candidate always qualifies, otherwise it must share at least this many
+    # domain tokens. One shared token (state, address, sales) is overwhelmingly
+    # noise on real repos; two co-occurring domain words is a real lead.
+    "DUPLICATION_SEMANTIC_MIN_SHARED_TOKENS": 2,
     "DUPLICATION_REVIEW_MAX_PROMPT_BYTES": 60_000,
     "DUPLICATION_REVIEW_MAX_SPAWNS_PER_SESSION": 2,
     # Lines of a candidate function's body read from disk as a citation aid for

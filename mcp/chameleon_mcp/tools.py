@@ -4287,6 +4287,7 @@ def record_review_verdict(
     findings_count: int | None = None,
     commit_sha: str | None = None,
     pr_id: str | None = None,
+    complexity_tier: str | None = None,
 ) -> dict:
     """Append one PR-review verdict to the repo's signed review ledger.
 
@@ -4347,6 +4348,7 @@ def record_review_verdict(
             trust_state=provenance["trust_state"],
             engine_version=engine_version,
             pr_id=pr_id,
+            complexity_tier=complexity_tier,
         )
     except Exception as exc:
         return _envelope(
@@ -5923,6 +5925,10 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
                 "reason": reason,
                 "auto_pass_eligible": False,
                 "risk": "high",
+                # Cannot read the diff -> cannot vouch for it; route as the
+                # highest tier so the verdict shape always carries the field and
+                # a degraded read never reads as a low-tier auto-pass.
+                "complexity_tier": "complex",
                 "reasons": [message],
             }
         )
