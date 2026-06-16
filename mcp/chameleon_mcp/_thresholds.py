@@ -383,6 +383,15 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # swallows.
     "CANONICAL_MATERIALIZE_LOCK_TIMEOUT_SECONDS": 30.0,
     "TRUST_LOCK_TIMEOUT_SECONDS": 10.0,
+    # Production-ref fetch (refresh-time, default-on, the one network path).
+    # Hard wall-clock for the non-interactive `git fetch origin <branch>` before
+    # a refresh resolves the tip; a slow/huge remote that can't finish in this
+    # budget is SIGKILLed and the refresh falls back to the last-fetched ref.
+    "PRODUCTION_REF_FETCH_TIMEOUT_SECONDS": 10.0,
+    # After a PERSISTENT fetch failure (auth / branch-gone) this many hours pass
+    # before chameleon retries, so a misconfigured remote doesn't pay a doomed
+    # fetch every session.
+    "PRODUCTION_REF_FETCH_BACKOFF_HOURS": 6.0,
     # Caps for the turn-end session attestation. Files bounds governed +
     # ungoverned entries (and their digest reads) per record; overrides and
     # check events bound the embedded evidence lists, with the remainder

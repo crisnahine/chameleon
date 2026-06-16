@@ -4955,6 +4955,107 @@ def _attempt_partial_refresh(
     )
 
 
+def _maybe_fetch_production_ref(repo_root: Path):
+    """Refresh-time, default-ON fetch of the locked production branch.
+
+    Returns a ``FetchOutcome`` (or None when no production_ref is locked) so the
+    refresh envelope can tell the user whether it derived from the latest tip or
+    fell back to the last-fetched ref. Gated so it only ever does ONE bounded
+    network fetch and only when it makes sense:
+      - a production_ref is locked,
+      - the env kill switch CHAMELEON_FETCH_PRODUCTION_REF != "0",
+      - the config flag auto_refresh.fetch_production_ref is on,
+      - not under CI (a fresh CI clone must not do an unasked network fetch),
+      - the branch is actually origin-backed (re-detected, not inferred).
+    On success it invalidates the in-process resolve memo so the tip-staleness
+    check reads the freshly-fetched SHA. Never raises; never blocks refresh.
+    """
+    try:
+        prod_branch = _persisted_production_ref(repo_root)
+        if not prod_branch:
+            # No lock yet, but an OLD profile gets migrated to one THIS refresh
+            # when detection is clean + origin-backed (see _refresh_repo_locked).
+            # Fetch the branch the migration will lock, so the migrating session
+            # also derives from the latest tip instead of being one session
+            # stale. Honor the explicit "production_ref": null opt-out.
+            if _production_ref_explicitly_disabled(repo_root):
+                return None
+            from chameleon_mcp.production_ref import detect_production_branch
+
+            det = detect_production_branch(repo_root)
+            if not (det.branch and not det.conflict and det.from_origin):
+                return None
+            prod_branch = det.branch
+        if os.environ.get("CHAMELEON_FETCH_PRODUCTION_REF") == "0":
+            return None
+        if os.environ.get("CI"):
+            # A CI agent on a fresh clone fires auto-refresh; it must not do an
+            # unasked network fetch and won't know the kill switch exists.
+            return None
+        try:
+            from chameleon_mcp.profile.config import load_config
+
+            if not load_config(repo_root / ".chameleon").auto_refresh.fetch_production_ref:
+                return None
+        except Exception:
+            return None  # config unreadable: do not fetch
+
+        from chameleon_mcp.production_ref import (
+            branch_is_origin_backed,
+            fetch_production_ref,
+            invalidate_resolve_memo,
+        )
+
+        # The LOCKED branch must itself be origin-backed (origin/<branch>
+        # exists), not merely that some branch is: a local-only locked branch
+        # must never trigger a doomed network fetch.
+        if not branch_is_origin_backed(repo_root, prod_branch):
+            return None
+
+        from chameleon_mcp._thresholds import threshold_float
+        from chameleon_mcp.profile.trust import repo_data_dir
+
+        data_dir = repo_data_dir(_compute_repo_id(repo_root))
+        outcome = fetch_production_ref(
+            repo_root,
+            prod_branch,
+            repo_data_dir=data_dir,
+            timeout_seconds=threshold_float("PRODUCTION_REF_FETCH_TIMEOUT_SECONDS"),
+            backoff_hours=threshold_float("PRODUCTION_REF_FETCH_BACKOFF_HOURS"),
+        )
+        if outcome.status == "ok":
+            invalidate_resolve_memo(repo_root, prod_branch)
+        # Log so the auto-refresh child's redirected stderr records it in
+        # auto_refresh.log, and the manual path leaves a server-log trail.
+        if outcome.attempted:
+            try:
+                import sys
+
+                msg = f"chameleon: fetch origin {prod_branch}: {outcome.status}"
+                if outcome.reason:
+                    msg += f" ({outcome.reason})"
+                print(msg, file=sys.stderr)
+            except Exception:
+                pass
+        return outcome
+    except Exception:
+        return None
+
+
+def _inject_production_ref_fetch(envelope: dict, outcome) -> None:
+    """Fold the fetch outcome into the refresh envelope so /chameleon-refresh can
+    render it. Omitted when the fetch was gated off (disabled / not attempted /
+    not locked) — the user sees a fetch line only when one actually ran."""
+    if outcome is None or not getattr(outcome, "attempted", False):
+        return
+    if not isinstance(envelope, dict):
+        return
+    data = envelope.get("data")
+    if not isinstance(data, dict):
+        return
+    data["production_ref_fetch"] = outcome.as_dict()
+
+
 def refresh_repo(repo: str, force: bool = False) -> dict:
     """Re-analyze repo, detect drift, update profile.
 
@@ -5033,7 +5134,13 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
     try:
         with acquire_advisory_lock(refresh_lock_path):
             pre_state = _capture_pre_refresh_state(repo_path)
+            # Default-ON: fetch the locked production tip first (one bounded
+            # network call, under the refresh lock) so the tip-staleness check
+            # and any re-derive below see the latest production, not the user's
+            # last fetch. Fails open; the outcome rides out in the envelope.
+            _prod_fetch = _maybe_fetch_production_ref(repo_path.resolve())
             envelope = _refresh_repo_locked(repo_path, force=force)
+            _inject_production_ref_fetch(envelope, _prod_fetch)
             _inject_archetype_diff(envelope, repo_path, pre_state)
             _maybe_preserve_trust_across_refresh(repo_path, pre_state, envelope)
             # Keep the status line in sync with the post-refresh trust state

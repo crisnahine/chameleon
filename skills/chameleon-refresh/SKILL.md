@@ -26,11 +26,27 @@ Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Whe
 3. The tool acquires an OS-level flock on `.chameleon/.refresh.lock` (per-PID + start timestamp; concurrent invocations fail with stale-lock detection at 1 hour).
 4. **Production-pinned repos** (`production_ref` in `.chameleon/config.json`,
    set at init or migrated below): staleness is the locked ref's TIP SHA,
-   not working-tree changes. Tip unchanged → `noop` (your feature-branch
-   edits don't affect a production-pinned profile). Tip moved → full
-   re-derive from a materialization of the new production tree — no need to
-   checkout or pull the production branch first; the local
-   `origin/<branch>` ref (current as of your last `git fetch`) is used.
+   not working-tree changes. Before resolving the tip, refresh runs ONE
+   bounded, non-interactive `git fetch origin <branch>` by default, so the
+   tip it sees is the genuinely-latest production — you do NOT need to
+   checkout, pull, or even fetch the production branch yourself. Tip
+   unchanged → `noop` (your feature-branch edits don't affect a
+   production-pinned profile). Tip moved → full re-derive from a
+   materialization of the new production tree.
+
+   The fetch outcome rides out in the envelope's `production_ref_fetch`
+   block (`{attempted, outcome, reason}`). Report it in one line:
+   - `outcome: "ok"` → "Fetched origin/<branch>; refreshed from the latest
+     production tip." (when tip moved) or "...tip unchanged, already current."
+   - ANY non-ok outcome with a non-empty `reason` (`auth` / `timeout` /
+     `no_network` / `no_remote_ref` / `concurrent` / `unknown`) → "Could not
+     fetch origin/<branch> (<reason>); refreshed from the last-fetched ref,
+     which may be behind production." Relay the reason verbatim (it names the
+     manual `git fetch` to run where useful). Never stay silent on a non-ok
+     fetch — a recurring failure means the profile is deriving from stale code.
+   - block absent → the fetch was gated off (no lock, kill switch
+     `CHAMELEON_FETCH_PRODUCTION_REF=0`, `auto_refresh.fetch_production_ref:
+     false`, CI, local-only repo, or a recent-failure backoff); say nothing.
    **Old-profile migration**: a profile without the lock gets one
    automatically here when detection is clean and origin-backed
    (origin default branch, or an origin branch named production/prod);

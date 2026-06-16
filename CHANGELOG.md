@@ -4,6 +4,45 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.0] - 2026-06-16
+
+Refresh now derives from the genuinely-latest production, not the user's last
+fetch. When a repo has a locked `production_ref`, `/chameleon-refresh` and the
+background auto-refresh run one bounded `git fetch origin <branch>` before
+resolving the tip — DEFAULT-ON, the one network path made default-on by design.
+
+### Added
+
+- **Production-ref fetch-before-refresh** (`auto_refresh.fetch_production_ref`,
+  default true; kill switch `CHAMELEON_FETCH_PRODUCTION_REF=0`). Before refresh
+  resolves the locked production tip, it fetches `origin <branch>` so the
+  derivation sees the latest production rather than whatever the user last
+  fetched. One fetch site in `refresh_repo` serves both manual and auto-refresh;
+  bootstrap/init never fetch. The outcome rides out in the refresh envelope's
+  `production_ref_fetch` block and `auto_refresh.log`, so a stale derivation
+  always says WHY.
+  - **Hang-proof + non-interactive.** The fetch runs with `GIT_TERMINAL_PROMPT=0`,
+    an empty askpass, and SSH `BatchMode=yes` so a missing credential is a clean
+    failure, never a prompt; a hard `CHAMELEON_PRODUCTION_REF_FETCH_TIMEOUT_SECONDS`
+    (default 10) wall-clock plus a process-group SIGKILL (taskkill tree on
+    Windows) backstops a stuck transfer.
+  - **Fails open, classified, surfaced.** Any non-ok outcome (timeout /
+    no_network / auth / no_remote_ref / concurrent / unknown) falls back to the
+    existing last-fetched ref and reports a specific reason — the auth reason
+    tells the user the exact `git fetch origin <branch>` to run by hand.
+  - **Self-suppresses where a surprise network call is wrong.** Off under `CI`,
+    off when the branch is not origin-backed (re-detected, not inferred), and a
+    `CHAMELEON_PRODUCTION_REF_FETCH_BACKOFF_HOURS` (default 6) backoff after a
+    persistent auth/branch-gone failure so a misconfigured remote isn't re-hit
+    every session. NO fetch on any hook hot path (PreToolUse/PostToolUse/
+    SessionStart stay offline).
+
+This is a deliberate, single exception to the "network paths stay opt-in"
+principle, made default-on by maintainer decision and surfaced here rather than
+buried. Designed via a multi-agent panel with adversarial review; shipped with a
+fake-git-shim test battery (classifier, timeout-kill, non-interactive env,
+backoff) plus real-local-origin integration and hot-path no-fetch assertions.
+
 ## [2.14.1] - 2026-06-16
 
 Remediation of the QA-30 full-surface campaign: a complete plugin inventory plus a five-lane hostile QA pass (failure/recovery, language depth, enforcement, upgrade/migration, regression) over the real bootstrapped repos. No P0/P1 survived independent verification — the calibration demotion, dual ignore-layers, init-skill sparse handling, and git-committed artifacts each downgraded a claimed P1 to P2 — but eight real defects ship fixed, each regression-pinned. Full unit suite 3,622 passing.

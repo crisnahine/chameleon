@@ -55,6 +55,12 @@ class AutoRefreshConfig:
     enabled: bool = True
     drift_threshold: float = 0.2
     max_age_hours: int = 168
+    # Default-ON: before a refresh (manual or auto) resolves the locked
+    # production tip, fetch origin/<branch> so derivation sees the genuinely
+    # latest production, not the user's last fetch. The one network-default-ON
+    # path; kill with CHAMELEON_FETCH_PRODUCTION_REF=0 or this flag = false, and
+    # it self-suppresses under CI. Non-interactive + hard-timeout, fails open.
+    fetch_production_ref: bool = True
 
 
 @dataclass(frozen=True)
@@ -279,7 +285,7 @@ def _coerce_auto_refresh(raw: Any) -> AutoRefreshConfig:
         return AutoRefreshConfig()
     if not isinstance(raw, dict):
         raise ChameleonConfigError(f"`auto_refresh` must be an object, got {type(raw).__name__}")
-    allowed = {"enabled", "drift_threshold", "max_age_hours"}
+    allowed = {"enabled", "drift_threshold", "max_age_hours", "fetch_production_ref"}
     unknown = set(raw.keys()) - allowed
     if unknown:
         raise ChameleonConfigError(
@@ -289,6 +295,12 @@ def _coerce_auto_refresh(raw: Any) -> AutoRefreshConfig:
     if not isinstance(enabled, bool):
         raise ChameleonConfigError(
             f"`auto_refresh.enabled` must be bool, got {type(enabled).__name__}"
+        )
+    fetch_production_ref = raw.get("fetch_production_ref", True)
+    if not isinstance(fetch_production_ref, bool):
+        raise ChameleonConfigError(
+            "`auto_refresh.fetch_production_ref` must be bool, got "
+            f"{type(fetch_production_ref).__name__}"
         )
     threshold = raw.get("drift_threshold", 0.2)
     if (
@@ -308,6 +320,7 @@ def _coerce_auto_refresh(raw: Any) -> AutoRefreshConfig:
         enabled=enabled,
         drift_threshold=float(threshold),
         max_age_hours=max_age,
+        fetch_production_ref=fetch_production_ref,
     )
 
 
@@ -389,6 +402,20 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
         raise ChameleonConfigError(
             f"`production_ref` must be a non-empty string or null, got {production_ref!r}"
         )
+    # SECURITY: the refresh-time fetch passes production_ref positionally into
+    # `git fetch origin <value>`. Only a plain branch name is safe: a leading
+    # '-' is an option (--upload-pack=<cmd> -> RCE), and a ':'/'+'/'*' makes it a
+    # refspec that writes a local ref. Refuse anything else here too (the fetch
+    # itself also refuses + uses --end-of-options).
+    if isinstance(production_ref, str) and production_ref.strip():
+        from chameleon_mcp.production_ref import is_safe_branch_name
+
+        if not is_safe_branch_name(production_ref):
+            raise ChameleonConfigError(
+                f"`production_ref` must be a plain branch name (got {production_ref!r}): "
+                "values with '-' prefix, ':', '+', '*', or whitespace are a git "
+                "argument/refspec-injection risk"
+            )
 
     auto_rename = raw.get("auto_rename", True)
     if not isinstance(auto_rename, bool):
