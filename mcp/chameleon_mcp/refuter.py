@@ -10,18 +10,29 @@ finding (the caller keeps unverified findings, labeled, per the degraded ladder)
 
 from __future__ import annotations
 
-import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from chameleon_mcp.judge import _extract_json_array  # noqa: F401
-from chameleon_mcp.judge import _spawn_reviewer as _spawn
+from chameleon_mcp.judge import (  # noqa: F401
+    _bare_auth_known_failed,
+    _bare_flag_supported,
+    _extract_json_array,
+)
+from chameleon_mcp.judge import (
+    _spawn_reviewer as _spawn,
+)
 
 
 def refuter_available() -> bool:
-    """True iff the bare-``claude`` CLI probe says a spawn can succeed."""
+    """True iff the bare-``claude`` CLI probe says a spawn can succeed.
+
+    Reuses judge.py's real probe: checks both that the --bare flag is supported
+    (implying the CLI binary exists and responds) and that auth has not previously
+    been confirmed to fail. This matches the actual spawn gate rather than a
+    naive ``shutil.which`` check that passes even after auth failure.
+    """
     try:
-        return shutil.which("claude") is not None
+        return _bare_flag_supported() and not _bare_auth_known_failed()
     except Exception:  # noqa: BLE001
         return False
 
@@ -57,10 +68,8 @@ def run_one(
 ) -> dict:
     """Spawn one refuter. Fail open to unverified on any error, timeout, or unparse.
 
-    ``model`` and ``timeout`` are accepted for API consistency with ``run_batch``
-    and future callers; the underlying spawn uses judge.py's own timeout/model
-    resolution (CHAMELEON_JUDGE_MODEL env var, _reviewer_timeout_seconds). This
-    follows judge.py's discipline exactly rather than re-implementing it.
+    ``model`` drives the ``--model`` flag; ``timeout`` is the wall-clock budget
+    in seconds. Both are forwarded directly to the underlying spawn.
     """
     fid = finding.get("id")
     try:
@@ -68,7 +77,7 @@ def run_one(
         # _spawn mirrors judge.py's full discipline: claude -p, --disallowedTools
         # (no Read/Edit/Write/Bash/...), CHAMELEON_DISABLE=1 child env, --bare
         # probe with auth fallback, wall-clock timeout via subprocess.run.
-        stdout = _spawn(prompt, repo_root)
+        stdout = _spawn(prompt, repo_root, model=model, timeout_s=timeout)
         if stdout is None:
             return {"id": fid, "verdict": "unverified", "reason": "refuter spawn returned nothing"}
         arr = _extract_json_array(stdout)

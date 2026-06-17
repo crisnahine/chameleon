@@ -715,7 +715,9 @@ def _reviewer_timeout_seconds() -> int:
     return threshold_int("CORRECTNESS_JUDGE_TIMEOUT_SECONDS")
 
 
-def _spawn_reviewer_status(prompt: str, cwd: Path) -> tuple[str | None, str | None]:
+def _spawn_reviewer_status(
+    prompt: str, cwd: Path, *, model: str | None = None, timeout_s: int | None = None
+) -> tuple[str | None, str | None]:
     """Spawn ``claude -p`` for a one-shot review, returning ``(stdout, reason)``.
 
     Runtime-owned spawn wrapper (the journey-harness wrapper under ``tests/`` is
@@ -725,8 +727,15 @@ def _spawn_reviewer_status(prompt: str, cwd: Path) -> tuple[str | None, str | No
     ``spawn_exec_error``, ``spawn_nonzero_exit`` so the caller can record WHY a
     review silently produced nothing instead of collapsing every failure mode
     into an indistinguishable None.
+
+    ``model`` and ``timeout_s`` override the env-var defaults when provided;
+    pass nothing to get the standard judge behavior.
     """
-    timeout_s = _reviewer_timeout_seconds()
+    if timeout_s is None:
+        timeout_s = _reviewer_timeout_seconds()
+    resolved_model = (
+        model if model is not None else os.environ.get("CHAMELEON_JUDGE_MODEL", "sonnet")
+    )
     args = [
         "claude",
         "-p",
@@ -737,7 +746,7 @@ def _spawn_reviewer_status(prompt: str, cwd: Path) -> tuple[str | None, str | No
         "--max-turns",
         "1",
         "--model",
-        os.environ.get("CHAMELEON_JUDGE_MODEL", "sonnet"),
+        resolved_model,
         "--permission-mode",
         "default",
         "--disallowedTools",
@@ -808,9 +817,11 @@ def _spawn_reviewer_status(prompt: str, cwd: Path) -> tuple[str | None, str | No
     return proc.stdout or "", None
 
 
-def _spawn_reviewer(prompt: str, cwd: Path) -> str | None:
+def _spawn_reviewer(
+    prompt: str, cwd: Path, *, model: str | None = None, timeout_s: int | None = None
+) -> str | None:
     """Stdout-only view of ``_spawn_reviewer_status`` (None on any failure)."""
-    return _spawn_reviewer_status(prompt, cwd)[0]
+    return _spawn_reviewer_status(prompt, cwd, model=model, timeout_s=timeout_s)[0]
 
 
 def collect_file_diffs(

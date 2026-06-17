@@ -48,3 +48,20 @@ def test_run_one_fails_open_to_unverified(monkeypatch):
     monkeypatch.setattr(refuter, "_spawn", boom, raising=False)
     out = refuter.run_one(Path("/tmp"), _finding(1), "excerpt", model="sonnet", timeout=45)
     assert out["verdict"] == "unverified"
+
+
+def test_run_one_forwards_model_and_timeout(monkeypatch):
+    """model and timeout must reach _spawn as keyword args."""
+    captured = {}
+
+    def fake_spawn(prompt, cwd, *, model=None, timeout_s=None):
+        captured["model"] = model
+        captured["timeout_s"] = timeout_s
+        # Return a valid JSON verdict so run_one doesn't fail-open
+        return '[{"confirmed": false, "reason": "refuted by test"}]'
+
+    monkeypatch.setattr(refuter, "_spawn", fake_spawn)
+    out = refuter.run_one(Path("/tmp"), _finding(2), "excerpt", model="opus", timeout=99)
+    assert captured["model"] == "opus"
+    assert captured["timeout_s"] == 99
+    assert out["verdict"] == "refuted"
