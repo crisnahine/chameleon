@@ -256,9 +256,7 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    transcript_text = (
-        transcript.read_text(encoding="utf-8") if transcript.exists() else ""
-    )
+    transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
     # Sentinel-delimited review span; populated in Phase 38 cross-check and reused
     # by Phase 39 to scope its anti-hallucination checks to the emitted review only.
     review_span: str = ""
@@ -314,9 +312,7 @@ def run(ctx: JourneyContext) -> ActResult:
 
         # Word-boundary severity labels so 'fixture'/'init'/'prefix' can't match.
         severity_labels = [
-            lbl
-            for lbl in ("block", "fix", "nit")
-            if re.search(rf"\b{lbl}\b", span_lower)
+            lbl for lbl in ("block", "fix", "nit") if re.search(rf"\b{lbl}\b", span_lower)
         ]
         if len(severity_labels) < 2:
             problems.append(
@@ -336,9 +332,7 @@ def run(ctx: JourneyContext) -> ActResult:
         divergence_line = None
         for raw_line in review_span.splitlines():
             line_lower = raw_line.lower()
-            if "format_date.ts" in line_lower and any(
-                t in line_lower for t in divergence_terms
-            ):
+            if "format_date.ts" in line_lower and any(t in line_lower for t in divergence_terms):
                 divergence_line = raw_line.strip()
                 break
         if divergence_line is None:
@@ -373,8 +367,7 @@ def run(ctx: JourneyContext) -> ActResult:
         posttool_events = [
             e
             for e in session.hook_events
-            if e.hook_name.startswith("PostToolUse")
-            and "<chameleon-context>" in e.stdout
+            if e.hook_name.startswith("PostToolUse") and "<chameleon-context>" in e.stdout
         ]
         verify_deviation = [
             e
@@ -389,9 +382,7 @@ def run(ctx: JourneyContext) -> ActResult:
         # regex anchored on the emoji codepoint never matches. Anchor on the
         # "chameleon: N violation" text instead; it is present in both the
         # decoded and escaped serializations of the deviation block.
-        transcript_has_verify = bool(
-            re.search(r"chameleon:\s*\d+\s*violation", transcript_text)
-        )
+        transcript_has_verify = bool(re.search(r"chameleon:\s*\d+\s*violation", transcript_text))
         if not verify_deviation and not transcript_has_verify:
             concern = (
                 "posttool-verify deviation block not observed for the off-archetype edit "
@@ -431,11 +422,7 @@ def run(ctx: JourneyContext) -> ActResult:
 
             # Layer 1: must name a staged file.
             matched_key = next(
-                (
-                    k
-                    for k in _STAGED_HUNK_RANGES
-                    if ref_path.endswith(k) or k.endswith(ref_path)
-                ),
+                (k for k in _STAGED_HUNK_RANGES if ref_path.endswith(k) or k.endswith(ref_path)),
                 None,
             )
             if matched_key is None:
@@ -458,9 +445,7 @@ def run(ctx: JourneyContext) -> ActResult:
         clean_in_block_fix = False
         for raw_line in (review_span or "").splitlines():
             line_lower = raw_line.lower()
-            if clean_basename in line_lower and re.search(
-                r"\b(block|fix)\b", line_lower
-            ):
+            if clean_basename in line_lower and re.search(r"\b(block|fix)\b", line_lower):
                 clean_in_block_fix = True
                 break
 
@@ -480,9 +465,7 @@ def run(ctx: JourneyContext) -> ActResult:
             )
 
         if problems_39:
-            notes_extra[39] = (
-                notes_extra.get(39, "") + "; " + "; ".join(problems_39)
-            ).strip("; ")
+            notes_extra[39] = (notes_extra.get(39, "") + "; " + "; ".join(problems_39)).strip("; ")
             cross_check_passed[39] = False
         else:
             cross_check_passed[39] = True
@@ -501,21 +484,14 @@ def run(ctx: JourneyContext) -> ActResult:
             if outcomes[phase].status == "SKIP":
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from SKIP by runner cross-check"
-            elif (
-                outcomes[phase].status == "FAIL"
-                and "phase incomplete" in outcomes[phase].notes
-            ):
+            elif outcomes[phase].status == "FAIL" and "phase incomplete" in outcomes[phase].notes:
                 outcomes[phase].status = "PASS"
-                outcomes[
-                    phase
-                ].notes = "promoted from incomplete-FAIL by runner cross-check"
+                outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
 
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""
-            outcomes[phase].notes = (
-                outcomes[phase].notes + "; " + note_prefix + extra
-            ).strip("; ")
+            outcomes[phase].notes = (outcomes[phase].notes + "; " + note_prefix + extra).strip("; ")
 
     return ActResult(
         act_id="12_pr_review",
