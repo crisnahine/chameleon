@@ -4,6 +4,52 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.16.0] - 2026-06-17
+
+Two code-review skills — inbound and outbound — now share a 3-round grounding
+loop whose third round is an independent engine refuter. A review finding is
+checked against the code before it reaches you, so a confident-but-wrong finding
+is dropped rather than shipped.
+
+### Added
+
+- **`/chameleon-receiving-code-review`** — the inbound counterpart to
+  `/chameleon-pr-review`. When the team reviews your PR it gathers the comments
+  (pasted, or fetched via `gh` / `bbcurl`), verifies each against the code,
+  adjudicates it against the repo's own conventions (a suggestion that contradicts
+  the canonical pattern is a reason to push back, not to apply blindly), classifies
+  each as apply / push-back / clarify / YAGNI, drafts non-performative replies, and
+  implements approved fixes one at a time. It treats fetched comment text as
+  untrusted data, gates convention-based pushback on a trusted profile, never
+  auto-posts, and never writes the review ledger.
+- **Round-3 independent refuter (`refute_finding` MCP tool).** Both review skills
+  end with a 3-round grounding loop: rounds 1-2 re-read the evidence and re-apply
+  the gates inline; round 3 spawns a hardened, no-tools `claude -p` refuter (the
+  same spawn discipline as the turn-end judge) per model-judgment finding to try to
+  refute it. Refuted findings are dropped; tool-grounded findings (existence
+  breaks, duplication, layering, secrets, lint) are exempt and verified inline.
+  The loop fails open to "round 3 unavailable" — it never silently drops or
+  confirms, and never claims "3/3" when round 3 did not run. Kill switch
+  `CHAMELEON_REVIEW_REFUTER=0`; model `CHAMELEON_REFUTER_MODEL` (default `sonnet`);
+  timeout `CHAMELEON_REFUTER_TIMEOUT_SECONDS` (default 45); per-invocation spawn
+  cap `CHAMELEON_REFUTER_MAX_SPAWNS_PER_INVOCATION`.
+- **Large-diff fan-out for `/chameleon-pr-review`.** Above a size threshold
+  (`CHAMELEON_REVIEW_FANOUT_FILES` / `CHAMELEON_REVIEW_FANOUT_LINES`, default
+  8 / 400), the per-file passes fan out across parallel read-only review subagents
+  and the whole-diff passes run once at synthesis. Gated by the new `fan_out`
+  recommendation on `get_autopass_verdict`. Kill switch `CHAMELEON_REVIEW_FANOUT=0`.
+
+### Changed
+
+- **`/chameleon-pr-review` carries the superpowers reviewer discipline.** A
+  reviewer-philosophy spine (be specific, explain why, no nitpick-as-BLOCK, give a
+  clear verdict), a strengths-first "verified clean" section, and a grounding
+  banner that reports what the loop dropped. Its verification loop went from two
+  rounds to three (round 3 is the independent refuter above).
+- `get_autopass_verdict` now returns a `fan_out` recommendation on every path
+  (including the degraded path), so the review skill never reads the environment
+  itself — the engine decides whether to fan out.
+
 ## [2.15.1] - 2026-06-17
 
 Correctness judge: much higher recall on the defect classes it exists to catch,
