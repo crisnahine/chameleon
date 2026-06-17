@@ -6111,6 +6111,31 @@ def bootstrap_repo(
         return _envelope({"status": "failed", "error": f"could not write profile: {e}"})
 
 
+def _fan_out_block(files_changed: int, lines_changed: int) -> dict:
+    """Fan-out recommendation for the pr-review skill. Default-ON over threshold;
+    CHAMELEON_REVIEW_FANOUT=0 forces off. Skill partitions the diff itself."""
+    import os
+
+    from chameleon_mcp._thresholds import threshold_int
+
+    if os.environ.get("CHAMELEON_REVIEW_FANOUT") == "0":
+        return {
+            "recommended": False,
+            "files_changed": int(files_changed),
+            "lines_changed": int(lines_changed),
+            "reason": "fan-out disabled (CHAMELEON_REVIEW_FANOUT=0)",
+        }
+    over = files_changed > threshold_int("REVIEW_FANOUT_FILES") or lines_changed > threshold_int(
+        "REVIEW_FANOUT_LINES"
+    )
+    return {
+        "recommended": bool(over),
+        "files_changed": int(files_changed),
+        "lines_changed": int(lines_changed),
+        "reason": ("diff over fan-out threshold" if over else "diff under fan-out threshold"),
+    }
+
+
 def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     """ADVISORY: is this branch's diff vs ``base_ref`` safe to auto-pass, or does
     it need a human? Never gates -- it informs a review decision. The honest goal
@@ -6138,19 +6163,24 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     from chameleon_mcp.safe_open import safe_read_text
 
     def _degraded(reason: str, message: str) -> dict:
-        return _envelope(
-            {
-                "status": "degraded",
-                "reason": reason,
-                "auto_pass_eligible": False,
-                "risk": "high",
-                # Cannot read the diff -> cannot vouch for it; route as the
-                # highest tier so the verdict shape always carries the field and
-                # a degraded read never reads as a low-tier auto-pass.
-                "complexity_tier": "complex",
-                "reasons": [message],
-            }
-        )
+        d = {
+            "status": "degraded",
+            "reason": reason,
+            "auto_pass_eligible": False,
+            "risk": "high",
+            # Cannot read the diff -> cannot vouch for it; route as the
+            # highest tier so the verdict shape always carries the field and
+            # a degraded read never reads as a low-tier auto-pass.
+            "complexity_tier": "complex",
+            "reasons": [message],
+            "fan_out": {
+                "recommended": False,
+                "files_changed": 0,
+                "lines_changed": 0,
+                "reason": "autopass degraded; no fan-out sizing",
+            },
+        }
+        return _envelope(d)
 
     repo_root, repo_id = _resolve_repo_arg(repo)
     if repo_root is None:
@@ -6288,6 +6318,11 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     verdict["advisory"] = True
     verdict["base_ref"] = base_ref
     verdict["typecheck"] = typecheck_fact
+    _facts = verdict.get("facts", {})
+    verdict["fan_out"] = _fan_out_block(
+        int(_facts.get("files_changed", 0)),
+        int(_facts.get("lines_changed", 0)),
+    )
     return _envelope(verdict)
 
 
