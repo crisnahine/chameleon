@@ -4,6 +4,39 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.1] - 2026-06-17
+
+Correctness judge: much higher recall on the defect classes it exists to catch,
+with no false-positive cost. The turn-end correctness reviewer (and the
+multi-lens correctness lens that shares its prompt) was missing unguarded
+dereferences, dropped awaits, and off-by-one errors on real repos. Two prompt
+changes fix that, validated on a real TypeScript and a real Ruby repo.
+
+### Changed
+
+- **Correctness reviewer now works through an explicit defect checklist.** The
+  prompt enumerates the defects most often missed and makes the reviewer clear
+  each dereference, index, and condition in the diff: optional/absent-on-miss
+  lookups dereferenced without a guard (`Map.get` / `.find` / `.find_by` / hash
+  index), nilable receivers used without `?.` / `&.` / a guard, dropped awaits,
+  off-by-one and index-bounds errors, assignment-in-condition, unreachable code,
+  and inverted conditions. A reminder to apply the checklist is re-anchored next
+  to each diff so it stays salient on context-heavy repos, and it names the safe
+  forms (explicit
+  default lookups like `fetch(k, default)`, optional chaining, and an earlier
+  early-return guard even when it sits outside the diff) so guarded code is not
+  flagged.
+
+- **Correctness-only prompt no longer carries team-idiom guidance or a sibling
+  witness by default.** An interleaved A/B on both repos found that injecting
+  the convention guidance and canonical excerpt into this bug-only prompt lowers
+  correctness recall with no false-positive benefit: the style context crowds
+  out the bug signal the reviewer is already told to ignore for style. The
+  correctness lens now gets only correctness-relevant context (the checklist,
+  the user's checkable intent tokens, the committed-caller facts, and the diff).
+  A new `include_style_context` flag on `build_prompt` (default off) lets a
+  future style-aware lens opt back in.
+
 ## [2.15.0] - 2026-06-16
 
 Refresh now derives from the genuinely-latest production, not the user's last

@@ -338,8 +338,9 @@ def build_prompt(
     diffs: list[FileDiff],
     intent_tokens: list[str] | None = None,
     caller_facts: str | None = None,
+    include_style_context: bool = False,
 ) -> str:
-    """Assemble the reviewer prompt from diffs, witnesses, and guidance.
+    """Assemble the reviewer prompt from diffs, the checklist, and caller facts.
 
     The prompt is deliberately narrow: the reviewer is told it is a second pair
     of eyes looking only for correctness defects, and to return a strict JSON
@@ -352,6 +353,16 @@ def build_prompt(
     caller block from :func:`caller_facts_for_diffs`; when present it rides
     above the diffs so the reviewer reads each change with its consumers in
     view instead of guessing the blast radius.
+
+    ``include_style_context`` defaults to ``False``. An interleaved A/B on a
+    real TypeScript and a real Ruby repo (both arms under identical conditions)
+    found that injecting the team-idiom/principles guidance plus a sibling
+    canonical witness into this correctness-only prompt measurably *lowers*
+    recall on unguarded-deref / dropped-await / off-by-one defects with no
+    false-positive benefit: the style context crowds out the bug signal the
+    reviewer is told to ignore for style anyway. The flag is kept so a caller
+    that genuinely wants convention context (e.g. a future style-aware lens)
+    can opt back in.
     """
     sections: list[str] = [
         "You are an independent code reviewer giving a finished change a second "
@@ -366,13 +377,54 @@ def build_prompt(
         'object: {"file": "<relative path>", "line": <int or null>, '
         '"message": "<one-sentence description of the bug and its consequence>", '
         '"confidence": <float 0..1>}. Return [] if you find no correctness bug.',
+        "",
+        "Before you return, work through this checklist against the CHANGED lines "
+        "below - these are the defects most often missed. For EACH dereference and "
+        "call in the change, either flag a defect or satisfy yourself it is safe:",
+        "1. Optional/absent-on-miss lookups dereferenced without a guard: a "
+        "`Map.get(...)` / `dict.get(...)` / `Array.find(...)` / `.find` / "
+        "`.find_by` / `[...]` hash lookup whose result is then used (`.field`, "
+        "`[...]`, a call, arithmetic) with no preceding presence check. These "
+        "return `undefined`/`nil`/`None` on a miss, so the deref throws or yields "
+        "garbage. `Map.get` is ALWAYS optional by language rule - you do not need "
+        "the value's type to know this. A lookup that supplies its own fallback "
+        "(`hash.fetch(k, default)`, `dict.get(k, default)`, `lookup ?? x`, "
+        "`lookup || x`, `lookup&.field`, `lookup?.field`) is already guarded - "
+        "do NOT flag those.",
+        "2. Nilable/undefined receivers dereferenced without `?.` / `&.` / an "
+        "explicit guard - INCLUDING any value a nearby comment, parameter name, or "
+        "signature marks as possibly null/nil/None. An earlier guard counts even "
+        "when it is OUTSIDE the changed lines you can see: if the receiver was "
+        "already null-checked (`if (!x) return` / `return unless x` / `x ||= ...` "
+        "/ an early raise) before the deref, it is safe - do NOT assume it is "
+        "unguarded just because the guard line is not in the diff.",
+        "3. A Promise/async/coroutine-returning call whose result is used as a "
+        "plain value (a dropped `await`): the variable holds a Promise, not the "
+        "resolved value, so field access or further use is wrong.",
+        "4. Off-by-one and index/bounds errors: a loop or index condition using "
+        "`<=` where `<` is meant against a `.length`/`.size`/count (reads one "
+        "past the last element), an index that can run past the end, or slice/"
+        "substring bounds that overrun.",
+        "5. An assignment (`=`) used where a comparison (`==` / `===` / `.eql?`) "
+        "was intended, inside an `if` / `while` / ternary condition - it mutates "
+        "and is always truthy.",
+        "6. Unreachable or dead code after a `return` / `throw` / `raise` / "
+        "`break` / `continue`; and early-return, error, or empty branches that "
+        "are skipped, fall through, or return the wrong value.",
+        "7. Inverted conditions and wrong comparison/boolean operators - a check "
+        "or a returned boolean that is the opposite of what the name or intent "
+        "implies.",
+        "Flagging one of these when present is the whole point of this review; do "
+        "not skip a deref, index, or condition just because the change looks "
+        "otherwise reasonable.",
     ]
 
-    guidance = _load_guidance(profile_dir)
-    if guidance:
-        sections.append("")
-        sections.append("Project guidance (context, not a checklist):")
-        sections.append(guidance)
+    if include_style_context:
+        guidance = _load_guidance(profile_dir)
+        if guidance:
+            sections.append("")
+            sections.append("Project guidance (context, not a checklist):")
+            sections.append(guidance)
 
     if intent_tokens:
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
@@ -400,11 +452,20 @@ def build_prompt(
             header += " (unified diff vs HEAD)"
         header += " ==="
         sections.append(header)
-        witness = _witness_for(repo_root, fd.archetype)
-        if witness:
-            sections.append(f"Sibling reference for {fd.rel_path}:")
-            sections.append(witness)
-            sections.append("")
+        if include_style_context:
+            witness = _witness_for(repo_root, fd.archetype)
+            if witness:
+                sections.append(f"Sibling reference for {fd.rel_path}:")
+                sections.append(witness)
+                sections.append("")
+        sections.append(
+            "Now apply the checklist to the change below. For every dereference, "
+            "optional lookup (`Map.get` / `.find` / `.find_by` / hash index), "
+            "possibly-null receiver, awaited call, index bound, and condition in "
+            "these lines, either flag a defect or confirm it is guarded. Treat any "
+            "surrounding project context as background only - it never makes an "
+            "unguarded deref, a dropped await, or an out-of-bounds index safe."
+        )
         sections.append(fd.diff_text)
 
     return "\n".join(sections)

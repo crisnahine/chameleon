@@ -114,15 +114,57 @@ def test_build_prompt_includes_diffs_and_correctness_only_instruction(tmp_path):
     assert "+const x = 1" in prompt
 
 
-def test_build_prompt_embeds_guidance_when_present(tmp_path):
+def test_build_prompt_has_nullability_deref_checklist(tmp_path):
+    # The enumerated must-work-through checklist is what lets the correctness
+    # lens reliably catch unguarded-deref bugs (Map.get / nilable / dropped-
+    # await) that the vague "look for null checks" wording missed entirely; pin
+    # the checklist so it can't silently regress back to that wording.
+    repo = tmp_path / "repo"
+    profile = repo / ".chameleon"
+    profile.mkdir(parents=True)
+    diffs = [judge.FileDiff("a.ts", None, "+const o = m.get(k)\n+return o.v\n", False)]
+    with patch.object(judge, "_witness_for", return_value=""):
+        prompt = judge.build_prompt(repo, profile, diffs)
+    low = prompt.lower()
+    assert "checklist" in low
+    assert "map.get" in low  # the optional-lookup obligation, named explicitly
+    assert "dropped" in low and "await" in low  # the dropped-await obligation
+    assert "nilable" in low or "&." in prompt or "?." in prompt  # nilable-receiver obligation
+
+
+def test_build_prompt_excludes_style_guidance_and_witness(tmp_path):
+    # The correctness lens is bug-only and tells the reviewer to ignore style.
+    # An interleaved A/B on real repos found that injecting team idioms/
+    # principles plus a sibling canonical excerpt into this prompt crowds out
+    # the bug signal and lowers recall on unguarded-deref / dropped-await
+    # defects with no false-positive benefit. So build_prompt must NOT embed
+    # guidance or a witness by default; pin that so it can't silently regress.
     repo = tmp_path / "repo"
     profile = repo / ".chameleon"
     profile.mkdir(parents=True)
     (profile / "idioms.md").write_text("- wrap db calls\n", encoding="utf-8")
-    diffs = [judge.FileDiff("a.ts", None, "+x\n", False)]
-    with patch.object(judge, "_witness_for", return_value=""):
+    diffs = [judge.FileDiff("a.ts", "checkout", "+x\n", False)]
+    # Default (and the shipped correctness-judge path) excludes style context.
+    with patch.object(judge, "_witness_for", return_value="SIBLING_WITNESS_MARKER"):
         prompt = judge.build_prompt(repo, profile, diffs)
+    assert "wrap db calls" not in prompt
+    assert "SIBLING_WITNESS_MARKER" not in prompt
+    assert "Project guidance" not in prompt
+
+
+def test_build_prompt_includes_style_context_only_when_opted_in(tmp_path):
+    # The flag still threads guidance + witness through for a caller that wants
+    # convention context; pin both directions so the parameter can't rot.
+    repo = tmp_path / "repo"
+    profile = repo / ".chameleon"
+    profile.mkdir(parents=True)
+    (profile / "idioms.md").write_text("- wrap db calls\n", encoding="utf-8")
+    diffs = [judge.FileDiff("a.ts", "checkout", "+x\n", False)]
+    with patch.object(judge, "_witness_for", return_value="SIBLING_WITNESS_MARKER"):
+        prompt = judge.build_prompt(repo, profile, diffs, include_style_context=True)
     assert "wrap db calls" in prompt
+    assert "SIBLING_WITNESS_MARKER" in prompt
+    assert "Project guidance" in prompt
 
 
 def test_build_prompt_intent_section_present_and_sanitized(tmp_path):
