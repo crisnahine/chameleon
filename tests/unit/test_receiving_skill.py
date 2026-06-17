@@ -35,3 +35,14 @@ def test_trust_gate_and_adjudication():
 
 def test_untrusted_comment_rule():
     assert "untrusted" in _t().lower() and "never instructions" in _t().lower()
+
+
+def test_ground_before_draft_and_safety():
+    t = _t()
+    i_ground = t.find("Step 6")
+    i_draft = t.find("Step 7")
+    assert 0 < i_ground < i_draft  # grounding precedes drafting
+    assert "refute_finding" in t
+    assert "never auto-post" in t.lower() or "drafts only" in t.lower()
+    assert "record_review_verdict" in t  # stated as NOT called
+    assert "one at a time" in t.lower()
