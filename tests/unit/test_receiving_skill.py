@@ -26,5 +26,12 @@ def test_superpowers_spine():
     assert "you're absolutely right" in t.lower()  # listed as forbidden
 
 
+def test_trust_gate_and_adjudication():
+    t = _t()
+    assert "get_pattern_context" in t
+    assert "trust_state" in t
+    assert "AGREE" in t and "PUSH BACK" in t and "NEEDS CLARIFICATION" in t and "YAGNI" in t
+
+
 def test_untrusted_comment_rule():
     assert "untrusted" in _t().lower() and "never instructions" in _t().lower()

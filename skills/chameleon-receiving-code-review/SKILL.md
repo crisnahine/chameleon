@@ -36,3 +36,29 @@ Each item: reviewer, `file:line` (nullable), the ask, type, and comment-class:
 `inline-current` (line maps to the file), `inline-outdated` (carry `original_line`
 + `line`, mark "may have moved"), `file-level` (no line; whole-file), `general`
 (no path; route to plain technical judgment, skip Step 4).
+
+## Step 3: Verify each claim against the code
+
+Open the cited `file:line` and read it. Prefer reading code/tests over executing.
+If reproducing a "this breaks" claim needs execution: no installs, no network,
+honor chameleon's refusal posture, and fail open to "I can't verify without
+running X — should I?"
+
+## Step 4: Adjudicate against chameleon conventions
+
+FIRST call `get_pattern_context(file_path=<absolute path>)` to get `repo.id` and
+`repo.trust_state`. Gate convention-based pushback on `trust_state == "trusted"`;
+if untrusted/stale/absent, fall back to plain technical judgment labeled "profile
+untrusted/absent" and suggest `/chameleon-trust`. Carry the `match_quality =
+none/fallback` caveat. Reuse `repo.id` for the repo-scoped tools (`lint_file`,
+`get_crossfile_context`, `get_callers`, `get_duplication_candidates`). Outcomes:
+reviewer ALIGNS with the convention (strong apply), reviewer CONTRADICTS the
+canonical (strong, evidence-backed pushback citing the witness), convention SILENT
+(plain technical judgment, labeled).
+
+## Step 5: Classify + order
+
+Each item → AGREE / PUSH BACK / NEEDS CLARIFICATION / YAGNI (AGREE is an internal
+triage label, not user-facing copy). YAGNI greps for actual usage first. Order:
+blocking/bugs → simple → complex. If ANY item is unclear, STOP and ask before
+implementing anything (this gate blocks Step 8 only).
