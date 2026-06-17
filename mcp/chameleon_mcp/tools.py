@@ -3394,12 +3394,18 @@ def _refuter_excerpt_for(repo_root: Path, finding: dict, base_ref: str) -> str:
     branch diff. Fails open to "" on any error.
     """
     try:
+        from chameleon_mcp.safe_open import UnsafeFileError, safe_read_text
+
         line = finding.get("line")
         path = finding.get("file")
         if path:
-            p = repo_root / path
-            if p.is_file():
-                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            try:
+                content = safe_read_text(repo_root, path, max_size_bytes=1_000_000)
+            except (UnsafeFileError, FileNotFoundError):
+                # Path failed safety check or doesn't exist; fall through to diff.
+                content = None
+            if content is not None:
+                lines = content.splitlines()
                 if line:
                     lo = max(0, int(line) - 25)
                     hi = min(len(lines), int(line) + 25)

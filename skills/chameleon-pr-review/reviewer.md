@@ -6,7 +6,7 @@ MCP tools (`get_pattern_context`, `lint_file`, `get_canonical_excerpt`). It must
 NEVER use `Edit`, `Write`, `Bash`, `WebFetch`, `WebSearch`, `NotebookEdit`, or
 dispatch a nested `Task`.
 
-Fill: {SLICE_FILES} (the files this reviewer owns), {REPO_ID}, {BASE}.
+Fill: {SLICE_FILES} (the files this reviewer owns), {REPO_ID}.
 
 ```
 Review ONLY these files against the repo's chameleon conventions: {SLICE_FILES}.

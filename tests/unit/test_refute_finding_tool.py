@@ -67,3 +67,20 @@ def test_kill_switch_checked_before_empty_findings(monkeypatch):
     monkeypatch.setenv("CHAMELEON_REVIEW_REFUTER", "0")
     out = tools.refute_finding("0" * 64, [])
     assert out["data"]["refuter"] == "disabled"
+
+
+def test_traversal_path_returns_empty(tmp_path, monkeypatch):
+    """A finding with a path-traversal file must fail open to '' (never read outside repo)."""
+    # Ensure _git_branch_diff doesn't fire for the traversal file path.
+    monkeypatch.setattr(tools, "_git_branch_diff", lambda *a, **kw: "")
+    result = tools._refuter_excerpt_for(
+        tmp_path, {"file": "../../../etc/passwd", "line": 1}, "main"
+    )
+    assert result == "", "traversal path must fail open to ''"
+
+
+def test_dotdot_path_no_escape(tmp_path, monkeypatch):
+    """Any '../'-escaping path yields '' regardless of whether the target exists."""
+    monkeypatch.setattr(tools, "_git_branch_diff", lambda *a, **kw: "")
+    result = tools._refuter_excerpt_for(tmp_path, {"file": "../../.ssh/id_rsa"}, "main")
+    assert result == "", "repo-escaping path must fail open to ''"
