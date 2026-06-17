@@ -401,7 +401,7 @@ Concrete enumeration of dimensions chameleon detects (Tier 1: auto-derivable) or
 │ │ ───── │ │ ────── │ │
 │ │ SessionStart │ │ using-chameleon (foundation) │ │
 │ │ → session-start │ │ │ │
-│ │ → SessionStart dispatch │ │ Slash commands (10 user-invocable)│ │
+│ │ → SessionStart dispatch │ │ Slash commands (13 user-invocable)│ │
 │ │ → cache_control: │ │ /chameleon-init │ │
 │ │ pinned static prefix │ │ /chameleon-refresh │ │
 │ │ + ephemeral footer │ │ /chameleon-status │ │
@@ -990,12 +990,12 @@ description: Use when starting any conversation in a repo with a chameleon profi
  - "I already saw the canonical for this archetype this session" → STOP, call MCP (canonicals can drift mid-session if `/chameleon-refresh` runs)
  - "The user is in a hurry, skipping the call saves time" → STOP, call MCP (200ms is the cost of correctness)
  - "I know this codebase already" → STOP, call MCP (the profile is the source of truth, not your prior)
-- Available slash commands (10 user-invocable + short aliases)
+- Available slash commands (13 user-invocable + short aliases)
 - Profile state interpretation (trusted vs untrusted)
 - Coordination with a complementary skills library: "After `another bootstrap skill` triggers `brainstorming`, but before any Edit/Write" (priority order)
 - Non-blocking trust prompt: "If profile is untrusted, surface in response but proceed with user request"
 
-### User-invokable skills (11 commands)
+### User-invokable skills (13 commands)
 
 | Skill | Slash command | Purpose |
 |---|---|---|
@@ -1010,6 +1010,8 @@ description: Use when starting any conversation in a repo with a chameleon profi
 | `chameleon-journey` | `/chameleon-journey` | Run the end-to-end journey test harness |
 | `chameleon-pr-review` | `/chameleon-pr-review` | Review a branch/PR against repo conventions, supply chain, security, migrations, cross-file, and task intent |
 | `chameleon-explain` | `/chameleon-explain` | Reconstruct what chameleon knew and did about a file at its last edit; classify a miss (recovery loop) |
+| `chameleon-auto-idiom` | `/chameleon-auto-idiom` | Derive novel team idioms from repo evidence (append-only, deduplicated against the profile) |
+| `chameleon-receiving-code-review` | `/chameleon-receiving-code-review` | Apply reviewer feedback with judgment: verify claims, surface tradeoffs, decide and explain before replying |
 
 **`/chameleon-trust` cooldown:** requires typing the repo name (or `yes-trust-<repo_id_short>`). New canonicals or idioms added after trust grant re-prompt. Trust granted is NOT trust authorizing all future content.
 
@@ -1038,7 +1040,7 @@ Severity discipline: only a secret (security pass) and an irreversible-`change` 
 
 > **Iron Law from `writing-skills`:** "NO SKILL WITHOUT A FAILING TEST FIRST."
 
-**CI enforcement:** `tests/skill_triggering_test.sh` fails if any `skills/<name>/` lacks a `tests/baseline.md` file with documented rationalizations. PRs cannot merge with missing baseline.
+**CI enforcement:** The `ci.yml` hooks-manifest job fails if any `skills/<name>/` directory is missing its `SKILL.md` file. Skill content invariants (required commands, env vars) are pinned by unit assertions in `tests/unit/test_command_wiring_docs.py` via `SKILL.read_text()`.
 
 ### `using-chameleon` test plan
 

@@ -84,6 +84,8 @@ The [Quickstart](#quickstart) above has the two commands for Claude Code. For th
 | `/chameleon-doctor` | Run health checks on the chameleon installation |
 | `/chameleon-journey` | Run the end-to-end journey test harness |
 | `/chameleon-pr-review` | Review a branch/PR against the repo's conventions and task intent |
+| `/chameleon-explain` | Reconstruct what chameleon knew and did about a file at its last edit; classify a miss |
+| `/chameleon-receiving-code-review` | Apply reviewer feedback with judgment: verify claims, surface tradeoffs, decide and explain |
 
 `using-chameleon` is one more skill on top of these — it auto-fires on `SessionStart` and orients the model.
 

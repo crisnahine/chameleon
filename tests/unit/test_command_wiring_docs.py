@@ -21,3 +21,12 @@ def test_claude_md_count_and_list_and_env():
         and "CHAMELEON_REVIEW_FANOUT" in t
         and "CHAMELEON_REFUTER_MODEL" in t
     )
+
+
+def test_architecture_and_readme():
+    arch = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
+    assert "(13 commands)" in arch
+    assert "skill_triggering_test.sh" not in arch  # stale CI ref removed
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "/chameleon-receiving-code-review" in readme
+    assert "/chameleon-explain" in readme  # was missing
