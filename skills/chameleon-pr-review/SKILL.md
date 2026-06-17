@@ -51,6 +51,34 @@ Keep this per-file hunk map. Two later steps depend on it:
 
 For very large diffs, cap the removed-line text you feed forward per file (keep the hunk ranges in full; truncate only the removed-line bodies) so the review stays within context. Note in the output when a file's delta was truncated.
 
+### Step 2.0: Fan-out routing (large diffs only)
+
+Call `get_autopass_verdict(repo=<repo_id>, base_ref=<base>)` and read
+`data.fan_out`. If `recommended` is false (small diff, or `CHAMELEON_REVIEW_FANOUT=0`),
+run the review single-pass inline exactly as today — STOP here and continue with
+Step 2. If `recommended` is true, fan out:
+
+- Partition the changed files (from your Step 1a hunk map) into ~4-6 slices,
+  MULTIPLE files per slice — never one slice per file.
+- Dispatch one in-session Task reviewer per slice using `reviewer.md`. Each runs
+  ONLY the per-file passes for its files: 2a-2f (convention/lint/canonical), 2.5
+  (the slice owning a manifest), 2.6 (security), 2.7 (the slice owning a
+  migration), 3c, 3e, 3f, 3f-ii. Reviewers are read-only (Read + read-only MCP).
+- Synthesize in two parts: (a) merge + dedup the slice findings with the key
+  `(file, section, rule, message-fingerprint)` — a `(file, line, rule)` key would
+  mis-merge the file-anchored and missing-requirement findings that have no line;
+  then (b) run the WHOLE-DIFF passes ONCE on the merged set: 2.8 (co-change), 2.9a
+  (layering — needs the import graph), 2.9b (duplication), 2.9c (existence-break),
+  2.9d (caller), 3a (task context), 3b (completeness), 3f-i (stale paired-test),
+  3g (coverage), 3h (auto-pass). Any pass not listed runs whole-diff at synthesis.
+  These whole-diff passes run once during synthesis, never in a slice.
+- THEN run the 3-round grounding loop (Step 4a/4b) on the merged findings.
+- Log that fan-out fired and how files were partitioned.
+
+Fallback: if a reviewer reports it cannot reach the chameleon MCP tools, the
+parent prefetches each slice's archetype/lint/canonical payload and the reviewer
+does file-reading + judgment only.
+
 ### Step 2: Convention review
 
 This is the core chameleon review. For EACH changed file:
