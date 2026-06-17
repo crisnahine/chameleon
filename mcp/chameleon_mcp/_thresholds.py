@@ -363,6 +363,11 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # worst-case cumulative Stop latency; once spent, further routed turns
     # record a skipped check instead of spawning.
     "CORRECTNESS_JUDGE_MAX_SPAWNS_PER_SESSION": 4,
+    # Review skills (pr-review fan-out sizing + round-3 refuter).
+    "REVIEW_FANOUT_FILES": 8,
+    "REVIEW_FANOUT_LINES": 400,
+    "REFUTER_MAX_SPAWNS_PER_INVOCATION": 8,
+    "REFUTER_TIMEOUT_SECONDS": 45,
     # Cap on extracted assertion tokens persisted per user prompt by intent
     # capture. Enough to carry the spec constants of a detailed prompt without
     # storing the prompt itself.
