@@ -106,4 +106,5 @@ Chameleon is an output-layer advisory: archetype + canonical + rules shape the c
 | `/chameleon-doctor` | Run health checks on the installation |
 | `/chameleon-journey` | Run the end-to-end journey test harness |
 | `/chameleon-pr-review` | Review a branch/PR against repo conventions and task intent |
+| `/chameleon-receiving-code-review` | Handle a review the team left on your PR: verify + adjudicate + draft replies + implement on approval |
 | `/chameleon-explain` | Drill down on one enforcement rule or replay a file's last edit |

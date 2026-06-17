@@ -15,7 +15,7 @@ chameleon/
 ├── .claude-plugin/    plugin.json + marketplace.json (Claude Code plugin manifest)
 ├── hooks/             session-start, preflight-and-advise, posttool-recorder,
 │                      posttool-verify, callout-detector (+ run-hook.cmd, hooks.json)
-├── skills/            using-chameleon (auto) + 12 user-invocable slash commands
+├── skills/            using-chameleon (auto) + 13 user-invocable slash commands
 ├── mcp/               chameleon-mcp Python server (FastMCP, stdio transport)
 ├── scripts/           ts_dump.mjs, prism_dump.rb, bump-version.sh, merge driver
 ├── bin/               chameleon-statusline.sh (status line, <100ms budget)
@@ -23,7 +23,7 @@ chameleon/
 └── docs/              architecture.md (design) + install.md
 ```
 
-The user-invocable commands: `init`, `refresh`, `status`, `teach`, `auto-idiom`, `trust`, `disable`, `pause-15m`, `doctor`, `journey`, `pr-review`, `explain` (all invoked as `/chameleon-*`).
+The user-invocable commands: `init`, `refresh`, `status`, `teach`, `auto-idiom`, `trust`, `disable`, `pause-15m`, `doctor`, `journey`, `pr-review`, `receiving-code-review`, `explain` (all invoked as `/chameleon-*`).
 
 ## Conventions
 
@@ -168,7 +168,7 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 - **Trust states**: every tool under untrusted / stale / trusted.
 
 ### Pass 3 — full surface (beyond tools + hooks)
-- **Slash-command / skill flows**: drive each `/chameleon-*` end-to-end (init, refresh, status, teach, auto-idiom, trust, disable, pause-15m, doctor, pr-review, explain) — the skill logic + output, not just the underlying tool.
+- **Slash-command / skill flows**: drive each `/chameleon-*` end-to-end (init, refresh, status, teach, auto-idiom, trust, disable, pause-15m, doctor, pr-review, receiving-code-review, explain) — the skill logic + output, not just the underlying tool.
 - **Statusline**: `bin/chameleon-statusline.sh` with a sample payload — correct format, within the <100ms budget, respects `CHAMELEON_DISABLE`.
 - **MCP stdio server**: `python -m chameleon_mcp.server` — call a tool over the real stdio transport, not just in-process.
 - **Daemon**: `daemon.py` / `daemon_client.py` — startup, socket, idle-timeout self-exit, `daemon_status`.
@@ -199,6 +199,9 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 - `CHAMELEON_ALLOW_TSC=1` — opt into the auto-pass router's `tsc --noEmit` grounding run (default OFF). Executes the repo's own tsc binary, resolved exclusively from `<repo>/node_modules/.bin` (never PATH, never a download), with a hard timeout. Tool-time only, never on a hook hot path. Off (or no root tsconfig.json, or no installed tsc) reads as a recorded "typecheck unavailable" fact — it never blocks auto-pass eligibility on its own.
 - `CHAMELEON_JUDGE_ASYNC=1` — opt into the detached post-Stop correctness-judge spawn with next-turn findings delivery (default OFF; POSIX only). Off uses the synchronous per-turn spawn under the existing wall-clock budget.
 - `CHAMELEON_JUDGE_MODEL` — model the turn-end correctness judge and duplication/multi-lens reviewers spawn (`claude -p --model <value>`); default `sonnet`. Lower to a cheaper model or raise for a stronger reviewer; affects only the advisory turn-end review spawns, never the hook hot path.
+- `CHAMELEON_REVIEW_REFUTER=0` — disable the pr-review / receiving round-3 refuter (the independent `refute_finding` spawn); the skills fall back to inline verification. Default ON.
+- `CHAMELEON_REVIEW_FANOUT=0` — disable pr-review large-diff fan-out; review runs single-pass inline. Default ON.
+- `CHAMELEON_REFUTER_MODEL` — model for the round-3 refuter spawn (default `sonnet`); same role as `CHAMELEON_JUDGE_MODEL` for the turn-end judge.
 - `CHAMELEON_FETCH_PRODUCTION_REF=0` — kill switch for the default-ON production-ref fetch. When a repo has a locked `production_ref`, refresh (manual `/chameleon-refresh` AND the auto-refresh) runs one bounded, non-interactive `git fetch origin <branch>` BEFORE resolving the tip, so derivation sees the genuinely-latest production instead of the user's last fetch. This is the one network path made default-ON (the per-repo flag is `auto_refresh.fetch_production_ref`, default true). It self-suppresses under `CI` (a fresh CI clone must not do an unasked network fetch), never runs on a hook hot path (PreToolUse/PostToolUse/SessionStart stay offline), and fails open to the last-fetched ref with a classified reason surfaced in the refresh envelope + `auto_refresh.log`. Tuning: `CHAMELEON_PRODUCTION_REF_FETCH_TIMEOUT_SECONDS` (default 10; SIGKILLs a stuck transfer) and `CHAMELEON_PRODUCTION_REF_FETCH_BACKOFF_HOURS` (default 6; after an auth/branch-gone failure, retry only this often).
 - `CHAMELEON_INTENT_CAPTURE=0` — kill switch for UserPromptSubmit intent capture (default ON). Capture persists only hard-secret-scanned extracted assertion tokens and content digests, never raw prompt prose; the captured tokens force the correctness-judge security/intent lens when they contain checkable constants.
 - `CHAMELEON_ATTESTATION=0` — kill switch for the turn-end session attestation record (default ON; local-only writes, no network, no repo-code execution). The attestation is self-signed and raise-only: nothing in it may ever lower scrutiny, it exists to raise gate depth and make post-incident replay honest.
