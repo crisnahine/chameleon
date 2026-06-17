@@ -3321,16 +3321,16 @@ def refute_finding(repo: str, findings: list, base_ref: str = "main") -> dict:
 
     def _all_unverified(reason):
         return [
-            {"id": f.get("id"), "verdict": "unverified", "reason": reason}
+            {"id": str(f.get("id", "")), "verdict": "unverified", "reason": reason}
             for f in (findings or [])
             if isinstance(f, dict)
         ]
 
-    if not isinstance(findings, list) or not findings:
-        return _envelope({"refuter": "enabled", "verdicts": []})
-
     if os.environ.get("CHAMELEON_REVIEW_REFUTER") == "0":
         return _envelope({"refuter": "disabled", "verdicts": []})
+
+    if not isinstance(findings, list) or not findings:
+        return _envelope({"refuter": "enabled", "verdicts": []})
 
     repo_root, repo_id = _resolve_repo_arg(repo)
     if repo_root is None and repo_id is not None:
@@ -3370,12 +3370,28 @@ def refute_finding(repo: str, findings: list, base_ref: str = "main") -> dict:
     return _envelope({"refuter": "enabled", "verdicts": verdicts})
 
 
+def _git_branch_diff(repo_root: Path, base_ref: str, rel_path: str | None = None) -> str:
+    """`git diff <base_ref>...HEAD [-- <rel_path>]` text, capped, fail-open to ''."""
+    args = ["git", "-C", str(repo_root), "diff", f"{base_ref}...HEAD"]
+    if rel_path:
+        args += ["--", rel_path]
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        if proc.returncode != 0:
+            return ""
+        return (proc.stdout or "")[:8000]
+    except Exception:
+        return ""
+
+
 def _refuter_excerpt_for(repo_root: Path, finding: dict, base_ref: str) -> str:
-    """Prefetch the inlined excerpt for one finding.
+    """Prefetch the inlined excerpt for one finding (base_ref...HEAD scoped).
 
     Anchored (file + line present): returns a ~50-line window around the
-    reported line from disk. Anchorless or unreadable: returns the HEAD diff
-    for the file when a path is known, or "" otherwise. Fails open to "".
+    reported line from disk. File present but no line: returns the
+    base_ref...HEAD diff for that file, falling back to the first ~200 lines
+    from disk. Truly anchorless (no file): returns the whole base_ref...HEAD
+    branch diff. Fails open to "" on any error.
     """
     try:
         line = finding.get("line")
@@ -3388,14 +3404,13 @@ def _refuter_excerpt_for(repo_root: Path, finding: dict, base_ref: str) -> str:
                     lo = max(0, int(line) - 25)
                     hi = min(len(lines), int(line) + 25)
                     return "\n".join(lines[lo:hi])
-                # Anchorless but file-anchored: fall through to diff
-                from chameleon_mcp.judge import reconstruct_diff
-
-                fd = reconstruct_diff(repo_root, str(p), path)
-                if fd is not None:
-                    return (fd.diff_text or "")[:8000]
+                # File-anchored but no line: return the branch diff for this file.
+                diff = _git_branch_diff(repo_root, base_ref, path)
+                if diff:
+                    return diff
                 return "\n".join(lines[:200])
-        return ""
+        # Truly anchorless: return the whole branch diff.
+        return _git_branch_diff(repo_root, base_ref)
     except Exception:
         return ""
 
