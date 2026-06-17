@@ -1040,7 +1040,7 @@ Severity discipline: only a secret (security pass) and an irreversible-`change` 
 
 > **Iron Law from `writing-skills`:** "NO SKILL WITHOUT A FAILING TEST FIRST."
 
-**CI enforcement:** The `ci.yml` hooks-manifest job fails if any `skills/<name>/` directory is missing its `SKILL.md` file. Skill content invariants (required commands, env vars) are pinned by unit assertions in `tests/unit/test_command_wiring_docs.py` via `SKILL.read_text()`.
+**CI enforcement:** The `ci.yml` hooks-manifest job fails if any `skills/<name>/` directory is missing its `SKILL.md` file. Specific skill-instruction invariants are pinned where they matter by `SKILL.read_text()` substring assertions in the relevant `tests/unit/` suites (e.g. `test_pr_review_*`, `test_receiving_skill`, `test_command_wiring_docs`); there is no blanket content sweep across all skills.
 
 ### `using-chameleon` test plan
 
