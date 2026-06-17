@@ -3303,6 +3303,103 @@ def get_crossfile_context(repo: str) -> dict:
     )
 
 
+def refute_finding(repo: str, findings: list, base_ref: str = "main") -> dict:
+    """Round-3 independent refutation of model-judgment review findings.
+
+    Spawns one hardened claude -p refuter per finding (engine-owned, no tools,
+    CHAMELEON_DISABLE=1), capped at REFUTER_MAX_SPAWNS_PER_INVOCATION with a
+    concurrency ceiling. Returns one verdict per finding: confirmed | refuted |
+    unverified. Default-ON; CHAMELEON_REVIEW_REFUTER=0 disables. Fails open to
+    refuter='unavailable' (every finding -> unverified) on any error; never
+    crashes, never invents a verdict, never authorizes an edit or post.
+    """
+    import os
+
+    from chameleon_mcp import refuter as _refuter
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+
+    def _all_unverified(reason):
+        return [
+            {"id": f.get("id"), "verdict": "unverified", "reason": reason}
+            for f in (findings or [])
+            if isinstance(f, dict)
+        ]
+
+    if not isinstance(findings, list) or not findings:
+        return _envelope({"refuter": "enabled", "verdicts": []})
+
+    if os.environ.get("CHAMELEON_REVIEW_REFUTER") == "0":
+        return _envelope({"refuter": "disabled", "verdicts": []})
+
+    repo_root, repo_id = _resolve_repo_arg(repo)
+    if repo_root is None and repo_id is not None:
+        repo_root = _resolve_repo_root_by_id(repo_id)
+    if repo_root is None or not repo_root.is_dir():
+        return _envelope({"refuter": "unavailable", "verdicts": _all_unverified("repo unresolved")})
+
+    expected_repo_id = _compute_repo_id(repo_root)
+    gate = _trust_state_for(expected_repo_id)
+    if gate is None or not gate.grants_root(repo_root):
+        return _envelope({"refuter": "untrusted", "verdicts": _all_unverified("profile untrusted")})
+
+    if not _refuter.refuter_available():
+        return _envelope(
+            {"refuter": "unavailable", "verdicts": _all_unverified("claude CLI unavailable")}
+        )
+
+    model = os.environ.get("CHAMELEON_REFUTER_MODEL", "sonnet")
+    timeout = threshold_int("REFUTER_TIMEOUT_SECONDS")
+    max_spawns = threshold_int("REFUTER_MAX_SPAWNS_PER_INVOCATION")
+    # Prefetch an inlined excerpt for each finding so the no-tools refuter
+    # never reads files at spawn time. Fails open to "" per finding.
+    excerpts = [_refuter_excerpt_for(repo_root, f, base_ref) for f in findings]
+    try:
+        verdicts = _refuter.run_batch(
+            repo_root,
+            findings,
+            excerpts,
+            model=model,
+            timeout=timeout,
+            max_spawns=max_spawns,
+        )
+    except Exception:
+        return _envelope(
+            {"refuter": "unavailable", "verdicts": _all_unverified("refuter batch failed")}
+        )
+    return _envelope({"refuter": "enabled", "verdicts": verdicts})
+
+
+def _refuter_excerpt_for(repo_root: Path, finding: dict, base_ref: str) -> str:
+    """Prefetch the inlined excerpt for one finding.
+
+    Anchored (file + line present): returns a ~50-line window around the
+    reported line from disk. Anchorless or unreadable: returns the HEAD diff
+    for the file when a path is known, or "" otherwise. Fails open to "".
+    """
+    try:
+        line = finding.get("line")
+        path = finding.get("file")
+        if path:
+            p = repo_root / path
+            if p.is_file():
+                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+                if line:
+                    lo = max(0, int(line) - 25)
+                    hi = min(len(lines), int(line) + 25)
+                    return "\n".join(lines[lo:hi])
+                # Anchorless but file-anchored: fall through to diff
+                from chameleon_mcp.judge import reconstruct_diff
+
+                fd = reconstruct_diff(repo_root, str(p), path)
+                if fd is not None:
+                    return (fd.diff_text or "")[:8000]
+                return "\n".join(lines[:200])
+        return ""
+    except Exception:
+        return ""
+
+
 def _candidate_body_excerpt(repo_root: Path, rel_path: str, name: str, max_lines: int) -> str:
     """Read a short body excerpt for a cataloged function from disk, or "".
 

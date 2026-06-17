@@ -195,6 +195,21 @@ def get_crossfile_context(repo: str) -> dict:
 
 
 @mcp.tool()
+def refute_finding(repo: str, findings: list, base_ref: str = "main") -> dict:
+    """Round-3: independently refute model-judgment review findings.
+
+    The pr-review / receiving skills call this ONCE with the batch of surviving
+    model-judgment BLOCK/FIX findings (tool-grounded findings are verified inline,
+    not sent here). The engine spawns one hardened, no-tools claude -p refuter per
+    finding, capped + timed out, and returns a verdict per finding:
+    confirmed (keep) | refuted (drop) | unverified (keep, labeled 'round 3
+    unavailable'). A 'confirmed' verdict never authorizes an edit or a post.
+    Default-ON; set CHAMELEON_REVIEW_REFUTER=0 to disable.
+    """
+    return tools.refute_finding(repo, findings, base_ref)
+
+
+@mcp.tool()
 def get_duplication_candidates(repo: str, file_path: str) -> dict:
     """Existing functions a file's new functions may re-implement under a new name.
 
