@@ -35,9 +35,12 @@ Promotion (SKIP->PASS, incomplete-FAIL->PASS) only happens when that strong
 evidence holds. Absent it, SKIP stays SKIP and incomplete-FAIL stays FAIL; the
 old behavior of promoting on substring presence alone is gone.
 
-Phase 39 is the anti-hallucination guard: every `path:line` reference the
-review emits must point at a file that actually exists in the staged diff.
-A reference to a file that is not in the changeset is an invented finding.
+Phase 39 is the anti-hallucination guard with three layers: (1) every
+`path:line` reference must point at a staged file, (2) the line number must
+fall within the hunk range of that file (all staged files are whole-file
+writes, so valid range is 1..line_count; a higher N is out-of-range
+invention), and (3) the clean conformant file (round.ts) must not appear in
+any BLOCK/FIX finding.
 
 Phase 38 ALSO carries a best-effort PostToolUse / posttool-verify assertion
 (Deliverable 2): the runner's parse_stream_json already captures PostToolUse
@@ -63,6 +66,7 @@ from tests.journey.harness.context import JourneyContext
 _CHANGED_FILES = (
     "src/utils/format_date.ts",
     "src/utils/parse_count.ts",
+    "src/utils/round.ts",
 )
 
 # The convention-violating rewrite of an existing util. Default-exported,
@@ -84,6 +88,28 @@ export function parseCount(raw, total) {
   return n / total;
 }
 """
+
+# A clean, conformant new util staged alongside the defective files.  It follows
+# the util archetype exactly (named, camelCase, `export function`, typed) and
+# has no logic gap.  The anti-hallucination guard asserts the review does NOT
+# emit a BLOCK/FIX anchored to a line that doesn't exist in this file.
+_CLEAN_FILE_PATH = "src/utils/round.ts"
+_CLEAN_FILE_CONTENT = """\
+export function roundTo(value: number, decimals: number): number {
+  const factor = Math.pow(10, decimals);
+  return Math.round(value * factor) / factor;
+}
+"""
+
+# Map of every staged relative path -> (first_added_line, last_added_line).
+# For whole-file writes/overwrites every line in the resulting file is in the
+# diff hunk, so the range is simply (1, line_count).  A `path:N` reference
+# where N > last_added_line is an out-of-range invention.
+_STAGED_HUNK_RANGES: dict[str, tuple[int, int]] = {
+    "src/utils/format_date.ts": (1, len(_VIOLATION_CONTENT.splitlines())),
+    "src/utils/parse_count.ts": (1, len(_LOGIC_GAP_CONTENT.splitlines())),
+    _CLEAN_FILE_PATH: (1, len(_CLEAN_FILE_CONTENT.splitlines())),
+}
 
 _PROMPT_BODY = (
     """\
@@ -111,13 +137,19 @@ PHASE 38 - pr-review surfaces convention + logic findings:
 """
     + _LOGIC_GAP_CONTENT
     + """
-    d. Commit both on the branch:
+    c2. Create a NEW file $TS/src/utils/round.ts that is CLEAN and conformant
+        (no violation, no logic gap). Use the Write tool. The content must be
+        EXACTLY:
+"""
+    + _CLEAN_FILE_CONTENT
+    + """
+    d. Commit all three files on the branch:
          git -C "$TS" add -A
-         git -C "$TS" commit -q -m "staged review fixture: util violation + logic gap"
+         git -C "$TS" commit -q -m "staged review fixture: util violation + logic gap + clean util"
     e. Confirm the diff is what you expect:
          git -C "$TS" diff main...HEAD --name-only
-       It should list exactly src/utils/format_date.ts and
-       src/utils/parse_count.ts.
+       It should list exactly src/utils/format_date.ts,
+       src/utils/parse_count.ts, and src/utils/round.ts.
 
   STEP 2 - run the review:
     From inside working/ts_basic, run /chameleon-pr-review with NO arguments
@@ -155,17 +187,26 @@ PHASE 38 - pr-review surfaces convention + logic findings:
   ANTI-HALLUCINATION REMINDER: every BLOCK and FIX must reference real chameleon
   data (a lint violation, a canonical mismatch, a convention entry, a principle).
   Do NOT invent a file:line that is not in the staged diff. The only files in
-  this diff are src/utils/format_date.ts and src/utils/parse_count.ts.
+  this diff are src/utils/format_date.ts (5 lines), src/utils/parse_count.ts
+  (4 lines), and src/utils/round.ts (4 lines). A line reference beyond the
+  file's actual length is invented. src/utils/round.ts is clean and conformant;
+  it should NOT appear in any BLOCK or FIX finding.
 
   emit checkpoint completed phase 38 (passed or failed per STEP 3).
 
-PHASE 39 - anti-hallucination: no invented file references:
+PHASE 39 - anti-hallucination: no invented file references or line numbers:
   emit checkpoint started phase 39
-  Re-read every finding the review emitted. List every distinct file path the
-  review referenced in a BLOCK or FIX finding. For each one, confirm it is one
-  of the two staged files (src/utils/format_date.ts, src/utils/parse_count.ts).
-  If the review referenced any OTHER file path in a BLOCK/FIX finding, that is a
-  hallucinated finding — emit phase 39 FAILED listing the invented path(s).
+  Re-read every finding the review emitted. For each BLOCK or FIX finding:
+    1. Confirm the referenced file is one of the three staged files
+       (src/utils/format_date.ts, src/utils/parse_count.ts,
+       src/utils/round.ts). Any other file path is hallucinated.
+    2. If a finding includes a line reference (file:N), confirm N is within
+       the file's actual line count: format_date.ts has 5 lines,
+       parse_count.ts has 4 lines, round.ts has 4 lines. A line number
+       beyond the file's length is an out-of-range invention.
+    3. Confirm round.ts does NOT appear in any BLOCK or FIX finding
+       (it is clean and conformant; any BLOCK/FIX against it is invented).
+  If any of the above checks fail, emit phase 39 FAILED with specifics.
   Otherwise emit phase 39 PASSED.
   emit checkpoint completed phase 39.
 
@@ -183,7 +224,10 @@ def run(ctx: JourneyContext) -> ActResult:
     session = spawn_claude(
         prompt=build_act_prompt(_PROMPT_BODY),
         cwd=cwd,
-        env={**ctx.env, "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file)},
+        env={
+            **ctx.env,
+            "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file),
+        },
         transcript_path=transcript,
         max_turns=45,
         allowed_tools=[
@@ -212,7 +256,12 @@ def run(ctx: JourneyContext) -> ActResult:
     notes_extra: dict[int, str] = {}
     cross_check_passed: dict[int, bool] = {}
 
-    transcript_text = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
+    transcript_text = (
+        transcript.read_text(encoding="utf-8") if transcript.exists() else ""
+    )
+    # Sentinel-delimited review span; populated in Phase 38 cross-check and reused
+    # by Phase 39 to scope its anti-hallucination checks to the emitted review only.
+    review_span: str = ""
 
     # ---- Phase 38 cross-check: real tool evidence + sentinel-scoped findings ----
     #
@@ -265,7 +314,9 @@ def run(ctx: JourneyContext) -> ActResult:
 
         # Word-boundary severity labels so 'fixture'/'init'/'prefix' can't match.
         severity_labels = [
-            lbl for lbl in ("block", "fix", "nit") if re.search(rf"\b{lbl}\b", span_lower)
+            lbl
+            for lbl in ("block", "fix", "nit")
+            if re.search(rf"\b{lbl}\b", span_lower)
         ]
         if len(severity_labels) < 2:
             problems.append(
@@ -285,7 +336,9 @@ def run(ctx: JourneyContext) -> ActResult:
         divergence_line = None
         for raw_line in review_span.splitlines():
             line_lower = raw_line.lower()
-            if "format_date.ts" in line_lower and any(t in line_lower for t in divergence_terms):
+            if "format_date.ts" in line_lower and any(
+                t in line_lower for t in divergence_terms
+            ):
                 divergence_line = raw_line.strip()
                 break
         if divergence_line is None:
@@ -320,7 +373,8 @@ def run(ctx: JourneyContext) -> ActResult:
         posttool_events = [
             e
             for e in session.hook_events
-            if e.hook_name.startswith("PostToolUse") and "<chameleon-context>" in e.stdout
+            if e.hook_name.startswith("PostToolUse")
+            and "<chameleon-context>" in e.stdout
         ]
         verify_deviation = [
             e
@@ -335,7 +389,9 @@ def run(ctx: JourneyContext) -> ActResult:
         # regex anchored on the emoji codepoint never matches. Anchor on the
         # "chameleon: N violation" text instead; it is present in both the
         # decoded and escaped serializations of the deviation block.
-        transcript_has_verify = bool(re.search(r"chameleon:\s*\d+\s*violation", transcript_text))
+        transcript_has_verify = bool(
+            re.search(r"chameleon:\s*\d+\s*violation", transcript_text)
+        )
         if not verify_deviation and not transcript_has_verify:
             concern = (
                 "posttool-verify deviation block not observed for the off-archetype edit "
@@ -348,25 +404,84 @@ def run(ctx: JourneyContext) -> ActResult:
             notes_extra.get(38, "") + "; posttool-verify soft check error: " + str(e)
         ).strip("; ")
 
-    # ---- Phase 39 cross-check: anti-hallucination on referenced file paths ----
+    # ---- Phase 39 cross-check: anti-hallucination on file paths + line numbers ----
+    #
+    # Two layers:
+    #   1. File-existence: every `path:N` reference must point at a staged file.
+    #   2. Line-in-hunk: the line number N must be within the added/changed hunk
+    #      range for that file.  Since each staged file is a whole-file write or
+    #      overwrite, the valid range is (1, line_count) derived from the staged
+    #      content constants.  N > line_count is an out-of-range invention.
+    # Additionally, the clean file (round.ts) must not appear in any BLOCK/FIX
+    # finding — it is conformant, so any such finding is invented.
     try:
-        # Collect every `<path>:<line>` reference the review emitted.
-        ref_paths = set(re.findall(r"([\w./\-]+\.(?:ts|tsx|js|jsx)):\d+", transcript_text))
-        invented = [
-            rp
-            for rp in ref_paths
-            if not any(rp.endswith(changed) or changed.endswith(rp) for changed in _CHANGED_FILES)
-            # Ignore references to chameleon's own profile/data files and the
-            # skill machinery; the guard only polices findings about source files
-            # under the staged diff.
-            and "/.chameleon/" not in rp
-            and "node_modules" not in rp
-        ]
-        if invented:
+        # Collect every `path:line` pair the review emitted (scoped to the review
+        # span when available; fall back to the full transcript).
+        search_text = review_span if review_span else transcript_text
+        raw_refs = re.findall(r"([\w./\-]+\.(?:ts|tsx|js|jsx)):(\d+)", search_text)
+
+        invented_files: list[str] = []
+        out_of_range: list[str] = []
+
+        for ref_path, line_str in raw_refs:
+            # Skip chameleon profile paths and node_modules — the guard only
+            # polices source-file findings in the staged diff.
+            if "/.chameleon/" in ref_path or "node_modules" in ref_path:
+                continue
+
+            # Layer 1: must name a staged file.
+            matched_key = next(
+                (
+                    k
+                    for k in _STAGED_HUNK_RANGES
+                    if ref_path.endswith(k) or k.endswith(ref_path)
+                ),
+                None,
+            )
+            if matched_key is None:
+                # Only flag as invented if the path looks like a project source
+                # file (has a directory component or is a .ts/.tsx extension ref).
+                if "/" in ref_path or ref_path.endswith((".ts", ".tsx")):
+                    invented_files.append(ref_path)
+                continue
+
+            # Layer 2: line number must be within the staged hunk range.
+            line_num = int(line_str)
+            lo, hi = _STAGED_HUNK_RANGES[matched_key]
+            if not (lo <= line_num <= hi):
+                out_of_range.append(f"{ref_path}:{line_str} (valid range {lo}-{hi})")
+
+        # Layer 3: clean file must not appear in any BLOCK/FIX finding.
+        # Check for the clean file path in the review span (case-insensitive
+        # filename match covers both relative and absolute path forms).
+        clean_basename = _CLEAN_FILE_PATH.rsplit("/", 1)[-1]  # "round.ts"
+        clean_in_block_fix = False
+        for raw_line in (review_span or "").splitlines():
+            line_lower = raw_line.lower()
+            if clean_basename in line_lower and re.search(
+                r"\b(block|fix)\b", line_lower
+            ):
+                clean_in_block_fix = True
+                break
+
+        problems_39: list[str] = []
+        if invented_files:
+            problems_39.append(
+                f"review referenced file(s) not in the staged diff: {invented_files!r}"
+            )
+        if out_of_range:
+            problems_39.append(
+                f"review referenced out-of-range line(s) (hallucinated): {out_of_range!r}"
+            )
+        if clean_in_block_fix:
+            problems_39.append(
+                f"review emitted a BLOCK/FIX finding against the clean file "
+                f"{_CLEAN_FILE_PATH!r} (should have zero violations)"
+            )
+
+        if problems_39:
             notes_extra[39] = (
-                notes_extra.get(39, "")
-                + "; "
-                + f"review referenced file(s) not in the staged diff: {invented!r}"
+                notes_extra.get(39, "") + "; " + "; ".join(problems_39)
             ).strip("; ")
             cross_check_passed[39] = False
         else:
@@ -386,14 +501,21 @@ def run(ctx: JourneyContext) -> ActResult:
             if outcomes[phase].status == "SKIP":
                 outcomes[phase].status = "PASS"
                 outcomes[phase].notes = "promoted from SKIP by runner cross-check"
-            elif outcomes[phase].status == "FAIL" and "phase incomplete" in outcomes[phase].notes:
+            elif (
+                outcomes[phase].status == "FAIL"
+                and "phase incomplete" in outcomes[phase].notes
+            ):
                 outcomes[phase].status = "PASS"
-                outcomes[phase].notes = "promoted from incomplete-FAIL by runner cross-check"
+                outcomes[
+                    phase
+                ].notes = "promoted from incomplete-FAIL by runner cross-check"
 
     for phase, extra in notes_extra.items():
         if phase in outcomes:
             note_prefix = "CONCERN: " if outcomes[phase].status == "PASS" else ""
-            outcomes[phase].notes = (outcomes[phase].notes + "; " + note_prefix + extra).strip("; ")
+            outcomes[phase].notes = (
+                outcomes[phase].notes + "; " + note_prefix + extra
+            ).strip("; ")
 
     return ActResult(
         act_id="12_pr_review",
