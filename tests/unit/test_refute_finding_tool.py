@@ -11,9 +11,7 @@ from chameleon_mcp import tools
 
 def test_kill_switch_disables(monkeypatch):
     monkeypatch.setenv("CHAMELEON_REVIEW_REFUTER", "0")
-    out = tools.refute_finding(
-        "0" * 64, [{"id": "f1", "kind": "x", "claim": "c", "evidence": "e"}]
-    )
+    out = tools.refute_finding("0" * 64, [{"id": "f1", "kind": "x", "claim": "c", "evidence": "e"}])
     assert out["data"]["refuter"] == "disabled"
     assert out["data"]["verdicts"] == []
 
@@ -21,9 +19,7 @@ def test_kill_switch_disables(monkeypatch):
 def test_unavailable_fails_open(monkeypatch):
     monkeypatch.delenv("CHAMELEON_REVIEW_REFUTER", raising=False)
     monkeypatch.setattr("chameleon_mcp.refuter.refuter_available", lambda: False)
-    out = tools.refute_finding(
-        "0" * 64, [{"id": "f1", "kind": "x", "claim": "c", "evidence": "e"}]
-    )
+    out = tools.refute_finding("0" * 64, [{"id": "f1", "kind": "x", "claim": "c", "evidence": "e"}])
     assert out["data"]["refuter"] == "unavailable"
     # one entry per finding, all unverified (never silently dropped)
     assert [v["verdict"] for v in out["data"]["verdicts"]] == ["unverified"]
@@ -39,9 +35,7 @@ def test_anchorless_excerpt_uses_whole_branch_diff(monkeypatch):
     calls = []
 
     def fake_branch_diff(repo_root, base_ref, rel_path=None):
-        calls.append(
-            {"repo_root": repo_root, "base_ref": base_ref, "rel_path": rel_path}
-        )
+        calls.append({"repo_root": repo_root, "base_ref": base_ref, "rel_path": rel_path})
         return "sentinel-diff-output"
 
     monkeypatch.setattr(tools, "_git_branch_diff", fake_branch_diff)
