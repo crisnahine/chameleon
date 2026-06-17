@@ -434,6 +434,12 @@ Format the review as follows:
 
 Reviewed N files against chameleon conventions + [ticket KEY / branch diff].
 
+Grounding: rounds 1-2 self-verified; round 3 independently refuted <b> dropped, <c> inline-exempt, <d> self-verified (round 3 unavailable).
+Review fan-out: <inline | M parallel agents over N files>.
+
+### Strengths / verified clean
+- <specific: e.g. "src/api/user.ts follows the `api` canonical; signal param present; tests paired">
+
 ### Convention findings (X issues)
 
 **BLOCK:**

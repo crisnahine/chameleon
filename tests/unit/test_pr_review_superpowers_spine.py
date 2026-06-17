@@ -27,3 +27,9 @@ def test_reviewer_philosophy_spine_present():
 def test_severity_mapping_note():
     t = _t()
     assert "Critical" in t and "Important" in t and "Minor" in t
+
+
+def test_strengths_and_banner_in_template():
+    t = _t()
+    assert "### Strengths / verified clean" in t
+    assert "Grounding: rounds 1-2 self-verified" in t
