@@ -427,6 +427,34 @@ This gate is the mechanical replacement for "decide by hand whether this is PR-i
 
 It ALSO applies to any line-anchored convention/style finding from `lint_file` (Step 2b/2d). `lint_file` reads the whole file, not the diff, so a `style-rule-violation` (e.g. "line 19 is 103 cols"), a `naming-convention-violation`, or an `inheritance-convention-violation` can sit on a line this change never touched. Parse the line number out of the violation `message` (the `line N` / `:N` it carries) and run it through the hunk map the same way as a logic finding: if the line is outside an added or changed range, drop it from the verdict. A line-anchored style/convention nit that pre-dates the change is pre-existing by construction and the integrity rule forbids reporting it; if it is worth mentioning at all, it goes to the "Pre-existing repo hygiene" note, never the Convention-findings section. Only convention findings with NO parseable line (duplication, missing-test, key-export overlap, which anchor to the file) stay exempt.
 
+#### 4b. Round 3 — independent refutation (model-judgment findings only)
+
+After rounds 1-2 (Step 4a + the verification bullet), collect every surviving
+BLOCK and FIX that is a MODEL-JUDGMENT finding — change-delta logic (removed
+guard, dropped await, inverted condition), canonical-divergence, taint/SSRF/
+path-traversal, callable-signature drift, spec-compliance / missing-requirement,
+placeholder-name, stale-comment. Send them in ONE call:
+
+`refute_finding(repo=<repo_id>, findings=[{id, kind, severity, file, line, claim, evidence}, ...], base_ref=<base>)`
+
+TOOL-GROUNDED findings are EXEMPT — never send them to the refuter; verify them
+inline by re-confirming the tool flag still holds (existence-break with
+`high_confidence`, duplication with a returned candidate, co-change `rule_id`,
+layering, a secret `lint_file` hit, a lint/naming/inheritance violation with a
+parsed line). The refuter sees one excerpt and cannot re-derive cross-file
+evidence, so sending these would wrongly drop the strongest findings.
+
+Apply each returned verdict:
+- `refuted` → DROP the finding (the refuter rebutted the cited evidence).
+- `confirmed` → KEEP it (this never authorizes an edit or a post).
+- `unverified` (refuter disabled / unavailable / timed out / cap reached) → KEEP
+  it on rounds 1-2, labeled "self-verified, round 3 unavailable", with downgraded
+  confidence. Never drop and never silently confirm.
+
+Banner: report `<b>` refuted-dropped, `<c>` inline-exempt, `<d>` self-verified.
+NEVER print "3/3" when round 3 did not adjudicate (disabled/unavailable/capped).
+NITs are verified inline only — they are not sent to the refuter.
+
 Format the review as follows:
 
 ```
@@ -614,7 +642,7 @@ This is a best-effort final step. If the tool call fails (no ledger, no signing 
 - **Security findings carry their own honesty bar.** A secret BLOCK (Step 2.6a) cites the `secret-detected-in-content` violation the scanner returned — a witnessed fact, like a lint violation — but only after both 2.6a gates passed: `secret_hard` is true AND the line sits inside an added/changed hunk. A low-precision heuristic hit or an out-of-hunk hit presented as a BLOCK is a false claim, the exact kind that destroys trust in a green gate. The authz FIX (2.6b) and the taint/SSRF/traversal FIX (2.6c) are judgments, not witnessed facts: they must carry their advisory labels, must never claim a structured profile cite (no profile data maps callbacks to actions), and the taint line must be inside the diff. Do not present a judgment as if it had the same backing as a gated secret hit or a lint violation.
 - **Migration findings carry their own honesty bar.** The irreversible-`change` BLOCK (Step 2.7a) cites the irreversible operation in the diff — a witnessed structural fact. The null:false and add_index FIXes (2.7b/2.7c) are table-size reminders, not confirmed defects: the dangerous condition is a row count this static read cannot see, and the repo's own safe migrations share the same shapes. They must keep their "verify table size" label and never reach BLOCK. Do not present either reminder as if it were a confirmed migration bug.
 - **The coverage-delta view is advisory and grounded only in archetypes.** The Step 3g partition rests on the file's archetype name (source vs test) and the test-vs-source archetype path mirror in `archetypes.json`. It must not claim a specific missing test file ("`foo.rb` needs `foo_spec.rb`") — chameleon has no source-to-test path map, and the diff lists only changed files, so a pre-existing untouched test is invisible. Keep it as a heads-up listing changed source in a test-paired layer, never a FIX or BLOCK, and never count an assertions delta: there is no assertion counter in chameleon, so an eyeball count of diff hunks would be exactly the ungrounded finding the integrity rule forbids.
-- **2-round verification loop.** After producing the review, re-read each BLOCK, FIX, and NIT finding. For each one, verify: (1) does the canonical witness, conventions data (`error_handling`/`required_guards`/`callable_signatures`/`test_pairing`/`layering`), the removed (`-`) lines of the hunk, a parsed manifest/lockfile line, a returned secret violation, or a returned tool result (`get_duplication_candidates` candidate, `get_crossfile_context` finding with `high_confidence=true`) actually support this claim? (2) for per-line logic findings, the stale-comment NIT (3f-ii), AND the taint/SSRF/traversal findings (2.6c), is the anchor line inside an added/changed hunk range (Step 4a)? Drop any finding that fails either check. The hunk gate is the deterministic answer to "PR-introduced vs pre-existing"; do not override it by judgment. The whole-diff cross-file findings (Step 2.8/2.9) are not hunk-gated; they are gated on their tool/artifact backing instead.
+- **3-round grounding loop.** After producing the review, re-read each BLOCK, FIX, and NIT finding. For each one, verify: (1) does the canonical witness, conventions data (`error_handling`/`required_guards`/`callable_signatures`/`test_pairing`/`layering`), the removed (`-`) lines of the hunk, a parsed manifest/lockfile line, a returned secret violation, or a returned tool result (`get_duplication_candidates` candidate, `get_crossfile_context` finding with `high_confidence=true`) actually support this claim? (2) for per-line logic findings, the stale-comment NIT (3f-ii), AND the taint/SSRF/traversal findings (2.6c), is the anchor line inside an added/changed hunk range (Step 4a)? Drop any finding that fails either check. The hunk gate is the deterministic answer to "PR-introduced vs pre-existing"; do not override it by judgment. The whole-diff cross-file findings (Step 2.8/2.9) are not hunk-gated; they are gated on their tool/artifact backing instead. Round 3 is the independent engine refutation pass for surviving model-judgment findings — see Step 4b.
 
 ## Important
 
