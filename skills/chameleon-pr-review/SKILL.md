@@ -7,6 +7,15 @@ description: "Use when the user explicitly invokes /chameleon-pr-review to revie
 
 Review code changes against this codebase's actual conventions, principles, and (optionally) the task spec. Combines convention compliance with logic review.
 
+## Reviewer discipline
+
+This review follows the same discipline a senior reviewer applies (superpowers
+`code-reviewer`): be specific (always `file:line`); explain WHY each finding
+matters, not just what; never say "looks good" without checking; don't mark a
+nitpick as BLOCK; never give feedback on code you didn't actually read; lead with
+what's done well, then the issues; and end with a clear verdict. Every finding is
+grounded in chameleon data or a removed hunk line — see the grounding loop below.
+
 ## Input formats
 
 ```
@@ -558,6 +567,10 @@ Render the `complexity_tier` field as `Tier: <easy|medium|hard|complex>` with a 
 | **BLOCK** | Must fix before merge | Missing base class/mixin the archetype requires | Missing requirement, race condition, removed guard/error branch | New direct dependency (verify provenance) | Secret detected in the diff | Irreversible op in a `change` block | — |
 | **FIX** | Should fix | Wrong response pattern, missing naming convention | Missing null guard, spec divergence, dropped await, inverted condition, error-handling/required-guard divergence (advisory), callable-signature drop (advisory), stale paired test | Non-registry resolved host, new install script, git+ssh:/file: source | Presence-only authz gap (advisory), taint/SSRF/traversal in hunk (advisory) | null:false without default (advisory), add_index without concurrently (advisory) | High-confidence existence break (get_crossfile_context); missing companion (co-change, advisory); upward-edge layering violation (advisory) |
 | **NIT** | Optional improvement | Potential duplication with existing utility | Minor inconsistency, placeholder name vs descriptive siblings, stale comment | — | — | — | Semantic duplication of a new function vs a returned candidate (get_duplication_candidates); borderline layering edge |
+
+For reviewers used to the superpowers vocabulary: BLOCK ≈ Critical, FIX ≈
+Important, NIT ≈ Minor. Chameleon keeps BLOCK/FIX/NIT because the review ledger
+(`record_review_verdict`) is keyed on them.
 
 Authz and taint/SSRF/traversal findings are capped at FIX. They are advisory judgments and never escalate to BLOCK; only a hard-kind secret on an added/changed line blocks from the security pass (Step 2.6a kind gate + hunk gate). Low-precision secret heuristics cap at NIT; out-of-hunk hard secrets go to the repo-hygiene note.
 
