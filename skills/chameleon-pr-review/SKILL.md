@@ -54,9 +54,10 @@ For very large diffs, cap the removed-line text you feed forward per file (keep 
 ### Step 2.0: Fan-out routing (large diffs only)
 
 Call `get_autopass_verdict(repo=<repo_id>, base_ref=<base>)` and read
-`data.fan_out`. If `recommended` is false (small diff, or `CHAMELEON_REVIEW_FANOUT=0`),
-run the review single-pass inline exactly as today — STOP here and continue with
-Step 2. If `recommended` is true, fan out:
+`data.fan_out`. The engine decides; you never read env yourself. If `recommended`
+is false (the diff is under the threshold, or the engine saw `CHAMELEON_REVIEW_FANOUT=0`
+when it computed the verdict), run the review single-pass inline exactly as today —
+STOP here and continue with Step 2. If `recommended` is true, fan out:
 
 - Partition the changed files (from your Step 1a hunk map) into ~4-6 slices,
   MULTIPLE files per slice — never one slice per file.
