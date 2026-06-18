@@ -2034,6 +2034,12 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
             if inc_freq >= _STRONG_THRESHOLD:
                 inheritance_lines.append(f"- Include {include} ({inc_freq:.0%})")
 
+    contract_lines: list[str] = []
+    for _arch, data in conv.get("class_contract", {}).items():
+        summary = _contract_summary(data)
+        if summary:
+            contract_lines.append(f"- {_arch}: {summary}")
+
     guard_lines: list[str] = []
     seen_guards: set[str] = set()
     for _arch, data in conv.get("required_guards", {}).items():
@@ -2113,6 +2119,7 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
         not import_lines
         and not naming_lines
         and not inheritance_lines
+        and not contract_lines
         and not guard_lines
         and not method_lines
         and not export_lines
@@ -2142,6 +2149,10 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     if inheritance_lines:
         lines.append("INHERITANCE:")
         lines.extend(inheritance_lines)
+        lines.append("")
+    if contract_lines:
+        lines.append("CONTRACT:")
+        lines.extend(contract_lines)
         lines.append("")
     if guard_lines:
         lines.append("AUTHZ (advisory):")
@@ -2229,6 +2240,30 @@ def format_directory_listing(
     return f"Nearby: {', '.join(display)} -- check before creating a new file."
 
 
+def _contract_summary(cc: dict) -> str:
+    """One-line human summary of a class_contract entry, or '' if empty.
+
+    Shared by the edit-time echo and the SessionStart block so both phrase the
+    contract identically: decorators, base, DSL macros, then required methods.
+    """
+    if not isinstance(cc, dict):
+        return ""
+    bits: list[str] = []
+    base = cc.get("base")
+    decorators = cc.get("decorators") or []
+    macros = cc.get("dsl_macros") or []
+    methods = cc.get("required_methods") or []
+    if decorators:
+        bits.append("@" + "/@".join(str(d) for d in decorators[:3]))
+    if base:
+        bits.append(f"extends {base}")
+    if macros:
+        bits.append("macros " + "/".join(str(m) for m in macros[:3]))
+    if methods:
+        bits.append("define " + ", ".join(str(m) for m in methods[:2]))
+    return ", ".join(bits)
+
+
 def format_conventions_echo(conventions: dict, *, archetype: str, principles_text: str = "") -> str:
     """Compact one-line convention echo for Tier 1 PreToolUse pointer. ~30 tokens max.
 
@@ -2273,6 +2308,13 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
     base = arch_inheritance.get("dominant_base")
     if base and arch_inheritance.get("frequency", 0) >= _STRONG_THRESHOLD:
         parts.append(f"Base: {base}")
+
+    arch_contract = conv.get("class_contract", {}).get(archetype, {})
+    if not arch_contract and conv.get("class_contract"):
+        arch_contract = next(iter(conv["class_contract"].values()), {})
+    summary = _contract_summary(arch_contract)
+    if summary:
+        parts.append(f"Contract: {summary}")
 
     if principles_text:
         p_lines = [
