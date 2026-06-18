@@ -101,7 +101,7 @@ def test_required_methods_capped_top_3():
             extras={
                 "class_body_calls": [],
                 "callable_signatures": [
-                    {"name": n, "kind": "method", "enclosing_class": cls}
+                    {"name": n, "kind": "method", "enclosing_class": cls, "base_class": "Base"}
                     for n in ("a", "b", "c", "d", "e")
                 ],
             },
@@ -112,16 +112,122 @@ def test_required_methods_capped_top_3():
 
 
 def test_below_threshold_macro_dropped():
-    # 'string' in all 10, 'rare' in only 4 (40% < 60%)
+    # 'string' in all 10, 'rare' in only 4 (40% < 60%); base anchors the contract
     def f(i):
         cls = f"C{i}"
         calls = [{"name": "string", "class": cls}]
         if i < 4:
             calls.append({"name": "rare", "class": cls})
-        return _pf(f"a{i}.rb", extras={"class_body_calls": calls, "callable_signatures": []})
+        return _pf(
+            f"a{i}.rb",
+            extras={
+                "class_body_calls": calls,
+                "callable_signatures": [
+                    {"name": "run", "kind": "method", "enclosing_class": cls, "base_class": "Base"}
+                ],
+            },
+        )
 
     out = extract_class_contract_conventions([f(i) for i in range(10)], language="ruby")
     assert out["dsl_macros"] == ["string"]
+
+
+def test_nested_helper_class_does_not_dilute_or_pollute():
+    # Each file has the interaction class PLUS a co-located error class with its own
+    # method. The error class must neither collapse the contract nor leak `message`.
+    def f(i):
+        main = f"Create{i}"
+        err = f"Error{i}"
+        return _pf(
+            f"app/interactions/c{i}.rb",
+            extras={
+                "class_body_calls": [
+                    {"name": "string", "class": main},
+                    {"name": "integer", "class": main},
+                ],
+                "callable_signatures": [
+                    {
+                        "name": "execute",
+                        "kind": "method",
+                        "enclosing_class": main,
+                        "base_class": "ActiveInteraction::Base",
+                    },
+                    {
+                        "name": "message",
+                        "kind": "method",
+                        "enclosing_class": err,
+                        "base_class": "StandardError",
+                    },
+                ],
+            },
+        )
+
+    out = extract_class_contract_conventions([f(i) for i in range(10)], language="ruby")
+    assert out["base"] == "ActiveInteraction::Base"
+    assert "string" in out["dsl_macros"]
+    assert out["required_methods"] == ["execute"]
+    assert "message" not in out["required_methods"]
+
+
+def test_initialize_and_operators_excluded_from_required_methods():
+    def f(i):
+        cls = f"Svc{i}"
+        return _pf(
+            f"app/services/s{i}.rb",
+            extras={
+                "class_body_calls": [],
+                "callable_signatures": [
+                    {"name": n, "kind": "method", "enclosing_class": cls, "base_class": "Base"}
+                    for n in ("initialize", "to_s", "==", "call")
+                ],
+            },
+        )
+
+    out = extract_class_contract_conventions([f(i) for i in range(10)], language="ruby")
+    assert out["required_methods"] == ["call"]
+
+
+def test_allowlisted_rails_dsl_excluded_from_macros():
+    # validates/belongs_to are generic (Common DSL covers them); only the novel
+    # macro `monetize` is the contract's value-add.
+    def f(i):
+        cls = f"Model{i}"
+        return _pf(
+            f"app/models/m{i}.rb",
+            extras={
+                "class_body_calls": [
+                    {"name": "validates", "class": cls},
+                    {"name": "belongs_to", "class": cls},
+                    {"name": "monetize", "class": cls},
+                ],
+                "callable_signatures": [
+                    {
+                        "name": "x",
+                        "kind": "method",
+                        "enclosing_class": cls,
+                        "base_class": "ApplicationRecord",
+                    }
+                ],
+            },
+        )
+
+    out = extract_class_contract_conventions([f(i) for i in range(10)], language="ruby")
+    assert out["dsl_macros"] == ["monetize"]
+
+
+def test_no_structural_anchor_returns_empty():
+    # Classes share a method name but have no base and no decorator -> not a contract.
+    def f(i):
+        cls = f"P{i}"
+        return _pf(
+            f"a{i}.rb",
+            extras={
+                "class_body_calls": [],
+                "callable_signatures": [{"name": "run", "kind": "method", "enclosing_class": cls}],
+            },
+        )
+
+    assert extract_class_contract_conventions([f(i) for i in range(10)], language="ruby") == {}
 
 
 def test_wired_into_extract_all_ruby():

@@ -656,7 +656,6 @@ _CONTRACT_VERB_PHRASES = (
     "must implement",
     "should implement",
     "typed filter",
-    "declare ",
 )
 
 

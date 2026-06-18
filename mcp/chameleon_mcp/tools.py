@@ -8315,7 +8315,14 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     if isinstance(conventions_data, dict):
         _conv_block = conventions_data.get("conventions")
         if isinstance(_conv_block, dict):
-            for _section in ("imports", "naming", "inheritance", "method_calls", "key_exports"):
+            for _section in (
+                "imports",
+                "naming",
+                "inheritance",
+                "method_calls",
+                "key_exports",
+                "class_contract",
+            ):
                 _sub = _conv_block.get(_section)
                 if isinstance(_sub, dict):
                     _conv_block[_section] = {effective.get(k, k): v for k, v in _sub.items()}

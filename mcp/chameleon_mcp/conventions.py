@@ -809,17 +809,50 @@ _INHERITANCE_THRESHOLD = 0.60
 # linter then flagged their bases as novel). ``[\w:]+`` matches the full name.
 _RUBY_CLASS_RE = re.compile(r"^\s*class\s+[\w:]+\s*<\s*([\w:]+)", re.MULTILINE)
 _RUBY_INCLUDE_RE = re.compile(r"^\s*include\s+([\w:]+)", re.MULTILINE)
+# Generic Rails/framework class-body macros. These already surface in the
+# method_calls "Common DSL" line, so class_contract excludes them — its value is
+# the NON-allowlisted, repo-specific DSL (ActiveInteraction's typed filters, etc.).
+_RUBY_DSL_ALLOWLIST = frozenset(
+    {
+        "validates",
+        "validate",
+        "belongs_to",
+        "has_many",
+        "has_one",
+        "has_and_belongs_to_many",
+        "scope",
+        "enum",
+        "before_action",
+        "after_action",
+        "around_action",
+        "before_validation",
+        "after_commit",
+        "after_save",
+        "before_save",
+        "after_create",
+        "before_create",
+        "before_destroy",
+        "after_destroy",
+        "delegate",
+        "attr_accessor",
+        "attr_reader",
+        "sidekiq_options",
+        "sidekiq_throttle",
+        "render_data",
+        "render_error",
+        "has_paper_trail",
+        "acts_as_taggable_on",
+        "mount_uploader",
+        "has_one_attached",
+        "has_many_attached",
+        "default_scope",
+        "counter_culture",
+    }
+)
+# Longest-first alternation so ``validates`` is tried before ``validate`` (``\b``
+# already disambiguates, but ordering keeps the match unambiguous).
 _RUBY_DSL_CALL_RE = re.compile(
-    r"^  (validates|validate|belongs_to|has_many|has_one|has_and_belongs_to_many"
-    r"|scope|enum|before_action|after_action|around_action"
-    r"|before_validation|after_commit|after_save|before_save|after_create"
-    r"|before_create|before_destroy|after_destroy"
-    r"|delegate|attr_accessor|attr_reader"
-    r"|sidekiq_options|sidekiq_throttle"
-    r"|render_data|render_error"
-    r"|has_paper_trail|acts_as_taggable_on"
-    r"|mount_uploader|has_one_attached|has_many_attached"
-    r"|default_scope|counter_culture)\b",
+    r"^  (" + "|".join(sorted(_RUBY_DSL_ALLOWLIST, key=lambda s: (-len(s), s))) + r")\b",
     re.MULTILINE,
 )
 
@@ -935,6 +968,8 @@ _CONTRACT_MACRO_STOPLIST = frozenset(
         "private",
         "public",
         "protected",
+        "private_class_method",
+        "private_constant",
         "require",
         "require_relative",
         "include",
@@ -942,87 +977,119 @@ _CONTRACT_MACRO_STOPLIST = frozenset(
         "prepend",
         "load",
         "autoload",
+        "freeze",
+    }
+)
+# Constructors and the universal Object/operator/conversion methods recur across
+# any archetype — defining them is "writing a class", not a contract. (TS already
+# excludes constructors via kind; this gives Ruby the same exclusion.)
+_CONTRACT_METHOD_STOPLIST = frozenset(
+    {
+        "initialize",
+        "to_s",
+        "to_str",
+        "to_h",
+        "to_hash",
+        "to_a",
+        "to_ary",
+        "to_proc",
+        "inspect",
+        "hash",
+        "eql?",
+        "==",
+        "<=>",
+        "coerce",
+        "method_missing",
+        "respond_to_missing?",
     }
 )
 _CONTRACT_METHOD_KINDS = frozenset({"method", "singleton_method"})
 _CONTRACT_REQUIRED_METHODS_CAP = 3
 
 
-def extract_class_contract_conventions(files: list[ParsedFile], *, language: str) -> dict:
-    """Derive an archetype's shared class-body contract from dump data.
+def _contract_rec(by_name: dict[str, dict], cname: str) -> dict:
+    """Get-or-create the per-class accumulator for ``cname`` within one file."""
+    rec = by_name.get(cname)
+    if rec is None:
+        rec = {"base": None, "decorators": set(), "macros": set(), "methods": set()}
+        by_name[cname] = rec
+    return rec
 
-    Captures the shape a base class/decorator implies but that the inheritance and
-    method_calls conventions miss: the recurring DSL macros (Ruby), class decorators
-    (TS), and required methods. A macro/decorator/method is part of the contract only
-    when a clear majority of the archetype's classes share it.
+
+def _collect_contract_classes(files: list[ParsedFile], *, language: str) -> list[dict]:
+    """One record per class: ``{base, decorators:set, macros:set, methods:set}``.
+
+    Records are per class (not per file) so a co-located helper/error/DTO class in
+    the same file is its own record and never dilutes the primary class's contract.
     """
-    if len(files) < MIN_SAMPLE_SIZE:
-        return {}
-
-    # Identity per class is (file path, class name); the same class name in two files
-    # counts twice (two members sharing the contract), which is what the ratio wants.
-    classes: set[tuple[str, str]] = set()
-    macro_classes: dict[str, set[tuple[str, str]]] = defaultdict(set)
-    decorator_classes: dict[str, set[tuple[str, str]]] = defaultdict(set)
-    method_classes: dict[str, set[tuple[str, str]]] = defaultdict(set)
-    base_classes: dict[str, set[tuple[str, str]]] = defaultdict(set)
-
+    classes: list[dict] = []
     for f in files:
         extras = getattr(f, "extras", {}) or {}
-        fpath = str(getattr(f, "path", ""))
+        by_name: dict[str, dict] = {}
 
         for shape in extras.get("class_shapes", []) or []:
             cname = shape.get("name")
             if not cname:
                 continue
-            key = (fpath, cname)
-            classes.add(key)
+            rec = _contract_rec(by_name, cname)
             for dec in shape.get("decorators", []) or []:
                 if dec:
-                    decorator_classes[dec].add(key)
-            base = shape.get("extends")
-            if base:
-                base_classes[base].add(key)
+                    rec["decorators"].add(dec)
+            ext = shape.get("extends")
+            if ext:
+                rec["base"] = ext
 
         for call in extras.get("class_body_calls", []) or []:
             name = call.get("name")
             cname = call.get("class")
             if not name or not cname or name in _CONTRACT_MACRO_STOPLIST:
                 continue
-            key = (fpath, cname)
-            classes.add(key)
-            macro_classes[name].add(key)
+            _contract_rec(by_name, cname)["macros"].add(name)
 
         for sig in extras.get("callable_signatures", []) or []:
             cname = sig.get("enclosing_class")
             if not cname or sig.get("kind") not in _CONTRACT_METHOD_KINDS:
                 continue
-            key = (fpath, cname)
-            classes.add(key)
+            rec = _contract_rec(by_name, cname)
             mname = sig.get("name")
-            if mname:
-                method_classes[mname].add(key)
+            if mname and mname not in _CONTRACT_METHOD_STOPLIST:
+                rec["methods"].add(mname)
             base = sig.get("base_class")
-            if base:
-                base_classes[base].add(key)
+            if base and not rec["base"]:
+                rec["base"] = base
 
-    total = len(classes)
+        classes.extend(by_name.values())
+    return classes
+
+
+def _contract_from_cohort(cohort: list[dict], *, language: str) -> dict:
+    """Build the contract over a cohort of classes sharing one anchor."""
+    total = len(cohort)
     if total == 0:
         return {}
 
-    def _dominant(counts: dict[str, set]) -> list[tuple[str, float]]:
-        ranked = []
-        for name, owners in counts.items():
-            freq = len(owners) / total
-            if freq >= _INHERITANCE_THRESHOLD:
-                ranked.append((name, round(freq, 3)))
+    def _dominant(counter: Counter) -> list[tuple[str, float]]:
+        ranked = [
+            (name, round(c / total, 3))
+            for name, c in counter.items()
+            if c / total >= _INHERITANCE_THRESHOLD
+        ]
         ranked.sort(key=lambda kv: (-kv[1], kv[0]))
         return ranked
 
-    macros = _dominant(macro_classes) if language == "ruby" else []
-    decorators = _dominant(decorator_classes) if language != "ruby" else []
-    methods = _dominant(method_classes)[:_CONTRACT_REQUIRED_METHODS_CAP]
-    bases = _dominant(base_classes)
+    macros = (
+        _dominant(Counter(m for c in cohort for m in c["macros"])) if language == "ruby" else []
+    )
+    # Drop generic Rails macros — the Common DSL line already covers them; keep only
+    # the repo-specific DSL that makes this archetype's contract distinct.
+    macros = [(n, fr) for n, fr in macros if n not in _RUBY_DSL_ALLOWLIST]
+    decorators = (
+        _dominant(Counter(d for c in cohort for d in c["decorators"])) if language != "ruby" else []
+    )
+    methods = _dominant(Counter(m for c in cohort for m in c["methods"]))[
+        :_CONTRACT_REQUIRED_METHODS_CAP
+    ]
+    bases = _dominant(Counter(c["base"] for c in cohort if c["base"]))
 
     result: dict = {}
     freqs: dict[str, float] = {}
@@ -1045,6 +1112,60 @@ def extract_class_contract_conventions(files: list[ParsedFile], *, language: str
     result["sample_size"] = total
     result["frequencies"] = freqs
     return result
+
+
+def extract_class_contract_conventions(files: list[ParsedFile], *, language: str) -> dict:
+    """Derive an archetype's shared class-body contract from dump data.
+
+    Captures the shape a base class/decorator implies but that the inheritance and
+    method_calls conventions miss: the repo-specific DSL macros (Ruby), class
+    decorators (TS), and required methods. A contract requires a structural anchor —
+    a dominant base class or class decorator — and is measured ONLY over the cohort
+    of classes carrying that anchor, so a co-located helper class never dilutes or
+    pollutes it.
+    """
+    if len(files) < MIN_SAMPLE_SIZE:
+        return {}
+
+    classes = _collect_contract_classes(files, language=language)
+    if not classes:
+        return {}
+
+    # The anchor must clear the dominance threshold against the member count, the
+    # same reference inheritance uses, so a file with two classes can't halve it.
+    anchor_min = _INHERITANCE_THRESHOLD * len(files)
+    base_counts: Counter = Counter(c["base"] for c in classes if c["base"])
+    decorator_counts: Counter = Counter(d for c in classes for d in c["decorators"])
+
+    candidates: list[tuple[str, str]] = [
+        ("base", b) for b, cnt in base_counts.items() if cnt >= anchor_min
+    ]
+    if language != "ruby":
+        candidates += [("decorator", d) for d, cnt in decorator_counts.items() if cnt >= anchor_min]
+    if not candidates:
+        return {}
+
+    # When several anchors qualify (e.g. an error base co-occurs with the real one),
+    # pick the anchor whose cohort yields the richest contract.
+    best: tuple[tuple, dict] | None = None
+    for kind, value in candidates:
+        if kind == "base":
+            cohort = [c for c in classes if c["base"] == value]
+        else:
+            cohort = [c for c in classes if value in c["decorators"]]
+        result = _contract_from_cohort(cohort, language=language)
+        if not result:
+            continue
+        richness = (
+            len(result.get("dsl_macros", []))
+            + len(result.get("decorators", []))
+            + len(result.get("required_methods", []))
+        )
+        rank = (richness, len(cohort), kind == "decorator", value)
+        if best is None or rank > best[0]:
+            best = (rank, result)
+
+    return best[1] if best else {}
 
 
 # A controller's authorization is expressed as a before_action callback whose
@@ -2035,10 +2156,14 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     contract_lines: list[str] = []
     class_contract = conv.get("class_contract", {})
     if isinstance(class_contract, dict):
-        for _arch, data in class_contract.items():
-            summary = _contract_summary(data)
+        for _arch in sorted(class_contract):
+            summary = _contract_summary(class_contract[_arch])
             if summary:
                 contract_lines.append(f"- {_arch}: {summary}")
+        if len(contract_lines) > _MAX_CONVENTION_ITEMS:
+            overflow = len(contract_lines) - _MAX_CONVENTION_ITEMS
+            contract_lines = contract_lines[:_MAX_CONVENTION_ITEMS]
+            contract_lines.append(f"- (+{overflow} more)")
 
     guard_lines: list[str] = []
     seen_guards: set[str] = set()
