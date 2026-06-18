@@ -164,11 +164,33 @@ def _fake_plugin_root(tmp_path) -> Path:
     return root
 
 
+# Coreutils the hooks reach for on the degraded path; symlinked into the isolated
+# bin so the hook still runs. Anything not found on the host is skipped — the
+# hooks degrade gracefully when a tool is absent.
+_NEEDED_TOOLS = ("bash", "sh", "env", "date", "dirname", "mkdir", "uname", "rm", "cat", "sleep")
+
+
+def _no_modern_python_bin(tmp_path) -> Path:
+    """A single PATH dir that holds the coreutils the hooks need plus python3 /
+    python stubs that report < 3.11 — and crucially NO python3.1x name and NO
+    uv. The version-named rung trusts a binary's NAME, so the only portable way
+    to assert "no >=3.11 interpreter resolves" on a host that ships python3.12 in
+    /usr/bin (ubuntu) is to exclude /usr/bin from PATH entirely and provide a
+    curated bin with no modern-python name on it."""
+    binp = tmp_path / "nomodernpy"
+    binp.mkdir()
+    for tool in _NEEDED_TOOLS:
+        src = shutil.which(tool)
+        if src:
+            (binp / tool).symlink_to(src)
+    _write_stub(binp / "python3", ge_311=False)
+    _write_stub(binp / "python", ge_311=False)
+    return binp
+
+
 def test_session_start_emits_degraded_banner_when_no_interpreter(tmp_path):
     root = _fake_plugin_root(tmp_path)
-    binp = tmp_path / "bin"
-    binp.mkdir()
-    _write_stub(binp / "python3", ge_311=False)  # 3.9, no uv -> degraded
+    binp = _no_modern_python_bin(tmp_path)  # python <3.11 only, no python3.1x, no uv
     log = tmp_path / "errors.log"
     res = subprocess.run(
         [str(root / "hooks" / "session-start")],
@@ -176,12 +198,12 @@ def test_session_start_emits_degraded_banner_when_no_interpreter(tmp_path):
         capture_output=True,
         text=True,
         env={
-            "PATH": f"{binp}:/usr/bin:/bin",
+            "PATH": str(binp),
             "CLAUDE_PLUGIN_ROOT": str(root),
             "CHAMELEON_HOOK_ERROR_LOG": str(log),
         },
     )
-    assert res.returncode == 0
+    assert res.returncode == 0, f"stderr={res.stderr}"
     out = json.loads(res.stdout)
     ctx = out["hookSpecificOutput"]["additionalContext"]
     assert "degraded" in ctx
@@ -192,9 +214,7 @@ def test_session_start_emits_degraded_banner_when_no_interpreter(tmp_path):
 
 def test_posttool_verify_fails_open_quietly_when_no_interpreter(tmp_path):
     root = _fake_plugin_root(tmp_path)
-    binp = tmp_path / "bin"
-    binp.mkdir()
-    _write_stub(binp / "python3", ge_311=False)
+    binp = _no_modern_python_bin(tmp_path)
     log = tmp_path / "errors.log"
     res = subprocess.run(
         [str(root / "hooks" / "posttool-verify")],
@@ -203,12 +223,12 @@ def test_posttool_verify_fails_open_quietly_when_no_interpreter(tmp_path):
         capture_output=True,
         text=True,
         env={
-            "PATH": f"{binp}:/usr/bin:/bin",
+            "PATH": str(binp),
             "CLAUDE_PLUGIN_ROOT": str(root),
             "CHAMELEON_HOOK_ERROR_LOG": str(log),
         },
     )
-    assert res.returncode == 0
+    assert res.returncode == 0, f"stderr={res.stderr}"
     assert res.stdout.strip() == "{}"
     assert "no-interpreter" in log.read_text()
 
