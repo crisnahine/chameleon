@@ -178,6 +178,10 @@ def _extras_from_record(record: dict) -> dict:
     signatures = record.get("callable_signatures")
     if isinstance(signatures, list) and signatures:
         extras["callable_signatures"] = signatures
+    # Receiverless class-body calls (the DSL-macro vocabulary), tagged with class.
+    class_body_calls = record.get("class_body_calls")
+    if isinstance(class_body_calls, list) and class_body_calls:
+        extras["class_body_calls"] = class_body_calls
     # Call sites feed the calls-index builder (caller -> callee edges).
     # Row-level validation lives in the builder, which skips anything
     # malformed, so the list is carried as-is.

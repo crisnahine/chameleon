@@ -269,6 +269,11 @@ def extract_file(file_path)
   # Enclosing def names, innermost last. Call sites read this to record which
   # method they were invoked from.
   def_stack = []
+  # Receiverless calls made directly in a class body (not inside a def or block),
+  # tagged with their class. This is the DSL-macro vocabulary a base class implies
+  # (ActiveInteraction's `string`/`integer`, a model's `validates`), which the
+  # generic call-site index flattens into anonymous bare sends.
+  class_body_calls = []
 
   walker = lambda do |node|
     ast_node_count += 1
@@ -301,6 +306,18 @@ def extract_file(file_path)
                          superclass: constant_name(node.superclass),
                          path: name ? (nesting_stack + [name]).join('::') : nil })
       pushed_class = true
+      # Scan only the class body's DIRECT statements for receiverless calls so a
+      # macro inside a scope lambda or a method body never leaks in. `string :name`
+      # is a direct CallNode; `def execute` is a DefNode (captured separately).
+      body = node.body
+      if name && body.is_a?(Prism::StatementsNode)
+        body.body.each do |stmt|
+          next unless stmt.is_a?(Prism::CallNode) && stmt.receiver.nil?
+
+          macro = stmt.name.to_s
+          class_body_calls << { name: macro, class: name } if macro.match?(/\A[a-z_]/)
+        end
+      end
       if name
         nesting_stack.push(name)
         pushed_nesting = true
@@ -417,6 +434,7 @@ def extract_file(file_path)
     parse_diagnostics_count: diagnostics,
     function_scopes: function_scopes,
     callable_signatures: callable_signatures,
+    class_body_calls: class_body_calls,
     call_sites: call_sites,
     call_sites_total: call_sites_total,
     call_sites_truncated: call_sites_truncated
