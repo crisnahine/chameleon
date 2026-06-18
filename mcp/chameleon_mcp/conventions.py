@@ -1039,9 +1039,7 @@ def extract_class_contract_conventions(files: list[ParsedFile], *, language: str
         result["base"] = bases[0][0]
         freqs.setdefault(bases[0][0], bases[0][1])
 
-    if not (
-        result.get("dsl_macros") or result.get("decorators") or result.get("required_methods")
-    ):
+    if not (result.get("dsl_macros") or result.get("decorators") or result.get("required_methods")):
         return {}
 
     result["sample_size"] = total
