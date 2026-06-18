@@ -4,6 +4,46 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.17.0] - 2026-06-18
+
+Chameleon now captures the contract a base class or decorator implies, not just
+its name. An ActiveInteraction subclass declares typed filters and defines
+`#execute`; a NestJS service carries `@Injectable` and extends a base. Before
+this, only the base/decorator was recorded and the body shape was invisible, so
+new code missed the convention and review caught it. The contract is surfaced on
+every edit.
+
+### Added
+
+- **Per-archetype `class_contract` convention.** Derived at bootstrap/refresh: the
+  repo-specific DSL macros (Ruby), class decorators (TypeScript), required methods,
+  and base that an archetype's classes share. It requires a structural anchor (a
+  dominant base or decorator) and is measured only over the cohort carrying that
+  anchor, so a co-located helper or error class never dilutes it. Surfaced in the
+  edit-time echo (`Contract: extends ActiveInteraction::Base, macros object, define execute`)
+  and a SessionStart `CONTRACT:` section. Advisory only.
+- **Custom-DSL extraction.** The Ruby dump now emits receiverless class-body macro
+  calls, generalizing beyond the fixed Rails allowlist (ActiveInteraction,
+  dry-validation, Grape, and other gem DSLs). The TypeScript dump now emits class
+  decorators and `extends`/`implements`, which were dropped entirely before.
+- **`/chameleon-auto-idiom` contract mining.** The skill now mines the body contract
+  a framework base/decorator implies, and idiom coverage exposes
+  `covered.class_contract` with a carve-out so an idiom that explains the contract is
+  not suppressed as a bare restatement of the inheritance convention.
+
+### Changed
+
+- Existing profiles pick this up on the next `/chameleon-refresh`: the engine-version
+  bump forces a full re-derive even for production-pinned repos with an unchanged
+  tip, and auto-refresh triggers it on the next session. Trust is preserved when the
+  archetype/canonical/rule/idiom artifacts are unchanged, so no manual re-trust is
+  needed in the common case.
+
+### Fixed
+
+- The archetype-rename path now carries the `class_contract` section to the new
+  archetype key alongside the other per-archetype conventions.
+
 ## [2.16.0] - 2026-06-17
 
 Two code-review skills — inbound and outbound — now share a 3-round grounding
