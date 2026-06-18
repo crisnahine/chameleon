@@ -434,6 +434,7 @@ function extractFile(filePath) {
     parse_diagnostics_count: diagnostics.length,
     function_scopes: [],
     callable_signatures: [],
+    class_shapes: [],
     call_sites: [],
     call_sites_total: 0,
     call_sites_truncated: false,
@@ -543,6 +544,62 @@ function extractFile(filePath) {
     return Array.isArray(node.parameters) ? node.parameters.length : 0;
   }
 
+  // Trailing identifier of an expression used as a type/decorator/heritage
+  // reference: `Injectable`, `core.Injectable`, `Base<T>` -> "Injectable"/"Base".
+  function nameFromExpr(expr) {
+    if (!expr) return null;
+    if (expr.kind === ts.SyntaxKind.Identifier) return expr.text;
+    if (expr.kind === ts.SyntaxKind.PropertyAccessExpression && expr.name) {
+      return expr.name.text;
+    }
+    if (expr.expression) return nameFromExpr(expr.expression);
+    return null;
+  }
+
+  function decoratorName(dec) {
+    let expr = dec.expression;
+    // `@Injectable()` is a CallExpression; `@Injectable` is the bare identifier.
+    if (expr && expr.kind === ts.SyntaxKind.CallExpression) expr = expr.expression;
+    return nameFromExpr(expr);
+  }
+
+  // Decorators across TS versions: getDecorators (4.8+), the modifiers array,
+  // and the legacy node.decorators property. Return identifier names only.
+  function decoratorsOf(node) {
+    let decs = [];
+    try {
+      if (typeof ts.getDecorators === "function" && ts.canHaveDecorators?.(node)) {
+        decs = ts.getDecorators(node) ?? [];
+      }
+    } catch {
+      decs = [];
+    }
+    if ((!decs || decs.length === 0) && Array.isArray(node.modifiers)) {
+      decs = node.modifiers.filter((m) => m.kind === ts.SyntaxKind.Decorator);
+    }
+    if ((!decs || decs.length === 0) && Array.isArray(node.decorators)) {
+      decs = node.decorators;
+    }
+    return decs.map((d) => decoratorName(d)).filter(Boolean);
+  }
+
+  function heritageOf(node) {
+    let ext = null;
+    const impl = [];
+    for (const clause of node.heritageClauses ?? []) {
+      if (clause.token === ts.SyntaxKind.ExtendsKeyword) {
+        const t = clause.types?.[0];
+        if (t) ext = nameFromExpr(t.expression);
+      } else if (clause.token === ts.SyntaxKind.ImplementsKeyword) {
+        for (const t of clause.types ?? []) {
+          const n = nameFromExpr(t.expression);
+          if (n) impl.push(n);
+        }
+      }
+    }
+    return { ext, impl };
+  }
+
   function visit(node) {
     nodeCount++;
     if (nodeCount > MAX_AST_NODES) {
@@ -579,6 +636,24 @@ function extractFile(filePath) {
       classStack.push(node.name.text);
     } else if (isClassSentinel) {
       classStack.push(null);
+    }
+
+    // The class's decorator + heritage shape: the contract a decorator/base
+    // implies (NestJS @Injectable, TypeORM @Entity, a shared base) that the
+    // signature index never records. Interfaces carry no runtime contract here.
+    if (
+      isNamedClass &&
+      (node.kind === ts.SyntaxKind.ClassDeclaration ||
+        node.kind === ts.SyntaxKind.ClassExpression) &&
+      result.class_shapes.length < MAX_CALLABLE_SIGNATURES
+    ) {
+      const { ext, impl } = heritageOf(node);
+      result.class_shapes.push({
+        name: node.name.text,
+        decorators: decoratorsOf(node),
+        extends: ext,
+        implements: impl,
+      });
     }
 
     const isFn = isFunctionLike(node);

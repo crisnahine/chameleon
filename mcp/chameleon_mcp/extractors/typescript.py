@@ -474,6 +474,10 @@ def _extras_from_record(record: dict) -> dict:
     signatures = record.get("callable_signatures")
     if isinstance(signatures, list) and signatures:
         extras["callable_signatures"] = signatures
+    # Per-class decorator + heritage shape feeding the class-contract convention.
+    class_shapes = record.get("class_shapes")
+    if isinstance(class_shapes, list) and class_shapes:
+        extras["class_shapes"] = class_shapes
     # Named export bindings + the open-set flag drive the phantom-symbol index.
     # `named_export_names` is the full set of importable names; `export_set_open`
     # is True when the file does `export * from` and its export set can't be
