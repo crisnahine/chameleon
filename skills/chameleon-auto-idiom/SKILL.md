@@ -65,6 +65,11 @@ by `check_idiom_candidates`.
    - `covered.naming`, `covered.inheritance`, `covered.error_handling`,
      `covered.convention_kinds` — structured conventions already injected at
      edit time.
+   - `covered.class_contract` — per-archetype DSL macros, class decorators, and
+     required methods already derived. A bare restatement is covered; an idiom
+     that EXPLAINS the full contract a base/decorator implies (which macros are
+     mandatory, which method every subclass defines, and why) can still be novel
+     — see step 3.
    - `covered.lint_sources` — formatting/lint topics already in `rules.json`.
      Formatting is NEVER idiom-worthy.
    If `status` is `untrusted`, stop and tell the user to run `/chameleon-trust`
@@ -93,6 +98,13 @@ by `check_idiom_candidates`.
    a repo-wide grep before drafting** — counting from the witness + summary
    alone undercounts and risks promoting a one-off to an idiom. Cite the
    grep numbers as evidence (e.g. "169 wrapper imports vs 4 raw").
+   When `covered.class_contract[<arch>]` or
+   `covered.inheritance[<arch>].dominant_base` shows a framework/gem base or
+   decorator, read 3-5 of that archetype's members and capture the FULL contract
+   it implies: which DSL macros are mandatory, which method(s) every subclass
+   defines, and the order. The base/decorator alone is covered; the body
+   contract it implies usually is not. Cite the macro/method names and the grep
+   count as evidence.
 4. **Draft at most 10 candidates.** Each candidate must have:
    - `slug` — `^[a-z][a-z0-9-]{2,63}$`, descriptive.
    - `rationale` — what to do AND why the team does it (one to three
@@ -150,6 +162,7 @@ by `check_idiom_candidates`.
 | Deprecated-vs-new API splits | Old and new pattern coexist; recent files use only the new | git-recent files vs older siblings |
 | Cross-cutting conventions | Pagination, error envelopes, event naming, feature-flag usage | shared modules + consumers |
 | Test data conventions | Factories-not-fixtures, builder helpers, network stubbing rules | spec/test dirs |
+| Base-class / decorator contract | An archetype has a framework/gem `dominant_base` or class decorator (`covered.class_contract`), and its members share a body shape: typed DSL macros + a required method (ActiveInteraction `string`/`integer` + `def execute`; NestJS `@Injectable` + `execute`). Propose the full shape as one idiom even though the bare base is `covered-by-inheritance`. | canonical witness + 3-5 archetype members |
 
 ## What is NOT a candidate (the covered map decides)
 
@@ -157,8 +170,10 @@ by `check_idiom_candidates`.
   (`covered.naming`, `covered.lint_sources`). The teach skill's anti-patterns
   apply here verbatim.
 - "Use wrapper X, not raw Y" already present in `covered.competing_imports`.
-- Base-class choices in `covered.inheritance`; error-handling shape in
-  `covered.error_handling`.
+- Bare base-class choice in `covered.inheritance` ("inherit from X" alone);
+  error-handling shape in `covered.error_handling`. The CONTRACT a base implies
+  (its mandatory DSL macros + required methods) is a candidate — see the
+  base-class/decorator contract row above.
 - Anything restating a `covered.principles` line.
 - Body-shape/size guidance — `body_shape` is measured, not taught.
 
