@@ -523,6 +523,25 @@ def _inheritance_bases(conventions: dict) -> dict[str, dict]:
     return out
 
 
+def _class_contract(conventions: dict) -> dict[str, dict]:
+    """Per-archetype DSL/decorator/required-method contract, for the dedup map."""
+    out: dict[str, dict] = {}
+    cc = conventions.get("class_contract", {})
+    if not isinstance(cc, dict):
+        return out
+    for arch, data in cc.items():
+        if isinstance(data, dict) and (
+            data.get("dsl_macros") or data.get("decorators") or data.get("required_methods")
+        ):
+            out[arch] = {
+                "dsl_macros": [str(m) for m in data.get("dsl_macros") or []],
+                "decorators": [str(d) for d in data.get("decorators") or []],
+                "required_methods": [str(m) for m in data.get("required_methods") or []],
+                "base": data.get("base"),
+            }
+    return out
+
+
 def _sanitize(text: str) -> str:
     """Neutralize tag-boundary / bidi / control-char tokens before relaying
     profile-derived prose into model context — idioms.md and principles.md are
@@ -601,6 +620,7 @@ def build_coverage(profile_dir: Path) -> tuple[dict, list[str]]:
             "competing_imports": _competing_pairs(conventions),
             "naming": _naming_casings(conventions),
             "inheritance": _inheritance_bases(conventions),
+            "class_contract": _class_contract(conventions),
             "error_handling": error_handling,
             "convention_kinds": convention_kinds,
             "lint_sources": sorted(artifacts["rules"]),
@@ -628,6 +648,31 @@ def _is_formatting_idiom(rationale: str) -> bool:
         return False
     fmt_hits = sum(1 for t in word_tokens if t in _LINT_TOPIC_WORDS) + phrase_hits
     return fmt_hits / len(word_tokens) >= _LINT_DOMINANCE
+
+
+_CONTRACT_VERB_PHRASES = (
+    "must define",
+    "should define",
+    "must implement",
+    "should implement",
+    "typed filter",
+    "declare ",
+)
+
+
+def _mentions_contract(text_lower: str, contract: dict) -> bool:
+    """True when the idiom text adds DSL/required-method contract content.
+
+    A pure ``inherit from X`` idiom restates the inheritance convention and is
+    covered. One that also names the base's DSL macros or required methods adds a
+    contract the inheritance section never captures, so it stays novel.
+    """
+    if not contract:
+        return any(p in text_lower for p in _CONTRACT_VERB_PHRASES)
+    for token in (contract.get("dsl_macros") or []) + (contract.get("required_methods") or []):
+        if token and token.lower() in text_lower:
+            return True
+    return any(p in text_lower for p in _CONTRACT_VERB_PHRASES)
 
 
 def _covered_reasons(
@@ -670,11 +715,16 @@ def _covered_reasons(
                 reasons.append(f"covered-by-naming:{arch}")
 
     if any(p in text_lower for p in _INHERITANCE_RULE_PHRASES):
+        contract = _class_contract(conventions)
         for arch, data in _inheritance_bases(conventions).items():
             if candidate_arch and arch != candidate_arch:
                 continue
             bases = [data.get("dominant_base") or ""] + list(data.get("known_bases") or [])
             if any(b and b.lower() in text_lower for b in bases):
+                # Suppress only a PURE "inherit from X" idiom; one that also names
+                # the base's DSL macros or required methods stays novel.
+                if _mentions_contract(text_lower, contract.get(arch, {})):
+                    continue
                 reasons.append(f"covered-by-inheritance:{arch}")
 
     rationale = str(candidate.get("rationale") or "")
