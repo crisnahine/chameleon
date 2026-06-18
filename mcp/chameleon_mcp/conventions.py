@@ -2033,10 +2033,12 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
                 inheritance_lines.append(f"- Include {include} ({inc_freq:.0%})")
 
     contract_lines: list[str] = []
-    for _arch, data in conv.get("class_contract", {}).items():
-        summary = _contract_summary(data)
-        if summary:
-            contract_lines.append(f"- {_arch}: {summary}")
+    class_contract = conv.get("class_contract", {})
+    if isinstance(class_contract, dict):
+        for _arch, data in class_contract.items():
+            summary = _contract_summary(data)
+            if summary:
+                contract_lines.append(f"- {_arch}: {summary}")
 
     guard_lines: list[str] = []
     seen_guards: set[str] = set()
@@ -2307,9 +2309,12 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
     if base and arch_inheritance.get("frequency", 0) >= _STRONG_THRESHOLD:
         parts.append(f"Base: {base}")
 
-    arch_contract = conv.get("class_contract", {}).get(archetype, {})
-    if not arch_contract and conv.get("class_contract"):
-        arch_contract = next(iter(conv["class_contract"].values()), {})
+    class_contract = conv.get("class_contract", {})
+    if not isinstance(class_contract, dict):
+        class_contract = {}
+    arch_contract = class_contract.get(archetype, {})
+    if not arch_contract and class_contract:
+        arch_contract = next(iter(class_contract.values()), {})
     summary = _contract_summary(arch_contract)
     if summary:
         parts.append(f"Contract: {summary}")

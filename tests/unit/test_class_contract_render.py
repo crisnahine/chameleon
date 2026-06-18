@@ -44,6 +44,16 @@ def test_echo_no_contract_no_line():
     assert "Contract:" not in echo
 
 
+def test_render_fails_open_on_malformed_class_contract():
+    # A corrupt conventions.json must never crash the SessionStart/PreToolUse hook.
+    for bad in ("garbage", 123, ["a"], None, {"arch": "not-a-dict"}, {"arch": 99}):
+        conv = {"conventions": {"class_contract": bad}}
+        echo = format_conventions_echo(conv, archetype="arch")
+        block = format_conventions_for_session(conv)
+        assert "Contract:" not in echo
+        assert "CONTRACT:" not in block
+
+
 def test_session_includes_contract_section():
     conv = _conv(
         {
