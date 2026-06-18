@@ -4,6 +4,40 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.18.0] - 2026-06-18
+
+Two fixes. The hooks now pin a Python they can actually run, so enforcement stops
+silently switching itself off on machines without a modern interpreter on PATH.
+And teaching the profile no longer bounces you to re-confirm your own change.
+
+### Fixed
+
+- **Hooks pin a dep-capable Python >=3.11 instead of falling through to a stale
+  system interpreter.** Each hook resolved its own Python via a ladder that ended
+  in a blind `python3`; on macOS that is `/usr/bin/python3` (3.9.x, below the
+  floor, no deps), so the hook failed and fail-opened — and in `enforce` mode a
+  real violation could pass unblocked with no signal. A shared resolver
+  (`hooks/_resolve-python.sh`) now walks the bundled venv, then `python3.13/12/11`,
+  then `uv run` (the same resolver the MCP server uses), and only a
+  version-probed bare `python3` — or surfaces a one-line SessionStart banner when
+  nothing >=3.11 resolves. The resolver runs as a subprocess, so a corrupt or
+  missing copy degrades the hook instead of aborting it. The merge driver uses the
+  same resolver. `/chameleon-doctor` now reports the exact interpreter the hooks
+  pick (command + version + dep status), and a SessionStart banner flags repeated
+  hook fail-opens so a degraded session is not mistaken for a healthy one.
+
+### Changed
+
+- **Teaching no longer stales your own trust.** `teach_profile` already re-granted
+  trust after editing `idioms.md`; the same now holds for `teach_competing_import`,
+  `unteach_competing_import`, and the deprecated-idiom paths of
+  `teach_profile_structured` (which `/chameleon-auto-idiom` uses). A teach you ran
+  yourself keeps the profile trusted instead of bouncing you to re-`/chameleon-trust`.
+  The guarantee is bounded: trust is preserved only when the profile was already
+  trusted (not when it was untrusted or already stale under a teammate's change),
+  and the re-grant still runs the injection scan, so a poisoned teach is refused
+  and stays stale rather than silently re-trusted.
+
 ## [2.17.0] - 2026-06-18
 
 Chameleon now captures the contract a base class or decorator implies, not just

@@ -7153,6 +7153,53 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
 _IDIOMS_FILE_CAP = 200_000
 
 
+def _profile_trusted_now(repo_id: str | None, profile_dir: Path) -> bool:
+    """True iff the profile is currently trusted for this user: a grant exists,
+    covers this root, and the profile is not already a material change (i.e.
+    trusted, not stale and not untrusted).
+
+    A user-initiated teach edits a hashed trust artifact. Capturing this BEFORE
+    the write lets the caller re-grant afterward so the user's own edit does not
+    stale their own trust. Only a genuine pre-existing grant is preserved — an
+    untrusted or already-stale profile returns False, so teaching never mints
+    trust the user did not hold. Fail-closed: any error reads as not-trusted.
+    """
+    if not repo_id:
+        return False
+    try:
+        from chameleon_mcp.profile.trust import is_material_change, trust_state_for
+
+        rec = trust_state_for(repo_id)
+        return (
+            rec is not None
+            and rec.grants_root(profile_dir.parent)
+            and not is_material_change(repo_id, profile_dir)
+        )
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _regrant_trust_if_was_trusted(
+    was_trusted: bool, repo_id: str | None, profile_dir: Path
+) -> None:
+    """Re-stamp the trust grant to the post-write profile hash when the profile
+    was trusted before the write.
+
+    Best-effort: a failed re-grant leaves the profile stale (the pre-fix
+    behavior), never raises. ``grant_trust`` re-runs its idioms.md/principles.md
+    injection scan, so a poisoned teach is refused here and stays stale rather
+    than silently re-trusted.
+    """
+    if not (was_trusted and repo_id):
+        return
+    try:
+        from chameleon_mcp.profile.trust import grant_trust
+
+        grant_trust(repo_id, profile_dir)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def teach_profile(repo: str, feedback: str) -> dict:
     """Append a captured idiom to .chameleon/idioms.md.
 
@@ -7212,16 +7259,7 @@ def teach_profile(repo: str, feedback: str) -> dict:
     # change. Capture whether the profile was trusted so we can re-grant after the
     # write (mirrors refresh's trust preservation for the user's own edits).
     _profile_dir = repo_path / ".chameleon"
-    _was_trusted = False
-    if _repo_id:
-        from chameleon_mcp.profile.trust import is_material_change, trust_state_for
-
-        _t = trust_state_for(_repo_id)
-        _was_trusted = (
-            _t is not None
-            and _t.grants_root(_profile_dir.parent)
-            and not is_material_change(_repo_id, _profile_dir)
-        )
+    _was_trusted = _profile_trusted_now(_repo_id, _profile_dir)
 
     suspicious, suspicious_pattern = _looks_suspicious(feedback)
 
@@ -7334,13 +7372,7 @@ def teach_profile(repo: str, feedback: str) -> dict:
             }
         )
 
-    if _was_trusted:
-        try:
-            from chameleon_mcp.profile.trust import grant_trust
-
-            grant_trust(_repo_id, _profile_dir)
-        except Exception:
-            pass
+    _regrant_trust_if_was_trusted(_was_trusted, _repo_id, _profile_dir)
 
     _notify_daemon_cache_invalidation()
 
@@ -8529,6 +8561,10 @@ def teach_competing_import(
         )
     conv_path = profile_dir / "conventions.json"
 
+    # conventions.json is a hashed trust artifact; capture trust before the write
+    # so the user's own teach does not stale their own trust.
+    _was_trusted = _profile_trusted_now(_repo_id, profile_dir)
+
     lock_path = _rdd(_compute_repo_id(repo_path)) / ".conventions.lock"
     try:
         with acquire_advisory_lock(lock_path):
@@ -8580,6 +8616,11 @@ def teach_competing_import(
     except Exception as e:
         return _envelope({"status": "failed", "error": f"conventions write failed: {e}"})
 
+    # A real write staled the user's own trust; re-grant so they aren't bounced
+    # to re-confirm their own change. No-op when the pair was already present.
+    if not already:
+        _regrant_trust_if_was_trusted(_was_trusted, _repo_id, profile_dir)
+
     # The archetype is regex-validated but not required to exist (a teammate may
     # be capturing a rule for a renamed/refreshed archetype the profile does not
     # yet reflect). But unlike a teach_profile idiom, this rule DRIVES a lint:
@@ -8609,8 +8650,9 @@ def teach_competing_import(
             "this wrapper-preference pair was already present; nothing changed"
             if already
             else (
-                "wrapper-preference recorded in conventions.json; the profile hash "
-                "changed, so run /chameleon-trust if it shows as stale."
+                "wrapper-preference recorded in conventions.json; your trust was preserved."
+                if _was_trusted
+                else "wrapper-preference recorded in conventions.json."
             )
         ),
     }
@@ -8681,6 +8723,10 @@ def unteach_competing_import(
             }
         )
 
+    # conventions.json is a hashed trust artifact; capture trust before the write
+    # so removing the user's own taught rule does not stale their own trust.
+    _was_trusted = _profile_trusted_now(_repo_id, profile_dir)
+
     removed = False
     lock_path = _rdd(_compute_repo_id(repo_path)) / ".conventions.lock"
     try:
@@ -8730,6 +8776,10 @@ def unteach_competing_import(
     except Exception as e:
         return _envelope({"status": "failed", "error": f"conventions write failed: {e}"})
 
+    # A real removal staled the user's own trust; re-grant. No-op when nothing matched.
+    if removed:
+        _regrant_trust_if_was_trusted(_was_trusted, _repo_id, profile_dir)
+
     return _envelope(
         {
             "status": "success",
@@ -8737,8 +8787,11 @@ def unteach_competing_import(
             "competing": {"preferred": preferred, "over": over},
             "removed": removed,
             "note": (
-                "wrapper-preference removed from conventions.json; the profile hash "
-                "changed, so run /chameleon-trust if it shows as stale."
+                (
+                    "wrapper-preference removed from conventions.json; your trust was preserved."
+                    if _was_trusted
+                    else "wrapper-preference removed from conventions.json."
+                )
                 if removed
                 else "no matching wrapper-preference pair found; nothing changed"
             ),
@@ -8898,8 +8951,14 @@ def teach_profile_structured(
                 ),
             }
         )
+    # The deprecated-idiom paths write idioms.md directly (the active path
+    # delegates to teach_profile, which preserves trust on its own). Capture
+    # trust before the write and re-grant on success so deprecating an idiom does
+    # not stale the user's own trust.
+    profile_dir = repo_path / ".chameleon"
     if in_active and status == "deprecated":
-        return _transition_slug_to_deprecated(
+        was_trusted = _profile_trusted_now(_repo_id, profile_dir)
+        result = _transition_slug_to_deprecated(
             idioms_path,
             slug,
             archetype=archetype,
@@ -8908,10 +8967,14 @@ def teach_profile_structured(
             example=example,
             counterexample=counterexample,
         )
+        if result.get("data", {}).get("status") == "success":
+            _regrant_trust_if_was_trusted(was_trusted, _repo_id, profile_dir)
+        return result
 
     if status == "active":
         return teach_profile(repo, rendered)
-    return _write_new_deprecated_idiom(
+    was_trusted = _profile_trusted_now(_repo_id, profile_dir)
+    result = _write_new_deprecated_idiom(
         idioms_path,
         slug,
         archetype=archetype,
@@ -8920,6 +8983,9 @@ def teach_profile_structured(
         example=example,
         counterexample=counterexample,
     )
+    if result.get("data", {}).get("status") == "success":
+        _regrant_trust_if_was_trusted(was_trusted, _repo_id, profile_dir)
+    return result
 
 
 def _find_all_slug_sections(idioms_path: Path, slug: str) -> frozenset[str]:
@@ -9623,51 +9689,80 @@ def doctor() -> dict:
             }
         )
 
-    # Hook interpreter dependency probe. The hooks resolve a python via a
-    # fallback ladder that can land on a system interpreter lacking chameleon's
-    # third-party deps (xxhash et al.). The hot-path hooks are stdlib-only, but
-    # the hook-spawned auto-refresh imports the extractors and aborts on a
-    # depless interpreter — visible only in auto_refresh.log. Resolve the same
-    # ladder and confirm the winner imports the deps; the auto-refresh path falls
-    # back to `uv run` when it cannot, so a depless winner with uv present is a
-    # warn, without uv an error.
+    # Hook interpreter probe. Every hook resolves its Python through one shared
+    # ladder (hooks/_resolve-python.sh): the bundled venv, then version-named
+    # python3.x, then `uv run` (the same dep-complete resolver the MCP server
+    # uses via uvx), and only a version-validated bare python3 — never a blind
+    # one, since macOS's /usr/bin/python3 is 3.9.x, below the >=3.11 floor and
+    # without chameleon's deps. Run that exact resolver here so doctor reports
+    # the command the hooks actually pick, then confirm the winner is >=3.11 and
+    # imports the deps. The hot-path hooks are stdlib-only, but the hook-spawned
+    # refresh imports the extractors and falls back to `uv run` when the winner
+    # lacks deps, so a >=3.11-but-depless winner with uv present is a warn,
+    # without uv an error.
     if plugin_root_env:
         try:
             import subprocess as _subp
 
             mcp_dir = Path(plugin_root_env) / "mcp"
-            candidates: list[str] = []
-            for rel in (".venv/bin/python", ".venv/Scripts/python.exe"):
-                cand = mcp_dir / rel
-                if cand.exists():
-                    candidates.append(str(cand))
-            for name in ("python3.13", "python3.12", "python3.11", "python3", "python"):
-                found = shutil.which(name)
-                if found:
-                    candidates.append(found)
-            hook_py = candidates[0] if candidates else None
-            if hook_py is None:
+            resolver = Path(plugin_root_env) / "hooks" / "_resolve-python.sh"
+            bash = shutil.which("bash")
+            hook_cmd: list[str] | None = None
+            if resolver.is_file() and bash:
+                res = _subp.run(
+                    [bash, str(resolver), str(mcp_dir)],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if res.returncode == 0:
+                    hook_cmd = [ln for ln in res.stdout.splitlines() if ln.strip()]
+            probe_env = {**os.environ, "PYTHONPATH": str(mcp_dir)}
+            if not bash or not resolver.is_file():
+                checks.append(
+                    {
+                        "name": "hook_interpreter_deps",
+                        "status": "warn",
+                        "detail": (
+                            "cannot probe the hook interpreter: "
+                            f"{'bash not on PATH' if not bash else 'resolver script missing'}"
+                        ),
+                    }
+                )
+            elif not hook_cmd:
                 checks.append(
                     {
                         "name": "hook_interpreter_deps",
                         "status": "error",
-                        "detail": "no python interpreter resolves for the hooks",
+                        "detail": (
+                            "no Python >=3.11 resolves for the hooks and `uv` is not on PATH; "
+                            "enforcement and guidance are OFF. Install uv or a Python >=3.11."
+                        ),
                     }
                 )
             else:
-                probe = _subp.run(
-                    [hook_py, "-c", "import xxhash, yaml, detect_secrets, chameleon_mcp"],
+                cmd_str = " ".join(hook_cmd)
+                ver = _subp.run(
+                    [*hook_cmd, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
                     capture_output=True,
                     text=True,
-                    timeout=15,
-                    env={**os.environ, "PYTHONPATH": str(mcp_dir)},
+                    timeout=30,
+                    env=probe_env,
+                )
+                ver_str = ver.stdout.strip() if ver.returncode == 0 else "?"
+                probe = _subp.run(
+                    [*hook_cmd, "-c", "import xxhash, yaml, detect_secrets, chameleon_mcp"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    env=probe_env,
                 )
                 if probe.returncode == 0:
                     checks.append(
                         {
                             "name": "hook_interpreter_deps",
                             "status": "ok",
-                            "detail": f"{hook_py} imports chameleon deps",
+                            "detail": f"hooks resolve `{cmd_str}` (Python {ver_str}); imports deps",
                         }
                     )
                 elif shutil.which("uv"):
@@ -9676,9 +9771,9 @@ def doctor() -> dict:
                             "name": "hook_interpreter_deps",
                             "status": "warn",
                             "detail": (
-                                f"{hook_py} is missing deps (e.g. xxhash); the hook-spawned "
-                                "refresh falls back to `uv run`. Create mcp/.venv with the "
-                                "deps to remove the fallback."
+                                f"hooks resolve `{cmd_str}` (Python {ver_str}); missing deps "
+                                "(e.g. xxhash) — the hook-spawned refresh falls back to `uv run`. "
+                                "Create mcp/.venv with the deps to remove the fallback."
                             ),
                         }
                     )
@@ -9688,9 +9783,9 @@ def doctor() -> dict:
                             "name": "hook_interpreter_deps",
                             "status": "error",
                             "detail": (
-                                f"{hook_py} cannot import chameleon deps and `uv` is not on "
-                                "PATH; hook-spawned refresh/bootstrap will fail. Install uv or "
-                                "create mcp/.venv with the deps."
+                                f"hooks resolve `{cmd_str}` (Python {ver_str}); cannot import "
+                                "chameleon deps and `uv` is not on PATH; hook-spawned "
+                                "refresh/bootstrap will fail. Install uv or create mcp/.venv."
                             ),
                         }
                     )

@@ -490,6 +490,7 @@ _DRIFT_BANNER_FILENAME = ".drift_banner.last"
 _ENGINE_BANNER_FILENAME = ".engine_banner.last"
 _PRODUCTION_BANNER_FILENAME = ".production_banner.last"
 _JUDGE_HEALTH_BANNER_FILENAME = ".judge_health_banner.last"
+_INTERPRETER_BANNER_FILENAME = ".interpreter_banner.last"
 
 # Degradation reasons the judge paths write into check events. The banner
 # echoes the reason into injected context, so anything outside this set reads
@@ -772,6 +773,111 @@ def _judge_spawn_health_banner(repo_root: Path, session_id: str | None = None) -
         return (
             f"[🦎 chameleon: turn-end reviewer failed to spawn last session "
             f"({reason}); run /chameleon-doctor]"
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _hook_error_log_path() -> Path:
+    """Path the hook scripts append fail-open lines to (override-aware).
+
+    Mirrors the shell hooks' LOG_FILE resolution so the SessionStart banner
+    reads the same file the hooks write.
+    """
+    override = os.environ.get("CHAMELEON_HOOK_ERROR_LOG")
+    if override:
+        return Path(override).expanduser()
+    return _plugin_data_dir() / ".hook_errors.log"
+
+
+def _interpreter_degraded_banner(repo_root: Path, session_id: str | None = None) -> str | None:
+    """One-line SessionStart advisory when recent hook fires fail-opened.
+
+    The hook scripts log a line when they cannot resolve a Python >=3.11 (the
+    ``no-interpreter`` case) or when the spawned helper exits non-zero
+    (``failed (python=...)``). Either means enforcement and guidance went silent
+    for that fire — invisible to the user, since the hook still exits 0 with
+    ``{}``. Read the tail of that log over a 24h window and surface a count so a
+    degraded session is not mistaken for a healthy one. ``no-interpreter`` is
+    definitive (raise on the first); spawn failures need a few to clear one-off
+    timeout noise. Same optout discipline as the other SessionStart banners, and
+    the same re-show cooldown (DRIFT_BANNER_TTL_SECONDS, 7d default), so a
+    persistently-broken machine warns at most once per cooldown window rather
+    than every session. Best-effort: any failure returns None.
+    """
+    try:
+        import calendar
+        import re as _re
+
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.optouts import is_chameleon_suppressed
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.tools import _compute_repo_id
+
+        resolved_root = find_repo_root(repo_root) or repo_root
+        # Profile-presence gate FIRST: an unprofiled repo has no enforcement to
+        # degrade, and returning here keeps session start side-effect free (the
+        # opt-out probe and marker write below would otherwise create the repo
+        # data dir). The hooks share one resolver, so a machine-level
+        # interpreter problem still surfaces on the next profiled repo.
+        if not (resolved_root / ".chameleon").is_dir():
+            return None
+        repo_id = _compute_repo_id(resolved_root)
+        if is_chameleon_suppressed(resolved_root, repo_id, session_id) is not None:
+            return None
+
+        log_path = _hook_error_log_path()
+        try:
+            size = log_path.stat().st_size
+        except OSError:
+            return None
+        with log_path.open("rb") as fh:
+            if size > 16384:
+                fh.seek(size - 16384)
+            tail = fh.read().decode("utf-8", errors="replace")
+
+        cutoff = time.time() - 86400
+        ts_re = _re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
+        no_interp = 0
+        spawn_fail = 0
+        for line in tail.splitlines():
+            m = ts_re.match(line)
+            if not m:
+                continue
+            try:
+                when = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ"))
+            except ValueError:
+                continue
+            if when < cutoff:
+                continue
+            if "no-interpreter" in line:
+                no_interp += 1
+            elif "failed (python=" in line:
+                spawn_fail += 1
+
+        if not (no_interp >= 1 or spawn_fail >= 3):
+            return None
+        # Count the triggering reason, not the sum: when no-interpreter fires,
+        # below-threshold one-off spawn-fails must not inflate the headline.
+        count = no_interp if no_interp else spawn_fail
+
+        marker = _plugin_data_dir() / repo_id / _INTERPRETER_BANNER_FILENAME
+        if _marker_path_is_fresh(marker, threshold_int("DRIFT_BANNER_TTL_SECONDS")):
+            return None
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(marker.parent, 0o700)
+        except OSError:
+            pass
+        _atomic_write_text(marker, str(int(time.time())))
+        try:
+            os.chmod(marker, 0o600)
+        except OSError:
+            pass
+        detail = "no Python >=3.11 resolved" if no_interp else "hook spawn failed"
+        return (
+            f"[🦎 chameleon: {count} hook fail-open(s) in the last 24h "
+            f"({detail}); enforcement was degraded — run /chameleon-doctor]"
         )
     except Exception:  # noqa: BLE001
         return None
@@ -1427,6 +1533,12 @@ def session_start() -> int:
     if judge_health_banner:
         wrapped_parts.append("")
         wrapped_parts.append(judge_health_banner)
+    interpreter_banner = _interpreter_degraded_banner(
+        repo_root or Path.cwd(), session_id=session_id
+    )
+    if interpreter_banner:
+        wrapped_parts.append("")
+        wrapped_parts.append(interpreter_banner)
     wrapped_parts.append("</chameleon-context>")
     wrapped = "\n".join(wrapped_parts)
 

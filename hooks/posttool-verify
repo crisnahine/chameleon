@@ -13,25 +13,8 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}"
 PLUGIN_ROOT="${PLUGIN_ROOT//\\//}"
 MCP_DIR="${PLUGIN_ROOT}/mcp"
 
-if [ -x "${MCP_DIR}/.venv/bin/python" ]; then
-    PYTHON="${MCP_DIR}/.venv/bin/python"
-elif [ -x "${MCP_DIR}/.venv/Scripts/python.exe" ]; then
-    PYTHON="${MCP_DIR}/.venv/Scripts/python.exe"
-elif command -v python3.13 >/dev/null 2>&1; then
-    PYTHON="$(command -v python3.13)"
-elif command -v python3.12 >/dev/null 2>&1; then
-    PYTHON="$(command -v python3.12)"
-elif command -v python3.11 >/dev/null 2>&1; then
-    PYTHON="$(command -v python3.11)"
-elif command -v python3 >/dev/null 2>&1; then
-    PYTHON="$(command -v python3)"
-elif command -v python >/dev/null 2>&1; then
-    PYTHON="$(command -v python)"
-else
-    printf '{}\n'
-    exit 0
-fi
-
+# Log destination is pure shell, computed before interpreter resolution so a
+# resolution failure can still be recorded.
 if [ -n "${CHAMELEON_HOOK_ERROR_LOG:-}" ]; then
     LOG_FILE="${CHAMELEON_HOOK_ERROR_LOG}"
     LOG_DIR="$(dirname "${LOG_FILE}")"
@@ -40,7 +23,33 @@ else
     LOG_FILE="${LOG_DIR}/.hook_errors.log"
 fi
 mkdir -p "${LOG_DIR}" 2>/dev/null || true
-"${PYTHON}" -m chameleon_mcp.log_rotation "${LOG_FILE}" 2>/dev/null || true
+
+# Resolve a dep-capable Python >=3.11 via the shared ladder (never a blind
+# `python3`, which on macOS is 3.9.x and fail-opens every hook). CHAMELEON_PY
+# is the interpreter argv (a path, or `uv run --project <mcp> python`).
+# A wrong interpreter here means a real violation passes unverified in enforce
+# mode, so this hook must land on a >=3.11 interpreter or fail open explicitly.
+CHAMELEON_PY=()
+RESOLVER="${PLUGIN_ROOT}/hooks/_resolve-python.sh"
+if [ -r "${RESOLVER}" ]; then
+    # Run the resolver as a subprocess, not `source`: a missing or corrupt
+    # resolver then leaves CHAMELEON_PY empty and degrades cleanly instead of
+    # aborting the hook. On bash 3.2 a syntax error in a sourced file exits 2
+    # (which would BLOCK the edit under PreToolUse) and `source <missing>` exits
+    # 1, neither catchable by `|| true` — so the broken-helper case stays
+    # fail-open by reading the resolver's argv over a pipe instead.
+    while IFS= read -r _tok || [ -n "${_tok}" ]; do
+        if [ -n "${_tok}" ]; then CHAMELEON_PY+=("${_tok}"); fi
+    done < <("${BASH:-bash}" "${RESOLVER}" "${MCP_DIR}" 2>/dev/null || true)
+fi
+if [ "${#CHAMELEON_PY[@]}" -eq 0 ]; then
+    echo "[$(date -u +%FT%TZ)] posttool-verify no-interpreter (no Python >=3.11, uv unavailable)" \
+        >>"${LOG_FILE}" 2>/dev/null || true
+    printf '{}\n'
+    exit 0
+fi
+
+"${CHAMELEON_PY[@]}" -m chameleon_mcp.log_rotation "${LOG_FILE}" 2>/dev/null || true
 
 # timeout(1) caps a stuck python; degrade to uncapped if neither timeout nor
 # gtimeout (Homebrew coreutils on macOS) is present, rather than failing the
@@ -53,6 +62,6 @@ case "$(uname -s 2>/dev/null)" in
     *) TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)" ;;
 esac
 PYTHONPATH="${MCP_DIR}" \
-    ${TIMEOUT_BIN:+"${TIMEOUT_BIN}" 3} "${PYTHON}" -m chameleon_mcp.hook_helper posttool-verify \
+    ${TIMEOUT_BIN:+"${TIMEOUT_BIN}" 3} "${CHAMELEON_PY[@]}" -m chameleon_mcp.hook_helper posttool-verify \
     2>>"${LOG_FILE}" \
-    || { printf '{}\n'; echo "[$(date -u +%FT%TZ)] posttool-verify failed (python=${PYTHON})" >>"${LOG_FILE}" 2>/dev/null || true; }
+    || { printf '{}\n'; echo "[$(date -u +%FT%TZ)] posttool-verify failed (python=${CHAMELEON_PY[*]})" >>"${LOG_FILE}" 2>/dev/null || true; }

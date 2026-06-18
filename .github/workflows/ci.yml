@@ -336,7 +336,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Lint hook scripts
-        run: shellcheck -S warning hooks/session-start hooks/preflight-and-advise hooks/posttool-recorder hooks/posttool-verify hooks/callout-detector scripts/*.sh
+        run: shellcheck -S warning hooks/_resolve-python.sh hooks/session-start hooks/preflight-and-advise hooks/posttool-recorder hooks/posttool-verify hooks/callout-detector hooks/stop-backstop scripts/*.sh
 
   hooks-manifest:
     name: hooks-manifest-check
