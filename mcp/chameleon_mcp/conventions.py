@@ -40,6 +40,11 @@ def empty_conventions(*, generation: int) -> dict:
             # Repo-level (not per-archetype): forbidden-upward cluster edges and a
             # static import-cycle report. Advisory context for status/PR-review.
             "layering": {},
+            # Per-archetype class-body contract: the DSL macros, class decorators,
+            # required methods, and base that the archetype's classes share. Surfaces
+            # what a base class implies beyond its name (e.g. ActiveInteraction's
+            # typed filters + #execute), which inheritance/method_calls miss.
+            "class_contract": {},
         },
     }
 
@@ -924,6 +929,126 @@ def extract_inheritance_conventions(files: list[ParsedFile]) -> dict:
     return result
 
 
+# Class-body calls that are structure/visibility, not domain DSL — never a contract.
+_CONTRACT_MACRO_STOPLIST = frozenset(
+    {
+        "private",
+        "public",
+        "protected",
+        "require",
+        "require_relative",
+        "include",
+        "extend",
+        "prepend",
+        "load",
+        "autoload",
+    }
+)
+_CONTRACT_METHOD_KINDS = frozenset({"method", "singleton_method"})
+_CONTRACT_REQUIRED_METHODS_CAP = 3
+
+
+def extract_class_contract_conventions(files: list[ParsedFile], *, language: str) -> dict:
+    """Derive an archetype's shared class-body contract from dump data.
+
+    Captures the shape a base class/decorator implies but that the inheritance and
+    method_calls conventions miss: the recurring DSL macros (Ruby), class decorators
+    (TS), and required methods. A macro/decorator/method is part of the contract only
+    when a clear majority of the archetype's classes share it.
+    """
+    if len(files) < MIN_SAMPLE_SIZE:
+        return {}
+
+    # Identity per class is (file path, class name); the same class name in two files
+    # counts twice (two members sharing the contract), which is what the ratio wants.
+    classes: set[tuple[str, str]] = set()
+    macro_classes: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    decorator_classes: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    method_classes: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    base_classes: dict[str, set[tuple[str, str]]] = defaultdict(set)
+
+    for f in files:
+        extras = getattr(f, "extras", {}) or {}
+        fpath = str(getattr(f, "path", ""))
+
+        for shape in extras.get("class_shapes", []) or []:
+            cname = shape.get("name")
+            if not cname:
+                continue
+            key = (fpath, cname)
+            classes.add(key)
+            for dec in shape.get("decorators", []) or []:
+                if dec:
+                    decorator_classes[dec].add(key)
+            base = shape.get("extends")
+            if base:
+                base_classes[base].add(key)
+
+        for call in extras.get("class_body_calls", []) or []:
+            name = call.get("name")
+            cname = call.get("class")
+            if not name or not cname or name in _CONTRACT_MACRO_STOPLIST:
+                continue
+            key = (fpath, cname)
+            classes.add(key)
+            macro_classes[name].add(key)
+
+        for sig in extras.get("callable_signatures", []) or []:
+            cname = sig.get("enclosing_class")
+            if not cname or sig.get("kind") not in _CONTRACT_METHOD_KINDS:
+                continue
+            key = (fpath, cname)
+            classes.add(key)
+            mname = sig.get("name")
+            if mname:
+                method_classes[mname].add(key)
+            base = sig.get("base_class")
+            if base:
+                base_classes[base].add(key)
+
+    total = len(classes)
+    if total == 0:
+        return {}
+
+    def _dominant(counts: dict[str, set]) -> list[tuple[str, float]]:
+        ranked = []
+        for name, owners in counts.items():
+            freq = len(owners) / total
+            if freq >= _INHERITANCE_THRESHOLD:
+                ranked.append((name, round(freq, 3)))
+        ranked.sort(key=lambda kv: (-kv[1], kv[0]))
+        return ranked
+
+    macros = _dominant(macro_classes) if language == "ruby" else []
+    decorators = _dominant(decorator_classes) if language != "ruby" else []
+    methods = _dominant(method_classes)[:_CONTRACT_REQUIRED_METHODS_CAP]
+    bases = _dominant(base_classes)
+
+    result: dict = {}
+    freqs: dict[str, float] = {}
+    if macros:
+        result["dsl_macros"] = sorted(n for n, _ in macros)
+        freqs.update(dict(macros))
+    if decorators:
+        result["decorators"] = sorted(n for n, _ in decorators)
+        freqs.update(dict(decorators))
+    if methods:
+        result["required_methods"] = [n for n, _ in methods]
+        freqs.update(dict(methods))
+    if bases:
+        result["base"] = bases[0][0]
+        freqs.setdefault(bases[0][0], bases[0][1])
+
+    if not (
+        result.get("dsl_macros") or result.get("decorators") or result.get("required_methods")
+    ):
+        return {}
+
+    result["sample_size"] = total
+    result["frequencies"] = freqs
+    return result
+
+
 # A controller's authorization is expressed as a before_action callback whose
 # first argument is the guard method symbol (``before_action :authorize!``).
 # The coarse DSL fingerprint only records the call NAME (before_action), so a
@@ -1585,6 +1710,10 @@ def extract_all_conventions(
             method_conv = extract_method_call_conventions(files)
             if method_conv:
                 conventions["conventions"].setdefault("method_calls", {})[archetype] = method_conv
+        for archetype, files in files_by_archetype.items():
+            contract = extract_class_contract_conventions(files, language=language)
+            if contract:
+                conventions["conventions"].setdefault("class_contract", {})[archetype] = contract
         # Required-guard derivation reuses the inheritance result so the
         # consuming check can suppress a miss when the archetype's own base
         # controller (its dominant/known bases) is the one carrying the guard.
@@ -1635,6 +1764,13 @@ def extract_all_conventions(
         signatures = extract_callable_signatures(files)
         if signatures:
             conventions["conventions"].setdefault("callable_signatures", {})[archetype] = signatures
+    # Class contract for TS runs here (the Ruby branch above already ran it). TS captures
+    # the decorator + heritage + required-method shape that has no inheritance section.
+    if language != "ruby":
+        for archetype, files in files_by_archetype.items():
+            contract = extract_class_contract_conventions(files, language=language)
+            if contract:
+                conventions["conventions"].setdefault("class_contract", {})[archetype] = contract
     if repo_root is not None:
         from chameleon_mcp.bootstrap.import_graph import build_layering
 
