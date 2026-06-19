@@ -378,6 +378,24 @@ def _atomic_write_text(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _write_timestamp_marker(marker: Path) -> None:
+    """Create a cooldown/state marker holding the current epoch seconds.
+
+    Parent dir and marker are locked to owner-only perms (0700/0600); a chmod
+    failure on an exotic filesystem is best-effort and never fatal.
+    """
+    marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(marker.parent, 0o700)
+    except OSError:
+        pass
+    _atomic_write_text(marker, str(int(time.time())))
+    try:
+        os.chmod(marker, 0o600)
+    except OSError:
+        pass
+
+
 def _update_statusline(
     activity: str,
     repo_name: str | None = None,
@@ -552,16 +570,7 @@ def _production_tip_banner(repo_root: Path, session_id: str | None = None) -> st
         marker = _plugin_data_dir() / repo_id / _PRODUCTION_BANNER_FILENAME
         if _marker_path_is_fresh(marker, threshold_int("DRIFT_BANNER_TTL_SECONDS")):
             return None
-        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
-            os.chmod(marker.parent, 0o700)
-        except OSError:
-            pass
-        _atomic_write_text(marker, str(int(time.time())))
-        try:
-            os.chmod(marker, 0o600)
-        except OSError:
-            pass
+        _write_timestamp_marker(marker)
         return (
             f"[🦎 chameleon: production drift] The locked production branch "
             f"({resolved.ref}) has moved to {resolved.sha[:12]} since this profile "
@@ -620,16 +629,7 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
                 emarker = _plugin_data_dir() / repo_id / _ENGINE_BANNER_FILENAME
                 if _marker_path_is_fresh(emarker, threshold_int("DRIFT_BANNER_TTL_SECONDS")):
                     return None
-                emarker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                try:
-                    os.chmod(emarker.parent, 0o700)
-                except OSError:
-                    pass
-                _atomic_write_text(emarker, str(int(time.time())))
-                try:
-                    os.chmod(emarker, 0o600)
-                except OSError:
-                    pass
+                _write_timestamp_marker(emarker)
                 # When auto-refresh is on, this same SessionStart triggers the
                 # re-derive itself — suggesting a manual /chameleon-refresh
                 # right after it already ran is stale advice.
@@ -670,16 +670,7 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
         if _marker_path_is_fresh(marker, ttl):
             return None
 
-        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
-            os.chmod(marker.parent, 0o700)
-        except OSError:
-            pass
-        _atomic_write_text(marker, str(int(time.time())))
-        try:
-            os.chmod(marker, 0o600)
-        except OSError:
-            pass
+        _write_timestamp_marker(marker)
 
         score_str = f"{stats['score']:.2f}"
         # The score is structural mimicry, not correctness. Lead with the
@@ -760,16 +751,7 @@ def _judge_spawn_health_banner(repo_root: Path, session_id: str | None = None) -
         marker = _plugin_data_dir() / repo_id / _JUDGE_HEALTH_BANNER_FILENAME
         if _marker_path_is_fresh(marker, threshold_int("DRIFT_BANNER_TTL_SECONDS")):
             return None
-        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
-            os.chmod(marker.parent, 0o700)
-        except OSError:
-            pass
-        _atomic_write_text(marker, str(int(time.time())))
-        try:
-            os.chmod(marker, 0o600)
-        except OSError:
-            pass
+        _write_timestamp_marker(marker)
         return (
             f"[🦎 chameleon: turn-end reviewer failed to spawn last session "
             f"({reason}); run /chameleon-doctor]"
@@ -864,16 +846,7 @@ def _interpreter_degraded_banner(repo_root: Path, session_id: str | None = None)
         marker = _plugin_data_dir() / repo_id / _INTERPRETER_BANNER_FILENAME
         if _marker_path_is_fresh(marker, threshold_int("DRIFT_BANNER_TTL_SECONDS")):
             return None
-        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
-            os.chmod(marker.parent, 0o700)
-        except OSError:
-            pass
-        _atomic_write_text(marker, str(int(time.time())))
-        try:
-            os.chmod(marker, 0o600)
-        except OSError:
-            pass
+        _write_timestamp_marker(marker)
         detail = "no Python >=3.11 resolved" if no_interp else "hook spawn failed"
         return (
             f"[🦎 chameleon: {count} hook fail-open(s) in the last 24h "
@@ -1098,16 +1071,7 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
                 except OSError:
                     pass
 
-        cooldown_marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
-            os.chmod(cooldown_marker.parent, 0o700)
-        except OSError:
-            pass
-        _atomic_write_text(cooldown_marker, str(int(time.time())))
-        try:
-            os.chmod(cooldown_marker, 0o600)
-        except OSError:
-            pass
+        _write_timestamp_marker(cooldown_marker)
     except Exception as exc:
         try:
             print(

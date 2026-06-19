@@ -179,6 +179,15 @@ _TS_STRING_OR_COMMENT = re.compile(
 )
 
 
+def _blank_match_to_spaces(m: re.Match) -> str:
+    """Replace a regex match with a same-length run of spaces, keeping newlines.
+
+    Shared by the string/comment strippers so blanking a multiline match (block
+    comment, heredoc, template literal) leaves downstream line numbers truthful.
+    """
+    return re.sub(r"[^\n]", " ", m.group(0))
+
+
 def _strip_ts_strings_and_comments(content: str) -> str:
     """Best-effort strip of strings/comments to reduce JSX false positives.
 
@@ -187,11 +196,7 @@ def _strip_ts_strings_and_comments(content: str) -> str:
     Newlines inside a multiline match (block comment, template literal) are
     preserved so line numbers downstream stay truthful.
     """
-
-    def _spaces(m: re.Match) -> str:
-        return re.sub(r"[^\n]", " ", m.group(0))
-
-    return _TS_STRING_OR_COMMENT.sub(_spaces, content)
+    return _TS_STRING_OR_COMMENT.sub(_blank_match_to_spaces, content)
 
 
 def extract_comment_spans(content: str, *, language: str) -> list[str]:
@@ -274,11 +279,8 @@ _TS_EXPORT_LIST = re.compile(r"^[ \t]*export\s*\{\s*([^}]*)\s*\}\s*;?\s*$", re.M
 
 _TS_TOP_LEVEL_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^[ \t]*import\s", re.MULTILINE), "ImportDeclaration"),
-    (
-        re.compile(r"^[ \t]*export\s+default\s+(?:async\s+)?function\b", re.MULTILINE),
-        "FunctionDeclaration",
-    ),
-    (re.compile(r"^[ \t]*export\s+default\s+class\b", re.MULTILINE), "ClassDeclaration"),
+    (_TS_DEFAULT_FUNCTION, "FunctionDeclaration"),
+    (_TS_DEFAULT_CLASS, "ClassDeclaration"),
     (re.compile(r"^[ \t]*export\s+default\s", re.MULTILINE), "ExportAssignment"),
     (
         re.compile(
@@ -472,23 +474,15 @@ _RUBY_PERCENT_LITERAL = re.compile(
 
 
 def _blank_ruby_percent_literals(content: str) -> str:
-    def _spaces(m: re.Match) -> str:
-        return re.sub(r"[^\n]", " ", m.group(0))
-
-    return _RUBY_PERCENT_LITERAL.sub(_spaces, content)
+    return _RUBY_PERCENT_LITERAL.sub(_blank_match_to_spaces, content)
 
 
 def _strip_ruby_strings_and_comments(content: str) -> str:
-    def _spaces(m: re.Match) -> str:
-        # Preserve newlines so line numbers downstream of a multiline match
-        # (block comment, heredoc, multiline string) stay truthful.
-        return re.sub(r"[^\n]", " ", m.group(0))
-
-    out = _RUBY_BLOCK_COMMENT.sub(_spaces, content)
-    out = _RUBY_LINE_COMMENT.sub(_spaces, out)
+    out = _RUBY_BLOCK_COMMENT.sub(_blank_match_to_spaces, content)
+    out = _RUBY_LINE_COMMENT.sub(_blank_match_to_spaces, out)
     out = _blank_ruby_heredocs(out)
-    out = _RUBY_STRING_DQ.sub(_spaces, out)
-    out = _RUBY_STRING_SQ.sub(_spaces, out)
+    out = _RUBY_STRING_DQ.sub(_blank_match_to_spaces, out)
+    out = _RUBY_STRING_SQ.sub(_blank_match_to_spaces, out)
     # After the quote forms: a `%` inside a normal "..."/'...' string is already
     # blanked and cannot start a literal, so only true percent-literals remain.
     return _blank_ruby_percent_literals(out)

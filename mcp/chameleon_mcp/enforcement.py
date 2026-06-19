@@ -96,18 +96,18 @@ class EnforcementState:
         )
 
 
-def _state_path(repo_dir: Path, session_id: str) -> Path:
+def _enforcement_path(repo_dir: Path, session_id: str, suffix: str) -> Path:
     from chameleon_mcp.optouts import _safe_session_marker
 
-    safe_sid = _safe_session_marker(session_id)
-    return repo_dir / f".enforcement.{safe_sid}.json"
+    return repo_dir / f".enforcement.{_safe_session_marker(session_id)}.{suffix}"
+
+
+def _state_path(repo_dir: Path, session_id: str) -> Path:
+    return _enforcement_path(repo_dir, session_id, "json")
 
 
 def _lock_path(repo_dir: Path, session_id: str) -> Path:
-    from chameleon_mcp.optouts import _safe_session_marker
-
-    safe_sid = _safe_session_marker(session_id)
-    return repo_dir / f".enforcement.{safe_sid}.lock"
+    return _enforcement_path(repo_dir, session_id, "lock")
 
 
 def load_state(repo_dir: Path, session_id: str) -> EnforcementState:

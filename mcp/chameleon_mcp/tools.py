@@ -1325,6 +1325,24 @@ def _content_signal_for_path(p: Path) -> str:
     return value if value is not None else "none"
 
 
+def _empty_archetype_envelope(content_signal_match: str, file_exists: bool) -> dict:
+    """The no-match payload returned by ``get_archetype``'s early exits.
+
+    Every early-return path (bad input, no repo, repo-id mismatch, profile load
+    failure) yields the same shape; only the content-signal and file-exists
+    fields vary by how far resolution got.
+    """
+    return {
+        "archetype": None,
+        "alternatives": [],
+        "content_signal_match": content_signal_match,
+        "confidence_band": "low",
+        "match_quality": "none",
+        "match_basis": None,
+        "file_exists": file_exists,
+    }
+
+
 def get_archetype(repo: str, file_path: str) -> dict:
     """Look up the archetype a given file matches.
 
@@ -1376,17 +1394,7 @@ def get_archetype(repo: str, file_path: str) -> dict:
     from chameleon_mcp.profile.loader import find_repo_root, load_profile_dir
 
     if not _validate_file_path_arg(file_path):
-        return _envelope(
-            {
-                "archetype": None,
-                "alternatives": [],
-                "content_signal_match": "none",
-                "confidence_band": "low",
-                "match_quality": "none",
-                "match_basis": None,
-                "file_exists": False,
-            }
-        )
+        return _envelope(_empty_archetype_envelope("none", False))
 
     p = Path(file_path).expanduser()
 
@@ -1394,62 +1402,22 @@ def get_archetype(repo: str, file_path: str) -> dict:
 
     repo_root = find_repo_root(p)
     if repo_root is None:
-        return _envelope(
-            {
-                "archetype": None,
-                "alternatives": [],
-                "content_signal_match": content_signal_value,
-                "confidence_band": "low",
-                "match_quality": "none",
-                "match_basis": None,
-                "file_exists": p.is_file(),
-            }
-        )
+        return _envelope(_empty_archetype_envelope(content_signal_value, p.is_file()))
 
     expected_repo_id = _compute_repo_id(repo_root)
     if _REPO_ID_RE.match(repo) if isinstance(repo, str) else False:
         if expected_repo_id != repo:
-            return _envelope(
-                {
-                    "archetype": None,
-                    "alternatives": [],
-                    "content_signal_match": content_signal_value,
-                    "confidence_band": "low",
-                    "match_quality": "none",
-                    "match_basis": None,
-                    "file_exists": p.is_file(),
-                }
-            )
+            return _envelope(_empty_archetype_envelope(content_signal_value, p.is_file()))
     else:
         _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
         if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            return _envelope(
-                {
-                    "archetype": None,
-                    "alternatives": [],
-                    "content_signal_match": content_signal_value,
-                    "confidence_band": "low",
-                    "match_quality": "none",
-                    "match_basis": None,
-                    "file_exists": p.is_file(),
-                }
-            )
+            return _envelope(_empty_archetype_envelope(content_signal_value, p.is_file()))
 
     profile_dir = _effective_profile_dir(repo_root)
     try:
         loaded: LoadedProfile = load_profile_dir(profile_dir)
     except Exception:
-        return _envelope(
-            {
-                "archetype": None,
-                "alternatives": [],
-                "content_signal_match": content_signal_value,
-                "confidence_band": "low",
-                "match_quality": "none",
-                "match_basis": None,
-                "file_exists": p.is_file(),
-            }
-        )
+        return _envelope(_empty_archetype_envelope(content_signal_value, p.is_file()))
 
     return _get_archetype_with_loaded(p, repo_root, loaded, content_signal_value)
 

@@ -77,25 +77,23 @@ def _blank_string_literals(content: str, file_path: str | None, language: str | 
             _RUBY_STRING_DQ,
             _RUBY_STRING_SQ,
             _TS_STRING,
+            _blank_match_to_spaces,
             _blank_ruby_heredocs,
             _blank_ruby_percent_literals,
             detect_language,
         )
 
-        def _spaces(m: re.Match) -> str:
-            return re.sub(r"[^\n]", " ", m.group(0))
-
         if language is None and file_path:
             language = detect_language(file_path)
         if language == "ruby":
             out = _blank_ruby_heredocs(content)
-            out = _RUBY_STRING_DQ.sub(_spaces, out)
-            out = _RUBY_STRING_SQ.sub(_spaces, out)
+            out = _RUBY_STRING_DQ.sub(_blank_match_to_spaces, out)
+            out = _RUBY_STRING_SQ.sub(_blank_match_to_spaces, out)
             # Percent-literals too: a directive inside `%q{...}` is content, not
             # author intent, and must not suppress a real violation.
             return _blank_ruby_percent_literals(out)
         # TypeScript and unknown languages share the quote/backtick shapes.
-        return _TS_STRING.sub(_spaces, content)
+        return _TS_STRING.sub(_blank_match_to_spaces, content)
     except Exception:
         return content
 

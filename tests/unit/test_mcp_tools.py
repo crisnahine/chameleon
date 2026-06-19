@@ -123,6 +123,34 @@ def test_get_archetype(trusted_repo):
     _assert_envelope(tools.get_archetype(str(trusted_repo), str(trusted_repo / WITNESS)))
 
 
+def test_get_archetype_bad_input_envelope(trusted_repo):
+    # An invalid file_path takes the first early-exit branch. The no-match
+    # envelope must carry every invariant field plus content_signal_match="none"
+    # and file_exists=False.
+    res = tools.get_archetype(str(trusted_repo), "")
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["archetype"] is None
+    assert data["alternatives"] == []
+    assert data["content_signal_match"] == "none"
+    assert data["confidence_band"] == "low"
+    assert data["match_quality"] == "none"
+    assert data["match_basis"] is None
+    assert data["file_exists"] is False
+
+
+def test_get_archetype_repo_mismatch_envelope(trusted_repo):
+    # A repo argument that does not match the file's actual repo takes a later
+    # early-exit branch, where file_exists tracks the real file (True for the
+    # existing witness) rather than the False of the bad-input branch.
+    res = tools.get_archetype("not-the-real-repo-id", str(trusted_repo / WITNESS))
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["archetype"] is None
+    assert data["match_quality"] == "none"
+    assert data["file_exists"] is True
+
+
 def test_get_canonical_excerpt(trusted_repo):
     res = tools.get_canonical_excerpt(str(trusted_repo), ARCH)
     _assert_envelope(res)

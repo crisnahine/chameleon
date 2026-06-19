@@ -35,6 +35,63 @@ class FileTooLargeError(UnsafeFileError):
     """
 
 
+_SUSPICIOUS_SEGMENTS = frozenset(
+    {
+        "..",
+        ".git",
+        ".ssh",
+        ".aws",
+        ".gnupg",
+        ".npmrc",
+        ".netrc",
+        ".pypirc",
+        ".dockercfg",
+    }
+)
+
+
+def _reject_unsafe_segments(rel_path: str) -> None:
+    """Reject null bytes, Windows ADS streams, NFC-traversal, and forbidden segments.
+
+    Pure string-level validation shared by ``safe_open`` and ``safe_open_fd``;
+    touches no filesystem. Raises ``UnsafeFileError`` on the first violation.
+    """
+    if "\x00" in rel_path:
+        raise UnsafeFileError("path contains null byte")
+
+    if ":" in rel_path and not rel_path.startswith(("./", "../")):
+        if "$DATA" in rel_path or "$SECURITY" in rel_path:
+            raise UnsafeFileError("path contains Windows alternate data stream")
+
+    normalized = unicodedata.normalize("NFC", rel_path)
+    if normalized != rel_path:
+        if ".." in normalized:
+            raise UnsafeFileError("path contains .. after NFC normalization")
+
+    for part in Path(rel_path).parts:
+        # Block common in-repo secret files (a witness/lint path should never
+        # name one). Covers .env and its variants (.env.local, .env.production).
+        if part in _SUSPICIOUS_SEGMENTS or part == ".env" or part.startswith(".env."):
+            raise UnsafeFileError(f"path contains forbidden segment: {part}")
+
+
+def _resolve_within_repo(repo_root: Path, rel_path: str) -> Path:
+    """Resolve ``rel_path`` under ``repo_root`` and confirm it stays inside it.
+
+    Returns the resolved absolute candidate Path. Raises ``UnsafeFileError`` if
+    the resolved path escapes the repo boundary. Does not stat or open.
+    """
+    candidate = (repo_root / rel_path).resolve(strict=False)
+    repo_resolved = repo_root.resolve(strict=False)
+    try:
+        candidate.relative_to(repo_resolved)
+    except ValueError as e:
+        raise UnsafeFileError(
+            f"path escapes repo boundary: {candidate} not under {repo_resolved}"
+        ) from e
+    return candidate
+
+
 def safe_open(repo_root: Path, rel_path: str, *, max_size_bytes: int = 1_000_000) -> Path:
     """Resolve and validate a relative path inside a repo. Returns the safe absolute Path.
 
@@ -49,35 +106,7 @@ def safe_open(repo_root: Path, rel_path: str, *, max_size_bytes: int = 1_000_000
     Raises:
         UnsafeFileError: if any security check fails. Caller should fail-closed.
     """
-    if "\x00" in rel_path:
-        raise UnsafeFileError("path contains null byte")
-
-    if ":" in rel_path and not rel_path.startswith(("./", "../")):
-        if "$DATA" in rel_path or "$SECURITY" in rel_path:
-            raise UnsafeFileError("path contains Windows alternate data stream")
-
-    normalized = unicodedata.normalize("NFC", rel_path)
-    if normalized != rel_path:
-        if ".." in normalized:
-            raise UnsafeFileError("path contains .. after NFC normalization")
-
-    suspicious_segments = {
-        "..",
-        ".git",
-        ".ssh",
-        ".aws",
-        ".gnupg",
-        ".npmrc",
-        ".netrc",
-        ".pypirc",
-        ".dockercfg",
-    }
-    parts = Path(rel_path).parts
-    for part in parts:
-        # Block common in-repo secret files (a witness/lint path should never
-        # name one). Covers .env and its variants (.env.local, .env.production).
-        if part in suspicious_segments or part == ".env" or part.startswith(".env."):
-            raise UnsafeFileError(f"path contains forbidden segment: {part}")
+    _reject_unsafe_segments(rel_path)
 
     unresolved = repo_root / rel_path
 
@@ -91,14 +120,7 @@ def safe_open(repo_root: Path, rel_path: str, *, max_size_bytes: int = 1_000_000
     if stat.S_ISLNK(st.st_mode):
         raise UnsafeFileError(f"path is a symlink (refused): {unresolved}")
 
-    candidate = unresolved.resolve(strict=False)
-    repo_resolved = repo_root.resolve(strict=False)
-    try:
-        candidate.relative_to(repo_resolved)
-    except ValueError as e:
-        raise UnsafeFileError(
-            f"path escapes repo boundary: {candidate} not under {repo_resolved}"
-        ) from e
+    candidate = _resolve_within_repo(repo_root, rel_path)
 
     if not stat.S_ISREG(st.st_mode):
         raise UnsafeFileError(f"path is not a regular file: {unresolved}")
@@ -222,42 +244,8 @@ def safe_open_fd(
     Used by the excerpt cache builder; other callers should keep using
     safe_open or safe_read_text.
     """
-    if "\x00" in rel_path:
-        raise UnsafeFileError("path contains null byte")
-    if ":" in rel_path and not rel_path.startswith(("./", "../")):
-        if "$DATA" in rel_path or "$SECURITY" in rel_path:
-            raise UnsafeFileError("path contains Windows alternate data stream")
-    normalized = unicodedata.normalize("NFC", rel_path)
-    if normalized != rel_path:
-        if ".." in normalized:
-            raise UnsafeFileError("path contains .. after NFC normalization")
-    suspicious_segments = {
-        "..",
-        ".git",
-        ".ssh",
-        ".aws",
-        ".gnupg",
-        ".npmrc",
-        ".netrc",
-        ".pypirc",
-        ".dockercfg",
-    }
-    parts = Path(rel_path).parts
-    for part in parts:
-        # Block common in-repo secret files (a witness/lint path should never
-        # name one). Covers .env and its variants (.env.local, .env.production).
-        if part in suspicious_segments or part == ".env" or part.startswith(".env."):
-            raise UnsafeFileError(f"path contains forbidden segment: {part}")
-
-    unresolved = repo_root / rel_path
-    candidate = unresolved.resolve(strict=False)
-    repo_resolved = repo_root.resolve(strict=False)
-    try:
-        candidate.relative_to(repo_resolved)
-    except ValueError as e:
-        raise UnsafeFileError(
-            f"path escapes repo boundary: {candidate} not under {repo_resolved}"
-        ) from e
+    _reject_unsafe_segments(rel_path)
+    candidate = _resolve_within_repo(repo_root, rel_path)
 
     # O_NOFOLLOW is POSIX-only (absent on Windows -> 0). The lstat symlink check
     # still rejects symlinks there; only the open()-level TOCTOU close is lost.
