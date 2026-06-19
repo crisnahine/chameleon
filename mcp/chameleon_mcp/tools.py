@@ -1727,7 +1727,13 @@ def get_pattern_context(file_path: str) -> dict:
         arch_data["sub_buckets_count"] = len(sub_buckets) if isinstance(sub_buckets, dict) else 0
         summary = arch_entry.get("summary") or ""
         if summary:
-            arch_data["summary"] = summary
+            # Free prose from archetypes.json (attacker-controllable in a committed
+            # profile). Sanitize before it enters the model-callable response, for
+            # parity with idioms below: an unsanitized summary could carry a
+            # </chameleon-context> tag-escape or a forged status header.
+            from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+            arch_data["summary"] = sanitize_for_chameleon_context(summary)
     else:
         arch_data["sub_buckets_count"] = 0
 

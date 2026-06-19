@@ -75,6 +75,24 @@ def _reject_unsafe_segments(rel_path: str) -> None:
             raise UnsafeFileError(f"path contains forbidden segment: {part}")
 
 
+def is_forbidden_segment_path(rel_path: str) -> bool:
+    """True when any path segment is a secret-bearing or forbidden name.
+
+    Non-raising sibling of the segment loop in ``_reject_unsafe_segments``, for
+    callers that want to FILTER such paths rather than reject the read outright.
+    The correctness judge uses it to drop ``.env`` / ``.ssh`` / credential files
+    from the set it diffs, so a secret a developer edits never reaches the
+    reviewer subprocess. Keep the segment predicate identical to the reject path.
+    """
+    for part in Path(rel_path or "").parts:
+        # Case-insensitive so a `.ENV` / `.Env` on a case-insensitive filesystem
+        # (macOS, Windows) still matches; the segment set is all-lowercase.
+        lowered = part.lower()
+        if lowered in _SUSPICIOUS_SEGMENTS or lowered == ".env" or lowered.startswith(".env."):
+            return True
+    return False
+
+
 def _resolve_within_repo(repo_root: Path, rel_path: str) -> Path:
     """Resolve ``rel_path`` under ``repo_root`` and confirm it stays inside it.
 

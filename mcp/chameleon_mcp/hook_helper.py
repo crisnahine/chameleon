@@ -2061,7 +2061,11 @@ def preflight_and_advise() -> int:
 
         dir_listing = format_directory_listing(file_path)
         if dir_listing:
-            block += f"\n{dir_listing}\n"
+            # Raw sibling filenames from the filesystem. A repo can ship a file
+            # whose NAME carries a context-escape token (<|im_start|>, BIDI
+            # override) or a forged [🦎 chameleon: ...] header; sanitize before it
+            # enters the block, like every other repo-derived field here.
+            block += f"\n{sanitize_for_chameleon_context(dir_listing)}\n"
     except Exception:
         pass
     block += "</chameleon-context>"

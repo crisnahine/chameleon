@@ -237,16 +237,39 @@ def _ensure_hmac_key() -> bytes:
     return key
 
 
+class ExecLogUnsafeError(OSError):
+    """Raised when an exec-log directory is a symlink.
+
+    Subclasses OSError so append_exec_log's existing fail-open handlers swallow
+    it: a planted symlink means skip logging, never crash the recorder hook.
+    """
+
+
+def _mkdir_checked(path: Path, *, parents: bool) -> None:
+    """``mkdir(0o700)`` that refuses a pre-existing symlink.
+
+    ``mkdir(exist_ok=True)`` silently succeeds when ``path`` is already a symlink,
+    and a later ``open(..., "a")`` would then FOLLOW it. On a shared ``TMPDIR`` a
+    local attacker can pre-plant ``<base>/<repo_id>`` (repo_id is derivable from a
+    public clone URL) as a symlink into a directory they control, diverting the
+    victim's command log. An ``lstat`` check before the mkdir refuses that,
+    mirroring safe_open's symlink discipline.
+    """
+    if path.is_symlink():
+        raise ExecLogUnsafeError(f"refusing symlinked exec-log path: {path}")
+    path.mkdir(mode=0o700, parents=parents, exist_ok=True)
+
+
 def _exec_log_dir(repo_id: str) -> Path:
     """Return per-repo log directory: ${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/.
 
-    Mode 0700 enforced; owner-checked on every read.
+    Mode 0700 enforced; symlink-refused; owner-checked on every read.
     """
     tmpdir = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
     base = tmpdir / ".chameleon_exec_log"
-    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _mkdir_checked(base, parents=True)
     repo_dir = base / repo_id
-    repo_dir.mkdir(mode=0o700, exist_ok=True)
+    _mkdir_checked(repo_dir, parents=False)
     return repo_dir
 
 
@@ -270,6 +293,37 @@ def _gc_old_logs(exec_dir: Path) -> None:
                 p.unlink()
         except OSError:
             pass
+
+
+def _append_line_nofollow(log_path: Path, line: str) -> bool:
+    """Append ``line`` to ``log_path`` without following a symlinked leaf.
+
+    O_NOFOLLOW makes the no-symlink open atomic on POSIX; on platforms without it
+    (Windows, where ``getattr`` yields 0) an ``is_symlink`` pre-check refuses an
+    existing planted leaf symlink, leaving only a negligible TOCTOU window that
+    the per-user 0o700 parent dir already closes. 0o600 keeps the log private; if
+    ``os.fdopen`` raises, the fd is closed rather than leaked. Returns True on a
+    successful write, False (fail open) on any rejection or open/write error so a
+    logging failure never crashes the calling hook.
+    """
+    if log_path.is_symlink():
+        return False
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(log_path, flags, 0o600)
+    except OSError:
+        return False
+    try:
+        f = os.fdopen(fd, "a", encoding="utf-8")
+    except OSError:
+        os.close(fd)  # fdopen never took ownership of the fd
+        return False
+    try:
+        with f:
+            f.write(line)
+    except OSError:
+        return False
+    return True
 
 
 def append_exec_log(
@@ -302,7 +356,12 @@ def append_exec_log(
     key = _ensure_hmac_key()
     from chameleon_mcp.optouts import _safe_session_marker
 
-    log_path = _exec_log_dir(repo_id) / f"{_safe_session_marker(session_id)}.jsonl"
+    try:
+        log_dir = _exec_log_dir(repo_id)
+    except OSError:
+        # Symlinked or unwritable log dir: skip logging, never crash the hook.
+        return
+    log_path = log_dir / f"{_safe_session_marker(session_id)}.jsonl"
     new_session = not log_path.exists()
 
     # Store only the SHA-256 of the command, never the body: the consumer just
@@ -325,10 +384,7 @@ def append_exec_log(
     payload["hmac"] = sig
 
     line = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(line)
-
-    if new_session:
+    if _append_line_nofollow(log_path, line) and new_session:
         _gc_old_logs(log_path.parent)
 
 
@@ -397,9 +453,9 @@ def append_check_event(
         log_path = _exec_log_dir(repo_id) / f"{_safe_session_marker(session_id)}.checks.jsonl"
         new_file = not log_path.exists()
         line = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(line)
-        if new_file:
+        # Symlink-safe append, matching append_exec_log: refuse a planted
+        # checks.jsonl symlink rather than follow it.
+        if _append_line_nofollow(log_path, line) and new_file:
             _gc_old_logs(log_path.parent)
     except Exception:
         return

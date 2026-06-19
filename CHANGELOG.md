@@ -4,6 +4,46 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.19.0] - 2026-06-19
+
+Security hardening from an internal source audit. chameleon treats the repo it
+analyzes as untrusted input; this closes five places where that input was handled
+less carefully than the rest of the code already handles it. No remote code
+execution and no default-reachable exploit was found. The fixes raise the floor
+and make these paths consistent with chameleon's own `safe_open` and
+`sanitize_for_chameleon_context` discipline.
+
+### Security
+
+- **The turn-end correctness judge no longer puts edited-file contents on the
+  process command line.** The reviewer prompt embeds file diffs and was passed as
+  a `claude -p <prompt>` argument, visible in `ps aux` / `/proc/<pid>/cmdline` to
+  any local process for the spawn's lifetime. It is now fed on stdin. The judge
+  also drops secret-bearing files (`.env`, `.ssh`, credential dotfiles) before it
+  diffs them, so a secret a developer edits is never reconstructed into the
+  prompt; this reuses the forbidden-segment set `safe_open` already enforces, now
+  matched case-insensitively for case-insensitive filesystems.
+- **The archetype summary is sanitized before it reaches the model.** Free prose
+  from a committed `archetypes.json` flowed into the model-callable
+  `get_pattern_context` response without `sanitize_for_chameleon_context`, while
+  its sibling fields (idioms, witness) were sanitized. A crafted summary could
+  carry a context-escape token or a forged status header; it now passes through
+  the sanitizer like the rest.
+- **The per-edit "Nearby files" listing is sanitized.** Raw sibling filenames
+  were appended to the advisory `<chameleon-context>` block unsanitized, so a file
+  named with a control token (for example `<|im_start|>`), a bidi override, or a
+  forged `[🦎 chameleon: ...]` header could inject. The listing now goes through
+  the same sanitizer as every other repo-derived field.
+- **The command log refuses symlinked paths.** The exec-log directory and the
+  per-session log file are created and opened without following symlinks (`lstat`
+  before `mkdir`, `O_NOFOLLOW` on the leaf), closing a symlink TOCTOU on a shared
+  `TMPDIR` where another local user could divert the log. The write fails open on
+  any error rather than crash the recorder hook.
+- **The Ruby extractor runs from a neutral working directory** with `RUBYOPT` and
+  `RUBYLIB` scrubbed, matching the TypeScript extractor, so a poisoned interpreter
+  option cannot make `ruby` load repo code before the parse-only `prism_dump.rb`
+  runs.
+
 ## [2.18.0] - 2026-06-18
 
 Two fixes. The hooks now pin a Python they can actually run, so enforcement stops

@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_int
+from chameleon_mcp.safe_open import is_forbidden_segment_path
 
 # Reuse the canonical-loader git timeout budget for the per-file diff reads: each
 # `git diff` is a cheap local read, and a hung git call must not eat the judge's
@@ -736,10 +737,15 @@ def _spawn_reviewer_status(
     resolved_model = (
         model if model is not None else os.environ.get("CHAMELEON_JUDGE_MODEL", "sonnet")
     )
+    # SECURITY: the prompt embeds file diffs and is fed on STDIN, never as an
+    # argv positional. A `-p <prompt>` argument is visible in `ps aux` /
+    # /proc/<pid>/cmdline to any local process for the spawn's lifetime, which
+    # would expose whatever the reviewed diff contains (a secret a developer
+    # edited, a `.env` line) to a co-located user. `claude -p` reads the prompt
+    # from stdin when no positional is given.
     args = [
         "claude",
         "-p",
-        prompt,
         "--output-format",
         "stream-json",
         "--verbose",
@@ -784,6 +790,7 @@ def _spawn_reviewer_status(
             return (
                 subprocess.run(
                     spawn_args,
+                    input=prompt,
                     cwd=str(cwd),
                     env=env,
                     capture_output=True,
@@ -843,6 +850,14 @@ def collect_file_diffs(
     used = 0
     for abs_path in abs_paths[:max_files]:
         rel = _repo_rel(repo_root, abs_path)
+        # SECURITY: never diff a secret-bearing file into the review prompt.
+        # reconstruct_diff reads via raw `git diff` / read_bytes (not safe_open),
+        # so without this filter a `.env` / `.ssh` / credential file a developer
+        # edited would be reconstructed and embedded in the reviewer's input.
+        # Mirrors safe_open's forbidden-segment set; a config diff has no review
+        # value anyway.
+        if is_forbidden_segment_path(rel):
+            continue
         fd = reconstruct_diff(repo_root, abs_path, rel)
         if fd is None:
             continue

@@ -85,7 +85,15 @@ class RubyExtractor:
 
         input_data = "".join(f"{fp.resolve()}\n" for fp in files)
 
+        # Defense-in-depth, matching the TypeScript extractor: run from a neutral
+        # cwd (never the untrusted repo root) and drop RUBYOPT/RUBYLIB so a
+        # poisoned interpreter option can't make ruby auto-load repo code before
+        # prism_dump.rb runs. prism_dump only parses (Prism) and requires stdlib,
+        # so this is hardening, not a live hole — but it keeps both extractors
+        # consistent.
         env = os.environ.copy()
+        env.pop("RUBYOPT", None)
+        env.pop("RUBYLIB", None)
         proc = subprocess.Popen(
             ["ruby", str(self._prism_dump_script)],
             stdin=subprocess.PIPE,
@@ -93,6 +101,7 @@ class RubyExtractor:
             stderr=subprocess.PIPE,
             text=True,
             env=env,
+            cwd=str(plugin_root() / "mcp"),
         )
 
         timed_out = False
