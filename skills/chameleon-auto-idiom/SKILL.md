@@ -105,6 +105,17 @@ by `check_idiom_candidates`.
    defines, and the order. The base/decorator alone is covered; the body
    contract it implies usually is not. Cite the macro/method names and the grep
    count as evidence.
+3b. **Pull drift-derived anti-patterns.** Call
+   `chameleon-mcp::get_drift_antipatterns(repo=<abs-repo-path>)`. For each
+   archetype it returns, the listed rules are conventions edits there repeatedly
+   bumped against (`count` is how often), and `violation_edits` is how often edits
+   drifted off-pattern. These point at where a counterexample earns its place:
+   open a flagged file for that archetype, read the actual off-pattern form the
+   rule names, and let it shape that candidate's `counterexample` — the tool
+   stores no wrong-way code, so you write the form from the file, never invent it.
+   When you save such a candidate, set `source` to note the drift origin, e.g.
+   `"drift: import-preference-violation x6"`. Skip an archetype with no flagged
+   rules; do not manufacture an anti-pattern the history does not evidence.
 4. **Draft at most 10 candidates.** Each candidate must have:
    - `slug` — `^[a-z][a-z0-9-]{2,63}$`, descriptive.
    - `rationale` — what to do AND why the team does it (one to three
@@ -140,7 +151,12 @@ by `check_idiom_candidates`.
    the one with the narrowest evidence base, until 5 remain (tell the user
    what was held back — they can re-run later). For each kept candidate call
    `chameleon-mcp::teach_profile_structured(repo=..., slug=..., rationale=...,
-   example=..., counterexample=..., archetype=..., status="active")`.
+   example=..., counterexample=..., archetype=..., status="active",
+   source=...)`. Pass `source` as the provenance string: the 2-3 evidence file
+   paths you verified the occurrences in, plus the ref they were derived from
+   when known (e.g. `"src/lib/api.ts, src/services/http.ts @ <production-ref-sha>"`).
+   This records where an auto-derived idiom came from so a poisoned one is
+   traceable and the trust gate shows its origin before `/chameleon-trust`.
    Success/failure lives at `data.status` in the envelope (`"success"` /
    `"failed"`), NOT at the top level — the call returns
    `{"api_version": "1", "data": {"status": ..., "idioms_added": ...}}`.

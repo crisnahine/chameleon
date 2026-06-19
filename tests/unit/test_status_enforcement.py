@@ -80,6 +80,48 @@ def test_status_reports_enforcement(make_trusted_repo):
     assert "shadow" in text.lower()
 
 
+def test_status_reports_degraded_block(make_trusted_repo, monkeypatch):
+    """get_status surfaces a cumulative degraded-delivery block read from
+    .hook_errors.log (no-interpreter/spawn-failed) and metrics.jsonl (fail_open)."""
+    import time
+
+    from chameleon_mcp.tools import get_status
+
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="shadow")
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(data_dir))
+    monkeypatch.delenv("CHAMELEON_HOOK_ERROR_LOG", raising=False)
+    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 30))
+    (data_dir / ".hook_errors.log").write_text(
+        f"[{ts}] preflight-and-advise no-interpreter (no Python >=3.11, uv unavailable)\n"
+        f"[{ts}] posttool-verify failed (python=/usr/bin/python3)\n",
+        encoding="utf-8",
+    )
+
+    out = get_status(str(repo))
+    degraded = out["data"]["degraded"]
+    assert degraded["window_days"] == 7
+    assert degraded["no_interpreter"] == 1
+    assert degraded["spawn_failed"] == 1
+    assert degraded["total"] == 2
+    assert degraded["last_ts"] == ts
+
+
+def test_status_degraded_block_fails_open_when_reader_raises(make_trusted_repo):
+    """If the degraded reader raises, get_status omits the degraded key and still
+    returns its normal enforcement envelope -- a status read never crashes."""
+    from chameleon_mcp.tools import get_status
+
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="shadow")
+    with patch(
+        "chameleon_mcp.degraded_telemetry.read_degraded_summary",
+        side_effect=RuntimeError("boom"),
+    ):
+        out = get_status(str(repo))
+
+    assert "degraded" not in out["data"]
+    assert out["data"]["enforcement"]["mode"] == "shadow"
+
+
 def test_status_surfaces_proposed_demotions_section(make_trusted_repo):
     # A rule carrying a pending demotion proposal is surfaced in
     # enforcement.proposed_demotions while staying in the active (blocking) list;

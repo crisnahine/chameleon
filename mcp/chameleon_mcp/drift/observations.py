@@ -538,6 +538,84 @@ def override_counts(
     return out
 
 
+def archetype_antipattern_signals(
+    repo_id: str,
+    *,
+    window_days: int = 30,
+    min_count: int = 3,
+    max_rules_per_archetype: int = 5,
+) -> dict[str, dict]:
+    """Per-archetype recurring-violation signals from drift history.
+
+    For each archetype, surfaces the rules edits there repeatedly bumped against
+    (``rule_overrides``, the per-(archetype, rule) signal) plus the archetype's
+    off-pattern edit count (``decision_log`` rows with ``violations_raised > 0``).
+    It points a deriver at where a drift-derived counterexample is worth capturing;
+    it carries NO wrong-way code, since drift.db stores none -- only the rule and
+    frequency. An archetype is included only when its top rule reaches ``min_count``
+    overrides OR its violation-edit count reaches ``min_count``, so a one-off bump
+    never surfaces.
+
+    Returns ``{archetype: {"rules": [{"rule","count","distinct_files"}],
+    "violation_edits": int, "total_edits": int}}``. Fail-open: a missing db or any
+    sqlite/OS error returns ``{}``.
+    """
+    db_path = _drift_db_path(repo_id)
+    if not repo_id or not db_path.is_file():
+        return {}
+    cutoff = int(time.time()) - max(1, window_days) * 86_400
+    try:
+        conn = _get_drift_conn(repo_id)
+    except (sqlite3.Error, OSError):
+        return {}
+    try:
+        override_rows = conn.execute(
+            """
+            SELECT archetype, rule, COUNT(*), COUNT(DISTINCT rel_path)
+            FROM rule_overrides
+            WHERE observed_at >= ? AND archetype IS NOT NULL AND archetype != ''
+            GROUP BY archetype, rule
+            """,
+            (cutoff,),
+        ).fetchall()
+        decision_rows = conn.execute(
+            """
+            SELECT archetype,
+                   SUM(CASE WHEN violations_raised > 0 THEN 1 ELSE 0 END),
+                   COUNT(*)
+            FROM decision_log
+            WHERE observed_at >= ? AND archetype IS NOT NULL AND archetype != ''
+            GROUP BY archetype
+            """,
+            (cutoff,),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+
+    def _blank() -> dict:
+        return {"rules": [], "violation_edits": 0, "total_edits": 0}
+
+    per_arch: dict[str, dict] = {}
+    for archetype, rule, count, files in override_rows:
+        entry = per_arch.setdefault(str(archetype), _blank())
+        entry["rules"].append(
+            {"rule": str(rule), "count": int(count or 0), "distinct_files": int(files or 0)}
+        )
+    for archetype, viol, total in decision_rows:
+        entry = per_arch.setdefault(str(archetype), _blank())
+        entry["violation_edits"] = int(viol or 0)
+        entry["total_edits"] = int(total or 0)
+
+    out: dict[str, dict] = {}
+    for arch, entry in per_arch.items():
+        entry["rules"].sort(key=lambda r: (-r["count"], r["rule"]))
+        entry["rules"] = entry["rules"][: max(0, max_rules_per_archetype)]
+        top = entry["rules"][0]["count"] if entry["rules"] else 0
+        if top >= min_count or entry["violation_edits"] >= min_count:
+            out[arch] = entry
+    return out
+
+
 def record_bootstrap_baseline(
     repo_id: str,
     clustered_files: list[tuple[str, str | None, str | None]],

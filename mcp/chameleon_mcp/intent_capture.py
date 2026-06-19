@@ -308,6 +308,96 @@ def checkable_tokens(entries: list[dict], since_ts: float | None = None) -> list
     return out
 
 
+def identifier_tokens(entries: list[dict], since_ts: float | None = None) -> list[str]:
+    """Identifier-bucket token values from non-suppressed entries newer than ``since_ts``.
+
+    Order-preserving dedupe. Identifiers are the scope anchors (symbol / file /
+    module names) the request named; ``scope_drift_files`` uses them to flag a
+    changed file that shares no name with anything the request mentioned.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for entry in entries or []:
+        if not isinstance(entry, dict) or entry.get("secret_suppressed"):
+            continue
+        ts = entry.get("ts")
+        if since_ts is not None and not (isinstance(ts, (int, float)) and ts > since_ts):
+            continue
+        tokens = entry.get("tokens")
+        if not isinstance(tokens, dict):
+            continue
+        for value in tokens.get("identifiers") or []:
+            if isinstance(value, str) and value not in seen:
+                seen.add(value)
+                out.append(value)
+    return out
+
+
+# Path noise that must not count as scope overlap between a request identifier and
+# a changed file path (extensions and ubiquitous directory names).
+_GENERIC_PATH_TOKENS = frozenset(
+    {
+        "ts",
+        "tsx",
+        "js",
+        "jsx",
+        "mjs",
+        "cjs",
+        "py",
+        "rb",
+        "src",
+        "lib",
+        "app",
+        "index",
+        "test",
+        "tests",
+        "spec",
+        "specs",
+        "mod",
+        "init",
+    }
+)
+
+
+def _scope_word_tokens(s: str) -> set[str]:
+    """Lowercase word tokens of a path or identifier.
+
+    Splits on non-alphanumerics and camelCase boundaries, drops generic path noise
+    and tokens shorter than 3 chars, so ``AuthService`` and ``auth/service.ts``
+    both yield ``{auth, service}``.
+    """
+    parts = re.split(r"[^a-zA-Z0-9]+|(?<=[a-z0-9])(?=[A-Z])", s or "")
+    return {p.lower() for p in parts if len(p) >= 3 and p.lower() not in _GENERIC_PATH_TOKENS}
+
+
+def scope_drift_files(
+    intent_identifiers: list[str],
+    changed_rel_paths: list[str],
+    *,
+    min_intent_tokens: int = 2,
+    max_flagged: int = 5,
+) -> list[str]:
+    """Changed files that look unrequested relative to the captured intent.
+
+    Returns the changed paths whose words share nothing with any identifier the
+    request named. Stays empty unless the request named at least
+    ``min_intent_tokens`` distinct words AND at least one changed file DID overlap
+    -- without the overlap gate, a turn whose captured intent belonged to an
+    earlier prompt would flag every file. Sorted, capped at ``max_flagged``.
+    """
+    intent_words: set[str] = set()
+    for tok in intent_identifiers or []:
+        if isinstance(tok, str):
+            intent_words |= _scope_word_tokens(tok)
+    if len(intent_words) < max(1, min_intent_tokens):
+        return []
+    per_path = {p: _scope_word_tokens(p) for p in (changed_rel_paths or []) if isinstance(p, str)}
+    if not any(words & intent_words for words in per_path.values()):
+        return []
+    drifted = [p for p, words in per_path.items() if not (words & intent_words)]
+    return sorted(drifted)[: max(0, max_flagged)]
+
+
 def security_intent_seen(entries: list[dict], since_ts: float | None = None) -> bool:
     """True when any entry newer than ``since_ts`` carries the security flag.
 

@@ -126,6 +126,12 @@ class EnforcementConfig:
     # this session, surface an advisory naming the original so the author can reuse
     # it. Confirmed by a bounded judge spawn; advisory only, never a block.
     duplication_review: bool = True
+    # intent_scope_advisory: on by default. At turn end, when the session's captured
+    # request named specific identifiers, surface an advisory naming any changed file
+    # that shares nothing with them -- a possibly-unrequested change. Advisory only,
+    # never a block; stays silent unless the turn plausibly IS the captured work (at
+    # least one changed file matched what was named), to keep false positives low.
+    intent_scope_advisory: bool = True
     # judge_crossfile_facts: on by default. When True, the correctness judge's
     # prompt carries a bounded block of committed caller facts (deterministic
     # grades only, from the calls_index.json snapshot) for the callables the
@@ -263,6 +269,12 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         raise ChameleonConfigError(
             f"`enforcement.multi_lens_review` must be bool, got {type(multi_lens_review).__name__}"
         )
+    intent_scope_advisory = raw.get("intent_scope_advisory", True)
+    if not isinstance(intent_scope_advisory, bool):
+        raise ChameleonConfigError(
+            "`enforcement.intent_scope_advisory` must be bool, got "
+            f"{type(intent_scope_advisory).__name__}"
+        )
     return EnforcementConfig(
         mode=mode,
         stop_backstop=stop_backstop,
@@ -277,6 +289,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         judge_crossfile_facts=judge_crossfile_facts,
         test_integrity_review=test_integrity_review,
         multi_lens_review=multi_lens_review,
+        intent_scope_advisory=intent_scope_advisory,
     )
 
 

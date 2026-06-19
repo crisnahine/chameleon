@@ -4096,10 +4096,59 @@ def get_status(repo: str) -> dict:
     except Exception:
         review_ledger = None
 
+    # Degraded-delivery section. A separate axis again: how often chameleon's
+    # guidance silently failed to reach the session (no interpreter, a crashed
+    # spawn, or an in-process advisor failure). The events are already persisted
+    # (.hook_errors.log + metrics.jsonl fail_open); this is the first surface that
+    # counts them. Fail-open: a missing/corrupt log degrades to no section.
+    degraded = None
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.degraded_telemetry import read_degraded_summary
+
+        degraded = read_degraded_summary(threshold_int("DEGRADED_WINDOW_DAYS"))
+    except Exception:
+        degraded = None
+
     out: dict = {"enforcement": enforcement}
     if review_ledger is not None:
         out["review_ledger"] = review_ledger
+    if degraded is not None:
+        out["degraded"] = degraded
     return _envelope(out)
+
+
+def get_drift_antipatterns(repo: str, archetype: str | None = None) -> dict:
+    """Per-archetype recurring-violation signals from this repo's drift history.
+
+    For each archetype where edits repeatedly bumped a convention
+    (``rule_overrides``) or drifted off-pattern (``decision_log``), returns the
+    rule(s) and frequency so a deriver (e.g. ``/chameleon-auto-idiom``) can propose
+    a counterexample-bearing idiom. Carries NO wrong-way code -- drift.db stores
+    none -- so the deriver reads a flagged file to write the off-pattern form
+    itself. Optionally filter to one ``archetype``. Fail-open: an unresolvable repo
+    or any read error returns an empty result rather than raising.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+
+    window_days = threshold_int("DRIFT_ANTIPATTERN_WINDOW_DAYS")
+    _repo_path, repo_id = _resolve_repo_arg(repo)
+    archetypes: dict[str, dict] = {}
+    if repo_id is not None:
+        try:
+            from chameleon_mcp.drift.observations import archetype_antipattern_signals
+
+            archetypes = archetype_antipattern_signals(
+                repo_id,
+                window_days=window_days,
+                min_count=threshold_int("DRIFT_ANTIPATTERN_MIN_COUNT"),
+                max_rules_per_archetype=threshold_int("DRIFT_ANTIPATTERN_MAX_RULES"),
+            )
+        except Exception:
+            archetypes = {}
+    if archetype is not None:
+        archetypes = {k: v for k, v in archetypes.items() if k == archetype}
+    return _envelope({"window_days": window_days, "archetypes": archetypes})
 
 
 def get_shadow_report(repo: str, window_days: int | None = None) -> dict:
@@ -6230,6 +6279,26 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         if typecheck_fact.get("status") in ("clean", "errors"):
             type_error_files = set(typecheck_fact.get("files") or ())
 
+    # Test run is three-state like the typecheck: "unavailable" (the default when
+    # the opt-in is unset, and the fail-open for any runner error) never routes;
+    # a "failures" status routes the change to a human like a type error does.
+    from chameleon_mcp import testrun
+
+    tests_fact: dict = {
+        "status": "unavailable",
+        "reason": f"opt-in not set ({testrun.ALLOW_ENV}=1)",
+    }
+    tests_failed = False
+    if testrun.is_enabled():
+        try:
+            tests_fact = testrun.run_tests(repo_root)
+        except Exception as exc:
+            tests_fact = {
+                "status": "unavailable",
+                "reason": f"test run failed open: {type(exc).__name__}",
+            }
+        tests_failed = tests_fact.get("status") == "failures"
+
     try:
         active = active_block_rules(repo_root / ".chameleon")
     except Exception:
@@ -6294,10 +6363,12 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         max_blast_radius=threshold_int("AUTOPASS_MAX_BLAST_RADIUS"),
         test_deletion_net_lines=threshold_int("AUTOPASS_TEST_DELETION_NET_LINES"),
         assertion_delta_floor=threshold_int("AUTOPASS_ASSERTION_DELTA_FLOOR"),
+        tests_failed=tests_failed,
     )
     verdict["advisory"] = True
     verdict["base_ref"] = base_ref
     verdict["typecheck"] = typecheck_fact
+    verdict["tests"] = tests_fact
     _facts = verdict.get("facts", {})
     verdict["fan_out"] = _fan_out_block(
         int(_facts.get("files_changed", 0)),
@@ -8782,6 +8853,7 @@ def teach_profile_structured(
     counterexample: str | None = None,
     archetype: str | None = None,
     status: str = "active",
+    source: str | None = None,
 ) -> dict:
     """Structured-form idiom capture.
 
@@ -8791,7 +8863,7 @@ def teach_profile_structured(
     Validation:
     - slug matches ``^[a-z][a-z0-9-]{2,63}$``
     - rationale must be non-empty after strip
-    - len(rationale) + len(example or '') + len(counterexample or '') ≤ 50KB
+    - len(rationale) + len(example or '') + len(counterexample or '') + len(source or '') ≤ 50KB
     - status ∈ {active, deprecated}
     - archetype (if provided) must match the archetype name regex — we
       don't require it to exist in the current profile because the user
@@ -8830,20 +8902,26 @@ def teach_profile_structured(
         return _envelope({"status": "failed", "error": "example must be a string or null"})
     if counterexample is not None and not isinstance(counterexample, str):
         return _envelope({"status": "failed", "error": "counterexample must be a string or null"})
+    if source is not None and not isinstance(source, str):
+        return _envelope({"status": "failed", "error": "source must be a string or null"})
 
-    total = len(rationale) + len(example or "") + len(counterexample or "")
+    total = len(rationale) + len(example or "") + len(counterexample or "") + len(source or "")
     if total > _STRUCTURED_TOTAL_CAP:
         return _envelope(
             {
                 "status": "failed",
                 "error": (
-                    f"rationale + example + counterexample size {total} exceeds "
+                    f"rationale + example + counterexample + source size {total} exceeds "
                     f"50KB cap ({_STRUCTURED_TOTAL_CAP})"
                 ),
             }
         )
 
     timestamp = time.strftime("%Y-%m-%d", time.gmtime())
+    # Source is single-line provenance metadata: collapse all whitespace (incl.
+    # newlines) so a multi-line value can never inject a `### slug` / `## section`
+    # heading into idioms.md.
+    clean_source = " ".join(source.split()) if source else ""
     lines: list[str] = [f"### {slug}"]
     if status == "active":
         lines.append(f"Status: active (added {timestamp})")
@@ -8851,6 +8929,10 @@ def teach_profile_structured(
         lines.append(f"Status: deprecated {timestamp}")
     if archetype:
         lines.append(f"Archetype: {archetype}")
+    if clean_source:
+        # Provenance: where this idiom was derived from (evidence file(s) + ref),
+        # so a poisoned idiom is traceable and the trust gate can show its origin.
+        lines.append(f"Source: {clean_source}")
     lines.append(rationale.strip())
     if example:
         lines.append("")
@@ -8940,6 +9022,7 @@ def teach_profile_structured(
             timestamp=timestamp,
             example=example,
             counterexample=counterexample,
+            source=clean_source or None,
         )
         if result.get("data", {}).get("status") == "success":
             _regrant_trust_if_was_trusted(was_trusted, _repo_id, profile_dir)
@@ -8956,6 +9039,7 @@ def teach_profile_structured(
         timestamp=timestamp,
         example=example,
         counterexample=counterexample,
+        source=clean_source or None,
     )
     if result.get("data", {}).get("status") == "success":
         _regrant_trust_if_was_trusted(was_trusted, _repo_id, profile_dir)
@@ -9010,6 +9094,7 @@ def _render_idiom_block(
     timestamp: str,
     example: str | None,
     counterexample: str | None,
+    source: str | None = None,
 ) -> str:
     """Render one idioms.md block. Used by both the transition path and
     the direct-deprecated writer. Sanitization is delegated to the
@@ -9024,6 +9109,8 @@ def _render_idiom_block(
     lines: list[str] = [f"### {slug}", status_line]
     if archetype:
         lines.append(f"Archetype: {archetype}")
+    if source:
+        lines.append(f"Source: {source}")
     lines.append(rationale)
     if example:
         lines.append("")
@@ -9071,6 +9158,7 @@ def _transition_slug_to_deprecated(
     timestamp: str,
     example: str | None,
     counterexample: str | None,
+    source: str | None = None,
 ) -> dict:
     """Move an existing `### {slug}` block from `## active` to
     `## deprecated`, replacing its status line with
@@ -9094,6 +9182,7 @@ def _transition_slug_to_deprecated(
         timestamp=timestamp,
         example=san_example,
         counterexample=san_counter,
+        source=source,
     )
 
     from chameleon_mcp.profile.trust import repo_data_dir as _rdd
@@ -9203,6 +9292,7 @@ def _write_new_deprecated_idiom(
     timestamp: str,
     example: str | None,
     counterexample: str | None,
+    source: str | None = None,
 ) -> dict:
     """Append a brand-new `### {slug}` block directly under `##
     deprecated`. Used when teach_profile_structured is called with
@@ -9223,6 +9313,7 @@ def _write_new_deprecated_idiom(
         timestamp=timestamp,
         example=san_example,
         counterexample=san_counter,
+        source=source,
     )
 
     from chameleon_mcp.profile.trust import repo_data_dir as _rdd

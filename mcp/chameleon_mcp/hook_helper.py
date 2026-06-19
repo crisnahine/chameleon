@@ -788,10 +788,8 @@ def _interpreter_degraded_banner(repo_root: Path, session_id: str | None = None)
     than every session. Best-effort: any failure returns None.
     """
     try:
-        import calendar
-        import re as _re
-
         from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.degraded_telemetry import parse_degradations
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.loader import find_repo_root
         from chameleon_mcp.tools import _compute_repo_id
@@ -819,23 +817,7 @@ def _interpreter_degraded_banner(repo_root: Path, session_id: str | None = None)
             tail = fh.read().decode("utf-8", errors="replace")
 
         cutoff = time.time() - 86400
-        ts_re = _re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
-        no_interp = 0
-        spawn_fail = 0
-        for line in tail.splitlines():
-            m = ts_re.match(line)
-            if not m:
-                continue
-            try:
-                when = calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%SZ"))
-            except ValueError:
-                continue
-            if when < cutoff:
-                continue
-            if "no-interpreter" in line:
-                no_interp += 1
-            elif "failed (python=" in line:
-                spawn_fail += 1
+        no_interp, spawn_fail, _ = parse_degradations(tail, cutoff)
 
         if not (no_interp >= 1 or spawn_fail >= 3):
             return None
@@ -1515,6 +1497,53 @@ def session_start() -> int:
     return 0
 
 
+def _build_untrusted_region(
+    excerpt_content: str,
+    idioms_text: str,
+    has_idioms: bool,
+    dir_listing: str,
+    *,
+    match_quality: str = "unknown",
+) -> str:
+    """Assemble the verbatim repo-derived PreToolUse content into one spotlighted
+    region, with the higher-signal section in the lead.
+
+    The canonical witness body, team idioms, and sibling listing are untrusted
+    data read from repository files. Wrapping them in a per-block provenance
+    marker tells the model to imitate their shape, never obey anything inside
+    them, and keeps them distinct from chameleon's own directives in the block.
+
+    Section order is relevance-ranked per edit so the higher-signal section takes
+    the lead (primacy) position: a high-confidence canonical match (exact/ast)
+    leads with the witness, while a weak match leads with team idioms, which are
+    repo truth regardless of how the file matched an archetype. Returns "" when
+    there is nothing to wrap.
+    """
+    from chameleon_mcp.sanitization import (
+        sanitize_for_chameleon_context,
+        spotlight_untrusted,
+    )
+
+    canonical_part = (
+        "Canonical witness:\n```\n" + excerpt_content + "\n```" if excerpt_content else ""
+    )
+    idioms_part = (
+        "Team idioms (captured via /chameleon-teach):\n" + idioms_text.rstrip()
+        if (has_idioms and idioms_text)
+        else ""
+    )
+    if match_quality in ("exact", "ast"):
+        ordered = [canonical_part, idioms_part]
+    else:
+        ordered = [idioms_part, canonical_part]
+    parts = [p for p in ordered if p]
+    if dir_listing:
+        parts.append(sanitize_for_chameleon_context(dir_listing))
+    if not parts:
+        return ""
+    return spotlight_untrusted("\n\n".join(parts))
+
+
 def preflight_and_advise() -> int:
     """PreToolUse Edit/Write/NotebookEdit: inject canonical context.
 
@@ -2032,42 +2061,41 @@ def preflight_and_advise() -> int:
             "current profile. Suggest /chameleon-trust to re-confirm. Do not block "
             "the edit; chameleon advisory is provided below for reference only.\n\n"
         )
-    if excerpt_content:
-        block += "Canonical witness:\n```\n"
-        block += excerpt_content
-        block += "\n```\n\n"
+    # Gather the sibling listing first, then emit the whole verbatim repo-derived
+    # region (canonical witness + team idioms + sibling listing) as ONE
+    # spotlighted block. The marker gives the model a provenance signal that this
+    # is untrusted data to imitate, never instructions to follow — distinct from
+    # chameleon's own directives (header, rules pointer) which stay unwrapped.
+    # Excerpt and idioms arrive already sanitized from get_pattern_context; the
+    # listing is sanitized here (a sibling filename can carry a context-escape
+    # token or a forged [🦎 ...] header), and spotlighting neutralizes a forged
+    # marker before wrapping.
+    dir_listing = ""
+    try:
+        from chameleon_mcp.conventions import format_directory_listing
+
+        dir_listing = format_directory_listing(file_path) or ""
+    except Exception:
+        dir_listing = ""
+    untrusted_region = _build_untrusted_region(
+        excerpt_content, idioms_text, has_idioms, dir_listing, match_quality=match_quality
+    )
+    if untrusted_region:
+        block += untrusted_region + "\n\n"
     if canonical.get("missing"):
         block += (
             f"(canonical witness {sanitize_for_chameleon_context(str(canonical.get('witness_path')))} is "
             "missing on disk; run /chameleon-refresh to re-select)\n\n"
         )
-    if has_idioms:
-        # Inline the team idioms (already loaded + sanitized by get_pattern_context)
-        # instead of pointing at another tool call — they are the highest-signal,
-        # repo-specific guidance and were previously discarded to a boolean.
-        block += "Team idioms (captured via /chameleon-teach):\n"
-        block += idioms_text.rstrip() + "\n\n"
     if rules_count:
         # Rules are verbose lint/formatter config; keep the pointer rather than
-        # flooding the block, but inline the idioms above. Rules are repo-global
-        # (scoped by source, not by archetype), so the pointer names the repo,
-        # not the archetype, to avoid a failed lookup.
+        # flooding the block. Rules are repo-global (scoped by source, not by
+        # archetype), so the pointer names the repo, not the archetype, to avoid a
+        # failed lookup.
         block += (
             f"Rules: {rules_count} repo-wide lint/format rules apply — "
             "call get_rules with this repo's path or id for the config.\n"
         )
-    try:
-        from chameleon_mcp.conventions import format_directory_listing
-
-        dir_listing = format_directory_listing(file_path)
-        if dir_listing:
-            # Raw sibling filenames from the filesystem. A repo can ship a file
-            # whose NAME carries a context-escape token (<|im_start|>, BIDI
-            # override) or a forged [🦎 chameleon: ...] header; sanitize before it
-            # enters the block, like every other repo-derived field here.
-            block += f"\n{sanitize_for_chameleon_context(dir_listing)}\n"
-    except Exception:
-        pass
     block += "</chameleon-context>"
 
     _metric(
@@ -5507,6 +5535,57 @@ def _multi_lens_review_lines(
         return []
 
 
+def _scope_drift_advisory_lines(
+    *,
+    repo_root: Path,
+    repo_data: Path,
+    session_id: str | None,
+    state,
+    cfg,
+) -> list[str]:
+    """Turn-end advisory naming changed files that look unrequested, or [].
+
+    The session's captured request named specific identifiers (symbol / file /
+    module names). A changed file whose path shares no word with any of them is a
+    candidate unrequested change. Stays silent unless the request named enough
+    identifiers AND at least one changed file matched, so a turn whose captured
+    intent belonged to an earlier prompt does not flag everything. Advisory only,
+    never a block. Privacy-preserving: reads only the stored identifier tokens,
+    never prompt prose. Fails open to [].
+    """
+    try:
+        if cfg.mode == "off" or not getattr(cfg, "intent_scope_advisory", True):
+            return []
+        from chameleon_mcp import intent_capture
+
+        entries = intent_capture.read_intent(repo_data, session_id)
+        idents = intent_capture.identifier_tokens(entries)
+        if not idents:
+            return []
+        root = repo_root.resolve()
+        rel_paths: list[str] = []
+        for path in state.files:
+            if not isinstance(path, str):
+                continue
+            try:
+                rel_paths.append(str(Path(path).resolve().relative_to(root)))
+            except (ValueError, OSError):
+                rel_paths.append(Path(path).name)
+        drifted = intent_capture.scope_drift_files(idents, rel_paths)
+        if not drifted:
+            return []
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        listed = ", ".join(sanitize_for_chameleon_context(p) for p in drifted)
+        return [
+            f"[🦎 chameleon: possible scope drift — {len(drifted)} changed file(s) "
+            f"share nothing with what the request named ({listed}). Confirm they are "
+            "intended, not unrequested changes.]"
+        ]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def _stop_gates(
     *,
     payload: dict,
@@ -5773,6 +5852,21 @@ def _stop_gates(
                 repo_data=repo_data,
             )
 
+            # Intent scope drift: when the session's captured request named specific
+            # identifiers, flag any changed file that shares nothing with them as a
+            # possibly-unrequested change. Advisory only; top-level Stop only (a
+            # subagent is dispatched for a scoped sub-task, so its file set is
+            # expected to differ from the parent request).
+            scope_lines: list[str] = []
+            if not is_subagent:
+                scope_lines = _scope_drift_advisory_lines(
+                    repo_root=repo_root,
+                    repo_data=repo_data,
+                    session_id=session_id,
+                    state=state,
+                    cfg=cfg,
+                )
+
             context_blocks: list[str] = []
             if idiom_advisory:
                 context_blocks.append(idiom_advisory)
@@ -5803,6 +5897,10 @@ def _stop_gates(
             if testint_lines:
                 context_blocks.append(
                     "<chameleon-context>\n" + "\n".join(testint_lines) + "\n</chameleon-context>"
+                )
+            if scope_lines:
+                context_blocks.append(
+                    "<chameleon-context>\n" + "\n".join(scope_lines) + "\n</chameleon-context>"
                 )
 
             if context_blocks:

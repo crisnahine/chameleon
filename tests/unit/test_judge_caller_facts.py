@@ -735,3 +735,29 @@ def test_caller_facts_strips_esc_and_newline_from_index_strings(tmp_path, monkey
     assert "src/evil.ts" in block
     # The line is intact (not split mid-output by the injected newline).
     assert "doWork() in src/util.ts" in block
+
+
+# --- caller-contract directive (C3.2): facts become an active check ----------
+
+
+def test_build_prompt_adds_caller_contract_directive_with_caller_facts():
+    prompt = judge.build_prompt(
+        Path("/r"),
+        Path("/r/.chameleon"),
+        [_diff("src/util.ts", "@@ -1 +1 @@\n+export function f(a) {}\n")],
+        caller_facts="Committed callers of the changed functions:\nf -> src/a.ts:3",
+    )
+    low = prompt.lower()
+    assert "listed call site" in low
+    assert "signature" in low
+    assert "return shape" in low
+    assert "throw" in low or "raise" in low
+
+
+def test_build_prompt_omits_caller_contract_directive_without_caller_facts():
+    prompt = judge.build_prompt(
+        Path("/r"),
+        Path("/r/.chameleon"),
+        [_diff("src/util.ts", "@@ -1 +1 @@\n+x\n")],
+    )
+    assert "listed call site" not in prompt.lower()

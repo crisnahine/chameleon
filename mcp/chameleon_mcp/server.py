@@ -243,6 +243,19 @@ def get_status(repo: str) -> dict:
 
 
 @mcp.tool()
+def get_drift_antipatterns(repo: str, archetype: str | None = None) -> dict:
+    """Per-archetype recurring-violation signals from this repo's drift history.
+
+    For each archetype where edits repeatedly bumped a convention or drifted
+    off-pattern, returns the rule(s) and frequency so /chameleon-auto-idiom can
+    propose a counterexample-bearing idiom (the deriver reads a flagged file for
+    the actual wrong-way form; drift.db stores no code). Optionally filtered to one
+    archetype. Fail-open: an unresolvable repo returns an empty result.
+    """
+    return tools.get_drift_antipatterns(repo, archetype)
+
+
+@mcp.tool()
 def get_shadow_report(repo: str, window_days: int | None = None) -> dict:
     """Per-rule would-block counts from the shadow log for the shadow->enforce decision.
 

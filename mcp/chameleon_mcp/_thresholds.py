@@ -123,6 +123,10 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # timeout the typecheck reads "unavailable" — a recorded fact, never a
     # failure and never a synthetic clean.
     "AUTOPASS_TSC_TIMEOUT_SECONDS": 120,
+    # Hard wall-clock budget for the opt-in repo-local test run (CHAMELEON_ALLOW_TESTS).
+    # A test suite can run longer than a typecheck, so the default is wider; on
+    # timeout the run reads "unavailable", a recorded fact, never a failure.
+    "AUTOPASS_TESTRUN_TIMEOUT_SECONDS": 300,
     # Cap on the unified-diff text scanned for the deterministic content
     # signals (removed-guard lexicon, in-diff ignore directives, test skip
     # markers, assertion delta). Past the cap the scan truncates and says so;
@@ -422,6 +426,21 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "JUDGE_FACTS_MAX_CALLABLES": 5,
     "JUDGE_FACTS_MAX_SITES": 5,
     "JUDGE_FACTS_CHAR_CAP": 1200,
+    # Lookback for the cumulative degraded-delivery count /chameleon-status
+    # surfaces (no-interpreter / spawn-failed hook fail-opens from
+    # .hook_errors.log plus in-process fail_open rows from metrics.jsonl). A week
+    # is long enough to show a recurring delivery problem without dragging in
+    # stale one-off events.
+    "DEGRADED_WINDOW_DAYS": 7,
+    # Drift-derived anti-pattern surface (get_drift_antipatterns -> auto-idiom).
+    # Window over which a recurring violation/override per archetype is read, and
+    # the minimum occurrences before it surfaces as a candidate counterexample so
+    # a one-off bump never proposes an idiom.
+    "DRIFT_ANTIPATTERN_WINDOW_DAYS": 30,
+    "DRIFT_ANTIPATTERN_MIN_COUNT": 3,
+    # Cap on rules surfaced per archetype in the anti-pattern read, kept
+    # most-frequent-first so a noisy archetype stays a short list.
+    "DRIFT_ANTIPATTERN_MAX_RULES": 5,
 }
 
 

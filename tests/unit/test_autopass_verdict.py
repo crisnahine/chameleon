@@ -28,6 +28,35 @@ def test_build_autopass_verdict_clean_change_eligible():
     assert verdict["facts"]["new_files"] == 1
 
 
+def test_build_autopass_verdict_failing_tests_route_to_human():
+    # An otherwise-clean small change that fails the opt-in test run routes to a
+    # human, with a recorded reason, like a type error does.
+    numstat = "20\t5\tsrc/a.ts\n"
+    name_status = "M\tsrc/a.ts\n"
+
+    clean = build_autopass_verdict(
+        numstat,
+        name_status,
+        is_unarchetyped=lambda p: False,
+        importers_of=lambda p: 1,
+        block_findings_for=lambda p: 0,
+    )
+    assert clean["auto_pass_eligible"] is True
+    assert clean["facts"]["tests_failed"] == 0
+
+    failing = build_autopass_verdict(
+        numstat,
+        name_status,
+        is_unarchetyped=lambda p: False,
+        importers_of=lambda p: 1,
+        block_findings_for=lambda p: 0,
+        tests_failed=True,
+    )
+    assert failing["auto_pass_eligible"] is False
+    assert failing["facts"]["tests_failed"] == 1
+    assert any("test suite failing" in r for r in failing["reasons"])
+
+
 def test_build_autopass_verdict_security_change_routes_to_human():
     numstat = "3\t1\tapp/controllers/sessions_controller.rb\n"
     name_status = "M\tapp/controllers/sessions_controller.rb\n"

@@ -443,6 +443,18 @@ def build_prompt(
     if caller_facts:
         sections.append("")
         sections.append(caller_facts)
+        # The caller facts are not just context: a change that breaks one of these
+        # call sites is a correctness defect, so the reviewer must diff the
+        # contract against them. Kept within the correctness remit (a broken caller
+        # is a real bug), unlike style/convention which stays out of this prompt.
+        sections.append(
+            "If a change below alters one of these functions' signature (parameter "
+            "list / arity), return shape, or the errors it throws/raises, check each "
+            "listed call site and flag a finding for any caller the change would "
+            "break: a wrong argument count, a removed return field the caller reads, "
+            "or a newly-thrown error the caller does not handle. A caller the change "
+            "breaks is a correctness defect, not a style note."
+        )
 
     for fd in diffs:
         sections.append("")

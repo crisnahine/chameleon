@@ -369,6 +369,7 @@ def build_autopass_verdict(
     max_blast_radius: int = 10,
     test_deletion_net_lines: int = 10,
     assertion_delta_floor: int = -3,
+    tests_failed: bool = False,
 ) -> dict:
     """End-to-end auto-pass verdict from a branch's raw git diff output.
 
@@ -410,6 +411,9 @@ def build_autopass_verdict(
         diff_signals=diff_signals,
     )
     facts["diff_scan_truncated"] = bool(diff_truncated)
+    # A grounded, opt-in test-run failure (CHAMELEON_ALLOW_TESTS) routes the change
+    # to a human like a type error does: a runnable check the change did not pass.
+    facts["tests_failed"] = 1 if tests_failed else 0
     verdict = classify_change(
         facts,
         max_files=max_files,
@@ -586,6 +590,9 @@ def classify_change(
     if type_errors > 0:
         reasons.append(f"{type_errors} file(s) with type errors")
 
+    if _int("tests_failed") > 0:
+        reasons.append("test suite failing")
+
     if bool(facts.get("security_surface")):
         reasons.append("touches a security-sensitive surface")
 
@@ -638,15 +645,16 @@ def classify_change(
     elif (
         findings > 0
         or type_errors > 0
+        or _int("tests_failed") > 0
         or bool(facts.get("security_surface"))
         or removed_guards > 0
         or ignores_added > 0
         or weakening_combo
     ):
-        # Grounded failures (a block finding, a type error), the security
-        # surface, the deterministic content signals (a removed guard, an
-        # in-diff suppression directive), and the weakening combination are
-        # high-confidence reasons; size/blast/unknown-fanout/archetype are
+        # Grounded failures (a block finding, a type error, a failing test run),
+        # the security surface, the deterministic content signals (a removed
+        # guard, an in-diff suppression directive), and the weakening combination
+        # are high-confidence reasons; size/blast/unknown-fanout/archetype are
         # softer.
         risk = "high"
     else:

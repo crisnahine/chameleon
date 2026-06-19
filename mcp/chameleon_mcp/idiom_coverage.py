@@ -304,6 +304,7 @@ def parse_idiom_blocks(text: str) -> list[dict]:
                 "slug": stripped[4:].strip(),
                 "section": section,
                 "archetype": None,
+                "source": None,
                 "example": "",
                 "counterexample": "",
             }
@@ -314,6 +315,11 @@ def parse_idiom_blocks(text: str) -> list[dict]:
             continue
         if stripped.startswith("Archetype:"):
             current["archetype"] = stripped.split(":", 1)[1].strip() or None
+            continue
+        if stripped.startswith("Source:"):
+            # Provenance metadata, not part of the rationale prose; capture it and
+            # keep it out of the rationale region like Language/Status/Archetype.
+            current["source"] = stripped.split(":", 1)[1].strip() or None
             continue
         # The label line tells the NEXT fence which field to capture into, and
         # marks the end of the rationale region.

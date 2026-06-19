@@ -43,6 +43,11 @@ What's plumbed today (read straight from `.chameleon/` and `drift.db`):
    - `shipped_over_block` — BLOCK verdicts whose commit is now an ancestor of HEAD, i.e. **merged despite a BLOCK**. Surface this **loudly** when non-empty: it is the one accountability case the ledger exists to catch. Print each `commit_sha ts` so the lead can open it.
    - `unverified` — records whose HMAC no longer matches. State the scope honestly: a verified record only proves no *other* local user silently edited the line. It does **not** prove the reviewed developer did not re-run and re-sign their own APPROVE (they hold the signing key), and **CI cannot verify these records** (no shared key). Present the ledger as an honest audit trail, never as a merge gate. If `unverified > 0`, say a record was tampered or written unsigned and name the count. Full per-record detail (the profile each verdict pinned, findings by severity) is in `chameleon-mcp::get_review_history(repo)`.
 
+9. **Degraded delivery** — `get_status` returns a `degraded` block: how often chameleon's guidance silently failed to reach the session over the last `window_days` (default 7). A **different surface** again — not what the rules decided, but whether chameleon ran at all.
+   - `total` — degraded hook fires in the window. When `0`, say guidance was delivered on every recent hook call (one line, not alarming). When `> 0`, surface it plainly and point at `/chameleon-doctor`.
+   - Breakdown: `no_interpreter` (no Python >=3.11 / uv resolved — enforcement and guidance were OFF), `spawn_failed` (the helper crashed), `advisor_unavailable` (Python ran but the advisor raised). `last_ts` is the most recent degraded event.
+   - These are **counts, not a ratio**: the no-interpreter/spawn-failed classes have no matching success rows, so don't compute or print an "N of M" fraction. A non-zero `no_interpreter` is the loud one — it means chameleon was effectively off, so recommend `/chameleon-doctor` and a Python >=3.11 / uv install.
+
 ## `--shadow`: would-block evidence for the shadow -> enforce decision
 
 `/chameleon-status --shadow` answers the one question a lead must settle before flipping a repo from `shadow` to `enforce`: over the last few weeks of real edits, how often would each block rule have fired, and were those would-blocks genuine off-pattern code? `get_status` only returns the one-shot bootstrap calibration (frozen committed files); `--shadow` reads the live accumulating real-edit record.
@@ -104,7 +109,7 @@ When `trust_state` is `untrusted` or `stale`, the line should be highlighted and
 
 ## Out of scope
 
-The earlier draft of this skill listed several telemetry surfaces ("value attribution", "MCP error rate", "p99 hook latency") that aren't implemented yet — there is no `value_attrib.db`, no MCP-error tracking surface, no hook-latency surface. Those have moved to **future work**:
+The earlier draft of this skill listed several telemetry surfaces ("value attribution", "p99 hook latency") that aren't implemented yet — there is no `value_attrib.db`, no hook-latency surface. Cumulative hook-degradation IS now surfaced (the `degraded` block above). The rest have moved to **future work**:
 
 - `--health` flag with operator-grade SLO compliance dashboard (Round 5 SRE recommendation).
 - `--diff` flag with profile-poisoning scan + semantic diff for PR review.

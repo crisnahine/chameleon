@@ -1,6 +1,6 @@
 """teach_profile_structured enforces the 50KB per-idiom total cap.
 
-The cap (rationale + example + counterexample <= 50000 chars) is deterministic
+The cap (rationale + example + counterexample + source <= 50000 chars) is deterministic
 server-side validation, asserted here rather than through a live editing session:
 forcing a model to emit a 51KB rationale either trips the per-response output
 ceiling or stalls the stream, and exercises the model, not the cap.
