@@ -176,6 +176,21 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
 
 
 @mcp.tool()
+def get_contract_breaks(repo: str, base_ref: str = "main") -> dict:
+    """ADVISORY: deterministic caller-contract breaks for a branch diff vs base_ref.
+
+    For each changed TS/Ruby file, compares its callables' POSITIONAL parameter
+    contract at base_ref vs HEAD and flags a NARROWING (new required positional,
+    or optional->required) that has committed callers -- the deterministic
+    signature-contract signal, surfaced as a citable tool result. Returns
+    {status, findings:[{file, name, old/new_required_positional, caller_total,
+    callers}]}. git show + AST re-parse, no network/repo-exec; default-on; fails
+    open to a no-signal result; never blocks. pr-review cites these as FIX.
+    """
+    return tools.get_contract_breaks(repo, base_ref)
+
+
+@mcp.tool()
 def get_crossfile_context(repo: str) -> dict:
     """Cross-file existence breaks across a TypeScript repo, for PR review.
 
@@ -624,6 +639,20 @@ def dep_audit(repo: str) -> dict:
     Never blocks anything.
     """
     return tools.dep_audit(repo)
+
+
+@mcp.tool()
+def scan_dependency_changes(repo: str, base_ref: str = "main") -> dict:
+    """No-network supply-chain review of a branch's manifest/lockfile changes. Advisory only.
+
+    Parses the base_ref...HEAD diff of changed package manifests/lockfiles for the
+    deterministic pr-review Step 2.5 signals: new install-lifecycle script (FIX),
+    lockfile entry resolving from a non-registry host (FIX), non-registry
+    dependency source (FIX), and new direct dependency (NIT). Each finding cites
+    the exact added line. PURE PARSE: no network, no install (that is dep_audit's
+    opt-in job); default-on. Fails open to a no-signal result; never blocks.
+    """
+    return tools.scan_dependency_changes(repo, base_ref)
 
 
 def main() -> None:

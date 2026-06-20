@@ -171,6 +171,7 @@ def test_needs_rederive_index_checks(tmp_path):
         "conventions.json",
         "calls_index.json",
         "function_catalog.json",
+        "symbol_signatures.json",
     ):
         (cham / name).write_text("{}", encoding="utf-8")
     (cham / "profile.json").write_text(json.dumps({"language": "ruby"}), encoding="utf-8")
@@ -189,6 +190,14 @@ def test_needs_rederive_index_checks(tmp_path):
     (cham / "function_catalog.json").unlink()
     assert tools._profile_needs_rederive(cham) is True
     (cham / "function_catalog.json").write_text("{}", encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is False
+
+    # symbol_signatures.json (forward definition hydration) is built for every
+    # language, so its absence forces a rebuild -- this is how an existing
+    # pre-C2.2 profile picks it up on the next /chameleon-refresh.
+    (cham / "symbol_signatures.json").unlink()
+    assert tools._profile_needs_rederive(cham) is True
+    (cham / "symbol_signatures.json").write_text("{}", encoding="utf-8")
     assert tools._profile_needs_rederive(cham) is False
 
     # TS profiles additionally require the two symbol indexes.

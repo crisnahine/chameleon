@@ -308,7 +308,15 @@ function paramShapesOf(node) {
     }
     if (isRest) kind = "rest";
     const optional = !!p.questionToken || p.initializer !== undefined || isRest;
-    return { name, optional, kind };
+    const shape = { name, optional, kind };
+    // Best-effort DECLARED type annotation text (definition-hydration only). This
+    // is a pure-parse getText() of the annotation as written -- no type checker,
+    // so an untyped param has none. JSON.stringify omits the undefined key.
+    if (p.type) {
+      const t = p.type.getText();
+      if (t) shape.type = t;
+    }
+    return shape;
   });
 }
 
@@ -679,6 +687,10 @@ function extractFile(filePath) {
           name: callableName,
           kind: callableKindOf(node),
           params: paramShapesOf(node),
+          // Best-effort DECLARED return-type annotation text (definition
+          // hydration). Pure-parse getText(); JSON.stringify omits it when the
+          // function has no return annotation (an inferred return is invisible).
+          return_type: node.type ? node.type.getText() : undefined,
           is_default_export: isDefaultExportNode(node),
           // Body span for the duplication catalog's body-hash fallback: a
           // body-exact clone whose name shares no tokens with the original

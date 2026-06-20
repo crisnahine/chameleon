@@ -2095,6 +2095,26 @@ def _bootstrap_single(
             )
         except Exception:
             pass
+        # The symbol-signature index backs the judge's forward definition
+        # hydration (the definitions of the symbols an edited file imports). Both
+        # languages carry callable_signatures (so both are indexed), but the
+        # DECLARED type text is TypeScript-only -- ts_dump emits param/return
+        # annotations; Ruby has no static types, so its entries are param-shape +
+        # span only. Hashed into the trust SHA, so it is written inside this same
+        # atomic transaction. Best-effort: a build failure must not abort the commit.
+        try:
+            from chameleon_mcp.symbol_signatures import build_symbol_signatures
+
+            (txn_dir / "symbol_signatures.json").write_text(
+                json.dumps(
+                    build_symbol_signatures(parse_result.files, repo_root),
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
         if idioms_raw_bytes is not None:
             (txn_dir / "idioms.md").write_bytes(idioms_raw_bytes)
         else:

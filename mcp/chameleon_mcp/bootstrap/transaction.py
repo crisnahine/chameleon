@@ -49,10 +49,11 @@ class ProfileCommitError(Exception):
 # stall a bootstrap/refresh if a writer wedges the lock.
 RECOVERY_LOCK_TIMEOUT_SECONDS = 10.0
 
-# calls_index.json uses the opposite failure posture from the other index
-# artifacts: a failed rebuild DROPS the old copy rather than carrying it
-# forward. Serving stale caller facts to the judge is worse than serving
-# none, so absence fails open (no facts block) instead of silently lying.
+# calls_index.json and symbol_signatures.json use the opposite failure posture
+# from the other index artifacts: a failed rebuild DROPS the old copy rather than
+# carrying it forward. Both feed the correctness judge, and serving STALE caller
+# facts / symbol definitions is worse than serving none, so absence fails open
+# (no facts block / no hydration) instead of silently lying.
 _PROTOCOL_FILES = frozenset(
     {
         COMMITTED_SENTINEL,
@@ -66,6 +67,7 @@ _PROTOCOL_FILES = frozenset(
         "idioms.md",
         "profile.summary.md",
         "renames.json",
+        "symbol_signatures.json",
     }
 )
 

@@ -585,7 +585,9 @@ def test_run_judge_passes_facts_to_prompt_and_sinks_included(tmp_path, monkeypat
     monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)])
     captured = {}
 
-    def fake_build(repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None):
+    def fake_build(
+        repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None, imported_defs=None
+    ):
         captured["caller_facts"] = caller_facts
         return "prompt"
 
@@ -626,7 +628,9 @@ def test_run_judge_config_off_sinks_skipped_disabled(tmp_path, monkeypatch):
     monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("fmt", 1, 1)])
     captured = {}
 
-    def fake_build(repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None):
+    def fake_build(
+        repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None, imported_defs=None
+    ):
         captured["caller_facts"] = caller_facts
         return "prompt"
 

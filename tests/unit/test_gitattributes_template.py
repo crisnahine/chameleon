@@ -75,5 +75,6 @@ def test_generated_index_artifacts_not_routed_to_driver():
         "reverse_index.json",
         "function_catalog.json",
         "calls_index.json",
+        "symbol_signatures.json",
     ):
         assert artifact not in entries

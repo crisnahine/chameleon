@@ -4,6 +4,46 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.21.0] - 2026-06-20
+
+A feature release that finishes the scoped-down items from the same mid-2026
+field review. It deepens the cross-file review gate with a deterministic
+signature-contract check, gives the correctness judge the forward direction of
+the call graph, and promotes the no-network supply-chain checks from review
+prose to a groundable tool. All three are advisory, default-on with a kill
+switch, tool-time only (never on a hook hot path), and fail open.
+
+### Added
+
+- **No-network supply-chain diff checks.** A new `scan_dependency_changes` tool
+  parses a branch's manifest/lockfile diff (npm, yarn classic and berry, pnpm,
+  Bundler) for four supply-chain signals the pr-review skill previously only
+  described as prose: a lockfile entry resolving from a non-registry host, a new
+  install-lifecycle script, a non-registry dependency source, and a new direct
+  dependency. They return as deterministic findings the round-3 refuter can
+  ground against, with no network. The registry CVE audit stays opt-in.
+- **Deterministic caller-contract signature diff.** A new `get_contract_breaks`
+  tool diffs each changed TypeScript/Ruby callable's positional parameter
+  contract (merge-base vs HEAD) and flags a narrowing, a new required positional
+  argument or an optional one made required, only when committed callers exist.
+  This fills the gap the auto-pass router had: a narrowing in a low-importer file
+  that slid under the blast-radius gate now routes to a human, and pr-review
+  surfaces it as a FIX.
+- **Forward definition hydration for the correctness judge.** The judge already
+  read the reverse caller facts (who calls the change). It now also reads the
+  forward direction, the signatures of the symbols the change imports, from a new
+  committed `symbol_signatures.json` index (parameter shape, declared TypeScript
+  type text, definition location), so the reviewer reads each call site with the
+  contract it calls into. Existing profiles pick the index up on their next
+  `/chameleon-refresh`.
+
+### Changed
+
+- `ts_dump.mjs` now records declared parameter and return type annotations on
+  callable signatures, best-effort and pure-parse with no type checker, feeding
+  the definition-hydration block. The `symbol_signatures.json` artifact joins the
+  trust-hashed profile surface.
+
 ## [2.20.0] - 2026-06-20
 
 A feature release that pushes the existing architecture further along the axes a

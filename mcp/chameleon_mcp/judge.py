@@ -333,12 +333,54 @@ def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
     return "\n".join(lines + _tail())
 
 
+def imported_definition_facts(repo_root: Path, diffs: list[FileDiff]) -> str:
+    """Forward block: the signatures of the symbols the changed files import.
+
+    Resolves each changed file's named imports through the committed
+    symbol-signature index and renders the matched definitions, so the reviewer
+    reads each call site with the contract it must satisfy. Bounded and
+    sanitized; returns "" when the index is absent or nothing resolves.
+    """
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+        from chameleon_mcp.symbol_signatures import hydrate_imported_definitions
+
+        abs_paths = [Path(repo_root) / fd.rel_path for fd in diffs]
+        lines = hydrate_imported_definitions(
+            repo_root, abs_paths, max_items=threshold_int("JUDGE_IMPORTED_DEFS_MAX_ITEMS")
+        )
+        if not lines:
+            return ""
+        char_cap = threshold_int("JUDGE_IMPORTED_DEFS_CHAR_CAP")
+        rendered: list[str] = []
+        used = 0
+        dropped = 0
+        for i, ln in enumerate(lines):
+            row = "- " + sanitize_for_chameleon_context(ln)
+            if used + len(row) + 1 > char_cap and rendered:
+                dropped = len(lines) - i
+                break
+            rendered.append(row)
+            used += len(row) + 1
+        body = "\n".join(rendered)
+        if dropped:
+            body += f"\n- (+{dropped} more imported definitions omitted for length)"
+        return (
+            "Definitions of symbols this change IMPORTS (the contracts the changed "
+            "code calls into; verify each call matches its signature):\n" + body
+        )
+    except Exception:
+        return ""
+
+
 def build_prompt(
     repo_root: Path,
     profile_dir: Path,
     diffs: list[FileDiff],
     intent_tokens: list[str] | None = None,
     caller_facts: str | None = None,
+    imported_defs: str | None = None,
     include_style_context: bool = False,
 ) -> str:
     """Assemble the reviewer prompt from diffs, the checklist, and caller facts.
@@ -353,7 +395,11 @@ def build_prompt(
     ``caller_facts`` is the pre-built (already bounded and labeled) committed-
     caller block from :func:`caller_facts_for_diffs`; when present it rides
     above the diffs so the reviewer reads each change with its consumers in
-    view instead of guessing the blast radius.
+    view instead of guessing the blast radius. ``imported_defs`` is the parallel
+    FORWARD block from :func:`imported_definition_facts` -- the signatures of the
+    symbols the change imports -- so the reviewer reads each call site with the
+    contract it calls into; also bounded and labeled, riding just below the
+    caller facts.
 
     ``include_style_context`` defaults to ``False``. An interleaved A/B on a
     real TypeScript and a real Ruby repo (both arms under identical conditions)
@@ -454,6 +500,16 @@ def build_prompt(
             "break: a wrong argument count, a removed return field the caller reads, "
             "or a newly-thrown error the caller does not handle. A caller the change "
             "breaks is a correctness defect, not a style note."
+        )
+
+    if imported_defs:
+        sections.append("")
+        sections.append(imported_defs)
+        sections.append(
+            "If the changed code calls one of these imported symbols with the wrong "
+            "argument count, a wrong argument type, or reads a return field the "
+            "signature does not provide, flag a finding: a call that does not match "
+            "its imported contract is a correctness defect, not a style note."
         )
 
     for fd in diffs:
@@ -958,12 +1014,30 @@ def run_correctness_judge(
             block = caller_facts_for_diffs(repo_root, diffs)
             caller_facts = block or None
             _sink("judge_facts_included" if block else "judge_facts_skipped_no_calls_index")
+        # Forward definition hydration: the signatures of the symbols the change
+        # imports. Gated on enforcement.judge_imported_definitions (default on;
+        # unreadable config fails open to on). Additive, like the caller facts.
+        imported_defs: str | None = None
+        defs_enabled = True
+        try:
+            from chameleon_mcp.profile.config import load_config
+
+            defs_enabled = load_config(profile_dir).enforcement.judge_imported_definitions
+        except Exception:
+            defs_enabled = True
+        if not defs_enabled:
+            _sink("judge_defs_skipped_disabled")
+        else:
+            defs_block = imported_definition_facts(repo_root, diffs)
+            imported_defs = defs_block or None
+            _sink("judge_defs_included" if defs_block else "judge_defs_skipped_no_index")
         prompt = build_prompt(
             repo_root,
             profile_dir,
             diffs,
             intent_tokens=intent_tokens,
             caller_facts=caller_facts,
+            imported_defs=imported_defs,
         )
         stdout, fail_reason = _spawn_reviewer_status(prompt, repo_root)
         if stdout is None:

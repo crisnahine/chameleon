@@ -132,6 +132,23 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # markers, assertion delta). Past the cap the scan truncates and says so;
     # a diff that large already routes needs-human on size alone.
     "AUTOPASS_MAX_DIFF_BYTES": 2_000_000,
+    # Per-file cap on the manifest/lockfile diff text the no-network supply-chain
+    # parser (dep_diff) scans. Lockfile diffs run large, so this is well above the
+    # generic 8000-char branch-diff cap; past it the scan truncates rather than
+    # reading a pathological diff. Tool-time only, never a hook hot path.
+    "DEP_DIFF_MAX_BYTES": 1_000_000,
+    # Cap on imported-symbol definition signatures hydrated into the correctness
+    # judge prompt (C2.2). Bounds prompt bloat so the forward-definition block
+    # cannot crowd out the diffs or the caller facts. Tool-time only.
+    "JUDGE_IMPORTED_DEFS_MAX_ITEMS": 20,
+    # Total char cap on the rendered imported-definitions block (mirrors
+    # JUDGE_FACTS_CHAR_CAP). A budget on the whole block so many long type
+    # annotations cannot inflate the prompt even under the item cap.
+    "JUDGE_IMPORTED_DEFS_CHAR_CAP": 1200,
+    # Per-annotation cap on a stored declared type's text (C2.2). A giant inline
+    # type literal (`{ a: ..., b: ..., ...500 fields }`) via getText() is cut so
+    # one parameter cannot bloat the artifact or a hydrated line.
+    "SYMBOL_SIG_TYPE_MAX_CHARS": 80,
     # Net removed lines across changed test files before the change reads as
     # net test deletion in the test-integrity gate. Small consolidation
     # refactors stay quiet; gutting a spec does not.

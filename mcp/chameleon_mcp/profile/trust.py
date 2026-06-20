@@ -177,6 +177,7 @@ _HASHED_ARTIFACTS: tuple[str, ...] = (
     "profile.json",
     "reverse_index.json",
     "rules.json",
+    "symbol_signatures.json",
 )
 
 
@@ -223,6 +224,10 @@ def hash_profile(profile_dir: Path) -> str:
       hash input.
     - ``rules.json`` — lint rules; ``/chameleon-rename`` may rewrite
       archetype-keyed entries here.
+    - ``symbol_signatures.json`` — per-callable signature + body span backing
+      the forward definition-hydration the correctness judge reads. Hashed so a
+      planted index (e.g. one inventing a definition to steer the judge) de-trusts
+      the profile rather than silently feeding the reviewer fabricated context.
 
     Returns an empty string if ``profile.json`` is missing — callers treat
     that as "no trustable profile yet" rather than a real hash. Missing

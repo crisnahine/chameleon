@@ -5756,7 +5756,7 @@ def _profile_needs_rederive(profile_dir) -> bool:
     # forever -- the loaders fail open to "no facts", silently degrading the
     # judge caller facts, the duplication prefilter, and the phantom-symbol /
     # cross-file checks.
-    index_names = ["calls_index.json", "function_catalog.json"]
+    index_names = ["calls_index.json", "function_catalog.json", "symbol_signatures.json"]
     if manifest.get("language") == "typescript":
         index_names += ["exports_index.json", "reverse_index.json"]
     for name in index_names:
@@ -6165,6 +6165,160 @@ def _fan_out_block(files_changed: int, lines_changed: int) -> dict:
     }
 
 
+# Extensions the contract diff parses. Aligned with the bootstrap extractor glob
+# (**/*.{ts,tsx,js,jsx,mjs,cjs} + **/*.rb): .mts/.cts are intentionally absent
+# because bootstrap does not scan them, so they are never in the calls index and
+# a contract finding for one could never be attributed. (.d.ts ends with .ts and
+# is covered, but declaration files carry no positional call sites.)
+_CONTRACT_DIFF_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".rb")
+
+
+def get_contract_breaks(repo: str, base_ref: str = "main") -> dict:
+    """ADVISORY: deterministic caller-contract breaks for a branch diff vs ``base_ref``.
+
+    For each changed TypeScript/Ruby source file, compares its callables'
+    POSITIONAL parameter contract at the merge-base of ``base_ref`` and HEAD vs
+    HEAD and flags a NARROWING
+    (a new required positional arg, or an optional positional flipped required)
+    that has committed callers -- the deterministic signal the LLM correctness
+    judge derives from the diff, surfaced as a tool result a reviewer can cite.
+
+    Each finding names the callable, its required-arg delta, and the committed
+    call sites that may now mis-call it. Tool-time only (git show + AST re-parse);
+    no network, no repo-code execution. Default-on; fails open to a no-signal
+    result; never blocks. The pr-review skill cites these as FIX findings.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.judge import _git_available, _run_git
+
+    repo_root, _repo_id = _resolve_repo_arg(repo)
+    try:
+        if repo_root is not None and not repo_root.is_dir():
+            repo_root = None
+    except (OSError, ValueError):
+        repo_root = None
+    if repo_root is None:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "repo could not be resolved to a directory; pass an absolute repo path",
+                "findings": [],
+            }
+        )
+    if not _git_available(repo_root):
+        return _envelope(
+            {"status": "degraded", "reason": "not_a_git_worktree", "findings": [], "advisory": True}
+        )
+    if not isinstance(base_ref, str) or not base_ref.strip():
+        return _envelope(
+            {"status": "failed", "error": "base_ref must be a non-empty ref name", "findings": []}
+        )
+    if base_ref == "main":
+        locked = _persisted_production_ref(repo_root)
+        if locked and locked != "main":
+            base_ref = locked
+
+    res = _run_git(["diff", "--numstat", f"{base_ref}...HEAD"], cwd=repo_root)
+    if res is None or res.returncode != 0:
+        return _envelope(
+            {
+                "status": "degraded",
+                "reason": "git_diff_failed",
+                "error": f"git diff against {base_ref!r} failed; the change set is unknown",
+                "findings": [],
+                "advisory": True,
+            }
+        )
+    _count, details = _compute_contract_breaks(
+        repo_root, res.stdout or "", base_ref, threshold_int("AUTOPASS_MAX_FILES")
+    )
+    return _envelope({"status": "ok", "base_ref": base_ref, "findings": details, "advisory": True})
+
+
+def _compute_contract_breaks(
+    repo_root: Path, numstat_text: str, base_ref: str, max_files: int
+) -> tuple[int, list]:
+    """Deterministic caller-contract breaks for the auto-pass router, fail-open.
+
+    Compares each changed source file's positional contract at ``base_ref`` vs
+    ``HEAD`` and joins narrowings to committed callers from the calls index.
+    Returns (count, detail-rows). Off (0, []) when the config flag is false, the
+    calls index is absent, the change is over the file cap (it routes to a human
+    regardless), or anything raises. git show + AST re-parse, tool-time only.
+    """
+    try:
+        from chameleon_mcp import signature_diff
+        from chameleon_mcp.autopass import parse_numstat
+        from chameleon_mcp.calls_index import load_calls_index
+        from chameleon_mcp.judge import _run_git as _sig_run_git
+        from chameleon_mcp.profile.config import load_config
+
+        try:
+            enabled = load_config(repo_root / ".chameleon").enforcement.signature_contract_diff
+        except Exception:
+            enabled = True  # fail-open to on, mirroring judge_crossfile_facts
+        if not enabled:
+            return 0, []
+
+        rows = parse_numstat(numstat_text)
+        if len(rows) > max_files:
+            # A change this large already routes to a human on size; the contract
+            # diff would not change the verdict and is not worth the re-parse cost.
+            return 0, []
+        changed_src = [
+            r["path"] for r in rows if str(r["path"]).lower().endswith(_CONTRACT_DIFF_EXTS)
+        ]
+        if not changed_src:
+            return 0, []
+        index = load_calls_index(repo_root)
+        if index is None:
+            return 0, []
+        # Use the merge-base as the OLD ref so the contract diff matches the
+        # `base_ref...HEAD` (three-dot) semantics the rest of the router uses: a
+        # divergent base that independently changed a signature must not read as
+        # this branch's narrowing. Fall back to base_ref if merge-base can't be
+        # resolved (a shallow clone, or HEAD not yet committed).
+        mb = _sig_run_git(["merge-base", base_ref, "HEAD"], cwd=repo_root)
+        old_ref = (
+            mb.stdout.strip()
+            if mb is not None and mb.returncode == 0 and (mb.stdout or "").strip()
+            else base_ref
+        )
+        findings = signature_diff.contract_breaks(
+            repo_root,
+            changed_src,
+            old_ref=old_ref,
+            new_ref="HEAD",
+            callers_fn=index.callers_of,
+            run_git=_sig_run_git,
+        )
+        # Symbol names and caller paths are repo-derived (untrusted under the
+        # chameleon threat model) and reach the model through the autopass /
+        # contract-breaks tool envelopes, so sanitize every echoed string.
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        def _san_caller(c: dict) -> dict:
+            out = dict(c)
+            if isinstance(out.get("path"), str):
+                out["path"] = sanitize_for_chameleon_context(out["path"])
+            return out
+
+        details = [
+            {
+                "file": sanitize_for_chameleon_context(f.rel),
+                "name": sanitize_for_chameleon_context(f.name),
+                "old_required_positional": f.old_required_positional,
+                "new_required_positional": f.new_required_positional,
+                "caller_total": f.caller_total,
+                "callers": [_san_caller(c) for c in f.callers if isinstance(c, dict)],
+            }
+            for f in findings
+        ]
+        return len(findings), details
+    except Exception:
+        return 0, []
+
+
 def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     """ADVISORY: is this branch's diff vs ``base_ref`` safe to auto-pass, or does
     it need a human? Never gates -- it informs a review decision. The honest goal
@@ -6349,6 +6503,17 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         except Exception:
             return 0
 
+    # Deterministic caller-contract signature diff (default-on; fail-open). The
+    # auto-pass router has no per-symbol contract signal otherwise, so a narrowed
+    # positional signature in a low-importer file would pass on blast radius
+    # alone. Tool-time only (git show + AST re-parse); skipped when the change is
+    # already over the file cap (it routes to a human regardless), and silently
+    # off when the calls index is absent or the config flag is false.
+    max_files_cap = threshold_int("AUTOPASS_MAX_FILES")
+    contract_break_count, contract_break_details = _compute_contract_breaks(
+        repo_root, numstat_text, base_ref, max_files_cap
+    )
+
     verdict = build_autopass_verdict(
         numstat_text,
         name_status_text,
@@ -6358,15 +6523,17 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         type_error_files=type_error_files,
         diff_text=diff_text[:diff_cap],
         diff_truncated=diff_truncated,
-        max_files=threshold_int("AUTOPASS_MAX_FILES"),
+        max_files=max_files_cap,
         max_lines=threshold_int("AUTOPASS_MAX_LINES"),
         max_blast_radius=threshold_int("AUTOPASS_MAX_BLAST_RADIUS"),
         test_deletion_net_lines=threshold_int("AUTOPASS_TEST_DELETION_NET_LINES"),
         assertion_delta_floor=threshold_int("AUTOPASS_ASSERTION_DELTA_FLOOR"),
         tests_failed=tests_failed,
+        caller_contract_breaks=contract_break_count,
     )
     verdict["advisory"] = True
     verdict["base_ref"] = base_ref
+    verdict["contract_breaks"] = contract_break_details
     verdict["typecheck"] = typecheck_fact
     verdict["tests"] = tests_fact
     _facts = verdict.get("facts", {})
@@ -9542,6 +9709,146 @@ def dep_audit(repo: str) -> dict:
         )
     result["advisory"] = True
     return _envelope(result)
+
+
+def scan_dependency_changes(repo: str, base_ref: str = "main") -> dict:
+    """No-network supply-chain review of a branch's manifest/lockfile changes.
+
+    Parses the ``base_ref...HEAD`` git diff of changed package manifests and
+    lockfiles (``package.json``, the npm/yarn/pnpm lockfiles, ``Gemfile``,
+    ``Gemfile.lock``) for the four deterministic pr-review Step 2.5 signals:
+    a new install-lifecycle script (FIX), a lockfile entry resolving from a
+    non-registry host (FIX), a non-registry dependency source (FIX), and a new
+    direct dependency (NIT listing). Each finding cites the exact added line, so
+    the pr-review refuter can ground it against this tool result rather than prose.
+
+    PURE PARSE: no network, no install -- that is :func:`dep_audit`'s opt-in,
+    network-gated job. Default-on (qualifies under the default-on principle: it
+    only reads local git diff text). Fails open: a non-git tree or a failed diff
+    degrades to a no-signal result, never a crash and never a fabricated finding.
+    Advisory only; nothing here blocks.
+    """
+    from chameleon_mcp import dep_diff
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.judge import _git_available, _run_git
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    repo_root, _repo_id = _resolve_repo_arg(repo)
+    try:
+        if repo_root is not None and not repo_root.is_dir():
+            repo_root = None
+    except (OSError, ValueError):
+        repo_root = None
+    if repo_root is None:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "repo could not be resolved to a directory; pass an absolute repo path",
+                "findings": [],
+            }
+        )
+    if not _git_available(repo_root):
+        return _envelope(
+            {
+                "status": "degraded",
+                "reason": "not_a_git_worktree",
+                "findings": [],
+                "advisory": True,
+            }
+        )
+    if not isinstance(base_ref, str) or not base_ref.strip():
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "base_ref must be a non-empty ref name",
+                "findings": [],
+            }
+        )
+    # A "main" default on a production-pinned repo means the repo's mainline,
+    # which the lock names better; an explicit non-default base_ref is honored.
+    if base_ref == "main":
+        locked = _persisted_production_ref(repo_root)
+        if locked and locked != "main":
+            base_ref = locked
+
+    def _git_out(args: list[str]) -> str | None:
+        res = _run_git(args, cwd=repo_root)
+        if res is None or res.returncode != 0:
+            return None
+        return res.stdout or ""
+
+    names = _git_out(["diff", "--name-only", f"{base_ref}...HEAD"])
+    if names is None:
+        return _envelope(
+            {
+                "status": "degraded",
+                "reason": "git_diff_failed",
+                "error": f"git diff against {base_ref!r} failed; the change set is unknown",
+                "findings": [],
+                "advisory": True,
+            }
+        )
+    changed = [ln.strip() for ln in names.splitlines() if ln.strip()]
+    cap = threshold_int("DEP_DIFF_MAX_BYTES")
+    # "no silent caps": record which manifest diffs were truncated at the cap so a
+    # large lockfile change cannot read as fully reviewed when its tail was dropped.
+    truncated_files: list[str] = []
+
+    def _fetch(rel_path: str) -> str:
+        out = _git_out(["diff", "--no-ext-diff", f"{base_ref}...HEAD", "--", rel_path]) or ""
+        if len(out) > cap:
+            truncated_files.append(rel_path)
+            return out[:cap]
+        return out
+
+    try:
+        findings = dep_diff.collect_dependency_findings(changed, _fetch)
+    except Exception:
+        # collect_dependency_findings is written never to raise; defensive fail-open.
+        findings = []
+
+    # Every field echoes untrusted manifest/lockfile text to the model, so each
+    # string is run through the chameleon-context sanitizer before serialization.
+    def _san(value):
+        if isinstance(value, str):
+            return sanitize_for_chameleon_context(value)
+        if isinstance(value, dict):
+            return {k: _san(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_san(v) for v in value]
+        return value
+
+    serialized = [
+        {
+            "check": f.check,
+            "severity": f.severity,
+            "path": _san(f.path),
+            "evidence": _san(f.evidence),
+            "message": _san(f.message),
+            "detail": _san(f.detail),
+        }
+        for f in findings
+    ]
+    summary = {
+        "fix": sum(1 for f in findings if f.severity == "FIX"),
+        "nit": sum(1 for f in findings if f.severity == "NIT"),
+    }
+    data = {
+        "status": "ok",
+        "base_ref": base_ref,
+        "manifests_changed": [
+            p for p in changed if p.rsplit("/", 1)[-1] in dep_diff.MANIFEST_LOCKFILE_BASENAMES
+        ],
+        "findings": serialized,
+        "summary": summary,
+        "advisory": True,
+    }
+    if truncated_files:
+        # Surfaced inside `data` (not just the envelope flag) so the consuming
+        # skill sees the coverage gap and can say so rather than claim clean.
+        data["truncated"] = True
+        data["truncated_files"] = truncated_files
+    return _envelope(data, truncated=bool(truncated_files))
 
 
 def daemon_status() -> dict:

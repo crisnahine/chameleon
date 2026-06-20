@@ -370,6 +370,7 @@ def build_autopass_verdict(
     test_deletion_net_lines: int = 10,
     assertion_delta_floor: int = -3,
     tests_failed: bool = False,
+    caller_contract_breaks: int = 0,
 ) -> dict:
     """End-to-end auto-pass verdict from a branch's raw git diff output.
 
@@ -414,6 +415,11 @@ def build_autopass_verdict(
     # A grounded, opt-in test-run failure (CHAMELEON_ALLOW_TESTS) routes the change
     # to a human like a type error does: a runnable check the change did not pass.
     facts["tests_failed"] = 1 if tests_failed else 0
+    # A deterministic caller-contract break (a narrowed positional signature with
+    # committed callers) routes to a human: the auto-pass router has no other
+    # per-symbol contract signal, so a narrowing in a low-importer file would
+    # otherwise pass on blast radius alone.
+    facts["caller_contract_breaks"] = int(caller_contract_breaks or 0)
     verdict = classify_change(
         facts,
         max_files=max_files,
@@ -593,6 +599,13 @@ def classify_change(
     if _int("tests_failed") > 0:
         reasons.append("test suite failing")
 
+    contract_breaks = _int("caller_contract_breaks")
+    if contract_breaks > 0:
+        reasons.append(
+            f"{contract_breaks} caller contract break(s) "
+            "(narrowed signature with committed callers)"
+        )
+
     if bool(facts.get("security_surface")):
         reasons.append("touches a security-sensitive surface")
 
@@ -646,6 +659,7 @@ def classify_change(
         findings > 0
         or type_errors > 0
         or _int("tests_failed") > 0
+        or contract_breaks > 0
         or bool(facts.get("security_surface"))
         or removed_guards > 0
         or ignores_added > 0

@@ -70,7 +70,7 @@ STOP here and continue with Step 2. If `recommended` is true, fan out:
   mis-merge the file-anchored and missing-requirement findings that have no line;
   then (b) run the WHOLE-DIFF passes ONCE on the merged set: 2.8 (co-change), 2.9a
   (layering — needs the import graph), 2.9b (duplication), 2.9c (existence-break),
-  2.9d (caller), 3a (task context), 3b (completeness), 3f-i (stale paired-test),
+  2.9d (caller), 2.9e (contract-break), 3a (task context), 3b (completeness), 3f-i (stale paired-test),
   3g (coverage), 3h (auto-pass). Any pass not listed runs whole-diff at synthesis.
   These whole-diff passes run once during synthesis, never in a slice.
 - THEN run the 3-round grounding loop (Step 4a/4b) on the merged findings.
@@ -164,6 +164,14 @@ For new files (not modifications), list sibling files in the same directory. Che
 ### Step 2.5: Dependency-change review (always, for manifest/lockfile diffs)
 
 Run this whenever the diff touches a package manifest or lockfile: `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `Gemfile`, or `Gemfile.lock`. These are the supply-chain entry points a human reviewer reads line by line and the convention review above does not cover. This pass is a pure parse of the diff text and the manifest/lockfile JSON or YAML. It makes NO network calls and does not install or run anything: only the added (`+`) lines matter, and the existing repo content gives the "previously present" baseline.
+
+**Tool-backed (deterministic):** Call the `scan_dependency_changes` MCP tool once for the whole diff:
+
+```
+scan_dependency_changes(repo=<repo_id>, base_ref=<the PR base branch, or the branch's merge base; use the locked production_ref from .chameleon/config.json when no PR base is known; default "main">)
+```
+
+It parses the manifest/lockfile diff (no network) and returns structured `findings`, each citing the exact added line it parsed: `install-script`, `non-registry-host`, and `non-registry-source` are **FIX**; `new-dependency` is the 2.5a listing you carry into the human-judgment gate below. Use these findings as the deterministic source for 2.5b/2.5c/2.5d and the 2.5a listing instead of hand-parsing the JSON/YAML — each is groundable by the round-3 refuter against the tool result (this is the Step 2.5 exception to the chameleon-data rule). The tool does NOT score typosquats; that judgment stays yours under 2.5a. If `scan_dependency_changes` is unavailable in this session, fall back to the manual parse described below and note it in one line. It is no-network and never replaces the opt-in `dep_audit` CVE scan.
 
 Each finding cites the exact lockfile line or manifest key. The four checks are independent; run every one that applies even if an earlier check fired.
 
@@ -319,6 +327,14 @@ get_callers(repo=<repo_id>, file_path=<abs_path_of_changed_file>, function_name=
 List the returned caller sites with their grades as blast-radius context for the finding pass: a signature, contract, or behavior change to a function with recorded callers is judged against those call sites, not in isolation. Grades are deterministic (`same_file` / `import` / `constant_receiver`), read from the committed calls snapshot at profile derivation, so each cited site is a real recorded call, not an inference.
 
 Absence of callers is NOT evidence of dead code: dynamic and unsupported call paths (reflection, metaprogramming, superclass chains) are invisible to the index, as is anything added after the last refresh. Never raise an "unused function" finding from an empty result. Name-token candidates from `get_duplication_candidates` may be listed separately alongside this context, but must be labeled non-deterministic; they never carry the deterministic grades above.
+
+#### 2.9e. Caller-contract signature breaks (FIX)
+
+Call the `get_contract_breaks` MCP tool once for the whole diff:
+```
+get_contract_breaks(repo=<repo_id>, base_ref=<the PR base branch, or the branch's merge base; the locked production_ref when no PR base is known; default "main">)
+```
+It compares each changed TS/Ruby callable's POSITIONAL parameter contract at the merge-base of `base_ref` and HEAD vs HEAD (three-dot semantics, matching the rest of the diff so a divergent base does not read as this branch's change) and returns `findings` only for a callable that NARROWED (a new required positional argument, or an optional positional flipped required) AND has committed callers. Each is a **FIX**: the narrowed callable now mis-matches `caller_total` recorded call sites. Cite the symbol, the `old`->`new` required-positional count, and the affected `callers` file:line list the tool returned (a deterministic fact, same bar as 2.9c). This is the deterministic complement to the LLM contract check: a required-positional narrowing in a low-importer file that the size/blast gates miss. The tool flags ONLY positional narrowing — never a removed/reordered param, a new optional/keyword arg, or a return-type change; for those, fall back to the logic review. If `get_contract_breaks` is unavailable, skip and note it in one line.
 
 ### Step 3: Logic review (only when Jira ticket provided)
 

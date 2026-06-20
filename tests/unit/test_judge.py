@@ -369,8 +369,12 @@ def test_run_correctness_judge_event_sink_sees_spawn_failure(tmp_path):
             event_sink=lambda kind, detail: events.append((kind, detail)),
         )
     assert findings == []
-    # One judge_facts outcome (no calls index here) precedes the failure kind.
-    assert events == [("judge_facts_skipped_no_calls_index", None), ("spawn_timeout", None)]
+    # One judge_facts + one judge_defs outcome (neither index here) precede the failure.
+    assert events == [
+        ("judge_facts_skipped_no_calls_index", None),
+        ("judge_defs_skipped_no_index", None),
+        ("spawn_timeout", None),
+    ]
 
 
 def test_run_correctness_judge_event_sink_sees_unparseable_output(tmp_path):
@@ -414,8 +418,8 @@ def test_run_correctness_judge_event_sink_sees_pipeline_error(tmp_path):
             event_sink=lambda kind, detail: events.append((kind, detail)),
         )
     assert findings == []
-    # The judge_facts outcome fires before build_prompt; the raise lands after.
-    failures = [e for e in events if not e[0].startswith("judge_facts_")]
+    # The judge_facts + judge_defs outcomes fire before build_prompt; the raise lands after.
+    failures = [e for e in events if not e[0].startswith(("judge_facts_", "judge_defs_"))]
     assert len(failures) == 1
     kind, detail = failures[0]
     assert kind == "pipeline_error"
@@ -449,7 +453,9 @@ def test_run_correctness_judge_forwards_intent_tokens(tmp_path):
     p.write_text("x\n", encoding="utf-8")
     captured = {}
 
-    def fake_build(repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None):
+    def fake_build(
+        repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None, imported_defs=None
+    ):
         captured["intent_tokens"] = intent_tokens
         return "prompt"
 

@@ -139,6 +139,24 @@ class EnforcementConfig:
     # Purely additive prompt grounding: a missing or stale index just means the
     # judge reviews without the block. Set false to opt out.
     judge_crossfile_facts: bool = True
+    # signature_contract_diff: on by default. When True, the auto-pass router (and
+    # pr-review) compute a DETERMINISTIC caller-contract signature diff: a changed
+    # callable whose POSITIONAL contract narrowed (a new required positional arg,
+    # or an optional positional flipped required) is flagged when it has committed
+    # callers, so a narrowing in a low-importer file no longer slides under the
+    # blast-radius gate with no signal. git show + AST re-parse, tool-time only,
+    # never a hook hot path; advisory (routes a human / FIX), never blocks. A
+    # missing index or git failure just means the check does not fire. Set false
+    # to opt out.
+    signature_contract_diff: bool = True
+    # judge_imported_definitions: on by default. When True, the correctness
+    # judge's prompt carries the SIGNATURES of the symbols the changed files
+    # import (resolved through the committed symbol-signature index), so the
+    # reviewer reads each call site with the contract it must satisfy in view --
+    # the forward complement to the reverse caller facts. Additive prompt
+    # grounding from a static index; a missing index just means the block is
+    # absent. Set false to opt out.
+    judge_imported_definitions: bool = True
     # test_integrity_review: on by default. At turn end, when the turn changed
     # live source AND weakened tests (added skip markers, dropped assertions, net
     # test deletion -- the deterministic signals the auto-pass router computes),
@@ -258,6 +276,18 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
             "`enforcement.judge_crossfile_facts` must be bool, got "
             f"{type(judge_crossfile_facts).__name__}"
         )
+    signature_contract_diff = raw.get("signature_contract_diff", True)
+    if not isinstance(signature_contract_diff, bool):
+        raise ChameleonConfigError(
+            "`enforcement.signature_contract_diff` must be bool, got "
+            f"{type(signature_contract_diff).__name__}"
+        )
+    judge_imported_definitions = raw.get("judge_imported_definitions", True)
+    if not isinstance(judge_imported_definitions, bool):
+        raise ChameleonConfigError(
+            "`enforcement.judge_imported_definitions` must be bool, got "
+            f"{type(judge_imported_definitions).__name__}"
+        )
     test_integrity_review = raw.get("test_integrity_review", True)
     if not isinstance(test_integrity_review, bool):
         raise ChameleonConfigError(
@@ -287,6 +317,8 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         crossfile_existence_advisory=crossfile_existence_advisory,
         duplication_review=duplication_review,
         judge_crossfile_facts=judge_crossfile_facts,
+        signature_contract_diff=signature_contract_diff,
+        judge_imported_definitions=judge_imported_definitions,
         test_integrity_review=test_integrity_review,
         multi_lens_review=multi_lens_review,
         intent_scope_advisory=intent_scope_advisory,
