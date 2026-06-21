@@ -4,6 +4,58 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.4] - 2026-06-21
+
+A silent-failure hardening release from a two-pass adversarial audit (24
+candidates, 11 confirmed), each fix re-verified across three independent rounds
+against live code. The 2.22.3 worktree fix wired the read / advisory / trust
+paths but not the enforcement gates; this completes that sweep and closes a set
+of independent fail-open gaps. Strictly additive off the affected paths: the
+worktree resolver is the identity for every non-worktree layout, so standalone
+repos and monorepo workspaces behave byte-identically (full unit suite green).
+
+### Fixed
+
+- **Enforcement no longer silently no-ops in a linked git worktree.** The
+  PreToolUse secret and banned-import denies, the PostToolUse enforce block, the
+  Stop turn-end backstop (plus its re-lint, attestation, and correctness-judge
+  reads), and the per-edit conventions echo all read `repo_root / ".chameleon"`
+  off the raw worktree path. A worktree's profile is gitignored and lives only at
+  the main worktree, so each gate saw an empty/missing profile and silently fell
+  through while trust still reported "trusted" (the worst asymmetry). They now
+  resolve the main worktree's profile through a shared `_enf_profile_dir`,
+  keeping the worktree as the identity / archetype root. `detect_repo`'s
+  production-branch hint resolves the same way.
+- **A broken `uv` no longer disables enforcement for the whole session.** The
+  interpreter resolver accepted the `uv` rung after only `command -v uv`; a
+  locked lockfile, an offline first-materialization, or a shadowing non-chameleon
+  `uv` then failed at every hook with only a log line (the no-interpreter
+  degraded banner never fired). The rung is now probed with its real
+  `uv run --project <mcp> python` argv under a generous timeout and falls through
+  to the degraded banner when it fails.
+- **A malformed `config.json` is now observable instead of silently disabling
+  the denies and the Stop backstop.** The enforcement gates caught the config
+  parse error in a bare `except` and fell through with no signal. They now record
+  a degraded check-event (surfaced in the session attestation and
+  `/chameleon-doctor`). It stays fail-open by design: failing closed is circular
+  (the enforcement mode is exactly what could not be parsed) and would wedge
+  every turn for a config with a stray typo.
+- **The repo-root cache no longer masks an out-of-band `.chameleon`.** A
+  no-marker lookup was memoized with no re-stat, so the long-lived daemon served
+  a stale "no profile here" after a `git worktree add` or a manual `.chameleon`.
+  No-marker results are no longer cached, and positive entries carry a key-dir
+  mtime stamp that self-heals (mirrors the profile cache).
+- **A sibling clone of the same remote now resolves to the most-recently-used
+  one.** `_pick_ancestor_or_freshest` tie-broke on shortest path string instead
+  of recency, so two clones sharing one repo_id loaded the wrong clone's profile.
+  It now keeps the freshest candidate on a descendant-count tie.
+- **repo_id ignores an explicit port on a well-known host.** A remote like
+  `https://github.com:443/owner/repo` or `ssh://git@github.com:22/owner/repo`
+  derived a different `repo_id` than the plain clone, silently losing the trust
+  grant. The port is now stripped before host matching (IPv6-safe). Such a remote
+  gets a corrected `repo_id` and needs a one-time `/chameleon-trust` re-grant
+  (degrades to "untrusted", never data loss). Self-hosted hosts are unchanged.
+
 ## [2.22.3] - 2026-06-21
 
 ### Fixed

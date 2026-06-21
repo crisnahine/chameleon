@@ -124,6 +124,51 @@ def _repo_rel(repo_root: Path | None, file_path: str | None) -> str | None:
         return None
 
 
+def _enf_profile_dir(repo_root: Path) -> Path:
+    """The ``.chameleon`` dir the hook's enforcement/profile reads should use.
+
+    For a linked git worktree this resolves to the MAIN worktree's profile (the
+    worktree's own ``.chameleon`` is gitignored and absent); it is the identity
+    for every non-worktree root, so non-worktree behavior is byte-identical.
+    Callers keep ``repo_root`` itself as the worktree so archetype-relativity
+    (``_repo_rel``), witness reads, and ``repo_id`` are unaffected. Mirrors
+    ``tools._effective_profile_dir`` and the worktree-aware trust resolution.
+    """
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    return resolve_profile_root(repo_root) / ".chameleon"
+
+
+def _note_if_config_malformed(
+    exc: BaseException,
+    repo_id: str | None,
+    session_id: str | None,
+    where: str,
+) -> None:
+    """Record a degraded check-event when a swallowed enforcement-gate exception
+    is a malformed / torn ``config.json``, so the silent fail-open is observable
+    in the session attestation and ``/chameleon-doctor`` instead of invisible.
+
+    Stays fail-open by design: failing closed on an unreadable config is circular
+    (the enforcement mode is exactly what could not be parsed) and would wedge
+    every edit / turn for a user whose committed config has a stray typo. Matches
+    the type by name so this never needs to import (and bind) the config module
+    inside an except clause. Never raises.
+    """
+    try:
+        if type(exc).__name__ == "ChameleonConfigError":
+            _emit_check_event(
+                repo_id,
+                session_id,
+                "enforcement_config",
+                "degraded",
+                reason="config_malformed",
+                detail={"where": where},
+            )
+    except Exception:
+        pass
+
+
 def _content_digest_16(content: str) -> str:
     """16-hex-char sha256 digest of an edit's analyzed content window.
 
@@ -637,7 +682,7 @@ def _drift_banner_for_repo(repo_root: Path, session_id: str | None = None) -> st
                 try:
                     from chameleon_mcp.profile.config import load_config
 
-                    auto_on = load_config(resolved_root / ".chameleon").auto_refresh.enabled
+                    auto_on = load_config(_enf_profile_dir(resolved_root)).auto_refresh.enabled
                 except Exception:  # noqa: BLE001
                     auto_on = True
                 if auto_on:
@@ -1739,7 +1784,10 @@ def preflight_and_advise() -> int:
             if proposed and isinstance(proposed, str):
                 from chameleon_mcp.enforcement_calibration import active_block_rules
 
-                profile_dir = repo_root_path / ".chameleon"
+                # Enforcement reads resolve to the main worktree's profile in a
+                # linked worktree (its own .chameleon is gitignored/absent);
+                # identity off the worktree. repo_root_path stays the worktree.
+                profile_dir = _enf_profile_dir(repo_root_path)
                 active_rules = active_block_rules(profile_dir)
                 if "secret-detected-in-content" in active_rules:
                     session_id = payload.get("session_id")
@@ -1808,8 +1856,13 @@ def preflight_and_advise() -> int:
                                 )
                             )
                             return 0
-    except Exception:
-        pass
+    except Exception as exc:
+        _note_if_config_malformed(
+            exc,
+            repo_info.get("id") or repo_id_hint,
+            payload.get("session_id"),
+            "pretool_secret_deny",
+        )
 
     if not archetype_name:
         repo_id = repo_info.get("id") or repo_id_hint
@@ -1890,7 +1943,7 @@ def preflight_and_advise() -> int:
             from chameleon_mcp.prewrite_lint import banned_imports_in_content
             from chameleon_mcp.profile.config import load_config
 
-            profile_dir = repo_root_path / ".chameleon"
+            profile_dir = _enf_profile_dir(repo_root_path)
             if active_rules is None:
                 # The secret deny above skipped its read (empty proposed
                 # content, or it raised); resolve the calibrated set here.
@@ -1976,8 +2029,13 @@ def preflight_and_advise() -> int:
                                 file_rel=_repo_rel(repo_root_path, file_path),
                                 line=banned[0].get("line"),
                             )
-    except Exception:
-        pass
+    except Exception as exc:
+        _note_if_config_malformed(
+            exc,
+            repo_info.get("id") or repo_id_hint,
+            payload.get("session_id"),
+            "pretool_import_deny",
+        )
 
     enforcement_state = None
     try:
@@ -2012,12 +2070,12 @@ def preflight_and_advise() -> int:
             from chameleon_mcp.conventions import format_conventions_echo
 
             conventions_path = (
-                repo_root_path / ".chameleon" / "conventions.json" if repo_root_path else None
+                _enf_profile_dir(repo_root_path) / "conventions.json" if repo_root_path else None
             )
             if conventions_path and conventions_path.is_file():
                 conv_data = json.loads(conventions_path.read_text(encoding="utf-8"))
                 pr_text = ""
-                pr_path = repo_root_path / ".chameleon" / "principles.md"
+                pr_path = _enf_profile_dir(repo_root_path) / "principles.md"
                 if pr_path.is_file():
                     try:
                         pr_text = pr_path.read_text(encoding="utf-8")
@@ -2436,7 +2494,7 @@ def _record_bash_write_mutations(
                 is_violation_ignored,
             )
 
-            active = active_block_rules(repo_root / ".chameleon")
+            active = active_block_rules(_enf_profile_dir(repo_root))
             hard = hard_class_violations(violations, active)
             # Without an archetype only the archetype-independent hard rules (a
             # deterministic secret) can be enforced at Stop, so record only those
@@ -3420,7 +3478,7 @@ def posttool_verify() -> int:
                     is_violation_ignored,
                 )
 
-                active = active_block_rules(repo_root / ".chameleon")
+                active = active_block_rules(_enf_profile_dir(repo_root))
                 hard = hard_class_violations(violations, active)
                 # An inline `chameleon-ignore <rule>` directive (or a bare one)
                 # downgrades the matching rule to advisory on the annotated
@@ -3487,14 +3545,14 @@ def posttool_verify() -> int:
                 from chameleon_mcp.profile.trust import hash_profile
 
                 enforce_off = os.environ.get("CHAMELEON_ENFORCE") == "0"
-                mode = load_config(repo_root / ".chameleon").enforcement.mode
+                mode = load_config(_enf_profile_dir(repo_root)).enforcement.mode
                 data = arch_result.get("data") or {}
                 match_quality = data.get("match_quality")
                 gate_band = data.get("confidence_band")
                 gate_ok = (match_quality == "ast") and (gate_band in ("high", "medium"))
                 at_l2 = file_state is not None and file_state.level >= 2
                 trusted_not_stale = _gate_rec.hash_for_root(repo_root) == hash_profile(
-                    repo_root / ".chameleon"
+                    _enf_profile_dir(repo_root)
                 )
                 if (
                     not enforce_off
@@ -3565,8 +3623,8 @@ def posttool_verify() -> int:
                         return 0
                     # shadow: would_block already logged; fall through to advisory.
                     decision_outcome = "would-block"
-            except Exception:
-                pass
+            except Exception as exc:
+                _note_if_config_malformed(exc, repo_id, session_id, "posttool_block")
 
             current_tone = "Fix these."
             if enforcement_state is not None and file_state is not None:
@@ -4004,7 +4062,7 @@ def _stop_file_still_blockable(
             if active is None:
                 from chameleon_mcp.enforcement_calibration import active_block_rules
 
-                active = active_block_rules(repo_root / ".chameleon")
+                active = active_block_rules(_enf_profile_dir(repo_root))
             hard = hard_class_violations(indep, active)
             idx = build_ignore_index(content, file_path=file_path)
             if idx is not None:
@@ -4023,7 +4081,7 @@ def _stop_file_still_blockable(
         if active is None:
             from chameleon_mcp.enforcement_calibration import active_block_rules
 
-            active = active_block_rules(repo_root / ".chameleon")
+            active = active_block_rules(_enf_profile_dir(repo_root))
         hard = hard_class_violations(violations, active)
         idx = build_ignore_index(content, file_path=file_path)
         if idx is not None:
@@ -4122,7 +4180,7 @@ def _idiom_review_gate(
             return None
 
         # Gather idioms/principles text; the gate needs at least one non-empty.
-        profile_dir = repo_root / ".chameleon"
+        profile_dir = _enf_profile_dir(repo_root)
         idioms_text = ""
         principles_text = ""
         try:
@@ -4757,7 +4815,7 @@ def _correctness_judge_gate(
         resolver = _archetype_resolver(repo_root, daemon_state or {"available": True})
         findings = judge.run_correctness_judge(
             repo_root,
-            repo_root / ".chameleon",
+            _enf_profile_dir(repo_root),
             fresh,
             resolver,
             intent_tokens=intent_tokens,
@@ -5446,7 +5504,7 @@ def _multi_lens_review_lines(
             resolver = _archetype_resolver(repo_root, daemon_state or {"available": True})
             return judge.run_correctness_judge(
                 repo_root,
-                repo_root / ".chameleon",
+                _enf_profile_dir(repo_root),
                 fresh,
                 resolver,
                 intent_tokens=intent_tokens,
@@ -5620,7 +5678,7 @@ def _stop_gates(
             _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "enforce_env_off")
             return {}
 
-        cfg = load_config(repo_root / ".chameleon").enforcement
+        cfg = load_config(_enf_profile_dir(repo_root)).enforcement
         if not cfg.stop_backstop:
             _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "feature_disabled")
             return {}
@@ -5659,7 +5717,7 @@ def _stop_gates(
         try:
             from chameleon_mcp.enforcement_calibration import active_block_rules
 
-            active_rules = active_block_rules(repo_root / ".chameleon")
+            active_rules = active_block_rules(_enf_profile_dir(repo_root))
         except Exception:
             active_rules = None
 
@@ -5971,7 +6029,8 @@ def _stop_gates(
                 f"on the offending line."
             ),
         }
-    except Exception:
+    except Exception as exc:
+        _note_if_config_malformed(exc, repo_id, session_id, "stop_relint")
         return {}
 
 
@@ -6036,15 +6095,15 @@ def _build_session_attestation(
     try:
         from chameleon_mcp.profile.trust import hash_profile
 
-        payload["profile_sha256"] = hash_profile(repo_root / ".chameleon") or None
+        payload["profile_sha256"] = hash_profile(_enf_profile_dir(repo_root)) or None
     except Exception:
         pass
     try:
         from chameleon_mcp.profile.config import load_config
 
-        payload["enforcement_mode"] = load_config(repo_root / ".chameleon").enforcement.mode
-    except Exception:
-        pass
+        payload["enforcement_mode"] = load_config(_enf_profile_dir(repo_root)).enforcement.mode
+    except Exception as exc:
+        _note_if_config_malformed(exc, repo_id, session_id, "attestation_enforcement_mode")
 
     suppression: dict = {
         "reason": suppressed_reason,
@@ -6317,7 +6376,7 @@ def stop_backstop() -> int:
         # A "stale" grant (the profile hash drifted from the one the user trusted)
         # only verifies; it never blocks the turn, mirroring the PreToolUse and
         # PostToolUse gates.
-        if rec.hash_for_root(repo_root) != hash_profile(repo_root / ".chameleon"):
+        if rec.hash_for_root(repo_root) != hash_profile(_enf_profile_dir(repo_root)):
             _emit({})
             return 0
 

@@ -33,11 +33,15 @@ MAX_SUPPORTED_SCHEMA_VERSION = 8
 # names it so a dead-looking install always explains how to proceed.
 ALLOW_TMP_REPO_ENV = "CHAMELEON_ALLOW_TMP_REPO"
 
-# Cache value is (resolved_root, refusal_reason): exactly one side is non-None
-# when the walk found a candidate, both are None when no marker was found at
-# all. Carrying the refusal lets detect_repo say WHY a root was rejected
-# instead of reporting a bare no_repo.
-_REPO_ROOT_CACHE: dict[str, tuple[Path | None, str | None]] = {}
+# Cache value is (key_dir_mtime_ns, (resolved_root, refusal_reason)). Inner tuple:
+# exactly one side is non-None when the walk found a candidate, both None when no
+# marker was found (the refusal lets detect_repo say WHY a root was rejected).
+# The mtime stamp lets a profile created directly in the key dir self-heal
+# without an explicit invalidate (mirrors _PROFILE_CACHE); the bare (None, None)
+# "no marker" result is deliberately NOT cached, so an out-of-band .chameleon /
+# .git (a `git worktree add`, a child gaining its own profile) is not masked for
+# the long-lived daemon's lifetime.
+_REPO_ROOT_CACHE: dict[str, tuple[int | None, tuple[Path | None, str | None]]] = {}
 
 
 def clear_repo_root_cache() -> None:
@@ -260,11 +264,24 @@ def find_repo_root_with_refusal(file_path: Path) -> tuple[Path | None, str | Non
         return None, None
 
     cache_key = str(current)
-    if cache_key in _REPO_ROOT_CACHE:
-        return _REPO_ROOT_CACHE[cache_key]
+    try:
+        key_mtime: int | None = current.stat().st_mtime_ns
+    except OSError:
+        key_mtime = None
+    cached = _REPO_ROOT_CACHE.get(cache_key)
+    if cached is not None and cached[0] == key_mtime:
+        return cached[1]
 
     result = _find_repo_root_uncached(current)
-    _REPO_ROOT_CACHE[cache_key] = result
+    # Do not cache a bare "no marker" result: an out-of-band .chameleon / .git
+    # created later (a `git worktree add`, a child gaining its own profile) would
+    # otherwise be masked for the cache's lifetime. Stamp positives (and
+    # refusals) with the key dir's mtime so a profile created directly in this
+    # dir self-heals. A .chameleon created at an INTERMEDIATE ancestor is the
+    # known residual (this dir's mtime is unchanged); an invalidate_cache IPC or
+    # the daemon idle-restart clears it.
+    if result != (None, None):
+        _REPO_ROOT_CACHE[cache_key] = (key_mtime, result)
     return result
 
 

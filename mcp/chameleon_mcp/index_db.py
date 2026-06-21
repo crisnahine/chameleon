@@ -475,9 +475,15 @@ def _pick_ancestor_or_freshest(candidates: list[str]) -> str:
       2. For each candidate, count how many other candidates sit under it
          (strict descendants). The one with the maximum descendant count
          is the ancestor-most.
-      3. Tie-break: the candidate with the shortest path string wins
-         (ancestors are always shorter). If still tied, fall back to the
-         original order (freshest first).
+      3. Tie-break: the FRESHEST candidate wins. Callers pass candidates
+         freshest-first (``last_seen_at DESC``), and the scan replaces the
+         current best only on a STRICT descendant-count increase, so the
+         first-seen (freshest) candidate is kept on any tie. Two sibling
+         clones of one remote (neither an ancestor of the other, same
+         repo_id) thus resolve to the most-recently-used clone, not the
+         shorter path -- matching the documented contract (an earlier
+         path-length tie-break silently returned the shorter-path clone
+         regardless of recency).
 
     Returns the ORIGINAL string (not the resolved Path) so callers
     comparing against ``upsert_repo`` insertion keys see the same value.
@@ -491,7 +497,6 @@ def _pick_ancestor_or_freshest(candidates: list[str]) -> str:
 
     best_idx = 0
     best_descendants = -1
-    best_path_len = float("inf")
     for i, (_, p_i) in enumerate(pairs):
         if p_i is None:
             continue
@@ -504,13 +509,11 @@ def _pick_ancestor_or_freshest(candidates: list[str]) -> str:
                     descendants += 1
             except (OSError, ValueError):
                 continue
-        path_len = len(str(p_i))
-        if descendants > best_descendants or (
-            descendants == best_descendants and path_len < best_path_len
-        ):
+        # Strict-greater only: a descendant-count tie keeps the earlier
+        # (freshest, since candidates arrive last_seen_at DESC) candidate.
+        if descendants > best_descendants:
             best_idx = i
             best_descendants = descendants
-            best_path_len = path_len
     return pairs[best_idx][0]
 
 

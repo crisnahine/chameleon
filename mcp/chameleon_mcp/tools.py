@@ -939,8 +939,11 @@ def detect_repo(file_path: str) -> dict:
     # detect_repo call.
     try:
         from chameleon_mcp.production_ref import detect_production_branch
+        from chameleon_mcp.worktree import resolve_profile_root
 
-        locked_branch = _persisted_production_ref(repo_root)
+        # Hint reads the main worktree's config in a linked worktree (identity
+        # off the worktree); repo_root stays the worktree for repo_id / repo_root.
+        locked_branch = _persisted_production_ref(resolve_profile_root(repo_root))
         if locked_branch:
             from chameleon_mcp.production_ref import resolve_production_ref
 

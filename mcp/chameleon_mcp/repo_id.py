@@ -29,6 +29,20 @@ _CASE_INSENSITIVE_HOSTS: frozenset[str] = frozenset(
 _SSH_URL_RE = re.compile(r"^(?:[\w-]+@)?([^:]+):(.+?)(?:\.git)?/?$")
 
 
+def _strip_port(host: str) -> str:
+    """Drop a trailing ``:<port>`` from a URL host, IPv6-safe.
+
+    A bracketed IPv6 literal (``[::1]`` or ``[::1]:22``) keeps the bracketed
+    address and drops only a port after ``]``. A plain host drops a trailing
+    ``:<digits>`` only, so a hostname that happens to contain a colon is never
+    truncated.
+    """
+    if host.startswith("["):
+        end = host.find("]")
+        return host[: end + 1] if end != -1 else host
+    return re.sub(r":\d+$", "", host)
+
+
 def _normalize_git_url(url: str) -> str:
     """Canonicalize a git remote URL for repo_id derivation.
 
@@ -42,14 +56,15 @@ def _normalize_git_url(url: str) -> str:
     2. Rewrite scp/ssh syntax `git@host:owner/repo` → `ssh://git@host/owner/repo`.
     3. Strip a trailing `.git` from the path.
     4. Strip a trailing slash from the path.
-    5. Force scheme to `https://` when the host is one of the well-known
-       hosting providers — both `https://github.com/...` and
-       `ssh://git@github.com/...` resolve to the same repository.
-    6. Lowercase the host for case-insensitive hosts.
-    7. Lowercase the owner/repo path too for those same hosts. GitHub,
-       GitLab, Bitbucket, and Azure DevOps resolve owner/repo
-       case-insensitively, so `github.com/Foo/Bar` and `github.com/foo/bar`
-       are the same repository and must collapse to one repo_id.
+    5. Force scheme to `https://` for the well-known hosting providers — both
+       `https://github.com/...` and `ssh://git@github.com/...` resolve to the
+       same repository.
+    6. Strip a `:<port>` from the host before matching (IPv6-safe), and drop it
+       from the canonical for the well-known hosts (their port is always the
+       default). Unknown self-hosted hosts are left as-is.
+    7. Lowercase the host and the owner/repo path for the well-known
+       case-insensitive hosts (GitHub, GitLab, Bitbucket, Azure DevOps), which
+       resolve owner/repo case-insensitively.
 
     Returns the canonical URL string. Non-URL input is returned stripped so
     we never crash — the caller still hashes whatever we return, which keeps
@@ -75,11 +90,20 @@ def _normalize_git_url(url: str) -> str:
     if "@" in host:
         host = host.split("@", 1)[1]
 
-    host_l = host.lower()
+    # The host capture may carry a port (``host:22``); strip it (IPv6-safe)
+    # before matching the case-insensitive set, so a ported clone of a
+    # well-known host still normalizes to the same id. (Finding 8.)
+    host_match = _strip_port(host)
+    host_l = host_match.lower()
     if host_l in _CASE_INSENSITIVE_HOSTS:
+        # Well-known hosts: force https so ssh / https clones collapse, drop the
+        # (always-default) port, and case-fold (they resolve owner/repo
+        # case-insensitively).
         host = host_l
         scheme = "https"
         path = path.lower()
+    # Unknown self-hosted hosts are left as-is: scheme, host (any explicit port),
+    # and path case are all preserved.
 
     return f"{scheme}://{host}{path}"
 

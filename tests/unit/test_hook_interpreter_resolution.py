@@ -91,6 +91,30 @@ def test_uv_rung_when_only_old_python_and_uv(tmp_path):
     assert lines == [str(binp / "uv"), "run", "--project", str(mcp), "python"]
 
 
+def test_broken_uv_rung_falls_through(tmp_path):
+    """Finding 10: a uv whose probe fails (broken/locked lockfile, offline
+    first-materialization, or a shadowing non-chameleon uv) must NOT be accepted.
+
+    Before the probe, rung 3 accepted any `uv` on PATH after only `command -v`,
+    so a uv that fails at call time poisoned EVERY hook for the whole session
+    (CHAMELEON_PY non-empty -> the no-interpreter degraded banner never fires,
+    each hook's `|| printf {}` swallows the failure). The probe runs the real
+    `uv run --project <mcp> python` argv once; a non-zero exit falls through to
+    rung 4, then to an empty resolution so the degraded banner can fire.
+    """
+    binp = tmp_path / "bin"
+    binp.mkdir()
+    _write_stub(binp / "python3", ge_311=False)  # only sub-3.11 python on PATH
+    broken_uv = binp / "uv"
+    broken_uv.write_text("#!/bin/sh\nexit 1\n")  # `uv run ...` fails to materialize
+    broken_uv.chmod(broken_uv.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    mcp = tmp_path / "mcp"
+    mcp.mkdir()
+    rc, lines = _run_resolver(mcp, str(binp))
+    assert rc == 1
+    assert lines == []
+
+
 def test_version_named_python_preferred_over_uv(tmp_path):
     """A version-named python3.x (>=3.11 by name) wins over uv: it is faster to
     start and the hot path is stdlib-only."""

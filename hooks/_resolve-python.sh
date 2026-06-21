@@ -43,6 +43,26 @@ _cham_py_ge_311() {
         >/dev/null 2>&1
 }
 
+# Probe the uv rung the way it will actually be invoked: the full
+# `uv run --project <dir> python` argv, not a single interpreter path. A broken
+# or locked lockfile, an offline first-materialization, or a shadowing
+# non-chameleon `uv` then fails here and the resolver falls through to rung 4 /
+# the degraded banner, instead of accepting a uv that fails at every later hook
+# call (silent enforcement-off for the session). `uv run` may materialize or
+# download an interpreter on a cold cache, so this needs a far more generous cap
+# than the 5s single-interpreter probe (mirrors doctor's 30s uv probe); a fast
+# non-zero exit (the broken-uv cases) returns immediately well under it.
+_cham_uv_ge_311() {
+    local uv="$1" mcp_dir="$2" t=""
+    case "$(uname -s 2>/dev/null)" in
+        MINGW* | MSYS* | CYGWIN*) t="" ;;
+        *) t="$(command -v timeout || command -v gtimeout || true)" ;;
+    esac
+    ${t:+"$t" 30} "$uv" run --project "$mcp_dir" python \
+        -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 11) else 1)' \
+        >/dev/null 2>&1
+}
+
 # Resolve into the CHAMELEON_PY array. Returns 0 on success (array set to the
 # interpreter argv), 1 when no viable interpreter exists (array left empty).
 _cham_resolve_python() {
@@ -73,7 +93,7 @@ _cham_resolve_python() {
     #    the box whose only python3 is < 3.11. uv honors requires-python, so the
     #    interpreter it materializes is >=3.11 with chameleon's deps available.
     uv="$(command -v uv 2>/dev/null || true)"
-    if [ -n "$uv" ] && [ -d "$mcp_dir" ]; then
+    if [ -n "$uv" ] && [ -d "$mcp_dir" ] && _cham_uv_ge_311 "$uv" "$mcp_dir"; then
         CHAMELEON_PY=("$uv" run --project "$mcp_dir" python)
         return 0
     fi
