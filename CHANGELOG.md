@@ -6,47 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [2.22.2] - 2026-06-21
 
-A small correctness-and-accuracy patch. `doctor` now checks all six hook
-scripts, and two stale source docstrings are corrected.
+The first release since 2.22.0. It rewrites the user-facing documentation to
+match the as-built code, bumps the build and runtime toolchain (including
+TypeScript 6.0), and fixes a `doctor` completeness gap. No runtime behavior
+change beyond the new doctor check.
+
+### Documentation
+
+- Rewrote `README.md` and `docs/architecture.md` to the as-built system,
+  verified against the code across three passes. Corrected accumulated drift:
+  the MCP server exposes 41 tools (not 38), six hook scripts across six events
+  (the Stop/SubagentStop backstop was undocumented), a six-dimension cluster
+  signature (not a "7-tuple"), full TypeScript and Ruby support (not "TypeScript
+  only"), a 15-artifact trust hash, and 19 journey acts. Removed stale claims:
+  the dropped `drift.db` `files` table, OS-level subprocess rlimits the
+  extractors do not set, and runtime verification of `typescript-checksums.json`
+  (it is a build-time reference only).
+- Fixed drift in supporting docs: `CONTRIBUTING.md` (six hooks; the per-edit
+  timeout budget), `install.md` (daemon uninstall path), the `chameleon-refresh`
+  (15 hashed artifacts), `chameleon-journey` (19 acts), and `chameleon-trust`
+  skill bodies, and the migrations README cross-reference anchor. Documented the
+  `CHAMELEON_ALLOW_TESTS` environment variable.
+- Corrected two source docstrings: `hash_profile` in `profile/trust.py` (the
+  trust hash iterates `_HASHED_ARTIFACTS` in declaration order, not alphabetical;
+  the tuple is unchanged, so existing trust grants are unaffected) and
+  `daemon_client` (socket path carries the `-<version_tag>` suffix).
+
+### Dependencies
+
+- TypeScript 5.9.3 -> 6.0.3. Extraction verified byte-identical to 5.9.3 over the
+  full unit-test corpus and a 2245-file real codebase; `engines.node` is
+  unchanged, so the pinned Node 20 is unaffected.
+- GitHub Actions: `actions/checkout` v4 -> v7, `actions/setup-python` v5 -> v6,
+  `actions/setup-node` v4 -> v6, `astral-sh/setup-uv` v3 -> v7,
+  `actions/upload-artifact` v4 -> v7. These also clear the Node 20 runner
+  deprecation warnings.
 
 ### Fixed
 
 - **`/chameleon-doctor` now verifies the `stop-backstop` hook.** doctor checked
   only five of the six wired hook scripts, so a missing or non-executable Stop /
   SubagentStop backstop (which hosts turn-end enforcement and the correctness
-  judge) would read as a healthy install. It now checks all six.
-
-### Documentation
-
-- Corrected the `hash_profile` docstring in `profile/trust.py`: the trust hash
-  iterates `_HASHED_ARTIFACTS` in declaration order, not alphabetical order (the
-  tuple lists `principles.md` before `idioms.md`). The tuple order is unchanged,
-  so existing trust grants are unaffected.
-- Corrected the `daemon_client` module docstring: the socket path carries the
-  version-tag suffix (`.daemon-<version_tag>.sock`), not `.daemon.sock`.
-
-## [2.22.1] - 2026-06-21
-
-A documentation-accuracy release. No runtime behavior changes. The user-facing
-docs were rewritten and corrected against the as-built code so every claim
-matches what the engine actually does, verified across three passes.
-
-### Documentation
-
-- Rewrote `README.md` and `docs/architecture.md` to the as-built system.
-  Corrected accumulated drift: the MCP server exposes 41 tools (not 38), six
-  hook scripts across six events (the Stop/SubagentStop backstop was
-  undocumented), a six-dimension cluster signature (not a "7-tuple"), full
-  TypeScript and Ruby support (not "TypeScript only"), a 15-artifact trust
-  hash, and 19 journey acts.
-- Removed stale claims: the dropped `drift.db` `files` table, OS-level
-  subprocess rlimits the extractors do not set, and runtime verification of
-  `typescript-checksums.json` (it is a build-time reference only).
-- Fixed drift in supporting docs: `CONTRIBUTING.md` (six hooks; the per-edit
-  timeout budget), `install.md` (daemon uninstall path), the `chameleon-refresh`
-  (15 hashed artifacts), `chameleon-journey` (19 acts), and `chameleon-trust`
-  skill bodies, and the migrations README cross-reference anchor. Documented the
-  `CHAMELEON_ALLOW_TESTS` environment variable.
+  judge) read as a healthy install. It now checks all six, with a regression
+  test.
+- Dropped a broken `cache: 'pip'` from `setup-python` in the calibration and
+  acceptance workflows. The repo installs with uv, so the pip cache dir never
+  existed and the post-job cache-save failed those (rarely-run) workflows.
 
 ## [2.22.0] - 2026-06-21
 
