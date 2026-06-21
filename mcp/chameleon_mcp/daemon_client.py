@@ -1,6 +1,6 @@
 """Tiny client for the chameleon-mcp daemon.
 
-Connects to the UNIX socket at ${PLUGIN_DATA}/.daemon.sock, sends a
+Connects to the UNIX socket at ${PLUGIN_DATA}/.daemon-<version_tag>.sock, sends a
 length-prefixed JSON request, reads a length-prefixed JSON response.
 One request per connection — same model as the daemon side.
 

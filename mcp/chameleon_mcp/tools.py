@@ -9875,6 +9875,7 @@ def doctor() -> dict:
             "posttool-verify",
             "session-start",
             "callout-detector",
+            "stop-backstop",
         ):
             hpath = hook_dir / hook_name
             if hpath.is_file() and os.access(hpath, os.X_OK):

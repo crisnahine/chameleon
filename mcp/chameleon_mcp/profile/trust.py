@@ -185,13 +185,13 @@ def hash_profile(profile_dir: Path) -> str:
     """SHA-256 over the user-visible profile surface for material-change detection.
 
     Hashes every artifact in :data:`_HASHED_ARTIFACTS` that exists on disk,
-    in alphabetical filename order, with each entry framed by
+    in the fixed declaration order of that tuple, with each entry framed by
     ``b"\\x00<filename>\\x00"`` so two artifacts can never collide via
     boundary ambiguity. The fixed ordering plus per-file framing means the
     hash is reproducible byte-for-byte from the profile_dir alone — useful
     for audit reproducibility.
 
-    Included artifacts (alphabetical):
+    Included artifacts:
 
     - ``archetypes.json`` — archetype definitions. ``/chameleon-rename``
       mutates these; older records did NOT include this file, so renames slipped

@@ -4,6 +4,27 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.2] - 2026-06-21
+
+A small correctness-and-accuracy patch. `doctor` now checks all six hook
+scripts, and two stale source docstrings are corrected.
+
+### Fixed
+
+- **`/chameleon-doctor` now verifies the `stop-backstop` hook.** doctor checked
+  only five of the six wired hook scripts, so a missing or non-executable Stop /
+  SubagentStop backstop (which hosts turn-end enforcement and the correctness
+  judge) would read as a healthy install. It now checks all six.
+
+### Documentation
+
+- Corrected the `hash_profile` docstring in `profile/trust.py`: the trust hash
+  iterates `_HASHED_ARTIFACTS` in declaration order, not alphabetical order (the
+  tuple lists `principles.md` before `idioms.md`). The tuple order is unchanged,
+  so existing trust grants are unaffected.
+- Corrected the `daemon_client` module docstring: the socket path carries the
+  version-tag suffix (`.daemon-<version_tag>.sock`), not `.daemon.sock`.
+
 ## [2.22.1] - 2026-06-21
 
 A documentation-accuracy release. No runtime behavior changes. The user-facing

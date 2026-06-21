@@ -291,3 +291,38 @@ class TestAdvisoryEmission:
         _make_profile(repo)
         monkeypatch.chdir(repo)
         assert _check("advisory_emission")["status"] == "ok"
+
+
+class TestDoctorChecksEveryWiredHook:
+    """doctor must verify every wired hook script, including stop-backstop.
+
+    The Stop / SubagentStop backstop hosts turn-end enforcement and the
+    correctness judge. If doctor never checks it, a missing or
+    non-executable stop-backstop reads as a healthy install.
+    """
+
+    _ALL_HOOKS = (
+        "session-start",
+        "preflight-and-advise",
+        "posttool-recorder",
+        "posttool-verify",
+        "callout-detector",
+        "stop-backstop",
+    )
+
+    def test_doctor_checks_all_six_hooks(self, tmp_path, monkeypatch):
+        plugin_root = tmp_path / "plugin"
+        hooks = plugin_root / "hooks"
+        hooks.mkdir(parents=True)
+        for name in self._ALL_HOOKS:
+            script = hooks / name
+            script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+            script.chmod(0o755)
+        monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(plugin_root))
+
+        checks = tools.doctor()["data"]["checks"]
+        names = {c["name"] for c in checks}
+        for name in self._ALL_HOOKS:
+            assert f"hook_{name}" in names, f"doctor did not check hook {name}"
+        sb = next(c for c in checks if c["name"] == "hook_stop-backstop")
+        assert sb["status"] == "ok"
