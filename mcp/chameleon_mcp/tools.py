@@ -288,7 +288,12 @@ def _effective_profile_dir(repo_root: Path) -> Path:
       - the ref can't be resolved or the materialize fails
       - any unexpected error
     """
-    working = repo_root / ".chameleon"
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    # A linked git worktree has no .chameleon of its own; resolve to the main
+    # worktree's profile. Identity for every non-worktree root, so the canonical
+    # -ref / working-tree behavior below is unchanged off the worktree path.
+    working = resolve_profile_root(repo_root) / ".chameleon"
     config_file = working / "config.json"
     if not config_file.is_file():
         return working
@@ -816,7 +821,12 @@ def detect_repo(file_path: str) -> dict:
         )
 
     repo_id = _compute_repo_id(repo_root)
-    profile_dir = repo_root / ".chameleon"
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    # repo_id is git-remote-derived (identical across a repo's worktrees); the
+    # profile and trust live at the main worktree, which a linked worktree has
+    # none of its own. resolve_profile_root is the identity off the worktree path.
+    profile_dir = resolve_profile_root(repo_root) / ".chameleon"
     profile_file = profile_dir / "profile.json"
     profile_present = profile_file.exists()
     trust = trust_state_for(repo_id)

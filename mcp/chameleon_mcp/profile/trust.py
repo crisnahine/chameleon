@@ -24,6 +24,25 @@ from chameleon_mcp.safe_open import (
 )
 
 
+def _resolve_main_key(repo_root: Path | str, self_key: str) -> str | None:
+    """Resolved main-worktree path key for a linked worktree, else ``None``.
+
+    A grant on a main worktree covers its linked worktrees: they share the
+    git-remote-derived repo_id and read the main checkout's committed
+    ``.chameleon``. For every non-worktree root ``resolve_profile_root`` returns
+    the input unchanged, so this returns ``None`` and trust behavior is
+    byte-identical. Returns ``None`` when the resolved key equals ``self_key``
+    (nothing to inherit).
+    """
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    try:
+        main_key = str(resolve_profile_root(Path(repo_root)).resolve())
+    except OSError:
+        return None
+    return main_key if main_key != self_key else None
+
+
 class ProfileInjectionError(Exception):
     """A profile_dir failed the canonical-artifacts injection/secret scan.
 
@@ -137,6 +156,11 @@ class TrustRecord:
         specific = self.repo_root_specific_hashes.get(key)
         if specific:
             return specific
+        main_key = _resolve_main_key(repo_root, key)
+        if main_key is not None:
+            inherited = self.repo_root_specific_hashes.get(main_key)
+            if inherited:
+                return inherited
         return self.profile_sha256
 
     def grants_root(self, repo_root: Path | str) -> bool:
@@ -158,8 +182,14 @@ class TrustRecord:
         except OSError:
             key = str(repo_root)
         if self.repo_root_specific_hashes:
-            return key in self.repo_root_specific_hashes
-        return key == self.repo_root
+            if key in self.repo_root_specific_hashes:
+                return True
+            main_key = _resolve_main_key(repo_root, key)
+            return main_key is not None and main_key in self.repo_root_specific_hashes
+        if key == self.repo_root:
+            return True
+        main_key = _resolve_main_key(repo_root, key)
+        return main_key is not None and main_key == self.repo_root
 
 
 _HASHED_ARTIFACTS: tuple[str, ...] = (
@@ -406,8 +436,14 @@ def is_material_change(repo_id: str, current_profile_dir: Path) -> bool:
     record = trust_state_for(repo_id)
     if record is None:
         return False
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    # A linked worktree's own .chameleon is absent; hash the main worktree's
+    # profile it actually reads. resolve_profile_root is the identity for every
+    # non-worktree dir, so this is unchanged off the worktree path.
+    effective_dir = resolve_profile_root(current_profile_dir.parent) / ".chameleon"
     expected = record.hash_for_root(current_profile_dir.parent)
-    return expected != hash_profile(current_profile_dir)
+    return expected != hash_profile(effective_dir)
 
 
 def _current_user() -> str:

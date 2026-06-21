@@ -4,6 +4,24 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.3] - 2026-06-21
+
+### Fixed
+
+- **chameleon no longer silently no-ops inside a linked git worktree.** A
+  worktree's `.chameleon/` is gitignored and lives only at the main worktree, so
+  profile and trust lookups (keyed on the worktree's own path) missed entirely:
+  no archetype injection, no idiom enforcement, no trust, with no signal that
+  anything was off. Profile and trust now resolve through the worktree's `.git`
+  `gitdir:` pointer to the main worktree, so a worktree inherits the main
+  checkout's committed profile and trust grant with no extra `/chameleon-trust`
+  and regardless of where the worktree lives on disk (under the repo, a sibling,
+  or a fully custom path). The worktree stays the identity/archetype root, so
+  `repo_id` and path-relative archetype matching are unaffected. Strictly
+  additive: a new `resolve_profile_root` helper returns the input root unchanged
+  for every non-worktree layout, so standalone repos and monorepo workspaces
+  behave byte-identically.
+
 ## [2.22.2] - 2026-06-21
 
 The first release since 2.22.0. It rewrites the user-facing documentation to

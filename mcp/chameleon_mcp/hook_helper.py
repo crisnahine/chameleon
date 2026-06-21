@@ -1357,6 +1357,7 @@ def session_start() -> int:
 
     try:
         from chameleon_mcp.profile.trust import hash_profile, trust_state_for
+        from chameleon_mcp.worktree import resolve_profile_root
 
         # Place the statusline cache under the repo root, not the launch cwd. The
         # statusline script reads it at the repo root, so a subdir-launched session
@@ -1372,7 +1373,7 @@ def session_start() -> int:
             if ts is None or not ts.grants_root(root):
                 # ungranted workspace under a monorepo-shared repo_id
                 return "untrusted"
-            pdir = root / ".chameleon"
+            pdir = resolve_profile_root(root) / ".chameleon"
             if pdir.is_dir():
                 cur = hash_profile(pdir)
                 expected = ts.hash_for_root(root)
@@ -1380,7 +1381,10 @@ def session_start() -> int:
                     return "stale"
             return "trusted"
 
-        has_own_profile = repo_root and (repo_root / ".chameleon" / "profile.json").is_file()
+        has_own_profile = (
+            repo_root
+            and (resolve_profile_root(repo_root) / ".chameleon" / "profile.json").is_file()
+        )
         if has_own_profile:
             profiles.append({"name": repo_root.name, "trust": _trust_for(repo_root)})
         else:
@@ -1422,8 +1426,10 @@ def session_start() -> int:
     conventions_block = ""
     try:
         from chameleon_mcp.conventions import format_conventions_for_session
+        from chameleon_mcp.worktree import resolve_profile_root
 
-        if repo_root and (repo_root / ".chameleon" / "conventions.json").is_file():
+        _prof_root = resolve_profile_root(repo_root) if repo_root else None
+        if _prof_root and (_prof_root / ".chameleon" / "conventions.json").is_file():
             # Trust gate: conventions.json + principles.md are attacker-controllable
             # committed content, so don't inject an untrusted profile's conventions
             # into trusted system context (stale still injects, matching the
@@ -1439,12 +1445,12 @@ def session_start() -> int:
             if _ss_rec is not None and _ss_rec.grants_root(repo_root):
                 import json as _conv_json
 
-                conv_text = (repo_root / ".chameleon" / "conventions.json").read_text(
+                conv_text = (_prof_root / ".chameleon" / "conventions.json").read_text(
                     encoding="utf-8"
                 )
                 conv_data = _conv_json.loads(conv_text)
                 pr_text = ""
-                pr_path = repo_root / ".chameleon" / "principles.md"
+                pr_path = _prof_root / ".chameleon" / "principles.md"
                 if pr_path.is_file():
                     pr_text = pr_path.read_text(encoding="utf-8")
                 # Sanitize the attacker-controllable inputs at the boundary (see
