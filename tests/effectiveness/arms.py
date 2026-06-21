@@ -21,6 +21,14 @@ class ArmSpec:
     disable_env: bool  # True only for the "off" arm
     toggle_key: str | None = None
     toggle_value: bool | None = None
+    env_key: str | None = None  # env var set to "1" for this arm (env-flag toggle)
+
+
+# Feature toggles that are env vars, not config.json enforcement keys. The
+# config-key toggle path cannot flip these (they are read from the environment at
+# hook time, not the profile), so they get a paired arm that sets the env var for
+# its sessions instead. Maps the --toggle name to the env var it flips on.
+_ENV_TOGGLES: dict[str, str] = {"nearby_signatures": "CHAMELEON_NEARBY_SIGNATURES"}
 
 
 def _toggleable_keys() -> dict[str, bool]:
@@ -48,16 +56,30 @@ def parse_arms(arms_csv: str, toggle: str | None) -> list[ArmSpec]:
         for n in names
     ]
     if toggle:
-        key = toggle.removeprefix("enforcement.")
-        keys = _toggleable_keys()
-        if key not in keys:
-            raise ArmError(
-                f"--toggle {toggle!r} is not a boolean enforcement key; valid: {sorted(keys)}"
-            )
         non_off = [s for s in specs if not s.disable_env]
         if not non_off:
             raise ArmError("--toggle needs a non-off base arm (default shadow)")
         base = next((s for s in non_off if s.name == "shadow"), non_off[0])
+        env_toggle = _ENV_TOGGLES.get(toggle)
+        if env_toggle is not None:
+            # Env-flag feature (e.g. nearby_signatures): a paired arm identical to
+            # the base except the env var is on, so the diff isolates the feature.
+            specs.append(
+                ArmSpec(
+                    name=f"{base.name}~{toggle}=on",
+                    base_mode=base.base_mode,
+                    disable_env=False,
+                    env_key=env_toggle,
+                )
+            )
+            return specs
+        key = toggle.removeprefix("enforcement.")
+        keys = _toggleable_keys()
+        if key not in keys:
+            raise ArmError(
+                f"--toggle {toggle!r} is not a boolean enforcement key or env toggle; "
+                f"valid keys: {sorted(keys)}; valid env toggles: {sorted(_ENV_TOGGLES)}"
+            )
         flipped = not keys[key]
         specs.append(
             ArmSpec(
@@ -72,10 +94,13 @@ def parse_arms(arms_csv: str, toggle: str | None) -> list[ArmSpec]:
 
 
 def arm_env(spec: ArmSpec, base_env: dict[str, str]) -> dict[str, str]:
-    """Per-arm session env: copy of the run env, plus the off arm's kill switch."""
+    """Per-arm session env: copy of the run env, plus the off arm's kill switch
+    and any env-flag toggle this arm turns on."""
     env = dict(base_env)
     if spec.disable_env:
         env["CHAMELEON_DISABLE"] = "1"
+    if spec.env_key is not None:
+        env[spec.env_key] = "1"
     return env
 
 

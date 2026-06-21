@@ -93,3 +93,45 @@ def test_apply_arm_config_disables_auto_refresh(tmp_path):
     data = json.loads((cham / "config.json").read_text())
     assert data["auto_refresh"]["enabled"] is False
     assert data["auto_refresh"]["drift_threshold"] == 0.2  # sibling keys preserved
+
+
+# --- env-flag toggle (nearby_signatures / CHAMELEON_NEARBY_SIGNATURES) -------
+
+
+def test_env_toggle_creates_paired_arm_via_env_not_config():
+    from tests.effectiveness.arms import arm_env, parse_arms
+
+    specs = parse_arms("off,shadow", "nearby_signatures")
+    assert "shadow~nearby_signatures=on" in [s.name for s in specs]
+    paired = next(s for s in specs if s.env_key)
+    assert paired.env_key == "CHAMELEON_NEARBY_SIGNATURES"
+    assert paired.toggle_key is None  # not a config enforcement key
+    # the paired arm sets the env var for its sessions
+    assert arm_env(paired, {})["CHAMELEON_NEARBY_SIGNATURES"] == "1"
+    # the off arm never carries the toggle
+    off = next(s for s in specs if s.disable_env)
+    assert "CHAMELEON_NEARBY_SIGNATURES" not in arm_env(off, {})
+
+
+def test_env_toggle_does_not_write_to_config(tmp_path):
+    from tests.effectiveness.arms import apply_arm_config, parse_arms
+
+    paired = next(s for s in parse_arms("off,shadow", "nearby_signatures") if s.env_key)
+    cham = tmp_path / ".chameleon"
+    cham.mkdir()
+    (cham / "config.json").write_text('{"enforcement": {"mode": "shadow"}}', encoding="utf-8")
+    apply_arm_config(paired, tmp_path)
+    import json
+
+    enforcement = json.loads((cham / "config.json").read_text())["enforcement"]
+    # the env toggle must NOT leak into config.json as a bogus enforcement key
+    assert "CHAMELEON_NEARBY_SIGNATURES" not in enforcement
+    assert "nearby_signatures" not in enforcement
+
+
+def test_unknown_toggle_error_lists_env_toggles():
+    import pytest
+    from tests.effectiveness.arms import ArmError, parse_arms
+
+    with pytest.raises(ArmError, match="env toggles"):
+        parse_arms("off,shadow", "bogus_toggle")

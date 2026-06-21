@@ -147,6 +147,11 @@ class SymbolSignatures:
         """The signature row for ``name`` defined in ``rel``, or None."""
         return (self._entries.get(rel) or {}).get(name)
 
+    def for_file(self, rel: str) -> dict[str, dict]:
+        """All ``name -> signature row`` entries defined in ``rel`` (empty dict
+        when the file carries no recorded signatures)."""
+        return self._entries.get(rel) or {}
+
     def __len__(self) -> int:
         return len(self._entries)
 

@@ -4,6 +4,53 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.23.0] - 2026-06-22
+
+Per-edit injection enrichment from EFFECTIVENESS-REVIEW-2026-06-22, a measured
+A/B study showing chameleon lifts first-try convention conformance from 1/8 to
+8/8 on house rules a model cannot guess. This release ships the proven-direction,
+low-risk recommendations; the cross-file collaborator-signature work (R1) is
+grounded and planned but gated on an effectiveness A/B before it ships, because
+its own cited research ("more retrieval can hurt") means it must be measured, not
+assumed.
+
+### Changed
+
+- **The witness imperative is now calibrated by match quality.** A strong
+  structural match (exact/ast) tells the model to mirror the canonical witness
+  closely; a weak match downgrades it to a loose reference and points at the team
+  idioms as the repo truth regardless of file shape. Previously match_quality was
+  printed in the header but never changed the instruction. The directive is
+  emitted outside the untrusted spotlight region (it is chameleon's instruction
+  about the data, not data to imitate).
+- **Team idioms in the per-edit block are capped and deduped against the
+  witness.** Idioms are bounded to the same 1500-char budget the PostToolUse path
+  already used (the PreToolUse block had no cap), and any idiom line the canonical
+  witness already demonstrates verbatim is dropped: repeating what the witness
+  shows is noise that dilutes the model's attention on the whole block. Bounded
+  substring dedup, no hot-path I/O added; skipped when there is no witness.
+
+Block ordering was already match-quality-driven (the higher-signal section leads
+for primacy), so the calibrated imperative is the ordering signal the review
+asked for; no separate reorder mechanism was added.
+
+### Added
+
+- **Experimental: nearby collaborator signatures in the per-edit block
+  (`CHAMELEON_NEARBY_SIGNATURES=1`, default OFF).** The cross-file lever the
+  review measured (it flipped a cross-file call from wrong to correct): instead
+  of just sibling filenames, inject the real callable signatures of source files
+  in the edited file's directory, read from the precomputed
+  `symbol_signatures.json` (no live parse, mtime-cached, so it stays on the
+  <100ms hot path). Off by default and env-gated pending an effectiveness A/B,
+  because the review's own research ("more retrieval can hurt") means the lift
+  must be measured before it ships on. Bounded (5 files, 8 signatures, 700
+  chars), fails open, rides the existing sanitize + spotlight path. The default
+  path short-circuits on the env check, so it adds zero cost when off.
+
+Drift negative-examples (R5) and the test-shape witness / per-edit re-ranking
+(R6/R7) remain deferred pending the same A/B.
+
 ## [2.22.5] - 2026-06-21
 
 A behavioral-test hardening release. Where the v2.22.4 work came from a static

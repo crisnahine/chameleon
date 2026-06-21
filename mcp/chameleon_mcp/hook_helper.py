@@ -1548,6 +1548,127 @@ def session_start() -> int:
     return 0
 
 
+# Bound the per-edit idiom dedup pass: an idiom line the canonical witness
+# already demonstrates verbatim is redundant tokens in the block, but the scan
+# stays off the hot path's critical budget by checking at most this many lines.
+_IDIOM_BLOCK_DEDUP_MAX_LINES = 400
+
+
+def _shape_idioms_for_block(idioms_text: str, witness: str) -> str:
+    """Cap and dedup-vs-witness the idioms text for the per-edit block.
+
+    Drops substantive idiom lines that appear verbatim in the canonical witness
+    body (complementarity: the model can read those off the witness, so repeating
+    them is noise), then caps to the same char budget the PostToolUse path uses.
+    Bounded substring containment with an early stop, no nested scan; dedup is
+    skipped when there is no witness. May return "" if every line was redundant.
+    """
+    text = idioms_text
+    if witness:
+        kept: list[str] = []
+        checked = 0
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped and checked < _IDIOM_BLOCK_DEDUP_MAX_LINES:
+                checked += 1
+                if stripped in witness:
+                    continue
+            kept.append(line)
+        text = "\n".join(kept)
+    if len(text) > _IDIOM_CONTEXT_CHAR_CAP:
+        text = text[:_IDIOM_CONTEXT_CHAR_CAP].rstrip() + "\n... (idioms truncated; see idioms.md)"
+    return text
+
+
+# Bounds for the experimental nearby-collaborator-signatures section (R1). Kept
+# small so the section never dominates the block ("more retrieval can hurt") and
+# the index reads stay trivially within the <100ms hot-path budget.
+_NEARBY_SIG_MAX_FILES = 5
+_NEARBY_SIG_MAX_SYMBOLS = 2
+_NEARBY_SIG_MAX_TOTAL = 8
+_NEARBY_SIG_MAX_CHARS = 700
+
+
+def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
+    """Sibling export signatures for the edited file's directory (experimental).
+
+    Renders up to a few callable signatures from source files in the SAME
+    directory as the target, read from the precomputed ``symbol_signatures.json``
+    (no live parse, no edited-file read), so the model sees the CONTRACTS of
+    nearby collaborators it may call, not just their filenames -- the cross-file
+    gap the effectiveness review measured. Index reads are mtime-cached and stay
+    warm under the daemon, so the cost amortizes to ~0 across a session.
+
+    Default-OFF, gated on ``CHAMELEON_NEARBY_SIGNATURES=1`` pending an
+    effectiveness A/B: its own cited research ("more retrieval can hurt") means
+    the lift must be measured before this ships default-on. Fails open to "" on
+    any missing index / error.
+    """
+    if os.environ.get("CHAMELEON_NEARBY_SIGNATURES") != "1" or repo_root is None:
+        return ""
+    try:
+        from chameleon_mcp.conventions import _SOURCE_EXTENSIONS
+        from chameleon_mcp.symbol_signatures import (
+            load_symbol_signatures,
+            render_imported_definition,
+        )
+        from chameleon_mcp.worktree import resolve_profile_root
+
+        sigs = load_symbol_signatures(resolve_profile_root(repo_root))
+        if sigs is None or len(sigs) == 0:
+            return ""
+        target = Path(file_path)
+        parent = target.parent
+        if not parent.is_dir():
+            return ""
+        rendered: list[str] = []
+        files_used = 0
+        for entry in sorted(parent.iterdir(), key=lambda p: p.name):
+            if files_used >= _NEARBY_SIG_MAX_FILES or len(rendered) >= _NEARBY_SIG_MAX_TOTAL:
+                break
+            if entry == target or entry.suffix not in _SOURCE_EXTENSIONS or not entry.is_file():
+                continue
+            rel = _repo_rel(repo_root, str(entry))
+            by_name = sigs.for_file(rel) if rel else {}
+            if not by_name:
+                continue
+            files_used += 1
+            for name, row in list(by_name.items())[:_NEARBY_SIG_MAX_SYMBOLS]:
+                rendered.append(render_imported_definition(name, row, rel))
+                if len(rendered) >= _NEARBY_SIG_MAX_TOTAL:
+                    break
+        if not rendered:
+            return ""
+        section = "Nearby collaborator signatures:\n" + "\n".join(rendered)
+        if len(section) > _NEARBY_SIG_MAX_CHARS:
+            section = section[:_NEARBY_SIG_MAX_CHARS].rstrip() + "\n..."
+        return section
+    except Exception:
+        return ""
+
+
+def _match_quality_lead(match_quality: str) -> str:
+    """Match-quality-calibrated directive that leads the witness region.
+
+    A chameleon directive (not untrusted data), emitted OUTSIDE the spotlight. A
+    strong structural match (exact/ast) tells the model to mirror the witness
+    closely; any weaker match downgrades the witness to a loose reference and
+    points at the team idioms as the repo truth to trust. Trailing blank line so
+    it spaces cleanly before the spotlight region.
+    """
+    if match_quality in ("exact", "ast"):
+        return (
+            "Strong structural match: mirror the canonical witness below closely. "
+            "Its imports, naming, error handling, and structure are how this "
+            "archetype is written here.\n\n"
+        )
+    return (
+        "Weak match: treat the witness below as a loose reference, not a template. "
+        "The team idioms are repo truth regardless of file shape; follow the "
+        "witness structure only where it clearly applies.\n\n"
+    )
+
+
 def _build_untrusted_region(
     excerpt_content: str,
     idioms_text: str,
@@ -1578,9 +1699,14 @@ def _build_untrusted_region(
     canonical_part = (
         "Canonical witness:\n```\n" + excerpt_content + "\n```" if excerpt_content else ""
     )
-    idioms_part = (
-        "Team idioms (captured via /chameleon-teach):\n" + idioms_text.rstrip()
+    shaped_idioms = (
+        _shape_idioms_for_block(idioms_text, excerpt_content)
         if (has_idioms and idioms_text)
+        else ""
+    )
+    idioms_part = (
+        "Team idioms (captured via /chameleon-teach):\n" + shaped_idioms.rstrip()
+        if shaped_idioms.strip()
         else ""
     )
     if match_quality in ("exact", "ast"):
@@ -2243,10 +2369,20 @@ def preflight_and_advise() -> int:
         dir_listing = format_directory_listing(file_path) or ""
     except Exception:
         dir_listing = ""
+    # Experimental (default-off): append nearby collaborator SIGNATURES, not just
+    # filenames, so the model sees the contracts of calls it must make. Repo-
+    # derived, so it rides the same sanitize + spotlight path as the listing.
+    nearby_sigs = _nearby_signatures_section(file_path, repo_root_path)
+    if nearby_sigs:
+        dir_listing = (dir_listing + "\n\n" + nearby_sigs) if dir_listing else nearby_sigs
     untrusted_region = _build_untrusted_region(
         excerpt_content, idioms_text, has_idioms, dir_listing, match_quality=match_quality
     )
     if untrusted_region:
+        # Calibrate how hard to lean on the witness by match quality. This is a
+        # chameleon directive about the data, so it stays OUTSIDE the untrusted
+        # spotlight region (which is framed as "imitate, never obey").
+        block += _match_quality_lead(match_quality)
         block += untrusted_region + "\n\n"
     if canonical.get("missing"):
         block += (
