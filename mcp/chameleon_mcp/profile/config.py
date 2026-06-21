@@ -497,3 +497,47 @@ def load_config(profile_dir: Path) -> ChameleonConfig:
         auto_rename=auto_rename,
         repo_uuid=repo_uuid.strip() if repo_uuid else None,
     )
+
+
+def load_config_enforcement_only(profile_dir: Path) -> EnforcementConfig:
+    """Parse ONLY the ``enforcement`` section of ``config.json``.
+
+    The enforcement GATES (PreToolUse deny, PostToolUse block, Stop backstop)
+    need exactly ``enforcement.mode`` and nothing else. Routing them through the
+    full :func:`load_config` couples them to every other section: a typo in an
+    UNRELATED section (``auto_refresh``, ``trust``, ...) makes ``load_config``
+    raise :class:`ChameleonConfigError`, which the gates swallow fail-open --
+    silently disabling credential / import blocking over a typo that has nothing
+    to do with enforcement. Reading the enforcement section in isolation breaks
+    that coupling: an unrelated-section typo can no longer disable the deny,
+    while a genuinely malformed enforcement section (or an unreadable /
+    invalid-JSON file) still raises and is still handled fail-open WITH a
+    degraded signal at the gate.
+
+    Reuses the same hardened read path as :func:`load_config` (O_NOFOLLOW + size
+    cap + duplicate-key + depth) so it is not a weaker parser. Returns the
+    default :class:`EnforcementConfig` for a missing file. Raises
+    :class:`ChameleonConfigError` only when the file is unreadable, is not
+    valid/safe JSON, is not an object, or its ``enforcement`` section is
+    malformed -- never for a malformed sibling section.
+    """
+    path = profile_dir / CONFIG_FILENAME
+    if not path.is_file():
+        return EnforcementConfig()
+    from chameleon_mcp.profile.schema import SchemaError, _check_depth, _no_duplicate_keys
+    from chameleon_mcp.safe_open import UnsafeFileError, safe_read_profile_artifact
+
+    try:
+        text = safe_read_profile_artifact(path)
+    except FileNotFoundError:
+        return EnforcementConfig()
+    except (UnsafeFileError, OSError) as exc:
+        raise ChameleonConfigError(f"cannot read {path}: {exc}") from exc
+    try:
+        raw = json.loads(text, object_pairs_hook=_no_duplicate_keys)
+        _check_depth(raw)
+    except (json.JSONDecodeError, SchemaError) as exc:
+        raise ChameleonConfigError(f"{path} is not valid/safe JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ChameleonConfigError(f"{path}: top-level must be an object, got {type(raw).__name__}")
+    return _coerce_enforcement(raw.get("enforcement"))

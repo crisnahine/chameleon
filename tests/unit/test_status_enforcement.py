@@ -222,3 +222,58 @@ def test_status_surfaces_precision_summary(make_trusted_repo):
     assert precision["active_block_rules"] == 1
     assert precision["sampled_files"] == 9
     assert precision["max_fp_rate"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# REAL-TEST-REPORT-2026-06-21: status surfaces malformed config (#2) + the
+# correctness_judge flag (#6).
+# --------------------------------------------------------------------------- #
+
+
+def test_status_reports_correctness_judge_flag(make_trusted_repo):
+    from chameleon_mcp.tools import get_status
+
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    enf = get_status(str(repo))["data"]["enforcement"]
+    # finding #6: correctness_judge was parsed but never surfaced in status.
+    assert enf["correctness_judge"] is True
+    assert enf["config_malformed"] is False
+
+
+def test_status_surfaces_malformed_enforcement_config(make_trusted_repo):
+    from chameleon_mcp.enforcement_calibration import write_block_rules
+    from chameleon_mcp.tools import get_status
+
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    # Break the enforcement section; enforcement.json (a separate artifact) still
+    # lists the secret rule active.
+    profile_dir.joinpath("config.json").write_text(
+        json.dumps({"enforcement": {"mode": 42}}), encoding="utf-8"
+    )
+    write_block_rules(
+        profile_dir,
+        {"secret-detected-in-content": {"active": True, "fp_rate": 0.0, "sampled": 3}},
+    )
+    enf = get_status(str(repo))["data"]["enforcement"]
+    # finding #2: status used to show mode "off" beside an "active" secret rule
+    # with no malformed signal. Now it flags the malformed config and does not
+    # claim rules are armed while the mode is unreadable.
+    assert enf["config_malformed"] is True
+    assert enf["mode"] == "off"
+    assert enf["active"] == []
+
+
+def test_status_unrelated_section_typo_still_shows_enforce(make_trusted_repo):
+    from chameleon_mcp.tools import get_status
+
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    # A typo in an UNRELATED section must not make status report enforcement off
+    # (the gates still enforce via the isolated read), so config_malformed is
+    # False and the mode is the real "enforce".
+    profile_dir.joinpath("config.json").write_text(
+        json.dumps({"enforcement": {"mode": "enforce"}, "auto_refresh": {"enabled": "yes"}}),
+        encoding="utf-8",
+    )
+    enf = get_status(str(repo))["data"]["enforcement"]
+    assert enf["config_malformed"] is False
+    assert enf["mode"] == "enforce"

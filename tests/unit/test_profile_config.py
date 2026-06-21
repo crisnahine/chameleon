@@ -425,3 +425,67 @@ def test_auto_preserve_when_accepts_always(tmp_path):
     )
     cfg = load_config(pd)
     assert cfg.trust.auto_preserve_when == "always"
+
+
+# --------------------------------------------------------------------------- #
+# REAL-TEST-REPORT-2026-06-21 #1: load_config_enforcement_only reads the
+# enforcement section in isolation so an unrelated-section typo cannot disable
+# the enforcement gates.
+# --------------------------------------------------------------------------- #
+
+
+def _write_config(tmp_path, obj):
+    import json as _json
+
+    d = tmp_path / ".chameleon"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "config.json").write_text(_json.dumps(obj), encoding="utf-8")
+    return d
+
+
+def test_enforcement_only_ignores_unrelated_section_typo(tmp_path):
+    from chameleon_mcp.profile.config import load_config, load_config_enforcement_only
+
+    d = _write_config(
+        tmp_path, {"enforcement": {"mode": "enforce"}, "auto_refresh": {"enabled": "yes"}}
+    )
+    # the full loader raises on the bad auto_refresh value...
+    import pytest as _pytest
+
+    from chameleon_mcp.profile.config import ChameleonConfigError
+
+    with _pytest.raises(ChameleonConfigError):
+        load_config(d)
+    # ...but the isolated enforcement read returns the real mode unaffected.
+    assert load_config_enforcement_only(d).mode == "enforce"
+
+
+def test_enforcement_only_raises_on_enforcement_section_typo(tmp_path):
+    import pytest as _pytest
+
+    from chameleon_mcp.profile.config import ChameleonConfigError, load_config_enforcement_only
+
+    d = _write_config(tmp_path, {"enforcement": {"mode": 42}})
+    with _pytest.raises(ChameleonConfigError):
+        load_config_enforcement_only(d)
+
+
+def test_enforcement_only_missing_file_is_default(tmp_path):
+    from chameleon_mcp.profile.config import EnforcementConfig, load_config_enforcement_only
+
+    d = tmp_path / ".chameleon"
+    d.mkdir()
+    out = load_config_enforcement_only(d)
+    assert out.mode == EnforcementConfig().mode
+
+
+def test_enforcement_only_raises_on_torn_json(tmp_path):
+    import pytest as _pytest
+
+    from chameleon_mcp.profile.config import ChameleonConfigError, load_config_enforcement_only
+
+    d = tmp_path / ".chameleon"
+    d.mkdir()
+    (d / "config.json").write_text('{"enforcement": {"mode": "enforce"', encoding="utf-8")
+    with _pytest.raises(ChameleonConfigError):
+        load_config_enforcement_only(d)

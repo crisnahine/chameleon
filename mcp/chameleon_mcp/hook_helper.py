@@ -1807,14 +1807,20 @@ def preflight_and_advise() -> int:
                             blanket=False,
                         )
                     if hard:
-                        from chameleon_mcp.profile.config import load_config
+                        from chameleon_mcp.profile.config import load_config_enforcement_only
                         from chameleon_mcp.violation_class import violation_line
 
-                        mode = load_config(profile_dir).enforcement.mode
-                        if mode in ("shadow", "enforce"):
+                        # Read ONLY the enforcement section: a typo in an unrelated
+                        # config section must not raise and disable the credential
+                        # deny (the whole-config load_config did exactly that).
+                        mode = load_config_enforcement_only(profile_dir).mode
+                        # would_block is a SHADOW-mode measurement; an enforce-mode
+                        # block is recorded as an edit decision, not a would-block,
+                        # so counting it here inflates the shadow -> enforce tally.
+                        if mode == "shadow":
                             for v in hard[:3]:
                                 _metric(
-                                    advisory_emitted=(mode == "shadow"),
+                                    advisory_emitted=True,
                                     repo_id=repo_id,
                                     archetype=archetype_name,
                                     would_block=True,
@@ -1854,6 +1860,97 @@ def preflight_and_advise() -> int:
                                     "on the offending line; a bare chameleon-ignore "
                                     "does not cover credentials."
                                 )
+                            )
+                            # Record the actual block in the decision log (the
+                            # non-shadow audit channel, like the PostToolUse
+                            # block) so /chameleon-explain can replay it. would_block
+                            # stays shadow-only so the promotion tally is clean.
+                            _record_edit_decision(
+                                repo_id,
+                                repo_root_path,
+                                file_path,
+                                archetype=archetype_name,
+                                match_quality=None,
+                                confidence_band=None,
+                                violations_raised=len(hard),
+                                blockable_rules=["secret-detected-in-content"],
+                                outcome="blocked",
+                                session_id=session_id,
+                            )
+                            return 0
+                if "eval-call" in active_rules:
+                    # eval()/exec() is a deterministic RCE sink and a hard-class
+                    # security fact, so it earns the same pre-write deny as a
+                    # hardcoded credential: the report found it was detected
+                    # everywhere but blocked nowhere pre-write. is_hard_class keeps
+                    # only the error-severity direct form, so class_eval/
+                    # instance_eval stay advisory.
+                    session_id = payload.get("session_id")
+                    repo_id = repo_info.get("id") or repo_id_hint
+                    hard_eval, eval_suppressed = _proposed_hard_eval_violations(
+                        proposed,
+                        file_path,
+                        tool_name=str(payload.get("tool_name") or ""),
+                    )
+                    if eval_suppressed:
+                        _record_overrides(
+                            repo_id,
+                            [{"rule": "eval-call"}],
+                            archetype=archetype_name,
+                            file_rel=_repo_rel(repo_root_path, file_path),
+                            session_id=session_id,
+                            blanket=False,
+                        )
+                    if hard_eval:
+                        from chameleon_mcp.profile.config import load_config_enforcement_only
+                        from chameleon_mcp.violation_class import violation_line
+
+                        mode = load_config_enforcement_only(profile_dir).mode
+                        if mode == "shadow":
+                            for v in hard_eval[:3]:
+                                _metric(
+                                    advisory_emitted=True,
+                                    repo_id=repo_id,
+                                    archetype=archetype_name,
+                                    would_block=True,
+                                    rule="eval-call",
+                                    file_rel=_repo_rel(repo_root_path, file_path),
+                                    line=violation_line(v),
+                                )
+                        if mode == "enforce":
+                            if archetype_name:
+                                _seed_archetype_seen(repo_id, session_id, archetype_name)
+                            from chameleon_mcp.sanitization import (
+                                sanitize_for_chameleon_context,
+                            )
+
+                            locs = ", ".join(
+                                str(violation_line(v)) for v in hard_eval[:3] if violation_line(v)
+                            )
+                            where = f" at line {locs}" if locs else ""
+                            _emit_pretool_deny(
+                                sanitize_for_chameleon_context(
+                                    "chameleon: dynamic code execution (eval/exec) in "
+                                    f"the proposed content{where}. eval()/exec() on "
+                                    "untrusted input is a remote-code-execution risk; "
+                                    "use a safe parser or an explicit dispatch table "
+                                    "instead. If this call is genuinely required, add "
+                                    f"{_ignore_hint(file_path, 'eval-call')} on the "
+                                    "offending line; a bare chameleon-ignore does not "
+                                    "cover eval-call."
+                                )
+                            )
+                            _record_edit_decision(
+                                repo_id,
+                                repo_root_path,
+                                file_path,
+                                archetype=archetype_name,
+                                match_quality=None,
+                                confidence_band=None,
+                                violations_raised=len(hard_eval),
+                                blockable_rules=["eval-call"],
+                                outcome="blocked",
+                                session_id=session_id,
                             )
                             return 0
     except Exception as exc:
@@ -1941,7 +2038,6 @@ def preflight_and_advise() -> int:
         ):
             from chameleon_mcp.lint_engine import detect_language
             from chameleon_mcp.prewrite_lint import banned_imports_in_content
-            from chameleon_mcp.profile.config import load_config
 
             profile_dir = _enf_profile_dir(repo_root_path)
             if active_rules is None:
@@ -1992,7 +2088,13 @@ def preflight_and_advise() -> int:
                             blanket="" in ign,
                         )
                     if banned and not ("" in ign or "import-preference-violation" in ign):
-                        mode = load_config(profile_dir).enforcement.mode
+                        from chameleon_mcp.profile.config import (
+                            load_config_enforcement_only,
+                        )
+
+                        # Isolated enforcement read: an unrelated config-section
+                        # typo must not raise and silently disable this deny.
+                        mode = load_config_enforcement_only(profile_dir).mode
                         if mode == "enforce":
                             # The message is built from attacker-controllable
                             # conventions.json values, so sanitize it before it
@@ -2801,8 +2903,9 @@ def _scan_archetype_independent(
     resolution fails the convention/AST lints have nothing to compare against
     and are correctly skipped, but the credential scan must still run so a
     leaked token in an unarchetyped file is not invisible. Sinks and style are
-    scanned here too, but they surface as advisories on this path: eval-call
-    enforcement stays gated on an archetype match. Each sub-scan is wrapped so a
+    scanned here too; eval-call is archetype-independent, so an error-severity
+    eval()/exec() in an unarchetyped file enforces here (it no longer needs an
+    archetype match), while style stays advisory. Each sub-scan is wrapped so a
     raising scanner contributes nothing rather than aborting the whole check;
     the caller treats an empty list as "clean".
 
@@ -2886,11 +2989,14 @@ def _posttool_no_archetype_advisory(
     try:
         from chameleon_mcp.violation_class import is_archetype_independent, is_hard_class
 
-        # Only an archetype-INDEPENDENT hard rule (a deterministic secret) can be
-        # enforced without an archetype: the Stop backstop's no-archetype re-lint
-        # filters to the same set, since the confidence/match-quality gate an
-        # archetype-dependent rule (eval) needs can never pass here. Recording only
-        # what the backstop will actually block keeps the two paths consistent.
+        # Only an archetype-INDEPENDENT hard rule can be enforced without an
+        # archetype: the Stop backstop's no-archetype re-lint filters to the same
+        # set. Deterministic security facts qualify -- a hardcoded secret AND an
+        # error-severity eval()/exec() are dangerous regardless of archetype, so
+        # both enforce here. Archetype-DEPENDENT rules (naming, inheritance) need
+        # a confidence/match-quality gate that can never pass without an archetype
+        # and are correctly excluded. Recording only what the backstop will
+        # actually block keeps the two paths consistent.
         hard = [
             v for v in violations if is_hard_class(v) and is_archetype_independent(v.get("rule"))
         ]
@@ -3013,6 +3119,56 @@ def _proposed_hard_secret_violations(
         return [], False
     tag_secret_hardness(violations)
     hard = [v for v in violations if is_hard_class(v)]
+    if not hard:
+        return [], False
+    named_suppressed = False
+    idx = build_ignore_index(clipped, file_path=file_path)
+    if idx is not None:
+        kept = [v for v in hard if not is_violation_ignored(v, idx)]
+        named_suppressed = len(kept) < len(hard)
+        hard = kept
+    if hard and tool_name in ("Edit", "NotebookEdit"):
+        disk_idx = build_ignore_index(_read_file_for_ignore(file_path), file_path=file_path)
+        if disk_idx is not None and (disk_idx.file_rules or disk_idx.named_anywhere):
+            file_scope = IgnoreIndex(
+                file_rules=disk_idx.file_rules,
+                named_anywhere=disk_idx.named_anywhere,
+            )
+            kept = [v for v in hard if not is_violation_ignored(v, file_scope)]
+            named_suppressed = named_suppressed or len(kept) < len(hard)
+            hard = kept
+    return hard, named_suppressed
+
+
+def _proposed_hard_eval_violations(
+    proposed: str, file_path: str, *, tool_name: str
+) -> tuple[list[dict], bool]:
+    """Hard-class eval-call violations in proposed content, after ignore filtering.
+
+    The sibling of :func:`_proposed_hard_secret_violations` for the other
+    deterministic security sink. Scans the proposed content for eval()/exec()
+    via ``scan_dangerous_sinks`` and keeps only the hard class -- ``is_hard_class``
+    drops the warning-severity ``*_eval`` metaprogramming variants
+    (``class_eval``/``instance_eval``), so only the error-severity direct form
+    can deny. Hits a NAMED ``eval-call`` directive covers are dropped (eval-call
+    is blanket-immune, so a bare chameleon-ignore does not clear it). Returns
+    ``(violations, named_suppressed)``; the scan is capped at the same ceiling as
+    the secret scan, with content past the cap left to the PostToolUse/Stop scans.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.lint_engine import detect_language, scan_dangerous_sinks
+    from chameleon_mcp.violation_class import (
+        IgnoreIndex,
+        build_ignore_index,
+        is_hard_class,
+        is_violation_ignored,
+    )
+
+    clipped = proposed[: threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS")]
+    violations = [
+        v.to_dict() for v in scan_dangerous_sinks(clipped, language=detect_language(file_path))
+    ]
+    hard = [v for v in violations if v.get("rule") == "eval-call" and is_hard_class(v)]
     if not hard:
         return [], False
     named_suppressed = False
@@ -3541,11 +3697,13 @@ def posttool_verify() -> int:
             # hash drifted from the one the user trusted) only verifies; it never
             # blocks, because the conventions it would enforce were not re-reviewed.
             try:
-                from chameleon_mcp.profile.config import load_config
+                from chameleon_mcp.profile.config import load_config_enforcement_only
                 from chameleon_mcp.profile.trust import hash_profile
 
                 enforce_off = os.environ.get("CHAMELEON_ENFORCE") == "0"
-                mode = load_config(_enf_profile_dir(repo_root)).enforcement.mode
+                # Isolated enforcement read: an unrelated config-section typo must
+                # not raise and silently demote this block to advisory.
+                mode = load_config_enforcement_only(_enf_profile_dir(repo_root)).mode
                 data = arch_result.get("data") or {}
                 match_quality = data.get("match_quality")
                 gate_band = data.get("confidence_band")
@@ -3562,27 +3720,32 @@ def posttool_verify() -> int:
                     and at_l2
                     and trusted_not_stale
                 ):
-                    try:
-                        from chameleon_mcp.metrics import emit_hook_metric
+                    # would_block is a SHADOW-mode measurement; the enforce-mode
+                    # block below is recorded as an edit decision, so emitting a
+                    # would_block row here too would inflate the shadow tally that
+                    # drives the shadow -> enforce promotion.
+                    if mode == "shadow":
+                        try:
+                            from chameleon_mcp.metrics import emit_hook_metric
 
-                        # One would_block row per blockable rule on this file, so
-                        # the shadow report attributes counts to the specific rule
-                        # and can sample the off-pattern file for spot-check.
-                        file_rel = _repo_rel(repo_root, file_path)
-                        for v in blockable_now:
-                            emit_hook_metric(
-                                "posttool-verify",
-                                elapsed_ms=0,
-                                repo_id=repo_id,
-                                advisory_emitted=True,
-                                archetype=archetype_name,
-                                would_block=True,
-                                rule=v.get("rule"),
-                                file_rel=file_rel,
-                                line=v.get("line"),
-                            )
-                    except Exception:
-                        pass
+                            # One would_block row per blockable rule on this file,
+                            # so the shadow report attributes counts to the
+                            # specific rule and can sample the file for spot-check.
+                            file_rel = _repo_rel(repo_root, file_path)
+                            for v in blockable_now:
+                                emit_hook_metric(
+                                    "posttool-verify",
+                                    elapsed_ms=0,
+                                    repo_id=repo_id,
+                                    advisory_emitted=True,
+                                    archetype=archetype_name,
+                                    would_block=True,
+                                    rule=v.get("rule"),
+                                    file_rel=file_rel,
+                                    line=v.get("line"),
+                                )
+                        except Exception:
+                            pass
                     if mode == "enforce":
                         rules = ", ".join(sorted({v.get("rule") for v in blockable_now}))
                         msgs = "; ".join(v.get("message", "") for v in blockable_now[:3])
@@ -5672,13 +5835,16 @@ def _stop_gates(
     """
     try:
         from chameleon_mcp.enforcement import load_state, save_state
-        from chameleon_mcp.profile.config import load_config
 
         if os.environ.get("CHAMELEON_ENFORCE") == "0":
             _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "enforce_env_off")
             return {}
 
-        cfg = load_config(_enf_profile_dir(repo_root)).enforcement
+        from chameleon_mcp.profile.config import load_config_enforcement_only
+
+        # Isolated enforcement read: an unrelated config-section typo must not
+        # raise and silently disable the Stop backstop.
+        cfg = load_config_enforcement_only(_enf_profile_dir(repo_root))
         if not cfg.stop_backstop:
             _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "feature_disabled")
             return {}
@@ -6099,9 +6265,9 @@ def _build_session_attestation(
     except Exception:
         pass
     try:
-        from chameleon_mcp.profile.config import load_config
+        from chameleon_mcp.profile.config import load_config_enforcement_only
 
-        payload["enforcement_mode"] = load_config(_enf_profile_dir(repo_root)).enforcement.mode
+        payload["enforcement_mode"] = load_config_enforcement_only(_enf_profile_dir(repo_root)).mode
     except Exception as exc:
         _note_if_config_malformed(exc, repo_id, session_id, "attestation_enforcement_mode")
 

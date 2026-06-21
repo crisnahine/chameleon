@@ -147,6 +147,23 @@ def _would_block_rows(tmp_path: Path) -> list[dict]:
     ]
 
 
+def _blocked_decisions(tmp_path: Path, repo_id: str) -> list[dict]:
+    """Rows the deny logged to the decision_log (the non-shadow audit channel)."""
+    db = tmp_path / repo_id / "drift.db"
+    if not db.is_file():
+        return []
+    con = sqlite3.connect(str(db))
+    try:
+        con.row_factory = sqlite3.Row
+        try:
+            rows = con.execute("SELECT * FROM decision_log WHERE outcome = 'blocked'").fetchall()
+        except sqlite3.OperationalError:
+            return []
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
 def test_enforce_write_with_secret_denied(tmp_path: Path):
     repo, repo_id = _build_repo(tmp_path, mode="enforce")
     write_block_rules(repo / ".chameleon", ACTIVE_SECRET_RULE)
@@ -256,9 +273,12 @@ def test_shadow_mode_records_would_block_and_does_not_deny(tmp_path: Path):
     assert row["line"] == 1
 
 
-def test_enforce_mode_also_records_would_block_row(tmp_path: Path):
-    # Posttool parity: an enforce deny that leaves no telemetry row is
-    # invisible to /chameleon-explain and the shadow report's rule history.
+def test_enforce_deny_records_block_decision_not_would_block(tmp_path: Path):
+    # would_block is a SHADOW measurement: an enforce deny must NOT inflate it,
+    # because the shadow -> enforce promotion tally reads that counter (finding
+    # #7). The actual block stays auditable via the decision log -- the same
+    # channel the PostToolUse block uses -- so /chameleon-explain can replay it
+    # without polluting the promotion signal.
     repo, repo_id = _build_repo(tmp_path, mode="enforce")
     write_block_rules(repo / ".chameleon", ACTIVE_SECRET_RULE)
     out = _run_preflight(
@@ -271,7 +291,8 @@ def test_enforce_mode_also_records_would_block_row(tmp_path: Path):
         env={"CHAMELEON_ENFORCE": "1"},
     )
     assert _decision(out) == "deny"
-    assert _would_block_rows(tmp_path)
+    assert not _would_block_rows(tmp_path)
+    assert _blocked_decisions(tmp_path, repo_id)
 
 
 def test_enforce_env_zero_does_not_deny(tmp_path: Path):
@@ -550,3 +571,85 @@ def test_malformed_payloads_fail_open(tmp_path: Path):
         assert rc == 0, repr(text)
         out = "".join(captured).strip()
         assert json.loads(out) == {}, repr(text)
+
+
+# --------------------------------------------------------------------------- #
+# REAL-TEST-REPORT-2026-06-21 regressions: config isolation (#1) + eval (#3)
+# --------------------------------------------------------------------------- #
+
+ACTIVE_EVAL_RULE = {"eval-call": {"active": True, "fp_rate": 0.0, "sampled": 3}}
+EVAL_CONTENT = "const r = eval(userInput);\n"
+NAMED_IGNORED_EVAL = "const r = eval(userInput); // chameleon-ignore eval-call\n"
+
+
+def test_unrelated_config_section_typo_does_not_disable_secret_deny(tmp_path: Path):
+    # finding #1: load_config validates the WHOLE config, so a typo in an
+    # UNRELATED section used to raise and silently downgrade the credential deny
+    # to advisory. The gate now reads the enforcement section in isolation, so an
+    # auto_refresh typo can no longer disable credential blocking.
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    (repo / ".chameleon" / "config.json").write_text(
+        json.dumps({"enforcement": {"mode": "enforce"}, "auto_refresh": {"enabled": "yes"}}),
+        encoding="utf-8",
+    )
+    write_block_rules(repo / ".chameleon", ACTIVE_SECRET_RULE)
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/config.ts"),
+        content=SECRET_CONTENT,
+        session_id="s-iso",
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert _decision(out) == "deny"
+
+
+def test_eval_call_denied_pre_write_in_enforce(tmp_path: Path):
+    # finding #3: a real eval()/exec() is an RCE and now earns the same pre-write
+    # deny a hardcoded credential gets.
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    write_block_rules(repo / ".chameleon", ACTIVE_EVAL_RULE)
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/run.ts"),
+        content=EVAL_CONTENT,
+        session_id="s-eval",
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert _decision(out) == "deny"
+
+
+def test_named_ignore_clears_eval_deny(tmp_path: Path):
+    # a NAMED directive clears the eval deny; the bare form does not (eval-call is
+    # blanket-immune), mirroring the credential rule.
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    write_block_rules(repo / ".chameleon", ACTIVE_EVAL_RULE)
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/run.ts"),
+        content=NAMED_IGNORED_EVAL,
+        session_id="s-eval-ign",
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert _decision(out) != "deny"
+
+
+def test_eval_shadow_mode_does_not_deny(tmp_path: Path):
+    # shadow never blocks; it records the would-block measurement instead.
+    repo, repo_id = _build_repo(tmp_path, mode="shadow")
+    write_block_rules(repo / ".chameleon", ACTIVE_EVAL_RULE)
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/run.ts"),
+        content=EVAL_CONTENT,
+        session_id="s-eval-shadow",
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert _decision(out) != "deny"

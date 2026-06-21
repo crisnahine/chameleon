@@ -3816,6 +3816,10 @@ def get_status(repo: str) -> dict:
     - ``idiom_review`` — whether the once-per-session Stop-hook idiom/principle
       self-review fires (default on in enforce mode).
     - ``idiom_judge`` — opt-in flag that strengthens the idiom-review directive.
+    - ``correctness_judge`` — whether the turn-end independent correctness
+      reviewer runs (default on; advisory, never blocks).
+    - ``config_malformed`` — True when config.json is present but its enforcement
+      section is unparseable, so enforcement is off (gates fail open) until fixed.
 
     Fail-open: a missing/corrupt config or enforcement.json degrades to the
     safest default (advisory mode, no active rules) rather than raising. The
@@ -3868,16 +3872,31 @@ def get_status(repo: str) -> dict:
     mode = "off"
     idiom_review = True
     idiom_judge = False
+    correctness_judge = True
+    config_malformed = False
     try:
-        from chameleon_mcp.profile.config import load_config
+        from chameleon_mcp.profile.config import (
+            ChameleonConfigError,
+            load_config_enforcement_only,
+        )
 
-        _enf = load_config(profile_dir).enforcement
+        # Read the enforcement section in isolation, exactly as the enforcement
+        # gates do, so a typo in an unrelated config section does not make status
+        # report enforcement "off" while the gates are in fact still enforcing.
+        _enf = load_config_enforcement_only(profile_dir)
         mode = _enf.mode
         idiom_review = _enf.idiom_review
         idiom_judge = _enf.idiom_judge
+        correctness_judge = _enf.correctness_judge
+    except ChameleonConfigError:
+        # The enforcement section (or the whole file) is unparseable, so the
+        # gates fail open and enforcement is genuinely OFF. Surface that (doctor
+        # already does) instead of showing "off" beside an "active" secret rule,
+        # which reads as a deliberate opt-out rather than a broken config.
+        config_malformed = True
+        mode = "off"
     except Exception:
-        # Malformed config.json: enforcement features are inactive until
-        # fixed. Report the safest mode rather than crashing the status call.
+        # Any other read failure: fail-open to the safe mode without crashing.
         mode = "off"
 
     from chameleon_mcp.enforcement_calibration import (
@@ -3896,6 +3915,10 @@ def get_status(repo: str) -> dict:
         lang_inert=lambda r: rule_inert_for_language(r, profile_dir),
         signal_inert=lambda r: rule_inert_missing_signal(r, profile_dir),
     )
+    if config_malformed:
+        # Enforcement is off because the config could not be parsed; do not list
+        # rules as "active" when the mode that would arm them is unreadable.
+        active, demoted = [], []
 
     # Live override-rate section. bootstrap fp_rate (above, calibration against
     # committed files) and the override rate (here, team contention on real AI
@@ -3918,6 +3941,10 @@ def get_status(repo: str) -> dict:
         "demoted": demoted,
         "idiom_review": idiom_review,
         "idiom_judge": idiom_judge,
+        "correctness_judge": correctness_judge,
+        # True when config.json is present but its enforcement section could not
+        # be parsed: enforcement is off (gates fail open) until it is fixed.
+        "config_malformed": config_malformed,
         # Headline calibration-precision: the measured false-positive ceiling the
         # active block rules clear against this repo's own committed files.
         "precision": _block_precision_summary(block_rules, active),
@@ -5667,7 +5694,15 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     profile_path = profile_dir / "profile.json"
 
     if not (cached and profile_path.is_file()):
-        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+        # No prior profile: refresh implicitly bootstraps rather than refusing
+        # (the documented idempotent-refresh design). Tag the envelope so the
+        # caller can distinguish an INITIAL bootstrap from a re-derive -- the
+        # status stays "success" because the profile written is complete and
+        # correct, but "noop"/"refreshed" would misdescribe a first-time write.
+        result = bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+        if isinstance(result, dict) and isinstance(result.get("data"), dict):
+            result["data"]["implicit_bootstrap"] = True
+        return result
 
     cached_files = cached.get("files_indexed") or 0
     last_seen_iso = cached.get("last_seen_at") or ""

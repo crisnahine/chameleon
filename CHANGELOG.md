@@ -4,6 +4,66 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.5] - 2026-06-21
+
+A behavioral-test hardening release. Where the v2.22.4 work came from a static
+audit, this came from running the plugin: 100 scenarios on real bootstrapped
+repos through the live hooks (the exact JSON payloads Claude Code sends), with
+every failure independently re-run on a fresh repo. 7 findings, each re-verified
+across three independent rounds against live code. It closes a set of fail-open
+and visibility gaps and completes the v2.22.4 silent-failure sweep.
+
+### Fixed
+
+- **A typo in an unrelated config section no longer disables credential / import
+  blocking.** The enforcement gates read `config.json` through `load_config`,
+  which validates the WHOLE file and raises on any malformed section, so a typo
+  in `auto_refresh` or `trust` made the gate swallow the error and fall through,
+  silently disabling the secret deny. The gates (PreToolUse secret + import deny,
+  PostToolUse block, Stop backstop) now read the enforcement section in isolation
+  via `load_config_enforcement_only`; an unrelated-section typo can no longer
+  disable enforcement, while a genuinely malformed enforcement section still
+  fails open WITH the degraded check-event from v2.22.4. Not fail-closed: that is
+  circular -- the mode is exactly what could not be parsed -- and would wedge
+  every edit on a stray typo.
+- **A real `eval()` / `exec()` is now hard-blocked.** `eval-call` was an active,
+  error-severity block rule with no enforcement path -- detected everywhere,
+  blocked nowhere: only the secret and import rules had a deny gate, and eval-call
+  was gated behind an archetype match, so a brand-new or unarchetyped file (where
+  `eval(userInput)` most often lands) got no hard block while a leaked credential
+  in the same file was denied. eval-call is now archetype-independent (like the
+  secret rule) and gets a pre-write PreToolUse deny. `is_hard_class` keeps this to
+  the error-severity direct form, so `class_eval` / `instance_eval` stay advisory;
+  a NAMED `chameleon-ignore eval-call` clears it, a bare directive does not.
+- **A no-remote repo's git worktree now inherits the main checkout's identity.**
+  `repo_id` for a remote-less repo is path-derived, so a linked worktree got a
+  distinct id, read `untrusted`, and silently no-opped both the advisory and the
+  deny. `_compute_repo_id` now resolves a worktree to its main root first, so
+  trust and enforcement transfer (the remote-backed case was already fixed in
+  v2.22.4).
+- **`/chameleon-status` surfaces a malformed config instead of hiding it.** A
+  broken config made status report `mode: off` beside an `active` secret rule
+  with no signal -- reading as a deliberate opt-out, not a typo. Status now flags
+  `config_malformed` and does not list rules as active when the mode is unreadable
+  (doctor already surfaced this; status was silent). It reads the enforcement
+  section in isolation too, so an unrelated-section typo no longer makes status
+  report "off" while the gates are in fact still enforcing.
+- **`would_block` no longer counts enforce-mode blocks.** A real enforce deny
+  incremented the shadow report's `would_block` tally -- the very signal the
+  shadow -> enforce promotion reads. would_block is now shadow-only at both
+  outlier sites (matching the three already-correct ones); an enforce block is
+  recorded in the decision log instead (the same audit channel the PostToolUse
+  block uses), so `/chameleon-explain` still sees it.
+
+### Changed
+
+- **`/chameleon-status` reports `correctness_judge`.** The flag was parsed but
+  never surfaced; status now returns it alongside `idiom_review` / `idiom_judge`.
+- **`refresh` on a never-bootstrapped repo tags the result `implicit_bootstrap`.**
+  Refresh on a repo with no profile implicitly bootstraps (the documented
+  idempotent design -- it does NOT refuse), and the envelope now flags that an
+  initial bootstrap happened rather than a re-derive (status stays `success`).
+
 ## [2.22.4] - 2026-06-21
 
 A silent-failure hardening release from a two-pass adversarial audit (24

@@ -116,7 +116,7 @@ class TestPosttoolNoArchetypeAdvisory:
         # The ignore directive drops the hard record, so no state file was created.
         assert state.files.get(file_path) is None
 
-    def test_advisory_only_for_non_hard(self, tmp_path):
+    def test_hard_eval_arms_state_without_archetype(self, tmp_path):
         repo_data = tmp_path / "data"
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -137,8 +137,37 @@ class TestPosttoolNoArchetypeAdvisory:
         from chameleon_mcp.enforcement import load_state
 
         state = load_state(repo_data / "repo-eval", "sess-1")
-        # eval-call is not archetype-independent, so without an archetype it never
-        # reaches hard-class here; the advisory is emitted but no state is armed.
+        # eval-call is archetype-independent (an RCE regardless of archetype), so a
+        # hard error-severity eval() in an unarchetyped file now arms state and
+        # escalates -- closing the no-archetype hole where a new file's eval got
+        # zero enforcement while a leaked credential in the same file was denied.
+        assert state.files.get(file_path) is not None
+
+    def test_warning_eval_does_not_arm_state_without_archetype(self, tmp_path):
+        # The sibling of the hard-eval test: a warning-severity *_eval variant
+        # (class_eval string form -- an established Rails metaprogramming idiom)
+        # is NOT hard-class, so it stays advisory and arms no state even in an
+        # unarchetyped file. This is the FP guard that keeps eval enforcement from
+        # hard-blocking legitimate metaprogramming.
+        repo_data = tmp_path / "data"
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        file_path = str(repo / "x.rb")
+        content = 'klass.class_eval("def x; end")\n'
+        (repo / "x.rb").write_text(content, encoding="utf-8")
+        violations = hook_helper._scan_archetype_independent(content, file_path)
+        with patch.object(hook_helper, "_plugin_data_dir", return_value=repo_data):
+            hook_helper._posttool_no_archetype_advisory(
+                repo_root=repo,
+                repo_id="repo-eval-warn",
+                file_path=file_path,
+                violations=violations,
+                session_id="sess-1",
+                now=1000.0,
+            )
+        from chameleon_mcp.enforcement import load_state
+
+        state = load_state(repo_data / "repo-eval-warn", "sess-1")
         assert state.files.get(file_path) is None
 
 

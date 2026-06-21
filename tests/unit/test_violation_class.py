@@ -104,6 +104,16 @@ def test_secret_rule_is_independent():
     assert is_archetype_independent("secret-detected-in-content")
 
 
+def test_eval_call_error_is_hard_and_independent_warning_is_not():
+    # finding #3: error-severity eval()/exec() is a hard, archetype-independent
+    # sink -- it blocks regardless of archetype, including in a brand-new file
+    # where none resolves. The warning-severity *_eval metaprogramming variants
+    # (class_eval/instance_eval string forms) stay advisory and never hard-block.
+    assert is_hard_class(v("eval-call", "error"))
+    assert is_archetype_independent("eval-call")
+    assert is_hard_class(v("eval-call", "warning")) is False
+
+
 def test_only_phantom_import_defers_to_turn_end():
     # phantom-import defers to the Stop backstop (a later same-turn edit can
     # create the import target). A secret never defers: nothing makes a hardcoded

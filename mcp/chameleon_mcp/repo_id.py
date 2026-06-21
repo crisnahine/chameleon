@@ -211,7 +211,18 @@ def _compute_repo_id(repo_root: Path) -> str:
     pre-fix path id stays reachable via `_legacy_path_repo_id`, which
     `detect_repo` uses to surface a re-trust hint for grants made by earlier
     engines, so the change is migration-safe.
+
+    A linked git worktree resolves to its MAIN worktree first: the git remote
+    (branch 1) is already shared via git config, but a no-remote repo falls to
+    the repo_uuid in config.json (branch 2) or the path hash (branch 3) -- both
+    per-worktree -- so the worktree would otherwise get a DISTINCT repo_id, read
+    "untrusted", and silently no-op enforcement. Resolving to the main root
+    stabilizes all three branches; it is the identity for any non-worktree root
+    and for a worktree whose main has no profile (nothing to share).
     """
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    repo_root = resolve_profile_root(repo_root)
     key = str(repo_root.resolve())
     cached = _REPO_ID_CACHE.get(key)
     if cached is not None:

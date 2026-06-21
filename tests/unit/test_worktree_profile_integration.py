@@ -139,3 +139,51 @@ class TestStandaloneRepoBoundaryUnchanged:
         (other / "x.rb").write_text("class X; end\n", encoding="utf-8")
         d = _detect(other / "x.rb")
         assert d["profile_status"] == "no_profile"
+
+
+class TestNoRemoteWorktreeIdentity:
+    """Finding #4B: a no-remote repo's worktree must share the MAIN repo_id so
+    trust and enforcement transfer. A remote-backed repo already shared it via
+    git config; a no-remote repo fell to a per-worktree path hash and diverged,
+    reading 'untrusted' and silently no-opping enforcement in the worktree.
+    """
+
+    def _make_no_remote_main(self, root: Path) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        _git("init", "-q", cwd=root)
+        _git("config", "user.email", "t@t.t", cwd=root)
+        _git("config", "user.name", "t", cwd=root)
+        # deliberately NO `git remote add origin` -- this is the no-remote case
+        (root / "app" / "models").mkdir(parents=True)
+        (root / "app" / "models" / "listing.rb").write_text(
+            "class Listing; end\n", encoding="utf-8"
+        )
+        (root / ".gitignore").write_text(".chameleon/\n", encoding="utf-8")
+        _git("add", "-A", cwd=root)
+        _git("commit", "-qm", "init", cwd=root)
+        cham = root / ".chameleon"
+        cham.mkdir()
+        for name, payload in (
+            ("profile.json", {"schema_version": 8, "generation": 1, "language": "ruby"}),
+            ("archetypes.json", {"schema_version": 8, "generation": 1, "archetypes": {}}),
+            ("canonicals.json", {"schema_version": 8, "generation": 1, "canonicals": {}}),
+            ("rules.json", {"schema_version": 8, "generation": 1, "rules": {}}),
+        ):
+            (cham / name).write_text(json.dumps(payload), encoding="utf-8")
+        (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
+        return root
+
+    def test_no_remote_worktree_shares_repo_id_and_trust(self, tmp_path):
+        main = self._make_no_remote_main(tmp_path / "main")
+        grant_trust(_compute_repo_id(main), main / ".chameleon")
+        wt = tmp_path / "sibling-wt"
+        _git("worktree", "add", "-q", str(wt), "-b", "feature", cwd=main)
+
+        # repo_id is stable across the worktree even with no remote (was a
+        # per-worktree path hash before the fix).
+        assert _compute_repo_id(wt) == _compute_repo_id(main)
+
+        d = _detect(wt / "app" / "models" / "listing.rb")
+        assert d["profile_status"] == "profile_present"
+        assert d["trust_state"] == "trusted"
+        assert d["repo_id"] == _detect(main / "app" / "models" / "listing.rb")["repo_id"]

@@ -531,3 +531,48 @@ def test_refresh_force_resets_observed_drift(tmp_path):
 
     after = tools.get_drift_status(str(repo))["data"]["observed_drift_score"]
     assert after is None or after <= 0.5
+
+
+def test_refresh_on_never_bootstrapped_repo_tags_implicit_bootstrap(tmp_path, monkeypatch):
+    # finding #5: refresh on a repo with no prior profile implicitly bootstraps
+    # (it does NOT refuse -- that is the idempotent-refresh design) and tags the
+    # envelope so the caller can distinguish an INITIAL bootstrap from a
+    # re-derive. status stays "success" because the write is complete and correct.
+    repo = tmp_path / "fresh-repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    assert not (repo / ".chameleon").exists()
+
+    captured = {}
+
+    def _fake_bootstrap(path, *, force, paths_glob=None):
+        captured["force"] = force
+        return tools._envelope({"status": "success", "files_indexed": 1})
+
+    monkeypatch.setattr(tools, "bootstrap_repo", _fake_bootstrap)
+    env = tools.refresh_repo(str(repo))
+    if isinstance(env, str):
+        env = json.loads(env)
+    data = env.get("data", env)
+
+    assert captured.get("force") is True  # the never-bootstrapped path bootstraps
+    assert data.get("status") == "success"
+    assert data.get("implicit_bootstrap") is True
+
+
+def test_refresh_explicit_force_is_not_tagged_implicit(tmp_path, monkeypatch):
+    # An explicit re-derive of an EXISTING profile is not an implicit bootstrap,
+    # so it must not carry the flag.
+    repo = tmp_path / "existing-repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("export const a = 1;\n", encoding="utf-8")
+
+    def _fake_bootstrap(path, *, force, paths_glob=None):
+        return tools._envelope({"status": "success", "files_indexed": 1})
+
+    monkeypatch.setattr(tools, "bootstrap_repo", _fake_bootstrap)
+    env = tools.refresh_repo(str(repo), force=True)
+    if isinstance(env, str):
+        env = json.loads(env)
+    data = env.get("data", env)
+    assert "implicit_bootstrap" not in data

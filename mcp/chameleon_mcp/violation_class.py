@@ -237,8 +237,15 @@ BLOCK_RULE_LANGUAGES: dict[str, frozenset[str] | None] = {
 # Archetype-independent rules are true/false regardless of which archetype the
 # file matched, so they need no confidence/match-quality gate. A hardcoded AWS
 # key is a credential no matter which archetype the file resolved to, so the
-# secret rule joins phantom-import here.
-_ARCHETYPE_INDEPENDENT: frozenset[str] = frozenset({"phantom-import", "secret-detected-in-content"})
+# secret rule joins phantom-import here. An eval()/exec() call is a deterministic
+# dangerous sink for the same reason -- an RCE is an RCE regardless of archetype,
+# and a brand-new or unarchetyped file (where no archetype resolves) is exactly
+# where it must still block. is_hard_class severity-gates eval-call to the
+# error-severity direct form, so the warning-severity *_eval metaprogramming
+# variants stay advisory and never hard-block here.
+_ARCHETYPE_INDEPENDENT: frozenset[str] = frozenset(
+    {"phantom-import", "secret-detected-in-content", "eval-call"}
+)
 
 # Archetype-independent rules whose block decision is deliberately deferred from
 # the per-edit PostToolUse gate to the turn-end Stop backstop. A phantom import
