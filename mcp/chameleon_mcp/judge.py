@@ -198,11 +198,33 @@ def _changed_lines(diff_text: str) -> list[tuple[int, int]]:
     return out
 
 
+_PARSE_MEMO: dict[tuple, list] = {}
+
+
 def _parse_changed_file(repo_root: Path, path: str):
-    """Indirection over the duplication gate's per-file parse so tests can stub it."""
+    """Indirection over the duplication gate's per-file parse so tests can stub it.
+
+    Memoized by (path, mtime, size) so the one-hop and transitive caller-fact
+    builders, which both walk the same changed files in one judge run, parse each
+    file once instead of spawning the parser subprocess twice. The mtime+size key
+    invalidates correctly across turns (a re-edited file re-parses); the memo is
+    bounded.
+    """
     from chameleon_mcp.tools import parse_edited_functions
 
-    return parse_edited_functions(repo_root, path)
+    try:
+        st = os.stat(path)
+        key = (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return parse_edited_functions(repo_root, path)
+    cached = _PARSE_MEMO.get(key)
+    if cached is not None:
+        return cached
+    result = parse_edited_functions(repo_root, path)
+    if len(_PARSE_MEMO) > 256:
+        _PARSE_MEMO.clear()
+    _PARSE_MEMO[key] = result
+    return result
 
 
 # "Committed callers", not "cross-file": same_file-grade rows list callers
@@ -292,7 +314,7 @@ def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
                     sites = ", ".join(
                         (
                             f"{sanitize_for_chameleon_context(r['path'])}:{r['line']}"
-                            if r["line"] is not None
+                            if isinstance(r["line"], int) and not isinstance(r["line"], bool)
                             else sanitize_for_chameleon_context(r["path"])
                         )
                         + f" ({sanitize_for_chameleon_context(r['caller'])})"
@@ -331,6 +353,190 @@ def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
     if len(lines) == 1:
         return ""
     return "\n".join(lines + _tail())
+
+
+_TRANSITIVE_HEADER = (
+    "Transitive impact of the changed functions (callers-of-callers from the "
+    "committed calls snapshot; deterministic grades only, absence is not dead "
+    "code, and a stale intermediate edge can shorten a chain):"
+)
+
+
+# Caller "names" that don't identify an actionable function: a chain that hops
+# into one reads as noise to the reviewer, so the walk stops at the last named
+# function instead of extending into them.
+_UNINFORMATIVE_CALLERS = frozenset({"<anonymous>", "<module>"})
+
+
+def _transitive_caller_chains(
+    index, start_path: str, start_name: str, *, max_depth: int, fanout: int, total_nodes: int
+) -> list[list[tuple]]:
+    """Bounded upward caller chains from ``(start_path, start_name)``.
+
+    Returns a list of chains; each chain is ``[(path, name, line), ...]`` root
+    first (the root carries no call-site line), deepest hop last. Walks up the
+    caller graph at most ``max_depth`` hops, expanding at most ``fanout`` named
+    callers per node and ``total_nodes`` nodes total.
+
+    Cycle-safety is per CHAIN, not global: a node is never revisited within the
+    same chain (so ``A <- B <- A`` terminates), but a node reached by two
+    distinct paths (a DAG diamond) is preserved in BOTH chains -- a global
+    visited set would silently drop one path and understate the impact. The
+    ``total_nodes`` counter still hard-bounds total work. Anonymous / module-scope
+    callers are not extended into. Caller rows are sorted before expansion and the
+    chains sorted before returning, so the result is deterministic.
+    """
+    chains: list[list[tuple]] = []
+    nodes = 0
+    # DFS; each stack item is (chain so far, set of (path,name) already in it).
+    stack: list[tuple[list[tuple], set]] = [
+        ([(start_path, start_name, None)], {(start_path, start_name)})
+    ]
+    while stack:
+        chain, seen = stack.pop()
+        cur_path, cur_name, _line = chain[-1]
+        if len(chain) - 1 >= max_depth or nodes >= total_nodes:
+            chains.append(chain)
+            continue
+        entry = index.callers_of(cur_path, cur_name)
+        callers = (entry or {}).get("callers") if entry else None
+        ordered = sorted(
+            (r for r in (callers or []) if r.get("caller") not in _UNINFORMATIVE_CALLERS),
+            key=lambda r: (
+                str(r.get("path") or ""),
+                str(r.get("caller") or ""),
+                r.get("line") if isinstance(r.get("line"), int) else -1,
+            ),
+        )
+        expanded: list[tuple[list[tuple], set]] = []
+        for r in ordered:
+            if len(expanded) >= fanout or nodes >= total_nodes:
+                break
+            key = (r.get("path"), r.get("caller"))
+            if key in seen:  # a cycle within THIS chain
+                continue
+            nodes += 1
+            expanded.append(
+                (chain + [(r.get("path"), r.get("caller"), r.get("line"))], seen | {key})
+            )
+        if not expanded:
+            chains.append(chain)  # entry point, depth cap, or all-cyclic: terminal
+        else:
+            # Push reversed so the deterministic caller order is preserved on pop.
+            for e in reversed(expanded):
+                stack.append(e)
+    chains.sort(
+        key=lambda c: tuple((p or "", n or "", ln if isinstance(ln, int) else -1) for p, n, ln in c)
+    )
+    return chains
+
+
+def _render_transitive_chain(chain: list[tuple], sanitize) -> str:
+    root_path, root_name, _ = chain[0]
+    parts = [f"{sanitize(str(root_name))}() [{sanitize(str(root_path))}]"]
+    for path, name, line in chain[1:]:
+        has_line = isinstance(line, int) and not isinstance(line, bool)
+        loc = f"{sanitize(str(path))}:{line}" if has_line else sanitize(str(path))
+        parts.append(f"{sanitize(str(name))}() [{loc}]")
+    return "- " + " <- ".join(parts)
+
+
+def caller_facts_transitive_for_diffs(repo_root: Path, diffs: list[FileDiff], index=None) -> str:
+    """Bounded multi-hop transitive caller-impact block, or ''.
+
+    For each changed callable, walks the committed caller graph upward and
+    renders the chains that reach at least two hops (the information the one-hop
+    caller_facts block does not carry: which entry points and intermediate
+    services a change transitively reaches). Same honesty posture as
+    :func:`caller_facts_for_diffs` -- a committed snapshot, deterministic grades
+    only, absence of an edge is never evidence of dead code. Hard-bounded
+    (depth / fanout / total-nodes / char caps) and fails open to '' everywhere;
+    a caller chain with fewer than two hops adds nothing over the one-hop block
+    and is dropped.
+    """
+    try:
+        if index is None:
+            from chameleon_mcp.calls_index import load_calls_index
+
+            index = load_calls_index(repo_root)
+        if index is None:
+            return ""
+
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        depth = threshold_int("JUDGE_TRANSITIVE_DEPTH")
+        fanout = threshold_int("JUDGE_TRANSITIVE_FANOUT_PER_NODE")
+        total = threshold_int("JUDGE_TRANSITIVE_TOTAL_NODES")
+        char_cap = threshold_int("JUDGE_TRANSITIVE_CHAR_CAP")
+        max_callables = threshold_int("JUDGE_FACTS_MAX_CALLABLES")
+
+        rendered: list[str] = []
+        listed = 0
+        for fd in diffs:
+            if listed >= max_callables:
+                break
+            try:
+                fns = _parse_changed_file(repo_root, str(repo_root / fd.rel_path))
+                ranges = _changed_lines(fd.diff_text) if not fd.is_whole_file else []
+                seen: set[str] = set()
+                for fn in fns:
+                    if listed >= max_callables:
+                        break
+                    if fn.name in seen or fn.kind == "constructor":
+                        continue
+                    if not fd.is_whole_file:
+                        if fn.start_line is None or fn.end_line is None:
+                            continue
+                        if not any(fn.start_line <= hi and fn.end_line >= lo for lo, hi in ranges):
+                            continue
+                    seen.add(fn.name)
+                    chains = _transitive_caller_chains(
+                        index,
+                        fd.rel_path,
+                        fn.name,
+                        max_depth=depth,
+                        fanout=fanout,
+                        total_nodes=total,
+                    )
+                    # Keep chains that reach the intended hop count: 2 hops at
+                    # the default depth (the info one-hop caller_facts lacks), but
+                    # honor a lowered depth override instead of silently emitting
+                    # nothing. min_hops = min(2, depth); a chain has len-1 hops.
+                    min_hops = min(2, depth)
+                    multi = [c for c in chains if len(c) - 1 >= min_hops]
+                    if not multi:
+                        continue
+                    for c in multi:
+                        rendered.append(_render_transitive_chain(c, sanitize_for_chameleon_context))
+                    listed += 1
+            except Exception:
+                continue
+
+        if not rendered:
+            return ""
+        # Dedupe identical chains; preserve first-seen (already deterministic) order.
+        uniq: list[str] = []
+        seen_r: set[str] = set()
+        for r in rendered:
+            if r not in seen_r:
+                seen_r.add(r)
+                uniq.append(r)
+
+        lines = [_TRANSITIVE_HEADER] + uniq
+        dropped = 0
+
+        def _tail() -> list[str]:
+            noun = "chain" if dropped == 1 else "chains"
+            return [f"(+{dropped} more transitive {noun} not shown)"] if dropped else []
+
+        while len(lines) > 1 and len("\n".join(lines + _tail())) > char_cap:
+            lines.pop()
+            dropped += 1
+        if len(lines) == 1:
+            return ""
+        return "\n".join(lines + _tail())
+    except Exception:
+        return ""
 
 
 def imported_definition_facts(repo_root: Path, diffs: list[FileDiff]) -> str:
@@ -380,6 +586,7 @@ def build_prompt(
     diffs: list[FileDiff],
     intent_tokens: list[str] | None = None,
     caller_facts: str | None = None,
+    transitive_facts: str | None = None,
     imported_defs: str | None = None,
     include_style_context: bool = False,
 ) -> str:
@@ -502,6 +709,17 @@ def build_prompt(
             "breaks is a correctness defect, not a style note."
         )
 
+    if transitive_facts:
+        sections.append("")
+        sections.append(transitive_facts)
+        sections.append(
+            "These chains show what a change transitively reaches (the entry points "
+            "and intermediate callers above each changed function). Use them to reason "
+            "about cross-module blast radius: if the change alters a behavior the chain "
+            "depends on (an invariant, a return contract, an error), trace it up the "
+            "chain and flag the caller it would break."
+        )
+
     if imported_defs:
         sections.append("")
         sections.append(imported_defs)
@@ -617,13 +835,18 @@ def _coerce_findings(arr: list) -> list[Finding]:
         if not isinstance(message, str) or not message.strip():
             continue
         raw_conf = item.get("confidence")
-        try:
-            confidence = float(raw_conf)
-        except (TypeError, ValueError):
+        # bool is an int subclass: a JSON `true` would coerce to 1, so reject it.
+        if isinstance(raw_conf, bool):
             confidence = 0.0
+        else:
+            try:
+                confidence = float(raw_conf)
+            except (TypeError, ValueError):
+                confidence = 0.0
         confidence = max(0.0, min(1.0, confidence))
         file = item.get("file") if isinstance(item.get("file"), str) else None
-        line = item.get("line") if isinstance(item.get("line"), int) else None
+        raw_line = item.get("line")
+        line = raw_line if isinstance(raw_line, int) and not isinstance(raw_line, bool) else None
         out.append(Finding(message=message.strip(), confidence=confidence, file=file, line=line))
     # Highest-confidence findings first; cap the list so advisory output stays
     # short. Stable sort keeps the model's own ordering among ties.
@@ -1000,14 +1223,18 @@ def run_correctness_judge(
         # fails open to on); the sink records exactly one judge_facts_* outcome
         # per run so the attestation distinguishes a grounded review from a
         # blind one.
-        caller_facts: str | None = None
-        facts_enabled = True
+        # One config read for all three grounding flags (each default on; an
+        # unreadable config fails open to on).
         try:
             from chameleon_mcp.profile.config import load_config
 
-            facts_enabled = load_config(profile_dir).enforcement.judge_crossfile_facts
+            _enf = load_config(profile_dir).enforcement
+            facts_enabled = _enf.judge_crossfile_facts
+            defs_enabled = _enf.judge_imported_definitions
+            trans_enabled = _enf.judge_transitive_impact
         except Exception:
-            facts_enabled = True
+            facts_enabled = defs_enabled = trans_enabled = True
+        caller_facts: str | None = None
         if not facts_enabled:
             _sink("judge_facts_skipped_disabled")
         else:
@@ -1018,25 +1245,42 @@ def run_correctness_judge(
         # imports. Gated on enforcement.judge_imported_definitions (default on;
         # unreadable config fails open to on). Additive, like the caller facts.
         imported_defs: str | None = None
-        defs_enabled = True
-        try:
-            from chameleon_mcp.profile.config import load_config
-
-            defs_enabled = load_config(profile_dir).enforcement.judge_imported_definitions
-        except Exception:
-            defs_enabled = True
         if not defs_enabled:
             _sink("judge_defs_skipped_disabled")
         else:
             defs_block = imported_definition_facts(repo_root, diffs)
             imported_defs = defs_block or None
             _sink("judge_defs_included" if defs_block else "judge_defs_skipped_no_index")
+        # Multi-hop transitive caller-impact: the callers-of-callers chains
+        # the one-hop facts don't carry. Gated on enforcement.judge_transitive_impact
+        # (default on; unreadable config fails open to on). Bounded + fail-open.
+        transitive_facts: str | None = None
+        if not trans_enabled:
+            _sink("judge_transitive_skipped_disabled")
+        else:
+            try:
+                from chameleon_mcp.calls_index import load_calls_index
+
+                trans_index = load_calls_index(repo_root)
+            except Exception:
+                trans_index = None
+            if trans_index is None:
+                _sink("judge_transitive_skipped_no_index")
+            else:
+                trans_block = caller_facts_transitive_for_diffs(repo_root, diffs, trans_index)
+                transitive_facts = trans_block or None
+                _sink(
+                    "judge_transitive_included"
+                    if trans_block
+                    else "judge_transitive_skipped_no_chains"
+                )
         prompt = build_prompt(
             repo_root,
             profile_dir,
             diffs,
             intent_tokens=intent_tokens,
             caller_facts=caller_facts,
+            transitive_facts=transitive_facts,
             imported_defs=imported_defs,
         )
         stdout, fail_reason = _spawn_reviewer_status(prompt, repo_root)

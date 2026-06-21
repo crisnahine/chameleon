@@ -18,11 +18,50 @@ from __future__ import annotations
 
 import re
 
+# A SQL STATEMENT shape: a verb together with its mandatory clause keyword. This
+# is far more specific than a lone verb -- benign English ("for update",
+# "Selected") lacks the clause keyword -- so interpolation NEXT TO a real SQL
+# statement is the signal, not interpolation next to any SQL-ish word.
+_SQL_STMT = (
+    r"(?:SELECT\b[^\n]{0,200}?\bFROM\b"
+    r"|INSERT\s+INTO\b"
+    r"|UPDATE\b[^\n]{0,200}?\bSET\b"
+    r"|DELETE\s+FROM\b"
+    r"|DROP\s+(?:TABLE|DATABASE|INDEX|SCHEMA|VIEW)\b)"
+)
+
 DANGEROUS_PATTERNS: tuple[tuple[re.Pattern[str], str, bool], ...] = (
     (
         re.compile(
             r"`[^`]*(?:\b(?:SELECT|INSERT|UPDATE|DELETE|DROP)\b[^`]*\$\{[^}]+\}|"
             r"\$\{[^}]+\}[^`]*\b(?:SELECT|INSERT|UPDATE|DELETE|DROP)\b)",
+            re.IGNORECASE,
+        ),
+        "raw_sql_concat",
+        False,
+    ),
+    # Ruby string interpolation (`"... #{x} ..."`) of a value inside a SQL
+    # STATEMENT is the same injection class as the TS backtick case. The match
+    # requires a full statement shape (verb + its clause keyword: SELECT..FROM,
+    # INSERT INTO, UPDATE..SET, DELETE FROM, DROP TABLE/...), not a bare verb, so
+    # SQL verbs occurring as ordinary English words ("for update", "Selected")
+    # near an interpolation do not false-positive -- which was poisoning
+    # canonical-witness selection on Rails repos.
+    (
+        re.compile(
+            _SQL_STMT + r"[^\n]{0,200}#\{[^}]*\}|#\{[^}]*\}[^\n]{0,200}" + _SQL_STMT,
+            re.IGNORECASE,
+        ),
+        "raw_sql_concat",
+        False,
+    ),
+    # Python f-string (`f"... {x} ..."`) of a value inside a SQL statement.
+    # Anchored on any f-string prefix -- f, rf, fr (a plain parameterized string
+    # is safe) -- with the same statement-shape requirement as the Ruby case.
+    (
+        re.compile(
+            r"(?:[fF][rR]?|[rR][fF])['\"][^\n]{0,240}(?:" + _SQL_STMT + r"[^\n]{0,200}\{[^}]+\}|"
+            r"\{[^}]+\}[^\n]{0,200}" + _SQL_STMT + r")",
             re.IGNORECASE,
         ),
         "raw_sql_concat",

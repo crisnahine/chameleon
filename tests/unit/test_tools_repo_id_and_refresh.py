@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from chameleon_mcp import tools
+from chameleon_mcp import repo_id, tools
 
 
 @pytest.fixture(autouse=True)
@@ -73,8 +73,8 @@ def test_compute_repo_id_path_fallback_is_case_insensitive(tmp_path, monkeypatch
     # No git remote -> path-based id. On a case-insensitive filesystem, two path
     # spellings that differ only in case must collapse to one id. Force the
     # case-insensitive branch so the assertion holds on a case-sensitive CI host.
-    monkeypatch.setattr(tools, "_git_remote_url", lambda _root: None)
-    monkeypatch.setattr(tools, "_fs_is_case_insensitive", lambda _p: True)
+    monkeypatch.setattr(repo_id, "_git_remote_url", lambda _root: None)
+    monkeypatch.setattr(repo_id, "_fs_is_case_insensitive", lambda _p: True)
     repo = tmp_path / "MixedCase"
     repo.mkdir()
     id_mixed = tools._compute_repo_id(repo)
@@ -103,10 +103,10 @@ def test_detect_repo_surfaces_legacy_hint_after_case_normalization(tmp_path, mon
     # path must surface a re-trust hint now that the id is case-normalized.
     from chameleon_mcp.profile.trust import grant_trust
 
-    monkeypatch.setattr(tools, "_git_remote_url", lambda _root: None)
+    monkeypatch.setattr(repo_id, "_git_remote_url", lambda _root: None)
     # Force the case-insensitive branch so the case-normalized id diverges from
     # the legacy (non-lowercased) id on a case-sensitive CI host too.
-    monkeypatch.setattr(tools, "_fs_is_case_insensitive", lambda _p: True)
+    monkeypatch.setattr(repo_id, "_fs_is_case_insensitive", lambda _p: True)
     repo = tmp_path / "MixedCaseRepo"
     cham = repo / ".chameleon"
     cham.mkdir(parents=True)
@@ -129,7 +129,7 @@ def test_detect_repo_surfaces_legacy_hint_after_case_normalization(tmp_path, mon
 
 
 def test_compute_repo_id_prefers_persisted_uuid_for_no_remote(tmp_path, monkeypatch):
-    monkeypatch.setattr(tools, "_git_remote_url", lambda _root: None)
+    monkeypatch.setattr(repo_id, "_git_remote_url", lambda _root: None)
     repo = tmp_path / "vendored"
     cham = repo / ".chameleon"
     cham.mkdir(parents=True)
@@ -153,7 +153,7 @@ def test_compute_repo_id_prefers_persisted_uuid_for_no_remote(tmp_path, monkeypa
 
 def test_compute_repo_id_git_remote_wins_over_uuid(tmp_path, monkeypatch):
     # When a git remote exists it must take precedence over a persisted uuid.
-    monkeypatch.setattr(tools, "_git_remote_url", lambda _root: "https://github.com/o/r.git")
+    monkeypatch.setattr(repo_id, "_git_remote_url", lambda _root: "https://github.com/o/r.git")
     repo = tmp_path / "withremote"
     cham = repo / ".chameleon"
     cham.mkdir(parents=True)
@@ -413,14 +413,14 @@ def test_repo_id_path_case_folding_only_on_case_insensitive_fs(monkeypatch, tmp_
     foo = tmp_path / "RepoFoo"
     foofold = tmp_path / "repofoo"
 
-    monkeypatch.setattr(tools, "_fs_is_case_insensitive", lambda p: True)
+    monkeypatch.setattr(repo_id, "_fs_is_case_insensitive", lambda p: True)
     tools._REPO_ID_CACHE.clear()
     id1 = tools._compute_repo_id(foo)
     tools._REPO_ID_CACHE.clear()
     id2 = tools._compute_repo_id(foofold)
     assert id1 == id2  # case-insensitive -> same id
 
-    monkeypatch.setattr(tools, "_fs_is_case_insensitive", lambda p: False)
+    monkeypatch.setattr(repo_id, "_fs_is_case_insensitive", lambda p: False)
     tools._REPO_ID_CACHE.clear()
     id3 = tools._compute_repo_id(foo)
     tools._REPO_ID_CACHE.clear()
@@ -485,7 +485,7 @@ def test_git_remote_url_timeout_does_not_change_repo_id(tmp_path, monkeypatch):
         raise subprocess.TimeoutExpired(cmd="git", timeout=2)
 
     monkeypatch.setattr(tools.subprocess, "run", _boom)
-    monkeypatch.setattr(tools, "_persisted_repo_uuid", lambda _root: None)
+    monkeypatch.setattr(repo_id, "_persisted_repo_uuid", lambda _root: None)
     repo = tmp_path / "TimeoutRepo"
     repo.mkdir()
 

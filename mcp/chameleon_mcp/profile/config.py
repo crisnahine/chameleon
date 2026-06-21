@@ -157,6 +157,14 @@ class EnforcementConfig:
     # grounding from a static index; a missing index just means the block is
     # absent. Set false to opt out.
     judge_imported_definitions: bool = True
+    # judge_transitive_impact: on by default. When True, the correctness judge's
+    # prompt carries a bounded MULTI-HOP transitive caller-impact block: for each
+    # changed callable, the chain of callers-of-callers (changed_fn <- service <-
+    # controller) walked from the committed calls index. This is the cross-module
+    # context LLMs are documented to be weakest at. Hard-bounded (depth/fanout/
+    # total/char caps), deterministic, fails open; a missing index just means the
+    # block is absent. Set false to opt out.
+    judge_transitive_impact: bool = True
     # test_integrity_review: on by default. At turn end, when the turn changed
     # live source AND weakened tests (added skip markers, dropped assertions, net
     # test deletion -- the deterministic signals the auto-pass router computes),
@@ -288,6 +296,12 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
             "`enforcement.judge_imported_definitions` must be bool, got "
             f"{type(judge_imported_definitions).__name__}"
         )
+    judge_transitive_impact = raw.get("judge_transitive_impact", True)
+    if not isinstance(judge_transitive_impact, bool):
+        raise ChameleonConfigError(
+            "`enforcement.judge_transitive_impact` must be bool, got "
+            f"{type(judge_transitive_impact).__name__}"
+        )
     test_integrity_review = raw.get("test_integrity_review", True)
     if not isinstance(test_integrity_review, bool):
         raise ChameleonConfigError(
@@ -319,6 +333,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         judge_crossfile_facts=judge_crossfile_facts,
         signature_contract_diff=signature_contract_diff,
         judge_imported_definitions=judge_imported_definitions,
+        judge_transitive_impact=judge_transitive_impact,
         test_integrity_review=test_integrity_review,
         multi_lens_review=multi_lens_review,
         intent_scope_advisory=intent_scope_advisory,

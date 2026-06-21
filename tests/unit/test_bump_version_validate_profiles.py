@@ -10,6 +10,7 @@ so a release that breaks profile compatibility is surfaced before it ships.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -62,3 +63,50 @@ def test_validate_profiles_ignores_malformed_profile(tmp_path: Path):
     # Must not crash on a malformed profile; treat as nothing to validate.
     result = _run("--validate-profiles", str(tmp_path))
     assert result.returncode == 0
+
+
+def test_hard_errors_when_jq_is_absent(tmp_path: Path):
+    # Without jq, the validator reads schema_version via `jq ... 2>/dev/null ||
+    # sv=""`, which silently skips every profile and falsely reports them all
+    # compatible. The script must instead hard-error so a missing dependency
+    # never masquerades as a clean validation. Simulate jq absence with a PATH
+    # that carries the script's other tools but not jq.
+    binc = tmp_path / "bin"
+    binc.mkdir()
+    for tool in (
+        "bash",
+        "dirname",
+        "find",
+        "sed",
+        "awk",
+        "grep",
+        "mv",
+        "env",
+        "python3",
+        "head",
+        "cat",
+        "tr",
+        "sort",
+        "cut",
+        "comm",
+        "sh",
+    ):
+        p = shutil.which(tool)
+        if p:
+            try:
+                (binc / tool).symlink_to(p)
+            except OSError:
+                pass
+    prof = tmp_path / "repoX" / ".chameleon"
+    prof.mkdir(parents=True)
+    # An incompatible profile that MUST NOT be reported as clean.
+    (prof / "profile.json").write_text(json.dumps({"schema_version": 9999}))
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--validate-profiles", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        env={"PATH": str(binc)},
+    )
+    assert result.returncode != 0, "expected a hard error when jq is missing"
+    assert "jq" in (result.stderr + result.stdout).lower()

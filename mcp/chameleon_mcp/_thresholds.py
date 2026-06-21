@@ -443,6 +443,14 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "JUDGE_FACTS_MAX_CALLABLES": 5,
     "JUDGE_FACTS_MAX_SITES": 5,
     "JUDGE_FACTS_CHAR_CAP": 1200,
+    # Caps for the judge's multi-hop transitive caller-impact block: how
+    # many hops up the caller graph to walk, callers expanded per node, total
+    # nodes per changed callable, and the rendered char budget. Hard bounds keep
+    # the walk cheap and the block small (it is grounding, not the review).
+    "JUDGE_TRANSITIVE_DEPTH": 2,
+    "JUDGE_TRANSITIVE_FANOUT_PER_NODE": 10,
+    "JUDGE_TRANSITIVE_TOTAL_NODES": 50,
+    "JUDGE_TRANSITIVE_CHAR_CAP": 600,
     # Lookback for the cumulative degraded-delivery count /chameleon-status
     # surfaces (no-interpreter / spawn-failed hook fail-opens from
     # .hook_errors.log plus in-process fail_open rows from metrics.jsonl). A week
@@ -485,6 +493,10 @@ def threshold(name: str) -> int | float:
             if not math.isfinite(value) or value < 0:
                 return default
             return value
+        # Int thresholds are NOT range-validated: some are meaningfully negative
+        # (e.g. AUTOPASS_ASSERTION_DELTA_FLOOR defaults to -3), so an override
+        # passes through verbatim. Float thresholds reject negatives above because
+        # none of them (timeouts, rates) is ever sensibly negative.
         return int(raw)
     except ValueError:
         return default

@@ -338,9 +338,12 @@ def test_hit_dict_has_exact_keys():
 
 
 def test_dangerous_patterns_table_shape():
-    """Six rules; only weak_hash and math_random require security context."""
+    """raw_sql_concat now spans three syntaxes (TS backtick, Ruby #{}, Python
+    f-string); only weak_hash and math_random require security context."""
     kinds = [k for _, k, _ in DANGEROUS_PATTERNS]
     assert kinds == [
+        "raw_sql_concat",
+        "raw_sql_concat",
         "raw_sql_concat",
         "eval_call",
         "exec_call",
@@ -350,3 +353,74 @@ def test_dangerous_patterns_table_shape():
     ]
     conditional = {k for _, k, req in DANGEROUS_PATTERNS if req}
     assert conditional == {"weak_hash", "math_random_for_security"}
+
+
+# --------------------------------------------------------------------------- #
+# raw_sql_concat: Ruby #{} and Python f-string interpolation (cross-language)
+# --------------------------------------------------------------------------- #
+
+
+def test_sql_concat_flagged_for_ruby_interpolation():
+    # Ruby "...#{x}..." interpolation around a SQL verb is the same injection
+    # class as the TS backtick case, and must not slip past.
+    content = 'User.where("SELECT * FROM users WHERE id = #{params[:id]}")'
+    assert "raw_sql_concat" in _kinds(content)
+
+
+def test_sql_concat_flagged_for_ruby_interpolation_before_keyword():
+    content = 'db.exec("#{table} DELETE FROM things")'
+    assert "raw_sql_concat" in _kinds(content)
+
+
+def test_sql_concat_flagged_for_python_fstring():
+    # Python f"...{x}..." around a SQL verb.
+    content = 'cur.execute(f"SELECT * FROM users WHERE id = {user_id}")'
+    assert "raw_sql_concat" in _kinds(content)
+
+
+def test_sql_concat_flagged_for_python_fstring_single_quotes():
+    content = "cur.execute(f'DELETE FROM t WHERE k = {key}')"
+    assert "raw_sql_concat" in _kinds(content)
+
+
+def test_ruby_parameterized_query_not_flagged():
+    # A parameterized query (no interpolation) is the safe pattern; not flagged.
+    content = 'User.where("SELECT * FROM users WHERE id = ?", params[:id])'
+    assert "raw_sql_concat" not in _kinds(content)
+
+
+def test_python_non_fstring_sql_not_flagged():
+    # A plain (non-f) string with a placeholder is not interpolation.
+    content = 'cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))'
+    assert "raw_sql_concat" not in _kinds(content)
+
+
+# raw_sql_concat: tightened to require real SQL-statement shape (verb + clause),
+# so SQL verbs occurring as ordinary English words near an interpolation do not
+# false-positive (which was poisoning canonical-witness selection on Rails repos).
+
+
+def test_ruby_benign_string_with_sql_word_not_flagged():
+    benign = [
+        'logger.info("Selected #{record.id} for update")',
+        'redirect_to "/update/#{resource.id}/edit"',
+        'flash[:notice] = "Deleted #{count} items"',
+        'raise "Insert #{name} failed"',
+    ]
+    for s in benign:
+        assert "raw_sql_concat" not in _kinds(s), s
+
+
+def test_ruby_real_sql_statement_still_flagged():
+    assert _kinds('db.query("SELECT * FROM users WHERE id = #{params[:id]}")') == ["raw_sql_concat"]
+    assert "raw_sql_concat" in _kinds('exec("#{t} DELETE FROM things")')
+    assert "raw_sql_concat" in _kinds('q("INSERT INTO logs VALUES (#{msg})")')
+    assert "raw_sql_concat" in _kinds('q("UPDATE users SET name = #{n} WHERE id = 1")')
+
+
+def test_python_benign_fstring_with_sql_word_not_flagged():
+    assert "raw_sql_concat" not in _kinds('log.info(f"User {name} selected for update")')
+
+
+def test_python_real_fstring_sql_still_flagged():
+    assert "raw_sql_concat" in _kinds('cur.execute(f"SELECT * FROM users WHERE id = {uid}")')

@@ -586,7 +586,13 @@ def test_run_judge_passes_facts_to_prompt_and_sinks_included(tmp_path, monkeypat
     captured = {}
 
     def fake_build(
-        repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None, imported_defs=None
+        repo_root,
+        profile_dir,
+        diffs,
+        intent_tokens=None,
+        caller_facts=None,
+        transitive_facts=None,
+        imported_defs=None,
     ):
         captured["caller_facts"] = caller_facts
         return "prompt"
@@ -629,7 +635,13 @@ def test_run_judge_config_off_sinks_skipped_disabled(tmp_path, monkeypatch):
     captured = {}
 
     def fake_build(
-        repo_root, profile_dir, diffs, intent_tokens=None, caller_facts=None, imported_defs=None
+        repo_root,
+        profile_dir,
+        diffs,
+        intent_tokens=None,
+        caller_facts=None,
+        transitive_facts=None,
+        imported_defs=None,
     ):
         captured["caller_facts"] = caller_facts
         return "prompt"

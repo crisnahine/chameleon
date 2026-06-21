@@ -175,3 +175,50 @@ def test_status_unknown_repo_id_returns_no_repo():
     out = get_status("d" * 64)
     assert out["data"]["status"] == "no_repo"
     assert "mode" not in out["data"]
+
+
+# --------------------------------------------------------------------------- #
+# B5: headline calibration-precision summary
+# --------------------------------------------------------------------------- #
+
+
+def test_block_precision_summary_aggregates_active_rules():
+    from chameleon_mcp.tools import _block_precision_summary
+
+    block_rules = {
+        "phantom-import": {"active": True, "fp_rate": 0.0, "sampled": 12},
+        "naming-convention-violation": {"active": True, "fp_rate": 0.01, "sampled": 12},
+        "jsx-presence-mismatch": {"active": False, "fp_rate": 0.4, "sampled": 12},
+    }
+    summary = _block_precision_summary(
+        block_rules, ["phantom-import", "naming-convention-violation"]
+    )
+    assert summary["active_block_rules"] == 2
+    assert summary["sampled_files"] == 12
+    assert summary["max_fp_rate"] == 0.01  # the inactive 0.4 is excluded
+    assert summary["mean_fp_rate"] == 0.005
+
+
+def test_block_precision_summary_empty_active():
+    from chameleon_mcp.tools import _block_precision_summary
+
+    summary = _block_precision_summary({}, [])
+    assert summary["active_block_rules"] == 0
+    assert summary["max_fp_rate"] == 0.0
+
+
+def test_status_surfaces_precision_summary(make_trusted_repo):
+    from chameleon_mcp.enforcement_calibration import write_block_rules
+    from chameleon_mcp.tools import get_status
+
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="shadow")
+    write_block_rules(
+        profile_dir,
+        {"phantom-import": {"active": True, "fp_rate": 0.0, "sampled": 9}},
+    )
+    out = get_status(str(repo))
+    precision = out["data"]["enforcement"].get("precision")
+    assert precision is not None
+    assert precision["active_block_rules"] == 1
+    assert precision["sampled_files"] == 9
+    assert precision["max_fp_rate"] == 0.0

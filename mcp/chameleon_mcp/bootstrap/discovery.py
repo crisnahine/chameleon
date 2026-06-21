@@ -375,6 +375,56 @@ def discover_files(
     return filtered
 
 
+# Path components and filename globs that mark machine-generated code. A
+# generated file (GraphQL resolvers, Prisma client, protobuf stubs, *.gen.*
+# output) is a poor canonical witness: telling the AI to "follow" codegen output
+# teaches it to mimic the generator, not the team's hand-written conventions.
+# Marker-bearing generated files are already dropped from clustering by
+# is_likely_generated; these path patterns catch the marker-LESS ones, and ONLY
+# at witness selection (is_eligible_as_canonical) — clustering is untouched.
+# Only unambiguous codegen-tool directory markers. A bare "generated" component
+# over-matches hand-written code that merely lives under a dir named "generated"
+# (e.g. a code-generator tool's own source), so it is intentionally excluded;
+# marker-bearing generated files in such dirs are still caught by the content
+# heuristic (is_likely_generated).
+GENERATED_PATH_COMPONENTS = frozenset(
+    {
+        "__generated__",
+        "__generated",
+    }
+)
+# Filename suffixes for generated output. Cross-language by design: a glob for a
+# language chameleon doesn't parse is harmless (those files never reach witness
+# selection), and keeps the set ready if support is added.
+GENERATED_FILE_GLOBS = (
+    "*.gen.*",
+    "*.generated.*",
+    "*.pb.ts",
+    "*_pb.ts",
+    "*.pb.js",
+    "*_pb.js",
+    "*_pb2.py",
+    "*_pb2_grpc.py",
+    "*.pb.go",
+    "*_pb.go",
+    "*.pb.dart",
+)
+
+
+def is_generated_path(rel_path: str) -> bool:
+    """Heuristic: True if a relative path looks machine-generated.
+
+    Deterministic path-only matching: a codegen directory marker (``__generated__``)
+    or a generated-output filename suffix (``foo.gen.ts``, ``types.generated.tsx``,
+    ``service.pb.ts``, ``schema_pb2.py``). Used to keep generated files out of the
+    canonical witness pool; never affects clustering.
+    """
+    p = Path(rel_path)
+    if _has_excluded_component(p, GENERATED_PATH_COMPONENTS):
+        return True
+    return _matches_any(p.name, GENERATED_FILE_GLOBS)
+
+
 def is_eligible_as_canonical(rel_path: str) -> bool:
     """Return True if a file may be picked as a canonical witness.
 
@@ -382,11 +432,15 @@ def is_eligible_as_canonical(rel_path: str) -> bool:
     selection but remain eligible for clustering. Directory exclusions match
     any path component (top-level OR nested) — a top-level "tests/" dir is
     just as disqualifying as a nested "src/tests/" one. Test/story/fixture
-    files are excluded by their leaf filename.
+    files are excluded by their leaf filename. Machine-generated files
+    (:func:`is_generated_path`) are excluded too, so the AI is never told to
+    follow codegen output.
     """
     if _has_excluded_component(Path(rel_path), EXCLUDE_FROM_CANONICAL_POOL_DIRS):
         return False
     if _matches_any(Path(rel_path).name, EXCLUDE_FROM_CANONICAL_POOL_FILE_GLOBS):
+        return False
+    if is_generated_path(rel_path):
         return False
     return True
 

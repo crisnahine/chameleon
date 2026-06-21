@@ -10,6 +10,16 @@ if [[ ! -f "$CONFIG" ]]; then
   exit 1
 fi
 
+# jq is required for every command (manifest read/write, config parsing, and the
+# profile schema scan). Without this guard, --validate-profiles reads
+# schema_version via `jq ... 2>/dev/null || sv=""`, which silently skips every
+# profile and falsely reports them all compatible. Fail loudly instead of letting
+# a missing dependency masquerade as a clean validation.
+if ! command -v jq >/dev/null 2>&1; then
+  echo "error: jq is required but was not found on PATH" >&2
+  exit 1
+fi
+
 read_json_field() {
   local file="$1" field="$2"
   if [[ "$file" == *.toml ]]; then
@@ -252,12 +262,14 @@ cmd_validate_profiles() {
   local found_incompatible=0
   local scanned=0
   while IFS= read -r profile; do
-    scanned=$((scanned + 1))
     local sv
     # jq returns "null" on a missing key and exits non-zero on malformed JSON.
     sv=$(jq -r '.schema_version // empty' "$profile" 2>/dev/null) || sv=""
     [[ -z "$sv" ]] && continue
     [[ "$sv" =~ ^[0-9]+$ ]] || continue
+    # Count only profiles actually validated (a real integer schema_version), so
+    # the summary's "All N scanned" excludes skipped/malformed files.
+    scanned=$((scanned + 1))
     if (( sv > max_schema )); then
       if [[ "$found_incompatible" -eq 0 ]]; then
         echo "INCOMPATIBLE profiles (schema newer than engine supports):"

@@ -4,6 +4,59 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.0] - 2026-06-21
+
+A depth-and-floor release from the same mid-2026 field review. It gives the
+correctness judge multi-hop cross-file context, stops generated code from being
+held up as a convention, publishes the precision number behind the low-noise
+design, and lands a batch of maintainability and security-floor fixes. The judge
+change is advisory, default-on with a kill switch, tool-time only, and fails open.
+
+### Added
+
+- **Multi-hop transitive caller impact for the correctness judge.** The turn-end
+  judge already saw a changed function's direct callers; it now also sees the
+  bounded chain of callers-of-callers (the controller to service to repository
+  path a change reaches), built from the committed calls snapshot. This is the
+  cross-module context LLMs are documented to be weakest at. Hard-bounded on
+  depth, fan-out, total nodes and characters, cycle-safe, deterministic, and it
+  fails open. Default-on via `enforcement.judge_transitive_impact`, with
+  `CHAMELEON_JUDGE_TRANSITIVE_*` threshold overrides.
+- **Published calibration-precision number.** `/chameleon-status` now surfaces a
+  one-line precision summary for the active block rules: how many are active and
+  the measured false-positive ceiling they clear against the repo's own committed
+  files. The low-noise design is now a number you can see, not a claim. A new
+  README "Precision" section documents it.
+- **Security policy and dependency automation.** A `SECURITY.md` (private
+  reporting via GitHub security advisory) and a `dependabot.yml` covering the
+  github-actions, npm and pip ecosystems.
+
+### Changed
+
+- **Extractor registry seam.** Language extractor selection moved behind a small
+  registry, so adding a language is a registry entry plus a signature mapping
+  rather than an edit to bootstrap's selection logic. No behavior change: the
+  TypeScript-before-Ruby precedence is identical, so existing profiles do not
+  re-cluster.
+- **Repo identity extracted to its own module.** The repo-id derivation moved out
+  of the oversized `tools.py` into a focused `repo_id` module, re-exported for
+  compatibility. Internal maintainability only; no behavior change.
+
+### Fixed
+
+- **Generated files are no longer chosen as canonical witnesses.** A generated
+  file (GraphQL resolvers, Prisma client, protobuf stubs, `*.gen.*` output) that
+  structurally matched a hand-written cluster could become the exemplar the
+  assistant was told to follow. They are now excluded from witness selection, so
+  the reference file is hand-written code. Witness-selection only; clustering and
+  existing archetypes are untouched.
+- **Supply-chain SQL-injection scan now covers Ruby and Python.** The canonical
+  poisoning scanner's raw-SQL-interpolation check was TypeScript-only; it now also
+  flags Ruby `"... #{x} ..."` and Python f-string SQL, tightened to require a real
+  SQL statement shape so ordinary prose near an interpolation is not flagged.
+- **`bump-version.sh` fails loudly when `jq` is absent** instead of silently
+  skipping profile-schema validation as if every profile were compatible.
+
 ## [2.21.0] - 2026-06-20
 
 A feature release that finishes the scoped-down items from the same mid-2026

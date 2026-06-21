@@ -124,6 +124,12 @@ CHAMELEON_VERIFY=0        disable post-edit verification only
 
 See [docs/architecture.md](docs/architecture.md) for the full design: bootstrap pipeline, cluster signature function, atomic profile commit, drift model, and security mitigations.
 
+## Precision
+
+The loudest complaint about AI code review is noise: false positives and nitpick fatigue. chameleon is built the other way. Most feedback is advisory and shapes the code without ever blocking. A rule blocks only after calibration proves it flags near-zero of the repo's own committed files, and `/chameleon-pr-review` findings pass an independent round-3 refuter that drops anything it cannot ground, so a green review means something.
+
+That precision is measured, not asserted. `/chameleon-status` surfaces the calibration headline: how many block rules are active and the false-positive ceiling they clear against this repo's own committed code (for example, "4 rules active, <=0.0% false-positive on 12 sampled files"). A separate live `overrides` axis tracks real-world contention on actual edits, so a rule that calibrates clean but fights the team stays visible.
+
 ## Contributing
 
 See [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md) for dev setup, test workflows, and the change conventions used in this repo. Contributors hacking on the plugin itself should use `--plugin-dir`, not the marketplace install above.

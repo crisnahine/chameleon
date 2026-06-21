@@ -1,0 +1,25 @@
+version: 2
+updates:
+  # GitHub Actions used by ci.yml / release.yml.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # The MCP server's Node dependency (the TypeScript compiler used by ts_dump.mjs).
+  - package-ecosystem: "npm"
+    directory: "/mcp"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+
+  # The MCP server's Python dependencies (mcp/pyproject.toml).
+  - package-ecosystem: "pip"
+    directory: "/mcp"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"

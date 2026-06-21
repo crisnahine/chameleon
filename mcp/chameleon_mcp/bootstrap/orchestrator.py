@@ -215,11 +215,11 @@ def _select_extractor(repo_root: Path) -> Extractor | None:
     """
     if _is_rails_with_frontend(repo_root):
         return RubyExtractor()
-    for ext_cls in (TypeScriptExtractor, RubyExtractor):
-        ext = ext_cls()
-        if ext.can_handle(repo_root):
-            return ext
-    return None
+    # General precedence (TypeScript > Ruby) lives in the extractor registry, so
+    # a new language is a registry entry, not an edit here.
+    from chameleon_mcp.extractors.registry import select_extractor
+
+    return select_extractor(repo_root)
 
 
 # Raised from 50: workspaces 501+ were never analyzed (a sampling cap, not a
@@ -1380,6 +1380,11 @@ def _bootstrap_single(
 
     extractor = _select_extractor(repo_root)
     if extractor is None and inherited_signals_from is not None:
+        # Specialized fallback, NOT the registry's can_handle precedence: when the
+        # repo root carries no extractor signal but inherits one from a workspace
+        # ancestor, disambiguate by which language's files actually dominate this
+        # subtree. A new registry language that needs to win this tiebreak (or the
+        # monorepo case below) must extend these branches too.
         ts_count = ruby_count = 0
         for ext_token in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
             ts_count += sum(1 for _ in repo_root.rglob(f"*{ext_token}"))

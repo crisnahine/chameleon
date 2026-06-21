@@ -539,8 +539,10 @@ chameleon/
 │ │ │ # realpath + prefix-match + null/NFD/sep checks
 │ │ │ # used by every file-reading tool
 │ │ ├── tools.py # all 34 MCP tool implementations
+│ │ ├── repo_id.py # repo-identity derivation (re-exported by tools.py)
 │ │ ├── extractors/
 │ │ │ ├── _base.py
+│ │ │ ├── registry.py # ordered extractor list; select_extractor()
 │ │ │ ├── typescript.py
 │ │ │ └── ruby.py
 │ │ ├── bootstrap/
