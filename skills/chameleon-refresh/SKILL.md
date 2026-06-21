@@ -63,7 +63,7 @@ Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Whe
 
 ## Trust + material change
 
-If the refresh causes a material change to any of the 9 hashed profile artifacts, trust transitions to `"stale"` and the user must re-run `/chameleon-trust`.
+If the refresh causes a material change to any of the 15 hashed profile artifacts, trust transitions to `"stale"` and the user must re-run `/chameleon-trust`.
 
 Exception: structurally-identical refreshes (only the generation counter bumped, no archetype/canonical/rules changes) automatically preserve the existing trust grant.
 

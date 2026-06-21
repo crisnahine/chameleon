@@ -234,11 +234,11 @@ scripts/prune-plugin-cache.sh --apply   # delete every cached version except the
 /plugin marketplace remove chameleon
 ```
 
-chameleon runs a long-lived per-user daemon. Stop it (if running), then clear your local trust and drift cache:
+chameleon runs a long-lived per-user daemon on POSIX systems. It idles out 10 minutes after your last session, but you can stop it now and clear your local trust and drift cache:
 
 ```bash
 # stop the background daemon if it's still alive (it also idles out after 10 min)
-[ -f ~/.local/share/chameleon/.daemon.pid ] && kill "$(head -1 ~/.local/share/chameleon/.daemon.pid)" 2>/dev/null
+pkill -f 'chameleon_mcp.daemon' 2>/dev/null || true
 rm -rf ~/.local/share/chameleon
 ```
 

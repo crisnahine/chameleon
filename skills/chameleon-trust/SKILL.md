@@ -56,6 +56,6 @@ Promotion is a TWO-step action: `config.json` is one of the trust-hashed artifac
 ## When to suggest revoking trust
 
 - User reports unexpected pattern advice that doesn't match their team's actual style — possible profile drift; suggest `/chameleon-refresh` first.
-- User forks a profile from another team and notices security-shaped concerns in canonicals — they should not trust it; suggest reviewing via `/chameleon-status --diff`.
+- User forks a profile from another team and notices security-shaped concerns in canonicals — they should not trust it; suggest reviewing `profile.summary.md` and the canonical files directly before deciding.
 
 (Revocation: delete `${PLUGIN_DATA}/<repo_id>/.trust`. Phase 4 adds an explicit `/chameleon-untrust` command.)

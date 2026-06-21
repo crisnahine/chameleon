@@ -9,7 +9,7 @@ Run the journey harness at `tests/journey/`. The harness verifies chameleon's fu
 
 ## Defaults
 
-Full run: 18 acts, ~$33 cost ceiling, ~65 min runtime, $35 hard budget cap (default `--max-budget-usd`).
+Full run: 19 acts, ~$33 cost ceiling, ~65 min runtime, $35 hard budget cap (default `--max-budget-usd`).
 
 ## Run
 

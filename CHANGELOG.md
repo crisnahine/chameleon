@@ -4,6 +4,29 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.22.1] - 2026-06-21
+
+A documentation-accuracy release. No runtime behavior changes. The user-facing
+docs were rewritten and corrected against the as-built code so every claim
+matches what the engine actually does, verified across three passes.
+
+### Documentation
+
+- Rewrote `README.md` and `docs/architecture.md` to the as-built system.
+  Corrected accumulated drift: the MCP server exposes 41 tools (not 38), six
+  hook scripts across six events (the Stop/SubagentStop backstop was
+  undocumented), a six-dimension cluster signature (not a "7-tuple"), full
+  TypeScript and Ruby support (not "TypeScript only"), a 15-artifact trust
+  hash, and 19 journey acts.
+- Removed stale claims: the dropped `drift.db` `files` table, OS-level
+  subprocess rlimits the extractors do not set, and runtime verification of
+  `typescript-checksums.json` (it is a build-time reference only).
+- Fixed drift in supporting docs: `CONTRIBUTING.md` (six hooks; the per-edit
+  timeout budget), `install.md` (daemon uninstall path), the `chameleon-refresh`
+  (15 hashed artifacts), `chameleon-journey` (19 acts), and `chameleon-trust`
+  skill bodies, and the migrations README cross-reference anchor. Documented the
+  `CHAMELEON_ALLOW_TESTS` environment variable.
+
 ## [2.22.0] - 2026-06-21
 
 A depth-and-floor release from the same mid-2026 field review. It gives the

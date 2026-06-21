@@ -77,13 +77,17 @@ issue, not the code, before implementation proceeds.
 
 ### Hook stack changes
 
-Hooks live in `hooks/`. Five hooks: `session-start`, `preflight-and-advise`,
-`posttool-recorder`, `posttool-verify`, `callout-detector`. They are subprocess-per-call today.
+Hooks live in `hooks/`. Six hook scripts wired across six events:
+`session-start` (SessionStart), `preflight-and-advise` (PreToolUse),
+`posttool-recorder` and `posttool-verify` (PostToolUse), `callout-detector`
+(UserPromptSubmit), and `stop-backstop` (Stop and SubagentStop). They are
+subprocess-per-call today.
 
 - Preserve the fail-open / fail-closed split: safety hard-denies block;
   advisory MCP calls fail open with a `<chameleon-context>` warning.
-- Preserve the 2-second MCP timeout in `preflight-and-advise`. Increasing
-  it slows every edit; decreasing it raises fail-open rate.
+- Preserve the per-edit timeout budget in `preflight-and-advise`: the shell
+  wrapper caps each hook at 3s and the daemon socket call defaults to 1.5s.
+  Raising them slows every edit; lowering them raises the fail-open rate.
 - Run `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ -v`
   and the journey harness dry-run (`mcp/.venv/bin/python -m tests.journey.runner --dry-run`).
 
