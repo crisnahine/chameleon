@@ -81,7 +81,7 @@ jobs:
 
       - name: Set up uv
         if: steps.secrets-check.outputs.missing == 'false'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: 'mcp/uv.lock'
