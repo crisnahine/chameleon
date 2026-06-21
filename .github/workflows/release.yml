@@ -208,7 +208,7 @@ jobs:
           ls -lh "${TARBALL_PATH}"
 
       - name: Upload tarball artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-tarball
           path: ${{ steps.archive.outputs.tarball-path }}
