@@ -298,9 +298,7 @@ def test_nearby_signatures_total_cap_enforced(tmp_path, monkeypatch):
     files = {}
     for i in range(20):
         (svc / f"m{i}.ts").write_text("export const x = 1", encoding="utf-8")
-        files[f"src/m{i}.ts"] = {
-            f"fn{i}": {"params": [], "return_type": "void", "start_line": 1}
-        }
+        files[f"src/m{i}.ts"] = {f"fn{i}": {"params": [], "return_type": "void", "start_line": 1}}
     (svc / "target.ts").write_text("export const t = 1", encoding="utf-8")
     cham = tmp_path / ".chameleon"
     cham.mkdir()
