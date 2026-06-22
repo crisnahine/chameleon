@@ -2362,7 +2362,11 @@ def format_directory_listing(
     if not siblings:
         return ""
     display = siblings[:max_files]
-    return f"Nearby: {', '.join(display)} -- check before creating a new file."
+    # Flag the overflow so the model does not read a capped list as the complete
+    # set and wrongly conclude a "reuse before creating" check came up empty.
+    more = len(siblings) - len(display)
+    tail = f" (+{more} more)" if more > 0 else ""
+    return f"Nearby: {', '.join(display)}{tail} -- check before creating a new file."
 
 
 def _contract_summary(cc: dict) -> str:

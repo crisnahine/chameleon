@@ -78,6 +78,7 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
     (pd / "calls_index.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     (pd / "function_catalog.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     (pd / "symbol_signatures.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    (pd / "counterexamples.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     (pd / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
     (pd / "principles.md").write_text(
         "# principles\n\n## anti-hallucination protocol\n\n- Don't invent symbols.\n",
@@ -225,6 +226,7 @@ def _complete_profile(tmp_path):
         "calls_index.json",
         "function_catalog.json",
         "symbol_signatures.json",
+        "counterexamples.json",
     ):
         pd.joinpath(name).write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
     pd.joinpath("profile.json").write_text(

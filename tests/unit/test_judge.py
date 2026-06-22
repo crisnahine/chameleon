@@ -209,6 +209,49 @@ def test_build_prompt_intent_section_respects_char_cap(tmp_path):
     assert len(with_intent) - len(without) < judge._INTENT_CHAR_CAP + 400
 
 
+def test_truncate_on_line_boundary_under_cap_unchanged():
+    assert judge._truncate_on_line_boundary("abc\ndef", 100, "X") == "abc\ndef"
+
+
+def test_truncate_on_line_boundary_cuts_on_newline_with_notice():
+    text = "line1\nline2\nline3longtail"
+    out = judge._truncate_on_line_boundary(text, 9, " ...cut")
+    # cut at the last newline within the budget, so no line is severed mid-content
+    assert out == "line1 ...cut"
+    assert "line2" not in out
+
+
+def test_intent_tokens_truncated_over_whole_tokens(tmp_path):
+    repo = tmp_path / "repo"
+    profile = repo / ".chameleon"
+    profile.mkdir(parents=True)
+    diffs = [judge.FileDiff("a.ts", None, "+x\n", False)]
+    tokens = [f"CONST_{i}_{'A' * 30}" for i in range(60)]
+    with patch.object(judge, "_witness_for", return_value=""):
+        prompt = judge.build_prompt(repo, profile, diffs, intent_tokens=tokens)
+    # the overflow is flagged, not silently dropped
+    assert "more)" in prompt
+    # every token shown is a COMPLETE input token (none sliced mid-value)
+    shown = prompt.split("a finding):")[1].split(" ... (+")[0]
+    for piece in (p.strip() for p in shown.split(",")):
+        if piece:
+            assert piece in tokens
+
+
+def test_intent_single_oversized_token_is_capped(tmp_path):
+    # A single token longer than the cap (the first token is always kept) must be
+    # bounded, not injected whole, or it blows the judge prompt budget.
+    repo = tmp_path / "repo"
+    profile = repo / ".chameleon"
+    profile.mkdir(parents=True)
+    diffs = [judge.FileDiff("a.ts", None, "+x\n", False)]
+    huge = "9" * 5000
+    with patch.object(judge, "_witness_for", return_value=""):
+        prompt = judge.build_prompt(repo, profile, diffs, intent_tokens=[huge])
+    assert huge not in prompt
+    assert ("9" * judge._INTENT_CHAR_CAP) in prompt
+
+
 # --- _parse_findings / _extract_json_array / _coerce_findings ---------------
 
 

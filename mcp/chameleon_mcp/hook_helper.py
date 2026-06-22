@@ -144,10 +144,13 @@ def _note_if_config_malformed(
     repo_id: str | None,
     session_id: str | None,
     where: str,
-) -> None:
+) -> bool:
     """Record a degraded check-event when a swallowed enforcement-gate exception
     is a malformed / torn ``config.json``, so the silent fail-open is observable
     in the session attestation and ``/chameleon-doctor`` instead of invisible.
+    Returns True when the swallowed exception WAS a malformed config, so a caller
+    can also surface it where the user is working (the check-event alone never
+    reaches the edit surface).
 
     Stays fail-open by design: failing closed on an unreadable config is circular
     (the enforcement mode is exactly what could not be parsed) and would wedge
@@ -165,8 +168,10 @@ def _note_if_config_malformed(
                 reason="config_malformed",
                 detail={"where": where},
             )
+            return True
     except Exception:
         pass
+    return False
 
 
 def _content_digest_16(content: str) -> str:
@@ -1588,6 +1593,24 @@ _NEARBY_SIG_MAX_SYMBOLS = 2
 _NEARBY_SIG_MAX_TOTAL = 8
 _NEARBY_SIG_MAX_CHARS = 700
 
+# A counterexample snippet is a single taught off-pattern import line; the build
+# already skips anything longer, and this hot-path guard skips (never truncates)
+# a snippet over the bound, since a counterexample cut mid-line could read as the
+# conforming form.
+_COUNTEREXAMPLE_MAX_CHARS = 400
+
+# Surfaced in the per-edit block when a deny gate could not read config.json (a
+# torn / malformed file): enforcement.mode was unreadable, so the credential /
+# import deny was SKIPPED fail-open. The skip is otherwise silent at the edit
+# surface (only a check-event reaches /chameleon-doctor and the attestation), so
+# this banner makes it visible where the user is actually writing. Fail-open, not
+# fail-closed: the edit still proceeds, but the user is no longer in the dark.
+_CONFIG_MALFORMED_BANNER = (
+    "**Enforcement degraded**: chameleon could not parse `.chameleon/config.json` "
+    "(malformed or torn JSON), so credential / import blocking is OFF for this edit. "
+    "Fix the JSON and run /chameleon-doctor to confirm enforcement is restored.\n\n"
+)
+
 
 def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
     """Sibling export signatures for the edited file's directory (experimental).
@@ -1643,6 +1666,90 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
         if len(section) > _NEARBY_SIG_MAX_CHARS:
             section = section[:_NEARBY_SIG_MAX_CHARS].rstrip() + "\n..."
         return section
+    except Exception:
+        return ""
+
+
+def _counterexample_section(
+    archetype: str | None, repo_root: Path | None, witness_excerpt: str = ""
+) -> str:
+    """A real off-pattern counterexample for the archetype, paired with the witness.
+
+    When the team has taught a competing import for this archetype and a real file
+    still uses the discouraged form, the precomputed ``counterexamples.json`` holds
+    that line. It is rendered as a chameleon "do NOT write it this way" directive,
+    deliberately OUTSIDE the imitate-spotlight: a counterexample is the one
+    repo-derived snippet the model must NOT copy, and the spotlight frames its
+    contents as a shape to imitate. The snippet still rides
+    ``sanitize_for_chameleon_context`` (it is repo file text) so a crafted import
+    line cannot escape the context block or forge a header.
+
+    Suppressed when the canonical ``witness_excerpt`` itself imports the discouraged
+    module: the block tells the model to mirror the witness closely and calls it
+    "the conforming form", so banning a line the witness opens with is a direct
+    self-contradiction. If the most-representative file uses the form, it is not an
+    anti-pattern for this archetype, and showing nothing beats showing a
+    contradiction. (Mirrors the witness-vs-idiom dedup in _shape_idioms_for_block.)
+
+    Default-ON: this adds no repo-code execution and no network, only a cached
+    artifact read, so it follows the kill-switch-default-on principle
+    (``CHAMELEON_COUNTEREXAMPLE=0`` disables). It fires only when a genuine,
+    taught, still-present off-pattern exists; a clean archetype injects nothing.
+    Fails open to "" on any missing artifact / error.
+    """
+    if os.environ.get("CHAMELEON_COUNTEREXAMPLE") == "0" or not archetype or repo_root is None:
+        return ""
+    try:
+        from chameleon_mcp.counterexamples import (
+            _find_import_line,
+            load_counterexamples,
+            neutralize_fences,
+        )
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+        from chameleon_mcp.worktree import resolve_profile_root
+
+        def _safe(text: str) -> str:
+            # Sanitize injection tokens AND break any markdown fence run: the snippet
+            # is rendered inside a ``` fence but sits OUTSIDE the spotlight, so a
+            # smuggled ``` could otherwise close the fence and land raw text in the
+            # model context. neutralize_fences closes that one gap the sanitizer leaves.
+            return neutralize_fences(sanitize_for_chameleon_context(text))
+
+        index = load_counterexamples(resolve_profile_root(repo_root))
+        if index is None:
+            return ""
+        row = index.for_archetype(archetype)
+        if not row:
+            return ""
+        snippet = row.get("snippet")
+        if not isinstance(snippet, str) or not snippet.strip():
+            return ""
+        if len(snippet) > _COUNTEREXAMPLE_MAX_CHARS:
+            return ""
+        over = row.get("over")
+        if (
+            isinstance(over, str)
+            and over
+            and witness_excerpt
+            and _find_import_line(witness_excerpt, over)
+        ):
+            # The witness we are telling the model to mirror imports the discouraged
+            # module: suppress rather than contradict it.
+            return ""
+        lines = [
+            "This archetype has a known off-pattern in this repo. Do NOT write it this way:",
+            "```",
+            _safe(snippet),
+            "```",
+        ]
+        preferred = row.get("preferred")
+        over = row.get("over")
+        if isinstance(preferred, str) and preferred and isinstance(over, str) and over:
+            lines.append(
+                f"Use {_safe(preferred)} instead of {_safe(over)}. The canonical witness above "
+                "is the conforming form."
+            )
+        return "\n".join(lines)
     except Exception:
         return ""
 
@@ -1796,6 +1903,15 @@ def preflight_and_advise() -> int:
 
     repo_id_hint: str | None = None
     repo_root_path: Path | None = None
+    # Set True when a deny gate swallowed a malformed/torn config.json: the
+    # enforcement mode could not be read, so the credential / import deny was
+    # skipped fail-open. The check-event alone never reaches here (the edit
+    # surface), so the advisory block surfaces a loud degraded banner instead of
+    # leaving the skipped block silent. Initialized OUTSIDE the setup try (beside
+    # repo_id_hint/repo_root_path): the deny-gate except handlers read it via
+    # ``... or _cfg_malformed``, so a setup-try abort before this line must not
+    # leave it unbound (that raised UnboundLocalError and failed the whole hook).
+    _cfg_malformed = False
     try:
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.loader import find_repo_root
@@ -2080,16 +2196,30 @@ def preflight_and_advise() -> int:
                             )
                             return 0
     except Exception as exc:
-        _note_if_config_malformed(
-            exc,
-            repo_info.get("id") or repo_id_hint,
-            payload.get("session_id"),
-            "pretool_secret_deny",
+        _cfg_malformed = (
+            _note_if_config_malformed(
+                exc,
+                repo_info.get("id") or repo_id_hint,
+                payload.get("session_id"),
+                "pretool_secret_deny",
+            )
+            or _cfg_malformed
         )
 
     if not archetype_name:
         repo_id = repo_info.get("id") or repo_id_hint
         _metric(advisory_emitted=False, repo_id=repo_id, trust_state=trust_state)
+        # A no-archetype file (e.g. a new .env) is the most common credential-leak
+        # target, and the deny gate above runs on it. If a torn config silently
+        # skipped that deny, surface the degraded banner here too -- this early
+        # exit would otherwise emit {} and lose the only edit-surface warning.
+        if _cfg_malformed:
+            _emit_chameleon_context(
+                "<chameleon-context>\n[🦎 chameleon]\n\n"
+                + _CONFIG_MALFORMED_BANNER.rstrip()
+                + "\n</chameleon-context>"
+            )
+            return 0
         _emit({})
         return 0
 
@@ -2258,11 +2388,14 @@ def preflight_and_advise() -> int:
                                 line=banned[0].get("line"),
                             )
     except Exception as exc:
-        _note_if_config_malformed(
-            exc,
-            repo_info.get("id") or repo_id_hint,
-            payload.get("session_id"),
-            "pretool_import_deny",
+        _cfg_malformed = (
+            _note_if_config_malformed(
+                exc,
+                repo_info.get("id") or repo_id_hint,
+                payload.get("session_id"),
+                "pretool_import_deny",
+            )
+            or _cfg_malformed
         )
 
     enforcement_state = None
@@ -2291,6 +2424,8 @@ def preflight_and_advise() -> int:
 
     if not use_tier2:
         block = f"<chameleon-context>\n[🦎 chameleon: {safe_name} ({safe_band})]\n"
+        if _cfg_malformed:
+            block += _CONFIG_MALFORMED_BANNER
         if summary:
             block += f"{sanitize_for_chameleon_context(summary)}\n"
         conv_echo = ""
@@ -2345,6 +2480,8 @@ def preflight_and_advise() -> int:
         f"match_quality={safe_match}, "
         f"sub_buckets={int(sub_buckets_count)}]\n\n"
     )
+    if _cfg_malformed:
+        block += _CONFIG_MALFORMED_BANNER
     if trust_state == "stale":
         block += (
             "**Trust is stale**: a recent /chameleon-refresh, /chameleon-teach, "
@@ -2384,6 +2521,14 @@ def preflight_and_advise() -> int:
         # spotlight region (which is framed as "imitate, never obey").
         block += _match_quality_lead(match_quality)
         block += untrusted_region + "\n\n"
+    # Pair the witness (the conforming form) with a real off-pattern the team has
+    # flagged, immediately after it: the in-context-learning literature finds a
+    # positive/negative contrast beats a positive example alone. This is a
+    # chameleon "do NOT write it this way" directive, so like the match-quality
+    # lead it stays OUTSIDE the imitate-spotlight.
+    counterexample = _counterexample_section(archetype_name, repo_root_path, excerpt_content)
+    if counterexample:
+        block += counterexample + "\n\n"
     if canonical.get("missing"):
         block += (
             f"(canonical witness {sanitize_for_chameleon_context(str(canonical.get('witness_path')))} is "

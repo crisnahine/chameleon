@@ -182,10 +182,58 @@ class TestConfigMalformedObservable:
             "_emit_check_event",
             lambda *a, **k: events.append((a, k)),
         )
-        hook_helper._note_if_config_malformed(
-            ChameleonConfigError("bad mode"), "rid", "sid", "pretool_secret_deny"
+        # returns True for a config error (so the caller can surface it at the
+        # edit surface), and records the check-event
+        assert (
+            hook_helper._note_if_config_malformed(
+                ChameleonConfigError("bad mode"), "rid", "sid", "pretool_secret_deny"
+            )
+            is True
         )
         assert len(events) == 1
-        # never raises and ignores non-config exceptions
-        hook_helper._note_if_config_malformed(ValueError("other"), "rid", "sid", "x")
+        # never raises, returns False, and ignores non-config exceptions
+        assert (
+            hook_helper._note_if_config_malformed(ValueError("other"), "rid", "sid", "x") is False
+        )
         assert len(events) == 1
+
+    def test_preflight_surfaces_malformed_config_banner_at_edit_surface(self):
+        # When a deny gate swallows a torn config.json, the per-edit block must
+        # carry a visible degraded banner (not just an off-surface check-event),
+        # and it stays fail-open. Guard the wiring + the banner text.
+        import inspect
+
+        src = inspect.getsource(hook_helper.preflight_and_advise)
+        # the deny-gate catch captures the malformed-config signal into the flag
+        assert "_cfg_malformed = (" in src
+        assert '"pretool_secret_deny",' in src
+        assert "or _cfg_malformed" in src
+        # and the advisory block surfaces it
+        assert "if _cfg_malformed:" in src
+        assert "block += _CONFIG_MALFORMED_BANNER" in src
+        assert "Enforcement degraded" in hook_helper._CONFIG_MALFORMED_BANNER
+        assert "OFF for this edit" in hook_helper._CONFIG_MALFORMED_BANNER
+
+    def test_cfg_malformed_flag_initialized_before_setup_try(self):
+        # Regression: _cfg_malformed must be bound OUTSIDE the setup try (before
+        # find_repo_root / _compute_repo_id, which can raise), or the deny-gate
+        # except handlers hit `... or _cfg_malformed` on an unbound name and the
+        # whole hook fails to {} (UnboundLocalError).
+        import inspect
+
+        src = inspect.getsource(hook_helper.preflight_and_advise)
+        init_at = src.index("_cfg_malformed = False")
+        try_at = src.index("from chameleon_mcp.profile.loader import find_repo_root")
+        assert init_at < try_at, "_cfg_malformed must be initialized before the setup try"
+
+    def test_no_archetype_path_surfaces_banner_when_config_malformed(self):
+        # The no-archetype early-return (a new .env etc., the prime leak target)
+        # must also emit the degraded banner when the deny was skipped fail-open,
+        # not a bare {}.
+        import inspect
+
+        src = inspect.getsource(hook_helper.preflight_and_advise)
+        na = src.index("if not archetype_name:")
+        tail = src[na : na + 900]
+        assert "if _cfg_malformed:" in tail
+        assert "_CONFIG_MALFORMED_BANNER" in tail

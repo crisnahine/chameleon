@@ -82,6 +82,18 @@ NOVEL = {
 def battery(label: str, repo: Path) -> None:
     cov = _coverage(repo)
 
+    # Precondition: the battery probes profile-derived coverage, which an
+    # untrusted profile correctly withholds (status != "ok", covered == {}).
+    # Skip with a clear message instead of crashing on the empty covered map so a
+    # human who runs this against an untrusted repo learns to grant trust first.
+    if cov.get("status") != "ok" or not isinstance(cov.get("covered"), dict) or not cov["covered"]:
+        _record(
+            f"{label}_00_precondition",
+            False,
+            f"coverage status={cov.get('status')!r} (run /chameleon-trust on {repo} first)",
+        )
+        return
+
     # 1. Coverage map populated from the real profile.
     ok = (
         cov.get("status") == "ok"

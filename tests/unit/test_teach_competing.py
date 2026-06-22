@@ -63,6 +63,92 @@ def test_teach_competing_import_writes_and_is_idempotent(tmp_path, monkeypatch):
     assert "chameleon-trust" not in d2["note"]
 
 
+def test_teach_competing_import_builds_counterexample(tmp_path, monkeypatch):
+    from chameleon_mcp import tools
+
+    repo = _setup_repo(tmp_path, monkeypatch)
+    # A real file uses the discouraged import; teaching against it should capture
+    # that line as the archetype's counterexample.
+    src = repo / "src" / "httpClient.ts"
+    src.parent.mkdir(parents=True)
+    src.write_text("import axios from 'axios';\nexport const c = axios;\n", encoding="utf-8")
+
+    res = tools.teach_competing_import(
+        str(repo), archetype="httpclient", preferred="@/lib/http", over="axios"
+    )
+    assert _data(res)["status"] == "success"
+
+    ce = json.loads((repo / ".chameleon" / "counterexamples.json").read_text())
+    entry = ce["archetypes"]["httpclient"]
+    assert entry["over"] == "axios"
+    assert entry["snippet"] == "import axios from 'axios';"
+    assert entry["preferred"] == "@/lib/http"
+
+
+def test_teach_competing_import_no_counterexample_when_unused(tmp_path, monkeypatch):
+    from chameleon_mcp import tools
+
+    repo = _setup_repo(tmp_path, monkeypatch)
+    # Nobody uses the discouraged import, so there is no real off-pattern to show.
+    src = repo / "src" / "httpClient.ts"
+    src.parent.mkdir(parents=True)
+    src.write_text("import { http } from '@/lib/http';\n", encoding="utf-8")
+
+    res = tools.teach_competing_import(
+        str(repo), archetype="httpclient", preferred="@/lib/http", over="axios"
+    )
+    assert _data(res)["status"] == "success"
+    ce_path = repo / ".chameleon" / "counterexamples.json"
+    if ce_path.is_file():
+        ce = json.loads(ce_path.read_text())
+        assert "httpclient" not in ce.get("archetypes", {})
+
+
+def test_unteach_competing_import_removes_counterexample(tmp_path, monkeypatch):
+    from chameleon_mcp import tools
+
+    repo = _setup_repo(tmp_path, monkeypatch)
+    src = repo / "src" / "httpClient.ts"
+    src.parent.mkdir(parents=True)
+    src.write_text("import axios from 'axios';\n", encoding="utf-8")
+    tools.teach_competing_import(
+        str(repo), archetype="httpclient", preferred="@/lib/http", over="axios"
+    )
+    ce_path = repo / ".chameleon" / "counterexamples.json"
+    assert "httpclient" in json.loads(ce_path.read_text())["archetypes"]
+
+    # Un-teaching the only pair must drop the stale counterexample.
+    res = tools.unteach_competing_import(
+        str(repo), archetype="httpclient", preferred="@/lib/http", over="axios"
+    )
+    assert _data(res)["removed"] is True
+    assert "httpclient" not in json.loads(ce_path.read_text())["archetypes"]
+
+
+def test_unteach_recomputes_counterexample_from_remaining_pair(tmp_path, monkeypatch):
+    from chameleon_mcp import tools
+
+    repo = _setup_repo(tmp_path, monkeypatch)
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("import axios from 'axios';\n", encoding="utf-8")
+    (repo / "src" / "b.ts").write_text("import moment from 'moment';\n", encoding="utf-8")
+    tools.teach_competing_import(
+        str(repo), archetype="httpclient", preferred="@/lib/http", over="axios"
+    )
+    tools.teach_competing_import(
+        str(repo), archetype="httpclient", preferred="dayjs", over="moment"
+    )
+    ce_path = repo / ".chameleon" / "counterexamples.json"
+    # The most recent teach captured moment.
+    assert json.loads(ce_path.read_text())["archetypes"]["httpclient"]["over"] == "moment"
+
+    # Removing moment recomputes from the remaining axios pair (still used in a.ts).
+    tools.unteach_competing_import(
+        str(repo), archetype="httpclient", preferred="dayjs", over="moment"
+    )
+    assert json.loads(ce_path.read_text())["archetypes"]["httpclient"]["over"] == "axios"
+
+
 def test_teach_competing_import_rejects_bad_input(tmp_path, monkeypatch):
     from chameleon_mcp import tools
 

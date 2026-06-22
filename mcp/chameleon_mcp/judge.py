@@ -53,17 +53,40 @@ _PER_FILE_DIFF_CAP = 12_000
 
 # Cap on canonical-witness bytes injected per archetype. The witness grounds the
 # reviewer in the sibling shape without ballooning the prompt past the spawn's
-# time budget.
-_WITNESS_CHAR_CAP = 1500
+# time budget. Truncation is line-boundaried (see _truncate_on_line_boundary) so
+# the judge never reasons against a function severed mid-body.
+_WITNESS_CHAR_CAP = 3000
 
-# Cap on idioms/principles text injected. Same rationale as the idiom gate's
-# own context cap: enough to ground the review, not the whole document.
-_GUIDANCE_CHAR_CAP = 1500
+# Cap on idioms/principles text injected. Same rationale as the witness cap:
+# enough to ground the review, not the whole document, cut on a line boundary so
+# a mandatory-wrapper / banned-import rule is never half-shown.
+_GUIDANCE_CHAR_CAP = 3000
 
 # Cap on the joined intent-token list appended to the prompt. Intent is a hint
 # pointing the reviewer at the request's checkable specifics (constants,
-# identifiers, quoted strings), not a transcript.
-_INTENT_CHAR_CAP = 600
+# identifiers, quoted strings), not a transcript. Enforced over whole tokens so a
+# constant is never sliced into a value the judge would "verify the code against".
+_INTENT_CHAR_CAP = 900
+
+
+def _truncate_on_line_boundary(text: str, cap: int, notice: str) -> str:
+    """Truncate ``text`` to at most ``cap`` chars on a line boundary.
+
+    A hard mid-line chop can sever a function body or a rule mid-sentence, leaving
+    the reviewer to reason against corrupted grounding. Cutting at the last newline
+    within the budget keeps every shown line whole; ``notice`` flags the omission
+    the way the per-file diff cap already does. Falls back to a hard cut when no
+    newline falls within the budget after the first character (a single over-long
+    line, or a leading blank line followed by one) -- the visible content is then
+    one line too long to break cleanly.
+    """
+    if len(text) <= cap:
+        return text
+    head = text[:cap]
+    nl = head.rfind("\n")
+    if nl > 0:
+        head = head[:nl]
+    return head.rstrip() + notice
 
 
 @dataclass
@@ -157,7 +180,12 @@ def _load_guidance(profile_dir: Path) -> str:
             if fp.is_file():
                 text = fp.read_text(encoding="utf-8", errors="replace").strip()
                 if text:
-                    parts.append(f"{label}:\n{text[:_GUIDANCE_CHAR_CAP]}")
+                    parts.append(
+                        f"{label}:\n"
+                        + _truncate_on_line_boundary(
+                            text, _GUIDANCE_CHAR_CAP, "\n... (truncated; see the file)"
+                        )
+                    )
         except OSError:
             continue
     return "\n\n".join(parts)
@@ -179,7 +207,9 @@ def _witness_for(repo_root: Path, archetype: str | None) -> str:
         data = env.get("data") if isinstance(env, dict) else None
         content = (data or {}).get("content") if isinstance(data, dict) else None
         if isinstance(content, str) and content.strip():
-            return content[:_WITNESS_CHAR_CAP]
+            return _truncate_on_line_boundary(
+                content, _WITNESS_CHAR_CAP, "\n... (witness truncated; full file in the repo)"
+            )
     except Exception:
         return ""
     return ""
@@ -683,7 +713,24 @@ def build_prompt(
     if intent_tokens:
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-        joined = ", ".join(sanitize_for_chameleon_context(t) for t in intent_tokens)
+        clean_tokens = [sanitize_for_chameleon_context(t) for t in intent_tokens]
+        kept: list[str] = []
+        used = 0
+        for tok in clean_tokens:
+            if not kept and len(tok) > _INTENT_CHAR_CAP:
+                # A single oversized token (e.g. a pasted 5000-digit numeral) would
+                # otherwise ride in unbounded, since the first token is always kept;
+                # cap it so one token cannot blow the intent budget.
+                kept.append(tok[:_INTENT_CHAR_CAP])
+                break
+            extra = (2 if kept else 0) + len(tok)  # ", " separator
+            if kept and used + extra > _INTENT_CHAR_CAP:
+                break
+            kept.append(tok)
+            used += extra
+        joined = ", ".join(kept)
+        if len(kept) < len(clean_tokens):
+            joined += f", ... (+{len(clean_tokens) - len(kept)} more)"
         sections.append("")
         sections.append(
             "The user's request for this work mentioned these specific values, "
@@ -691,7 +738,7 @@ def build_prompt(
             "with each one (a wrong constant, a renamed identifier, a "
             "mismatched string is a finding):"
         )
-        sections.append(joined[:_INTENT_CHAR_CAP])
+        sections.append(joined)
 
     if caller_facts:
         sections.append("")

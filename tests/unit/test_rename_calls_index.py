@@ -128,6 +128,42 @@ def test_rename_carries_calls_index_verbatim_and_hashes_it(tmp_path):
     assert hash_profile(cham) != res["new_profile_sha256"]
 
 
+def test_rename_carries_and_remaps_counterexamples_and_symbol_signatures(tmp_path):
+    # counterexamples.json (archetype-keyed) must survive a rename AND have its key
+    # remapped; symbol_signatures.json (file-keyed) must survive verbatim. Both are
+    # protocol files the swap would otherwise drop.
+    repo, cham = _make_profile_repo(tmp_path)
+    ce_payload = {
+        "schema_version": 1,
+        "archetypes": {
+            "svc-old": {
+                "rule": "import-preference-violation",
+                "over": "axios",
+                "snippet": "import x from 'axios';",
+            }
+        },
+    }
+    (cham / "counterexamples.json").write_text(json.dumps(ce_payload), encoding="utf-8")
+    ss_payload = {"schema_version": 1, "files": {"src/services/payment.ts": {}}}
+    (cham / "symbol_signatures.json").write_text(json.dumps(ss_payload), encoding="utf-8")
+
+    res = tools.apply_archetype_renames(str(repo), {"svc-old": "payment-service"})["data"]
+    assert res["status"] == "success"
+
+    carried_ce = cham / "counterexamples.json"
+    assert carried_ce.is_file(), "rename txn dropped counterexamples.json"
+    ce = json.loads(carried_ce.read_text())
+    assert "svc-old" not in ce["archetypes"], "rename left a dangling archetype key"
+    assert ce["archetypes"]["payment-service"]["over"] == "axios"
+
+    carried_ss = cham / "symbol_signatures.json"
+    assert carried_ss.is_file(), "rename txn dropped symbol_signatures.json"
+    assert json.loads(carried_ss.read_text()) == ss_payload
+
+    # The carried counterexample artifact is part of the trust-hashed surface.
+    assert res["new_profile_sha256"] == hash_profile(cham)
+
+
 def test_rename_drops_over_ceiling_calls_index(tmp_path):
     """An artifact past the 16MB loader ceiling is dropped, not carried —
     the loader would refuse to serve it, so carrying it only bloats the

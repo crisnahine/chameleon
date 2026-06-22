@@ -4889,6 +4889,27 @@ def _attempt_partial_refresh(
         except (OSError, FileNotFoundError, _UnsafeFileErrorCI):
             calls_index_text = None
 
+    # counterexamples.json and symbol_signatures.json are protocol files for the
+    # same reason as calls_index.json (a failed FULL rebuild drops them rather than
+    # serving stale model-steering data). A partial refresh is not a failed rebuild,
+    # so carry them forward verbatim; otherwise a successful partial refresh silently
+    # wipes the taught off-pattern counterexamples and the symbol index until the
+    # next full refresh.
+    from chameleon_mcp.safe_open import UnsafeFileError as _UnsafeFileErrorIdx
+    from chameleon_mcp.safe_open import safe_read_profile_artifact as _safe_read_idx
+
+    def _carry_protocol_index(name: str) -> str | None:
+        path = profile_dir / name
+        if not path.is_file():
+            return None
+        try:
+            return _safe_read_idx(path, max_bytes=16_000_000)
+        except (OSError, FileNotFoundError, _UnsafeFileErrorIdx):
+            return None
+
+    counterexamples_text = _carry_protocol_index("counterexamples.json")
+    symbol_signatures_text = _carry_protocol_index("symbol_signatures.json")
+
     try:
         with atomic_profile_commit(profile_dir) as txn_dir:
             (txn_dir / "profile.json").write_text(
@@ -4916,6 +4937,14 @@ def _attempt_partial_refresh(
                 (txn_dir / "conventions.json").write_text(conventions_text, encoding="utf-8")
             if calls_index_text is not None:
                 (txn_dir / "calls_index.json").write_text(calls_index_text, encoding="utf-8")
+            if counterexamples_text is not None:
+                (txn_dir / "counterexamples.json").write_text(
+                    counterexamples_text, encoding="utf-8"
+                )
+            if symbol_signatures_text is not None:
+                (txn_dir / "symbol_signatures.json").write_text(
+                    symbol_signatures_text, encoding="utf-8"
+                )
     except Exception:
         return None
 
@@ -5633,7 +5662,12 @@ def _profile_needs_rederive(profile_dir) -> bool:
     # forever -- the loaders fail open to "no facts", silently degrading the
     # judge caller facts, the duplication prefilter, and the phantom-symbol /
     # cross-file checks.
-    index_names = ["calls_index.json", "function_catalog.json", "symbol_signatures.json"]
+    index_names = [
+        "calls_index.json",
+        "function_catalog.json",
+        "symbol_signatures.json",
+        "counterexamples.json",
+    ]
     if manifest.get("language") == "typescript":
         index_names += ["exports_index.json", "reverse_index.json"]
     for name in index_names:
@@ -8483,6 +8517,34 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         except (OSError, FileNotFoundError, _UnsafeFileErrorRn):
             calls_index_text = None
 
+    # counterexamples.json + symbol_signatures.json are protocol files, so the swap
+    # drops whatever the txn does not re-emit. symbol_signatures is keyed by file
+    # path, so it carries verbatim; counterexamples is keyed by archetype NAME, so
+    # a rename must remap its keys (the same dangling-reference the idioms
+    # "Archetype:" rewrite below avoids) or the entry points at a vanished archetype.
+    from chameleon_mcp.safe_open import safe_read_profile_artifact as _safe_read_rn2
+
+    counterexamples_text: str | None = None
+    ce_rename_path = profile_dir / "counterexamples.json"
+    if ce_rename_path.is_file():
+        try:
+            _ce_doc = json.loads(_safe_read_rn2(ce_rename_path, max_bytes=16_000_000))
+        except Exception:
+            _ce_doc = None
+        if isinstance(_ce_doc, dict) and isinstance(_ce_doc.get("archetypes"), dict):
+            _ce_doc["archetypes"] = {
+                effective.get(a, a): row for a, row in _ce_doc["archetypes"].items()
+            }
+            counterexamples_text = json.dumps(_ce_doc, indent=2, sort_keys=True)
+
+    symbol_signatures_text: str | None = None
+    ss_rename_path = profile_dir / "symbol_signatures.json"
+    if ss_rename_path.is_file():
+        try:
+            symbol_signatures_text = _safe_read_rn2(ss_rename_path, max_bytes=16_000_000)
+        except Exception:
+            symbol_signatures_text = None
+
     idioms_path = profile_dir / "idioms.md"
     idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
 
@@ -8547,6 +8609,14 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
                 (txn_dir / "principles.md").write_text(principles_text, encoding="utf-8")
             if calls_index_text is not None:
                 (txn_dir / "calls_index.json").write_text(calls_index_text, encoding="utf-8")
+            if counterexamples_text is not None:
+                (txn_dir / "counterexamples.json").write_text(
+                    counterexamples_text, encoding="utf-8"
+                )
+            if symbol_signatures_text is not None:
+                (txn_dir / "symbol_signatures.json").write_text(
+                    symbol_signatures_text, encoding="utf-8"
+                )
             (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
             (txn_dir / "profile.summary.md").write_text(summary_md, encoding="utf-8")
             (txn_dir / "renames.json").write_text(
@@ -8713,6 +8783,54 @@ def teach_competing_import(
     except Exception as e:
         return _envelope({"status": "failed", "error": f"conventions write failed: {e}"})
 
+    # Pair the taught wrapper-preference with a real instance of the banned import
+    # so the per-edit block can show the off-pattern form next to the witness. The
+    # counterexample artifact is a hashed trust file, so it is rebuilt BEFORE the
+    # re-grant below, which then covers it. Best-effort: a scan/write failure must
+    # not fail the teach.
+    if not already:
+        try:
+            from chameleon_mcp.counterexamples import (
+                COUNTEREXAMPLES_FILENAME,
+                capture_counterexample_in_repo,
+            )
+            from chameleon_mcp.counterexamples import (
+                SCHEMA_VERSION as _ce_schema,
+            )
+
+            entry = capture_counterexample_in_repo(
+                repo_path, [{"preferred": preferred, "over": over}]
+            )
+            if entry is not None:
+                ce_path = profile_dir / COUNTEREXAMPLES_FILENAME
+                # Serialize the artifact read-modify-write under the same conventions
+                # lock the source-of-truth write used, so a concurrent teach on a
+                # different archetype cannot clobber this row (the scan above needs
+                # no lock; only the shared-file update does).
+                with acquire_advisory_lock(lock_path):
+                    try:
+                        ce_doc = (
+                            json.loads(safe_read_profile_artifact(ce_path))
+                            if ce_path.is_file()
+                            else {}
+                        )
+                    except Exception:
+                        ce_doc = {}
+                    if not isinstance(ce_doc, dict):
+                        ce_doc = {}
+                    ce_doc["schema_version"] = _ce_schema
+                    arches = ce_doc.setdefault("archetypes", {})
+                    if not isinstance(arches, dict):
+                        ce_doc["archetypes"] = arches = {}
+                    arches[archetype] = entry
+                    _ce_tmp = ce_path.with_suffix(".json.tmp")
+                    _ce_tmp.write_text(
+                        json.dumps(ce_doc, indent=2, sort_keys=True), encoding="utf-8"
+                    )
+                    _ce_tmp.replace(ce_path)
+        except Exception:
+            pass
+
     # A real write staled the user's own trust; re-grant so they aren't bounced
     # to re-confirm their own change. No-op when the pair was already present.
     if not already:
@@ -8872,6 +8990,46 @@ def unteach_competing_import(
         )
     except Exception as e:
         return _envelope({"status": "failed", "error": f"conventions write failed: {e}"})
+
+    # Keep the counterexample artifact coherent: the removed pair may have been the
+    # one captured, so recompute this archetype's counterexample from the REMAINING
+    # taught pairs and drop it when none still apply. Rebuilt BEFORE the re-grant so
+    # the new hash is covered. Best-effort: a failure must not fail the unteach.
+    if removed:
+        try:
+            from chameleon_mcp.counterexamples import (
+                COUNTEREXAMPLES_FILENAME,
+                capture_counterexample_in_repo,
+            )
+            from chameleon_mcp.counterexamples import (
+                SCHEMA_VERSION as _ce_schema,
+            )
+
+            ce_path = profile_dir / COUNTEREXAMPLES_FILENAME
+            if ce_path.is_file():
+                # Recompute outside the lock (a repo scan), then serialize the
+                # artifact read-modify-write under the conventions lock so a
+                # concurrent teach/unteach cannot clobber another archetype's row.
+                new_entry = capture_counterexample_in_repo(repo_path, kept)
+                with acquire_advisory_lock(lock_path):
+                    try:
+                        ce_doc = json.loads(safe_read_profile_artifact(ce_path))
+                    except Exception:
+                        ce_doc = None
+                    arches = ce_doc.get("archetypes") if isinstance(ce_doc, dict) else None
+                    if isinstance(arches, dict) and archetype in arches:
+                        if new_entry is not None:
+                            arches[archetype] = new_entry
+                        else:
+                            arches.pop(archetype, None)
+                        ce_doc["schema_version"] = _ce_schema
+                        _ce_tmp = ce_path.with_suffix(".json.tmp")
+                        _ce_tmp.write_text(
+                            json.dumps(ce_doc, indent=2, sort_keys=True), encoding="utf-8"
+                        )
+                        _ce_tmp.replace(ce_path)
+        except Exception:
+            pass
 
     # A real removal staled the user's own trust; re-grant. No-op when nothing matched.
     if removed:

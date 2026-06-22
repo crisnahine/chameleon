@@ -113,6 +113,21 @@ def test_env_toggle_creates_paired_arm_via_env_not_config():
     assert "CHAMELEON_NEARBY_SIGNATURES" not in arm_env(off, {})
 
 
+def test_env_toggle_disables_default_on_feature():
+    # counterexample is default-ON, so its A/B paired arm turns it OFF ("0") to
+    # isolate the feature's effect against the base shadow arm.
+    from tests.effectiveness.arms import arm_env, parse_arms
+
+    specs = parse_arms("off,shadow", "counterexample")
+    assert "shadow~counterexample=off" in [s.name for s in specs]
+    paired = next(s for s in specs if s.env_key)
+    assert paired.env_key == "CHAMELEON_COUNTEREXAMPLE"
+    assert arm_env(paired, {})["CHAMELEON_COUNTEREXAMPLE"] == "0"
+    # the base shadow arm leaves the feature at its default (on, unset)
+    shadow = next(s for s in specs if s.name == "shadow")
+    assert "CHAMELEON_COUNTEREXAMPLE" not in arm_env(shadow, {})
+
+
 def test_env_toggle_does_not_write_to_config(tmp_path):
     from tests.effectiveness.arms import apply_arm_config, parse_arms
 

@@ -1237,6 +1237,20 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
         except OSError:
             calls_index_text = None
 
+    # counterexamples.json + symbol_signatures.json are protocol files for the same
+    # reason as calls_index.json, so the commit will not carry them forward on its
+    # own; this amend only adds the workspaces array to a just-derived profile, so
+    # re-emit them verbatim or every monorepo root loses them moments after they
+    # were written. (amend does not rename, so no key remap is needed.)
+    extra_protocol_text: dict[str, str] = {}
+    for _name in ("counterexamples.json", "symbol_signatures.json"):
+        _p = profile_dir / _name
+        if _p.is_file():
+            try:
+                extra_protocol_text[_name] = _p.read_text(encoding="utf-8")
+            except OSError:
+                pass
+
     with atomic_profile_commit(profile_dir) as txn_dir:
         (txn_dir / "profile.json").write_text(
             json.dumps(profile_data, indent=2, sort_keys=True), encoding="utf-8"
@@ -1249,6 +1263,8 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
             (txn_dir / "renames.json").write_text(renames_text, encoding="utf-8")
         if calls_index_text is not None:
             (txn_dir / "calls_index.json").write_text(calls_index_text, encoding="utf-8")
+        for _name, _body in extra_protocol_text.items():
+            (txn_dir / _name).write_text(_body, encoding="utf-8")
 
 
 # Plain-word labels for the AST node kinds that lead the Tier 1 pointer —
@@ -2113,6 +2129,34 @@ def _bootstrap_single(
             (txn_dir / "symbol_signatures.json").write_text(
                 json.dumps(
                     build_symbol_signatures(parse_result.files, repo_root),
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+        # Off-pattern counterexamples back the per-edit "do NOT write it this way"
+        # injection. When a team has taught a competing import for an archetype
+        # (conventions.imports.<arch>.competing) and a real member still uses the
+        # discouraged form, capture that line so the witness's positive example is
+        # paired with a real negative. Hashed into the trust SHA, written in this
+        # same atomic transaction. Best-effort: a build failure must not abort the
+        # commit.
+        try:
+            from chameleon_mcp.counterexamples import build_counterexamples
+
+            imports_conv = conventions_data.get("conventions", {}).get("imports", {})
+            competing_by_archetype = {
+                arch: body["competing"]
+                for arch, body in imports_conv.items()
+                if isinstance(body, dict)
+                and isinstance(body.get("competing"), list)
+                and body["competing"]
+            }
+            (txn_dir / "counterexamples.json").write_text(
+                json.dumps(
+                    build_counterexamples(competing_by_archetype, repo_root),
                     indent=2,
                     sort_keys=True,
                 ),

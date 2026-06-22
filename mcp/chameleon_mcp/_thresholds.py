@@ -147,8 +147,11 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "JUDGE_IMPORTED_DEFS_CHAR_CAP": 1200,
     # Per-annotation cap on a stored declared type's text (C2.2). A giant inline
     # type literal (`{ a: ..., b: ..., ...500 fields }`) via getText() is cut so
-    # one parameter cannot bloat the artifact or a hydrated line.
-    "SYMBOL_SIG_TYPE_MAX_CHARS": 80,
+    # one parameter cannot bloat the artifact or a hydrated line. 80 severed a
+    # realistic generic mid-type (`Record<string, Foo<Bar>>`), leaving the judge a
+    # type it cannot match a call against; 160 holds the common case whole and the
+    # ellipsis still flags the rare overflow.
+    "SYMBOL_SIG_TYPE_MAX_CHARS": 160,
     # Net removed lines across changed test files before the change reads as
     # net test deletion in the test-integrity gate. Small consolidation
     # refactors stay quiet; gutting a spec does not.

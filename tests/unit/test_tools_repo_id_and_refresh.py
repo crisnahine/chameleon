@@ -367,6 +367,92 @@ def test_partial_refresh_preserves_calls_index(tmp_path, monkeypatch):
     assert json.loads((cham / "calls_index.json").read_text()) == calls_payload
 
 
+def test_partial_refresh_preserves_counterexamples_and_symbol_signatures(tmp_path, monkeypatch):
+    """A successful partial refresh must carry counterexamples.json and
+    symbol_signatures.json forward.
+
+    Both are protocol files, so the atomic commit does not copy them on its own;
+    without an explicit re-emit a partial refresh (the default for a small change)
+    silently wiped the taught off-pattern counterexamples and the symbol index.
+    """
+    repo_root = tmp_path / "repo"
+    cham = repo_root / ".chameleon"
+    cham.mkdir(parents=True)
+    src = repo_root / "src"
+    src.mkdir()
+
+    files = []
+    for i in range(20):
+        p = src / f"f{i}.ts"
+        p.write_text(f"export const v{i} = {i};\n")
+        files.append(p)
+
+    (cham / "profile.json").write_text(
+        json.dumps({"schema_version": 7, "generation": 1, "language": "typescript"})
+    )
+    (cham / "archetypes.json").write_text(
+        json.dumps(
+            {"generation": 1, "archetypes": {"svc": {"cluster_id": "C1", "cluster_size": 20}}}
+        )
+    )
+    (cham / "canonicals.json").write_text(
+        json.dumps(
+            {
+                "generation": 1,
+                "canonicals": {"svc": [{"witness": {"path": "src/witness.ts", "sha_hint": "zz"}}]},
+            }
+        )
+    )
+    (cham / "rules.json").write_text(json.dumps({"generation": 1, "rules": {}}))
+    (cham / "conventions.json").write_text(json.dumps({"generation": 1, "conventions": {}}))
+    (cham / "principles.md").write_text("# principles\n")
+    (cham / "idioms.md").write_text("# idioms\n")
+    (cham / "profile.summary.md").write_text("# summary\n")
+    ce_payload = {
+        "schema_version": 1,
+        "archetypes": {
+            "svc": {
+                "rule": "import-preference-violation",
+                "over": "axios",
+                "snippet": "import x from 'axios';",
+            }
+        },
+    }
+    (cham / "counterexamples.json").write_text(json.dumps(ce_payload))
+    ss_payload = {"schema_version": 1, "files": {}}
+    (cham / "symbol_signatures.json").write_text(json.dumps(ss_payload))
+    (cham / "COMMITTED").touch()
+
+    repo_id = tools._compute_repo_id(repo_root)
+
+    prev_state = {}
+    for i in range(20):
+        prev_state[f"src/f{i}.ts"] = {
+            "cluster_id": "C1",
+            "sha_hint": ("old-sha" if i == 0 else f"sha-{i}"),
+        }
+
+    def _sha(p):
+        i = int(p.name[1:].split(".")[0])
+        return "new-sha" if i == 0 else f"sha-{i}"
+
+    monkeypatch.setattr(
+        tools, "_reparse_changed_files", lambda _root, _paths: {"src/f0.ts": ("C1", "new-sha")}
+    )
+    monkeypatch.setattr(tools, "_content_sha_hint", _sha)
+    monkeypatch.setattr(tools, "_calibrate_block_rules_for_repo", lambda _root: None)
+
+    env = tools._attempt_partial_refresh(repo_root, repo_id, cham, files, prev_state, 1000.0)
+    assert env is not None and env["data"]["status"] == "partial_refresh"
+
+    assert (cham / "counterexamples.json").is_file(), "partial refresh dropped counterexamples.json"
+    assert json.loads((cham / "counterexamples.json").read_text()) == ce_payload
+    assert (cham / "symbol_signatures.json").is_file(), (
+        "partial refresh dropped symbol_signatures.json"
+    )
+    assert json.loads((cham / "symbol_signatures.json").read_text()) == ss_payload
+
+
 # ---- witness-path overlap tolerates backslash-authored profiles ----
 
 

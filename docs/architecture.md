@@ -222,6 +222,7 @@ All JSON artifacts carry `schema_version`, `engine_min_version`, and a
 | `function_catalog.json` | Per-function name, shape, and body-hash for the duplication prefilter. Both languages. |
 | `calls_index.json` | Deterministic caller -> callee edges for the judge. Both languages. |
 | `symbol_signatures.json` | Per-callable signature and body span for forward-definition hydration. Both languages (declared types TS only). |
+| `counterexamples.json` | Per-archetype off-pattern counterexample: a real instance of a taught discouraged import, paired with the witness at edit time as a "do NOT write it this way" example. Built at teach time and bootstrap/refresh; drop-stale. |
 | `renames.json` | User archetype-rename overlay (written only when a rename map exists). |
 | `config.json` | Operator-managed: `production_ref`, `auto_refresh`, `enforcement`, `trust`, `canonical_ref`. Read, never produced, by bootstrap. |
 

@@ -199,6 +199,7 @@ _HASHED_ARTIFACTS: tuple[str, ...] = (
     "canonicals.json",
     "config.json",
     "conventions.json",
+    "counterexamples.json",
     "enforcement.json",
     "exports_index.json",
     "function_catalog.json",

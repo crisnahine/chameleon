@@ -21,14 +21,20 @@ class ArmSpec:
     disable_env: bool  # True only for the "off" arm
     toggle_key: str | None = None
     toggle_value: bool | None = None
-    env_key: str | None = None  # env var set to "1" for this arm (env-flag toggle)
+    env_key: str | None = None  # env var set for this arm (env-flag toggle)
+    env_value: str | None = None  # the value env_key is set to ("1" or "0")
 
 
 # Feature toggles that are env vars, not config.json enforcement keys. The
 # config-key toggle path cannot flip these (they are read from the environment at
 # hook time, not the profile), so they get a paired arm that sets the env var for
-# its sessions instead. Maps the --toggle name to the env var it flips on.
-_ENV_TOGGLES: dict[str, str] = {"nearby_signatures": "CHAMELEON_NEARBY_SIGNATURES"}
+# its sessions instead. Maps the --toggle name to (env var, value): a default-OFF
+# feature is set "1" to turn it on for the paired arm; a default-ON feature is set
+# "0" to turn it off, so either way the diff against the base isolates the feature.
+_ENV_TOGGLES: dict[str, tuple[str, str]] = {
+    "nearby_signatures": ("CHAMELEON_NEARBY_SIGNATURES", "1"),
+    "counterexample": ("CHAMELEON_COUNTEREXAMPLE", "0"),
+}
 
 
 def _toggleable_keys() -> dict[str, bool]:
@@ -62,14 +68,19 @@ def parse_arms(arms_csv: str, toggle: str | None) -> list[ArmSpec]:
         base = next((s for s in non_off if s.name == "shadow"), non_off[0])
         env_toggle = _ENV_TOGGLES.get(toggle)
         if env_toggle is not None:
-            # Env-flag feature (e.g. nearby_signatures): a paired arm identical to
-            # the base except the env var is on, so the diff isolates the feature.
+            # Env-flag feature (e.g. nearby_signatures, counterexample): a paired
+            # arm identical to the base except the env var is flipped, so the diff
+            # isolates the feature. "1" turns a default-OFF feature on; "0" turns a
+            # default-ON feature off.
+            env_key, env_value = env_toggle
+            direction = "on" if env_value == "1" else "off"
             specs.append(
                 ArmSpec(
-                    name=f"{base.name}~{toggle}=on",
+                    name=f"{base.name}~{toggle}={direction}",
                     base_mode=base.base_mode,
                     disable_env=False,
-                    env_key=env_toggle,
+                    env_key=env_key,
+                    env_value=env_value,
                 )
             )
             return specs
@@ -100,7 +111,7 @@ def arm_env(spec: ArmSpec, base_env: dict[str, str]) -> dict[str, str]:
     if spec.disable_env:
         env["CHAMELEON_DISABLE"] = "1"
     if spec.env_key is not None:
-        env[spec.env_key] = "1"
+        env[spec.env_key] = spec.env_value or "1"
     return env
 
 
