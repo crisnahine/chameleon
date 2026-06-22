@@ -7190,6 +7190,26 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
                 }
             )
 
+        # The cluster_size/witness merge below assumes each archetype maps to a
+        # DICT (archetypes.json). counterexamples.json also has a top-level
+        # "archetypes" key, but maps each archetype to a LIST of off-pattern rows
+        # (schema v2), which would crash on `.get(...)`. That artifact is a
+        # regenerable protocol file and is deliberately NOT routed to this driver
+        # (.gitattributes-template), but decline cleanly rather than crash if it
+        # ever reaches here — the next /chameleon-refresh rebuilds it from the
+        # merged conventions.json.
+        if any(not isinstance(v, dict) for v in (*ours_archs.values(), *theirs_archs.values())):
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        "archetype values are not objects (regenerable protocol "
+                        "artifact); leaving the conflict for manual resolution"
+                    ),
+                    "merged_profile_path": None,
+                }
+            )
+
         merged: dict[str, dict] = dict(ours_archs)
         for name, arch in theirs_archs.items():
             if name not in merged:
@@ -8793,6 +8813,7 @@ def teach_competing_import(
             from chameleon_mcp.counterexamples import (
                 COUNTEREXAMPLES_FILENAME,
                 capture_counterexample_in_repo,
+                normalize_archetype_rows,
             )
             from chameleon_mcp.counterexamples import (
                 SCHEMA_VERSION as _ce_schema,
@@ -8822,7 +8843,20 @@ def teach_competing_import(
                     arches = ce_doc.setdefault("archetypes", {})
                     if not isinstance(arches, dict):
                         ce_doc["archetypes"] = arches = {}
-                    arches[archetype] = entry
+                    # APPEND into the archetype's row list (normalizing any legacy v1
+                    # single-dict still on disk), replacing only a prior row for the
+                    # SAME discouraged import. A second taught competing import for
+                    # this archetype keeps the first's counterexample instead of
+                    # clobbering it.
+                    rows = [
+                        r
+                        for r in normalize_archetype_rows(arches.get(archetype))
+                        if r.get("over") != over
+                    ]
+                    rows.append(entry)
+                    # Re-normalize the final list so the cap holds AFTER the append
+                    # (capping only the existing rows would let it grow to cap+1).
+                    arches[archetype] = normalize_archetype_rows(rows)
                     _ce_tmp = ce_path.with_suffix(".json.tmp")
                     _ce_tmp.write_text(
                         json.dumps(ce_doc, indent=2, sort_keys=True), encoding="utf-8"
@@ -8999,7 +9033,7 @@ def unteach_competing_import(
         try:
             from chameleon_mcp.counterexamples import (
                 COUNTEREXAMPLES_FILENAME,
-                capture_counterexample_in_repo,
+                capture_counterexamples_in_repo,
             )
             from chameleon_mcp.counterexamples import (
                 SCHEMA_VERSION as _ce_schema,
@@ -9010,7 +9044,9 @@ def unteach_competing_import(
                 # Recompute outside the lock (a repo scan), then serialize the
                 # artifact read-modify-write under the conventions lock so a
                 # concurrent teach/unteach cannot clobber another archetype's row.
-                new_entry = capture_counterexample_in_repo(repo_path, kept)
+                # Rebuild this archetype's FULL row list from the REMAINING taught
+                # pairs so unteaching one competing import leaves the others' rows.
+                new_rows = capture_counterexamples_in_repo(repo_path, kept)
                 with acquire_advisory_lock(lock_path):
                     try:
                         ce_doc = json.loads(safe_read_profile_artifact(ce_path))
@@ -9018,8 +9054,8 @@ def unteach_competing_import(
                         ce_doc = None
                     arches = ce_doc.get("archetypes") if isinstance(ce_doc, dict) else None
                     if isinstance(arches, dict) and archetype in arches:
-                        if new_entry is not None:
-                            arches[archetype] = new_entry
+                        if new_rows:
+                            arches[archetype] = new_rows
                         else:
                             arches.pop(archetype, None)
                         ce_doc["schema_version"] = _ce_schema

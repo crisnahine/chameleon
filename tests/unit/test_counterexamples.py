@@ -233,7 +233,9 @@ def test_build_captures_over_import_for_taught_competing(tmp_path):
         tmp_path,
     )
     assert art["schema_version"] == ce.SCHEMA_VERSION
-    row = art["archetypes"]["service"]
+    rows = art["archetypes"]["service"]
+    assert isinstance(rows, list) and len(rows) == 1
+    row = rows[0]
     assert row["rule"] == "import-preference-violation"
     assert row["over"] == "raw-db"
     assert row["preferred"] == "~/core/db"
@@ -266,7 +268,7 @@ def test_build_captures_from_non_member_outlier_file(tmp_path):
         {"service": [{"preferred": "~/core/db", "over": "raw-db"}]},
         tmp_path,
     )
-    assert art["archetypes"]["service"]["over"] == "raw-db"
+    assert art["archetypes"]["service"][0]["over"] == "raw-db"
 
 
 def test_build_multiple_archetypes(tmp_path):
@@ -279,8 +281,30 @@ def test_build_multiple_archetypes(tmp_path):
         },
         tmp_path,
     )
-    assert art["archetypes"]["service"]["over"] == "raw-db"
-    assert art["archetypes"]["component"]["over"] == "moment"
+    assert art["archetypes"]["service"][0]["over"] == "raw-db"
+    assert art["archetypes"]["component"][0]["over"] == "moment"
+
+
+def test_build_keeps_all_competing_pairs_for_one_archetype(tmp_path):
+    # A team that teaches TWO competing imports for ONE archetype, both with a real
+    # off-pattern in the repo, keeps a counterexample for EACH (not just the last).
+    _write(tmp_path / "src" / "a.ts", "import w from 'winston';\n")
+    _write(tmp_path / "src" / "b.ts", "import m from 'moment';\n")
+    art = ce.build_counterexamples(
+        {
+            "service": [
+                {"preferred": "@/lib/logger", "over": "winston"},
+                {"preferred": "@/lib/date", "over": "moment"},
+            ]
+        },
+        tmp_path,
+    )
+    rows = art["archetypes"]["service"]
+    assert [r["over"] for r in rows] == ["winston", "moment"]
+    assert {r["snippet"] for r in rows} == {
+        "import w from 'winston';",
+        "import m from 'moment';",
+    }
 
 
 def test_build_empty_when_no_repo_file_uses_over(tmp_path):
@@ -314,7 +338,21 @@ def test_build_first_competing_pair_with_usage_wins(tmp_path):
         },
         tmp_path,
     )
-    assert art["archetypes"]["service"]["over"] == "moment"
+    assert art["archetypes"]["service"][0]["over"] == "moment"
+
+
+def test_capture_plural_returns_row_per_used_pair(tmp_path):
+    _write(tmp_path / "src" / "a.ts", "import w from 'winston';\n")
+    _write(tmp_path / "src" / "b.ts", "import m from 'moment';\n")
+    rows = ce.capture_counterexamples_in_repo(
+        tmp_path,
+        [
+            {"preferred": "@/lib/logger", "over": "winston"},
+            {"preferred": "@/lib/date", "over": "moment"},
+            {"preferred": "@/lib/http", "over": "axios"},  # unused -> no row
+        ],
+    )
+    assert [r["over"] for r in rows] == ["winston", "moment"]
 
 
 # --- load_counterexamples ------------------------------------------------------
@@ -329,6 +367,32 @@ def _profile_with_artifact(tmp_path: Path, payload: dict) -> Path:
 
 def test_load_round_trip(tmp_path):
     payload = {
+        "schema_version": ce.SCHEMA_VERSION,
+        "archetypes": {
+            "service": [
+                {
+                    "rule": "import-preference-violation",
+                    "over": "raw-db",
+                    "snippet": "import x from 'raw-db';",
+                }
+            ]
+        },
+    }
+    root = _profile_with_artifact(tmp_path, payload)
+    idx = ce.load_counterexamples(root)
+    assert idx is not None
+    rows = idx.for_archetype("service")
+    assert rows[0]["snippet"] == "import x from 'raw-db';"
+    assert idx.for_archetype("nope") == []
+    assert idx.for_archetype("") == []
+    assert len(idx) == 1
+
+
+def test_load_v1_single_dict_back_compat(tmp_path):
+    # A counterexamples.json still in the legacy v1 shape (one dict per archetype,
+    # schema_version 1) loads and normalizes to a one-row list, so an existing user
+    # keeps their counterexample until the next refresh rewrites it as v2.
+    payload = {
         "schema_version": 1,
         "archetypes": {
             "service": {
@@ -341,11 +405,27 @@ def test_load_round_trip(tmp_path):
     root = _profile_with_artifact(tmp_path, payload)
     idx = ce.load_counterexamples(root)
     assert idx is not None
-    row = idx.for_archetype("service")
-    assert row["snippet"] == "import x from 'raw-db';"
-    assert idx.for_archetype("nope") is None
-    assert idx.for_archetype("") is None
-    assert len(idx) == 1
+    rows = idx.for_archetype("service")
+    assert len(rows) == 1 and rows[0]["over"] == "raw-db"
+
+
+def test_load_v2_multi_row(tmp_path):
+    payload = {
+        "schema_version": ce.SCHEMA_VERSION,
+        "archetypes": {
+            "service": [
+                {
+                    "over": "winston",
+                    "preferred": "@/lib/logger",
+                    "snippet": "import w from 'winston';",
+                },
+                {"over": "moment", "preferred": "@/lib/date", "snippet": "import m from 'moment';"},
+            ]
+        },
+    }
+    root = _profile_with_artifact(tmp_path, payload)
+    idx = ce.load_counterexamples(root)
+    assert [r["over"] for r in idx.for_archetype("service")] == ["winston", "moment"]
 
 
 def test_load_none_when_missing(tmp_path):
@@ -375,7 +455,7 @@ def test_load_drops_rows_without_snippet(tmp_path):
     )
     idx = ce.load_counterexamples(root)
     assert idx is not None
-    assert idx.for_archetype("service") is None
+    assert idx.for_archetype("service") == []
 
 
 def test_load_mtime_cache_serves_cached(tmp_path):
@@ -384,6 +464,42 @@ def test_load_mtime_cache_serves_cached(tmp_path):
     first = ce.load_counterexamples(root)
     second = ce.load_counterexamples(root)
     assert first is second
+
+
+# --- scan bounds (file cap + wall-clock budget, env-tunable) ------------------
+
+
+def test_scan_max_files_reads_threshold(monkeypatch):
+    monkeypatch.delenv("CHAMELEON_COUNTEREXAMPLE_SCAN_MAX_FILES", raising=False)
+    assert ce._scan_max_files() == 50000
+    monkeypatch.setenv("CHAMELEON_COUNTEREXAMPLE_SCAN_MAX_FILES", "7")
+    assert ce._scan_max_files() == 7
+
+
+def test_scan_budget_reads_threshold(monkeypatch):
+    monkeypatch.delenv("CHAMELEON_COUNTEREXAMPLE_SCAN_BUDGET_SECONDS", raising=False)
+    assert ce._scan_budget_seconds() == 10.0
+    monkeypatch.setenv("CHAMELEON_COUNTEREXAMPLE_SCAN_BUDGET_SECONDS", "0.5")
+    assert ce._scan_budget_seconds() == 0.5
+
+
+def test_capture_honors_low_file_cap(tmp_path, monkeypatch):
+    # The off-pattern is in a late-alphabetical dir; a cap of 1 stops before it.
+    _write(tmp_path / "aaa" / "early.ts", "export const x = 1;\n")
+    _write(tmp_path / "zzz" / "legacy.ts", "import x from 'raw-db';\n")
+    monkeypatch.setenv("CHAMELEON_COUNTEREXAMPLE_SCAN_MAX_FILES", "1")
+    assert ce.capture_counterexamples_in_repo(tmp_path, [{"over": "raw-db"}]) == []
+    # A higher cap reaches it.
+    monkeypatch.setenv("CHAMELEON_COUNTEREXAMPLE_SCAN_MAX_FILES", "50")
+    rows = ce.capture_counterexamples_in_repo(tmp_path, [{"over": "raw-db"}])
+    assert [r["over"] for r in rows] == ["raw-db"]
+
+
+def test_capture_honors_zero_budget(tmp_path, monkeypatch):
+    # A zero-second budget bounds the scan immediately without crashing.
+    _write(tmp_path / "src" / "legacy.ts", "import x from 'raw-db';\n")
+    monkeypatch.setenv("CHAMELEON_COUNTEREXAMPLE_SCAN_BUDGET_SECONDS", "0")
+    assert ce.capture_counterexamples_in_repo(tmp_path, [{"over": "raw-db"}]) == []
 
 
 # --- capture_counterexample_in_repo (teach-time repo scan) --------------------

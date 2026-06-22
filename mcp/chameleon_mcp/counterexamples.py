@@ -36,10 +36,22 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 COUNTEREXAMPLES_FILENAME = "counterexamples.json"
-SCHEMA_VERSION = 1
+# v2 stores a LIST of off-patterns per archetype so a team that teaches several
+# competing imports for one archetype (winston->logger AND moment->date) keeps a
+# grounded counterexample for EACH, not just the last taught. v1 (a single row
+# per archetype) is still read for back-compat and normalized to a 1-row list.
+SCHEMA_VERSION = 2
+_READABLE_SCHEMA_VERSIONS = (1, 2)
+
+# Defensive upper bound on counterexample rows kept per archetype. The real bound
+# is the number of competing imports a human has TAUGHT for the archetype (a
+# naturally small, deliberate set), so this never bites a real team; it only caps
+# a pathological teach loop from bloating the artifact and the edit spotlight.
+_MAX_ROWS_PER_ARCHETYPE = 10
 
 # A captured counterexample is a single import statement; anything longer than
 # this is not a clean one-line import (a folded multi-name import, a false match
@@ -65,10 +77,24 @@ def neutralize_fences(text: str) -> str:
 # generated file slow the build.
 _MEMBER_SCAN_BYTES = 64_000
 
-# Cap on files visited by the repo-wide scan (teach-time, never on a hook hot
-# path). Keeps a giant monorepo's teach bounded; the scan stops early on the
-# first match anyway.
-_REPO_SCAN_MAX_FILES = 5_000
+
+# Cap on files visited by the repo-wide scan + the wall-clock budget (teach-time,
+# never on a hook hot path). Read from _thresholds so an operator can tune them;
+# the file cap is a high backstop and the budget is the real bound, so a huge
+# monorepo whose off-pattern lives in a late-alphabetical dir is still found rather
+# than the scan exhausting a low file cap inside app/. The scan stops early on a
+# match, so the budget only binds when the taught module is absent.
+def _scan_max_files() -> int:
+    from chameleon_mcp._thresholds import threshold_int
+
+    return threshold_int("COUNTEREXAMPLE_SCAN_MAX_FILES")
+
+
+def _scan_budget_seconds() -> float:
+    from chameleon_mcp._thresholds import threshold_float
+
+    return threshold_float("COUNTEREXAMPLE_SCAN_BUDGET_SECONDS")
+
 
 # A line whose stripped form opens with one of these is a comment, never a real
 # import statement: a commented-out import (`// import x from "over"`, a JSDoc
@@ -224,12 +250,14 @@ def _iter_repo_source_files(repo_root: Path | str):
     (``EXCLUDE_FROM_CLUSTERING_DIRS``) so the teach-time scan never captures a
     counterexample from a vendored/generated/cache file that is not hand-written
     team code, and the two exclude sets cannot drift. Skips symlinked dirs and
-    files so a planted link out of the repo is never read. Stops after
-    ``_REPO_SCAN_MAX_FILES``. Tool-time only, never on a hook hot path.
+    files so a planted link out of the repo is never read. Stops after the
+    ``COUNTEREXAMPLE_SCAN_MAX_FILES`` threshold. Tool-time only, never on a hook
+    hot path.
     """
     from chameleon_mcp.bootstrap.discovery import EXCLUDE_FROM_CLUSTERING_DIRS
     from chameleon_mcp.conventions import _SOURCE_EXTENSIONS
 
+    max_files = _scan_max_files()
     count = 0
     for dirpath, dirnames, filenames in os.walk(repo_root):
         # os.walk already does not descend symlinked dirs (followlinks=False);
@@ -241,7 +269,7 @@ def _iter_repo_source_files(repo_root: Path | str):
             and not os.path.islink(os.path.join(dirpath, d))
         )
         for name in sorted(filenames):
-            if count >= _REPO_SCAN_MAX_FILES:
+            if count >= max_files:
                 return
             path = Path(dirpath) / name
             if path.suffix in _SOURCE_EXTENSIONS and not path.is_symlink():
@@ -249,35 +277,81 @@ def _iter_repo_source_files(repo_root: Path | str):
                 yield path
 
 
-def capture_counterexample_in_repo(repo_root: Path | str, competing_pairs: list) -> dict | None:
-    """Scan repo source files for the first real instance of a discouraged import.
+def normalize_archetype_rows(value: object) -> list[dict]:
+    """Coerce a stored per-archetype counterexample value to a list of valid rows.
 
-    Walks the repo (not a member list) so a taught competing pair finds its real
-    off-pattern instance wherever it lives -- ``archetypes.json`` records no
-    per-archetype member paths, and the off-pattern usage may sit in an outlier
-    file that did not cluster into the archetype. This is the single capture path
-    shared by teach and the bootstrap/refresh rebuild, so the two cannot diverge.
-    Returns the captured entry or None when no discouraged import is present
-    anywhere. Tool-time only.
+    Accepts a v2 list, a legacy v1 single dict, or junk, and returns a list of
+    rows that each carry a string ``snippet``. The single normalizer is shared by
+    :func:`load_counterexamples` and the teach/unteach read-modify-write so the on-
+    disk shape (which may still be v1 until the next refresh) is handled one way.
+    """
+    rows = value if isinstance(value, list) else [value]
+    out: list[dict] = []
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("snippet"), str) and row.get("snippet"):
+            out.append(row)
+    return out[:_MAX_ROWS_PER_ARCHETYPE]
+
+
+def capture_counterexamples_in_repo(repo_root: Path | str, competing_pairs: list) -> list[dict]:
+    """All real off-pattern lines for the taught competing pairs, one row per pair.
+
+    Walks the repo ONCE and, for each distinct discouraged (``over``) module, keeps
+    the first real import of it found anywhere in the tree -- ``archetypes.json``
+    records no per-archetype member paths, and the off-pattern usage may sit in an
+    outlier file that did not cluster into the archetype. Returns one entry per pair
+    whose discouraged import is actually present (deduped by ``over``, in pair
+    order); a pair nobody violates yields nothing, so a clean archetype produces an
+    empty list. This is the single capture path shared by teach and the
+    bootstrap/refresh rebuild, so the two cannot diverge. Tool-time only.
+
+    Bounded by a wall-clock budget (``COUNTEREXAMPLE_SCAN_BUDGET_SECONDS``) as well
+    as the file cap: the scan breaks early once every pair is found, so the budget
+    only binds when a taught module is absent (nothing to capture), keeping the
+    teach on the largest monorepos snappy without missing an off-pattern that sits
+    in a late-scanned directory.
     """
     if not isinstance(competing_pairs, list) or not competing_pairs:
-        return None
-    overs = [
-        (p["over"], p.get("preferred"))
-        for p in competing_pairs
-        if isinstance(p, dict) and isinstance(p.get("over"), str) and p.get("over")
-    ]
+        return []
+    overs: list[tuple[str, object]] = []
+    seen_over: set[str] = set()
+    for p in competing_pairs:
+        if isinstance(p, dict) and isinstance(p.get("over"), str) and p.get("over"):
+            over = p["over"]
+            if over not in seen_over:
+                seen_over.add(over)
+                overs.append((over, p.get("preferred")))
     if not overs:
-        return None
+        return []
+
+    deadline = time.monotonic() + _scan_budget_seconds()
+    found: dict[str, dict] = {}
     for path in _iter_repo_source_files(repo_root):
+        if len(found) == len(overs):
+            break
+        if time.monotonic() > deadline:
+            break
         text = _read_member_text(path)
         if text is None:
             continue
         for over, preferred in overs:
+            if over in found:
+                continue
             snippet = _find_import_line(text, over)
             if snippet:
-                return _make_entry(over, snippet, preferred)
-    return None
+                found[over] = _make_entry(over, snippet, preferred)
+    # Preserve the taught pair order, capped.
+    return [found[over] for over, _ in overs if over in found][:_MAX_ROWS_PER_ARCHETYPE]
+
+
+def capture_counterexample_in_repo(repo_root: Path | str, competing_pairs: list) -> dict | None:
+    """First real off-pattern instance for any of the competing pairs, or None.
+
+    Back-compatible singular wrapper over :func:`capture_counterexamples_in_repo`
+    for callers that want a single row.
+    """
+    rows = capture_counterexamples_in_repo(repo_root, competing_pairs)
+    return rows[0] if rows else None
 
 
 def build_counterexamples(
@@ -294,30 +368,31 @@ def build_counterexamples(
 
     ``competing_by_archetype`` maps each archetype to its taught competing pairs
     (``[{"preferred", "over"}, ...]``). Keys in the output are archetype names so
-    the edit-time reader can look up by the edited file's archetype.
+    the edit-time reader can look up by the edited file's archetype. Each value is
+    a LIST: one row per taught pair whose discouraged import is still present.
     """
-    out: dict[str, dict] = {}
+    out: dict[str, list[dict]] = {}
     for archetype in sorted(competing_by_archetype):
-        entry = capture_counterexample_in_repo(
+        rows = capture_counterexamples_in_repo(
             repo_root, competing_by_archetype.get(archetype) or []
         )
-        if entry:
-            out[archetype] = entry
+        if rows:
+            out[archetype] = rows
 
     return {"schema_version": SCHEMA_VERSION, "archetypes": out}
 
 
 class Counterexamples:
-    """Archetype -> counterexample row, loaded from the artifact."""
+    """Archetype -> list of counterexample rows, loaded from the artifact."""
 
-    def __init__(self, entries: dict[str, dict]) -> None:
+    def __init__(self, entries: dict[str, list[dict]]) -> None:
         self._entries = entries
 
-    def for_archetype(self, archetype: str) -> dict | None:
-        """The counterexample row for ``archetype``, or None."""
+    def for_archetype(self, archetype: str) -> list[dict]:
+        """The counterexample rows for ``archetype`` (empty list when none)."""
         if not archetype:
-            return None
-        return self._entries.get(archetype)
+            return []
+        return self._entries.get(archetype, [])
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -360,20 +435,22 @@ def load_counterexamples(repo_root: Path | str | None) -> Counterexamples | None
         data = json.loads(artifact.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
+    if not isinstance(data, dict) or data.get("schema_version") not in _READABLE_SCHEMA_VERSIONS:
         return None
     raw = data.get("archetypes")
     if not isinstance(raw, dict):
         return None
 
-    entries: dict[str, dict] = {}
-    for archetype, row in raw.items():
-        if (
-            isinstance(archetype, str)
-            and isinstance(row, dict)
-            and isinstance(row.get("snippet"), str)
-        ):
-            entries[archetype] = row
+    # Each value may be a v2 list or a legacy v1 single dict; normalize_archetype_rows
+    # handles both and drops rows without a string snippet. An archetype that
+    # normalizes to no valid rows is omitted.
+    entries: dict[str, list[dict]] = {}
+    for archetype, value in raw.items():
+        if not isinstance(archetype, str):
+            continue
+        rows = normalize_archetype_rows(value)
+        if rows:
+            entries[archetype] = rows
 
     index = Counterexamples(entries)
     _CACHE[key] = (token, index)

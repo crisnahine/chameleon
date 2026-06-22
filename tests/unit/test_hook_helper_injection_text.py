@@ -333,12 +333,46 @@ def _repo_with_counterexample(
             {
                 "schema_version": _CE_SCHEMA,
                 "archetypes": {
-                    "service": {
-                        "rule": "import-preference-violation",
-                        "preferred": "~/core/db",
-                        "over": "raw-db",
-                        "snippet": snippet,
-                    }
+                    "service": [
+                        {
+                            "rule": "import-preference-violation",
+                            "preferred": "~/core/db",
+                            "over": "raw-db",
+                            "snippet": snippet,
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def _repo_with_two_counterexamples(tmp_path: _Path) -> _Path:
+    """A repo whose 'service' archetype carries TWO taught off-patterns."""
+    (tmp_path / ".git").mkdir()
+    cham = tmp_path / ".chameleon"
+    cham.mkdir()
+    (cham / _CE_FILENAME).write_text(
+        _json.dumps(
+            {
+                "schema_version": _CE_SCHEMA,
+                "archetypes": {
+                    "service": [
+                        {
+                            "rule": "import-preference-violation",
+                            "preferred": "@/lib/logger",
+                            "over": "winston",
+                            "snippet": "import winston from 'winston';",
+                        },
+                        {
+                            "rule": "import-preference-violation",
+                            "preferred": "@/lib/date",
+                            "over": "moment",
+                            "snippet": "import moment from 'moment';",
+                        },
+                    ]
                 },
             }
         ),
@@ -354,6 +388,33 @@ def test_counterexample_on_by_default_renders(tmp_path, monkeypatch):
     assert "Do NOT write it this way" in out
     assert "import { db } from 'raw-db';" in out
     assert "Use ~/core/db instead of raw-db" in out
+
+
+def test_counterexample_renders_all_taught_off_patterns(tmp_path, monkeypatch):
+    # Two taught competing imports for one archetype -> BOTH off-patterns shown,
+    # both replacement directives present, plural header, one fence pair.
+    monkeypatch.delenv("CHAMELEON_COUNTEREXAMPLE", raising=False)
+    repo = _repo_with_two_counterexamples(tmp_path)
+    out = hook_helper._counterexample_section("service", repo)
+    assert "Do NOT write them this way" in out
+    assert "import winston from 'winston';" in out
+    assert "import moment from 'moment';" in out
+    # first clause capitalized, subsequent clauses lowercase, joined with "; "
+    assert "Use @/lib/logger instead of winston; use @/lib/date instead of moment" in out
+    assert out.count("```") == 2
+
+
+def test_counterexample_multi_suppresses_only_witness_matching_row(tmp_path, monkeypatch):
+    # The witness imports winston -> that row is suppressed (would contradict the
+    # "conforming form"), but the moment row still fires.
+    monkeypatch.delenv("CHAMELEON_COUNTEREXAMPLE", raising=False)
+    repo = _repo_with_two_counterexamples(tmp_path)
+    witness = "import winston from 'winston';\nexport class Svc {}\n"
+    out = hook_helper._counterexample_section("service", repo, witness)
+    assert "winston" not in out
+    assert "import moment from 'moment';" in out
+    # only one row survives -> singular header
+    assert "Do NOT write it this way" in out
 
 
 def test_counterexample_kill_switch_off(tmp_path, monkeypatch):

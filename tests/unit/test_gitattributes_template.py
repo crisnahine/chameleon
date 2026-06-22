@@ -76,5 +76,9 @@ def test_generated_index_artifacts_not_routed_to_driver():
         "function_catalog.json",
         "calls_index.json",
         "symbol_signatures.json",
+        # counterexamples.json is a regenerable protocol artifact (rebuilt from the
+        # merged conventions.json on refresh) AND its schema-v2 per-archetype LIST
+        # shape would crash merge_profiles' archetype dict-merge — must stay unrouted.
+        "counterexamples.json",
     ):
         assert artifact not in entries

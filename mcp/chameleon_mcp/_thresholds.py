@@ -127,6 +127,14 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # A test suite can run longer than a typecheck, so the default is wider; on
     # timeout the run reads "unavailable", a recorded fact, never a failure.
     "AUTOPASS_TESTRUN_TIMEOUT_SECONDS": 300,
+    # Counterexample teach-time repo scan bounds (tool-time, never a hook hot path).
+    # The file cap is a high backstop; the real bound is the wall-clock budget, so a
+    # huge monorepo (gitlabhq: 29k .rb files, app/ alone >6k) still finds an
+    # off-pattern that lives in a late-alphabetical dir (gems/, tooling/) instead of
+    # exhausting the cap inside app/. The scan breaks early on a match, so the budget
+    # only binds when the taught module is absent (no counterexample to capture).
+    "COUNTEREXAMPLE_SCAN_MAX_FILES": 50000,
+    "COUNTEREXAMPLE_SCAN_BUDGET_SECONDS": 10.0,
     # Cap on the unified-diff text scanned for the deterministic content
     # signals (removed-guard lexicon, in-diff ignore directives, test skip
     # markers, assertion delta). Past the cap the scan truncates and says so;

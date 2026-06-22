@@ -4,6 +4,55 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.25.0] - 2026-06-23
+
+Per-edit off-pattern counterexamples. The canonical witness shows the model the
+right way to write an archetype; it never shows the wrong way the team has
+explicitly flagged. When a team teaches a competing import ("prefer X over Y")
+and a real file in the repo still imports Y, that line is now captured and paired
+with the witness at edit time as a grounded "do NOT write it this way" directive,
+the positive/negative contrast in-context-learning research favors over a
+positive example alone. Measured in an isolated agentic A/B (real sessions, no
+repo access so the injected block is the only signal): +100pp adoption of the
+team's wrapper in both languages (TypeScript and Ruby) when the witness does not
+already demonstrate the concern.
+
+### Added
+
+- **Off-pattern counterexample in the per-edit block (default ON,
+  `CHAMELEON_COUNTEREXAMPLE=0` disables).** A taught competing import whose
+  discouraged module is still used somewhere in the repo surfaces that real line
+  next to the canonical witness. The signal is conservative: it fires only on a
+  TAUGHT competing pair (never auto-derived) with a present usage, so a clean
+  archetype injects nothing and the index never fabricates an anti-pattern. The
+  artifact (`counterexamples.json`, trust-hashed) is built at teach time and at
+  bootstrap/refresh, never on a hook hot path; the edit-time read is mtime-cached
+  and fails open. Rendered outside the imitate-spotlight (a counterexample must
+  not be copied) and sanitized + fence-neutralized.
+- **Every taught off-pattern is kept per archetype.** When a team teaches several
+  competing imports for one archetype (e.g. winston→logger AND moment→date),
+  every still-present off-pattern is shown, not just the last taught.
+  `counterexamples.json` is a list per archetype (schema v2); a legacy v1
+  single-row artifact still loads and is normalized on read, so an existing
+  profile keeps its counterexample until the next refresh rewrites it.
+
+### Fixed
+
+- The counterexample is suppressed when the canonical witness itself imports the
+  discouraged module, so the block never contradicts the form it calls "the
+  conforming form."
+- `merge_profiles` declines cleanly instead of crashing when an `archetypes`
+  payload maps to lists (the counterexamples shape) rather than dicts; the
+  artifact is a regenerable protocol file and is deliberately not routed to the
+  merge driver, rebuilt from the merged conventions on refresh.
+- The teach-time off-pattern scan no longer misses an import on the largest
+  monorepos. The file cap is raised (`CHAMELEON_COUNTEREXAMPLE_SCAN_MAX_FILES`,
+  default 50000) and bounded by a wall-clock budget
+  (`CHAMELEON_COUNTEREXAMPLE_SCAN_BUDGET_SECONDS`, default 10s) instead of a low
+  flat cap that could exhaust inside `app/` before reaching a discouraged import
+  that lives in a peripheral directory. The scan still breaks early on a match,
+  so the budget only binds when the taught module is absent.
+
 ## [2.23.0] - 2026-06-22
 
 Per-edit injection enrichment from EFFECTIVENESS-REVIEW-2026-06-22, a measured

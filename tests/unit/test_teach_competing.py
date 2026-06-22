@@ -79,7 +79,9 @@ def test_teach_competing_import_builds_counterexample(tmp_path, monkeypatch):
     assert _data(res)["status"] == "success"
 
     ce = json.loads((repo / ".chameleon" / "counterexamples.json").read_text())
-    entry = ce["archetypes"]["httpclient"]
+    rows = ce["archetypes"]["httpclient"]
+    assert isinstance(rows, list) and len(rows) == 1
+    entry = rows[0]
     assert entry["over"] == "axios"
     assert entry["snippet"] == "import axios from 'axios';"
     assert entry["preferred"] == "@/lib/http"
@@ -125,7 +127,7 @@ def test_unteach_competing_import_removes_counterexample(tmp_path, monkeypatch):
     assert "httpclient" not in json.loads(ce_path.read_text())["archetypes"]
 
 
-def test_unteach_recomputes_counterexample_from_remaining_pair(tmp_path, monkeypatch):
+def test_two_teaches_one_archetype_keep_both_counterexamples(tmp_path, monkeypatch):
     from chameleon_mcp import tools
 
     repo = _setup_repo(tmp_path, monkeypatch)
@@ -139,14 +141,54 @@ def test_unteach_recomputes_counterexample_from_remaining_pair(tmp_path, monkeyp
         str(repo), archetype="httpclient", preferred="dayjs", over="moment"
     )
     ce_path = repo / ".chameleon" / "counterexamples.json"
-    # The most recent teach captured moment.
-    assert json.loads(ce_path.read_text())["archetypes"]["httpclient"]["over"] == "moment"
+    # Both taught off-patterns are kept; the second teach does not clobber the first.
+    rows = json.loads(ce_path.read_text())["archetypes"]["httpclient"]
+    assert {r["over"] for r in rows} == {"axios", "moment"}
 
     # Removing moment recomputes from the remaining axios pair (still used in a.ts).
     tools.unteach_competing_import(
         str(repo), archetype="httpclient", preferred="dayjs", over="moment"
     )
-    assert json.loads(ce_path.read_text())["archetypes"]["httpclient"]["over"] == "axios"
+    rows2 = json.loads(ce_path.read_text())["archetypes"]["httpclient"]
+    assert [r["over"] for r in rows2] == ["axios"]
+
+
+def test_teach_caps_counterexample_rows_per_archetype(tmp_path, monkeypatch):
+    from chameleon_mcp import counterexamples as ce
+    from chameleon_mcp import tools
+
+    repo = _setup_repo(tmp_path, monkeypatch)
+    (repo / "src").mkdir(parents=True)
+    over = ce._MAX_ROWS_PER_ARCHETYPE + 3
+    for n in range(over):
+        (repo / "src" / f"off{n}.ts").write_text(f"import x from 'badmod{n}';\n", encoding="utf-8")
+        tools.teach_competing_import(
+            str(repo), archetype="httpclient", preferred=f"@/lib/good{n}", over=f"badmod{n}"
+        )
+    rows = json.loads((repo / ".chameleon" / "counterexamples.json").read_text())["archetypes"][
+        "httpclient"
+    ]
+    # The append must not let the artifact grow past the cap (cap, not cap+1).
+    assert len(rows) == ce._MAX_ROWS_PER_ARCHETYPE
+
+
+def test_reteaching_same_over_does_not_duplicate_counterexample(tmp_path, monkeypatch):
+    from chameleon_mcp import tools
+
+    repo = _setup_repo(tmp_path, monkeypatch)
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "a.ts").write_text("import axios from 'axios';\n", encoding="utf-8")
+    tools.teach_competing_import(
+        str(repo), archetype="httpclient", preferred="@/lib/http", over="axios"
+    )
+    # Re-teaching the SAME over (different preferred) replaces the row, not appends.
+    tools.teach_competing_import(
+        str(repo), archetype="httpclient", preferred="@/lib/fetch", over="axios"
+    )
+    rows = json.loads((repo / ".chameleon" / "counterexamples.json").read_text())["archetypes"][
+        "httpclient"
+    ]
+    assert len(rows) == 1 and rows[0]["over"] == "axios"
 
 
 def test_teach_competing_import_rejects_bad_input(tmp_path, monkeypatch):

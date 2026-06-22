@@ -1718,37 +1718,48 @@ def _counterexample_section(
         index = load_counterexamples(resolve_profile_root(repo_root))
         if index is None:
             return ""
-        row = index.for_archetype(archetype)
-        if not row:
+        rows = index.for_archetype(archetype)
+        if not rows:
             return ""
-        snippet = row.get("snippet")
-        if not isinstance(snippet, str) or not snippet.strip():
+        # Collect every taught off-pattern that is showable: a usable snippet, and
+        # not one the witness itself imports (suppress per-row rather than contradict
+        # the form we call "the conforming form"). A team that taught winston->logger
+        # AND moment->date for one archetype gets BOTH counterexamples, not just the
+        # last taught.
+        snippets: list[str] = []
+        guidance: list[str] = []
+        for row in rows:
+            snippet = row.get("snippet")
+            if not isinstance(snippet, str) or not snippet.strip():
+                continue
+            if len(snippet) > _COUNTEREXAMPLE_MAX_CHARS:
+                continue
+            over = row.get("over")
+            if (
+                isinstance(over, str)
+                and over
+                and witness_excerpt
+                and _find_import_line(witness_excerpt, over)
+            ):
+                continue
+            snippets.append(_safe(snippet))
+            preferred = row.get("preferred")
+            if isinstance(preferred, str) and preferred and isinstance(over, str) and over:
+                guidance.append(f"use {_safe(preferred)} instead of {_safe(over)}")
+        if not snippets:
             return ""
-        if len(snippet) > _COUNTEREXAMPLE_MAX_CHARS:
-            return ""
-        over = row.get("over")
-        if (
-            isinstance(over, str)
-            and over
-            and witness_excerpt
-            and _find_import_line(witness_excerpt, over)
-        ):
-            # The witness we are telling the model to mirror imports the discouraged
-            # module: suppress rather than contradict it.
-            return ""
-        lines = [
-            "This archetype has a known off-pattern in this repo. Do NOT write it this way:",
-            "```",
-            _safe(snippet),
-            "```",
-        ]
-        preferred = row.get("preferred")
-        over = row.get("over")
-        if isinstance(preferred, str) and preferred and isinstance(over, str) and over:
-            lines.append(
-                f"Use {_safe(preferred)} instead of {_safe(over)}. The canonical witness above "
-                "is the conforming form."
-            )
+        plural = len(snippets) > 1
+        header = (
+            "This archetype has known off-patterns in this repo. Do NOT write them this way:"
+            if plural
+            else "This archetype has a known off-pattern in this repo. Do NOT write it this way:"
+        )
+        lines = [header, "```", *snippets, "```"]
+        if guidance:
+            # Capitalize the first clause; the witness-is-conforming closer is shared.
+            joined = "; ".join(guidance)
+            joined = joined[0].upper() + joined[1:]
+            lines.append(f"{joined}. The canonical witness above is the conforming form.")
         return "\n".join(lines)
     except Exception:
         return ""
