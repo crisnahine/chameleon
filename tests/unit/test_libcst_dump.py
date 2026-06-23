@@ -322,3 +322,66 @@ def test_async_def_opens_a_scope(tmp_path):
     assert rec["function_scopes"][0]["param_count"] == 2
     sigs = {s["name"]: s for s in rec["callable_signatures"]}
     assert sigs["endpoint"]["kind"] == "function"
+
+
+# --------------------------------------------------------------------------- #
+# PKG-1 foundation fields (cross-file unlock): import_symbols, namespace_imports,
+# named_export_names/export_set_open, return_type, param type, class_shapes extends
+# --------------------------------------------------------------------------- #
+
+
+def test_import_symbols_named_imports(tmp_path):
+    src = "from a.b import Foo, Bar as Baz\nfrom . import sibling\n"
+    rec = _dump(_write(tmp_path, "imp.py", src))
+    rows = {(r["name"], r["local"], r["module"]) for r in rec["import_symbols"]}
+    assert ("Foo", "Foo", "a.b") in rows
+    assert ("Bar", "Baz", "a.b") in rows  # `as` alias -> local differs from name
+    assert ("sibling", "sibling", ".") in rows
+    for r in rec["import_symbols"]:
+        assert "line" in r
+
+
+def test_namespace_imports(tmp_path):
+    src = "import os\nimport a.b.c as abc\nimport pkg.mod\n"
+    rec = _dump(_write(tmp_path, "ns.py", src))
+    rows = {(r["alias"], r["module"]) for r in rec["namespace_imports"]}
+    assert ("os", "os") in rows
+    assert ("abc", "a.b.c") in rows  # asname binds the alias
+    assert ("pkg", "pkg.mod") in rows  # plain import binds the top segment
+
+
+def test_star_import_not_in_symbols(tmp_path):
+    rec = _dump(_write(tmp_path, "s.py", "from mod import *\n"))
+    assert rec["import_symbols"] == []
+    assert rec["export_set_open"] is True  # star re-export opens the export set
+
+
+def test_named_export_names(tmp_path):
+    src = "import os\nCONST = 1\n\n\ndef helper():\n    pass\n\n\nclass Widget:\n    pass\n"
+    rec = _dump(_write(tmp_path, "m.py", src))
+    assert set(rec["named_export_names"]) == {"os", "CONST", "helper", "Widget"}
+    assert rec["export_set_open"] is False
+
+
+def test_return_type_and_param_type(tmp_path):
+    src = "def f(a: int, b: str = 'x') -> bool:\n    return True\n"
+    rec = _dump(_write(tmp_path, "t.py", src))
+    sig = next(s for s in rec["callable_signatures"] if s["name"] == "f")
+    assert sig["return_type"] == "bool"
+    by_name = {p["name"]: p for p in sig["params"]}
+    assert by_name["a"]["type"] == "int"
+    assert by_name["b"]["type"] == "str"
+
+
+def test_no_return_type_when_unannotated(tmp_path):
+    rec = _dump(_write(tmp_path, "u.py", "def g(x):\n    return x\n"))
+    sig = next(s for s in rec["callable_signatures"] if s["name"] == "g")
+    assert "return_type" not in sig
+    assert "type" not in sig["params"][0]
+
+
+def test_class_shapes_extends_mirrors_first_base(tmp_path):
+    rec = _dump(_write(tmp_path, "c.py", "class V(models.Model, Mixin):\n    pass\n"))
+    shape = next(c for c in rec["class_shapes"] if c["name"] == "V")
+    assert shape["extends"] == "models.Model"
+    assert shape["bases"] == ["models.Model", "Mixin"]

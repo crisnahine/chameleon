@@ -223,4 +223,39 @@ def _extras_from_record(record: dict) -> dict:
     call_sites_truncated = record.get("call_sites_truncated")
     if call_sites_truncated:
         extras["call_sites_truncated"] = True
+    # The full importable-name set + open-set flag (phantom-symbol existence
+    # check / exports index) and the named-import + namespace-import binding rows
+    # (reverse index + calls-index import grade). Same extras keys + validation
+    # the TypeScript extractor uses, so the cross-file consumers read Python from
+    # the same place.
+    names = record.get("named_export_names")
+    if isinstance(names, list) and names:
+        extras["named_export_names"] = [str(n) for n in names if isinstance(n, str)]
+    if record.get("export_set_open"):
+        extras["export_set_open"] = True
+    import_symbols = record.get("import_symbols")
+    if isinstance(import_symbols, list) and import_symbols:
+        rows: list[dict] = []
+        for sym in import_symbols:
+            if not isinstance(sym, dict):
+                continue
+            name = sym.get("name")
+            module = sym.get("module")
+            if not isinstance(name, str) or not isinstance(module, str):
+                continue
+            local = sym.get("local")
+            line = sym.get("line")
+            rows.append(
+                {
+                    "name": name,
+                    "local": local if isinstance(local, str) and local else name,
+                    "module": module,
+                    "line": int(line) if isinstance(line, int) else None,
+                }
+            )
+        if rows:
+            extras["import_symbols"] = rows
+    namespace_imports = record.get("namespace_imports")
+    if isinstance(namespace_imports, list) and namespace_imports:
+        extras["namespace_imports"] = namespace_imports
     return extras
