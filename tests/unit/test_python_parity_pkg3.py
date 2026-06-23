@@ -194,3 +194,51 @@ def test_phantom_symbol_python(tmp_path):
     # Ghost is not exported by models.py -> phantom-symbol; User is fine.
     assert any(r == "phantom-symbol" and "Ghost" in a for r, a in rules)
     assert not any(r == "phantom-symbol" and "User" in a for r, a in rules)
+
+
+# --------------------------------------------------------------------------- #
+# Sub-step F: cross-file-importers + removed-export (read the reverse index).
+# --------------------------------------------------------------------------- #
+
+
+def _py_repo_with_reverse_index(tmp_path):
+    import json
+
+    from chameleon_mcp.extractors.python import PythonExtractor
+    from chameleon_mcp.symbol_index import build_reverse_index
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "models.py").write_text("class User:\n    pass\n", encoding="utf-8")
+    (pkg / "views.py").write_text(
+        "from .models import User\n\n\ndef show():\n    return User\n", encoding="utf-8"
+    )
+    files = PythonExtractor().parse_repo(tmp_path).files
+    (tmp_path / ".chameleon").mkdir()
+    (tmp_path / ".chameleon" / "reverse_index.json").write_text(
+        json.dumps(build_reverse_index(files, tmp_path, language="python")), encoding="utf-8"
+    )
+    return pkg / "models.py"
+
+
+def test_cross_file_importers_python(tmp_path):
+    from chameleon_mcp.phantom_imports import lint_cross_file_imports
+
+    models = _py_repo_with_reverse_index(tmp_path)
+    # models.py still exports User -> blast-radius advisory naming its importer.
+    v = lint_cross_file_imports(
+        models.read_text(), file_path=str(models), repo_root=tmp_path, language="python"
+    )
+    assert any(x.rule == "cross-file-importers" and "User" in x.expected for x in v)
+
+
+def test_removed_export_breaks_importers_python(tmp_path):
+    from chameleon_mcp.phantom_imports import lint_cross_file_imports
+
+    models = _py_repo_with_reverse_index(tmp_path)
+    # Edited content no longer defines User, but views.py still imports it.
+    v = lint_cross_file_imports(
+        "class Account:\n    pass\n", file_path=str(models), repo_root=tmp_path, language="python"
+    )
+    assert any(x.rule == "removed-export-breaks-importers" and x.expected == "User" for x in v)

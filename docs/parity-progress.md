@@ -43,8 +43,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] reverse index for Python (import_symbols → reverse_index.json)
 - [x] phantom-import (relative import → file on disk) Python branch
 - [x] phantom-symbol (imported name in target exports) Python
-- [ ] cross-file-importers (blast-radius advisory) Python
-- [ ] removed-export-breaks-importers Python
+- [x] cross-file-importers (blast-radius advisory) Python
+- [x] removed-export-breaks-importers Python
 - [ ] calls index import grade (named/namespace import call edges) Python
 - [ ] forward definition hydration Python
 - [x] signature contract-diff (.py in _CONTRACT_DIFF_EXTS + signature_diff extractor)

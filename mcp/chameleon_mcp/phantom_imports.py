@@ -985,6 +985,52 @@ def _broken_export_violation(name: str, importers: list) -> Violation:
     )
 
 
+# Top-level (column-0) Python declarations, for the live export-set read. Mirror
+# the dump's _module_exports: def/class names, assignment targets, and import-
+# bound locals (re-exports). A `from x import *` opens the set (non-authoritative).
+_PY_TL_DEF_RE = re.compile(r"^(?:async\s+)?def\s+(\w+)", re.MULTILINE)
+_PY_TL_CLASS_RE = re.compile(r"^class\s+(\w+)", re.MULTILINE)
+_PY_TL_ASSIGN_RE = re.compile(r"^([A-Za-z_]\w*)\s*(?::[^=\n]+)?=(?!=)", re.MULTILINE)
+_PY_TL_FROM_IMPORT_RE = re.compile(r"^from\s+[.\w]+\s+import\s+(.+)$", re.MULTILINE)
+_PY_TL_IMPORT_RE = re.compile(r"^import\s+(.+)$", re.MULTILINE)
+_PY_TL_STAR_RE = re.compile(r"^from\s+\S+\s+import\s+\*", re.MULTILINE)
+
+
+def _python_current_export_names(content: str) -> tuple[frozenset[str], bool]:
+    """Names the edited Python file currently exports, plus an open-set flag.
+
+    Regex over a strings/comments-stripped copy (so a name inside a string or a
+    method body does not count -- only column-0 statements). Mirrors the dump's
+    ``_module_exports`` so the live read and the stored index agree on what is
+    importable. Returns ``(names, open)``; ``open`` True (a ``from x import *``)
+    means the set is non-authoritative and the existence check is skipped.
+    """
+    from chameleon_mcp.lint_engine import _strip_python_strings_and_comments
+
+    scan = _strip_python_strings_and_comments(content)
+    if _PY_TL_STAR_RE.search(scan):
+        return frozenset(), True
+    names: set[str] = set()
+    names.update(_PY_TL_DEF_RE.findall(scan))
+    names.update(_PY_TL_CLASS_RE.findall(scan))
+    names.update(_PY_TL_ASSIGN_RE.findall(scan))
+    for clause in _PY_TL_FROM_IMPORT_RE.findall(scan):
+        for part in clause.split(","):
+            part = part.strip().rstrip(")").lstrip("(")
+            if not part or part == "*":
+                continue
+            local = part.split(" as ")[-1].strip() if " as " in part else part
+            if local.isidentifier():
+                names.add(local)
+    for clause in _PY_TL_IMPORT_RE.findall(scan):
+        for part in clause.split(","):
+            part = part.strip()
+            local = part.split(" as ")[-1].strip() if " as " in part else part.split(".")[0].strip()
+            if local.isidentifier():
+                names.add(local)
+    return frozenset(names), False
+
+
 def lint_cross_file_imports(
     content: str,
     *,
@@ -1009,7 +1055,7 @@ def lint_cross_file_imports(
     resolved, the reverse index is absent/corrupt, or the file's export set is
     open (``export * from``). Suppress with ``// chameleon-ignore <rule>``.
     """
-    if language != "typescript" or not file_path:
+    if language not in ("typescript", "python") or not file_path:
         return []
     try:
         root = Path(repo_root).resolve() if repo_root else None
@@ -1023,7 +1069,10 @@ def lint_cross_file_imports(
     if not _under_repo(fp, root):
         return []
 
-    ignored = {m.group(1) for m in _IGNORE_TS_RE.finditer(content)}
+    # Python uses `#` comment directives; TS uses `//`. Both ignore patterns are
+    # `<comment> chameleon-ignore <rule>`; pick the one for the language.
+    _ignore_re = _IGNORE_RUBY_RE if language == "python" else _IGNORE_TS_RE
+    ignored = {m.group(1) for m in _ignore_re.finditer(content)}
     crossfile_on = _CROSSFILE_RULE not in ignored
     broken_on = _BROKEN_EXPORT_RULE not in ignored
     if not crossfile_on and not broken_on:
@@ -1039,7 +1088,10 @@ def lint_cross_file_imports(
     if not indexed:
         return []  # nothing imports this module by name -> no cross-file context
 
-    current, open_set = _current_export_names(content)
+    if language == "python":
+        current, open_set = _python_current_export_names(content)
+    else:
+        current, open_set = _current_export_names(content)
     if open_set:
         # `export * from` re-exports an unknown set; a name absent from the
         # statically-visible set may still be re-exported, so the existence
