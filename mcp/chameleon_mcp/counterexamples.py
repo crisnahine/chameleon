@@ -154,15 +154,24 @@ def _heredoc_terminator(raw: str) -> str | None:
 
 
 def _import_of(over: str) -> re.Pattern[str]:
-    """A regex matching a real import of ``over``: the discouraged module quoted
-    and IMMEDIATELY preceded by an import keyword (``from "over"``,
-    ``import 'over'``, ``require("over")``, ``require 'over'``). The adjacency
-    rules out a bare substring elsewhere on the line."""
-    return re.compile(
-        r"""\b(?:from|import|require|require_relative|load)\b\s*\(?\s*['"]"""
-        + re.escape(over)
-        + r"""['"]"""
+    """A regex matching a real import of ``over``.
+
+    Two forms. The QUOTED form (TS/Ruby) requires the discouraged module quoted
+    and immediately preceded by an import keyword (``from "over"``,
+    ``import 'over'``, ``require("over")``); the adjacency rules out a bare
+    substring elsewhere on the line. The UNQUOTED form (Python) matches a
+    ``from over`` / ``import over`` statement anchored at the start of the
+    (stripped) line, with the module followed by a boundary so ``requests`` does
+    not match ``requests_oauthlib`` while ``requests.adapters`` still does. The
+    line anchor keeps ``from . import requests`` (a name import, not a module
+    import) from matching the bare ``import`` form.
+    """
+    esc = re.escape(over)
+    quoted = (
+        r"""\b(?:from|import|require|require_relative|load)\b\s*\(?\s*['"]""" + esc + r"""['"]"""
     )
+    py_unquoted = r"""^(?:from|import)\s+""" + esc + r"""(?=[\s.,]|$)"""
+    return re.compile(quoted + "|" + py_unquoted)
 
 
 def _find_import_line(content: str, over: str) -> str | None:
