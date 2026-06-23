@@ -271,13 +271,20 @@ def _is_rails_routes(rel: str) -> bool:
 
 def _is_django_model(rel: str) -> bool:
     # A Django model module: models.py or a file in a models/ package (the
-    # cross-app role form), excluding migrations and the package __init__.
+    # cross-app role form), excluding migrations and the package __init__. The
+    # package form additionally consults the role classifier so a co-located
+    # managers.py / querysets.py / signals.py -- which has no table and needs no
+    # migration -- is not mistaken for a model.
     if not rel.endswith(".py") or "/migrations/" in rel:
         return False
     name = rel.rsplit("/", 1)[-1]
     if name == "models.py":
         return True
-    return "/models/" in rel and name != "__init__.py"
+    if "/models/" not in rel or name == "__init__.py":
+        return False
+    from chameleon_mcp.signatures import python_role_for_path
+
+    return python_role_for_path(rel) == "model"
 
 
 def _is_django_migration(rel: str) -> bool:

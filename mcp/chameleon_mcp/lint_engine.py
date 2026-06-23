@@ -3642,16 +3642,16 @@ def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list
     known_tails = {b.rsplit(".", 1)[-1] for b in known_bases}
 
     out: list[Violation] = []
-    min_indent: int | None = None
     for m in _PY_CLASS_BASES_LINT_RE.finditer(scan_content):
         indent = len(m.group(1))
         class_name = m.group(2)
         bases_raw = m.group(3)
-        # Only outermost-indent classes carry the archetype's convention; a
-        # nested helper class does not.
-        if min_indent is not None and indent > min_indent:
+        # Only a top-level class carries the archetype's convention. A column-0
+        # check is exact: a function-nested helper, an `if TYPE_CHECKING:` class,
+        # and a nested class are all indented and correctly skipped. (A running
+        # minimum mis-fires when the first class in the file is itself nested.)
+        if indent != 0:
             continue
-        min_indent = indent if min_indent is None else min(min_indent, indent)
         if class_name in known_bases or class_name in known_tails:
             continue
         bases: list[str] = []

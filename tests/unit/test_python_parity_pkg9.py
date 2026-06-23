@@ -108,3 +108,16 @@ def test_python_backend_marker(tmp_path):
     assert _has_python_backend_marker(tmp_path) is False
     (tmp_path / "manage.py").write_text("x", encoding="utf-8")
     assert _has_python_backend_marker(tmp_path) is True
+
+
+def test_is_django_model_excludes_sibling_roles():
+    # Regression (cloud review): non-model files in a models/ package must not
+    # be treated as models (no makemigrations nudge for a manager/queryset).
+    from chameleon_mcp.cochange import _is_django_model
+
+    assert _is_django_model("app/models.py") is True
+    assert _is_django_model("app/models/user.py") is True
+    assert _is_django_model("app/models/managers.py") is False
+    assert _is_django_model("app/models/querysets.py") is False
+    assert _is_django_model("app/models/signals.py") is False
+    assert _is_django_model("app/models/__init__.py") is False
