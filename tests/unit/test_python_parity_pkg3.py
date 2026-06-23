@@ -112,3 +112,49 @@ def test_phantom_import_block_eligible_for_python():
     from chameleon_mcp.violation_class import BLOCK_RULE_LANGUAGES
 
     assert "python" in BLOCK_RULE_LANGUAGES["phantom-import"]
+
+
+# --------------------------------------------------------------------------- #
+# Sub-step D: exports + reverse index for Python (named_export_names /
+# import_symbols, resolved through a Python-aware module resolver).
+# --------------------------------------------------------------------------- #
+
+
+def test_exports_and_reverse_index_python(tmp_path):
+    from chameleon_mcp.extractors.python import PythonExtractor
+    from chameleon_mcp.symbol_index import build_exports_index, build_reverse_index
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "models.py").write_text(
+        "class User:\n    pass\n\n\nclass Widget:\n    pass\n", encoding="utf-8"
+    )
+    (pkg / "views.py").write_text(
+        "from .models import User\n\n\ndef show():\n    return User\n", encoding="utf-8"
+    )
+    files = PythonExtractor().parse_repo(tmp_path).files
+
+    exports = build_exports_index(files, tmp_path)["files"]
+    assert "User" in exports["pkg/models.py"]["names"]
+    assert "Widget" in exports["pkg/models.py"]["names"]
+
+    reverse = build_reverse_index(files, tmp_path, language="python")["targets"]
+    # views.py imports User FROM pkg/models.py -> recorded under that target.
+    importers = reverse["pkg/models.py"]["User"]
+    assert any(row.get("path") == "pkg/views.py" for row in importers)
+
+
+def test_resolve_python_index_key(tmp_path):
+    from chameleon_mcp.symbol_index import make_module_resolver
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "models.py").write_text("x = 1\n", encoding="utf-8")
+    resolve = make_module_resolver(tmp_path.resolve(), "python")
+    # relative from a sibling file
+    assert resolve(".models", (pkg / "views.py").resolve().parent) == "pkg/models.py"
+    # absolute repo-rooted
+    assert resolve("pkg.models", (pkg).resolve()) == "pkg/models.py"
+    # external -> None
+    assert resolve("django.db", pkg.resolve()) is None
