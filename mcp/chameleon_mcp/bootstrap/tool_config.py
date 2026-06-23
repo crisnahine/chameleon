@@ -43,6 +43,11 @@ class ToolConfigResult:
     """BUG-014: extracted .rubocop.yml content (top-level cops, plugins,
     AllCops settings, etc.). None when the repo has no rubocop config."""
 
+    python_format: dict | None = None
+    """Declared Python formatter config (black / ruff / flake8): ``line_length``
+    and ``quote_style`` ("single"/"double"). None when no Python formatter config
+    is present. Pure TOML/INI parse, no repo-code execution."""
+
     has_prettier_js_plugins: bool = False
     """If True, plugin rules are invisible to chameleon (warn user)."""
 
@@ -170,7 +175,88 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
                 result.parse_warnings["rubocop"] = warning
             break
 
+    py_fmt, py_src = _read_python_format(repo_root)
+    if py_fmt:
+        result.python_format = py_fmt
+        if py_src:
+            result.sources["python_format"] = py_src
+
     return result
+
+
+def _read_python_format(repo_root: Path) -> tuple[dict | None, str | None]:
+    """Declared Python line-length + quote-style from black / ruff / flake8.
+
+    Pure TOML/INI parse (no repo-code execution). Precedence for line length:
+    ruff > black > flake8/pycodestyle. Quote style: ruff ``[tool.ruff.format]``
+    quote-style first, else black (double unless string-normalization is
+    skipped). Returns ``({line_length?, quote_style?}, source)`` or ``(None,
+    None)`` when nothing is declared. Fails open: a malformed config contributes
+    nothing rather than raising.
+    """
+    fmt: dict = {}
+    source: str | None = None
+
+    pyproject = repo_root / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            import tomllib
+
+            data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, ValueError, ImportError):
+            data = {}
+        tool = data.get("tool") if isinstance(data, dict) else None
+        tool = tool if isinstance(tool, dict) else {}
+        ruff = tool.get("ruff") if isinstance(tool.get("ruff"), dict) else {}
+        black = tool.get("black") if isinstance(tool.get("black"), dict) else {}
+        ruff_format = ruff.get("format") if isinstance(ruff.get("format"), dict) else {}
+
+        ll = _coerce_positive_int(ruff.get("line-length")) or _coerce_positive_int(
+            black.get("line-length")
+        )
+        if ll is not None:
+            fmt["line_length"] = ll
+        qs = ruff_format.get("quote-style")
+        if qs in ("single", "double"):
+            fmt["quote_style"] = qs
+        elif "quote_style" not in fmt and black and not black.get("skip-string-normalization"):
+            # black normalizes to double quotes unless told not to.
+            fmt["quote_style"] = "double"
+        if fmt:
+            source = "pyproject.toml"
+
+    if "line_length" not in fmt:
+        for name in ("setup.cfg", "tox.ini", ".flake8"):
+            p = repo_root / name
+            if not p.is_file():
+                continue
+            try:
+                import configparser
+
+                cp = configparser.ConfigParser()
+                cp.read_string(p.read_text(encoding="utf-8", errors="replace"))
+            except (OSError, configparser.Error):
+                continue
+            for section in ("flake8", "pycodestyle"):
+                if cp.has_option(section, "max-line-length"):
+                    ll = _coerce_positive_int(cp.get(section, "max-line-length"))
+                    if ll is not None:
+                        fmt["line_length"] = ll
+                        source = source or name
+                        break
+            if "line_length" in fmt:
+                break
+
+    return (fmt or None), source
+
+
+def _coerce_positive_int(value) -> int | None:
+    """A positive int from an int/str, or None."""
+    try:
+        n = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
 
 
 def _strip_jsonc_comments(text: str) -> str:

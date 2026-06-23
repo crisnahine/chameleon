@@ -1964,6 +1964,11 @@ def _bootstrap_single(
             "source": tool_configs.sources.get("rubocop", ""),
             "parse_warning": tool_configs.parse_warnings["rubocop"],
         }
+    if tool_configs.python_format:
+        rules_data["rules"]["python_format"] = {
+            "source": tool_configs.sources.get("python_format", "pyproject.toml"),
+            "rules": tool_configs.python_format,
+        }
 
     # idioms.md is user-authored: taught idioms cannot be regenerated, so a
     # damaged file must be carried forward byte-identical and flagged loudly,

@@ -59,12 +59,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] insecure-deserialization sink (pickle.load(s) / yaml.load non-Safe) [net-new, Python]
 
 ## PKG-5 — Style lint (lint_engine.py + tool_config.py)
-- [ ] Python formatter-config reader at bootstrap (black/ruff/flake8: line-length, quote)
-- [ ] scan_style_rules gate + python stripper branch
-- [ ] indent rule (editorconfig fallback)
-- [ ] quote rule (+ _PY_TOKEN_RE for triple/prefixed strings)
-- [ ] max-line-length rule
-- [ ] (emission cap + summary tail come free once the scan runs)
+- [x] Python formatter-config reader at bootstrap (black/ruff/flake8: line-length, quote)
+- [x] scan_style_rules gate + python stripper branch
+- [x] indent rule (editorconfig fallback)
+- [x] quote rule (+ _PY_TOKEN_RE for triple/prefixed strings)
+- [x] max-line-length rule
+- [x] (emission cap + summary tail come free once the scan runs)
 
 ## PKG-6 — Naming + file-naming lint (lint_engine.py + conventions.py + violation_class.py)
 - [x] naming-convention-violation identifier scan (Python snake/Pascal/UPPER, mirror Ruby path)
