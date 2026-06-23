@@ -84,3 +84,66 @@ def test_import_preference_not_fooled_by_substring():
     conv = {"imports": {"competing": [{"over": "requests", "preferred": "httpx"}]}}
     v = lint_conventions("import requests_oauthlib\n", conv, language="python")
     assert not any(x.rule == "import-preference-violation" for x in v)
+
+
+# --------------------------------------------------------------------------- #
+# PKG-4 security sinks (advisory): weak-hash, insecure-random,
+# command-injection, insecure-deserialization
+# --------------------------------------------------------------------------- #
+
+
+def test_weak_hash_python_crypto_context():
+    v = scan_dangerous_sinks(
+        "import hashlib\nsig = hashlib.md5(password).hexdigest()\n", language="python"
+    )
+    assert any(x.rule == "weak-hash" for x in v)
+
+
+def test_weak_hash_quiet_without_crypto_context():
+    # A bare md5 with no security keyword nearby stays quiet (cache-key use).
+    v = scan_dangerous_sinks("key = hashlib.md5(blob).hexdigest()\n", language="python")
+    assert not any(x.rule == "weak-hash" for x in v)
+
+
+def test_insecure_random_python():
+    v = scan_dangerous_sinks(
+        "token = random.randint(0, 999999)  # session token\n", language="python"
+    )
+    assert any(x.rule == "insecure-random" for x in v)
+
+
+def test_command_injection_os_system():
+    v = scan_dangerous_sinks("import os\nos.system(user_cmd)\n", language="python")
+    assert any(x.rule == "command-injection" for x in v)
+
+
+def test_command_injection_subprocess_shell_true():
+    v = scan_dangerous_sinks("subprocess.run(cmd, shell=True)\n", language="python")
+    assert any(x.rule == "command-injection" for x in v)
+
+
+def test_command_injection_quiet_without_shell():
+    v = scan_dangerous_sinks('subprocess.run(["ls", "-l"])\n', language="python")
+    assert not any(x.rule == "command-injection" for x in v)
+
+
+def test_insecure_deserialization_pickle():
+    v = scan_dangerous_sinks("import pickle\nobj = pickle.loads(blob)\n", language="python")
+    assert any(x.rule == "insecure-deserialization" for x in v)
+
+
+def test_insecure_deserialization_yaml_load():
+    v = scan_dangerous_sinks("data = yaml.load(text)\n", language="python")
+    assert any(x.rule == "insecure-deserialization" for x in v)
+
+
+def test_yaml_safe_load_is_clean():
+    v = scan_dangerous_sinks("data = yaml.safe_load(text)\n", language="python")
+    assert not any(x.rule == "insecure-deserialization" for x in v)
+
+
+def test_sinks_in_string_not_flagged():
+    v = scan_dangerous_sinks(
+        'doc = "use pickle.loads and os.system carefully"\n', language="python"
+    )
+    assert not any(x.rule in ("command-injection", "insecure-deserialization") for x in v)

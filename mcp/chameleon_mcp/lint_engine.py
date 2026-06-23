@@ -1374,6 +1374,18 @@ _RUBY_SEND_EVAL_RE = re.compile(r"\b((?:public_)?send)\s*\(\s*(?::eval\b|[\"']ev
 # crypto keyword sits nearby (a stable cache key or an ETag built from MD5 is
 # legitimate), so this stays advisory and is gated on `_has_security_context`.
 _WEAK_HASH_RE = re.compile(r"\b(?:MD5|SHA1|SHA-1)\b", re.IGNORECASE)
+# Python-specific dangerous sinks (advisory warnings, like weak-hash). Matched on
+# the strings/comments-stripped scan so a mention in a docstring is inert.
+_PY_INSECURE_RANDOM_RE = re.compile(
+    r"\brandom\.(?:random|randint|randrange|choice|choices|sample|shuffle|uniform|getrandbits)\s*\("
+)
+_PY_OS_COMMAND_RE = re.compile(r"\bos\.(?:system|popen)\s*\(")
+# subprocess.<fn>(... shell=True ...) — the shell-injection vector. [^)]* keeps
+# the match within the one call (won't cross the closing paren of a sibling).
+_PY_SUBPROCESS_SHELL_RE = re.compile(r"\bsubprocess\.\w+\s*\([^)]*\bshell\s*=\s*True")
+_PY_PICKLE_RE = re.compile(r"\bpickle\.loads?\s*\(")
+# yaml.load( is unsafe; yaml.safe_load( is the safe sibling and must not match.
+_PY_YAML_LOAD_RE = re.compile(r"\byaml\.load\s*\(")
 
 # Non-cryptographic randomness used where unpredictability matters. Same context
 # gate as weak hashes: `Math.random()` for a UI jitter is fine; for a token or
@@ -1508,6 +1520,64 @@ def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violatio
                 )
             )
 
+        # insecure-random: random.* in a crypto context (token/salt/nonce nearby).
+        # The secrets module is the secure alternative.
+        for m in _PY_INSECURE_RANDOM_RE.finditer(scan):
+            if not _sink_security_context(scan, m.start(), m.end()):
+                continue
+            line = _position_to_line(scan, m.start())
+            violations.append(
+                Violation(
+                    rule="insecure-random",
+                    expected="<cryptographic randomness>",
+                    actual=f"random.* at line {line}",
+                    severity="warning",
+                    message=(
+                        f"the random module at line {line} is not cryptographically "
+                        "secure. For tokens, salts, or nonces use the secrets module."
+                    ),
+                )
+            )
+
+        # command-injection: os.system / os.popen, and subprocess(..., shell=True).
+        for rx, what in (
+            (_PY_OS_COMMAND_RE, "os.system/os.popen"),
+            (_PY_SUBPROCESS_SHELL_RE, "subprocess(shell=True)"),
+        ):
+            for m in rx.finditer(scan):
+                line = _position_to_line(scan, m.start())
+                violations.append(
+                    Violation(
+                        rule="command-injection",
+                        expected="<no shell string>",
+                        actual=f"{what} at line {line}",
+                        severity="warning",
+                        message=(
+                            f"shell command execution at line {line}. If any part "
+                            "reaches user input this is command injection; pass an "
+                            "argument list and avoid shell=True."
+                        ),
+                    )
+                )
+
+        # insecure-deserialization: pickle.load(s) and yaml.load (non-safe).
+        for rx, what in ((_PY_PICKLE_RE, "pickle.load"), (_PY_YAML_LOAD_RE, "yaml.load")):
+            for m in rx.finditer(scan):
+                line = _position_to_line(scan, m.start())
+                violations.append(
+                    Violation(
+                        rule="insecure-deserialization",
+                        expected="<safe deserialization>",
+                        actual=f"{what} at line {line}",
+                        severity="warning",
+                        message=(
+                            f"untrusted deserialization at line {line} can execute "
+                            "code. Use a safe loader (yaml.safe_load, json) and never "
+                            "unpickle untrusted data."
+                        ),
+                    )
+                )
+
     if language == "ruby":
         # String-argument *_eval forms. The method name is matched in the
         # stripped scan (comment/string mentions are blanked there); the
@@ -1581,9 +1651,9 @@ def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violatio
                 )
             )
 
-    # Weak hashes apply to both languages; the security-context gate keeps benign
-    # non-crypto MD5/SHA1 uses (cache keys, content fingerprints) quiet.
-    if language in ("typescript", "ruby"):
+    # Weak hashes apply to all three languages; the security-context gate keeps
+    # benign non-crypto MD5/SHA1 uses (cache keys, content fingerprints) quiet.
+    if language in ("typescript", "ruby", "python"):
         for m in _WEAK_HASH_RE.finditer(scan):
             if not _sink_security_context(scan, m.start(), m.end()):
                 continue
