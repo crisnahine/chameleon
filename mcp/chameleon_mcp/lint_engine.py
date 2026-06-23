@@ -2477,6 +2477,9 @@ _CLOCK_FREEZE_TOKENS = (
     "freeze_time",
     "travel_to",
     "Timecop",
+    # Python: freezegun (freeze_time, already above) + time-machine.
+    "freezegun",
+    "time_machine",
 )
 # Tokens that mark a test as stubbing the network. Same whole-file rationale.
 _NETWORK_STUB_TOKENS = (
@@ -2489,6 +2492,13 @@ _NETWORK_STUB_TOKENS = (
     "setupServer",
     "mockServer",
     "VCR",
+    # Python network-stub libs.
+    "responses",
+    "respx",
+    "vcr",
+    "httpretty",
+    "requests_mock",
+    "aioresponses",
 )
 # Tokens that indicate a candidate touches the real network at all. Without one
 # of these present there is nothing to stub, so the unstubbed-network rule stays
@@ -2505,6 +2515,12 @@ _NETWORK_CALL_TOKENS = (
     "HTTParty",
     "RestClient",
     "Faraday",
+    # Python HTTP clients.
+    "requests.",
+    "httpx",
+    "urllib",
+    "aiohttp",
+    "urlopen",
 )
 # Tokens that indicate a candidate reads the real clock. Without one of these
 # there is nothing to freeze, so the unfrozen-clock rule stays silent.
@@ -2515,6 +2531,12 @@ _CLOCK_READ_TOKENS = (
     "Time.current",
     "Date.today",
     "DateTime.now",
+    # Python real-clock reads.
+    "datetime.now",
+    "datetime.utcnow",
+    "datetime.today",
+    "date.today",
+    "time.time",
 )
 
 # Assertion tokens. Presence of any of these in a test block means the block
@@ -2535,6 +2557,28 @@ _RUBY_ASSERTION_RE = re.compile(
 # block's assertion does not mask an assertion-free neighbor.
 _TS_TEST_BLOCK_RE = re.compile(r"(?:^|[^.\w])(?:it|test)\s*\(")
 _RUBY_TEST_BLOCK_RE = re.compile(r"^[ \t]*(?:it|specify|example)\b.*\b(?:do|\{)\s*$", re.MULTILINE)
+
+# Python (pytest / unittest) test-quality patterns.
+_PY_SKIPPED_TEST_RE = re.compile(
+    r"@(?:pytest\.mark\.(?:skip|skipif|xfail)|unittest\.skip(?:If|Unless)?|skip(?:If|Unless)?)\b"
+    r"|(?<![.\w])pytest\.skip\s*\("
+)
+# Self-comparing assertion: `assert <lit> == <same lit>` or `assertEqual(<lit>, <same>)`.
+_PY_TAUTOLOGY_RE = re.compile(
+    r"assert\s+(True|False|None|\d+)\s*==\s*\1\b"
+    r"|(?:self\.)?assertEqual\s*\(\s*(True|False|None|\d+)\s*,\s*\2\s*\)"
+)
+_PY_REAL_SLEEP_RE = re.compile(r"\b(?:time\.sleep|asyncio\.sleep)\s*\(\s*\d")
+_PY_TEST_RANDOM_RE = re.compile(
+    r"(?<![.\w])random\.\w+\s*\(|\b(?:np|numpy)\.random\.|(?<![.\w])secrets\.\w+\s*\("
+    r"|\buuid\.uuid[14]\s*\("
+)
+_PY_ASSERTION_RE = re.compile(
+    r"(?<![.\w])assert\b|\bpytest\.(?:raises|warns)\b|\bself\.assert\w+\b|\bassert\w+\s*\("
+)
+# A pytest/unittest test function opener (test_* def), the block whose body the
+# assertion-free check spans.
+_PY_TEST_BLOCK_RE = re.compile(r"^[ \t]*(?:async\s+)?def\s+test\w*\s*\(", re.MULTILINE)
 
 # A call expression: NAME( ... . Used to derive the witness's assertion-helper
 # vocabulary (assertOk(res), expectUser(u)) so a candidate that wraps its
@@ -2621,6 +2665,34 @@ def _ruby_block_span(lines: list[str], start_idx: int) -> str:
     return "\n".join(body)
 
 
+def _py_block_span(lines: list[str], start_idx: int) -> str:
+    """Return the indented body of a Python `def test_*` block.
+
+    The body is the run of lines more-indented than the def opener; it ends at
+    the first non-blank line at or below the opener's indent. Capped so a
+    malformed file cannot run the scan away.
+    """
+    opener = lines[start_idx]
+    base_indent = len(opener) - len(opener.lstrip())
+    body: list[str] = [opener]
+    for ln in lines[start_idx + 1 : start_idx + 1 + 4000]:
+        if ln.strip():
+            indent = len(ln) - len(ln.lstrip())
+            if indent <= base_indent:
+                break
+        body.append(ln)
+    return "\n".join(body)
+
+
+def _assertion_re_for(language: str) -> re.Pattern[str]:
+    """The assertion-token regex for a language."""
+    if language == "ruby":
+        return _RUBY_ASSERTION_RE
+    if language == "python":
+        return _PY_ASSERTION_RE
+    return _TS_ASSERTION_RE
+
+
 # Call-name prefixes that read as an assertion helper rather than a setup call.
 # A witness call like assertUser()/expectOk()/verifyState() is almost certainly
 # the team's own matcher wrapper; makeUser()/create()/save() are not.
@@ -2640,7 +2712,7 @@ def _witness_assert_helpers(witness_content: str, *, language: str) -> set[str]:
     """
     if not witness_content:
         return set()
-    assert_re = _TS_ASSERTION_RE if language == "typescript" else _RUBY_ASSERTION_RE
+    assert_re = _assertion_re_for(language)
     helpers: set[str] = set()
     for line in witness_content.splitlines():
         line_has_assert = bool(assert_re.search(line))
@@ -2655,7 +2727,7 @@ def _witness_assert_helpers(witness_content: str, *, language: str) -> set[str]:
 
 def _block_asserts(block: str, *, language: str, witness_helpers: set[str]) -> bool:
     """True when a test block contains a recognized assertion or helper call."""
-    assert_re = _TS_ASSERTION_RE if language == "typescript" else _RUBY_ASSERTION_RE
+    assert_re = _assertion_re_for(language)
     if assert_re.search(block):
         return True
     if witness_helpers:
@@ -2686,6 +2758,11 @@ def _test_quality_violations(
         sleep_re = _TS_REAL_SLEEP_RE
         random_re = _TS_RANDOM_RE
         random_label = "Math.random"
+    elif language == "python":
+        skipped_re = _PY_SKIPPED_TEST_RE
+        sleep_re = _PY_REAL_SLEEP_RE
+        random_re = _PY_TEST_RANDOM_RE
+        random_label = "random/secrets/uuid4"
     else:
         skipped_re = _RUBY_SKIPPED_TEST_RE
         sleep_re = _RUBY_REAL_SLEEP_RE
@@ -2706,7 +2783,10 @@ def _test_quality_violations(
             )
         )
 
-    if language == "typescript" and _TS_TAUTOLOGY_RE.search(scan_content):
+    tautology = (language == "typescript" and _TS_TAUTOLOGY_RE.search(scan_content)) or (
+        language == "python" and _PY_TAUTOLOGY_RE.search(scan_content)
+    )
+    if tautology:
         out.append(
             Violation(
                 rule="tautological-assertion",
@@ -2715,7 +2795,8 @@ def _test_quality_violations(
                 severity="info",
                 message=(
                     "TEST: an assertion compares a literal to itself (e.g. "
-                    "expect(true).toBe(true)); it always passes and proves nothing"
+                    "expect(true).toBe(true) / assert 1 == 1); it always passes "
+                    "and proves nothing"
                 ),
             )
         )
@@ -2778,6 +2859,11 @@ def _assertion_free_violations(
     if language == "typescript":
         for m in _TS_TEST_BLOCK_RE.finditer(scan_content):
             blocks.append(_ts_block_span(scan_content, m.end()))
+    elif language == "python":
+        lines = scan_content.splitlines()
+        for i, line in enumerate(lines):
+            if _PY_TEST_BLOCK_RE.match(line):
+                blocks.append(_py_block_span(lines, i))
     else:
         lines = scan_content.splitlines()
         for i, line in enumerate(lines):
@@ -3412,12 +3498,16 @@ def lint_conventions(
     if (
         archetype_name
         and archetype_name.startswith(("test", "spec"))
-        and language in ("typescript", "ruby")
+        and language in ("typescript", "ruby", "python")
         and "test-quality" not in ignored_rules
     ):
         if language == "ruby":
             witness_scan = (
                 _strip_ruby_strings_and_comments(witness_content) if witness_content else None
+            )
+        elif language == "python":
+            witness_scan = (
+                _strip_python_strings_and_comments(witness_content) if witness_content else None
             )
         else:
             witness_scan = (

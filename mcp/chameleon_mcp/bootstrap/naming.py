@@ -63,6 +63,10 @@ _GENERIC_TAIL_SEGMENTS = frozenset(
 
 _TEST_DIR_TOKENS = frozenset({"spec", "specs", "test", "tests", "__tests__"})
 
+# pytest/unittest: the dominant convention is the `test_` PREFIX (test_views.py),
+# which a suffix list can't catch; also `*_test.py` and `conftest.py`.
+_PY_TEST_BASENAME_RE = re.compile(r"^(test_.+|.+_test|conftest)\.pyi?$")
+
 _TEST_FILE_SUFFIXES = (
     "_spec.rb",
     "_test.rb",
@@ -178,7 +182,13 @@ def _looks_like_test(paths_pattern: str, member_paths: Iterable[str]) -> bool:
     if not member_list:
         return False
 
-    suffix_hits = sum(1 for p in member_list if any(p.endswith(suf) for suf in _TEST_FILE_SUFFIXES))
+    def _is_test_basename(p: str) -> bool:
+        name = p.rsplit("/", 1)[-1]
+        return any(p.endswith(suf) for suf in _TEST_FILE_SUFFIXES) or bool(
+            _PY_TEST_BASENAME_RE.match(name)
+        )
+
+    suffix_hits = sum(1 for p in member_list if _is_test_basename(p))
     if suffix_hits * 2 >= len(member_list):
         return True
 
