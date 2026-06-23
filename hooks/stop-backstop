@@ -49,7 +49,8 @@ if [ "${#CHAMELEON_PY[@]}" -eq 0 ]; then
     exit 0
 fi
 
-"${CHAMELEON_PY[@]}" -m chameleon_mcp.log_rotation "${LOG_FILE}" 2>/dev/null || true
+# The hook error log is rotated in-process inside hook_helper (rotate_if_needed
+# at the top of main), so no separate log_rotation interpreter spawns here.
 
 # timeout(1) caps a stuck python; degrade to uncapped if neither timeout nor
 # gtimeout (Homebrew coreutils on macOS) is present, rather than failing the

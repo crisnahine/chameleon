@@ -235,7 +235,13 @@ BLOCK_RULE_LANGUAGES: dict[str, frozenset[str] | None] = {
     "import-preference-violation": None,
     "jsx-presence-mismatch": frozenset({"typescript"}),
     "naming-convention-violation": frozenset({"typescript", "ruby", "python"}),
-    "inheritance-convention-violation": frozenset({"ruby"}),
+    # Ruby + Python each derive a dominant-base convention and lint a class that
+    # inherits outside it (the Ruby check runs inline in lint_conventions, the
+    # Python check in _python_inheritance_violations). Both are listed so
+    # calibration can certify the rule per-language; the same noisy-rule
+    # demotion that protects file-naming applies here, so calibration, not this
+    # set, decides whether it actually blocks.
+    "inheritance-convention-violation": frozenset({"ruby", "python"}),
     "file-naming-convention-violation": None,
     "secret-detected-in-content": None,
     "eval-call": None,

@@ -375,7 +375,9 @@ def _creating_pid_alive(tree_name: str) -> bool:
     """
     pid_part = tree_name.rsplit("-", 1)[-1]
     if not pid_part.isdigit():
-        return False
+        # Unknowable: a name we can't parse a pid from could belong to an
+        # in-flight tree, so treat it as alive rather than sweep it.
+        return True
     try:
         os.kill(int(pid_part), 0)
         return True

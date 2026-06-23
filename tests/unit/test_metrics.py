@@ -39,6 +39,7 @@ EXPECTED_KEYS = [
     "file_rel",
     "line",
     "override",
+    "session_id",
 ]
 
 TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")

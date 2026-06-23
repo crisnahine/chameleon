@@ -44,6 +44,7 @@ def emit_hook_metric(
     file_rel: str | None = None,
     line: int | None = None,
     override: bool = False,
+    session_id: str | None = None,
 ) -> None:
     """Append one metrics line. Best-effort; never raises.
 
@@ -57,6 +58,11 @@ def emit_hook_metric(
     directive dropped a block-eligible rule. It pairs with ``rule`` to track how
     often each rule gets overridden vs would-block; the durable per-repo tally
     lives in drift.db, this row is the same write-path counter as would_block.
+
+    ``session_id`` is the Claude Code session that produced the row. The shadow
+    report counts distinct sessions per rule from it; a row without one is not
+    attributed to any session rather than being mistaken for its own session, so
+    distinct-session counts never silently collapse onto distinct-file counts.
     """
     try:
         path = _metrics_path()
@@ -78,6 +84,7 @@ def emit_hook_metric(
             "file_rel": file_rel,
             "line": int(line) if isinstance(line, int) else None,
             "override": bool(override),
+            "session_id": session_id,
         }
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))

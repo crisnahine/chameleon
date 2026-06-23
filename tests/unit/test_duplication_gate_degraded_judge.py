@@ -188,7 +188,7 @@ def test_degraded_judge_spawn_lets_duplication_gate_run(make_trusted_repo):
     assert out.get("decision") != "block"
 
 
-def test_judge_timeout_also_lets_duplication_gate_run(make_trusted_repo):
+def test_judge_timeout_skips_duplication_gate_to_stay_in_budget(make_trusted_repo):
     repo, data_dir, sid, file_path = make_trusted_repo()
     _seed_edited(file_path, data_dir, sid)
     findings = [_planted_finding(file_path, repo)]
@@ -201,9 +201,12 @@ def test_judge_timeout_also_lets_duplication_gate_run(make_trusted_repo):
 
     out, gather, dup_spawn = _run_stop(repo, sid, corr_judge_behavior=timed_out, findings=findings)
 
-    gather.assert_called_once()
-    dup_spawn.assert_called_once()
-    assert "re-implements" in out["hookSpecificOutput"]["additionalContext"]
+    # A judge that fails by TIMEOUT already consumed the full wall-clock budget;
+    # spawning the duplication reviewer after it would blow the 55s cap and be
+    # SIGKILLed mid-review, so the gate skips the second spawn this turn. (The
+    # fast unparseable-output failure, tested below, still runs duplication.)
+    dup_spawn.assert_not_called()
+    assert "re-implements" not in (out.get("hookSpecificOutput", {}).get("additionalContext", ""))
 
 
 def test_unparseable_judge_output_lets_duplication_gate_run(make_trusted_repo):

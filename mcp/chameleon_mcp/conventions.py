@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import json
 import os
 import re
@@ -323,6 +324,10 @@ _RUBY_SCOPE_OPEN_RE = re.compile(r"^\s*(class|module)\b")
 # unlike TS/Ruby where the doc comment sits ABOVE the declaration.
 _PY_PUBLIC_DEF_RE = re.compile(r"^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z]\w*)")
 _PY_DOCSTRING_START_RE = re.compile(r"""^[rRbBuUfF]{0,2}('''|\"\"\"|'|")""")
+# Backstop on the header-end scan. Generated DRF/Django signatures can run to
+# dozens of parameter lines, so this is wide; the next-def/class guard, not this
+# cap, is what actually stops a one-liner from borrowing a sibling's docstring.
+_PY_HEADER_SCAN_MAX_LINES = 200
 
 
 def _py_decl_has_docstring(lines: list[str], decl_index: int) -> bool:
@@ -330,10 +335,11 @@ def _py_decl_has_docstring(lines: list[str], decl_index: int) -> bool:
 
     Finds the end of the (possibly multi-line) header — the first line ending in
     ``:`` — then checks whether the first non-blank body line is a string
-    literal. Bounded scan; stops at the next def/class so a one-liner without a
-    docstring can't borrow a sibling's.
+    literal. The real terminator is the next def/class (so a one-liner without a
+    docstring can't borrow a sibling's); the line cap is only a backstop, kept
+    wide enough that a long multi-line signature still reaches its colon.
     """
-    end = min(len(lines), decl_index + 15)
+    end = min(len(lines), decl_index + _PY_HEADER_SCAN_MAX_LINES)
     i = decl_index
     while i < end:
         stripped = lines[i].split("#", 1)[0].rstrip()
@@ -406,12 +412,22 @@ def compute_doc_coverage_from_content(content: str, *, language: str) -> tuple[i
                 if _ts_decl_has_leading_doc(lines, idx):
                     documented += 1
     elif language == "ruby":
+        # Local import: lint_engine imports from this module at load time.
+        from chameleon_mcp.lint_engine import _strip_ruby_strings_and_comments
+
+        # Detect declarations on a strings/comments/heredoc-stripped copy so a
+        # `def`/`private` inside a heredoc template isn't counted — the same
+        # exclusion the naming derivation applies. The strip is length-preserving
+        # (bodies blanked to spaces, newlines kept), so indices align with the
+        # original; the leading-comment check then reads the ORIGINAL lines,
+        # since the stripper blanks the very `#` comment that documents the def.
+        scan_lines = _strip_ruby_strings_and_comments(content).splitlines()
         # Visibility is per class/module body. A new class/module body and the
         # file top both reset to public; a bare `private`/`protected` flips it
         # until the next reset. This is the same private-section tracking the
         # AST would do, approximated line-wise.
         visibility = "public"
-        for idx, line in enumerate(lines):
+        for idx, line in enumerate(scan_lines):
             if _RUBY_SCOPE_OPEN_RE.match(line):
                 visibility = "public"
                 continue
@@ -426,9 +442,18 @@ def compute_doc_coverage_from_content(content: str, *, language: str) -> tuple[i
                 if _ruby_def_has_leading_doc(lines, idx):
                     documented += 1
     elif language == "python":
+        from chameleon_mcp.lint_engine import _strip_python_strings_and_comments
+
+        # Detect declarations on a strings/comments-stripped copy so a
+        # `def`/`class` inside a triple-quoted code-generation template isn't
+        # counted as public surface — consistent with the naming derivation. The
+        # strip is length-preserving, so indices align with the original; the
+        # docstring check reads the ORIGINAL lines, since the stripper blanks the
+        # very docstring it would look for.
+        scan_lines = _strip_python_strings_and_comments(content).splitlines()
         # Public surface = def/class whose name is not underscore-prefixed;
         # documented = opens with a docstring (the first body statement).
-        for idx, line in enumerate(lines):
+        for idx, line in enumerate(scan_lines):
             m = _PY_PUBLIC_DEF_RE.match(line)
             if not m or m.group(2).startswith("_"):
                 continue
@@ -1935,7 +1960,8 @@ def extract_all_conventions(
 
     ``doc_coverage_by_archetype`` carries the per-file (documented, public)
     declaration counts the orchestrator gathers during its per-member re-read.
-    Passed in rather than recomputed here so conventions.py stays I/O-free.
+    Passed in rather than recomputed here so each member file is read once, not
+    a second time, during convention extraction.
 
     ``repo_root`` enables the repo-level import-layering graph (resolving each
     file's relative/alias imports to a target path -> archetype). When omitted
@@ -2502,19 +2528,23 @@ def format_directory_listing(
         if not parent.is_dir():
             return ""
         target_name = Path(file_path).name
-        siblings = sorted(
+        names = [
             entry.name
             for entry in parent.iterdir()
             if entry.is_file() and entry.suffix in _SOURCE_EXTENSIONS and entry.name != target_name
-        )
+        ]
     except OSError:
         return ""
-    if not siblings:
+    if not names:
         return ""
-    display = siblings[:max_files]
+    # Take the alphabetically-first ``max_files`` directly rather than sorting the
+    # whole directory then slicing. heapq.nsmallest is O(d log max_files) and
+    # returns the same deterministic prefix a full sort would, which keeps the
+    # per-edit cost bounded on a flat directory holding thousands of files.
+    display = heapq.nsmallest(max_files, names)
     # Flag the overflow so the model does not read a capped list as the complete
     # set and wrongly conclude a "reuse before creating" check came up empty.
-    more = len(siblings) - len(display)
+    more = len(names) - len(display)
     tail = f" (+{more} more)" if more > 0 else ""
     return f"Nearby: {', '.join(display)}{tail} -- check before creating a new file."
 
