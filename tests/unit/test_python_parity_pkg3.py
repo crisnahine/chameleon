@@ -158,3 +158,39 @@ def test_resolve_python_index_key(tmp_path):
     assert resolve("pkg.models", (pkg).resolve()) == "pkg/models.py"
     # external -> None
     assert resolve("django.db", pkg.resolve()) is None
+
+
+# --------------------------------------------------------------------------- #
+# Sub-step E: phantom-symbol — a named import absent from the target's exports.
+# --------------------------------------------------------------------------- #
+
+
+def test_phantom_symbol_python(tmp_path):
+    import json
+
+    from chameleon_mcp.extractors.python import PythonExtractor
+    from chameleon_mcp.phantom_imports import lint_phantom_imports
+    from chameleon_mcp.symbol_index import build_exports_index
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "models.py").write_text("class User:\n    pass\n", encoding="utf-8")
+    # Build + commit the exports index where load_exports_index reads it.
+    files = PythonExtractor().parse_repo(tmp_path).files
+    (tmp_path / ".chameleon").mkdir()
+    (tmp_path / ".chameleon" / "exports_index.json").write_text(
+        json.dumps(build_exports_index(files, tmp_path)), encoding="utf-8"
+    )
+
+    editing = pkg / "views.py"
+    v = lint_phantom_imports(
+        "from .models import User, Ghost\n",
+        file_path=str(editing),
+        repo_root=tmp_path,
+        language="python",
+    )
+    rules = [(x.rule, x.actual) for x in v]
+    # Ghost is not exported by models.py -> phantom-symbol; User is fine.
+    assert any(r == "phantom-symbol" and "Ghost" in a for r, a in rules)
+    assert not any(r == "phantom-symbol" and "User" in a for r, a in rules)

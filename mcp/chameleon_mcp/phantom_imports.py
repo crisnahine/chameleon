@@ -23,6 +23,7 @@ from chameleon_mcp.symbol_index import (
     load_reverse_index,
     module_key_for_path,
     resolve_index_key,
+    resolve_python_index_key,
 )
 
 _RULE = "phantom-import"
@@ -74,12 +75,38 @@ _IGNORE_TS_RE = re.compile(r"//\s*chameleon-ignore\s+([\w-]+)")
 
 _RUBY_REQUIRE_RELATIVE_RE = re.compile(r"^\s*require_relative\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
 _IGNORE_RUBY_RE = re.compile(r"#\s*chameleon-ignore\s+([\w-]+)")
-# A Python relative import: `from .mod import x`, `from ..pkg.sub import y`,
+# A Python relative import: `from .mod import x`, `from ..pkg.sub import y, z`,
 # `from . import z`. group(1) = leading dots (relative level), group(2) = the
-# dotted module after the dots (empty for `from . import`). Absolute imports
-# (`import os`, `from django.db import ...`) are not relative and unverifiable
-# without sys.path, so they are not matched.
-_PY_RELATIVE_IMPORT_RE = re.compile(r"^[ \t]*from\s+(\.+)([\w.]*)\s+import\b", re.MULTILINE)
+# dotted module after the dots (empty for `from . import`), group(3) = the
+# imported-names clause to the end of the line (for the phantom-SYMBOL check).
+# Absolute imports (`import os`, `from django.db import ...`) are not relative
+# and unverifiable without sys.path, so they are not matched.
+_PY_RELATIVE_IMPORT_RE = re.compile(r"^[ \t]*from\s+(\.+)([\w.]*)\s+import\b(.*)$", re.MULTILINE)
+
+
+def _py_imported_names(clause: str) -> list[str]:
+    """Imported names from a single-line `import a, b as c` clause.
+
+    Returns the SOURCE name (left of any ``as``) of each binding -- the name the
+    target module must export. A parenthesized/multi-line clause (just ``(``) or
+    a star import yields nothing, so the symbol check conservatively skips it.
+    """
+    clause = clause.strip()
+    if not clause or clause.startswith("(") or clause == "*":
+        return []
+    # Drop a trailing inline comment and any wrapping parens content past EOL.
+    clause = clause.split("#", 1)[0].strip().rstrip(")").lstrip("(")
+    names: list[str] = []
+    for part in clause.split(","):
+        part = part.strip()
+        if not part or part == "*":
+            continue
+        src = part.split(" as ", 1)[0].strip()
+        if src.isidentifier():
+            names.append(src)
+    return names
+
+
 _RUBY_SUFFIXES = ("", ".rb", ".so", ".bundle")
 
 # Maximum import specifiers checked per file. A real module has a few dozen; a
@@ -730,35 +757,46 @@ def lint_phantom_imports(
                 continue
             violations.append(_violation(spec, base.parent, root))
     elif language == "python":
-        if _RULE in {m.group(1) for m in _IGNORE_RUBY_RE.finditer(content)}:
+        _ignored_py = {m.group(1) for m in _IGNORE_RUBY_RE.finditer(content)}
+        if _RULE in _ignored_py:
             return []
+        symbol_check_on = _SYMBOL_RULE not in _ignored_py
+        exports_index = load_exports_index(root) if symbol_check_on else None
+        symbol_check_on = symbol_check_on and exports_index is not None
         seen_py: set[str] = set()
         for m in _PY_RELATIVE_IMPORT_RE.finditer(content):
             if len(seen_py) >= _MAX_SPECS:
                 break
-            dots, module = m.group(1), m.group(2)
+            dots, module, names_clause = m.group(1), m.group(2), m.group(3)
             spec = dots + module
-            if spec in seen_py:
-                continue
-            seen_py.add(spec)
             if not module:
-                # `from . import x` targets the current package (always present);
-                # the imported name `x` is a phantom-SYMBOL concern, not import.
-                continue
-            base = file_dir
-            for _ in range(len(dots) - 1):
-                base = base.parent
-            base = base / Path(module.replace(".", "/"))
+                # `from . import x` targets the current package (always present),
+                # so it is never a phantom-IMPORT; the bound name is checked below.
+                base = file_dir
+            else:
+                base = file_dir
+                for _ in range(len(dots) - 1):
+                    base = base.parent
+                base = base / Path(module.replace(".", "/"))
             if not _under_repo(base, root):
                 continue
-            if _py_resolves(base):
-                continue
-            # Same conservative guard as the Ruby/TS paths: only flag when the
-            # immediate parent dir exists (a missing parent is a generated /
-            # cross-checkout tree, not a typo we can be confident about).
-            if not _safe_is_dir(base.parent):
-                continue
-            violations.append(_violation(spec, base.parent, root))
+            resolves = _py_resolves(base) if module else True
+            # phantom-import: a relative module that resolves to no file on disk.
+            if module and not resolves and spec not in seen_py:
+                # Same conservative guard as the Ruby/TS paths: only flag when the
+                # immediate parent dir exists.
+                if _safe_is_dir(base.parent):
+                    violations.append(_violation(spec, base.parent, root))
+            seen_py.add(spec)
+            # phantom-symbol: the module resolves, but a named binding it imports
+            # is absent from that module's (closed) export set.
+            if symbol_check_on and resolves and module:
+                key = resolve_python_index_key(base, root)
+                entry = exports_index.lookup(key) if key is not None else None
+                if entry is not None and not entry.open:
+                    for nm in _py_imported_names(names_clause):
+                        if nm not in entry.names:
+                            violations.append(_symbol_violation(nm, spec))
     return violations
 
 
