@@ -971,12 +971,52 @@ def _dominant_base_family(base_counts: Counter[str]) -> tuple[str, list[str], in
     return best
 
 
-def extract_inheritance_conventions(files: list[ParsedFile]) -> dict:
+def _python_inheritance_conventions(files: list[ParsedFile], total: int) -> dict:
+    """Dominant base + known bases for Python, from the parsed ``class_shapes``.
+
+    Python conflates the single superclass and mixins into one base tuple, so
+    every base a class declares is counted (deduped per file): the dominant base
+    is whatever the archetype's classes share most (``models.Model`` for a Django
+    model cohort, ``APIView`` for a DRF view cohort), and any base recurring at
+    least twice is an established choice, not a violation. No separate
+    ``dominant_include`` -- a Python mixin is just another base.
+    """
+    base_counts: Counter[str] = Counter()
+    for f in files:
+        shapes = (getattr(f, "extras", None) or {}).get("class_shapes")
+        if not isinstance(shapes, list):
+            continue
+        seen_bases: set[str] = set()
+        for sh in shapes:
+            if not isinstance(sh, dict):
+                continue
+            bases = sh.get("bases")
+            if not isinstance(bases, list):
+                continue
+            for base in bases:
+                if isinstance(base, str) and base and base != "object" and base not in seen_bases:
+                    base_counts[base] += 1
+                    seen_bases.add(base)
+
+    result: dict = {}
+    if base_counts:
+        top_base, top_count = base_counts.most_common(1)[0]
+        if top_count / total >= _INHERITANCE_THRESHOLD:
+            result["dominant_base"] = top_base
+            result["frequency"] = round(top_count / total, 3)
+            result["sample_size"] = total
+            result["known_bases"] = sorted(b for b, c in base_counts.items() if c >= 2)
+    return result
+
+
+def extract_inheritance_conventions(files: list[ParsedFile], *, language: str = "ruby") -> dict:
     """Detect dominant base class and include mixins by reading file content."""
     if len(files) < MIN_SAMPLE_SIZE:
         return {}
 
     total = len(files)
+    if language == "python":
+        return _python_inheritance_conventions(files, total)
     base_counts: Counter[str] = Counter()
     include_counts: Counter[str] = Counter()
 
@@ -1912,16 +1952,18 @@ def extract_all_conventions(
         file_naming = extract_file_naming_convention(basenames=basenames)
         if file_naming:
             conventions["conventions"]["naming"].setdefault(archetype, {}).update(file_naming)
-    if language == "ruby":
-        # Inheritance + DSL method-call conventions are Ruby/Rails-specific;
-        # running them on TS files emits bogus "Inherit <type-param>" /
-        # "Common DSL: scope" lines into the SessionStart block.
+    if language in ("ruby", "python"):
+        # Inheritance derivation applies to both class-based languages: a Django
+        # model cohort sharing ``models.Model``, a DRF view cohort sharing
+        # ``APIView``, a Rails controller cohort sharing ``ApplicationController``.
+        # The DSL/method-call and required-guard derivations below stay Ruby-only.
         for archetype, files in files_by_archetype.items():
-            inheritance_conv = extract_inheritance_conventions(files)
+            inheritance_conv = extract_inheritance_conventions(files, language=language)
             if inheritance_conv:
                 conventions["conventions"].setdefault("inheritance", {})[archetype] = (
                     inheritance_conv
                 )
+    if language == "ruby":
         for archetype, files in files_by_archetype.items():
             method_conv = extract_method_call_conventions(files)
             if method_conv:

@@ -35,7 +35,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] error_handling (`try:` shape)
 - [x] doc_coverage (docstring detection — scan line AFTER def/class, not before)
 - [x] test_pairing: `_is_test_path` + `_candidate_test_paths` Python branches (test_*.py, *_test.py, conftest.py)
-- [ ] inheritance derivation (dominant_base/known_bases for Python)
+- [x] inheritance derivation (dominant_base/known_bases for Python)
 - [x] layering: `_resolve_python` dotted-relative resolver in import_graph.py
 
 ## PKG-3 — Cross-file intelligence (depends on PKG-1)
@@ -93,7 +93,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [ ] hybrid frontend (python<->ts language_hint, both directions)
 - [x] Django model→migration co-change rule (+ _normalize_language python)
 - [x] stale-test advisory eligibility (python in _normalize_language)
-- [ ] inheritance-convention derivation (Django models.Model / DRF APIView)
+- [x] inheritance-convention derivation (Django models.Model / DRF APIView)
 - [x] class-contract decorator/base recognition (one-line extends/bases — overlaps PKG-2)
 - [x] AST-shape fallback: add ClassDef to is_class_default (naming.py)
 

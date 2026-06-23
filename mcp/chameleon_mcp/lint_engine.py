@@ -3109,6 +3109,10 @@ _RUBY_CONSTANT_ASSIGN_LINT_RE = re.compile(
 # def or a snake class to flag it), mirroring the Ruby lint captures.
 _PY_FUNC_DEF_LINT_RE = re.compile(r"^[ \t]*(?:async\s+)?def\s+([A-Za-z_]\w*)", re.MULTILINE)
 _PY_CLASS_DECL_LINT_RE = re.compile(r"^[ \t]*class\s+([A-Za-z_]\w*)", re.MULTILINE)
+# Captures the base list too (group 3, None when bare) for the inheritance check.
+_PY_CLASS_BASES_LINT_RE = re.compile(
+    r"^([ \t]*)class\s+([A-Za-z_]\w*)\s*(?:\(([^)]*)\))?\s*:", re.MULTILINE
+)
 
 
 def _python_naming_violations(scan_content: str, naming: dict) -> list[Violation]:
@@ -3313,6 +3317,11 @@ def lint_conventions(
         scan_content = _strip_ruby_strings_and_comments(content)
     elif language == "typescript":
         scan_content = _strip_ts_strings_and_comments(content)
+    elif language == "python":
+        # A `class Foo(Bar):` or `def fooBar` inside a docstring is prose, not a
+        # declaration; strip strings + comments so the naming/inheritance scans
+        # don't false-match it. Length-preserving, so line numbers stay truthful.
+        scan_content = _strip_python_strings_and_comments(content)
     else:
         scan_content = content
 
@@ -3509,6 +3518,13 @@ def lint_conventions(
                         )
                     )
 
+    if language == "python" and not (
+        ignored_rules & {"inheritance-convention", "inheritance-convention-violation"}
+    ):
+        violations.extend(
+            _python_inheritance_violations(scan_content, conventions.get("inheritance") or {})
+        )
+
     if language == "ruby" and "required-guard-convention" not in ignored_rules:
         violations.extend(_required_guard_violations(scan_content, conventions))
 
@@ -3601,6 +3617,64 @@ def _required_guard_violations(scan_content: str, conventions: dict) -> list[Vio
                     f"AUTHZ: controllers in this archetype usually call "
                     f"before_action :{guard}; this file does not -- confirm "
                     f"authorization is inherited or intentionally skipped"
+                ),
+            )
+        )
+    return out
+
+
+def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list[Violation]:
+    """Advisory hint when a Python class inherits a base outside the archetype's.
+
+    Mirrors the Ruby inheritance check: fires only when a dominant base clears
+    the 60% convention floor. A class with NO positional base is left alone -- a
+    plain ``class Foo:`` is valid Python, not a missed inheritance -- so only a
+    class inheriting something OTHER than an established base is flagged. A class
+    that IS one of the known bases (it defines the convention boundary, e.g. a
+    project's own ``BaseModel``) is exempt. Bases are matched on the full dotted
+    name or its tail, so ``models.Model`` accepts a bare ``Model`` import.
+    """
+    dominant_base = inheritance.get("dominant_base")
+    if not dominant_base or inheritance.get("frequency", 0) < 0.60:
+        return []
+    known_bases = set(inheritance.get("known_bases") or ())
+    known_bases.add(dominant_base)
+    known_tails = {b.rsplit(".", 1)[-1] for b in known_bases}
+
+    out: list[Violation] = []
+    min_indent: int | None = None
+    for m in _PY_CLASS_BASES_LINT_RE.finditer(scan_content):
+        indent = len(m.group(1))
+        class_name = m.group(2)
+        bases_raw = m.group(3)
+        # Only outermost-indent classes carry the archetype's convention; a
+        # nested helper class does not.
+        if min_indent is not None and indent > min_indent:
+            continue
+        min_indent = indent if min_indent is None else min(min_indent, indent)
+        if class_name in known_bases or class_name in known_tails:
+            continue
+        bases: list[str] = []
+        if bases_raw:
+            for part in bases_raw.split(","):
+                part = part.strip()
+                # Drop keyword args (``metaclass=...``) and unpackings (``*bases``).
+                if not part or "=" in part or part.startswith("*"):
+                    continue
+                bases.append(part)
+        if not bases:
+            continue
+        if any(b in known_bases or b.rsplit(".", 1)[-1] in known_tails for b in bases):
+            continue
+        out.append(
+            Violation(
+                rule="inheritance-convention-violation",
+                expected=dominant_base,
+                actual=", ".join(bases),
+                severity="warning",
+                message=(
+                    f"INHERITANCE: class {class_name} should inherit "
+                    f"{dominant_base} ({inheritance['frequency']:.0%} convention)"
                 ),
             )
         )
