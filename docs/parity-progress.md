@@ -53,10 +53,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [ ] doctor advisory-emission source-edit check (.py in _source_exts)
 
 ## PKG-4 — Security lint (lint_engine.py)
-- [ ] weak-hash (add python to gate — hashlib.md5/sha1)
-- [ ] insecure-random (random.* vs secrets in crypto context) Python (+Ruby)
-- [ ] command-injection sink (os.system / subprocess shell=True / os.popen) [net-new, Python]
-- [ ] insecure-deserialization sink (pickle.load(s) / yaml.load non-Safe) [net-new, Python]
+- [x] weak-hash (add python to gate — hashlib.md5/sha1)
+- [x] insecure-random (random.* vs secrets in crypto context) Python (+Ruby)
+- [x] command-injection sink (os.system / subprocess shell=True / os.popen) [net-new, Python]
+- [x] insecure-deserialization sink (pickle.load(s) / yaml.load non-Safe) [net-new, Python]
 
 ## PKG-5 — Style lint (lint_engine.py + tool_config.py)
 - [ ] Python formatter-config reader at bootstrap (black/ruff/flake8: line-length, quote)
