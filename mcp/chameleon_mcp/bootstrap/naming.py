@@ -597,6 +597,7 @@ def _base_name_for(
         "ClassNode",
         "ClassDeclaration",
         "ModuleNode",
+        "ClassDef",  # libcst (Python): a single top-level class
     }
     is_arrow_default = default_export in {"ArrowFunction", "FunctionExpression"}
 
