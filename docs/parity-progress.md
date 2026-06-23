@@ -41,7 +41,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 ## PKG-3 — Cross-file intelligence (depends on PKG-1)
 - [ ] exports index for Python (named_export_names → exports_index.json)
 - [ ] reverse index for Python (import_symbols → reverse_index.json)
-- [ ] phantom-import (relative import → file on disk) Python branch
+- [x] phantom-import (relative import → file on disk) Python branch
 - [ ] phantom-symbol (imported name in target exports) Python
 - [ ] cross-file-importers (blast-radius advisory) Python
 - [ ] removed-export-breaks-importers Python
@@ -98,7 +98,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] AST-shape fallback: add ClassDef to is_class_default (naming.py)
 
 ## PKG-10 — Calibration (violation_class.py + enforcement_calibration.py)
-- [ ] phantom-import block rule Python (after PKG-3 phantom-import lands)
+- [x] phantom-import block rule Python (after PKG-3 phantom-import lands)
 - [ ] naming-convention block rule Python (after PKG-6)
 - [ ] file-naming block rule Python (after PKG-0)
 - [ ] block-eligible rule set parity audit (scope correctly)

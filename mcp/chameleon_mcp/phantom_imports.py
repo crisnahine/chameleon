@@ -74,6 +74,12 @@ _IGNORE_TS_RE = re.compile(r"//\s*chameleon-ignore\s+([\w-]+)")
 
 _RUBY_REQUIRE_RELATIVE_RE = re.compile(r"^\s*require_relative\s+['\"]([^'\"]+)['\"]", re.MULTILINE)
 _IGNORE_RUBY_RE = re.compile(r"#\s*chameleon-ignore\s+([\w-]+)")
+# A Python relative import: `from .mod import x`, `from ..pkg.sub import y`,
+# `from . import z`. group(1) = leading dots (relative level), group(2) = the
+# dotted module after the dots (empty for `from . import`). Absolute imports
+# (`import os`, `from django.db import ...`) are not relative and unverifiable
+# without sys.path, so they are not matched.
+_PY_RELATIVE_IMPORT_RE = re.compile(r"^[ \t]*from\s+(\.+)([\w.]*)\s+import\b", re.MULTILINE)
 _RUBY_SUFFIXES = ("", ".rb", ".so", ".bundle")
 
 # Maximum import specifiers checked per file. A real module has a few dozen; a
@@ -440,6 +446,21 @@ def _ruby_resolves(base: Path) -> bool:
         return True
 
 
+def _py_resolves(base: Path) -> bool:
+    """True if a Python relative-import module ``base`` resolves to a file.
+
+    A module is ``base.py`` / ``base.pyi``; a package is ``base/__init__.py``.
+    Fails open (returns True) on any OS error so an unreadable tree never flags.
+    """
+    try:
+        for suf in (".py", ".pyi"):
+            if Path(str(base) + suf).is_file():
+                return True
+        return (base / "__init__.py").is_file() or (base / "__init__.pyi").is_file()
+    except OSError:
+        return True
+
+
 def _safe_is_dir(p: Path) -> bool:
     try:
         return p.is_dir()
@@ -705,6 +726,36 @@ def lint_phantom_imports(
             # immediate parent dir exists; a missing parent means a generated /
             # cross-checkout tree (e.g. EE/CE split) or a heredoc fixture, not a
             # typo we can be confident about.
+            if not _safe_is_dir(base.parent):
+                continue
+            violations.append(_violation(spec, base.parent, root))
+    elif language == "python":
+        if _RULE in {m.group(1) for m in _IGNORE_RUBY_RE.finditer(content)}:
+            return []
+        seen_py: set[str] = set()
+        for m in _PY_RELATIVE_IMPORT_RE.finditer(content):
+            if len(seen_py) >= _MAX_SPECS:
+                break
+            dots, module = m.group(1), m.group(2)
+            spec = dots + module
+            if spec in seen_py:
+                continue
+            seen_py.add(spec)
+            if not module:
+                # `from . import x` targets the current package (always present);
+                # the imported name `x` is a phantom-SYMBOL concern, not import.
+                continue
+            base = file_dir
+            for _ in range(len(dots) - 1):
+                base = base.parent
+            base = base / Path(module.replace(".", "/"))
+            if not _under_repo(base, root):
+                continue
+            if _py_resolves(base):
+                continue
+            # Same conservative guard as the Ruby/TS paths: only flag when the
+            # immediate parent dir exists (a missing parent is a generated /
+            # cross-checkout tree, not a typo we can be confident about).
             if not _safe_is_dir(base.parent):
                 continue
             violations.append(_violation(spec, base.parent, root))
