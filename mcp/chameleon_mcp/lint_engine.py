@@ -1964,6 +1964,12 @@ def _declared_quote(rules, language: str) -> str | None:
                 return "single"
             if style == "double_quotes":
                 return "double"
+    elif language == "python":
+        pf = _rules_section(rules, "python_format")
+        if pf:
+            qs = pf.get("quote_style")
+            if qs in ("single", "double"):
+                return qs
     return None
 
 
@@ -1986,6 +1992,12 @@ def _declared_max_line_length(rules, language: str) -> int | None:
         cop = _rubocop_cop(rules, "Layout/LineLength")
         if cop:
             n = _coerce_int(cop.get("Max"))
+            if n is not None:
+                return n
+    elif language == "python":
+        pf = _rules_section(rules, "python_format")
+        if pf:
+            n = _coerce_int(pf.get("line_length"))
             if n is not None:
                 return n
     ec = _editorconfig_value(rules, "max_line_length")
@@ -2056,6 +2068,20 @@ _RUBY_TOKEN_RE = re.compile(
     r")",
     re.DOTALL,
 )
+# Python tokenizer for the quote scan. Comments, triple-quoted strings, and
+# PREFIXED single-line strings (f/r/b/u) are matched but NOT in the `str` group,
+# so the quote check only fires on a plain single-line '...'/"..." literal --
+# triple-quoted docstrings and f/r/b-strings are left alone (conservative). Order
+# matters: triple-quoted and prefixed forms precede the plain `str` alternative.
+_PY_TOKEN_RE = re.compile(
+    r"#[^\n]*"  # line comment
+    r'|[rRbBfFuU]{0,3}"""[\s\S]*?"""'  # triple double-quoted
+    r"|[rRbBfFuU]{0,3}'''[\s\S]*?'''"  # triple single-quoted
+    r'|[rRbBfFuU]{1,3}"(?:\\.|[^"\\\n])*"'  # prefixed double (not str-group)
+    r"|[rRbBfFuU]{1,3}'(?:\\.|[^'\\\n])*'"  # prefixed single (not str-group)
+    r'|(?P<str>"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\')',  # plain single-line string
+    re.DOTALL,
+)
 
 
 def scan_style_rules(
@@ -2099,7 +2125,7 @@ def scan_style_rules(
     file; past the cap a single summary row reports the remainder. Pure function
     -- no I/O, never executes the scanned code.
     """
-    if not content or language not in ("typescript", "ruby"):
+    if not content or language not in ("typescript", "ruby", "python"):
         return []
 
     # Repo-relative POSIX path for the rubocop Exclude check. Resolve against the
@@ -2126,6 +2152,9 @@ def scan_style_rules(
     if language == "ruby":
         stripped = _strip_ruby_strings_and_comments(content)
         token_re = _RUBY_TOKEN_RE
+    elif language == "python":
+        stripped = _strip_python_strings_and_comments(content)
+        token_re = _PY_TOKEN_RE
     else:
         stripped = _strip_ts_strings_and_comments(content)
         token_re = _TS_TOKEN_RE
