@@ -56,6 +56,8 @@ def _normalize_language(language: str | None) -> str | None:
         return "ruby"
     if language == "typescript":
         return "typescript"
+    if language == "python":
+        return "python"
     return None
 
 
@@ -267,6 +269,22 @@ def _is_rails_routes(rel: str) -> bool:
     return rel == "config/routes.rb" or (rel.startswith("config/routes/") and rel.endswith(".rb"))
 
 
+def _is_django_model(rel: str) -> bool:
+    # A Django model module: models.py or a file in a models/ package (the
+    # cross-app role form), excluding migrations and the package __init__.
+    if not rel.endswith(".py") or "/migrations/" in rel:
+        return False
+    name = rel.rsplit("/", 1)[-1]
+    if name == "models.py":
+        return True
+    return "/models/" in rel and name != "__init__.py"
+
+
+def _is_django_migration(rel: str) -> bool:
+    name = rel.rsplit("/", 1)[-1]
+    return "/migrations/" in rel and rel.endswith(".py") and name != "__init__.py"
+
+
 def _is_ts_migration_dir(rel: str) -> bool:
     # ORM migrations (Prisma, TypeORM, Knex, Sequelize) live under a migrations
     # directory; the leaf extension is the source family's, so this only needs the
@@ -308,6 +326,14 @@ _COCHANGE_RULES: tuple[CoChangeRule, ...] = (
         _is_rails_controller,
         _is_rails_routes,
         "new controller added without a config/routes change wiring it up",
+    ),
+    CoChangeRule(
+        "cochange-django-model-migration",
+        "python",
+        _is_django_model,
+        _is_django_migration,
+        "new Django model added without a migrations/*.py migration in the same change "
+        "(run makemigrations)",
     ),
     CoChangeRule(
         "cochange-prisma-migration",

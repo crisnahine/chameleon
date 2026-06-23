@@ -91,11 +91,11 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## PKG-9 — Framework awareness (cochange.py + orchestrator.py + naming.py)
 - [ ] hybrid frontend (python<->ts language_hint, both directions)
-- [ ] Django model→migration co-change rule (+ _normalize_language python)
-- [ ] stale-test advisory eligibility (python in _normalize_language)
+- [x] Django model→migration co-change rule (+ _normalize_language python)
+- [x] stale-test advisory eligibility (python in _normalize_language)
 - [ ] inheritance-convention derivation (Django models.Model / DRF APIView)
-- [ ] class-contract decorator/base recognition (one-line extends/bases — overlaps PKG-2)
-- [ ] AST-shape fallback: add ClassDef to is_class_default (naming.py)
+- [x] class-contract decorator/base recognition (one-line extends/bases — overlaps PKG-2)
+- [x] AST-shape fallback: add ClassDef to is_class_default (naming.py)
 
 ## PKG-10 — Calibration (violation_class.py + enforcement_calibration.py)
 - [ ] phantom-import block rule Python (after PKG-3 phantom-import lands)

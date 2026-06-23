@@ -55,9 +55,9 @@ class TestRuleTable:
     def test_rules_are_directional_and_unique(self):
         ids = [r.rule_id for r in _COCHANGE_RULES]
         assert len(ids) == len(set(ids))
-        # The curated set stays small and framework-keyed (Rails + TS).
-        assert 3 <= len(_COCHANGE_RULES) <= 5
-        assert {r.language for r in _COCHANGE_RULES} == {"ruby", "typescript"}
+        # The curated set stays small and framework-keyed (Rails + TS + Django).
+        assert 3 <= len(_COCHANGE_RULES) <= 6
+        assert {r.language for r in _COCHANGE_RULES} == {"ruby", "typescript", "python"}
 
     def test_model_trigger_excludes_concerns_and_base(self):
         rule = next(r for r in _COCHANGE_RULES if r.rule_id == "cochange-model-migration")
