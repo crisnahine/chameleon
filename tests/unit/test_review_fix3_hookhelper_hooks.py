@@ -176,15 +176,18 @@ def test_eval_call_in_code_still_denies(tmp_path: Path):
     assert _decision(out) == "deny"
 
 
-def test_proposed_hard_secret_violations_gates_on_language():
+def test_proposed_hard_secret_violations_skips_prose_fires_on_config_and_code():
     from chameleon_mcp.hook_helper import _proposed_hard_secret_violations
 
     code = f'AWS_KEY = "{AWS_KEY}"\n'
-    # Unrecognized extension -> no violations regardless of content.
+    # Prose/doc files -> a sample key is documentation, not a leak: no deny.
     md, _ = _proposed_hard_secret_violations(code, "notes.md", tool_name="Write")
     txt, _ = _proposed_hard_secret_violations(code, "fixtures.txt", tool_name="Write")
+    assert md == [] and txt == []
+    # Config/data files are the most common real leak target -> the deny fires
+    # even though they are not a recognized code language.
     js, _ = _proposed_hard_secret_violations(code, "data.json", tool_name="Write")
-    assert md == [] and txt == [] and js == []
+    assert js, "a real hardcoded key in a config/data file must still be a hard violation"
     # Recognized language -> the real secret still fires.
     py, _ = _proposed_hard_secret_violations(code, "settings.py", tool_name="Write")
     assert py, "a real hardcoded key in a .py must still be a hard violation"

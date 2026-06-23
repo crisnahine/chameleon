@@ -5004,6 +5004,14 @@ def _attempt_partial_refresh(
 
     counterexamples_text = _carry_protocol_index("counterexamples.json")
     symbol_signatures_text = _carry_protocol_index("symbol_signatures.json")
+    # These three are file/symbol-keyed (not archetype-keyed) and are now protocol
+    # files, so the generic sibling carry-forward skips them; a partial refresh
+    # does not re-derive them, so carry the prior copy verbatim (same as
+    # calls_index) rather than dropping it and dark-firing phantom-symbol /
+    # cross-file existence / duplication until the next full refresh.
+    exports_index_text = _carry_protocol_index("exports_index.json")
+    reverse_index_text = _carry_protocol_index("reverse_index.json")
+    function_catalog_text = _carry_protocol_index("function_catalog.json")
 
     try:
         with atomic_profile_commit(profile_dir) as txn_dir:
@@ -5039,6 +5047,14 @@ def _attempt_partial_refresh(
             if symbol_signatures_text is not None:
                 (txn_dir / "symbol_signatures.json").write_text(
                     symbol_signatures_text, encoding="utf-8"
+                )
+            if exports_index_text is not None:
+                (txn_dir / "exports_index.json").write_text(exports_index_text, encoding="utf-8")
+            if reverse_index_text is not None:
+                (txn_dir / "reverse_index.json").write_text(reverse_index_text, encoding="utf-8")
+            if function_catalog_text is not None:
+                (txn_dir / "function_catalog.json").write_text(
+                    function_catalog_text, encoding="utf-8"
                 )
     except Exception:
         return None
@@ -8720,6 +8736,23 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         except Exception:
             symbol_signatures_text = None
 
+    # exports_index / reverse_index / function_catalog are protocol files keyed by
+    # file path + symbol (not archetype), so a rename does not change them; carry
+    # the prior copy verbatim (like symbol_signatures) or the dir-swap drops them
+    # and dark-fires phantom-symbol / cross-file existence / duplication.
+    def _carry_rn_index(name: str) -> str | None:
+        p = profile_dir / name
+        if not p.is_file():
+            return None
+        try:
+            return _safe_read_rn2(p, max_bytes=16_000_000)
+        except Exception:
+            return None
+
+    exports_index_text = _carry_rn_index("exports_index.json")
+    reverse_index_text = _carry_rn_index("reverse_index.json")
+    function_catalog_text = _carry_rn_index("function_catalog.json")
+
     idioms_path = profile_dir / "idioms.md"
     idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
 
@@ -8791,6 +8824,14 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
             if symbol_signatures_text is not None:
                 (txn_dir / "symbol_signatures.json").write_text(
                     symbol_signatures_text, encoding="utf-8"
+                )
+            if exports_index_text is not None:
+                (txn_dir / "exports_index.json").write_text(exports_index_text, encoding="utf-8")
+            if reverse_index_text is not None:
+                (txn_dir / "reverse_index.json").write_text(reverse_index_text, encoding="utf-8")
+            if function_catalog_text is not None:
+                (txn_dir / "function_catalog.json").write_text(
+                    function_catalog_text, encoding="utf-8"
                 )
             (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
             (txn_dir / "profile.summary.md").write_text(summary_md, encoding="utf-8")
