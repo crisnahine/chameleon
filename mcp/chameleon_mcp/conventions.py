@@ -1035,7 +1035,10 @@ def _collect_contract_classes(files: list[ParsedFile], *, language: str) -> list
             for dec in shape.get("decorators", []) or []:
                 if dec:
                     rec["decorators"].add(dec)
-            ext = shape.get("extends")
+            # TS class_shapes carry the base under `extends` (a string); the
+            # libcst dump carries it under `bases` (a list). Read either so a
+            # Python class's base reaches the contract, not just TS's.
+            ext = shape.get("extends") or next(iter(shape.get("bases") or []), None)
             if ext:
                 rec["base"] = ext
 

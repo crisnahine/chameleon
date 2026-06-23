@@ -16,9 +16,9 @@ dead for all three).
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## PKG-0 — P0 wiring bugs (correctness, tiny)
-- [ ] class_shapes base: consumer reads `extends` but Python emits `bases` (conventions.py:1038 one-line `extends or bases[0]`)
-- [ ] file-naming enforcement gate omits `_PY_EXTENSIONS` (lint_engine.py:2829)
-- [ ] vacuous-active calibration: scope phantom-import + file-naming `BLOCK_RULE_LANGUAGES` so Python doesn't certify inert rules active (violation_class.py:226,231)
+- [x] class_shapes base: consumer reads `extends` but Python emits `bases` (conventions.py:1038 one-line `extends or bases[0]`)
+- [x] file-naming enforcement gate omits `_PY_EXTENSIONS` (lint_engine.py:2829)
+- [x] vacuous-active calibration: scope phantom-import + file-naming `BLOCK_RULE_LANGUAGES` so Python doesn't certify inert rules active (violation_class.py:226,231)
 
 ## PKG-1 — Extractor foundation (libcst_dump.py + python.py); re-bootstrap to validate
 - [ ] emit `import_symbols` rows `{name, local, module, line}` (match ts_dump shape)

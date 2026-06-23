@@ -2826,7 +2826,9 @@ def _file_naming_violations(file_path: str, file_naming: dict) -> list[Violation
     # into a governed cluster carries no source-naming obligation, and judging
     # its casing against a kebab `.service.ts` convention is a pure false
     # positive. Both branches share this gate so they stay consistent.
-    if not basename.endswith(tuple(_TS_EXTENSIONS) + tuple(_RUBY_EXTENSIONS)):
+    if not basename.endswith(
+        tuple(_TS_EXTENSIONS) + tuple(_RUBY_EXTENSIONS) + tuple(_PY_EXTENSIONS)
+    ):
         return []
     stem, suffix = _split_compound_suffix(basename)
     out: list[Violation] = []

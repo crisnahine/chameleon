@@ -223,7 +223,11 @@ BLOCK_ELIGIBLE_RULES: frozenset[str] = frozenset(
 # profile shipped with jsx-presence-mismatch "active" at fp_rate 0.0 this way).
 # None means language-independent.
 BLOCK_RULE_LANGUAGES: dict[str, frozenset[str] | None] = {
-    "phantom-import": None,
+    # phantom-import is language-independent in principle, but it is only
+    # implemented for typescript + ruby today. Scoping it keeps calibration from
+    # certifying it active-but-inert for a Python profile (it can never fire on a
+    # .py file yet); widen to include "python" when a Python phantom-import lands.
+    "phantom-import": frozenset({"typescript", "ruby"}),
     "import-preference-violation": None,
     "jsx-presence-mismatch": frozenset({"typescript"}),
     "naming-convention-violation": frozenset({"typescript", "ruby"}),
