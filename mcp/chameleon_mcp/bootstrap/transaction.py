@@ -49,12 +49,18 @@ class ProfileCommitError(Exception):
 # stall a bootstrap/refresh if a writer wedges the lock.
 RECOVERY_LOCK_TIMEOUT_SECONDS = 10.0
 
-# calls_index.json, symbol_signatures.json, and counterexamples.json use the
-# opposite failure posture from the other index artifacts: a failed rebuild DROPS
-# the old copy rather than carrying it forward. They steer the model, and serving
-# STALE caller facts / symbol definitions / off-pattern examples is worse than
-# serving none, so absence fails open (no facts block / no hydration / no
-# counterexample) instead of silently lying.
+# Every derived artifact is dropped (never carried forward) when the current
+# build did not (re)write it into the txn dir. This matters for the index
+# artifacts that steer the model -- calls_index.json, symbol_signatures.json,
+# counterexamples.json, exports_index.json, reverse_index.json,
+# function_catalog.json. A failed rebuild (best-effort try/except) or a derive
+# whose detected language no longer builds that index (e.g. TS->Ruby flips off
+# exports_index/reverse_index) must not carry forward the prior copy: serving a
+# STALE symbol/caller/off-pattern index is worse than serving none. Absence fails
+# open in every reader (the check simply does not fire), so dropping is safe;
+# carrying stale bytes drives false phantom-import and cross-file findings and is
+# silently re-trusted (all six are hashed into the trust SHA). The only sibling
+# carry-forward that survives here is genuine user-dropped non-protocol content.
 _PROTOCOL_FILES = frozenset(
     {
         COMMITTED_SENTINEL,
@@ -64,11 +70,14 @@ _PROTOCOL_FILES = frozenset(
         "canonicals.json",
         "conventions.json",
         "counterexamples.json",
+        "exports_index.json",
+        "function_catalog.json",
         "principles.md",
         "rules.json",
         "idioms.md",
         "profile.summary.md",
         "renames.json",
+        "reverse_index.json",
         "symbol_signatures.json",
     }
 )

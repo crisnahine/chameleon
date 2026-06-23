@@ -82,6 +82,69 @@ def _envelope(data: dict, truncated: bool = False, next_cursor: str | None = Non
     return out
 
 
+def _sanitize_rules_value(value: object) -> object:
+    """Recursively neutralize tag-boundary tokens in a rules.json config value.
+
+    rules.json is derived from committed (attacker-controllable) eslint /
+    rubocop / tsconfig config and stored largely verbatim: dict/list structures
+    whose keys and scalar values can be free text (eslint custom rule names,
+    message-template strings). Every string reaching the model surface must be
+    sanitized, mirroring the per-source parse_warning scrub get_rules already
+    applies. Non-string scalars (numbers, booleans, None) pass through.
+    """
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    if isinstance(value, str):
+        return sanitize_for_chameleon_context(value)
+    if isinstance(value, dict):
+        return {
+            (sanitize_for_chameleon_context(k) if isinstance(k, str) else k): _sanitize_rules_value(
+                v
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_rules_value(v) for v in value]
+    return value
+
+
+def _write_idioms_atomic(idioms_path: Path, new_content: str) -> None:
+    """Write idioms.md via tmp + os.replace, never truncate-in-place.
+
+    idioms.md is a trust-hashed, unregenerable artifact. A plain write_text
+    opens O_TRUNC; a crash after the truncate but before the write completes
+    leaves a torn file that either fails to parse (carry-forward warning) or,
+    worse, parses cleanly as a valid prefix and silently drops the tail idioms.
+    A tmp write + os.replace makes the swap atomic, matching the conventions.json
+    write path. The caller already holds .idioms.lock, which serializes writers
+    but does nothing for crash-atomicity.
+    """
+    import os as _os
+
+    _tmp = idioms_path.with_suffix(idioms_path.suffix + ".tmp")
+    _tmp.write_text(new_content, encoding="utf-8")
+    _os.replace(_tmp, idioms_path)
+
+
+def _sanitize_rule_items(items: list) -> list:
+    """Sanitize a list of (source_key, config_value) rule entries for the model.
+
+    Both the source key and the (nested) config value are profile-derived
+    strings, so both go through _sanitize_rules_value.
+    """
+    clean: list = []
+    for entry in items:
+        if isinstance(entry, (list, tuple)) and len(entry) == 2:
+            key, val = entry
+            clean_key = (
+                _sanitize_rules_value(key) if isinstance(key, (str, dict, list, tuple)) else key
+            )
+            clean.append((clean_key, _sanitize_rules_value(val)))
+        else:
+            clean.append(_sanitize_rules_value(entry))
+    return clean
+
+
 # Witness excerpt read ceiling. Real canonical witnesses are a few KB; this
 # 5 MB ceiling (matching the profile-artifact cap) lets even an unusually large
 # hand-written exemplar inject in FULL — quality over token cost — while still
@@ -188,9 +251,18 @@ def _resolve_repo_arg(repo: str) -> tuple[Path | None, str | None]:
         path = Path(repo_path_str).expanduser()
     except (OSError, ValueError):
         return None, None
-    if not path.is_absolute():
+    # is_absolute() is lexical, but is_dir() stat-probes the filesystem and on
+    # CPython raises ValueError ("embedded null byte") for a NUL-byte arg. repo
+    # args do not pass through _validate_file_path_arg, so guard the shape probe
+    # here: a malformed repo must yield a not-resolvable result, not an uncaught
+    # raise that escapes the tool with no envelope.
+    try:
+        if not path.is_absolute():
+            return None, None
+        is_dir = path.is_dir()
+    except (OSError, ValueError):
         return None, None
-    if path.is_dir():
+    if is_dir:
         try:
             resolved_path = path.resolve()
         except OSError:
@@ -1686,7 +1758,9 @@ def get_pattern_context(file_path: str) -> dict:
 
         idioms_text = sanitize_for_chameleon_context(idioms_text)
 
-    rules_out = list(loaded.rules.get("rules", {}).items())
+    # Rule keys and config values are profile-derived strings; sanitize them
+    # before they reach the model, matching get_rules' direct-call path.
+    rules_out = _sanitize_rule_items(list(loaded.rules.get("rules", {}).items()))
 
     # Trust gate at the data layer. An untrusted .chameleon profile is
     # attacker-controllable, and this tool is model-callable, so ALL
@@ -1809,6 +1883,22 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             {
                 "status": "failed",
                 "error": "repo_id not found",
+                "content": None,
+                "witness_path": None,
+                "truncated": False,
+                "sha_hint": None,
+            }
+        )
+
+    # Explicit-path / by-id resolution bypasses find_repo_root, so re-apply the
+    # unsafe-root guard here: a profile planted under /tmp or a world-writable
+    # dir by another local user must not be served to the model surface.
+    _unsafe = _unsafe_root_refusal(repo_root)
+    if _unsafe is not None:
+        return _envelope(
+            {
+                "status": "failed",
+                "error": _unsafe,
                 "content": None,
                 "witness_path": None,
                 "truncated": False,
@@ -2139,14 +2229,17 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
             env["parse_warnings"] = parse_warnings
         return env
 
+    # The rule keys and config VALUES are profile-derived strings, so sanitize
+    # them on the way to the model surface (the per-source parse_warning above is
+    # already scrubbed; this closes the asymmetry for the rule entries beside it).
     if source is None:
-        env = _with_warnings({"rules": list(rules_dict.items())})
+        env = _with_warnings({"rules": _sanitize_rule_items(list(rules_dict.items()))})
         if deprecation_note:
             env["deprecation"] = deprecation_note
         return _envelope(env)
 
     if source in rules_dict:
-        env = _with_warnings({"rules": [(source, rules_dict[source])]})
+        env = _with_warnings({"rules": _sanitize_rule_items([(source, rules_dict[source])])})
         if deprecation_note:
             env["deprecation"] = deprecation_note
         return _envelope(env)
@@ -2169,7 +2262,7 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         return _envelope(env)
 
     filtered = [(k, v) for k, v in rules_dict.items() if source in str(k)]
-    env = {"rules": filtered}
+    env = {"rules": _sanitize_rule_items(filtered)}
     if deprecation_note:
         env["deprecation"] = deprecation_note
     return _envelope(env)
@@ -2882,22 +2975,24 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
         out["reason"] = "file-outside-repo"
         return _envelope(out)
 
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
+
     entry = index.callers_of(rel, function_name)
     if entry is None:
         # The (file, name) pair was not recorded -- a known-absent callee is a
         # real answer (no deterministic callers at derivation time), not an error.
+        # Sanitize the echoed module/function for shape parity with the success
+        # branch (both derive from the calls index / caller-supplied path).
         return _envelope(
             {
                 "found": True,
-                "module": rel,
-                "function": function_name,
+                "module": _sanitize(rel),
+                "function": _sanitize(function_name),
                 "callers": [],
                 "total": 0,
                 "truncated": False,
             }
         )
-
-    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
 
     clean_callers = []
     for row in entry["callers"]:
@@ -5186,7 +5281,28 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             # and any re-derive below see the latest production, not the user's
             # last fetch. Fails open; the outcome rides out in the envelope.
             _prod_fetch = _maybe_fetch_production_ref(repo_path.resolve())
-            envelope = _refresh_repo_locked(repo_path, force=force)
+            # Hold .idioms.lock across the re-derive's idioms.md read AND the
+            # atomic profile swap. teach/deprecate write idioms.md under this same
+            # lock, so without it a teach landing between the orchestrator's
+            # idioms read and the dir-swap would be silently clobbered by the
+            # swap (it carries the pre-teach idioms snapshot). The bounded
+            # blocking wait lets an in-flight teach finish first; the re-derive
+            # then reads the post-teach idioms.md. .refresh.lock is always taken
+            # before .idioms.lock and teach never takes .refresh.lock, so the two
+            # cannot deadlock.
+            idioms_lock_path = _lock_dir / ".idioms.lock"
+            try:
+                with acquire_advisory_lock(idioms_lock_path, blocking_timeout=10.0):
+                    envelope = _refresh_repo_locked(repo_path, force=force)
+            except LockHeldError as e:
+                return _envelope(
+                    {
+                        "status": "failed",
+                        "error": (
+                            f"a /chameleon-teach is in progress (PID {e.holder_pid}); retry shortly"
+                        ),
+                    }
+                )
             _inject_production_ref_fetch(envelope, _prod_fetch)
             _inject_archetype_diff(envelope, repo_path, pre_state)
             _maybe_preserve_trust_across_refresh(repo_path, pre_state, envelope)
@@ -6109,6 +6225,7 @@ def get_contract_breaks(repo: str, base_ref: str = "main") -> dict:
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.judge import _git_available, _run_git
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
 
     repo_root, _repo_id = _resolve_repo_arg(repo)
     try:
@@ -6124,6 +6241,14 @@ def get_contract_breaks(repo: str, base_ref: str = "main") -> dict:
                 "findings": [],
             }
         )
+    # Trust-gate: the calls index this tool joins to is a committed,
+    # attacker-controllable artifact whose caller paths/names must not reach the
+    # model surface from an untrusted profile (mirrors get_callers /
+    # query_symbol_importers / get_duplication_candidates).
+    expected_repo_id = _compute_repo_id(repo_root)
+    gate = _trust_state_for(expected_repo_id)
+    if gate is None or not gate.grants_root(repo_root):
+        return _envelope({"status": "untrusted", "findings": []})
     if not _git_available(repo_root):
         return _envelope(
             {"status": "degraded", "reason": "not_a_git_worktree", "findings": [], "advisory": True}
@@ -6390,15 +6515,27 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         # to vouch for the file, so it cannot be auto-passed.
         return not arch or mq in ("none", "fallback")
 
-    _REVERSE_INDEX_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+    _REVERSE_INDEX_EXTS = (
+        ".ts",
+        ".tsx",
+        ".mts",
+        ".cts",
+        ".js",
+        ".jsx",
+        ".mjs",
+        ".cjs",
+        ".py",
+        ".pyi",
+    )
 
     def importers_of(rel: str) -> int | None:
-        # The reverse index covers the JS/TS module graph only. A file outside
-        # those extensions is uncovered by design and contributes 0 (not
-        # "unknown"); for a covered file, any unreadable answer -- untrusted
-        # profile, missing index, deleted/unreadable module, a raise -- returns
-        # None so the router counts it as UNKNOWN fan-out instead of assuming 0,
-        # which is the auto-pass direction and the wrong default.
+        # The reverse index covers the JS/TS and Python module graphs (both are
+        # built at bootstrap). A file outside those extensions is uncovered by
+        # design and contributes 0 (not "unknown"); for a covered file, any
+        # unreadable answer -- untrusted profile, missing index,
+        # deleted/unreadable module, a raise -- returns None so the router counts
+        # it as UNKNOWN fan-out instead of assuming 0, which is the auto-pass
+        # direction and the wrong default.
         if not str(rel).lower().endswith(_REVERSE_INDEX_EXTS):
             return 0
         try:
@@ -6453,6 +6590,15 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     verdict["advisory"] = True
     verdict["base_ref"] = base_ref
     verdict["contract_breaks"] = contract_break_details
+    # changed_files are git-diff paths; a crafted path can cross-encode a close
+    # tag across the separator, so sanitize them on the way to the model surface
+    # exactly as the contract-break paths in the same envelope are sanitized.
+    if isinstance(verdict.get("changed_files"), list):
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _san_path
+
+        verdict["changed_files"] = [
+            _san_path(f) if isinstance(f, str) else f for f in verdict["changed_files"]
+        ]
     verdict["typecheck"] = typecheck_fact
     verdict["tests"] = tests_fact
     _facts = verdict.get("facts", {})
@@ -7512,7 +7658,7 @@ def teach_profile(repo: str, feedback: str) -> dict:
                         ),
                     }
                 )
-            idioms_path.write_text(new_content, encoding="utf-8")
+            _write_idioms_atomic(idioms_path, new_content)
     except LockHeldError as e:
         return _envelope(
             {
@@ -7803,6 +7949,15 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
         return _envelope({"status": "failed", "error": f"repo path does not exist: {repo!r}"})
     if not repo_path.is_dir():
         return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
+
+    # Explicit-path / by-id resolution bypasses find_repo_root, so re-apply the
+    # unsafe-root guard here: a profile planted under /tmp or a world-writable
+    # dir by another local user must not be trustable (the hooks would refuse to
+    # load it anyway, so trusting it is a dead grant at best, an injection at
+    # worst).
+    _unsafe = _unsafe_root_refusal(repo_path)
+    if _unsafe is not None:
+        return _envelope({"status": "failed", "error": _unsafe})
 
     profile_dir = repo_path / ".chameleon"
     if not profile_dir.is_dir():
@@ -9506,7 +9661,7 @@ def _transition_slug_to_deprecated(
                         ),
                     }
                 )
-            idioms_path.write_text(new_content, encoding="utf-8")
+            _write_idioms_atomic(idioms_path, new_content)
     except LockHeldError as e:
         return _envelope(
             {
@@ -9598,7 +9753,7 @@ def _write_new_deprecated_idiom(
                         ),
                     }
                 )
-            idioms_path.write_text(new_content, encoding="utf-8")
+            _write_idioms_atomic(idioms_path, new_content)
     except LockHeldError as e:
         return _envelope(
             {

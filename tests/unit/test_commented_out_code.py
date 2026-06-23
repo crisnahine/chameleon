@@ -31,7 +31,7 @@ def _fake_pf(kinds: tuple[str, ...], *, diagnostics: int = 0, imports=()) -> Par
 
 class TestExtractCommentSpans:
     def test_unsupported_language(self):
-        assert extract_comment_spans("# x", language="python") == []
+        assert extract_comment_spans("# x", language="go") == []
 
     def test_stitches_consecutive_line_comments(self):
         spans = extract_comment_spans("// a\n// b\ncode()\n", language="typescript")
@@ -89,7 +89,7 @@ class TestDetectTypeScript:
         return TypeScriptExtractor()
 
     def test_unsupported_language(self):
-        assert detect_commented_out_code(["// x"], language="python", extractor=None) == 0
+        assert detect_commented_out_code(["// x"], language="go", extractor=None) == 0
 
     def test_flags_commented_out_import(self):
         content = "// import { Foo } from './foo';\nfunction live() {}\n"

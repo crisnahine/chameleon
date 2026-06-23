@@ -1236,9 +1236,10 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
     Wraps the rewrite in the same atomic_profile_commit transaction the
     initial bootstrap used so concurrent loaders never see a half-written
     profile. Every other protocol artifact the root bootstrap wrote (the
-    JSON artifacts, idioms.md, summary, renames, calls index) is re-read
-    from the existing committed profile and re-emitted verbatim inside the
-    new txn so the generation counter stays consistent across files (the
+    JSON artifacts, idioms.md, summary, renames, calls index, counterexamples,
+    symbol signatures, and the exports/reverse/function symbol indexes) is
+    re-read from the existing committed profile and re-emitted verbatim inside
+    the new txn so the generation counter stays consistent across files (the
     loader's double-fstat check requires it).
     """
     profile_path = profile_dir / "profile.json"
@@ -1318,13 +1319,21 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
         except OSError:
             calls_index_text = None
 
-    # counterexamples.json + symbol_signatures.json are protocol files for the same
-    # reason as calls_index.json, so the commit will not carry them forward on its
-    # own; this amend only adds the workspaces array to a just-derived profile, so
-    # re-emit them verbatim or every monorepo root loses them moments after they
+    # counterexamples.json, symbol_signatures.json, and the three symbol indexes
+    # (exports_index.json, reverse_index.json, function_catalog.json) are protocol
+    # files for the same reason as calls_index.json: the commit drops rather than
+    # carries them forward, so a build that does not rewrite them serves none, not
+    # stale. This amend only adds the workspaces array to a just-derived profile,
+    # so re-emit them verbatim or every monorepo root loses them moments after they
     # were written. (amend does not rename, so no key remap is needed.)
     extra_protocol_text: dict[str, str] = {}
-    for _name in ("counterexamples.json", "symbol_signatures.json"):
+    for _name in (
+        "counterexamples.json",
+        "symbol_signatures.json",
+        "exports_index.json",
+        "reverse_index.json",
+        "function_catalog.json",
+    ):
         _p = profile_dir / _name
         if _p.is_file():
             try:
@@ -2249,12 +2258,13 @@ def _bootstrap_single(
         except Exception:
             pass
         # The symbol-signature index backs the judge's forward definition
-        # hydration (the definitions of the symbols an edited file imports). Both
-        # languages carry callable_signatures (so both are indexed), but the
-        # DECLARED type text is TypeScript-only -- ts_dump emits param/return
-        # annotations; Ruby has no static types, so its entries are param-shape +
-        # span only. Hashed into the trust SHA, so it is written inside this same
-        # atomic transaction. Best-effort: a build failure must not abort the commit.
+        # hydration (the definitions of the symbols an edited file imports). All
+        # supported languages carry callable_signatures (so all are indexed).
+        # DECLARED param/return type text is emitted for TypeScript (ts_dump) and
+        # Python (libcst_dump); Ruby has no static types, so its entries are
+        # param-shape + span only. Hashed into the trust SHA, so it is written
+        # inside this same atomic transaction. Best-effort: a build failure must
+        # not abort the commit.
         try:
             from chameleon_mcp.symbol_signatures import build_symbol_signatures
 

@@ -72,6 +72,7 @@ def _build_repo(
 
 def test_canonical_excerpt_blocked_when_untrusted(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
     repo = _build_repo(tmp_path)
     res = get_canonical_excerpt(str(repo), ARCH)["data"]
     assert res.get("status") == "untrusted"
@@ -80,6 +81,7 @@ def test_canonical_excerpt_blocked_when_untrusted(tmp_path, monkeypatch):
 
 def test_canonical_excerpt_returned_when_trusted(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
     repo = _build_repo(tmp_path)
     grant_trust(_compute_repo_id(repo), repo / ".chameleon")
     res = get_canonical_excerpt(str(repo), ARCH)["data"]
@@ -90,6 +92,7 @@ def test_canonical_excerpt_returned_when_trusted(tmp_path, monkeypatch):
 def test_canonical_excerpt_flows_when_stale(tmp_path, monkeypatch):
     """Stale (trusted-then-changed) still returns content, matching the contract."""
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
     repo = _build_repo(tmp_path)
     grant_trust(_compute_repo_id(repo), repo / ".chameleon")
     # Mutate a profile artifact so the trust hash no longer matches (stale).

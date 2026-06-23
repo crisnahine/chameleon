@@ -141,6 +141,15 @@ GUARD_LEXICON: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bcsrf\w*"),
     re.compile(r"\bprotect_from_forgery\b"),
     re.compile(r"\bauthenticate_\w+"),
+    # Django / DRF / Flask guard constructs: removing one is the same security
+    # signal as removing a Rails before_action. Kept to the framework's
+    # near-zero-FP guard names (the decorator, the DRF view attribute, the
+    # permission class) so a stray identifier match does not route a clean diff.
+    re.compile(r"\blogin_required\b"),
+    re.compile(r"\bpermission_required\b"),
+    re.compile(r"\bpermission_classes\b"),
+    re.compile(r"\bIsAuthenticated\w*"),
+    re.compile(r"\brequire_http_methods\b"),
 )
 
 # Test skip/disable markers, counted on added lines in test files only. The
@@ -163,10 +172,18 @@ _ASSERTION_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 
 def _is_test_file(path: str) -> bool:
-    """True when the path is a test/spec/story file under either language's
-    test-naming convention; scopes the test-integrity signals."""
+    """True when the path is a test/spec/story file under any supported
+    language's test-naming convention; scopes the test-integrity signals.
+
+    Probes Python too (test_x.py / x_test.py / tests/ tree) so a co-located
+    Python test file is recognized for the test-weakening gate, gate parity with
+    the TS/Ruby paths."""
     p = str(path)
-    return _is_test_path(p, language="ruby") or _is_test_path(p, language="typescript")
+    return (
+        _is_test_path(p, language="ruby")
+        or _is_test_path(p, language="typescript")
+        or _is_test_path(p, language="python")
+    )
 
 
 def _iter_diff_files(diff_text):

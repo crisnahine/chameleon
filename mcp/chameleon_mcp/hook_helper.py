@@ -1663,12 +1663,20 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
         parent = target.parent
         if not parent.is_dir():
             return ""
+        # Filter to source-suffix siblings in one cheap pass BEFORE sorting, so a
+        # flat directory of thousands of asset/config files does not sort its
+        # whole listing on every edit -- the sort then runs only over the source
+        # candidates. Deterministic name order is preserved.
+        candidates = sorted(
+            (e for e in parent.iterdir() if e != target and e.suffix in _SOURCE_EXTENSIONS),
+            key=lambda p: p.name,
+        )
         rendered: list[str] = []
         files_used = 0
-        for entry in sorted(parent.iterdir(), key=lambda p: p.name):
+        for entry in candidates:
             if files_used >= _NEARBY_SIG_MAX_FILES or len(rendered) >= _NEARBY_SIG_MAX_TOTAL:
                 break
-            if entry == target or entry.suffix not in _SOURCE_EXTENSIONS or not entry.is_file():
+            if not entry.is_file():
                 continue
             rel = _repo_rel(repo_root, str(entry))
             by_name = sigs.for_file(rel) if rel else {}
@@ -3292,6 +3300,7 @@ def _posttool_no_archetype_advisory(
     violations: list[dict],
     session_id,
     now: float,
+    content: str | None = None,
 ) -> bool:
     """Surface archetype-independent violations on a file with no archetype.
 
@@ -3305,8 +3314,16 @@ def _posttool_no_archetype_advisory(
     re-lints and blocks it the same way an archetyped file's secret does. The
     state is keyed by the written file's repo_id (the Stop backstop loads by it).
     Fails open: any error leaves the advisory un-surfaced rather than crashing.
+
+    ``content`` is the file's first-100KB decode the caller already has in hand;
+    it is reused for the inline-ignore index scans rather than re-reading the
+    same bytes off disk (the per-edit hot path). It is the identical window
+    ``_read_file_for_ignore`` reads, so the ignore directives it finds are the
+    same; falls back to that read only when the caller passed nothing.
     """
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    ignore_scan_content = content if content is not None else _read_file_for_ignore(file_path)
 
     hard: list[dict] = []
     try:
@@ -3326,7 +3343,7 @@ def _posttool_no_archetype_advisory(
         try:
             from chameleon_mcp.violation_class import build_ignore_index, is_violation_ignored
 
-            idx = build_ignore_index(_read_file_for_ignore(file_path), file_path=file_path)
+            idx = build_ignore_index(ignore_scan_content, file_path=file_path)
             if idx is not None:
                 hard = [v for v in hard if not is_violation_ignored(v, idx)]
         except Exception:
@@ -3356,7 +3373,7 @@ def _posttool_no_archetype_advisory(
             pass
 
     try:
-        displayed = _displayable_violations(violations, _read_file_for_ignore(file_path), file_path)
+        displayed = _displayable_violations(violations, ignore_scan_content, file_path)
         if not displayed:
             return False
         lines = []
@@ -3425,9 +3442,18 @@ def _proposed_hard_secret_violations(
     (deny-candidate path only, never on clean edits) and on-disk line-scoped
     directives are not consulted: fragment line numbers do not map truthfully
     onto file lines.
+
+    The hard-block deny is gated to recognized code languages
+    (``detect_language`` is not None): an example AKIA.../ghp_/PEM token written
+    into prose/config/fixtures (``.md``/``.txt``/``.json``/``.yaml``) must not
+    hard-block the write in enforce mode. A real secret lives inside a string
+    literal, so the scan still runs against RAW content (the per-language
+    string strip would blank the token itself and find nothing); the language
+    gate alone clears the prose/config false positives while keeping the deny on
+    code unchanged.
     """
     from chameleon_mcp._thresholds import threshold_int
-    from chameleon_mcp.lint_engine import scan_hard_secrets
+    from chameleon_mcp.lint_engine import detect_language, scan_hard_secrets
     from chameleon_mcp.violation_class import (
         IgnoreIndex,
         build_ignore_index,
@@ -3436,6 +3462,8 @@ def _proposed_hard_secret_violations(
         tag_secret_hardness,
     )
 
+    if detect_language(file_path) is None:
+        return [], False
     clipped = proposed[: threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS")]
     violations = [v.to_dict() for v in scan_hard_secrets(clipped)]
     if not violations:
@@ -3477,6 +3505,15 @@ def _proposed_hard_eval_violations(
     is blanket-immune, so a bare chameleon-ignore does not clear it). Returns
     ``(violations, named_suppressed)``; the scan is capped at the same ceiling as
     the secret scan, with content past the cap left to the PostToolUse/Stop scans.
+
+    Gated to recognized code languages (``detect_language`` is not None): the
+    literal text ``eval(`` in prose/config/fixtures
+    (``.md``/``.txt``/``.json``/``.yaml``) must not hard-block the write in
+    enforce mode. For a recognized language ``scan_dangerous_sinks`` runs the
+    same per-language string/comment strip the lint path uses, so an ``eval(``
+    inside a string or comment never fires; only a real call in code does.
+    Without the gate an unrecognized extension falls through to that scanner's
+    raw-content branch and denies on a documented ``eval()`` mention.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.lint_engine import detect_language, scan_dangerous_sinks
@@ -3487,10 +3524,11 @@ def _proposed_hard_eval_violations(
         is_violation_ignored,
     )
 
+    language = detect_language(file_path)
+    if language is None:
+        return [], False
     clipped = proposed[: threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS")]
-    violations = [
-        v.to_dict() for v in scan_dangerous_sinks(clipped, language=detect_language(file_path))
-    ]
+    violations = [v.to_dict() for v in scan_dangerous_sinks(clipped, language=language)]
     hard = [v for v in violations if v.get("rule") == "eval-call" and is_hard_class(v)]
     if not hard:
         return [], False
@@ -3718,6 +3756,7 @@ def posttool_verify() -> int:
                     violations=indep,
                     session_id=session_id,
                     now=_started,
+                    content=content,
                 ):
                     return 0
             _emit({})
@@ -5283,6 +5322,13 @@ def _correctness_judge_gate(
                 return
             if kind in _JUDGE_FAILURE_KINDS:
                 failures.append(kind)
+            if kind == "spawn_timeout":
+                # A timeout is the one failure that consumes the FULL judge
+                # budget (45s). A second sequential reviewer spawn in the same
+                # Stop would blow the wrapper's 55s wall-clock cap and get the
+                # process SIGKILLed mid-review, so the duplication gate must skip
+                # its spawn after a judge timeout (it reads this flag).
+                route["spawn_timed_out"] = True
             degraded.append(kind)
             _emit_check_event(
                 repo_id,
@@ -6013,26 +6059,52 @@ def _multi_lens_review_lines(
                 return []
             return dr.judge_body_matches(repo_root, findings, semantic=True)
 
+        # When the async/detach route is selected (operator opt-in, or
+        # automatically on a known bare-auth failure) the correctness lens cannot
+        # run synchronously here: the plain full-primer spawn pays the full
+        # session primer and cannot fit the sync Stop budget, so under the short
+        # 45s cap it reliably times out and contributes nothing. Detach it through
+        # the same path the standard gate uses; its findings arrive on the next
+        # prompt. The duplication lens still runs synchronously this Stop.
+        corr_detached = False
+        if getattr(cfg, "correctness_judge", True) and _judge_async_mode() is not None:
+            try:
+                from chameleon_mcp import judge_async
+
+                corr_detached = judge_async.launch_async_judge(
+                    repo_root=repo_root,
+                    repo_data=repo_data,
+                    repo_id=repo_id or "",
+                    session_id=session_id or "",
+                    fresh_abs_paths=fresh,
+                    digests=digests,
+                    turn_key=route.get("turn_key"),
+                    intent_tokens=intent_tokens,
+                )
+            except Exception:
+                corr_detached = False
+
         # Honor the per-lens enforcement flags: multi_lens replaces the gates but
         # must not resurrect a lens the operator turned off (duplication_review /
         # correctness_judge). A lens left out simply does not run.
         lenses = []
         ran_duplication = False
-        if getattr(cfg, "correctness_judge", True):
+        if getattr(cfg, "correctness_judge", True) and not corr_detached:
             lenses.append(lens_runner.correctness_lens(_run_correctness))
         if getattr(cfg, "duplication_review", True):
             lenses.append(lens_runner.duplication_lens(_run_duplication))
             ran_duplication = True
-        if not lenses:
+        if not lenses and not corr_detached:
             _emit_check_event(repo_id, session_id, "multi_lens_review", "skipped", "no_lenses")
             return []
 
         # Spend the review budget and persist BEFORE the (slow) lens spawns so an
         # interrupted Stop still consumes the budget and the session cap holds.
         # correctness_spawns is the route's budget counter, so it always advances
-        # (the pass is the unit it caps); duplication_spawns advances too when the
-        # duplication lens ran, so a later turn with multi_lens off sees the
-        # duplication budget already spent rather than double-reviewing.
+        # (the pass is the unit it caps, and a detached correctness spawn already
+        # spent its budget); duplication_spawns advances too when the duplication
+        # lens ran, so a later turn with multi_lens off sees the duplication
+        # budget already spent rather than double-reviewing.
         state.correctness_spawns += 1
         if ran_duplication:
             state.duplication_spawns += 1
@@ -6042,6 +6114,20 @@ def _multi_lens_review_lines(
             save_state(state, repo_data, session_id or "")
         except Exception:
             pass
+
+        # The correctness lens detached and there is no sync lens to run: the
+        # detached child surfaces its findings on the next prompt and marks its
+        # own digests judged, so this pass is done.
+        if not lenses:
+            _emit_check_event(
+                repo_id,
+                session_id,
+                "multi_lens_review",
+                "ran",
+                "correctness_detached",
+                detail={"turn_key": route.get("turn_key")},
+            )
+            return []
 
         _emit_check_event(
             repo_id,
@@ -6373,15 +6459,22 @@ def _stop_gates(
             # so the author can reuse the original. Confirmed by a bounded judge
             # spawn, skipped on a SubagentStop and when the correctness judge
             # spawned a working reviewer this Stop, so a turn fires at most one
-            # reviewer. A DEGRADED judge spawn (nonzero exit, timeout, parse
-            # failure -- route["spawn_failed"], written by the gate above) does
-            # not defer: a permanently broken reviewer must not starve
-            # duplication review forever. Advisory only, folded into the same
-            # Stop context.
+            # reviewer. A FAST-DEGRADED judge spawn (nonzero exit, parse failure)
+            # does not defer: it finished quickly and left budget, so a
+            # permanently broken reviewer must not starve duplication review
+            # forever. A judge TIMEOUT is different -- it consumed the full 45s
+            # budget, so the duplication gate must still defer (route
+            # ["spawn_timed_out"]); a second sequential spawn would blow the 55s
+            # wall-clock cap and SIGKILL the process mid-review. Advisory only,
+            # folded into the same Stop context.
             # Skipped when multi_lens_review owns duplication this turn (the lens
             # pass above already ran it).
             dup_lines: list[str] = []
             if not is_subagent and not cfg.multi_lens_review:
+                _corr_active = bool(
+                    corr_spawning
+                    and (not route.get("spawn_failed") or route.get("spawn_timed_out"))
+                )
                 dup_lines = _duplication_advisory_lines(
                     repo_root=repo_root,
                     repo_id=repo_id,
@@ -6389,7 +6482,7 @@ def _stop_gates(
                     state=state,
                     cfg=cfg,
                     repo_data=repo_data,
-                    corr_spawning=corr_spawning and not route.get("spawn_failed"),
+                    corr_spawning=_corr_active,
                 )
 
             # Turn-end test integrity: a turn that changed live source while
@@ -6917,6 +7010,16 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("hook_helper.py: missing command argument\n")
         return 1
     command = args[0]
+    # Rotate the hook error log in-process, the metrics.py pattern, instead of
+    # the shell hooks spawning a second `python -m chameleon_mcp.log_rotation`
+    # interpreter before every helper spawn -- an edit then pays one interpreter
+    # per hook, not two. Best-effort: a rotation failure must never break a hook.
+    try:
+        from chameleon_mcp.log_rotation import rotate_if_needed
+
+        rotate_if_needed(_hook_error_log_path())
+    except Exception:
+        pass
     try:
         if command == "session-start":
             return session_start()

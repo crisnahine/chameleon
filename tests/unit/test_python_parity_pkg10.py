@@ -1,9 +1,11 @@
 """PKG-10: block-eligible rule-set parity audit for Python.
 
-The audit conclusion is that prior packages already scoped the block rules
-correctly for Python; these tests lock that scoping so a future edit can't
-silently (a) drop Python from a rule it can block on, or (b) make a rule
-block-eligible for Python that would false-fire on idiomatic code.
+These tests lock the Python block-rule scoping so a future edit can't silently
+(a) drop Python from a rule it has a signal source for, or (b) add Python to a
+rule it cannot lint (e.g. jsx-presence-mismatch). A rule with a real Python
+signal source belongs in BLOCK_RULE_LANGUAGES even when it is FP-prone -- the
+per-repo calibration gate, not this set, is what demotes a noisy rule to
+advisory (the same way file-naming is demoted on a mixed-casing repo).
 """
 
 from __future__ import annotations
@@ -28,10 +30,13 @@ def test_block_rule_languages_python_scoping():
     assert BLOCK_RULE_LANGUAGES["import-preference-violation"] is None
     assert BLOCK_RULE_LANGUAGES["secret-detected-in-content"] is None
     assert BLOCK_RULE_LANGUAGES["eval-call"] is None
-    # Rules that must NOT block for Python: no Python JSX, and Python
-    # inheritance is advisory only (kept off the block path deliberately).
+    # Rules that must NOT block for Python: there is no Python JSX, so the
+    # rule has no Python signal source and stays inert.
     assert "python" not in BLOCK_RULE_LANGUAGES["jsx-presence-mismatch"]
-    assert "python" not in (BLOCK_RULE_LANGUAGES["inheritance-convention-violation"] or frozenset())
+    # Python derives + lints an inheritance convention (parity with Ruby), so it
+    # is block-eligible. Calibration is the safety gate that demotes it on a
+    # repo where the convention is noisy; this set only records the signal source.
+    assert "python" in BLOCK_RULE_LANGUAGES["inheritance-convention-violation"]
 
 
 def _python_profile(tmp_path):
@@ -46,9 +51,11 @@ def test_rule_inert_for_python_profile(tmp_path):
     assert rule_inert_for_language("naming-convention-violation", p) is False
     assert rule_inert_for_language("file-naming-convention-violation", p) is False
     assert rule_inert_for_language("eval-call", p) is False
-    # Inert (cannot block) for a Python profile.
+    # Python lints an inheritance convention, so the rule is not vacuously inert;
+    # calibration, not the language gate, decides whether it blocks.
+    assert rule_inert_for_language("inheritance-convention-violation", p) is False
+    # Inert (cannot block) for a Python profile: there is no Python JSX.
     assert rule_inert_for_language("jsx-presence-mismatch", p) is True
-    assert rule_inert_for_language("inheritance-convention-violation", p) is True
 
 
 def test_file_naming_dunder_files_exempt():

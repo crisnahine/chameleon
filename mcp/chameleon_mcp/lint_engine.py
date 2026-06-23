@@ -221,6 +221,11 @@ def extract_comment_spans(content: str, *, language: str) -> list[str]:
         block_re, prefix = _TS_BLOCK_COMMENT, "//"
     elif language == "ruby":
         block_re, prefix = _RUBY_BLOCK_COMMENT, "#"
+    elif language == "python":
+        # Python has only `#` line comments (a triple-quoted string is a string,
+        # not a comment); consecutive `#` lines stitch into one commented-code
+        # span the caller re-parses as Python.
+        block_re, prefix = None, "#"
     else:
         return []
 
@@ -257,7 +262,15 @@ def extract_comment_spans(content: str, *, language: str) -> list[str]:
 
     # Drop spans with no word characters (rulers, dividers, empty markers): they
     # cannot parse as code and only cost a parser round-trip.
-    return [s for s in spans if re.search(r"\w", s)]
+    spans = [s for s in spans if re.search(r"\w", s)]
+    if language == "python":
+        # Python is indentation-sensitive: stripping the `# ` marker leaves a
+        # uniform leading offset (`# def f():` -> ` def f():`) that would fail to
+        # parse. Remove the common indent so the span parses as the code it was.
+        import textwrap
+
+        spans = [textwrap.dedent(s) for s in spans]
+    return spans
 
 
 _TS_DEFAULT_FUNCTION = re.compile(
@@ -406,6 +419,12 @@ _PY_STRING_OR_COMMENT = re.compile(
     """,
     re.VERBOSE,
 )
+# Known limitation: a PEP 701 (3.12+) f-string that reuses the outer quote inside
+# a replacement field -- f"{eval("x")}" -- is only partially matched here, so an
+# eval/exec sink in that field is under-detected. Detecting it correctly needs
+# brace-aware field-preserving blanking, and getting that wrong would mis-strip
+# every Python lint rule that shares this helper; the niche false negative is the
+# safer trade than that blast radius.
 
 
 def _strip_python_strings_and_comments(content: str) -> str:

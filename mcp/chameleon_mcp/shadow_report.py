@@ -140,10 +140,12 @@ def build_shadow_report(
     - ``total_edits`` — clean ``posttool-verify`` rows in the window, the
       denominator the promotion verdict reads.
     - ``rules`` — per rule: ``would_blocks``, ``distinct_files``,
-      ``distinct_sessions``, ``advisory_only`` (advisory-emitted rows for the
-      same rule that did not would-block), ``overrides`` (inline
-      ``chameleon-ignore`` bypasses of this rule, counted apart from
-      ``advisory_only``), and a ``verdict``.
+      ``distinct_sessions`` (count of distinct sessions whose rows carried a
+      session id, or None when no would_block row for the rule carried one — it
+      is never a relabel of ``distinct_files``), ``advisory_only``
+      (advisory-emitted rows for the same rule that did not would-block),
+      ``overrides`` (inline ``chameleon-ignore`` bypasses of this rule, counted
+      apart from ``advisory_only``), and a ``verdict``.
     - ``idiom_review`` — turn-level would-block count for the idiom/principle
       gate, with no per-rule verdict.
     - ``sample`` — up to SHADOW_REPORT_SAMPLE_CAP ``{rule, file, line, ts}``
@@ -235,11 +237,13 @@ def build_shadow_report(
         if file_rel:
             files[rule_key].add(file_rel)
         sess = row.get("repo_id_session") or row.get("session_id")
-        # The metric row does not carry a session id today; distinct-session
-        # accounting falls back to file_rel as a coarse proxy when absent so the
-        # field is never silently zero. When a real session id is added it takes
-        # precedence.
-        sessions[rule_key].add(sess or file_rel or "?")
+        # Only a real session id counts toward distinct sessions. A row without
+        # one is left unattributed rather than proxied to file_rel: the proxy
+        # made distinct_sessions a silent relabel of distinct_files, which reads
+        # as a second dimension that does not exist. With no real id present the
+        # rule's distinct_sessions surfaces as None (unknown), not a file count.
+        if sess:
+            sessions[rule_key].add(sess)
         if len(sample) < sample_cap:
             # The sampled path traces back to a repo file path, which is
             # attacker-influenceable and can cross-encode a tag-boundary token
@@ -271,10 +275,14 @@ def build_shadow_report(
     rules_out: dict[str, dict] = {}
     for rule_key in sorted(set(would_blocks) | set(advisory_only) | set(overrides)):
         count = would_blocks.get(rule_key, 0)
+        # None (unknown) when no would_block row carried a session id, so the
+        # field is never a silent copy of distinct_files. An integer here means
+        # real session ids were observed and counted.
+        known_sessions = sessions.get(rule_key)
         rules_out[rule_key] = {
             "would_blocks": count,
             "distinct_files": len(files.get(rule_key, ())),
-            "distinct_sessions": len(sessions.get(rule_key, ())),
+            "distinct_sessions": len(known_sessions) if known_sessions else None,
             "advisory_only": advisory_only.get(rule_key, 0),
             "overrides": overrides.get(rule_key, 0),
             "verdict": _promotion_verdict(

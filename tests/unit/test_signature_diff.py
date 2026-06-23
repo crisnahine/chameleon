@@ -396,6 +396,11 @@ def test_get_contract_breaks_tool(tmp_path, monkeypatch):
     fake = _FakeIndex({("a.ts", "foo"): {"callers": [{"path": "b.ts", "line": 4}], "total": 1}})
     monkeypatch.setattr(_ci, "load_calls_index", lambda root: fake)
 
+    (repo / ".chameleon").mkdir(exist_ok=True)
+    from chameleon_mcp.profile.trust import grant_trust as _grant
+    from chameleon_mcp.tools import _compute_repo_id as _crid
+
+    _grant(_crid(repo), repo / ".chameleon")
     result = tools.get_contract_breaks(str(repo), base_ref="main")
     data = result["data"]
     assert data["status"] == "ok"
@@ -410,6 +415,11 @@ def test_get_contract_breaks_non_git_degrades(tmp_path, monkeypatch):
 
     plain = tmp_path / "plain_cb"
     plain.mkdir()
+    (plain / ".chameleon").mkdir(exist_ok=True)
+    from chameleon_mcp.profile.trust import grant_trust as _grant
+    from chameleon_mcp.tools import _compute_repo_id as _crid
+
+    _grant(_crid(plain), plain / ".chameleon")
     result = tools.get_contract_breaks(str(plain), base_ref="main")
     assert result["data"]["status"] in ("degraded", "failed")
 

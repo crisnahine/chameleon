@@ -210,12 +210,14 @@ def test_route_proceeds_when_only_multi_lens_on(tmp_path):
 
 def test_both_lenses_when_both_flags_on(tmp_path, monkeypatch):
     seen = _capture_lenses(monkeypatch)
+    monkeypatch.setattr(hook_helper, "_judge_async_mode", lambda: None)
     _call(tmp_path, cfg=_cfg(correctness_judge=True, duplication_review=True), route=_route())
     assert seen["names"] == ["correctness", "duplication"]
 
 
 def test_duplication_flag_off_excludes_duplication_lens(tmp_path, monkeypatch):
     seen = _capture_lenses(monkeypatch)
+    monkeypatch.setattr(hook_helper, "_judge_async_mode", lambda: None)
     _call(tmp_path, cfg=_cfg(correctness_judge=True, duplication_review=False), route=_route())
     assert seen["names"] == ["correctness"]
 
