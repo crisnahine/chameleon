@@ -7,6 +7,10 @@
 
 chameleon learns your repo's actual conventions and injects archetype-aware guidance on every edit, so AI-generated code matches your existing style on the first try. It supports TypeScript and Ruby on Rails.
 
+![chameleon injecting archetype-aware guidance before an edit: the resolved archetype and confidence, the canonical witness to mirror, and a "do NOT write it this way" counterexample drawn from the repo's own off-pattern](assets/chameleon-injection.svg)
+
+*Every Edit/Write gets a block like this: the matched archetype, the canonical witness to mirror, and (when your team has taught a competing import) the real off-pattern line not to copy. Measured to lift first-try wrapper adoption by +100pp in both TypeScript and Ruby.*
+
 ## Quickstart
 
 **Before you start**, you need `uv` and Node.js 20+ on your `PATH`. Ruby 3.0+ is also needed if you edit Rails repos. On a fresh machine, [docs/install.md](docs/install.md) has copy-paste setup for macOS, Linux, and Windows, plus a check for each tool. Skip ahead if you already have them.
@@ -124,6 +128,17 @@ CHAMELEON_VERIFY=0        disable post-edit verification only
 /chameleon-disable        this session only
 /chameleon-pause-15m      next 15 minutes (auto-resume)
 ```
+
+## Permissions & safety
+
+chameleon is hook-driven, so it sees every Edit/Write and runs at session start, post-edit, and turn end. Here is exactly what that means, since a marketplace listing can only flag "uses hooks" and "broad access" without the detail:
+
+- **Local only, no telemetry.** Nothing is sent anywhere. State lives under `~/.local/share/chameleon/<repo_id>/` (drift db, trust grant) and the repo's committed `.chameleon/` profile. There is no analytics, no phone-home.
+- **No repo-code execution by default.** The hot path never runs your code. The only paths that can execute the repo's own tooling are explicit, per-invocation opt-ins, all default-OFF: `CHAMELEON_ALLOW_ESLINT_EVAL`, `CHAMELEON_ALLOW_DEP_AUDIT`, `CHAMELEON_ALLOW_TSC`, `CHAMELEON_ALLOW_TESTS`. Off, they record an "unavailable" fact instead of spawning anything.
+- **One default-on network call, killable.** Refresh runs a single bounded `git fetch origin <branch>` so derivation sees the latest production tip; it self-suppresses under CI, never runs on a hook hot path, fails open, and is disabled with `CHAMELEON_FETCH_PRODUCTION_REF=0`.
+- **Fails open, never blocks by default.** Hooks degrade to advisory if anything goes wrong. Blocking is off until you opt into `enforcement.mode: enforce`, and any block is overridable inline with `// chameleon-ignore <rule>`.
+- **Trust gate.** No repo-derived content (canonical excerpts, idioms) is injected until you run `/chameleon-trust` and type the repo's basename to confirm, so a profile committed by someone else can't silently shape your session.
+- **Fully removable.** The opt-out hierarchy above turns it off at any scope, instantly. See [SECURITY.md](SECURITY.md) for the disclosure policy and supported versions.
 
 ## Philosophy
 
