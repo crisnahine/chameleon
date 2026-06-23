@@ -68,10 +68,11 @@ def test_file_naming_still_fires_for_typescript():
     assert any(x.rule == "file-naming-convention-violation" for x in v)
 
 
-def test_phantom_import_reports_inert_for_python_profile(tmp_path):
+def test_phantom_import_active_for_python_profile(tmp_path):
     (tmp_path / "profile.json").write_text(json.dumps({"language": "python"}), encoding="utf-8")
-    # phantom-import has no Python implementation yet, so it must NOT certify active.
-    assert rule_inert_for_language("phantom-import", tmp_path) is True
+    # PKG-3 implemented a Python phantom-import (relative-import resolution), so
+    # the rule is now genuinely active for a Python profile, not inert.
+    assert rule_inert_for_language("phantom-import", tmp_path) is False
 
 
 def test_phantom_import_still_active_for_typescript_profile(tmp_path):

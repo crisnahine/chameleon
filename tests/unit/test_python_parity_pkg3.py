@@ -57,3 +57,58 @@ def test_signature_index_python_types(tmp_path):
     # find the fetch row regardless of the index's keying shape
     blob = repr(sigs)
     assert "bool" in blob and "int" in blob  # return + param types present
+
+
+# --------------------------------------------------------------------------- #
+# Sub-step C: phantom-import — a relative import resolving to no file on disk.
+# --------------------------------------------------------------------------- #
+
+
+def test_phantom_import_python(tmp_path):
+    from chameleon_mcp.phantom_imports import lint_phantom_imports
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "real.py").write_text("x = 1\n", encoding="utf-8")
+    editing = pkg / "views.py"
+
+    # A relative import of a module that does not exist -> phantom-import.
+    v = lint_phantom_imports(
+        "from .nonexistent import thing\n",
+        file_path=str(editing),
+        repo_root=tmp_path,
+        language="python",
+    )
+    assert any(x.rule == "phantom-import" for x in v)
+
+    # A relative import that resolves on disk -> clean.
+    v2 = lint_phantom_imports(
+        "from .real import x\n",
+        file_path=str(editing),
+        repo_root=tmp_path,
+        language="python",
+    )
+    assert not any(x.rule == "phantom-import" for x in v2)
+
+
+def test_phantom_import_python_from_dot_import_not_flagged(tmp_path):
+    from chameleon_mcp.phantom_imports import lint_phantom_imports
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    # `from . import x` targets the package itself (present) -> not a phantom.
+    v = lint_phantom_imports(
+        "from . import anything\n",
+        file_path=str(pkg / "views.py"),
+        repo_root=tmp_path,
+        language="python",
+    )
+    assert not any(x.rule == "phantom-import" for x in v)
+
+
+def test_phantom_import_block_eligible_for_python():
+    from chameleon_mcp.violation_class import BLOCK_RULE_LANGUAGES
+
+    assert "python" in BLOCK_RULE_LANGUAGES["phantom-import"]
