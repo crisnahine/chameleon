@@ -145,6 +145,42 @@ def _resolve_ruby(spec: str, from_file: Path, repo_root: Path) -> Path | None:
     return None
 
 
+def _resolve_python(spec: str, from_file: Path, repo_root: Path) -> Path | None:
+    """Resolve a Python import module to a real repo file, or None.
+
+    Handles both forms that point inside the repo: a relative spec (``.models``,
+    ``..pkg.mod``, ``.``) resolved against the importing file's package, and an
+    absolute dotted spec (``readthedocs.projects.models``) resolved as a
+    repo-root-relative module path (Python packages are importable from the repo
+    root). A spec that resolves outside the repo or to no file is an external
+    package and returns None, the fail-open path. Tries ``<path>.py``,
+    ``<path>.pyi``, and the ``<path>/__init__.py`` package form.
+    """
+    if spec.startswith("."):
+        ndots = len(spec) - len(spec.lstrip("."))
+        rest = spec[ndots:]
+        base = from_file.parent
+        for _ in range(ndots - 1):
+            base = base.parent
+        if rest:
+            base = base / Path(rest.replace(".", "/"))
+    else:
+        base = repo_root / Path(spec.replace(".", "/"))
+    try:
+        base = base.resolve()
+        base.relative_to(repo_root.resolve())
+    except (OSError, ValueError):
+        return None
+    candidates = (Path(str(base) + ".py"), Path(str(base) + ".pyi"), base / "__init__.py")
+    try:
+        for cand in candidates:
+            if cand.is_file():
+                return cand
+    except OSError:
+        return None
+    return None
+
+
 def _load_tsconfig_paths(repo_root: Path) -> tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]:
     """(baseUrl, ((pattern, (targets,...)),...)) from tsconfig/jsconfig at the root."""
     import json
@@ -205,6 +241,10 @@ def _resolve_import_archetype(
         # reach the load path and are unresolvable statically.
         if kind == "namespace" and not _is_bare_specifier(spec):
             target = _resolve_ruby(spec, from_file, repo_root)
+    elif language == "python":
+        # Both relative (.models) and absolute intra-repo (pkg.sub.mod) imports
+        # resolve to files; external packages (django, os) resolve to None.
+        target = _resolve_python(spec, from_file, repo_root)
     else:
         if _is_bare_specifier(spec):
             if tsconfig_paths:

@@ -30,13 +30,13 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## PKG-2 — Conventions derivation (conventions.py + import_graph.py)
 - [ ] naming casing conventions for Python (PEP8 snake/Pascal/UPPER)
-- [ ] class_contract base fix (read `extends`/`bases`) + accept staticmethod/classmethod kinds
-- [ ] key_exports (top-level public names / `__all__`)
-- [ ] error_handling (`try:` shape)
-- [ ] doc_coverage (docstring detection — scan line AFTER def/class, not before)
-- [ ] test_pairing: `_is_test_path` + `_candidate_test_paths` Python branches (test_*.py, *_test.py, conftest.py)
+- [x] class_contract base fix (read `extends`/`bases`) + accept staticmethod/classmethod kinds
+- [x] key_exports (top-level public names / `__all__`)
+- [x] error_handling (`try:` shape)
+- [x] doc_coverage (docstring detection — scan line AFTER def/class, not before)
+- [x] test_pairing: `_is_test_path` + `_candidate_test_paths` Python branches (test_*.py, *_test.py, conftest.py)
 - [ ] inheritance derivation (dominant_base/known_bases for Python)
-- [ ] layering: `_resolve_python` dotted-relative resolver in import_graph.py
+- [x] layering: `_resolve_python` dotted-relative resolver in import_graph.py
 
 ## PKG-3 — Cross-file intelligence (depends on PKG-1)
 - [ ] exports index for Python (named_export_names → exports_index.json)
