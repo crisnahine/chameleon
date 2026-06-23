@@ -408,15 +408,21 @@ def _top_level_kinds(module: cst.Module) -> list[str]:
     return kinds
 
 
-def _module_exports(module: cst.Module) -> tuple[list[str], bool]:
+def _module_exports(module: cst.Module, file_path: str | None = None) -> tuple[list[str], bool]:
     """The names importable from this module, and whether the set is open.
 
     Python has no `export` keyword: every top-level binding is importable, so the
     set is the names bound at module level -- def/class names, assignment
-    targets, and import locals (re-exports). The set is OPEN (non-authoritative)
-    when the module does `from X import *`, since a name could come from the star
-    and is not statically visible. Mirrors the purpose of ts_dump's
-    named_export_names / export_set_open for the phantom-symbol existence check.
+    targets, and import locals (re-exports). Bindings inside a top-level
+    conditional/loop/context block (``try/except`` import fallbacks, ``if
+    TYPE_CHECKING``, version gates) are module-level too, so the walk descends
+    into those compound bodies; a def/class body is a new scope and is NOT
+    descended. An ``__init__`` module additionally re-exports its sibling
+    submodules (``from pkg import submodule`` resolves to ``pkg/submodule.py`` on
+    disk regardless of what ``__init__`` names), so their basenames are added.
+    The set is OPEN (non-authoritative) on ``from X import *``. Mirrors the
+    purpose of ts_dump's named_export_names / export_set_open for the
+    phantom-symbol existence check.
     """
     names: set[str] = set()
     open_set = False
@@ -429,29 +435,81 @@ def _module_exports(module: cst.Module) -> tuple[list[str], bool]:
         elif isinstance(small, cst.AnnAssign) and isinstance(small.target, cst.Name):
             names.add(small.target.value)
 
-    for stmt in module.body:
-        if isinstance(stmt, (cst.FunctionDef, cst.ClassDef)):
-            names.add(stmt.name.value)
-        elif isinstance(stmt, cst.SimpleStatementLine):
-            for small in stmt.body:
-                if isinstance(small, cst.ImportFrom):
-                    if isinstance(small.names, cst.ImportStar):
-                        open_set = True
-                    else:
-                        for alias in small.names:
-                            local = alias.asname.name if alias.asname else alias.name
-                            if isinstance(local, cst.Name):
-                                names.add(local.value)
-                elif isinstance(small, cst.Import):
-                    for alias in small.names:
-                        if alias.asname is not None and isinstance(alias.asname.name, cst.Name):
-                            names.add(alias.asname.name.value)
-                        else:
-                            dotted = _dotted_name(alias.name)
-                            if dotted:
-                                names.add(dotted.split(".")[0])
+    def _process_simple(stmt) -> None:
+        nonlocal open_set
+        for small in stmt.body:
+            if isinstance(small, cst.ImportFrom):
+                if isinstance(small.names, cst.ImportStar):
+                    open_set = True
                 else:
-                    _add_targets(small)
+                    for alias in small.names:
+                        local = alias.asname.name if alias.asname else alias.name
+                        if isinstance(local, cst.Name):
+                            names.add(local.value)
+            elif isinstance(small, cst.Import):
+                for alias in small.names:
+                    if alias.asname is not None and isinstance(alias.asname.name, cst.Name):
+                        names.add(alias.asname.name.value)
+                    else:
+                        dotted = _dotted_name(alias.name)
+                        if dotted:
+                            names.add(dotted.split(".")[0])
+            else:
+                _add_targets(small)
+
+    _try_types = (cst.Try, getattr(cst, "TryStar", cst.Try))
+
+    def _walk(statements) -> None:
+        for stmt in statements:
+            if isinstance(stmt, (cst.FunctionDef, cst.ClassDef)):
+                names.add(stmt.name.value)
+            elif isinstance(stmt, cst.SimpleStatementLine):
+                _process_simple(stmt)
+            elif isinstance(stmt, cst.If):
+                _walk(stmt.body.body)
+                orelse = stmt.orelse
+                if isinstance(orelse, cst.If):
+                    _walk([orelse])
+                elif isinstance(orelse, cst.Else):
+                    _walk(orelse.body.body)
+            elif isinstance(stmt, _try_types):
+                _walk(stmt.body.body)
+                for handler in stmt.handlers:
+                    _walk(handler.body.body)
+                if stmt.orelse is not None:
+                    _walk(stmt.orelse.body.body)
+                if stmt.finalbody is not None:
+                    _walk(stmt.finalbody.body)
+            elif isinstance(stmt, (cst.For, cst.While)):
+                _walk(stmt.body.body)
+                if stmt.orelse is not None:
+                    _walk(stmt.orelse.body.body)
+            elif isinstance(stmt, cst.With):
+                _walk(stmt.body.body)
+
+    try:
+        _walk(module.body)
+    except Exception:
+        # Unexpected node shape: keep what was collected, never crash the dump.
+        pass
+
+    if file_path is not None:
+        base = os.path.basename(file_path)
+        if base in ("__init__.py", "__init__.pyi"):
+            try:
+                pkg_dir = os.path.dirname(file_path)
+                for entry in os.listdir(pkg_dir):
+                    if entry.startswith("__"):
+                        continue
+                    if entry.endswith((".py", ".pyi")):
+                        names.add(entry.rsplit(".", 1)[0])
+                    elif os.path.isfile(
+                        os.path.join(pkg_dir, entry, "__init__.py")
+                    ) or os.path.isfile(os.path.join(pkg_dir, entry, "__init__.pyi")):
+                        names.add(entry)
+            except OSError:
+                pass
+
     return sorted(names), open_set
 
 
@@ -497,7 +555,7 @@ def extract_file(file_path: str) -> dict:
     else:
         default_export_kind = None
 
-    named_export_names, export_set_open = _module_exports(module)
+    named_export_names, export_set_open = _module_exports(module, file_path)
 
     return {
         "path": file_path,
