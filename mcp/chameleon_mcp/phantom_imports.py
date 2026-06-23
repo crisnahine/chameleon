@@ -757,14 +757,21 @@ def lint_phantom_imports(
                 continue
             violations.append(_violation(spec, base.parent, root))
     elif language == "python":
-        _ignored_py = {m.group(1) for m in _IGNORE_RUBY_RE.finditer(content)}
+        # Blank string literals (keep comments) before both scans: a `from .x
+        # import y` inside a docstring is not an import, and a `# chameleon-ignore`
+        # inside a string is not a directive. Length-preserving, so the line a
+        # phantom-import reports stays truthful.
+        from chameleon_mcp.lint_engine import _blank_python_strings
+
+        scan = _blank_python_strings(content)
+        _ignored_py = {m.group(1) for m in _IGNORE_RUBY_RE.finditer(scan)}
         if _RULE in _ignored_py:
             return []
         symbol_check_on = _SYMBOL_RULE not in _ignored_py
         exports_index = load_exports_index(root) if symbol_check_on else None
         symbol_check_on = symbol_check_on and exports_index is not None
         seen_py: set[str] = set()
-        for m in _PY_RELATIVE_IMPORT_RE.finditer(content):
+        for m in _PY_RELATIVE_IMPORT_RE.finditer(scan):
             if len(seen_py) >= _MAX_SPECS:
                 break
             dots, module, names_clause = m.group(1), m.group(2), m.group(3)
@@ -1070,9 +1077,18 @@ def lint_cross_file_imports(
         return []
 
     # Python uses `#` comment directives; TS uses `//`. Both ignore patterns are
-    # `<comment> chameleon-ignore <rule>`; pick the one for the language.
-    _ignore_re = _IGNORE_RUBY_RE if language == "python" else _IGNORE_TS_RE
-    ignored = {m.group(1) for m in _ignore_re.finditer(content)}
+    # `<comment> chameleon-ignore <rule>`; pick the one for the language. For
+    # Python, blank string literals first so a directive inside a docstring is
+    # not read as author intent.
+    if language == "python":
+        from chameleon_mcp.lint_engine import _blank_python_strings
+
+        _ignore_scan = _blank_python_strings(content)
+        _ignore_re = _IGNORE_RUBY_RE
+    else:
+        _ignore_scan = content
+        _ignore_re = _IGNORE_TS_RE
+    ignored = {m.group(1) for m in _ignore_re.finditer(_ignore_scan)}
     crossfile_on = _CROSSFILE_RULE not in ignored
     broken_on = _BROKEN_EXPORT_RULE not in ignored
     if not crossfile_on and not broken_on:
