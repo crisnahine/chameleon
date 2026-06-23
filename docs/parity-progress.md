@@ -69,7 +69,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 ## PKG-6 — Naming + file-naming lint (lint_engine.py + conventions.py + violation_class.py)
 - [x] naming-convention-violation identifier scan (Python snake/Pascal/UPPER, mirror Ruby path)
 - [x] naming-convention block-eligibility (BLOCK_RULE_LANGUAGES add python)
-- [ ] (file-naming enforcement — done in PKG-0)
+- [x] (file-naming enforcement — done in PKG-0)
 
 ## PKG-7 — Test-quality lint (lint_engine.py + conventions.py)
 - [x] test-quality pass language gate + python branch
@@ -104,5 +104,5 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] block-eligible rule set parity audit (scope correctly)
 
 ## PKG-11 — Idioms (idiom_coverage.py + conventions.py)
-- [ ] covered-by-inheritance dedup for non-Ruby (consult class_contract.base)
-- [ ] covered-by-class-contract content for non-Ruby
+- [x] covered-by-inheritance dedup for non-Ruby (consult class_contract.base)
+- [x] covered-by-class-contract content for non-Ruby

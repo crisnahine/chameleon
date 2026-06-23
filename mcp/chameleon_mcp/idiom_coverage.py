@@ -536,8 +536,14 @@ def _class_contract(conventions: dict) -> dict[str, dict]:
     if not isinstance(cc, dict):
         return out
     for arch, data in cc.items():
+        # A base-only contract (no macros/decorators/methods) is still useful: it
+        # carries the heritage TypeScript records here instead of an inheritance
+        # section, and the covered-by-inheritance dedup consults it.
         if isinstance(data, dict) and (
-            data.get("dsl_macros") or data.get("decorators") or data.get("required_methods")
+            data.get("dsl_macros")
+            or data.get("decorators")
+            or data.get("required_methods")
+            or data.get("base")
         ):
             out[arch] = {
                 "dsl_macros": [str(m) for m in data.get("dsl_macros") or []],
@@ -719,18 +725,53 @@ def _covered_reasons(
             if any(s in text_lower for s in synonyms):
                 reasons.append(f"covered-by-naming:{arch}")
 
+    contract = _class_contract(conventions)
+    # TypeScript records the heritage on class_contract, not in an inheritance
+    # section, and a Python archetype may carry a class_contract base even when
+    # the inheritance derivation didn't clear its 60% floor. Ruby is unaffected:
+    # its base shows up under both, and the union just reuses the inheritance row.
+    is_ruby = artifacts.get("language") == "ruby"
+
     if any(p in text_lower for p in _INHERITANCE_RULE_PHRASES):
-        contract = _class_contract(conventions)
-        for arch, data in _inheritance_bases(conventions).items():
+        inh = _inheritance_bases(conventions)
+        for arch in sorted(set(inh) | set(contract)):
             if candidate_arch and arch != candidate_arch:
                 continue
+            data = inh.get(arch, {})
+            cc = contract.get(arch, {})
             bases = [data.get("dominant_base") or ""] + list(data.get("known_bases") or [])
+            if cc.get("base"):
+                bases.append(str(cc["base"]))
             if any(b and b.lower() in text_lower for b in bases):
-                # Suppress only a PURE "inherit from X" idiom; one that also names
-                # the base's DSL macros or required methods stays novel.
-                if _mentions_contract(text_lower, contract.get(arch, {})):
+                # A pure "inherit from X" idiom restates the convention. One that
+                # also names the base's DSL macros / required methods is covered by
+                # the class-contract section instead -- for non-Ruby, where that
+                # section is the canonical home of the base's shape. (Ruby keeps
+                # such idioms novel: its contract nuance is worth an explicit note.)
+                if _mentions_contract(text_lower, cc):
+                    if not is_ruby and cc:
+                        reasons.append(f"covered-by-class-contract:{arch}")
                     continue
                 reasons.append(f"covered-by-inheritance:{arch}")
+
+    # A non-Ruby idiom that restates the archetype's derived class-contract content
+    # (decorators / required methods / DSL macros, all surfaced in the SessionStart
+    # block) duplicates it, even without an inheritance phrase ("must implement
+    # save() and delete()"). A specific derived token must appear -- a bare verb
+    # phrase alone is too weak to dedupe on.
+    if not is_ruby:
+        for arch, cc in contract.items():
+            if candidate_arch and arch != candidate_arch:
+                continue
+            if f"covered-by-class-contract:{arch}" in reasons:
+                continue
+            derived = (
+                (cc.get("decorators") or [])
+                + (cc.get("required_methods") or [])
+                + (cc.get("dsl_macros") or [])
+            )
+            if any(t and len(t) >= 3 and t.lower() in text_lower for t in derived):
+                reasons.append(f"covered-by-class-contract:{arch}")
 
     rationale = str(candidate.get("rationale") or "")
     if artifacts["rules"] and _is_formatting_idiom(rationale):
