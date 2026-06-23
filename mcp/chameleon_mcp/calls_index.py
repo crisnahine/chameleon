@@ -97,7 +97,7 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
     except OSError:
         root = Path(repo_root)
 
-    resolve_module = make_module_resolver(root)
+    resolve_module = make_module_resolver(root, language)
 
     # Pass 1: per-file fact tables. A rel appearing twice merges, mirroring
     # the reverse index's dedupe stance.
@@ -267,7 +267,10 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                 # and the recorded edge use the exported name it resolves to.
                 if name in own_callables:
                     _add(rel, name, rel, caller_fn, line, "same_file")
-                elif language == "typescript" and name in import_targets:
+                elif language in ("typescript", "python") and name in import_targets:
+                    # Python calls an imported function bare too
+                    # (`from .svc import run; run()`); the local binding resolves
+                    # to the exported name, checked against the target's closed set.
                     t, exported = import_targets[name]
                     if t is not None and _closed_target(t, exported) is not None:
                         _add(t, exported, rel, caller_fn, line, "import")
@@ -275,10 +278,13 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                 if name in own_members:
                     _add(rel, name, rel, caller_fn, line, "same_file")
             elif kind in ("new", "member"):
-                if language != "typescript":
+                if language not in ("typescript", "python"):
                     continue
                 receiver = site.get("receiver")
-                if kind == "new" and receiver is None:
+                # Python has no `new`; its only member sites are `recv.attr()`,
+                # graded below against a runtime namespace import (`import a.b as
+                # x; x.f()`). The receiver-less `new` grade is TS construction.
+                if language == "typescript" and kind == "new" and receiver is None:
                     # `new Foo()` of a named import: the EXPORTED name the
                     # local binding resolves to is the callee key (the index
                     # keys on exported names, not constructors or aliases).
