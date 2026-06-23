@@ -99,9 +99,9 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## PKG-10 — Calibration (violation_class.py + enforcement_calibration.py)
 - [x] phantom-import block rule Python (after PKG-3 phantom-import lands)
-- [ ] naming-convention block rule Python (after PKG-6)
-- [ ] file-naming block rule Python (after PKG-0)
-- [ ] block-eligible rule set parity audit (scope correctly)
+- [x] naming-convention block rule Python (after PKG-6)
+- [x] file-naming block rule Python (after PKG-0)
+- [x] block-eligible rule set parity audit (scope correctly)
 
 ## PKG-11 — Idioms (idiom_coverage.py + conventions.py)
 - [ ] covered-by-inheritance dedup for non-Ruby (consult class_contract.base)
