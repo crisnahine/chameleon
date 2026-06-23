@@ -84,8 +84,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] test-archetype naming (_looks_like_test Python predicate, not just suffix list)
 
 ## PKG-8 — Import lint + counterexamples (lint_engine.py + counterexamples.py)
-- [ ] string-embedded-import false-positive guard (Python)
-- [ ] inline-ignore directive Python string blanker (_blank_string_literals)
+- [x] string-embedded-import false-positive guard (Python)
+- [x] inline-ignore directive Python string blanker (_blank_string_literals)
 - [x] off-pattern counterexample capture (_import_of Python branch: import x / from x import)
 - [x] counterexample render + multi-off-pattern (free once capture works)
 

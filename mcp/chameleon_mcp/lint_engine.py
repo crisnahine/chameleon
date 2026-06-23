@@ -418,6 +418,27 @@ def _strip_python_strings_and_comments(content: str) -> str:
     return _PY_STRING_OR_COMMENT.sub(_blank_match_to_spaces, content)
 
 
+def _blank_python_strings(content: str) -> str:
+    """Blank Python string-literal bodies to spaces, leaving comments intact.
+
+    The string-embedded-import guard and the inline-ignore directive scan both
+    need comments PRESERVED (a real ``# chameleon-ignore`` and a real ``from``
+    must still be found) while text inside a string constant is neutralized: a
+    docstring containing ``from .ghost import x`` is not an import, and a
+    ``# chameleon-ignore`` inside a help string is not author intent. Comments
+    are still consumed by the scan so a ``#``-led line carrying a quote cannot
+    open a phantom string across the directive below it. Length-preserving.
+    """
+
+    def repl(m: re.Match) -> str:
+        s = m.group(0)
+        # The comment alternative is matched (so its inner quotes can't open a
+        # string) but returned verbatim; only real string literals are blanked.
+        return s if s.startswith("#") else _blank_match_to_spaces(m)
+
+    return _PY_STRING_OR_COMMENT.sub(repl, content)
+
+
 # Python's exec() is the sibling of eval(): both execute an arbitrary string as
 # code. Same member-call guard as eval so `obj.exec(...)` (a method) is exempt.
 _PY_EXEC_CALL_RE = re.compile(r"(?<![.\w])exec\s*\(")

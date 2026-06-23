@@ -78,6 +78,7 @@ def _blank_string_literals(content: str, file_path: str | None, language: str | 
             _RUBY_STRING_SQ,
             _TS_STRING,
             _blank_match_to_spaces,
+            _blank_python_strings,
             _blank_ruby_heredocs,
             _blank_ruby_percent_literals,
             detect_language,
@@ -92,6 +93,10 @@ def _blank_string_literals(content: str, file_path: str | None, language: str | 
             # Percent-literals too: a directive inside `%q{...}` is content, not
             # author intent, and must not suppress a real violation.
             return _blank_ruby_percent_literals(out)
+        if language == "python":
+            # Triple-quoted / f/r/b-prefixed strings the TS regex can't span; a
+            # directive inside a docstring must not suppress a real violation.
+            return _blank_python_strings(content)
         # TypeScript and unknown languages share the quote/backtick shapes.
         return _TS_STRING.sub(_blank_match_to_spaces, content)
     except Exception:
