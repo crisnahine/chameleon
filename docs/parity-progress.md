@@ -29,7 +29,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] class_shapes also carry `extends` (first base) to match TS consumer
 
 ## PKG-2 — Conventions derivation (conventions.py + import_graph.py)
-- [ ] naming casing conventions for Python (PEP8 snake/Pascal/UPPER)
+- [x] naming casing conventions for Python (PEP8 snake/Pascal/UPPER)
 - [x] class_contract base fix (read `extends`/`bases`) + accept staticmethod/classmethod kinds
 - [x] key_exports (top-level public names / `__all__`)
 - [x] error_handling (`try:` shape)
@@ -67,8 +67,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [ ] (emission cap + summary tail come free once the scan runs)
 
 ## PKG-6 — Naming + file-naming lint (lint_engine.py + conventions.py + violation_class.py)
-- [ ] naming-convention-violation identifier scan (Python snake/Pascal/UPPER, mirror Ruby path)
-- [ ] naming-convention block-eligibility (BLOCK_RULE_LANGUAGES add python)
+- [x] naming-convention-violation identifier scan (Python snake/Pascal/UPPER, mirror Ruby path)
+- [x] naming-convention block-eligibility (BLOCK_RULE_LANGUAGES add python)
 - [ ] (file-naming enforcement — done in PKG-0)
 
 ## PKG-7 — Test-quality lint (lint_engine.py + conventions.py)

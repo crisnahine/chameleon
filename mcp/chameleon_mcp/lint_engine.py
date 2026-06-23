@@ -2969,6 +2969,68 @@ _RUBY_CONSTANT_ASSIGN_LINT_RE = re.compile(
 )
 
 
+# Lint-side Python declaration captures — permissive (must SEE a PascalCase
+# def or a snake class to flag it), mirroring the Ruby lint captures.
+_PY_FUNC_DEF_LINT_RE = re.compile(r"^[ \t]*(?:async\s+)?def\s+([A-Za-z_]\w*)", re.MULTILINE)
+_PY_CLASS_DECL_LINT_RE = re.compile(r"^[ \t]*class\s+([A-Za-z_]\w*)", re.MULTILINE)
+
+
+def _python_naming_violations(scan_content: str, naming: dict) -> list[Violation]:
+    """In-source Python (PEP 8) naming checks against the derived casing.
+
+    Functions/methods must be snake_case, classes PascalCase — each fires only
+    when the profile derived that canonical casing at >= 0.60 consistency. Reuses
+    the Ruby classifiers (the rules coincide) so what is measured is what is
+    checked. Dunder/underscore-prefixed names (``__init__``, ``_helper``) are not
+    flagged: they are valid PEP 8 regardless of the snake rule.
+    """
+    from chameleon_mcp.conventions import (
+        _classify_ruby_class_casing,
+        _classify_ruby_method_casing,
+    )
+
+    out: list[Violation] = []
+    method_entry = naming.get("method_casing") or {}
+    if method_entry.get("pattern") == "snake_case" and method_entry.get("consistency", 0) >= 0.60:
+        for m in _PY_FUNC_DEF_LINT_RE.finditer(scan_content):
+            name = m.group(1)
+            if name.startswith("_"):
+                continue
+            if _classify_ruby_method_casing(name) != "snake_case":
+                out.append(
+                    Violation(
+                        rule="naming-convention-violation",
+                        expected="snake_case",
+                        actual=name,
+                        severity="warning",
+                        message=(
+                            f"NAMING: function {name} should use snake_case "
+                            f"({method_entry['consistency']:.0%} convention)"
+                        ),
+                    )
+                )
+    class_entry = naming.get("class_casing") or {}
+    if class_entry.get("pattern") == "PascalCase" and class_entry.get("consistency", 0) >= 0.60:
+        for m in _PY_CLASS_DECL_LINT_RE.finditer(scan_content):
+            name = m.group(1)
+            if name.startswith("_"):
+                continue
+            if _classify_ruby_class_casing(name) != "PascalCase":
+                out.append(
+                    Violation(
+                        rule="naming-convention-violation",
+                        expected="PascalCase",
+                        actual=name,
+                        severity="warning",
+                        message=(
+                            f"NAMING: class {name} should use PascalCase "
+                            f"({class_entry['consistency']:.0%} convention)"
+                        ),
+                    )
+                )
+    return out
+
+
 def _ruby_naming_violations(scan_content: str, naming: dict) -> list[Violation]:
     """In-source Ruby naming checks against the derived casing conventions.
 
@@ -3211,6 +3273,11 @@ def lint_conventions(
         ignored_rules & {"naming-convention", "naming-convention-violation"}
     ):
         violations.extend(_ruby_naming_violations(scan_content, conventions.get("naming") or {}))
+
+    if language == "python" and not (
+        ignored_rules & {"naming-convention", "naming-convention-violation"}
+    ):
+        violations.extend(_python_naming_violations(scan_content, conventions.get("naming") or {}))
 
     if language == "typescript" and "then-without-catch" not in ignored_rules:
         violations.extend(_then_without_catch_violations(scan_content))
