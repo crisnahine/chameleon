@@ -72,16 +72,16 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [ ] (file-naming enforcement — done in PKG-0)
 
 ## PKG-7 — Test-quality lint (lint_engine.py + conventions.py)
-- [ ] test-quality pass language gate + python branch
-- [ ] skipped-test (pytest mark.skip/skipif/xfail, unittest skip)
-- [ ] tautological-assertion (assert True==True / assertEqual(1,1))
-- [ ] real-sleep-in-test (time.sleep/asyncio.sleep)
-- [ ] random-in-test (random.*/secrets.*/uuid4 in test)
-- [ ] assertion-free-test (_PY_ASSERTION_RE + test-block scanner)
-- [ ] unstubbed-network (requests/httpx/... vs responses/respx/vcrpy)
-- [ ] unfrozen-clock (datetime.now/time.time vs freezegun/time-machine)
-- [ ] witness assertion-helper self-calibration (Python)
-- [ ] test-archetype naming (_looks_like_test Python predicate, not just suffix list)
+- [x] test-quality pass language gate + python branch
+- [x] skipped-test (pytest mark.skip/skipif/xfail, unittest skip)
+- [x] tautological-assertion (assert True==True / assertEqual(1,1))
+- [x] real-sleep-in-test (time.sleep/asyncio.sleep)
+- [x] random-in-test (random.*/secrets.*/uuid4 in test)
+- [x] assertion-free-test (_PY_ASSERTION_RE + test-block scanner)
+- [x] unstubbed-network (requests/httpx/... vs responses/respx/vcrpy)
+- [x] unfrozen-clock (datetime.now/time.time vs freezegun/time-machine)
+- [x] witness assertion-helper self-calibration (Python)
+- [x] test-archetype naming (_looks_like_test Python predicate, not just suffix list)
 
 ## PKG-8 — Import lint + counterexamples (lint_engine.py + counterexamples.py)
 - [ ] string-embedded-import false-positive guard (Python)
