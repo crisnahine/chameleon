@@ -1,6 +1,7 @@
 """Render a real chameleon per-edit injection block to a clean terminal-style SVG."""
 
 from html import escape
+from pathlib import Path
 
 # (text, color) per line. None color = default light gray.
 FG = "#c9d1d9"
@@ -58,7 +59,6 @@ for text, color in LINES:
         )
     y += LINE_H
 parts.append("</svg>")
-open("/Users/crisn/Documents/Projects/chameleon/assets/chameleon-injection.svg", "w").write(
-    "\n".join(parts)
-)
-print("wrote assets/chameleon-injection.svg", WIDTH, "x", HEIGHT)
+out = Path(__file__).resolve().parent.parent / "assets" / "chameleon-injection.svg"
+out.write_text("\n".join(parts))
+print("wrote", out.relative_to(out.parents[1]), WIDTH, "x", HEIGHT)
