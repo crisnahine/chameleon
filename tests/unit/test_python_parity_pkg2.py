@@ -165,3 +165,85 @@ def test_resolve_python_relative_and_absolute(tmp_path):
     assert _resolve_python("django.db", views, tmp_path) is None
     # package __init__ form
     assert _resolve_python("pkg", views, tmp_path) == (tmp_path / "pkg" / "__init__.py")
+
+
+# --------------------------------------------------------------------------- #
+# inheritance derivation (dominant_base / known_bases from class_shapes) + lint
+# --------------------------------------------------------------------------- #
+
+
+def _model(i, bases):
+    return _pf(f"app/models/m{i}.py", extras={"class_shapes": [{"name": f"M{i}", "bases": bases}]})
+
+
+def test_inheritance_derivation_python_dominant_base():
+    from chameleon_mcp.conventions import extract_inheritance_conventions
+
+    # 9 of 10 model files inherit models.Model -> dominant base.
+    files = [_model(i, ["models.Model"]) for i in range(9)] + [_model(9, ["object"])]
+    out = extract_inheritance_conventions(files, language="python")
+    assert out.get("dominant_base") == "models.Model"
+    assert out.get("frequency", 0) >= 0.6
+
+
+def test_inheritance_derivation_python_known_bases_includes_mixins():
+    from chameleon_mcp.conventions import extract_inheritance_conventions
+
+    # APIView dominant; LoginRequiredMixin recurs (>=2) so it's an accepted base.
+    files = (
+        [_model(i, ["LoginRequiredMixin", "APIView"]) for i in range(3)]
+        + [_model(i, ["APIView"]) for i in range(3, 9)]
+        + [_model(9, ["APIView"])]
+    )
+    out = extract_inheritance_conventions(files, language="python")
+    assert out.get("dominant_base") == "APIView"
+    assert "LoginRequiredMixin" in out.get("known_bases", [])
+
+
+def test_inheritance_derivation_skips_object_only():
+    from chameleon_mcp.conventions import extract_inheritance_conventions
+
+    # All plain classes -> nothing dominant (object is filtered).
+    files = [_model(i, ["object"]) for i in range(10)]
+    out = extract_inheritance_conventions(files, language="python")
+    assert out == {}
+
+
+def test_inheritance_lint_flags_wrong_base():
+    from chameleon_mcp.lint_engine import lint_conventions
+
+    conv = {"inheritance": {"dominant_base": "models.Model", "frequency": 0.9}}
+    v = lint_conventions(
+        "class Widget(SomethingElse):\n    pass\n", conv, language="python", archetype_name="model"
+    )
+    assert any(
+        x.rule == "inheritance-convention-violation" and x.expected == "models.Model" for x in v
+    )
+
+
+def test_inheritance_lint_clean_for_known_base():
+    from chameleon_mcp.lint_engine import lint_conventions
+
+    conv = {"inheritance": {"dominant_base": "models.Model", "frequency": 0.9}}
+    v = lint_conventions(
+        "class Widget(models.Model):\n    pass\n", conv, language="python", archetype_name="model"
+    )
+    assert not any(x.rule == "inheritance-convention-violation" for x in v)
+
+
+def test_inheritance_lint_ignores_plain_class():
+    from chameleon_mcp.lint_engine import lint_conventions
+
+    # A bare `class Foo:` is valid Python, not a missed inheritance.
+    conv = {"inheritance": {"dominant_base": "models.Model", "frequency": 0.9}}
+    v = lint_conventions("class Helper:\n    pass\n", conv, language="python")
+    assert not any(x.rule == "inheritance-convention-violation" for x in v)
+
+
+def test_inheritance_lint_not_fooled_by_docstring():
+    from chameleon_mcp.lint_engine import lint_conventions
+
+    conv = {"inheritance": {"dominant_base": "models.Model", "frequency": 0.9}}
+    content = '"""\nclass Widget(SomethingElse):\n    pass\n"""\nx = 1\n'
+    v = lint_conventions(content, conv, language="python")
+    assert not any(x.rule == "inheritance-convention-violation" for x in v)
