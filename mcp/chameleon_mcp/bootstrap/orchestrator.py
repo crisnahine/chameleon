@@ -2059,11 +2059,13 @@ def _bootstrap_single(
             json.dumps(rules_data, indent=2, sort_keys=True), encoding="utf-8"
         )
         # Symbol indexes back the phantom-symbol check and the cross-file edit
-        # advisory. Only TypeScript/JS files carry the export/import extras the
-        # builders read, so the indexes are TS-only; both are hashed into the
-        # trust SHA, so they are written inside this same atomic transaction.
-        # Best-effort: a build failure must not abort the whole profile commit.
-        if extractor.language == "typescript":
+        # advisory. TypeScript/JS and Python both carry the export/import extras
+        # the builders read (named_export_names / import_symbols); Ruby does not
+        # (no static named-export/import surface), so the indexes are built for TS
+        # + Python. Both are hashed into the trust SHA, so they are written inside
+        # this same atomic transaction. Best-effort: a build failure must not
+        # abort the whole profile commit.
+        if extractor.language in ("typescript", "python"):
             try:
                 from chameleon_mcp.symbol_index import (
                     build_exports_index,
@@ -2080,7 +2082,9 @@ def _bootstrap_single(
                 )
                 (txn_dir / "reverse_index.json").write_text(
                     json.dumps(
-                        build_reverse_index(parse_result.files, repo_root),
+                        build_reverse_index(
+                            parse_result.files, repo_root, language=extractor.language
+                        ),
                         indent=2,
                         sort_keys=True,
                     ),

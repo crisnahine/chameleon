@@ -39,8 +39,8 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] layering: `_resolve_python` dotted-relative resolver in import_graph.py
 
 ## PKG-3 — Cross-file intelligence (depends on PKG-1)
-- [ ] exports index for Python (named_export_names → exports_index.json)
-- [ ] reverse index for Python (import_symbols → reverse_index.json)
+- [x] exports index for Python (named_export_names → exports_index.json)
+- [x] reverse index for Python (import_symbols → reverse_index.json)
 - [x] phantom-import (relative import → file on disk) Python branch
 - [ ] phantom-symbol (imported name in target exports) Python
 - [ ] cross-file-importers (blast-radius advisory) Python

@@ -245,7 +245,48 @@ class Importer:
     line: int | None
 
 
-def make_module_resolver(root: Path) -> Callable[[str, Path], str | None]:
+_PY_INDEX_SUFFIXES = (".py", ".pyi")
+
+
+def resolve_python_index_key(base: Path, repo_root: Path) -> str | None:
+    """Map a resolved Python module base path to its repo-relative index key.
+
+    A module is ``base.py`` / ``base.pyi``; a package is ``base/__init__.py``.
+    Returns the resolved file's repo-relative POSIX path (the same key form the
+    exports index uses), or None when nothing resolves under the repo.
+    """
+    try:
+        s = str(base)
+        candidates = [Path(s + suf) for suf in _PY_INDEX_SUFFIXES]
+        candidates += [base / "__init__.py", base / "__init__.pyi"]
+        for cand in candidates:
+            if cand.is_file():
+                return cand.resolve().relative_to(repo_root).as_posix()
+        return None
+    except (ValueError, OSError):
+        return None
+
+
+def _python_module_base(module: str, importer_dir: Path, root: Path) -> Path:
+    """The filesystem base path a Python import module points at (no extension).
+
+    Relative (``.mod`` / ``..pkg.sub``) joins onto the importer's package walking
+    up one dir per extra dot; absolute (``pkg.sub``) is repo-root-relative (Python
+    packages import from the repo root).
+    """
+    if module.startswith("."):
+        dots = len(module) - len(module.lstrip("."))
+        rest = module[dots:]
+        base = importer_dir
+        for _ in range(dots - 1):
+            base = base.parent
+        return base / Path(rest.replace(".", "/")) if rest else base
+    return root / Path(module.replace(".", "/"))
+
+
+def make_module_resolver(
+    root: Path, language: str = "typescript"
+) -> Callable[[str, Path], str | None]:
     """Return ``resolve(module, importer_dir) -> rel_key | None`` for ``root``.
 
     ``root`` must be pre-resolved (``Path.resolve()``); passing a relative or
@@ -264,6 +305,15 @@ def make_module_resolver(root: Path) -> Callable[[str, Path], str | None]:
     Shared by the reverse index and the calls index so both resolve a
     specifier identically -- a target the one can see, the other can too.
     """
+    if language == "python":
+        # Python: relative (.mod / ..pkg) joins onto the importer's package,
+        # absolute (pkg.sub) is repo-root-relative; both probe .py/.pyi/__init__.
+        def _resolve_python(module: str, importer_dir: Path) -> str | None:
+            base = _python_module_base(module, importer_dir, root)
+            return resolve_python_index_key(base, root)
+
+        return _resolve_python
+
     # Imported lazily: phantom_imports imports this module for
     # resolve_index_key, so a top-level import here would be circular.
     from chameleon_mcp.phantom_imports import (
@@ -303,7 +353,7 @@ def make_module_resolver(root: Path) -> Callable[[str, Path], str | None]:
     return _resolve_module
 
 
-def build_reverse_index(files, repo_root: Path | str) -> dict:
+def build_reverse_index(files, repo_root: Path | str, language: str = "typescript") -> dict:
     """Build the ``reverse_index.json`` payload from parsed TypeScript/JS files.
 
     Inverts the import graph: for every named import an importer file carries
@@ -327,7 +377,7 @@ def build_reverse_index(files, repo_root: Path | str) -> dict:
     except OSError:
         root = Path(repo_root)
 
-    _resolve_module = make_module_resolver(root)
+    _resolve_module = make_module_resolver(root, language)
 
     # target_rel -> name -> set of (importer_rel, line)
     accum: dict[str, dict[str, set[tuple[str, int | None]]]] = {}
