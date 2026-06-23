@@ -1126,6 +1126,13 @@ _CONTRACT_METHOD_STOPLIST = frozenset(
 )
 _CONTRACT_METHOD_KINDS = frozenset({"method", "singleton_method", "staticmethod", "classmethod"})
 _CONTRACT_REQUIRED_METHODS_CAP = 3
+# Python's data-model dunders (__init__, __str__, __repr__, __eq__, __hash__, ...)
+# are the language's universal Object methods -- the same "writing a class, not a
+# contract" exclusion the Ruby stoplist encodes, but there are too many to
+# enumerate and new ones keep being added, so they are matched by shape. Django
+# recommends __str__ on every model and dataclasses synthesize __init__/__eq__,
+# so unfiltered these fill the required-methods cap and bury the real contract.
+_PY_DUNDER_RE = re.compile(r"^__\w+__$")
 
 
 def _contract_rec(by_name: dict[str, dict], cname: str) -> dict:
@@ -1176,7 +1183,11 @@ def _collect_contract_classes(files: list[ParsedFile], *, language: str) -> list
                 continue
             rec = _contract_rec(by_name, cname)
             mname = sig.get("name")
-            if mname and mname not in _CONTRACT_METHOD_STOPLIST:
+            if (
+                mname
+                and mname not in _CONTRACT_METHOD_STOPLIST
+                and not (language == "python" and _PY_DUNDER_RE.match(mname))
+            ):
                 rec["methods"].add(mname)
             base = sig.get("base_class")
             if base and not rec["base"]:

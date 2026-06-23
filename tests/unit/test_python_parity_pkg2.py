@@ -247,3 +247,47 @@ def test_inheritance_lint_not_fooled_by_docstring():
     content = '"""\nclass Widget(SomethingElse):\n    pass\n"""\nx = 1\n'
     v = lint_conventions(content, conv, language="python")
     assert not any(x.rule == "inheritance-convention-violation" for x in v)
+
+
+# --------------------------------------------------------------------------- #
+# Regression (cloud review): dunder methods must not fill the class-contract
+# required_methods cap, and a function-nested helper must not be flagged.
+# --------------------------------------------------------------------------- #
+
+
+def test_class_contract_excludes_python_dunders():
+    files = [
+        _pf(
+            f"app/m{i}.py",
+            extras={
+                "class_shapes": [{"name": f"User{i}", "bases": ["models.Model"]}],
+                "callable_signatures": [
+                    {"name": n, "kind": "method", "enclosing_class": f"User{i}"}
+                    for n in ("__init__", "__str__", "__repr__", "save", "get_absolute_url")
+                ],
+            },
+        )
+        for i in range(10)
+    ]
+    out = extract_class_contract_conventions(files, language="python")
+    req = out.get("required_methods") or []
+    assert "__init__" not in req and "__str__" not in req and "__repr__" not in req
+    # The real domain methods now surface instead of being squeezed out by dunders.
+    assert "save" in req or "get_absolute_url" in req
+
+
+def test_inheritance_lint_ignores_function_nested_helper():
+    from chameleon_mcp.lint_engine import lint_conventions
+
+    conv = {"inheritance": {"dominant_base": "models.Model", "frequency": 0.9}}
+    # Helper is nested in a function and appears BEFORE the top-level model.
+    src = (
+        "def make_validator():\n"
+        "    class Helper(BaseProto):\n"
+        "        pass\n"
+        "    return Helper\n\n\n"
+        "class MyModel(models.Model):\n"
+        "    pass\n"
+    )
+    v = lint_conventions(src, conv, language="python")
+    assert not any(x.rule == "inheritance-convention-violation" for x in v)
