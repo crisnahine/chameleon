@@ -45,10 +45,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] phantom-symbol (imported name in target exports) Python
 - [x] cross-file-importers (blast-radius advisory) Python
 - [x] removed-export-breaks-importers Python
-- [ ] calls index import grade (named/namespace import call edges) Python
-- [ ] forward definition hydration Python
+- [x] calls index import grade (named/namespace import call edges) Python
+- [x] forward definition hydration Python
 - [x] signature contract-diff (.py in _CONTRACT_DIFF_EXTS + signature_diff extractor)
-- [ ] get_callers/get_drift caller facts (unlocked by import grade)
+- [x] get_callers/get_drift caller facts (unlocked by import grade)
 - [x] signature index param/return type text (Python)
 - [x] doctor advisory-emission source-edit check (.py in _source_exts)
 

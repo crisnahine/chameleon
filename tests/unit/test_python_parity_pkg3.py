@@ -242,3 +242,94 @@ def test_removed_export_breaks_importers_python(tmp_path):
         "class Account:\n    pass\n", file_path=str(models), repo_root=tmp_path, language="python"
     )
     assert any(x.rule == "removed-export-breaks-importers" and x.expected == "User" for x in v)
+
+
+# --------------------------------------------------------------------------- #
+# Sub-step G: calls index import grade + forward definition hydration (Python).
+# --------------------------------------------------------------------------- #
+
+
+def test_calls_index_import_grade_python(tmp_path):
+    from chameleon_mcp.calls_index import build_calls_index
+    from chameleon_mcp.extractors.python import PythonExtractor
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "svc.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    # A bare call of a named import resolves to svc.py's closed export `run`.
+    (pkg / "views.py").write_text(
+        "from .svc import run\n\n\ndef handler():\n    return run()\n", encoding="utf-8"
+    )
+    files = PythonExtractor().parse_repo(tmp_path).files
+    index = build_calls_index(files, tmp_path, language="python")
+
+    entry = index["callees"]["pkg/svc.py"]["run"]
+    rows = entry["callers"]
+    assert any(r["path"] == "pkg/views.py" and r["grade"] == "import" for r in rows)
+
+
+def test_calls_index_member_grade_python(tmp_path):
+    from chameleon_mcp.calls_index import build_calls_index
+    from chameleon_mcp.extractors.python import PythonExtractor
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "util.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    # `import pkg.util as u; u.helper()` -> member call against the namespace
+    # import's closed export set.
+    (pkg / "views.py").write_text(
+        "import pkg.util as u\n\n\ndef handler():\n    return u.helper()\n", encoding="utf-8"
+    )
+    files = PythonExtractor().parse_repo(tmp_path).files
+    index = build_calls_index(files, tmp_path, language="python")
+
+    rows = index["callees"]["pkg/util.py"]["helper"]["callers"]
+    assert any(r["path"] == "pkg/views.py" and r["grade"] == "import" for r in rows)
+
+
+def test_calls_index_external_member_not_graded_python(tmp_path):
+    # `requests.get()` -- an external namespace -- must not produce a phantom edge.
+    from chameleon_mcp.calls_index import build_calls_index
+    from chameleon_mcp.extractors.python import PythonExtractor
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "views.py").write_text(
+        "import requests\n\n\ndef handler():\n    return requests.get('x')\n", encoding="utf-8"
+    )
+    files = PythonExtractor().parse_repo(tmp_path).files
+    index = build_calls_index(files, tmp_path, language="python")
+    # No in-repo callee for an external receiver.
+    assert "get" not in {n for names in index["callees"].values() for n in names}
+
+
+def test_hydrate_imported_definitions_python(tmp_path):
+    import json
+
+    from chameleon_mcp.extractors.python import PythonExtractor
+    from chameleon_mcp.symbol_signatures import (
+        build_symbol_signatures,
+        hydrate_imported_definitions,
+    )
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "svc.py").write_text(
+        "def fetch(a: int, b: str = 'x') -> bool:\n    return True\n", encoding="utf-8"
+    )
+    editing = pkg / "views.py"
+    editing.write_text("from .svc import fetch\n", encoding="utf-8")
+    files = PythonExtractor().parse_repo(tmp_path).files
+    (tmp_path / ".chameleon").mkdir()
+    (tmp_path / ".chameleon" / "symbol_signatures.json").write_text(
+        json.dumps(build_symbol_signatures(files, tmp_path)), encoding="utf-8"
+    )
+
+    out = hydrate_imported_definitions(tmp_path, [str(editing)])
+    blob = "\n".join(out)
+    # The imported symbol's signature is rendered for the reviewer.
+    assert "fetch(" in blob and "bool" in blob

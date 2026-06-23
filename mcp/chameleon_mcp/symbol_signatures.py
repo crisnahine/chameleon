@@ -221,6 +221,17 @@ def load_symbol_signatures(repo_root: Path | str | None) -> SymbolSignatures | N
 # Only TS-family files carry the named ``import_symbols`` rows this resolves; a
 # Ruby require has no named-binding to hydrate, and Ruby carries no types.
 _TS_IMPORT_EXTS = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"})
+_PY_IMPORT_EXTS = frozenset({".py", ".pyi"})
+
+
+def _language_for_path(abs_path) -> str | None:
+    """Resolver language for one edited file, by suffix; None when ungoverned."""
+    suffix = Path(abs_path).suffix.lower()
+    if suffix in _TS_IMPORT_EXTS:
+        return "typescript"
+    if suffix in _PY_IMPORT_EXTS:
+        return "python"
+    return None
 
 
 def render_imported_definition(name: str, entry: dict, target_rel: str) -> str:
@@ -262,13 +273,23 @@ def render_imported_definition(name: str, entry: dict, target_rel: str) -> str:
 
 
 def _parse_import_symbols(repo_root, abs_path) -> list[tuple[str, str]]:
-    """``[(imported_name, module_specifier)]`` for one TS-family edited file."""
-    if Path(abs_path).suffix.lower() not in _TS_IMPORT_EXTS:
+    """``[(imported_name, module_specifier)]`` for one TS-family or Python edited file.
+
+    The Python dump preserves a relative module's leading dots (``from .svc import
+    x`` -> ``.svc``), the exact form the Python module resolver consumes.
+    """
+    lang = _language_for_path(abs_path)
+    if lang is None:
         return []
     try:
-        from chameleon_mcp.extractors.typescript import TypeScriptExtractor
+        if lang == "python":
+            from chameleon_mcp.extractors.python import PythonExtractor
 
-        result = TypeScriptExtractor().parse_repo(Path(repo_root), paths=[Path(abs_path)])
+            result = PythonExtractor().parse_repo(Path(repo_root), paths=[Path(abs_path)])
+        else:
+            from chameleon_mcp.extractors.typescript import TypeScriptExtractor
+
+            result = TypeScriptExtractor().parse_repo(Path(repo_root), paths=[Path(abs_path)])
     except Exception:
         return []
     rows: list[tuple[str, str]] = []
@@ -284,9 +305,9 @@ def _parse_import_symbols(repo_root, abs_path) -> list[tuple[str, str]]:
 def hydrate_imported_definitions(repo_root, edited_abs_paths, *, max_items: int = 20) -> list[str]:
     """Definition signatures of the symbols the edited files import, for the judge.
 
-    For each edited TS file, resolves every named import to its in-repo defining
-    module and, when that module's symbol is in the signature index, renders the
-    symbol's signature. Bounded by ``max_items`` and de-duplicated per
+    For each edited TS or Python file, resolves every named import to its in-repo
+    defining module and, when that module's symbol is in the signature index,
+    renders the symbol's signature. Bounded by ``max_items`` and de-duplicated per
     (module, name). Fail-open: returns [] when the index is absent or anything
     raises. Tool/Stop-time only -- it spawns the extractor to read imports.
     """
@@ -297,11 +318,24 @@ def hydrate_imported_definitions(repo_root, edited_abs_paths, *, max_items: int 
         from chameleon_mcp.symbol_index import make_module_resolver
 
         root = Path(repo_root).resolve()
-        resolver = make_module_resolver(root)
+        # One resolver per language: a TS specifier and a Python dotted module
+        # resolve by different rules, so each edited file uses the resolver for
+        # its own suffix.
+        resolvers: dict[str, object] = {}
+
+        def _resolver_for(lang: str):
+            if lang not in resolvers:
+                resolvers[lang] = make_module_resolver(root, lang)
+            return resolvers[lang]
+
         out: list[str] = []
         seen: set[tuple[str, str]] = set()
         for ap in edited_abs_paths or ():
             ap = Path(ap)
+            lang = _language_for_path(ap)
+            if lang is None:
+                continue
+            resolver = _resolver_for(lang)
             importer_dir = ap.parent
             for name, module in _parse_import_symbols(repo_root, ap):
                 target_rel = resolver(module, importer_dir)
