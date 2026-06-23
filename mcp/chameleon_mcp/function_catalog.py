@@ -194,6 +194,7 @@ def _param_names(params: object) -> list[str]:
 
 _RUBY_BLOCK_PARAMS_RE = re.compile(r"(?:\bdo\b|\{)\s*\|([^|\n]*)\|")
 _TS_ARROW_PARAMS_RE = re.compile(r"\(([^()]*)\)\s*=>")
+_PY_LAMBDA_PARAMS_RE = re.compile(r"\blambda\b([^:\n]*):")
 _BLOCK_PARAM_IDENT_RE = re.compile(r"[A-Za-z_$][\w$]*")
 
 
@@ -204,6 +205,8 @@ def _lang_from_path(path: str) -> str | None:
         return "ruby"
     if p.endswith((".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")):
         return "typescript"
+    if p.endswith((".py", ".pyi")):
+        return "python"
     return None
 
 
@@ -211,12 +214,15 @@ def _block_param_names(text: str, language: str | None) -> list[str]:
     """Ordered block/closure parameter identifiers declared inside a body.
 
     The dumper records only the callable's own ``def`` / ``function`` signature
-    params, so block parameters (Ruby ``each do |row|``, a TS arrow callback)
-    never reach the param rename. Best-effort over the collapsed body text: Ruby
-    ``do |..|`` / ``{ |..| }`` block params, and simple untyped TypeScript arrow
-    params. Typed/generic/destructured/defaulted TS param lists are skipped so a
-    misparse cannot corrupt the fingerprint; block-LOCAL variables are not
-    collected (renaming arbitrary locals would over-merge distinct bodies).
+    params, so block parameters (Ruby ``each do |row|``, a TS arrow callback, a
+    Python ``lambda x:``) never reach the param rename. Best-effort over the
+    collapsed body text: Ruby ``do |..|`` / ``{ |..| }`` block params, simple
+    untyped TypeScript arrow params, and simple Python lambda params.
+    Typed/generic/destructured/defaulted TS param lists, and defaulted/starred
+    Python lambda lists, are skipped so a misparse cannot corrupt the
+    fingerprint; block-LOCAL variables (including comprehension targets, which
+    are locals not parameters) are not collected (renaming arbitrary locals
+    would over-merge distinct bodies).
     """
     names: list[str] = []
     if language == "ruby":
@@ -235,6 +241,18 @@ def _block_param_names(text: str, language: str | None) -> list[str]:
                 continue
             for tok in group.split(","):
                 tok = tok.strip().lstrip(".").strip()
+                im = _BLOCK_PARAM_IDENT_RE.match(tok)
+                if im and im.group(0) != "_":
+                    names.append(im.group(0))
+    elif language == "python":
+        for m in _PY_LAMBDA_PARAMS_RE.finditer(text):
+            group = m.group(1)
+            # Skip defaulted/starred lists — a default value can carry tokens
+            # that are not parameter names, and *args/**kwargs are not renamed.
+            if any(c in group for c in "=*"):
+                continue
+            for tok in group.split(","):
+                tok = tok.strip()
                 im = _BLOCK_PARAM_IDENT_RE.match(tok)
                 if im and im.group(0) != "_":
                     names.append(im.group(0))

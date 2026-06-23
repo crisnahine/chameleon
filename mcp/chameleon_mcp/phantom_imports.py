@@ -1091,7 +1091,7 @@ def lint_cross_file_imports(
     """Cross-file context for the edited module, read from the prebuilt reverse
     index only (no caller is re-parsed).
 
-    Two advisory findings, both TS-only and silent on any ambiguity:
+    Two advisory findings (TypeScript and Python), silent on any ambiguity:
 
     - ``cross-file-importers``: for each name the file currently exports that has
       indexed importers, "N files import `name` from this module" -- the
@@ -1101,9 +1101,10 @@ def lint_cross_file_imports(
       severity, but advisory at edit time (Stop/PR-review consume the same index
       for the gate-eligible surfacing).
 
-    Returns ``[]`` when the language isn't TypeScript, the path can't be
-    resolved, the reverse index is absent/corrupt, or the file's export set is
-    open (``export * from``). Suppress with ``// chameleon-ignore <rule>``.
+    Returns ``[]`` when the language is neither TypeScript nor Python, the path
+    can't be resolved, the reverse index is absent/corrupt, or the file's export
+    set is open (``export * from``). Suppress with ``// chameleon-ignore <rule>``
+    (``# chameleon-ignore <rule>`` in Python).
     """
     if language not in ("typescript", "python") or not file_path:
         return []

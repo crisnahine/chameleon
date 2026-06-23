@@ -241,10 +241,17 @@ def build_shadow_report(
         # precedence.
         sessions[rule_key].add(sess or file_rel or "?")
         if len(sample) < sample_cap:
+            # The sampled path traces back to a repo file path, which is
+            # attacker-influenceable and can cross-encode a tag-boundary token
+            # across the separator, so the displayed value is sanitized before
+            # it reaches the model. The raw file_rel still keys the distinct
+            # accounting sets above (those are dedup counts, never displayed).
+            from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
             sample.append(
                 {
                     "rule": rule_key,
-                    "file": file_rel,
+                    "file": sanitize_for_chameleon_context(file_rel) if file_rel else file_rel,
                     "line": row.get("line"),
                     "ts": row.get("ts"),
                 }

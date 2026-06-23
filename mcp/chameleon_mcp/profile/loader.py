@@ -33,15 +33,19 @@ MAX_SUPPORTED_SCHEMA_VERSION = 8
 # names it so a dead-looking install always explains how to proceed.
 ALLOW_TMP_REPO_ENV = "CHAMELEON_ALLOW_TMP_REPO"
 
-# Cache value is (key_dir_mtime_ns, (resolved_root, refusal_reason)). Inner tuple:
-# exactly one side is non-None when the walk found a candidate, both None when no
-# marker was found (the refusal lets detect_repo say WHY a root was rejected).
-# The mtime stamp lets a profile created directly in the key dir self-heal
-# without an explicit invalidate (mirrors _PROFILE_CACHE); the bare (None, None)
-# "no marker" result is deliberately NOT cached, so an out-of-band .chameleon /
-# .git (a `git worktree add`, a child gaining its own profile) is not masked for
-# the long-lived daemon's lifetime.
-_REPO_ROOT_CACHE: dict[str, tuple[int | None, tuple[Path | None, str | None]]] = {}
+# Cache value is (key_dir_mtime_ns, allow_tmp, (resolved_root, refusal_reason)).
+# Inner tuple: exactly one side is non-None when the walk found a candidate, both
+# None when no marker was found (the refusal lets detect_repo say WHY a root was
+# rejected). The mtime stamp lets a profile created directly in the key dir
+# self-heal without an explicit invalidate (mirrors _PROFILE_CACHE); the bare
+# (None, None) "no marker" result is deliberately NOT cached, so an out-of-band
+# .chameleon / .git (a `git worktree add`, a child gaining its own profile) is not
+# masked for the long-lived daemon's lifetime. allow_tmp records the
+# CHAMELEON_ALLOW_TMP_REPO state the entry was resolved under: the temp-dir /
+# world-writable refusal depends on that env, so a flip of it (in either
+# direction) within a long-lived daemon must miss the cache rather than serve a
+# stale refusal or a stale relaxed positive.
+_REPO_ROOT_CACHE: dict[str, tuple[int | None, bool, tuple[Path | None, str | None]]] = {}
 
 
 def clear_repo_root_cache() -> None:
@@ -268,20 +272,23 @@ def find_repo_root_with_refusal(file_path: Path) -> tuple[Path | None, str | Non
         key_mtime: int | None = current.stat().st_mtime_ns
     except OSError:
         key_mtime = None
+    allow_tmp = os.environ.get(ALLOW_TMP_REPO_ENV) == "1"
     cached = _REPO_ROOT_CACHE.get(cache_key)
-    if cached is not None and cached[0] == key_mtime:
-        return cached[1]
+    if cached is not None and cached[0] == key_mtime and cached[1] == allow_tmp:
+        return cached[2]
 
     result = _find_repo_root_uncached(current)
     # Do not cache a bare "no marker" result: an out-of-band .chameleon / .git
     # created later (a `git worktree add`, a child gaining its own profile) would
     # otherwise be masked for the cache's lifetime. Stamp positives (and
-    # refusals) with the key dir's mtime so a profile created directly in this
-    # dir self-heals. A .chameleon created at an INTERMEDIATE ancestor is the
-    # known residual (this dir's mtime is unchanged); an invalidate_cache IPC or
-    # the daemon idle-restart clears it.
+    # refusals) with the key dir's mtime AND the CHAMELEON_ALLOW_TMP_REPO state so
+    # a profile created directly in this dir self-heals and an env flip that
+    # changes the temp-dir / world-writable verdict is honored without a restart.
+    # A .chameleon created at an INTERMEDIATE ancestor is the known residual (this
+    # dir's mtime is unchanged); an invalidate_cache IPC or the daemon
+    # idle-restart clears it.
     if result != (None, None):
-        _REPO_ROOT_CACHE[cache_key] = (key_mtime, result)
+        _REPO_ROOT_CACHE[cache_key] = (key_mtime, allow_tmp, result)
     return result
 
 

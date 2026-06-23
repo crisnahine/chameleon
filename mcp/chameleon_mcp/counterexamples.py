@@ -153,7 +153,7 @@ def _heredoc_terminator(raw: str) -> str | None:
     return m.group("id") if _HEREDOC_POS_RE.search(raw[: m.start()]) else None
 
 
-def _import_of(over: str) -> re.Pattern[str]:
+def _import_of(over: str, language: str | None = None) -> re.Pattern[str]:
     """A regex matching a real import of ``over``.
 
     Two forms. The QUOTED form (TS/Ruby) requires the discouraged module quoted
@@ -165,16 +165,26 @@ def _import_of(over: str) -> re.Pattern[str]:
     not match ``requests_oauthlib`` while ``requests.adapters`` still does. The
     line anchor keeps ``from . import requests`` (a name import, not a module
     import) from matching the bare ``import`` form.
+
+    The unquoted Python form is included only when scanning a Python file
+    (``language == "python"``) or when the language is unspecified. A TypeScript
+    default import that aliases the preferred module to the discouraged module's
+    name (``import moment from "dayjs"`` after teaching "prefer dayjs over
+    moment") would otherwise match the bare binding name and capture a line that
+    imports the RIGHT module, so the unquoted form must not run against
+    TS/Ruby sources.
     """
     esc = re.escape(over)
     quoted = (
         r"""\b(?:from|import|require|require_relative|load)\b\s*\(?\s*['"]""" + esc + r"""['"]"""
     )
+    if language is not None and language != "python":
+        return re.compile(quoted)
     py_unquoted = r"""^(?:from|import)\s+""" + esc + r"""(?=[\s.,]|$)"""
     return re.compile(quoted + "|" + py_unquoted)
 
 
-def _find_import_line(content: str, over: str) -> str | None:
+def _find_import_line(content: str, over: str, language: str | None = None) -> str | None:
     """The first import/require line in ``content`` that imports ``over``, or None.
 
     Real-import filters: skip comment lines (``//``, ``/* */``, JSDoc ``*``, Ruby
@@ -185,10 +195,14 @@ def _find_import_line(content: str, over: str) -> str | None:
     a multi-line construct -- a TS/JS template literal, a Ruby heredoc, or a
     ``/* */`` block comment -- is not mistaken for a real import. Returns the
     stripped line, or None.
+
+    ``language`` selects which import forms apply: a non-Python language drops the
+    unquoted Python form so a TS/Ruby alias of the preferred module is not
+    mis-captured (see :func:`_import_of`).
     """
     if not over:
         return None
-    pat = _import_of(over)
+    pat = _import_of(over, language)
     open_quote: str | None = None  # template/string left open by a prior line
     in_block_comment = False  # inside an unclosed /* ... */
     heredoc_end: str | None = None  # Ruby heredoc terminator we are waiting for
@@ -320,6 +334,8 @@ def capture_counterexamples_in_repo(repo_root: Path | str, competing_pairs: list
     teach on the largest monorepos snappy without missing an off-pattern that sits
     in a late-scanned directory.
     """
+    from chameleon_mcp.lint_engine import detect_language
+
     if not isinstance(competing_pairs, list) or not competing_pairs:
         return []
     overs: list[tuple[str, object]] = []
@@ -343,10 +359,14 @@ def capture_counterexamples_in_repo(repo_root: Path | str, competing_pairs: list
         text = _read_member_text(path)
         if text is None:
             continue
+        # An unrecognized source extension resolves to "", which is not "python",
+        # so the unquoted Python import form (Python-only by design) does not run
+        # against it -- only the language-agnostic quoted form does.
+        language = detect_language(str(path)) or ""
         for over, preferred in overs:
             if over in found:
                 continue
-            snippet = _find_import_line(text, over)
+            snippet = _find_import_line(text, over, language)
             if snippet:
                 found[over] = _make_entry(over, snippet, preferred)
     # Preserve the taught pair order, capped.

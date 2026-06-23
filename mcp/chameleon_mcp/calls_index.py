@@ -14,13 +14,15 @@ Grades:
   per-class scoping is impossible). The member lookup is file-scoped: a
   this-call whose method lives on a base class in another file yields no
   edge rather than a guess (cross-file inheritance is out of scope).
-- ``import`` - TS only: a bare or new call of a named import (matched on
-  its LOCAL binding name -- ``import { x as y }`` binds ``y`` -- with the
-  edge recorded under the EXPORTED name it resolves to), or ns.member() /
-  new ns.Foo() through a runtime namespace import, resolved with the same
-  specifier machinery as the reverse index; the callee must exist in the
-  target's CLOSED export set. An open (barrel) set proves nothing, so it
-  yields no edge.
+- ``import`` - TypeScript and Python: a bare or new call of a named import
+  (matched on its LOCAL binding name -- ``import { x as y }`` binds ``y`` --
+  with the edge recorded under the EXPORTED name it resolves to), or
+  ns.member() / new ns.Foo() through a runtime namespace import, resolved with
+  the same specifier machinery as the reverse index; the callee must exist in
+  the target's CLOSED export set. An open (barrel) set proves nothing, so it
+  yields no edge. ``new`` is TypeScript-only (Python has no construction
+  call); Python contributes bare calls of named imports and ``recv.attr()``
+  through a runtime namespace import (``import a.b as x; x.f()``).
 - ``constant_receiver`` - Ruby only: Const.method where Const matches a
   class key exactly. Keys are fully qualified (``enclosing_class_path``,
   module nesting included; old dumps fall back to the lexical class name),
@@ -149,8 +151,12 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             # joined with "::"); keying on it stops a short class name from
             # matching across namespaces. Rows without it (old dumps, TS) fall
             # back to the lexical class name.
-            path = row.get("enclosing_class_path")
-            cls = path if isinstance(path, str) and path else row.get("enclosing_class")
+            class_path = row.get("enclosing_class_path")
+            cls = (
+                class_path
+                if isinstance(class_path, str) and class_path
+                else row.get("enclosing_class")
+            )
             if isinstance(cls, str) and cls:
                 kinds = (
                     class_members.setdefault(rel, {}).setdefault(cls, {}).setdefault(name, set())

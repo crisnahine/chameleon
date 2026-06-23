@@ -534,14 +534,28 @@ def _blank_ruby_percent_literals(content: str) -> str:
     return _RUBY_PERCENT_LITERAL.sub(_blank_match_to_spaces, content)
 
 
+_RUBY_STR_OR_LINE_COMMENT = re.compile(
+    r'"(?:\\.|[^"\\])*"'  # double-quoted string (Ruby strings may span newlines)
+    r"|'(?:\\.|[^'\\])*'"  # single-quoted string
+    r"|#[^\n]*",  # line comment
+    re.DOTALL,
+)
+
+
 def _strip_ruby_strings_and_comments(content: str) -> str:
-    out = _RUBY_BLOCK_COMMENT.sub(_blank_match_to_spaces, content)
-    out = _RUBY_LINE_COMMENT.sub(_blank_match_to_spaces, out)
-    out = _blank_ruby_heredocs(out)
-    out = _RUBY_STRING_DQ.sub(_blank_match_to_spaces, out)
-    out = _RUBY_STRING_SQ.sub(_blank_match_to_spaces, out)
-    # After the quote forms: a `%` inside a normal "..."/'...' string is already
-    # blanked and cannot start a literal, so only true percent-literals remain.
+    # Heredocs and =begin/=end block comments are unambiguous multi-line spans;
+    # blank them first so their bodies can't open a stray string/comment below.
+    out = _blank_ruby_heredocs(content)
+    out = _RUBY_BLOCK_COMMENT.sub(_blank_match_to_spaces, out)
+    # Strings and line comments are resolved in ONE alternation pass so that
+    # position order decides which claims a shared character: a `#` inside a
+    # "..."/'...' string is consumed by the string (not read as a comment opener,
+    # which would leave the quote dangling and pair it forward to a later line),
+    # and a `"` inside a `# ...` comment is consumed by the comment. Stripping
+    # comments and strings as separate sequential passes mis-handles whichever
+    # construct the second pass would have claimed.
+    out = _RUBY_STR_OR_LINE_COMMENT.sub(_blank_match_to_spaces, out)
+    # Percent-literals last: a `%` inside a now-blanked string can't start one.
     return _blank_ruby_percent_literals(out)
 
 

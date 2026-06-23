@@ -172,13 +172,24 @@ def reconstruct_diff(repo_root: Path, abs_path: str, rel_path: str) -> FileDiff 
 
 
 def _load_guidance(profile_dir: Path) -> str:
-    """Return the combined idioms + principles text, length-capped, or ''."""
+    """Return the combined idioms + principles text, length-capped, or ''.
+
+    idioms.md / principles.md are attacker-controllable committed artifacts, so
+    their text is run through sanitize_for_chameleon_context before it enters the
+    reviewer prompt -- the same scrub every other artifact-derived prompt string
+    gets, keeping the invariant uniform. Sanitizing before the truncation cap
+    means the cap bites on the final neutralized text.
+    """
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
     parts: list[str] = []
     for name, label in (("idioms.md", "Team idioms"), ("principles.md", "Principles")):
         try:
             fp = profile_dir / name
             if fp.is_file():
-                text = fp.read_text(encoding="utf-8", errors="replace").strip()
+                text = sanitize_for_chameleon_context(
+                    fp.read_text(encoding="utf-8", errors="replace").strip()
+                )
                 if text:
                     parts.append(
                         f"{label}:\n"

@@ -491,8 +491,9 @@ def _dispatch(method: str, payload: dict) -> dict:
         clear_profile_cache()
         return {"ok": True, "cleared": True}
 
-    if method == "ping":
-        return {"ok": True, "ts": time.time()}
+    # ping never reaches the dispatcher: _handle_connection answers it directly
+    # with the full status reply (ts + last_request_at + request_count) and
+    # returns before dispatching, so it is intentionally absent here.
 
     return {"error": f"unknown method {method!r}"}
 

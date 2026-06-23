@@ -304,29 +304,32 @@ def build_duplication_prompt(findings: list, semantic: bool = False) -> str:
         # only those that re-implement the existing function's intent.
         header = (
             "You are reviewing whether newly-edited functions re-implement "
-            "existing ones. Each item pairs a NEW function with an EXISTING "
-            "candidate surfaced by name/shape similarity; their bodies may "
-            "differ. Return ONLY a JSON array; one object per item that "
-            're-implements the same intent: {"new_name": "<name>", '
-            '"is_duplicate": true}. Omit items that merely look similar but do '
-            "a different job. No prose outside the JSON array.\n\n"
+            "existing ones. Each item has an id and pairs a NEW function with an "
+            "EXISTING candidate surfaced by name/shape similarity; their bodies "
+            "may differ. Return ONLY a JSON array; one object per item that "
+            're-implements the same intent: {"id": <id>, "is_duplicate": true}. '
+            "Omit items that do a different job. No prose outside the JSON "
+            "array.\n\n"
         )
     else:
         header = (
             "You are reviewing whether newly-edited functions re-implement existing "
-            "ones. For each item, the NEW function body is shown with the EXISTING "
-            "function it body-matched. Return ONLY a JSON array; one object per item "
-            'that is a real re-implementation: {"new_name": "<name>", "is_duplicate": '
-            "true}. Omit items that merely look similar but are not the same intent. "
-            "No prose outside the JSON array.\n\n"
+            "ones. Each item has an id; the NEW function body is shown with the "
+            "EXISTING function it body-matched. Return ONLY a JSON array; one "
+            'object per item that is a real re-implementation: {"id": <id>, '
+            '"is_duplicate": true}. Omit items that are not the same intent. No '
+            "prose outside the JSON array.\n\n"
         )
     parts = [header]
     used = len(header)
-    for f in findings:
+    # The id is the finding's position in this list; _coerce_confirmed maps it
+    # back the same way. Echoing a stable integer keeps two functions that share
+    # a name in different files distinct.
+    for idx, f in enumerate(findings):
         excerpt = sanitize_for_chameleon_context(f.excerpt)
         existing_excerpt = sanitize_for_chameleon_context(f.existing_excerpt or "")
         block = (
-            f"### new: {f.new_name} ({f.new_file}:{f.line})\n"
+            f"### id {idx}: {f.new_name} ({f.new_file}:{f.line})\n"
             f"new body:\n{excerpt}\n"
             f"existing: {f.existing_name} ({f.existing_file})\n"
             f"existing body:\n{existing_excerpt or '(source unavailable)'}\n\n"
@@ -339,18 +342,44 @@ def build_duplication_prompt(findings: list, semantic: bool = False) -> str:
 
 
 def _coerce_confirmed(arr, findings: list) -> list:
-    by_name = {f.new_name: f for f in findings}
+    """Map the judge's confirmation echo back to Finding objects.
+
+    The judge echoes the per-item integer id assigned by build_duplication_prompt;
+    that id is the finding's position in this same list, so it disambiguates two
+    findings sharing a new_name. A new_name echo is still honored as a fallback
+    for a judge that omits the id, and the fallback resolves to the first
+    not-yet-confirmed finding with that name so several same-named findings each
+    get their own confirmation.
+    """
     confirmed: list = []
-    seen: set = set()
+    confirmed_idx: set = set()
+
+    def _confirm(idx: int) -> None:
+        if 0 <= idx < len(findings) and idx not in confirmed_idx:
+            confirmed_idx.add(idx)
+            confirmed.append(findings[idx])
+
     for item in arr or []:
         if not isinstance(item, dict):
             continue
         if item.get("is_duplicate") is not True:
             continue
+        raw_id = item.get("id")
+        if isinstance(raw_id, bool):
+            raw_id = None
+        if isinstance(raw_id, int):
+            _confirm(raw_id)
+            continue
+        if isinstance(raw_id, str) and raw_id.strip().lstrip("-").isdigit():
+            _confirm(int(raw_id.strip()))
+            continue
         name = item.get("new_name")
-        if name in by_name and name not in seen:
-            seen.add(name)
-            confirmed.append(by_name[name])
+        if name is None:
+            continue
+        for idx, f in enumerate(findings):
+            if f.new_name == name and idx not in confirmed_idx:
+                _confirm(idx)
+                break
     return confirmed
 
 

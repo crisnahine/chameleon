@@ -25,6 +25,7 @@ Two libcst specifics shape the port:
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import sys
@@ -33,7 +34,6 @@ import libcst as cst
 from libcst.metadata import MetadataWrapper, PositionProvider
 
 MAX_AST_NODES = 50_000
-MAX_PARSE_DIAGNOSTICS = 20
 MAX_FILE_SIZE = 1_000_000
 # A real module declares a few dozen callables; cap the recorded headers so one
 # outlier file cannot bloat the dump record (consensus needs a sample, not all).
@@ -263,16 +263,21 @@ class _Collector(cst.CSTVisitor):
             name = node.name.value
             bases = _base_names(node)
             path = ".".join(self._nesting + [name])
-            self.class_shapes.append(
-                {
-                    "name": name,
-                    "bases": bases,
-                    # `extends` mirrors ts_dump's single-base string so consumers
-                    # that read the TS-shaped class_shapes pick up the base too.
-                    "extends": bases[0] if bases else None,
-                    "decorators": _decorator_targets(node.decorators),
-                }
-            )
+            # Capped like callable_signatures and call_sites: a generated megafile
+            # can declare thousands of trivial classes, and the recorded heritage
+            # sample feeds class-contract derivation, which needs a sample not all.
+            # ts_dump gates the equivalent push on the same MAX_CALLABLE_SIGNATURES.
+            if len(self.class_shapes) < MAX_CALLABLE_SIGNATURES:
+                self.class_shapes.append(
+                    {
+                        "name": name,
+                        "bases": bases,
+                        # `extends` mirrors ts_dump's single-base string so consumers
+                        # that read the TS-shaped class_shapes pick up the base too.
+                        "extends": bases[0] if bases else None,
+                        "decorators": _decorator_targets(node.decorators),
+                    }
+                )
             self._classes.append({"name": name, "base": bases[0] if bases else None, "path": path})
             self._nesting.append(name)
         elif isinstance(node, cst.FunctionDef):
@@ -513,6 +518,104 @@ def _module_exports(module: cst.Module, file_path: str | None = None) -> tuple[l
     return sorted(names), open_set
 
 
+def _ast_dotted_name(node) -> str | None:
+    """Flatten a stdlib-``ast`` Name/Attribute into a dotted string, else None."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _ast_dotted_name(node.value)
+        return f"{base}.{node.attr}" if base else None
+    return None
+
+
+def _recover_with_ast(file_path: str, content: str) -> dict | None:
+    """Degraded record from the running interpreter's parser when libcst rejects.
+
+    libcst's grammar is coupled to its pinned release, so valid Python written
+    in syntax newer than that grammar is refused wholesale even though the
+    interpreter running this dump accepts it. Rather than drop such a file (the
+    TS/Ruby dumps keep contributing through a bounded number of recoverable parse
+    errors), re-parse with stdlib ``ast`` and, when it succeeds, emit the
+    import/export surface so the file still contributes its symbol hints. The
+    body-shape, signature, and call-site fields stay empty: that path is the
+    libcst CST walk, which this tree cannot drive. ``parse_diagnostics_count`` is
+    1 to mark the record as recovered, not a clean parse. The export set is left
+    OPEN: this scan only reads top-level bindings, not the conditional bodies
+    (``if TYPE_CHECKING``, ``try/except ImportError`` fallbacks) the authoritative
+    ``_module_exports`` walk descends into, so the recovered name set is a
+    non-authoritative hint and must never drive the phantom-symbol absence check.
+    Returns None when the interpreter also rejects the file (a genuine syntax
+    error, not grammar skew).
+    """
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
+        return None
+
+    names: set[str] = set()
+    import_specifiers: list[list] = []
+    top_level_kinds: list[str] = []
+
+    for stmt in tree.body:
+        top_level_kinds.append(type(stmt).__name__)
+        if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names.add(stmt.name)
+        elif isinstance(stmt, ast.Import):
+            for alias in stmt.names:
+                if alias.name:
+                    import_specifiers.append([alias.name, "namespace"])
+                bound = alias.asname or (alias.name.split(".")[0] if alias.name else None)
+                if bound:
+                    names.add(bound)
+        elif isinstance(stmt, ast.ImportFrom):
+            dots = "." * (stmt.level or 0)
+            target = dots + (stmt.module or "")
+            if target:
+                star = any(a.name == "*" for a in stmt.names)
+                import_specifiers.append([target, "namespace" if star else "named"])
+            for alias in stmt.names:
+                if alias.name != "*":
+                    names.add(alias.asname or alias.name)
+        elif isinstance(stmt, ast.Assign):
+            for t in stmt.targets:
+                if isinstance(t, ast.Name):
+                    names.add(t.id)
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            names.add(stmt.target.id)
+
+    top_classes = [s for s in tree.body if isinstance(s, ast.ClassDef)]
+    top_funcs = [s for s in tree.body if isinstance(s, ast.FunctionDef | ast.AsyncFunctionDef)]
+    if len(top_classes) == 1 and not top_funcs:
+        default_export_kind = "ClassDef"
+    elif len(top_funcs) == 1 and not top_classes:
+        default_export_kind = "FunctionDef"
+    else:
+        default_export_kind = None
+
+    return {
+        "path": file_path,
+        "content_first_200_bytes": content[:200],
+        "top_level_node_kinds": top_level_kinds,
+        "default_export_kind": default_export_kind,
+        "named_export_count": len(top_classes) + len(top_funcs),
+        "named_export_names": sorted(names),
+        # Open: a top-level-only scan cannot authoritatively enumerate the closed
+        # export set, so the absence check must skip this recovered record.
+        "export_set_open": True,
+        "import_specifiers": import_specifiers,
+        "import_symbols": [],
+        "namespace_imports": [],
+        "has_jsx": False,
+        "parse_diagnostics_count": 1,
+        "function_scopes": [],
+        "callable_signatures": [],
+        "class_shapes": [],
+        "call_sites": [],
+        "call_sites_total": 0,
+        "call_sites_truncated": False,
+    }
+
+
 def extract_file(file_path: str) -> dict:
     try:
         stat = os.lstat(file_path)
@@ -534,8 +637,14 @@ def extract_file(file_path: str) -> dict:
     try:
         module = cst.parse_module(content)
     except cst.ParserSyntaxError as e:
+        recovered = _recover_with_ast(file_path, content)
+        if recovered is not None:
+            return recovered
         return {"path": file_path, "error": "parse_error", "message": str(e)}
     except Exception as e:  # pragma: no cover - defensive: any non-syntax parse fault
+        recovered = _recover_with_ast(file_path, content)
+        if recovered is not None:
+            return recovered
         return {"path": file_path, "error": "parse_error", "message": str(e)}
 
     collector = _Collector()
@@ -544,6 +653,12 @@ def extract_file(file_path: str) -> dict:
     except _NodeCeilingExceeded:
         return {"path": file_path, "error": "ast_node_ceiling_exceeded"}
     except RecursionError as e:
+        return {"path": file_path, "error": "walk_error", "message": str(e)}
+    except Exception as e:
+        # A metadata-resolution fault or an unexpected node shape during the walk
+        # is a walk-time failure, not a top-level extractor crash. Classify it as
+        # walk_error to match ts_dump / prism_dump, which already distinguish the
+        # two so the skipped-file reason is actionable.
         return {"path": file_path, "error": "walk_error", "message": str(e)}
 
     top_classes = [s for s in module.body if isinstance(s, cst.ClassDef)]

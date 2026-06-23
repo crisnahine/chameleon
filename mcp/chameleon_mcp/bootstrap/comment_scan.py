@@ -51,6 +51,21 @@ _RUBY_CODE_KINDS = frozenset(
         "DefNode",
     }
 )
+# Python structural kinds that always read as commented-out code. The kinds are
+# the dumper's top-level node names: libcst emits FunctionDef for sync and async
+# defs (async is an attribute, not a separate node), the stdlib-ast fallback
+# emits AsyncFunctionDef separately, so both are accepted. A commented-out
+# import surfaces in import_specifiers and is caught by the same fall-through
+# Ruby uses for its require-family calls. Bare expression/assignment kinds are
+# NOT here: prose parses into them with zero diagnostics and would flood the
+# advisory with false positives.
+_PY_CODE_KINDS = frozenset(
+    {
+        "ClassDef",
+        "FunctionDef",
+        "AsyncFunctionDef",
+    }
+)
 
 # A span must reach this many characters to be worth a parse round-trip; below
 # it the false-positive cost (a one-word comment that happens to parse)
@@ -64,6 +79,8 @@ def _ext_for(language: str) -> str | None:
         return ".ts"
     if language == "ruby":
         return ".rb"
+    if language == "python":
+        return ".py"
     return None
 
 
@@ -74,12 +91,18 @@ def _span_is_code(parsed_file, language: str) -> bool:
     TS: any top-level declaration/import kind. Ruby: a class/module/def, OR a
     require-family call (which the parser records in import_specifiers) — a bare
     CallNode from prose is rejected because Prism parses prose without errors.
+    Python: a class/def, OR an import (recorded in import_specifiers) — a bare
+    expression/assignment is rejected because prose parses without diagnostics.
     """
     if parsed_file.parse_diagnostics_count != 0:
         return False
     kinds = parsed_file.top_level_node_kinds
     if language == "typescript":
         return any(kind in _TS_CODE_KINDS for kind in kinds)
+    if language == "python":
+        if any(kind in _PY_CODE_KINDS for kind in kinds):
+            return True
+        return bool(getattr(parsed_file, "import_specifiers", ()))
     if any(kind in _RUBY_CODE_KINDS for kind in kinds):
         return True
     return bool(getattr(parsed_file, "import_specifiers", ()))
