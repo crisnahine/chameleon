@@ -239,6 +239,11 @@ _RUBY_DECL_METHOD_RE = re.compile(
 _RUBY_DECL_CLASS_RE = re.compile(r"^[ \t]*(?:class|module)\s+([A-Z]\w*(?:::\w+)*)", re.MULTILINE)
 # Constant assignment; `[^=~]` keeps `==` / `=~` comparisons out.
 _RUBY_DECL_CONSTANT_RE = re.compile(r"^[ \t]*([A-Z]\w*)\s*=[^=~]", re.MULTILINE)
+# Python in-source declarations for casing derivation: any def/class name at any
+# indent (the classifier buckets the casing). Methods and free functions share
+# the snake_case rule, so both feed the "method" category; classes feed "class".
+_PY_DECL_FUNCTION_RE = re.compile(r"^[ \t]*(?:async\s+)?def\s+([A-Za-z_]\w*)", re.MULTILINE)
+_PY_DECL_CLASS_RE = re.compile(r"^[ \t]*class\s+([A-Za-z_]\w*)", re.MULTILINE)
 
 
 def extract_declarations_from_content(content: str, *, language: str) -> dict[str, list[str]]:
@@ -276,6 +281,21 @@ def extract_declarations_from_content(content: str, *, language: str) -> dict[st
         constants = _RUBY_DECL_CONSTANT_RE.findall(scan)
         if constants:
             result["constant"] = constants
+        return result
+    if language == "python":
+        from chameleon_mcp.lint_engine import _strip_python_strings_and_comments
+
+        scan = _strip_python_strings_and_comments(content)
+        # def names feed "method" (snake_case, shared with Ruby); class names feed
+        # "class" (PascalCase). Module-level constants are intentionally NOT
+        # derived: a lowercase module var (logger = ...) is valid PEP 8, so a
+        # constant-casing rule would false-flag it.
+        functions = _PY_DECL_FUNCTION_RE.findall(scan)
+        if functions:
+            result["method"] = functions
+        classes = _PY_DECL_CLASS_RE.findall(scan)
+        if classes:
+            result["class"] = classes
         return result
     return result
 

@@ -230,7 +230,7 @@ BLOCK_RULE_LANGUAGES: dict[str, frozenset[str] | None] = {
     "phantom-import": frozenset({"typescript", "ruby"}),
     "import-preference-violation": None,
     "jsx-presence-mismatch": frozenset({"typescript"}),
-    "naming-convention-violation": frozenset({"typescript", "ruby"}),
+    "naming-convention-violation": frozenset({"typescript", "ruby", "python"}),
     "inheritance-convention-violation": frozenset({"ruby"}),
     "file-naming-convention-violation": None,
     "secret-detected-in-content": None,
