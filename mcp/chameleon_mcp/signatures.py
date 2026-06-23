@@ -107,6 +107,103 @@ _MONOREPO_WORKSPACE_ROOTS: frozenset[str] = frozenset(
 )
 
 
+# Django (and DRF) express a file's role in its FILENAME, not a directory chain
+# like Rails (app/models/). So a Python file named ``models.py`` is a "model"
+# regardless of which app it lives in. Mapping a known role filename -> a clean
+# singular archetype name lets clustering group all ``models.py`` across apps
+# into one cross-app "model" archetype, which is how Django developers reason.
+_PY_ROLE_NAMES: dict[str, str] = {
+    "models": "model",
+    "views": "view",
+    "serializers": "serializer",
+    "admin": "admin",
+    "urls": "urls",
+    "forms": "form",
+    "apps": "app-config",
+    "signals": "signal",
+    "tasks": "task",
+    "managers": "manager",
+    "permissions": "permission",
+    "filters": "filter",
+    "middleware": "middleware",
+    "viewsets": "viewset",
+    "schemas": "schema",
+    "querysets": "queryset",
+    "consumers": "consumer",
+    "routing": "routing",
+    "validators": "validator",
+    "decorators": "decorator",
+    "migrations": "migration",
+    # Flask / FastAPI web layer (freeform frameworks; the routes/routers/
+    # endpoints dir is the role signal since route files have generic names).
+    "routes": "route",
+    "routers": "route",
+    "router": "route",
+    "endpoints": "route",
+    "blueprints": "blueprint",
+    "deps": "dependency",
+    "dependencies": "dependency",
+    "schema": "schema",
+    "crud": "crud",
+}
+
+# Directory names that imply a role for the PACKAGE form: a big app splits
+# ``models.py`` into ``models/__init__.py`` + ``models/base.py``, so any file
+# under a ``models/`` (or ``views/`` ...) package is still a model. A subset of
+# the role names above -- only the dirs that conventionally hold many files.
+_PY_ROLE_DIRS: frozenset[str] = frozenset(
+    {
+        "models",
+        "views",
+        "serializers",
+        "admin",
+        "migrations",
+        "forms",
+        "tasks",
+        "managers",
+        "viewsets",
+        "permissions",
+        "filters",
+        "consumers",
+        "routes",
+        "routers",
+        "endpoints",
+        "blueprints",
+    }
+)
+
+
+def python_role_for_path(file_path: str) -> str | None:
+    """Return the Django/DRF role archetype for a ``.py`` path, or None.
+
+    Self-gated on the ``.py`` / ``.pyi`` extension so it never reshapes a
+    TypeScript or Ruby file. Recognizes the role from the basename
+    (``models.py`` -> ``model``) first, then the PACKAGE form where a parent
+    directory is a role dir (``shop/models/base.py`` -> ``model``). Test files
+    are intentionally NOT a role here -- they fall through to the existing
+    test-archetype machinery. Ordinary files (``utils.py``) return None and are
+    directory-bucketed like any other source file.
+    """
+    parts = [p for p in file_path.split("/") if p and p not in (".", "..")]
+    if not parts:
+        return None
+    last = parts[-1]
+    if last.endswith(".py"):
+        stem = last[:-3]
+    elif last.endswith(".pyi"):
+        stem = last[:-4]
+    else:
+        return None
+
+    role = _PY_ROLE_NAMES.get(stem)
+    if role is not None:
+        return role
+    for d in reversed(parts[:-1]):
+        if d in _PY_ROLE_DIRS:
+            return _PY_ROLE_NAMES[d]
+    return None
+
+
 def path_pattern_bucket_for(
     file_path: str,
     archetype_paths: dict[str, list[str]] | None = None,
@@ -164,6 +261,20 @@ def path_pattern_bucket_for(
     parts = [p for p in file_path.split("/") if p and p not in (".", "..")]
     if len(parts) < 2:
         return ("(root)", "")
+
+    # Django role bucketing: a known role filename (models.py, views.py, ...)
+    # buckets by ROLE across apps, not by app directory. The sub_bucket is empty
+    # so the cross-app merge survives _split_by_sub_bucket -- a per-app sub_bucket
+    # would shatter the "model" cluster straight back into per-app clusters.
+    py_role = python_role_for_path(file_path)
+    if py_role is not None:
+        bucket = py_role
+        if include_extension:
+            ext = _extension_of(parts[-1])
+            if ext:
+                bucket = f"{bucket}:{ext}"
+        return (bucket, "")
+
     sub_bucket = ""
     if len(parts) >= 4 and parts[0] in _MONOREPO_WORKSPACE_ROOTS:
         bucket = f"{parts[0]}/{parts[1]}/{parts[2]}"

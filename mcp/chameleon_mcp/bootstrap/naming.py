@@ -272,6 +272,51 @@ def _is_typescript_cluster(member_paths: Iterable[str]) -> bool:
     return members[0].endswith(_TS_JS_EXTENSIONS)
 
 
+_PY_EXTENSIONS_NAMING: tuple[str, ...] = (".py", ".pyi")
+
+
+def _is_python_cluster(member_paths: Iterable[str]) -> bool:
+    """Return True when the cluster's canonical witness is a ``.py`` file.
+
+    Mirrors ``_is_ruby_cluster`` / ``_is_typescript_cluster``: the Python prior
+    table must not fire on a TS/Ruby cluster. First member's extension is the
+    language tell.
+    """
+    members = list(member_paths)
+    if not members:
+        return False
+    return members[0].endswith(_PY_EXTENSIONS_NAMING)
+
+
+def _python_prior_match(member_paths: Iterable[str]) -> str | None:
+    """Name a Python cluster by the Django/DRF role its members share.
+
+    Django expresses role in the filename (``models.py`` -> ``model``), so the
+    role is read per-member and the strict-majority role wins -- the same
+    majority discipline ``_has_dir_chain`` uses, so one stray file in a coarse
+    cluster can't yank the name. Returns None when no role reaches a majority
+    (the cluster degrades to the language-agnostic fallback).
+    """
+    from collections import Counter
+
+    from chameleon_mcp.signatures import python_role_for_path
+
+    members = list(member_paths)
+    if not members:
+        return None
+    roles: Counter[str] = Counter()
+    for p in members:
+        role = python_role_for_path(p)
+        if role:
+            roles[role] += 1
+    if not roles:
+        return None
+    role, count = roles.most_common(1)[0]
+    if count * 2 >= len(members):
+        return role
+    return None
+
+
 _RAILS_PRIORS: tuple[tuple[tuple[str, ...], str | None, str], ...] = (
     (("app", "controllers", "concerns"), None, "controller-concern"),
     (("app", "models", "concerns"), None, "model-concern"),
@@ -579,6 +624,11 @@ def _base_name_for(
         and not any(p.endswith(".rb") for p in member_paths)
     ):
         prior_name = _ts_prior_match(ts_member_paths)
+        if prior_name is not None:
+            return prior_name
+
+    if _is_python_cluster(member_paths) and not _is_ruby_cluster(member_paths):
+        prior_name = _python_prior_match(member_paths)
         if prior_name is not None:
             return prior_name
 

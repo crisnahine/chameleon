@@ -39,6 +39,21 @@ def test_select_ruby_repo(tmp_path):
     assert ext is not None and ext.language == "ruby"
 
 
+def test_select_python_repo(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    ext = registry.select_extractor(tmp_path)
+    assert ext is not None and ext.language == "python"
+
+
+def test_typescript_precedes_python_for_hybrid(tmp_path):
+    # A repo with both a tsconfig and .py files routes to TS (registry order),
+    # so Python's liberal detection never steals a TS repo.
+    (tmp_path / "tsconfig.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "script.py").write_text("x = 1\n", encoding="utf-8")
+    ext = registry.select_extractor(tmp_path)
+    assert ext is not None and ext.language == "typescript"
+
+
 def test_select_none_for_unknown_repo(tmp_path):
     assert registry.select_extractor(tmp_path) is None
 

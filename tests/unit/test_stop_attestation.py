@@ -284,14 +284,17 @@ def test_ungoverned_triple_and_classification(make_trusted_repo):
     repo, data_dir, sid, profile_dir = make_trusted_repo(
         mode="enforce", extra_profile_files={"exports_index.json": exports_index}
     )
+    txt_file = str(repo / "src" / "notes.txt")
     py_file = str(repo / "src" / "notes.py")
     rb_file = str(repo / "src" / "thing.rb")
     ts_file = str(repo / "src" / "Widget.ts")
-    Path(py_file).write_text("print('hi')\n", encoding="utf-8")
+    Path(txt_file).write_text("just notes\n", encoding="utf-8")
+    Path(py_file).write_text("class Thing:\n    pass\n", encoding="utf-8")
     Path(rb_file).write_text("class Thing; end\n", encoding="utf-8")
     Path(ts_file).write_text("export const Widget = 1\n", encoding="utf-8")
 
     st = EnforcementState()
+    st.files[txt_file] = FileState(last_verified_at=9.0)
     st.files[py_file] = FileState(last_verified_at=10.0)
     st.files[rb_file] = FileState(last_verified_at=11.0)
     st.files[ts_file] = FileState(last_verified_at=12.0)
@@ -302,11 +305,11 @@ def test_ungoverned_triple_and_classification(make_trusted_repo):
     rec = _records()[0]
     ungoverned = {e["file"] for e in rec["ungoverned_files"]}
     governed = {e["file"] for e in rec["governed_files"]}
-    # .py: no archetype AND no lint dimension AND no exports entry -> ungoverned.
-    assert ungoverned == {"src/notes.py"}
-    # .rb has a lint dimension; .ts is in the exports index -> governed.
-    assert governed == {"src/thing.rb", "src/Widget.ts"}
-    assert rec["ungoverned_files"][0]["content_digest"] == _digest16("print('hi')\n")
+    # .txt: no archetype AND no lint dimension AND no exports entry -> ungoverned.
+    assert ungoverned == {"src/notes.txt"}
+    # .py and .rb have a lint dimension; .ts is in the exports index -> governed.
+    assert governed == {"src/notes.py", "src/thing.rb", "src/Widget.ts"}
+    assert rec["ungoverned_files"][0]["content_digest"] == _digest16("just notes\n")
 
 
 def test_governed_snapshot_pins_current_content_digest(make_trusted_repo):

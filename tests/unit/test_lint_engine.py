@@ -41,8 +41,11 @@ class TestDetectLanguage:
     def test_md_unsupported(self):
         assert detect_language("README.md") is None
 
-    def test_py_unsupported(self):
-        assert detect_language("main.py") is None
+    def test_py_supported(self):
+        assert detect_language("main.py") == "python"
+
+    def test_pyi_supported(self):
+        assert detect_language("stubs.pyi") == "python"
 
     def test_none_path(self):
         assert detect_language(None) is None

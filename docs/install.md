@@ -1,6 +1,6 @@
 # Installing chameleon
 
-chameleon is a Claude Code plugin that learns your repo's conventions and feeds the model archetype-aware context on every edit. It supports TypeScript and Ruby on Rails repos.
+chameleon is a Claude Code plugin that learns your repo's conventions and feeds the model archetype-aware context on every edit. It supports TypeScript, Ruby on Rails, and Python (Django, Flask, FastAPI) repos.
 
 Two ways to read this guide:
 
@@ -22,7 +22,7 @@ You have `uv` on your `PATH` and Node.js 20 or newer. Inside any Claude Code ses
 
 Restart Claude Code. Done. Verify it worked: [Verify the plugin loaded](#verify-the-plugin-loaded).
 
-Editing Ruby on Rails repos too? You also need Ruby 3.0+ with the `prism` gem. The [Full setup](#full-setup) section has the per-OS commands.
+Editing Ruby on Rails repos too? You also need Ruby 3.0+ with the `prism` gem. The [Full setup](#full-setup) section has the per-OS commands. Python repos (Django / Flask / FastAPI) need nothing extra — chameleon parses them with its own bundled libcst.
 
 ---
 
@@ -166,7 +166,7 @@ The very first time the server starts it builds a Python environment (about 5 to
 
 ## Your first profile
 
-Open a TypeScript or Ruby on Rails repo in Claude Code.
+Open a TypeScript, Ruby on Rails, or Python (Django / Flask / FastAPI) repo in Claude Code.
 
 1. **Bootstrap a profile.** Skip this only if `.chameleon/` already exists and you trust who committed it.
 

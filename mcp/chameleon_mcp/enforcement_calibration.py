@@ -144,7 +144,7 @@ def _stored_profile_languages(profile_dir: Path) -> frozenset[str]:
     try:
         profile = json.loads(path.read_text(encoding="utf-8"))
         lang = profile.get("language") if isinstance(profile, dict) else None
-        if lang in ("typescript", "ruby"):
+        if lang in ("typescript", "ruby", "python"):
             langs = frozenset({lang})
     except (OSError, ValueError):
         langs = frozenset()
@@ -452,7 +452,7 @@ def _profile_languages(loaded) -> set[str]:
     langs: set[str] = set()
     profile = getattr(loaded, "profile", {}) or {}
     lang = profile.get("language")
-    if lang in ("typescript", "ruby"):
+    if lang in ("typescript", "ruby", "python"):
         langs.add(lang)
     return langs
 

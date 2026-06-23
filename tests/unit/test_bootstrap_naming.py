@@ -561,3 +561,67 @@ class TestProductionShapeInputs:
         # And prove the guard is load-bearing: drop repo_root and the abs paths
         # carry the "tests" token, so the same cluster degrades to "test".
         assert propose_archetype_name(c, set()) == "test"
+
+
+# --------------------------------------------------------------------------
+# Python (Django/DRF) prior table — role from filename, cross-app
+# --------------------------------------------------------------------------
+class TestPythonPriors:
+    def test_model_cluster_from_cross_app_models(self):
+        c = _cluster(
+            bucket="model:py",
+            members=[
+                "analytics/models.py",
+                "builds/models.py",
+                "projects/models.py",
+            ],
+        )
+        assert _base_name_for(c) == "model"
+
+    def test_view_cluster(self):
+        c = _cluster(
+            bucket="view:py",
+            members=["api/v3/views.py", "core/views.py"],
+        )
+        assert _base_name_for(c) == "view"
+
+    def test_serializer_cluster(self):
+        c = _cluster(
+            bucket="serializer:py",
+            members=["api/serializers.py", "projects/serializers.py"],
+        )
+        assert _base_name_for(c) == "serializer"
+
+    def test_migration_cluster_from_dir(self):
+        c = _cluster(
+            bucket="migration:py",
+            members=[
+                "app/migrations/0001_initial.py",
+                "other/migrations/0002_auto.py",
+            ],
+        )
+        assert _base_name_for(c) == "migration"
+
+    def test_package_form_models(self):
+        c = _cluster(
+            bucket="model:py",
+            members=["shop/models/__init__.py", "shop/models/base.py"],
+        )
+        assert _base_name_for(c) == "model"
+
+    def test_non_role_python_falls_through(self):
+        # utils.py is not a Django role; the prior returns None and the cluster
+        # degrades to the language-agnostic fallback (util).
+        c = _cluster(
+            bucket="readthedocs/core:py",
+            members=["readthedocs/core/utils.py", "readthedocs/core/helpers.py"],
+        )
+        assert _base_name_for(c) != "model"
+
+    def test_python_prior_skipped_for_ruby_members(self):
+        # A models.rb file must not be named by the Python prior.
+        c = _cluster(
+            bucket="app/models",
+            members=["app/models/user.rb", "app/models/post.rb"],
+        )
+        assert _base_name_for(c) == "model"  # via the Rails/agnostic path, not python prior

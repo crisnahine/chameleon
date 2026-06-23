@@ -68,9 +68,15 @@ language, below a sample-size threshold, or in a file class the engine does not
 verify goes to a human regardless of gate color. See
 [What stays human](#what-stays-human) for the full list.
 
-**Supported stacks:** TypeScript / JavaScript and Ruby on Rails. Claude Code
-only. Both languages are first-class: the TypeScript extractor uses the
-TypeScript Compiler API, the Ruby extractor uses Prism.
+**Supported stacks:** TypeScript / JavaScript, Ruby on Rails, and Python
+(Django, Flask, FastAPI). Claude Code only. All three languages are
+first-class: the TypeScript extractor uses the TypeScript Compiler API, the
+Ruby extractor uses Prism, and the Python extractor uses libcst (bundled with
+the plugin, so Python repos need nothing extra installed). Python framework
+awareness keys on filename conventions (`models.py`/`views.py`/`serializers.py`
+→ cross-app role archetypes) and the web-layer directory (`routes/`,
+`blueprints/`), with decorators and base classes captured for finer
+discrimination.
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: using-chameleon
-description: "Active when .chameleon/ profile directory exists. Explains hook-injected pattern context and violation feedback for TypeScript and Ruby on Rails."
+description: "Active when .chameleon/ profile directory exists. Explains hook-injected pattern context and violation feedback for TypeScript, Ruby on Rails, and Python (Django/Flask/FastAPI)."
 ---
 
 <SUBAGENT-STOP>
