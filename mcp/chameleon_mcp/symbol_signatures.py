@@ -8,7 +8,7 @@ it must satisfy. This index supplies those definitions cheaply.
 
 It builds and reads a committed ``symbol_signatures.json`` recording, per
 top-level/exported callable, its parameter shape, best-effort DECLARED param and
-return type text (TypeScript only -- the dump is a pure parse with no type
+return type text (TypeScript and Python -- the dump is a pure parse with no type
 checker, so untyped params and inferred returns yield empty cells; Ruby has no
 static types), and its body span. A tool/Stop-time consumer resolves each symbol
 the edited file imports to its defining file, looks it up here, and injects a

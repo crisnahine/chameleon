@@ -246,7 +246,7 @@ class ExecLogUnsafeError(OSError):
 
 
 def _mkdir_checked(path: Path, *, parents: bool) -> None:
-    """``mkdir(0o700)`` that refuses a pre-existing symlink.
+    """``mkdir(0o700)`` that refuses a pre-existing symlink or foreign-owned dir.
 
     ``mkdir(exist_ok=True)`` silently succeeds when ``path`` is already a symlink,
     and a later ``open(..., "a")`` would then FOLLOW it. On a shared ``TMPDIR`` a
@@ -254,10 +254,33 @@ def _mkdir_checked(path: Path, *, parents: bool) -> None:
     public clone URL) as a symlink into a directory they control, diverting the
     victim's command log. An ``lstat`` check before the mkdir refuses that,
     mirroring safe_open's symlink discipline.
+
+    ``exist_ok=True`` is also a no-op when the path already exists as a real
+    directory owned by another uid: a planted real dir is then written into and
+    never re-permed. After the mkdir, an owner check refuses a directory whose
+    ``st_uid`` is not the calling euid, so an attacker-owned dir cannot capture
+    the victim's command log. POSIX-only (Windows has no ``st_uid`` ownership
+    model and relies on directory ACLs), matching the HMAC key file's check.
     """
     if path.is_symlink():
         raise ExecLogUnsafeError(f"refusing symlinked exec-log path: {path}")
     path.mkdir(mode=0o700, parents=parents, exist_ok=True)
+    if hasattr(os, "geteuid"):
+        euid = os.geteuid()
+        try:
+            st = os.stat(path)
+        except FileNotFoundError:
+            # The dir does not exist after mkdir (mkdir was a no-op or could not
+            # create it): there is no foreign-owned directory to capture the log,
+            # so there is nothing to refuse. A later open() on the missing path
+            # fails and the caller fails open.
+            return
+        except OSError as e:
+            raise ExecLogUnsafeError(f"cannot stat exec-log path {path}: {e}") from e
+        if getattr(st, "st_uid", euid) != euid:
+            raise ExecLogUnsafeError(
+                f"refusing exec-log dir {path} owned by uid {st.st_uid}, expected {euid}"
+            )
 
 
 def _exec_log_dir(repo_id: str) -> Path:
@@ -326,6 +349,31 @@ def _append_line_nofollow(log_path: Path, line: str) -> bool:
     return True
 
 
+def _open_for_read_nofollow(log_path: Path):
+    """Open ``log_path`` for reading without following a symlinked leaf.
+
+    The read symmetry of ``_append_line_nofollow``: the write path refuses a
+    planted leaf symlink, so the read paths must too, or an attacker who controls
+    the (shared-TMPDIR) log dir could plant ``<session>.jsonl`` as a symlink into
+    a file they want the victim's Stop path to read. O_NOFOLLOW makes the refusal
+    atomic on POSIX; an ``is_symlink`` pre-check covers platforms without it
+    (Windows). Returns an open text file object, or ``None`` when the leaf is a
+    symlink, is absent, or cannot be opened, so callers fail open to "no log".
+    """
+    if log_path.is_symlink():
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(log_path, flags)
+    except OSError:
+        return None
+    try:
+        return os.fdopen(fd, "r", encoding="utf-8")
+    except OSError:
+        os.close(fd)  # fdopen never took ownership of the fd
+        return None
+
+
 def append_exec_log(
     repo_id: str,
     *,
@@ -353,13 +401,21 @@ def append_exec_log(
     discarded. When omitted it is derived here so any call site benefits; passing
     it explicitly lets the recorder classify once and reuse the result.
     """
-    key = _ensure_hmac_key()
+    try:
+        key = _ensure_hmac_key()
+    except HMACKeyError:
+        # No signing key (foreign-owned key file, /dev/urandom unavailable):
+        # an unsigned entry could be forged, so skip logging rather than emit
+        # one. HMACKeyError is not an OSError, so it must be caught here to keep
+        # the fail-open contract self-contained instead of leaning on the caller.
+        return
     from chameleon_mcp.optouts import _safe_session_marker
 
     try:
         log_dir = _exec_log_dir(repo_id)
     except OSError:
-        # Symlinked or unwritable log dir: skip logging, never crash the hook.
+        # Symlinked, foreign-owned, or unwritable log dir: skip logging, never
+        # crash the hook.
         return
     log_path = log_dir / f"{_safe_session_marker(session_id)}.jsonl"
     new_session = not log_path.exists()
@@ -477,9 +533,10 @@ def read_check_events(repo_id: str, session_id: str, *, limit: int) -> dict:
         from chameleon_mcp.optouts import _safe_session_marker
 
         log_path = _exec_log_dir(repo_id) / f"{_safe_session_marker(session_id)}.checks.jsonl"
-        if not log_path.is_file():
+        f = _open_for_read_nofollow(log_path)
+        if f is None:
             return empty
-        with open(log_path, encoding="utf-8") as f:
+        with f:
             raw_lines = [ln.strip() for ln in f if ln.strip()]
         events: list[dict] = []
         unverified = 0
@@ -514,9 +571,10 @@ def session_test_run_seen(repo_id: str, session_id: str) -> bool:
         from chameleon_mcp.optouts import _safe_session_marker
 
         log_path = _exec_log_dir(repo_id) / f"{_safe_session_marker(session_id)}.jsonl"
-        if not log_path.is_file():
+        f = _open_for_read_nofollow(log_path)
+        if f is None:
             return False
-        with open(log_path, encoding="utf-8") as f:
+        with f:
             for line in f:
                 line = line.strip()
                 if not line:

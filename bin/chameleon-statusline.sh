@@ -3,7 +3,9 @@ set -euo pipefail
 
 [[ "${CHAMELEON_DISABLE:-}" == "1" ]] && exit 0
 
-input=$(cat)
+# Bound the stdin read so a pathological payload cannot blow the <100ms render
+# budget. Real Claude Code payloads are tiny JSON; 256 KB is far above any of them.
+input=$(head -c 262144 2>/dev/null || true)
 project_dir=""
 if command -v jq &>/dev/null; then
   project_dir=$(printf '%s' "$input" | jq -r '.workspace.project_dir // empty' 2>/dev/null || true)
@@ -61,7 +63,10 @@ if [[ -f "$cache_file" ]]; then
         plugin_init="${CLAUDE_PLUGIN_ROOT:-${0%/*}/..}/mcp/chameleon_mcp/__init__.py"
         cur_ver=""
         if [[ -f "$plugin_init" ]]; then
-          cur_ver=$(grep '^__version__' "$plugin_init" 2>/dev/null | head -1 | sed 's/.*= *"//;s/".*//')
+          # grep exits non-zero when the file has no column-0 __version__
+          # literal; under pipefail that would abort the whole statusline, so
+          # the no-match is absorbed and cur_ver is left empty.
+          cur_ver=$({ grep '^__version__' "$plugin_init" 2>/dev/null || true; } | head -1 | sed 's/.*= *"//;s/".*//')
         fi
         if [[ -n "$cur_ver" && "$cur_ver" != "$update" ]]; then
           parts="$parts │ ⬆ v${update} ready — /reload-plugins or reopen session"

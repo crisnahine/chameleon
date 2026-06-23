@@ -190,6 +190,14 @@ def init_index_db(db_path: Path | None = None) -> sqlite3.Connection:
         # write (same failure class as drift.db's schema-init — see
         # drift/schema.py).
         with conn:
+            # schema_version is written once (INSERT OR IGNORE) and is purely
+            # informational — doctor surfaces it, nothing here reads it back.
+            # The forward-compatibility contract is additive columns / tables
+            # only, so the stored version stays "1" across additive changes.
+            # There is NO automatic migrate-or-reject: any change that retypes
+            # or removes a column MUST bump INDEX_DB_SCHEMA_VERSION here AND add
+            # an explicit migration (mirroring _migrate_repos_to_composite_pk),
+            # or older readers will silently misread the new layout.
             conn.execute(
                 "INSERT OR IGNORE INTO schema_meta (k, v) VALUES ('schema_version', ?)",
                 (INDEX_DB_SCHEMA_VERSION,),

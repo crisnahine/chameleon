@@ -564,6 +564,27 @@ def _sanitize(text: str) -> str:
     return sanitize_for_chameleon_context(text)
 
 
+def _sanitize_obj(value):
+    """Recursively neutralize every string in a model-facing structure.
+
+    conventions.json / archetypes.json values AND their archetype-name keys are
+    attacker-controllable committed content, so each string crossing into model
+    context must be scrubbed for tag-boundary tokens — the same whole-object scrub
+    the SessionStart convention block applies. Non-string leaves (None, numbers,
+    booleans) pass through, so a None base or a numeric cap never crashes the
+    scrub and the fail-open contract holds.
+    """
+    if isinstance(value, dict):
+        return {
+            (_sanitize(k) if isinstance(k, str) else k): _sanitize_obj(v) for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_obj(v) for v in value]
+    if isinstance(value, str):
+        return _sanitize(value)
+    return value
+
+
 def build_coverage(profile_dir: Path) -> tuple[dict, list[str]]:
     """Assemble the already-covered map the auto-idiom skill reads before
     drafting candidates. Returns (data, checks_skipped)."""
@@ -573,14 +594,14 @@ def build_coverage(profile_dir: Path) -> tuple[dict, list[str]]:
     deprecated: list[dict] = []
     for block in artifacts["idiom_blocks"]:
         entry = {
-            "slug": _sanitize(block["slug"]),
+            "slug": block["slug"],
             "archetype": block["archetype"],
-            "summary": _sanitize(block["body"][:_SUMMARY_CAP]),
+            "summary": block["body"][:_SUMMARY_CAP],
         }
         if block["section"] == "active":
             active.append(entry)
         else:
-            deprecated.append({"slug": _sanitize(block["slug"])})
+            deprecated.append({"slug": block["slug"]})
 
     conventions = artifacts["conventions"]
     import_preferences: dict[str, list[str]] = {}
@@ -627,7 +648,7 @@ def build_coverage(profile_dir: Path) -> tuple[dict, list[str]]:
             "deprecated": deprecated,
         },
         "covered": {
-            "principles": [_sanitize(p) for p in artifacts["principles"]],
+            "principles": artifacts["principles"],
             "import_preferences": import_preferences,
             "competing_imports": _competing_pairs(conventions),
             "naming": _naming_casings(conventions),
@@ -639,7 +660,12 @@ def build_coverage(profile_dir: Path) -> tuple[dict, list[str]]:
             "archetypes": artifacts["archetypes"],
         },
     }
-    return data, skipped
+    # Every string crossing to the model — including the archetype-name keys and
+    # the structured convention values read RAW from conventions.json /
+    # archetypes.json — is scrubbed for tag-boundary tokens at the one output
+    # boundary. The helpers stay pure so the unsanitized values still feed the
+    # substring dedup in _covered_reasons.
+    return _sanitize_obj(data), skipped
 
 
 def _candidate_text(candidate: dict) -> str:
@@ -709,7 +735,11 @@ def _covered_reasons(
 
     for pair in _competing_pairs(conventions):
         if pair["preferred"].lower() in text_lower and pair["over"].lower() in text_lower:
-            reasons.append(f"covered-by-competing-import:{pair['preferred']}-over-{pair['over']}")
+            # Compare on the raw values; scrub only the names embedded in the
+            # reason string that reaches the model.
+            reasons.append(
+                f"covered-by-competing-import:{_sanitize(pair['preferred'])}-over-{_sanitize(pair['over'])}"
+            )
 
     candidate_arch = candidate.get("archetype")
     # Only an idiom that is explicitly about FILE naming restates the
@@ -723,7 +753,7 @@ def _covered_reasons(
             prefix = _casing_prefix(casing)
             synonyms = _CASING_SYNONYMS.get(prefix, (casing.lower(),))
             if any(s in text_lower for s in synonyms):
-                reasons.append(f"covered-by-naming:{arch}")
+                reasons.append(f"covered-by-naming:{_sanitize(arch)}")
 
     contract = _class_contract(conventions)
     # TypeScript records the heritage on class_contract, not in an inheritance
@@ -750,9 +780,9 @@ def _covered_reasons(
                 # such idioms novel: its contract nuance is worth an explicit note.)
                 if _mentions_contract(text_lower, cc):
                     if not is_ruby and cc:
-                        reasons.append(f"covered-by-class-contract:{arch}")
+                        reasons.append(f"covered-by-class-contract:{_sanitize(arch)}")
                     continue
-                reasons.append(f"covered-by-inheritance:{arch}")
+                reasons.append(f"covered-by-inheritance:{_sanitize(arch)}")
 
     # A non-Ruby idiom that restates the archetype's derived class-contract content
     # (decorators / required methods / DSL macros, all surfaced in the SessionStart
@@ -763,7 +793,11 @@ def _covered_reasons(
         for arch, cc in contract.items():
             if candidate_arch and arch != candidate_arch:
                 continue
-            if f"covered-by-class-contract:{arch}" in reasons:
+            # The reason key is scrubbed before it reaches the model; the
+            # not-already-added guard must compare on that same scrubbed form so
+            # the inheritance branch's earlier append still dedupes.
+            reason_key = f"covered-by-class-contract:{_sanitize(arch)}"
+            if reason_key in reasons:
                 continue
             derived = (
                 (cc.get("decorators") or [])
@@ -771,7 +805,7 @@ def _covered_reasons(
                 + (cc.get("dsl_macros") or [])
             )
             if any(t and len(t) >= 3 and t.lower() in text_lower for t in derived):
-                reasons.append(f"covered-by-class-contract:{arch}")
+                reasons.append(reason_key)
 
     rationale = str(candidate.get("rationale") or "")
     if artifacts["rules"] and _is_formatting_idiom(rationale):

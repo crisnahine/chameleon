@@ -30,6 +30,31 @@ except ImportError:  # pragma: no cover — defensive; PyYAML is a hard dep.
 
 _MAX_EXTENDS_HOPS = 8
 
+# Upper bound on bytes any tool-config reader pulls into memory. Bootstrap-time
+# only, never a hook hot path, but a hostile or accidentally-huge config (a
+# multi-GB .eslintrc.yml) must not be read whole. The cap is generous: real
+# eslint/tsconfig/package.json/pyproject configs are tiny, so a legit large
+# monorepo manifest still parses, while a pathological file is bounded. A
+# structured config (JSON/TOML) truncated mid-value parses fail-open to None/{}
+# in each reader's existing except, which is the right outcome for a file this
+# size.
+_MAX_CONFIG_BYTES = 4_000_000
+
+
+def _read_capped(path: Path, *, max_bytes: int | None = None) -> str:
+    """Read at most ``max_bytes`` of a config file as text.
+
+    Reads bounded so a hostile multi-GB config is never materialized whole, then
+    decodes with ``errors="replace"`` to match every reader's prior ``read_text``
+    shape. ``max_bytes`` defaults to ``_MAX_CONFIG_BYTES``, resolved at call time
+    so the bound stays tunable. Raises ``OSError`` on a read failure so callers
+    keep their existing ``except OSError`` handling.
+    """
+    cap = _MAX_CONFIG_BYTES if max_bytes is None else max_bytes
+    with path.open("rb") as fh:
+        raw = fh.read(cap)
+    return raw.decode("utf-8", errors="replace")
+
 
 @dataclass
 class ToolConfigResult:
@@ -80,7 +105,7 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
         p = repo_root / name
         if p.exists():
             try:
-                result.prettier = json.loads(p.read_text(errors="replace"))
+                result.prettier = json.loads(_read_capped(p))
                 result.sources["prettier"] = name
                 break
             except json.JSONDecodeError:
@@ -108,7 +133,7 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
         p = repo_root / name
         if p.exists():
             try:
-                result.eslint = json.loads(_strip_jsonc_comments(p.read_text(errors="replace")))
+                result.eslint = json.loads(_strip_jsonc_comments(_read_capped(p)))
                 result.sources["eslint"] = name
                 break
             except json.JSONDecodeError:
@@ -202,7 +227,7 @@ def _read_python_format(repo_root: Path) -> tuple[dict | None, str | None]:
         try:
             import tomllib
 
-            data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+            data = tomllib.loads(_read_capped(pyproject))
         except (OSError, ValueError, ImportError):
             data = {}
         tool = data.get("tool") if isinstance(data, dict) else None
@@ -234,7 +259,7 @@ def _read_python_format(repo_root: Path) -> tuple[dict | None, str | None]:
                 import configparser
 
                 cp = configparser.ConfigParser()
-                cp.read_string(p.read_text(encoding="utf-8", errors="replace"))
+                cp.read_string(_read_capped(p))
             except (OSError, configparser.Error):
                 continue
             for section in ("flake8", "pycodestyle"):
@@ -494,7 +519,7 @@ def _workspace_monorepo_root(start: Path) -> Path | None:
         pkg = walker / "package.json"
         if pkg.is_file():
             try:
-                data = json.loads(pkg.read_text(errors="replace"))
+                data = json.loads(_read_capped(pkg))
             except (OSError, json.JSONDecodeError):
                 data = None
             if isinstance(data, dict) and data.get("workspaces"):
@@ -561,7 +586,7 @@ def _resolve_workspace_package_target(target: str, from_path: Path, repo_root: P
 def _load_tsconfig_file(path: Path) -> dict | None:
     """Read + JSONC-parse a tsconfig file. Returns None on failure."""
     try:
-        text = _strip_jsonc_comments(path.read_text(errors="replace"))
+        text = _strip_jsonc_comments(_read_capped(path))
         parsed = json.loads(text)
         return parsed if isinstance(parsed, dict) else None
     except (OSError, json.JSONDecodeError):
@@ -625,7 +650,7 @@ def _parse_eslint_yaml(path: Path) -> tuple[dict | None, str | None]:
     if _yaml is None:
         return None, "PyYAML unavailable; cannot parse YAML eslint config"
     try:
-        text = path.read_text(errors="replace")
+        text = _read_capped(path)
     except OSError as exc:
         return None, f"could not read {path.name}: {exc}"
     try:
@@ -664,7 +689,7 @@ def _parse_rubocop_yaml(path: Path) -> tuple[dict | None, str | None]:
     if _yaml is None:
         return None, "PyYAML unavailable; cannot parse rubocop config"
     try:
-        text = path.read_text(errors="replace")
+        text = _read_capped(path)
     except OSError as exc:
         return None, f"could not read {path.name}: {exc}"
     if len(text) > 200_000:
@@ -852,7 +877,7 @@ def _parse_eslint_js(path: Path) -> tuple[dict | None, str | None]:
             return parsed, None
 
     try:
-        text = path.read_text(errors="replace")
+        text = _read_capped(path)
     except OSError as exc:
         return None, f"could not read {path.name}: {exc}"
 
@@ -965,7 +990,7 @@ def _parse_editorconfig(path: Path) -> dict:
     current_section: str | None = "root"
     result["root"] = {}
     try:
-        text = path.read_text(errors="replace")
+        text = _read_capped(path)
     except OSError:
         return result
     for raw_line in text.splitlines():

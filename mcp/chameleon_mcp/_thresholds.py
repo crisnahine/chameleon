@@ -507,7 +507,12 @@ def threshold(name: str) -> int | float:
         # Int thresholds are NOT range-validated: some are meaningfully negative
         # (e.g. AUTOPASS_ASSERTION_DELTA_FLOOR defaults to -3), so an override
         # passes through verbatim. Float thresholds reject negatives above because
-        # none of them (timeouts, rates) is ever sensibly negative.
+        # none of them (timeouts, rates) is ever sensibly negative. The int
+        # timeout overrides (AUTOPASS_TSC/TESTRUN/DEP_AUDIT/REFUTER timeouts) are
+        # therefore unfloored: a 0 or negative value reaches subprocess.run, which
+        # raises TimeoutExpired immediately and the opt-in check degrades to
+        # "unavailable" (fail-open) — never a crash and never a synthetic pass, so
+        # the absent floor is a coherent "skip this check" knob, not a hazard.
         return int(raw)
     except ValueError:
         return default

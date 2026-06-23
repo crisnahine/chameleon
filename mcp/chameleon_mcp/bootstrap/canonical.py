@@ -102,9 +102,11 @@ def _file_recency_weight(path: Path, *, now: float | None = None) -> float:
     except OSError:
         return 1.0
     age_seconds = reference - mtime
+    # A future mtime (clock skew, an archive extracted with bogus timestamps, a
+    # crafted file) gets no boost: only files genuinely modified within the
+    # window are treated as recent, so a far-future timestamp cannot outrank a
+    # just-edited file in canonical selection.
     if 0 <= age_seconds <= _RECENCY_WINDOW_SECONDS:
-        return RECENCY_WEIGHT_MULTIPLIER
-    if age_seconds < 0:
         return RECENCY_WEIGHT_MULTIPLIER
     return 1.0
 

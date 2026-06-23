@@ -26,6 +26,7 @@ parser spawns.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_float, threshold_int
@@ -42,6 +43,15 @@ from chameleon_mcp.conventions import (
 # the advisory cites the same vocabulary the profile stored.
 _EXPORT_NAME_SKIP = frozenset(
     {"default", "module", "class", "React", "Component", "ApplicationRecord", "Base"}
+)
+
+# A top-level public def/class: the name is what the module exports. Anchored at
+# column zero (no leading whitespace) so nested methods and class-body members,
+# which are not part of the importable surface, are excluded. The bootstrap
+# key-export derivation drops underscore-prefixed names, so the leading-letter
+# class restricts this to the same public set.
+_PY_TOP_LEVEL_PUBLIC_DECL_RE = re.compile(
+    r"^(?:async\s+)?(?:def|class)\s+([A-Za-z]\w*)", re.MULTILINE
 )
 
 
@@ -87,6 +97,17 @@ def changed_exports_in_content(content: str, *, language: str) -> list[str]:
             _add(m.group(1).split("::")[-1])
         for m in _RUBY_MODULE_NAME_RE.finditer(content):
             _add(m.group(1).split("::")[-1])
+    elif language == "python":
+        # Python has no export keyword: a module's public surface is its
+        # top-level def/class names. Strip strings/comments first so a
+        # ``def``/``class`` inside a docstring or string literal is not counted.
+        from chameleon_mcp.lint_engine import _strip_python_strings_and_comments
+
+        scan = _strip_python_strings_and_comments(content)
+        for m in _PY_TOP_LEVEL_PUBLIC_DECL_RE.finditer(scan):
+            name = m.group(1)
+            if len(name) > 1:
+                _add(name)
     return names
 
 
@@ -339,8 +360,8 @@ _COCHANGE_RULES: tuple[CoChangeRule, ...] = (
         "python",
         _is_django_model,
         _is_django_migration,
-        "new Django model added without a migrations/*.py migration in the same change "
-        "(run makemigrations)",
+        "new model added without a migrations/*.py migration in the same change "
+        "(Django: run makemigrations; SQLAlchemy: add the Alembic revision)",
     ),
     CoChangeRule(
         "cochange-prisma-migration",
