@@ -185,6 +185,45 @@ def test_chameleon_ignore_directive_clears_deny(tmp_path: Path):
     assert hso.get("permissionDecision") != "deny"
 
 
+def test_inline_ignore_records_override_at_deny_gate(tmp_path: Path):
+    # An inline-ignored banned import bypasses the deny (allow), and the bypass is
+    # RECORDED in the override audit. lint_conventions suppresses an ignored rule
+    # so the lint-derived `banned` list is empty; the gate re-scans the content
+    # with the directive stripped so the override still records. Without that
+    # re-scan the recording is dead code and the bypass is invisible to the audit.
+    import sqlite3
+
+    from chameleon_mcp.drift import observations as obs
+
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    write_block_rules(
+        repo / ".chameleon",
+        {"import-preference-violation": {"active": True, "fp_rate": 0.0, "sampled": 3}},
+    )
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/Widget.ts"),
+        content=IGNORED_CONTENT,
+        session_id="s-ovr",
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
+    # Drop any cached write-connection so the read sees the committed row.
+    for conn in list(obs._DRIFT_CONN.values()):
+        conn.close()
+    obs._DRIFT_CONN.clear()
+    db = tmp_path / repo_id / "drift.db"
+    assert db.is_file(), "the override should have created drift.db"
+    con = sqlite3.connect(str(db))
+    try:
+        rules = [r[0] for r in con.execute("SELECT rule FROM rule_overrides").fetchall()]
+    finally:
+        con.close()
+    assert "import-preference-violation" in rules
+
+
 def test_clean_import_not_denied(tmp_path: Path):
     repo, repo_id = _build_repo(tmp_path, mode="enforce")
     write_block_rules(

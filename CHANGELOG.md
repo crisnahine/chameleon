@@ -52,6 +52,12 @@ already demonstrate the concern.
   flat cap that could exhaust inside `app/` before reaching a discouraged import
   that lives in a peripheral directory. The scan still breaks early on a match,
   so the budget only binds when the taught module is absent.
+- An inline `chameleon-ignore import-preference-violation` that bypasses an
+  enforce-mode import deny is now recorded in the override audit. The lint
+  suppresses an ignored rule, so the deny gate re-scans the proposed content with
+  the directive stripped to recover the bypassed import and record the override;
+  previously the bypass was invisible to `get_override_audit`. The deny decision
+  itself is unchanged.
 
 ## [2.23.0] - 2026-06-22
 

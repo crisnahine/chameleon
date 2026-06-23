@@ -217,6 +217,25 @@ def _emit_check_event(
         pass
 
 
+# A `// chameleon-ignore...` / `# chameleon-ignore...` directive comment (any
+# variant: bare, `-file`, rule-named). Stripped from content ONLY to re-detect a
+# bypassed banned import for override auditing -- never used to change a decision.
+_CHAMELEON_IGNORE_DIRECTIVE_RE = re.compile(r"(?://|#)\s*chameleon-ignore[^\n]*")
+
+
+def _strip_chameleon_ignore_directives(content: str) -> str:
+    """Remove chameleon-ignore directive comments so a re-scan sees the import the
+    inline ignore otherwise suppresses.
+
+    ``banned_imports_in_content`` (via ``lint_conventions``) returns no violation
+    for an inline-ignored rule, which would make the deny-gate override-recording
+    dead code (``banned`` and the ignore set can never both be truthy). Re-scanning
+    the stripped content recovers the bypassed import so the bypass stays auditable.
+    Advisory-only: the result feeds override recording, never the deny decision.
+    """
+    return _CHAMELEON_IGNORE_DIRECTIVE_RE.sub("", content)
+
+
 def _record_overrides(
     repo_id: str | None,
     overridden: list[dict],
@@ -2341,20 +2360,32 @@ def preflight_and_advise() -> int:
                     from chameleon_mcp.violation_class import ignored_rules
 
                     ign = ignored_rules(proposed, file_path=file_path) or set()
-                    if banned and ("" in ign or "import-preference-violation" in ign):
+                    suppressed_by_ignore = "" in ign or "import-preference-violation" in ign
+                    if suppressed_by_ignore:
                         # The directive bypasses the deny. Record the override so
                         # the audit sees a bypass at the deny gate too, not only
                         # at the PostToolUse verifier. A bare directive (empty
-                        # string in the set) is the blanket form.
-                        _record_overrides(
-                            repo_id,
-                            [{"rule": "import-preference-violation"}],
+                        # string in the set) is the blanket form. ``banned`` is
+                        # already empty here -- lint_conventions suppresses an
+                        # ignored rule -- so re-scan with the directives stripped to
+                        # recover the bypassed import; otherwise this recording is
+                        # dead code and the bypass is invisible to the audit.
+                        raw_banned = banned_imports_in_content(
+                            _strip_chameleon_ignore_directives(proposed),
+                            language=detect_language(file_path),
                             archetype=archetype_name,
-                            file_rel=_repo_rel(repo_root_path, file_path),
-                            session_id=session_id,
-                            blanket="" in ign,
+                            conventions=conv,
                         )
-                    if banned and not ("" in ign or "import-preference-violation" in ign):
+                        if raw_banned:
+                            _record_overrides(
+                                repo_id,
+                                [{"rule": "import-preference-violation"}],
+                                archetype=archetype_name,
+                                file_rel=_repo_rel(repo_root_path, file_path),
+                                session_id=session_id,
+                                blanket="" in ign,
+                            )
+                    if banned and not suppressed_by_ignore:
                         from chameleon_mcp.profile.config import (
                             load_config_enforcement_only,
                         )
