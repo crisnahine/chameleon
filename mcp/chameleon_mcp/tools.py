@@ -1087,7 +1087,7 @@ def _file_shape_snapshot(p: Path, loaded):
     except OSError:
         return None
     language = detect_language(str(p)) or loaded.profile.get("language")
-    if language not in ("typescript", "ruby"):
+    if language not in ("typescript", "ruby", "python"):
         language = None
     try:
         return extract_dimensions(content, language=language)
@@ -1343,7 +1343,7 @@ def _get_archetype_with_loaded(
         )
 
     language = detect_language(str(p)) or loaded.profile.get("language")
-    if language not in ("typescript", "ruby"):
+    if language not in ("typescript", "ruby", "python"):
         language = None
     snapshot = extract_dimensions(content, language=language)
 
@@ -2282,7 +2282,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     # Language is inferred from the path; with no recognizable extension only the
     # language-agnostic eval( shape fires, which is the block-eligible one.
     _sink_lang = _detect_language(file_path) if file_path else None
-    if _sink_lang not in ("typescript", "ruby"):
+    if _sink_lang not in ("typescript", "ruby", "python"):
         _sink_lang = None
     sink_violations: list[dict] = []
     try:
@@ -2472,7 +2472,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
         or _detect_language(witness_rel_path)
         or loaded.profile.get("language")
     )
-    if language not in ("typescript", "ruby"):
+    if language not in ("typescript", "ruby", "python"):
         language = None
 
     snapshot = _extract_dimensions(working_content, language=language)

@@ -58,6 +58,7 @@ Severity = Literal["info", "warning", "error"]
 
 _TS_EXTENSIONS: frozenset[str] = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"})
 _RUBY_EXTENSIONS: frozenset[str] = frozenset({".rb"})
+_PY_EXTENSIONS: frozenset[str] = frozenset({".py", ".pyi"})
 
 
 @dataclass(frozen=True)
@@ -150,6 +151,9 @@ def detect_language(file_path: str | None) -> str | None:
     for ext in _RUBY_EXTENSIONS:
         if lower.endswith(ext):
             return "ruby"
+    for ext in _PY_EXTENSIONS:
+        if lower.endswith(ext):
+            return "python"
     return None
 
 
@@ -386,6 +390,38 @@ def _extract_typescript(content: str) -> DimensionSnapshot:
     )
 
 
+# Python string/comment stripper. A single alternation so the leftmost token
+# wins positionally -- a `#` inside a string is consumed by the string alt, a
+# quote inside a comment by the comment alt. Triple-quoted forms come first so
+# `"""` is not mis-read as an empty `""` plus a stray quote. The optional
+# string-prefix run covers f/r/b/u (and combinations like rb, f). Blanked to
+# spaces (length-preserving) so line numbers stay truthful.
+_PY_STRING_OR_COMMENT = re.compile(
+    r"""
+      [rRbBfFuU]{0,3}\"\"\"[\s\S]*?\"\"\"     # triple double-quoted
+    | [rRbBfFuU]{0,3}'''[\s\S]*?'''           # triple single-quoted
+    | \#[^\n]*                                  # line comment
+    | [rRbBfFuU]{0,3}"(?:\\.|[^"\\\n])*"      # double-quoted
+    | [rRbBfFuU]{0,3}'(?:\\.|[^'\\\n])*'      # single-quoted
+    """,
+    re.VERBOSE,
+)
+
+
+def _strip_python_strings_and_comments(content: str) -> str:
+    """Blank Python strings + comments to spaces (length-preserving).
+
+    Used by the sink/style/convention scans so an ``eval(`` mentioned in a
+    docstring or comment never fires. Newlines inside a triple-quoted string are
+    preserved so downstream line numbers stay truthful.
+    """
+    return _PY_STRING_OR_COMMENT.sub(_blank_match_to_spaces, content)
+
+
+# Python's exec() is the sibling of eval(): both execute an arbitrary string as
+# code. Same member-call guard as eval so `obj.exec(...)` (a method) is exempt.
+_PY_EXEC_CALL_RE = re.compile(r"(?<![.\w])exec\s*\(")
+
 _RUBY_LINE_COMMENT = re.compile(r"#[^\n]*")
 _RUBY_BLOCK_COMMENT = re.compile(r"^=begin\b.*?^=end\b", re.DOTALL | re.MULTILINE)
 _RUBY_STRING_DQ = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
@@ -612,6 +648,68 @@ def _extract_ruby(content: str) -> DimensionSnapshot:
     )
 
 
+# stdlib-ast node names that differ from the libcst dump's vocabulary. The
+# stored cluster signature is produced by libcst (scripts/libcst_dump.py), which
+# folds async forms into their sync kind and uses "Del" / "Try" for the star
+# variants; the hot-path ast extractor must agree or every async file would
+# false-flag a top-level-node-kinds mismatch.
+_PY_KIND_NORMALIZE = {
+    "AsyncFunctionDef": "FunctionDef",
+    "AsyncFor": "For",
+    "AsyncWith": "With",
+    "Delete": "Del",
+    "TryStar": "Try",
+}
+
+
+def _extract_python(content: str) -> DimensionSnapshot:
+    """Best-effort Python dimension extraction via stdlib ``ast``.
+
+    Parses in-process (the hot path cannot spawn the libcst subprocess) and
+    builds the same normalized shape the libcst dump stores, so an edit-time
+    snapshot is directly comparable to the bootstrap cluster signature. A file
+    mid-edit that does not parse yields an empty snapshot (no observations, no
+    violations) rather than a crash.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
+        return DimensionSnapshot()
+
+    top_level: list[str] = []
+    class_count = 0
+    func_count = 0
+    for node in tree.body:
+        name = type(node).__name__
+        top_level.append(_PY_KIND_NORMALIZE.get(name, name))
+        if isinstance(node, ast.ClassDef):
+            class_count += 1
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            func_count += 1
+
+    if class_count == 1 and func_count == 0:
+        default_export_kind = "ClassDef"
+    elif func_count == 1 and class_count == 0:
+        default_export_kind = "FunctionDef"
+    else:
+        default_export_kind = None
+
+    head = content[:200]
+    cs = content_signal_match_for(head)
+    content_signal = cs if cs != "none" else None
+
+    return DimensionSnapshot(
+        top_level_node_kinds=top_level,
+        default_export_kind=default_export_kind,
+        named_export_count=class_count + func_count,
+        jsx_present=False,
+        content_signal=content_signal,
+        unparseable_regions=[],
+    )
+
+
 def extract_dimensions(
     content: str,
     *,
@@ -636,6 +734,8 @@ def extract_dimensions(
         return _extract_typescript(content)
     if language == "ruby":
         return _extract_ruby(content)
+    if language == "python":
+        return _extract_python(content)
     return DimensionSnapshot()
 
 
@@ -1361,6 +1461,8 @@ def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violatio
         scan = _strip_ruby_strings_and_comments(content)
     elif language == "typescript":
         scan = _strip_ts_strings_and_comments(content)
+    elif language == "python":
+        scan = _strip_python_strings_and_comments(content)
     else:
         # No language means no reliable string/comment stripping; only the
         # language-agnostic `eval(` shape is safe to run, against raw content.
@@ -1384,6 +1486,27 @@ def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violatio
                 ),
             )
         )
+
+    if language == "python":
+        # Python's exec() executes an arbitrary string as code, exactly like
+        # eval(); flag it under the same rule. Member calls (obj.exec) are
+        # exempt via the same lookbehind guard.
+        for m in _PY_EXEC_CALL_RE.finditer(scan):
+            line = _position_to_line(scan, m.start())
+            violations.append(
+                Violation(
+                    rule="eval-call",
+                    expected="<no dynamic exec>",
+                    actual=f"exec( at line {line}",
+                    severity="error",
+                    message=(
+                        f"dynamic exec() at line {line} executes arbitrary code. "
+                        "If the argument can reach user input this is remote code "
+                        "execution; replace it with an explicit parser or dispatch "
+                        "table."
+                    ),
+                )
+            )
 
     if language == "ruby":
         # String-argument *_eval forms. The method name is matched in the
@@ -2080,6 +2203,28 @@ def _module_specifier_matches(spec: str, module: str) -> bool:
 _RUBY_REQUIRE_RE = re.compile(
     r"^[ \t]*require(?:_relative)?\s*\(?\s*['\"]([^'\"]+)['\"]", re.MULTILINE
 )
+# Python imports: the module path of an `import x.y` or a `from x.y import z`.
+# One capture group per branch; the matcher reads whichever matched. Dotted
+# paths are preserved (django.db, requests.adapters) so a taught module keys on
+# its full root.
+_PY_IMPORT_RE = re.compile(
+    r"^[ \t]*(?:import[ \t]+([\w.]+)|from[ \t]+([\w.]+)[ \t]+import)", re.MULTILINE
+)
+
+
+def _python_module_in_use(mod: str, import_specs: list[str]) -> bool:
+    """True when ``mod`` is imported (exact module or a submodule of it).
+
+    ``requests`` matches ``import requests`` and ``from requests.adapters import
+    ...``; it must NOT match an unrelated module that merely shares the prefix
+    string (``requests_oauthlib``), which the dotted-boundary check enforces.
+    """
+    for spec in import_specs:
+        if spec == mod or spec.startswith(mod + "."):
+            return True
+    return False
+
+
 # A competing pair taught on a Ruby repo names either a require path
 # ('net/http') or a constant path (Net::HTTP). This shape-check picks the
 # matching strategy per entry.
@@ -2930,6 +3075,8 @@ def lint_conventions(
         # rule was inert on exactly the language it was taught for.
         if language == "ruby":
             import_specs = [m.group(1) for m in _RUBY_REQUIRE_RE.finditer(content)]
+        elif language == "python":
+            import_specs = [m.group(1) or m.group(2) for m in _PY_IMPORT_RE.finditer(content)]
         else:
             import_specs = [m.group(1) for m in _TS_IMPORT_FROM_RE.finditer(import_scan_content)]
         for competing in (conventions.get("imports") or {}).get("competing", []):
@@ -2942,6 +3089,9 @@ def lint_conventions(
             if language == "ruby":
                 over_used = _ruby_module_in_use(over_mod, import_specs, scan_content)
                 preferred_used = _ruby_module_in_use(preferred_mod, import_specs, scan_content)
+            elif language == "python":
+                over_used = _python_module_in_use(over_mod, import_specs)
+                preferred_used = _python_module_in_use(preferred_mod, import_specs)
             else:
                 over_used = any(_module_specifier_matches(s, over_mod) for s in import_specs)
                 preferred_used = any(

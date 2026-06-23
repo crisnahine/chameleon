@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED.svg)](https://docs.claude.com/claude-code)
 
-chameleon learns your repo's actual conventions and injects archetype-aware guidance on every edit, so AI-generated code matches your existing style on the first try. It supports TypeScript and Ruby on Rails.
+chameleon learns your repo's actual conventions and injects archetype-aware guidance on every edit, so AI-generated code matches your existing style on the first try. It supports TypeScript, Ruby on Rails, and Python (Django, Flask, FastAPI).
 
 ![chameleon injecting archetype-aware guidance before an edit: the resolved archetype and confidence, the canonical witness to mirror, and a "do NOT write it this way" counterexample drawn from the repo's own off-pattern](assets/chameleon-injection.svg)
 
@@ -13,7 +13,7 @@ chameleon learns your repo's actual conventions and injects archetype-aware guid
 
 ## Quickstart
 
-**Before you start**, you need `uv` and Node.js 20+ on your `PATH`. Ruby 3.0+ is also needed if you edit Rails repos. On a fresh machine, [docs/install.md](docs/install.md) has copy-paste setup for macOS, Linux, and Windows, plus a check for each tool. Skip ahead if you already have them.
+**Before you start**, you need `uv` and Node.js 20+ on your `PATH`. Ruby 3.0+ is also needed if you edit Rails repos. (Python repos need nothing extra — chameleon parses them with its own bundled libcst.) On a fresh machine, [docs/install.md](docs/install.md) has copy-paste setup for macOS, Linux, and Windows, plus a check for each tool. Skip ahead if you already have them.
 
 **1. Install the plugin.** In any Claude Code session:
 
@@ -24,7 +24,7 @@ chameleon learns your repo's actual conventions and injects archetype-aware guid
 
 Restart Claude Code. Confirm it loaded by asking *"What chameleon tools do you have?"*
 
-**2. Profile a repo.** Open a TypeScript or Ruby on Rails repo, then:
+**2. Profile a repo.** Open a TypeScript, Ruby on Rails, or Python (Django / Flask / FastAPI) repo, then:
 
 ```
 /chameleon-init    # build a profile (a few seconds for repos under 5k files)

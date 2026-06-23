@@ -367,6 +367,8 @@ def resolve_extractor(repo_root: Path) -> Extractor | None:
 def _glob_for_extractor(extractor: Extractor) -> str:
     if extractor.language == "ruby":
         return "**/*.rb"
+    if extractor.language == "python":
+        return "**/*.py"
     return "**/*.{ts,tsx,js,jsx,mjs,cjs}"
 
 

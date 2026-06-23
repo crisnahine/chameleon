@@ -4,6 +4,49 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.26.0] - 2026-06-23
+
+Python support, with framework awareness for Django, Flask, and FastAPI. Python
+joins TypeScript and Ruby as a first-class language: repos bootstrap into a
+profile, and per-edit injection serves a role-appropriate canonical witness on
+every edit. A Python file is parsed with libcst, which ships bundled with the
+plugin and runs under the plugin's own interpreter, so a user's repo needs
+nothing extra installed.
+
+Django archetypes are role-based across apps: every `models.py` clusters into
+one "model" archetype, every `views.py` into "view", and so on (proven on a real
+Django repo where 17 of 18 `models.py` across 18 apps merged into a single
+cluster), so editing a model is guided by other models rather than by a random
+file in the same app. Flask and FastAPI are freeform, so the web layer is keyed
+on the route directory (`routes/`, `routers/`, `endpoints/`, `blueprints/`).
+
+### Added
+
+- **Python language support.** A libcst-backed dump script
+  (`scripts/libcst_dump.py`) and `PythonExtractor` produce the same normalized
+  shape as the TypeScript and Ruby extractors, so clustering, archetype
+  derivation, body-shape norms, the signature consensus, and the calls index
+  treat Python identically. Decorators and base classes are captured for the
+  framework priors.
+- **Django role archetypes.** Filename-based role bucketing (`models.py` →
+  `model`, `views.py` → `view`, `serializers.py` → `serializer`, plus `admin`,
+  `migration`, `form`, `manager`, `queryset`, `signal`, `task`, `permission`,
+  `filter`, `urls`, `app-config`), including the package form
+  (`models/base.py`). Roles cluster across apps.
+- **Flask / FastAPI web-layer roles.** `routes/` / `routers/` / `endpoints/` →
+  `route`, `blueprints/` → `blueprint`, `deps.py` → `dependency`.
+- **Python hook-time lint.** The `eval` / `exec` security sink (block-eligible)
+  and import-preference, which lets the teach-competing-import and counterexample
+  features work on Python. Hot-path dimension extraction parses with stdlib
+  `ast` (≈10x faster than libcst), normalizing `async def` to the libcst
+  `FunctionDef` vocabulary so the cluster signature matches.
+- **`tests/qa_python.py`** QA battery (mirrors `qa_typescript.py` /
+  `qa_ruby.py`), driven by `CHAMELEON_TEST_PYTHON_REPO`.
+
+### Changed
+
+- `libcst>=1.1.0` added as an MCP dependency.
+
 ## [2.25.0] - 2026-06-23
 
 Per-edit off-pattern counterexamples. The canonical witness shows the model the

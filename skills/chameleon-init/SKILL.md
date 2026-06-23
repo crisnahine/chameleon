@@ -1,6 +1,6 @@
 ---
 name: chameleon-init
-description: Use when the user explicitly invokes /chameleon-init to bootstrap a chameleon profile for the current repository (TypeScript or Ruby on Rails)
+description: Use when the user explicitly invokes /chameleon-init to bootstrap a chameleon profile for the current repository (TypeScript, Ruby on Rails, or Python — Django/Flask/FastAPI)
 ---
 
 # /chameleon-init
@@ -12,16 +12,17 @@ the commit-marker pattern.
 
 ## When to use
 
-User runs `/chameleon-init` in a TypeScript or Ruby on Rails
-repo that does not yet have a `.chameleon/` directory.
+User runs `/chameleon-init` in a TypeScript, Ruby on Rails, or Python
+(Django / Flask / FastAPI) repo that does not yet have a `.chameleon/` directory.
 
 If `.chameleon/profile.json` already exists, suggest `/chameleon-refresh` instead —
 running init twice would overwrite the existing profile.
 
 ## The flow (overall)
 
-1. Confirm the repo's language: TypeScript (`tsconfig.json` or TS in `package.json` deps)
-   or Ruby on Rails (`Gemfile` with rails, or `config/application.rb`).
+1. Confirm the repo's language: TypeScript (`tsconfig.json` or TS in `package.json` deps),
+   Ruby on Rails (`Gemfile` with rails, or `config/application.rb`), or Python
+   (`pyproject.toml` / `setup.py` / `requirements.txt` / `manage.py`, or any `.py` files).
 2. **Determine the production branch** (the branch the profile derives
    from, regardless of what is checked out). Call
    `chameleon-mcp::detect_repo(file_path=<repo_root>)` and read its
@@ -130,7 +131,7 @@ the user for an explicit `paths_glob` (e.g., `src/**/*.ts` or `app/**/*.rb`).
 
 | Failure | Action |
 |---|---|
-| `failed_unsupported_language` | No TypeScript or Ruby signals (no tsconfig, no Gemfile). Tell the user chameleon currently supports TS + Rails; other languages are not yet supported. |
+| `failed_unsupported_language` | No TypeScript, Ruby, or Python signals (no tsconfig, no Gemfile, no pyproject/setup.py/`.py`). Tell the user chameleon currently supports TypeScript, Ruby on Rails, and Python (Django/Flask/FastAPI); other languages are not yet supported. |
 | `failed_too_many_files` | Repo exceeds 200k file ceiling. Ask user for `paths_glob` to scope. |
 | Bootstrap completes but `archetypes_detected == 0` | All clusters were sparse (< 5 files). User likely has a tiny project; suggest manual archetype curation via `/chameleon-teach`. Skip the rename interview. |
 | `canonicals_skipped_failed_scans > 0` | Some clusters had every candidate fail secret/injection/poisoning scans. Tell the user to investigate via `/chameleon-status`. |
@@ -163,8 +164,8 @@ append-only — it never touches idioms the team later adds.
 
 ## Out of scope (current release)
 
-- Languages other than TypeScript and Ruby — `failed_unsupported_language`.
-  Future releases may add Python, Go, etc.
+- Languages other than TypeScript, Ruby, and Python — `failed_unsupported_language`.
+  Future releases may add Go, etc.
 - Per-workspace bootstrapping in monorepos — current implementation
   bootstraps at repo root regardless. Future versions will add per-workspace
   `.chameleon/` directories.

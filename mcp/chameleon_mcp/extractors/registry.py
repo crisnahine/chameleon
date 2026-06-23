@@ -16,12 +16,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from chameleon_mcp.extractors._base import Extractor
+from chameleon_mcp.extractors.python import PythonExtractor
 from chameleon_mcp.extractors.ruby import RubyExtractor
 from chameleon_mcp.extractors.typescript import TypeScriptExtractor
 
 # Order is precedence: the first extractor whose can_handle() matches wins.
-# TypeScript before Ruby preserves the historical bootstrap order.
-EXTRACTORS: list[type[Extractor]] = [TypeScriptExtractor, RubyExtractor]
+# TypeScript before Ruby preserves the historical bootstrap order; Python is last
+# so its liberal "any .py file" detection only claims repos TS/Ruby did not.
+EXTRACTORS: list[type[Extractor]] = [TypeScriptExtractor, RubyExtractor, PythonExtractor]
 
 
 def register(extractor_cls: type[Extractor]) -> None:

@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Python AST dump — the libcst counterpart of prism_dump.rb / ts_dump.mjs.
+
+A long-lived subprocess: reads absolute file paths on stdin (one per line) and
+emits one NDJSON ``ParsedFile`` record per file on stdout, flushed per record.
+The schema is the same normalized shape every chameleon extractor produces, so
+the downstream clustering, archetype derivation, body-shape norms, signature
+consensus, and calls index treat Python identically to TypeScript and Ruby.
+
+Runs under the plugin's own interpreter (``sys.executable``), which is where
+libcst is installed (it is a hard dependency of ``chameleon-mcp``), so a user's
+repo never needs libcst on its own. libcst is a lossless CST, but here it is
+used purely as a parser: this script only reads the tree, never the repo's
+runtime, and it drops PYTHONPATH/PYTHONSTARTUP at the extractor boundary as
+defense-in-depth (see extractors/python.py).
+
+Two libcst specifics shape the port:
+* Nodes carry no line numbers on their own; positions come from a
+  ``MetadataWrapper`` + ``PositionProvider`` pass, read via ``get_metadata``.
+* Top-level small statements (import/assign/expr) are wrapped in
+  ``SimpleStatementLine``; ``top_level_node_kinds`` unwraps them so the kinds
+  are the meaningful inner statements, while compound statements
+  (``FunctionDef``/``ClassDef``/``If``/...) emit their own kind directly.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+import libcst as cst
+from libcst.metadata import MetadataWrapper, PositionProvider
+
+MAX_AST_NODES = 50_000
+MAX_PARSE_DIAGNOSTICS = 20
+MAX_FILE_SIZE = 1_000_000
+# A real module declares a few dozen callables; cap the recorded headers so one
+# outlier file cannot bloat the dump record (consensus needs a sample, not all).
+MAX_CALLABLE_SIGNATURES = 200
+# One file's recorded call sites are capped so a generated megafile cannot bloat
+# the dump; the true total is preserved for honest truncation.
+MAX_CALL_SITES = 2000
+
+# Decision points for branch_count: the cyclomatic decision set minus boolean
+# operators. `elif` is a nested `If` in libcst, so it counts as another branch
+# on its own. Each `except` handler and each `match` case is its own branch.
+_BRANCH_TYPES = (cst.If, cst.While, cst.For, cst.ExceptHandler, cst.IfExp, cst.MatchCase)
+# Nodes that also open a structural indent level (raise max_depth). `match`
+# raises depth; its individual cases do not (they sit at the match's indent,
+# mirroring how `when`/`case` is handled in the Ruby extractor).
+_NESTING_TYPES = (cst.If, cst.While, cst.For, cst.With, cst.Try, cst.Match)
+
+
+class _NodeCeilingExceeded(Exception):
+    """Raised to abort a walk that exceeds MAX_AST_NODES (pathological file)."""
+
+
+def _dotted_name(node) -> str | None:
+    """Flatten a Name/Attribute/Call target into a dotted string.
+
+    ``app.route`` from ``@app.route("/x")``, ``models.Model`` from a base, or a
+    plain ``staticmethod``. Returns None for a target the static walk cannot name
+    (a subscription, a chained call result, a lambda).
+    """
+    if isinstance(node, cst.Name):
+        return node.value
+    if isinstance(node, cst.Attribute):
+        base = _dotted_name(node.value)
+        return f"{base}.{node.attr.value}" if base else None
+    if isinstance(node, cst.Call):
+        return _dotted_name(node.func)
+    return None
+
+
+def _decorator_targets(decorators) -> list[str]:
+    """Dotted target of each decorator, in source order, skipping the unnamed."""
+    out = []
+    for dec in decorators:
+        name = _dotted_name(dec.decorator)
+        if name:
+            out.append(name)
+    return out
+
+
+def _base_names(class_node: cst.ClassDef) -> list[str]:
+    """Dotted name of each base class, in declaration order."""
+    out = []
+    for base in class_node.bases:
+        name = _dotted_name(base.value)
+        if name:
+            out.append(name)
+    return out
+
+
+def _import_specifier(node) -> list[tuple[str, str]]:
+    """``[module, kind]`` pairs for one Import / ImportFrom node.
+
+    ``import x``        -> ``(x, "namespace")``   whole-module bind
+    ``from m import a`` -> ``(m, "named")``        one pair per from-statement
+    ``from m import *`` -> ``(m, "namespace")``
+    ``from . import x`` -> ``(".", "named")``      relative dots preserved
+    The module string keeps its full dotted path (``django.db``, ``fastapi``) so
+    framework discrimination downstream can key on the import root.
+    """
+    if isinstance(node, cst.Import):
+        out = []
+        for alias in node.names:
+            mod = _dotted_name(alias.name)
+            if mod:
+                out.append((mod, "namespace"))
+        return out
+    if isinstance(node, cst.ImportFrom):
+        dots = "." * len(node.relative)
+        mod = _dotted_name(node.module) if node.module is not None else ""
+        target = dots + (mod or "")
+        if not target:
+            return []
+        kind = "namespace" if isinstance(node.names, cst.ImportStar) else "named"
+        return [(target, kind)]
+    return []
+
+
+def _param_shapes(params: cst.Parameters) -> list[dict]:
+    """Structured param shape mirroring the Ruby/TS extractors.
+
+    Each entry is ``{name, optional, kind}`` so the cross-language signature
+    consensus treats all three languages the same way. ``optional`` is True when
+    the binding can be dropped at a call site (a default, ``*args``, ``**kwargs``,
+    a keyword-with-default).
+    """
+    shapes: list[dict] = []
+    for p in list(params.posonly_params) + list(params.params):
+        has_default = p.default is not None
+        shapes.append(
+            {
+                "name": p.name.value,
+                "optional": has_default,
+                "kind": "optional" if has_default else "positional",
+            }
+        )
+    if isinstance(params.star_arg, cst.Param):
+        shapes.append({"name": params.star_arg.name.value, "optional": True, "kind": "rest"})
+    for p in params.kwonly_params:
+        has_default = p.default is not None
+        shapes.append({"name": p.name.value, "optional": has_default, "kind": "keyword"})
+    if params.star_kwarg is not None:
+        shapes.append(
+            {"name": params.star_kwarg.name.value, "optional": True, "kind": "keyword_rest"}
+        )
+    return shapes
+
+
+def _call_site_of(node: cst.Call) -> dict | None:
+    """Classify one Call into the dump's call-site shape, or None when the callee
+    can never be index-resolved (a chained-call result, a subscription, a
+    ``super().__init__`` style receiver)."""
+    func = node.func
+    if isinstance(func, cst.Name):
+        return {"name": func.value, "receiver": None, "kind": "bare"}
+    if isinstance(func, cst.Attribute):
+        attr = func.attr.value
+        recv = func.value
+        if isinstance(recv, cst.Name):
+            if recv.value == "self":
+                return {"name": attr, "receiver": "self", "kind": "self"}
+            return {"name": attr, "receiver": recv.value, "kind": "member"}
+    return None
+
+
+class _Collector(cst.CSTVisitor):
+    """Single-pass walker mirroring prism_dump.rb's ``walker`` lambda.
+
+    Maintains the same enter/leave stacks (body-shape frames, enclosing classes,
+    lexical nesting, enclosing def names) so a nested def is measured
+    independently of its enclosing def and a method records the class + base it
+    belongs to.
+    """
+
+    METADATA_DEPENDENCIES = (PositionProvider,)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.node_count = 0
+        self.import_specifiers: list[list] = []
+        self.function_scopes: list[dict] = []
+        self.callable_signatures: list[dict] = []
+        self.class_shapes: list[dict] = []
+        self.call_sites: list[dict] = []
+        self.call_sites_total = 0
+        self.call_sites_truncated = False
+        self._frames: list[dict] = []
+        self._classes: list[dict] = []
+        self._nesting: list[str] = []
+        self._defs: list[str] = []
+
+    def _line(self, node) -> int | None:
+        try:
+            return self.get_metadata(PositionProvider, node).start.line
+        except Exception:
+            return None
+
+    def _span(self, node) -> tuple[int | None, int | None]:
+        try:
+            rng = self.get_metadata(PositionProvider, node)
+            return rng.start.line, rng.end.line
+        except Exception:
+            return None, None
+
+    def on_visit(self, node) -> bool:
+        self.node_count += 1
+        if self.node_count > MAX_AST_NODES:
+            raise _NodeCeilingExceeded()
+
+        for spec in _import_specifier(node):
+            self.import_specifiers.append([spec[0], spec[1]])
+
+        if isinstance(node, cst.Call):
+            site = _call_site_of(node)
+            if site is not None:
+                self.call_sites_total += 1
+                if len(self.call_sites) < MAX_CALL_SITES:
+                    site["line"] = self._line(node)
+                    site["caller"] = self._defs[-1] if self._defs else "<module>"
+                    self.call_sites.append(site)
+                else:
+                    self.call_sites_truncated = True
+
+        if isinstance(node, cst.ClassDef):
+            name = node.name.value
+            bases = _base_names(node)
+            path = ".".join(self._nesting + [name])
+            self.class_shapes.append(
+                {"name": name, "bases": bases, "decorators": _decorator_targets(node.decorators)}
+            )
+            self._classes.append({"name": name, "base": bases[0] if bases else None, "path": path})
+            self._nesting.append(name)
+        elif isinstance(node, cst.FunctionDef):
+            self._enter_function(node)
+        elif self._frames:
+            frame = self._frames[-1]
+            if isinstance(node, _BRANCH_TYPES):
+                frame["branch_count"] += 1
+            if isinstance(node, _NESTING_TYPES):
+                frame["depth"] += 1
+                frame["max_depth"] = max(frame["max_depth"], frame["depth"])
+
+        return True
+
+    def on_leave(self, node) -> None:
+        if isinstance(node, cst.FunctionDef):
+            self._defs.pop()
+            frame = self._frames.pop()
+            self.function_scopes.append(
+                {
+                    "start_line": frame["start_line"],
+                    "end_line": frame["end_line"],
+                    "line_span": frame["line_span"],
+                    "max_depth": frame["max_depth"],
+                    "branch_count": frame["branch_count"],
+                    "param_count": frame["param_count"],
+                }
+            )
+        elif self._frames and isinstance(node, _NESTING_TYPES):
+            self._frames[-1]["depth"] -= 1
+
+        if isinstance(node, cst.ClassDef):
+            self._classes.pop()
+            self._nesting.pop()
+
+    def _enter_function(self, node: cst.FunctionDef) -> None:
+        start, end = self._span(node)
+        params = _param_shapes(node.params)
+        self._frames.append(
+            {
+                "start_line": start,
+                "end_line": end,
+                "line_span": (end - start + 1) if (start and end) else None,
+                "param_count": len(params),
+                "max_depth": 0,
+                "branch_count": 0,
+                "depth": 0,
+            }
+        )
+        self._defs.append(node.name.value)
+
+        decorators = _decorator_targets(node.decorators)
+        enclosing = self._classes[-1] if self._classes else None
+        if "staticmethod" in decorators:
+            kind = "staticmethod"
+        elif "classmethod" in decorators:
+            kind = "classmethod"
+        elif enclosing is not None:
+            kind = "method"
+        else:
+            kind = "function"
+
+        if len(self.callable_signatures) < MAX_CALLABLE_SIGNATURES:
+            self.callable_signatures.append(
+                {
+                    "name": node.name.value,
+                    "kind": kind,
+                    "params": params,
+                    "is_default_export": False,
+                    "enclosing_class": enclosing["name"] if enclosing else None,
+                    "enclosing_class_path": enclosing["path"] if enclosing else None,
+                    "base_class": enclosing["base"] if enclosing else None,
+                    "decorators": decorators,
+                    "start_line": start,
+                    "end_line": end,
+                }
+            )
+
+
+def _top_level_kinds(module: cst.Module) -> list[str]:
+    """Unwrap SimpleStatementLine so top-level kinds are the meaningful inner
+    statements (Import/ImportFrom/Assign), while compound statements emit their
+    own kind."""
+    kinds: list[str] = []
+    for stmt in module.body:
+        if isinstance(stmt, cst.SimpleStatementLine):
+            kinds.extend(type(small).__name__ for small in stmt.body)
+        else:
+            kinds.append(type(stmt).__name__)
+    return kinds
+
+
+def extract_file(file_path: str) -> dict:
+    try:
+        stat = os.lstat(file_path)
+    except OSError as e:
+        return {"path": file_path, "error": "read_error", "message": str(e)}
+
+    if os.path.islink(file_path):
+        return {"path": file_path, "error": "symlink_refused"}
+
+    if stat.st_size > MAX_FILE_SIZE:
+        return {"path": file_path, "error": "file_too_large", "size": stat.st_size}
+
+    try:
+        with open(file_path, encoding="utf-8", errors="replace") as fh:
+            content = fh.read()
+    except OSError as e:
+        return {"path": file_path, "error": "read_error", "message": str(e)}
+
+    try:
+        module = cst.parse_module(content)
+    except cst.ParserSyntaxError as e:
+        return {"path": file_path, "error": "parse_error", "message": str(e)}
+    except Exception as e:  # pragma: no cover - defensive: any non-syntax parse fault
+        return {"path": file_path, "error": "parse_error", "message": str(e)}
+
+    collector = _Collector()
+    try:
+        MetadataWrapper(module, unsafe_skip_copy=True).visit(collector)
+    except _NodeCeilingExceeded:
+        return {"path": file_path, "error": "ast_node_ceiling_exceeded"}
+    except RecursionError as e:
+        return {"path": file_path, "error": "walk_error", "message": str(e)}
+
+    top_classes = [s for s in module.body if isinstance(s, cst.ClassDef)]
+    top_funcs = [s for s in module.body if isinstance(s, cst.FunctionDef)]
+    if len(top_classes) == 1 and not top_funcs:
+        default_export_kind = "ClassDef"
+    elif len(top_funcs) == 1 and not top_classes:
+        default_export_kind = "FunctionDef"
+    else:
+        default_export_kind = None
+
+    return {
+        "path": file_path,
+        "content_first_200_bytes": content[:200],
+        "top_level_node_kinds": _top_level_kinds(module),
+        "default_export_kind": default_export_kind,
+        "named_export_count": len(top_classes) + len(top_funcs),
+        "import_specifiers": collector.import_specifiers,
+        "has_jsx": False,
+        "parse_diagnostics_count": 0,
+        "function_scopes": collector.function_scopes,
+        "callable_signatures": collector.callable_signatures,
+        "class_shapes": collector.class_shapes,
+        "call_sites": collector.call_sites,
+        "call_sites_total": collector.call_sites_total,
+        "call_sites_truncated": collector.call_sites_truncated,
+    }
+
+
+def main() -> None:
+    for line in sys.stdin:
+        path = line.strip()
+        if not path:
+            continue
+        try:
+            record = extract_file(path)
+        except RecursionError:
+            record = {"path": path, "error": "walk_error", "message": "recursion limit"}
+        except Exception as e:  # noqa: BLE001 - per-file crash guard, never abort the corpus
+            record = {"path": path, "error": "extractor_crash", "message": str(e)}
+        sys.stdout.write(json.dumps(record) + "\n")
+        sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()
