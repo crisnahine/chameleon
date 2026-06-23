@@ -3443,17 +3443,17 @@ def _proposed_hard_secret_violations(
     directives are not consulted: fragment line numbers do not map truthfully
     onto file lines.
 
-    The hard-block deny is gated to recognized code languages
-    (``detect_language`` is not None): an example AKIA.../ghp_/PEM token written
-    into prose/config/fixtures (``.md``/``.txt``/``.json``/``.yaml``) must not
-    hard-block the write in enforce mode. A real secret lives inside a string
-    literal, so the scan still runs against RAW content (the per-language
-    string strip would blank the token itself and find nothing); the language
-    gate alone clears the prose/config false positives while keeping the deny on
-    code unchanged.
+    The hard-block deny is skipped only for prose/doc files (``.md``/``.txt``/
+    ``.rst``...), where a sample AKIA.../ghp_/PEM token is documentation rather
+    than a leak. Config and data files (``.env``/``.yml``/``.json``/``.toml``)
+    are the most common real leak target, so the deny still fires there even
+    though they are not a recognized code language; the hard-kind tokens are
+    high-precision. A real secret lives inside a string literal, so the scan runs
+    against RAW content (the per-language string strip would blank the token
+    itself and find nothing).
     """
     from chameleon_mcp._thresholds import threshold_int
-    from chameleon_mcp.lint_engine import detect_language, scan_hard_secrets
+    from chameleon_mcp.lint_engine import scan_hard_secrets
     from chameleon_mcp.violation_class import (
         IgnoreIndex,
         build_ignore_index,
@@ -3462,7 +3462,13 @@ def _proposed_hard_secret_violations(
         tag_secret_hardness,
     )
 
-    if detect_language(file_path) is None:
+    # The hard-secret deny may hard-block an edit, so skip it only for prose/doc
+    # files, where a sample key is documentation (the original false-positive).
+    # Config and data files (.env, .yml, .json, .toml, ...) are NOT a recognized
+    # code language but are the most common real leak target, so the deny must
+    # still fire there; the hard-kind tokens (AKIA.../ghp_/PEM) are high-precision.
+    _prose = (".md", ".markdown", ".mdx", ".rst", ".txt", ".text", ".adoc")
+    if file_path and str(file_path).lower().endswith(_prose):
         return [], False
     clipped = proposed[: threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS")]
     violations = [v.to_dict() for v in scan_hard_secrets(clipped)]

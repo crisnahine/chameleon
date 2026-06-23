@@ -229,3 +229,30 @@ def test_real_bootstrap_rename_keeps_caller_facts(tmp_path):
     assert (cham / "calls_index.json").is_file(), "rename txn dropped calls_index.json"
     assert (cham / "calls_index.json").read_text(encoding="utf-8") == before
     assert res["new_profile_sha256"] == hash_profile(cham)
+
+
+def test_rename_carries_exports_reverse_function_indexes_verbatim(tmp_path):
+    # exports_index/reverse_index/function_catalog became protocol files (the
+    # dir-swap drops them) and are file/symbol-keyed, so a rename must carry them
+    # verbatim or it dark-fires phantom-symbol / cross-file existence / dedup.
+    repo, cham = _make_profile_repo(tmp_path)
+    payloads = {
+        "exports_index.json": {"schema_version": 1, "files": {"src/a.ts": {"names": ["foo"]}}},
+        "reverse_index.json": {
+            "schema_version": 1,
+            "targets": {"src/a.ts": {"foo": [{"path": "src/b.ts"}]}},
+        },
+        "function_catalog.json": {"schema_version": 1, "files": {"src/a.ts": {}}},
+    }
+    texts = {}
+    for name, doc in payloads.items():
+        texts[name] = json.dumps(doc, indent=2, sort_keys=True)
+        (cham / name).write_text(texts[name], encoding="utf-8")
+
+    res = tools.apply_archetype_renames(str(repo), {"svc-old": "payment-service"})["data"]
+    assert res["status"] == "success"
+    for name, text in texts.items():
+        carried = cham / name
+        assert carried.is_file(), f"rename txn dropped {name}"
+        assert carried.read_text(encoding="utf-8") == text
+    assert res["new_profile_sha256"] == hash_profile(cham)

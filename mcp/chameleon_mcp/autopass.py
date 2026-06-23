@@ -160,6 +160,9 @@ _SKIP_MARKER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bx(?:it|test|describe|specify|context)\b\s*[('\"]"),
     re.compile(r"\bpending\b"),
     re.compile(r"\bskip\b(?=\s*[(:'\"])"),
+    # Python: pytest/unittest skip markers, parenthesized OR bare. The paren-
+    # anchored arm above misses bare `@pytest.mark.skip` and `@pytest.mark.xfail`.
+    re.compile(r"@(?:pytest\.mark\.(?:skipif|skip|xfail)|unittest\.(?:skip|expectedFailure))\b"),
 )
 
 # Assertion tokens for the added-minus-removed delta over test-file diff lines.
