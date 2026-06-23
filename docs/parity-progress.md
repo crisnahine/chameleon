@@ -42,7 +42,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] exports index for Python (named_export_names → exports_index.json)
 - [x] reverse index for Python (import_symbols → reverse_index.json)
 - [x] phantom-import (relative import → file on disk) Python branch
-- [ ] phantom-symbol (imported name in target exports) Python
+- [x] phantom-symbol (imported name in target exports) Python
 - [ ] cross-file-importers (blast-radius advisory) Python
 - [ ] removed-export-breaks-importers Python
 - [ ] calls index import grade (named/namespace import call edges) Python
