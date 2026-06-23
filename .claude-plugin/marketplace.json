@@ -13,7 +13,18 @@
       "author": {
         "name": "Cris Nahine",
         "email": "crisjosephnahine@gmail.com"
-      }
+      },
+      "homepage": "https://github.com/crisnahine/chameleon",
+      "license": "MIT",
+      "keywords": [
+        "skills",
+        "code-conventions",
+        "pattern-matching",
+        "ast-analysis",
+        "archetype",
+        "best-practices",
+        "claude-code"
+      ]
     }
   ]
 }
