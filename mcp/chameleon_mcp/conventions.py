@@ -298,6 +298,38 @@ _RUBY_DEF_RE = re.compile(r"^\s*def\s+[\w.]+")
 # single target and do NOT open a section, so they must not flip the flag.
 _RUBY_VISIBILITY_RE = re.compile(r"^\s*(private|protected|public)\s*(#.*)?$")
 _RUBY_SCOPE_OPEN_RE = re.compile(r"^\s*(class|module)\b")
+# Python: a public top-level/nested def or class (name not underscore-prefixed).
+# The docstring is the FIRST statement of the body (the line AFTER the header),
+# unlike TS/Ruby where the doc comment sits ABOVE the declaration.
+_PY_PUBLIC_DEF_RE = re.compile(r"^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z]\w*)")
+_PY_DOCSTRING_START_RE = re.compile(r"""^[rRbBuUfF]{0,2}('''|\"\"\"|'|")""")
+
+
+def _py_decl_has_docstring(lines: list[str], decl_index: int) -> bool:
+    """True if the Python def/class at ``decl_index`` opens with a docstring.
+
+    Finds the end of the (possibly multi-line) header — the first line ending in
+    ``:`` — then checks whether the first non-blank body line is a string
+    literal. Bounded scan; stops at the next def/class so a one-liner without a
+    docstring can't borrow a sibling's.
+    """
+    end = min(len(lines), decl_index + 15)
+    i = decl_index
+    while i < end:
+        stripped = lines[i].split("#", 1)[0].rstrip()
+        if stripped.endswith(":"):
+            break
+        if i > decl_index and _PY_PUBLIC_DEF_RE.match(lines[i]):
+            return False
+        i += 1
+    else:
+        return False
+    j = i + 1
+    while j < len(lines) and not lines[j].strip():
+        j += 1
+    if j >= len(lines):
+        return False
+    return bool(_PY_DOCSTRING_START_RE.match(lines[j].strip()))
 
 
 def _ts_decl_has_leading_doc(lines: list[str], decl_index: int) -> bool:
@@ -373,6 +405,16 @@ def compute_doc_coverage_from_content(content: str, *, language: str) -> tuple[i
                 public += 1
                 if _ruby_def_has_leading_doc(lines, idx):
                     documented += 1
+    elif language == "python":
+        # Public surface = def/class whose name is not underscore-prefixed;
+        # documented = opens with a docstring (the first body statement).
+        for idx, line in enumerate(lines):
+            m = _PY_PUBLIC_DEF_RE.match(line)
+            if not m or m.group(2).startswith("_"):
+                continue
+            public += 1
+            if _py_decl_has_docstring(lines, idx):
+                documented += 1
     return documented, public
 
 
@@ -423,6 +465,8 @@ def extract_doc_coverage_conventions(
 # component.
 _TEST_BASENAME_RE = re.compile(r"\.(test|spec|stories|fixture)\.[A-Za-z0-9]+$")
 _RUBY_TEST_BASENAME_RE = re.compile(r"_(spec|test)\.rb$")
+# pytest/unittest: test_<x>.py (dominant), <x>_test.py, conftest.py.
+_PY_TEST_BASENAME_RE = re.compile(r"^(test_.+|.+_test|conftest)\.pyi?$")
 _TEST_DIR_COMPONENTS = frozenset({"__tests__", "test", "tests", "spec", "specs", "cypress", "e2e"})
 # Top-level roots a mirrored test tree commonly lives under, paired with the
 # basename transform that turns a source stem into its test stem there.
@@ -447,6 +491,9 @@ def _is_test_path(rel_path: str, *, language: str) -> bool:
     name = p.rsplit("/", 1)[-1]
     if language == "ruby":
         if _RUBY_TEST_BASENAME_RE.search(name):
+            return True
+    elif language == "python":
+        if _PY_TEST_BASENAME_RE.match(name):
             return True
     elif _TEST_BASENAME_RE.search(name):
         return True
@@ -474,6 +521,20 @@ def _candidate_test_paths(rel_path: str, *, language: str) -> list[tuple[str, st
 
     def _join(segments: list[str]) -> str:
         return "/".join(s for s in segments if s)
+
+    if language == "python":
+        # Co-located: x.py -> test_x.py (pytest dominant) / x_test.py.
+        candidates.append(("co-located test_", _join(dir_parts + [f"test_{stem}{ext}"])))
+        candidates.append(("co-located _test", _join(dir_parts + [f"{stem}_test{ext}"])))
+        # Mirrored tests/ tree: swap a leading source root for the test root, else
+        # prefix it. The test stem keeps the pytest test_ prefix.
+        for root in ("tests", "test"):
+            if dir_parts and dir_parts[0] in ("src", "app", "lib"):
+                mirror = [root] + dir_parts[1:]
+            else:
+                mirror = [root] + dir_parts
+            candidates.append((f"mirrored {root}/.../test_", _join(mirror + [f"test_{stem}{ext}"])))
+        return candidates
 
     if language == "ruby":
         # Co-located: x.rb -> x_spec.rb / x_test.rb next to the source.
@@ -1003,7 +1064,7 @@ _CONTRACT_METHOD_STOPLIST = frozenset(
         "respond_to_missing?",
     }
 )
-_CONTRACT_METHOD_KINDS = frozenset({"method", "singleton_method"})
+_CONTRACT_METHOD_KINDS = frozenset({"method", "singleton_method", "staticmethod", "classmethod"})
 _CONTRACT_REQUIRED_METHODS_CAP = 3
 
 
@@ -1300,6 +1361,7 @@ def extract_required_guards_conventions(files: list[ParsedFile]) -> dict:
 #     base-level pattern) and, separately, the dominant render target a rescue
 #     hands the error to (render json:/render_error/an ErrorSerializer call).
 _TS_TRY_RE = re.compile(r"(?:^|[^.\w])try\s*\{", re.MULTILINE)
+_PY_TRY_RE = re.compile(r"^[ \t]*try\s*:", re.MULTILINE)
 _RUBY_RESCUE_FROM_RE = re.compile(r"^\s*rescue_from\b", re.MULTILINE)
 # Ruby's built-in exception classes. `raise StandardError.new("...")` is raising a
 # stdlib exception, not handing the error to the project's render shape, so these
@@ -1388,6 +1450,9 @@ def extract_error_handling_conventions(files: list[ParsedFile], *, language: str
                     continue
                 shape_counts[label] += 1
                 break
+        elif language == "python":
+            if _PY_TRY_RE.search(content):
+                handled += 1
         else:
             if _TS_TRY_RE.search(content):
                 handled += 1
@@ -1454,11 +1519,20 @@ def extract_key_exports(files: list[ParsedFile], *, language: str) -> list[str]:
 
     name_counts: Counter[str] = Counter()
     for f in files:
+        seen: set[str] = set()
+        if language == "python":
+            # Top-level public names the libcst dump already enumerated; the
+            # reuse signal is the public surface (drop underscore-prefixed).
+            for name in f.extras.get("named_export_names") or []:
+                if name.startswith("_") or name in seen or len(name) <= 1:
+                    continue
+                name_counts[name] += 1
+                seen.add(name)
+            continue
         try:
             content = f.path.read_bytes()[:50_000].decode("utf-8", errors="replace")
         except OSError:
             continue
-        seen: set[str] = set()
         if language == "typescript":
             for m in _TS_EXPORT_NAME_RE.finditer(content):
                 name = m.group(1)

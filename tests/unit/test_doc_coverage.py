@@ -91,7 +91,14 @@ class TestExtractDocCoverageConventions:
         assert result["public"] == 20
 
     def test_unsupported_language_yields_zero(self):
-        assert compute_doc_coverage_from_content("def f(): pass", language="python") == (0, 0)
+        assert compute_doc_coverage_from_content("func main() {}", language="go") == (0, 0)
+
+    def test_python_doc_coverage_supported(self):
+        # Python is a supported language: one public undocumented function.
+        assert compute_doc_coverage_from_content("def f():\n    pass\n", language="python") == (
+            0,
+            1,
+        )
 
 
 class TestDocCoverageRendering:
