@@ -21,12 +21,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] vacuous-active calibration: scope phantom-import + file-naming `BLOCK_RULE_LANGUAGES` so Python doesn't certify inert rules active (violation_class.py:226,231)
 
 ## PKG-1 — Extractor foundation (libcst_dump.py + python.py); re-bootstrap to validate
-- [ ] emit `import_symbols` rows `{name, local, module, line}` (match ts_dump shape)
-- [ ] emit `namespace_imports` rows `{alias, module, line}`
-- [ ] emit `named_export_names` + `export_set_open`
-- [ ] emit `return_type` on callable_signatures
-- [ ] emit param `type` annotation on param shapes
-- [ ] class_shapes also carry `extends` (first base) to match TS consumer
+- [x] emit `import_symbols` rows `{name, local, module, line}` (match ts_dump shape)
+- [x] emit `namespace_imports` rows `{alias, module, line}`
+- [x] emit `named_export_names` + `export_set_open`
+- [x] emit `return_type` on callable_signatures
+- [x] emit param `type` annotation on param shapes
+- [x] class_shapes also carry `extends` (first base) to match TS consumer
 
 ## PKG-2 — Conventions derivation (conventions.py + import_graph.py)
 - [ ] naming casing conventions for Python (PEP8 snake/Pascal/UPPER)

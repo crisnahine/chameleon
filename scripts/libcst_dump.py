@@ -121,33 +121,56 @@ def _import_specifier(node) -> list[tuple[str, str]]:
     return []
 
 
+_EMPTY_MODULE = cst.Module([])
+
+
+def _code(node) -> str | None:
+    """Best-effort source text of a node (annotations, bases). None on failure."""
+    try:
+        return _EMPTY_MODULE.code_for_node(node).strip() or None
+    except Exception:
+        return None
+
+
+def _param_type(p: cst.Param) -> str | None:
+    """Declared type-annotation text of a param (``x: int`` -> ``int``), or None.
+
+    Pure parse, no type checker -- mirrors ts_dump's best-effort declared-type
+    text for definition hydration. An unannotated param has none.
+    """
+    ann = getattr(p, "annotation", None)
+    if ann is not None and getattr(ann, "annotation", None) is not None:
+        return _code(ann.annotation)
+    return None
+
+
 def _param_shapes(params: cst.Parameters) -> list[dict]:
     """Structured param shape mirroring the Ruby/TS extractors.
 
-    Each entry is ``{name, optional, kind}`` so the cross-language signature
-    consensus treats all three languages the same way. ``optional`` is True when
-    the binding can be dropped at a call site (a default, ``*args``, ``**kwargs``,
-    a keyword-with-default).
+    Each entry is ``{name, optional, kind}`` plus an optional declared ``type``
+    (omitted when absent, like ts_dump) so the cross-language signature consensus
+    treats all three languages the same way. ``optional`` is True when the
+    binding can be dropped at a call site (a default, ``*args``, ``**kwargs``, a
+    keyword-with-default).
     """
     shapes: list[dict] = []
+
+    def _add(p: cst.Param, *, optional: bool, kind: str) -> None:
+        shape: dict = {"name": p.name.value, "optional": optional, "kind": kind}
+        t = _param_type(p)
+        if t:
+            shape["type"] = t
+        shapes.append(shape)
+
     for p in list(params.posonly_params) + list(params.params):
         has_default = p.default is not None
-        shapes.append(
-            {
-                "name": p.name.value,
-                "optional": has_default,
-                "kind": "optional" if has_default else "positional",
-            }
-        )
+        _add(p, optional=has_default, kind="optional" if has_default else "positional")
     if isinstance(params.star_arg, cst.Param):
-        shapes.append({"name": params.star_arg.name.value, "optional": True, "kind": "rest"})
+        _add(params.star_arg, optional=True, kind="rest")
     for p in params.kwonly_params:
-        has_default = p.default is not None
-        shapes.append({"name": p.name.value, "optional": has_default, "kind": "keyword"})
+        _add(p, optional=p.default is not None, kind="keyword")
     if params.star_kwarg is not None:
-        shapes.append(
-            {"name": params.star_kwarg.name.value, "optional": True, "kind": "keyword_rest"}
-        )
+        _add(params.star_kwarg, optional=True, kind="keyword_rest")
     return shapes
 
 
@@ -189,6 +212,11 @@ class _Collector(cst.CSTVisitor):
         self.call_sites: list[dict] = []
         self.call_sites_total = 0
         self.call_sites_truncated = False
+        # Named-import bindings (reverse index + calls-index import grade) and
+        # whole-module namespace binds (namespace-call resolution), matching the
+        # ts_dump shapes the consumers expect.
+        self.import_symbols: list[dict] = []
+        self.namespace_imports: list[dict] = []
         self._frames: list[dict] = []
         self._classes: list[dict] = []
         self._nesting: list[str] = []
@@ -215,6 +243,11 @@ class _Collector(cst.CSTVisitor):
         for spec in _import_specifier(node):
             self.import_specifiers.append([spec[0], spec[1]])
 
+        if isinstance(node, cst.ImportFrom):
+            self._collect_from_import(node)
+        elif isinstance(node, cst.Import):
+            self._collect_import(node)
+
         if isinstance(node, cst.Call):
             site = _call_site_of(node)
             if site is not None:
@@ -231,7 +264,14 @@ class _Collector(cst.CSTVisitor):
             bases = _base_names(node)
             path = ".".join(self._nesting + [name])
             self.class_shapes.append(
-                {"name": name, "bases": bases, "decorators": _decorator_targets(node.decorators)}
+                {
+                    "name": name,
+                    "bases": bases,
+                    # `extends` mirrors ts_dump's single-base string so consumers
+                    # that read the TS-shaped class_shapes pick up the base too.
+                    "extends": bases[0] if bases else None,
+                    "decorators": _decorator_targets(node.decorators),
+                }
             )
             self._classes.append({"name": name, "base": bases[0] if bases else None, "path": path})
             self._nesting.append(name)
@@ -296,20 +336,63 @@ class _Collector(cst.CSTVisitor):
             kind = "function"
 
         if len(self.callable_signatures) < MAX_CALLABLE_SIGNATURES:
-            self.callable_signatures.append(
-                {
-                    "name": node.name.value,
-                    "kind": kind,
-                    "params": params,
-                    "is_default_export": False,
-                    "enclosing_class": enclosing["name"] if enclosing else None,
-                    "enclosing_class_path": enclosing["path"] if enclosing else None,
-                    "base_class": enclosing["base"] if enclosing else None,
-                    "decorators": decorators,
-                    "start_line": start,
-                    "end_line": end,
-                }
+            sig: dict = {
+                "name": node.name.value,
+                "kind": kind,
+                "params": params,
+                "is_default_export": False,
+                "enclosing_class": enclosing["name"] if enclosing else None,
+                "enclosing_class_path": enclosing["path"] if enclosing else None,
+                "base_class": enclosing["base"] if enclosing else None,
+                "decorators": decorators,
+                "start_line": start,
+                "end_line": end,
+            }
+            # Declared return-type text (`def f() -> int`), omitted when absent,
+            # for definition hydration -- the ts_dump `return_type` analogue.
+            if node.returns is not None:
+                rt = _code(node.returns.annotation)
+                if rt:
+                    sig["return_type"] = rt
+            self.callable_signatures.append(sig)
+
+    def _collect_from_import(self, node: cst.ImportFrom) -> None:
+        """`from m import a, b as c` -> import_symbols rows {name, local, module, line}."""
+        if isinstance(node.names, cst.ImportStar):
+            return
+        dots = "." * len(node.relative)
+        mod = _dotted_name(node.module) if node.module is not None else ""
+        module = dots + (mod or "")
+        if not module:
+            return
+        line = self._line(node)
+        for alias in node.names:
+            name = _dotted_name(alias.name)
+            if not name:
+                continue
+            local = name
+            if alias.asname is not None and isinstance(alias.asname.name, cst.Name):
+                local = alias.asname.name.value
+            self.import_symbols.append(
+                {"name": name, "local": local, "module": module, "line": line}
             )
+
+    def _collect_import(self, node: cst.Import) -> None:
+        """`import m`, `import a.b as x` -> namespace_imports rows {alias, module, line}.
+
+        The bound name is the asname when present, else the top package segment
+        (`import a.b` binds `a`), so namespace-call resolution can key on it.
+        """
+        line = self._line(node)
+        for alias in node.names:
+            module = _dotted_name(alias.name)
+            if not module:
+                continue
+            if alias.asname is not None and isinstance(alias.asname.name, cst.Name):
+                bound = alias.asname.name.value
+            else:
+                bound = module.split(".")[0]
+            self.namespace_imports.append({"alias": bound, "module": module, "line": line})
 
 
 def _top_level_kinds(module: cst.Module) -> list[str]:
@@ -323,6 +406,53 @@ def _top_level_kinds(module: cst.Module) -> list[str]:
         else:
             kinds.append(type(stmt).__name__)
     return kinds
+
+
+def _module_exports(module: cst.Module) -> tuple[list[str], bool]:
+    """The names importable from this module, and whether the set is open.
+
+    Python has no `export` keyword: every top-level binding is importable, so the
+    set is the names bound at module level -- def/class names, assignment
+    targets, and import locals (re-exports). The set is OPEN (non-authoritative)
+    when the module does `from X import *`, since a name could come from the star
+    and is not statically visible. Mirrors the purpose of ts_dump's
+    named_export_names / export_set_open for the phantom-symbol existence check.
+    """
+    names: set[str] = set()
+    open_set = False
+
+    def _add_targets(small) -> None:
+        if isinstance(small, cst.Assign):
+            for t in small.targets:
+                if isinstance(t.target, cst.Name):
+                    names.add(t.target.value)
+        elif isinstance(small, cst.AnnAssign) and isinstance(small.target, cst.Name):
+            names.add(small.target.value)
+
+    for stmt in module.body:
+        if isinstance(stmt, (cst.FunctionDef, cst.ClassDef)):
+            names.add(stmt.name.value)
+        elif isinstance(stmt, cst.SimpleStatementLine):
+            for small in stmt.body:
+                if isinstance(small, cst.ImportFrom):
+                    if isinstance(small.names, cst.ImportStar):
+                        open_set = True
+                    else:
+                        for alias in small.names:
+                            local = alias.asname.name if alias.asname else alias.name
+                            if isinstance(local, cst.Name):
+                                names.add(local.value)
+                elif isinstance(small, cst.Import):
+                    for alias in small.names:
+                        if alias.asname is not None and isinstance(alias.asname.name, cst.Name):
+                            names.add(alias.asname.name.value)
+                        else:
+                            dotted = _dotted_name(alias.name)
+                            if dotted:
+                                names.add(dotted.split(".")[0])
+                else:
+                    _add_targets(small)
+    return sorted(names), open_set
 
 
 def extract_file(file_path: str) -> dict:
@@ -367,13 +497,19 @@ def extract_file(file_path: str) -> dict:
     else:
         default_export_kind = None
 
+    named_export_names, export_set_open = _module_exports(module)
+
     return {
         "path": file_path,
         "content_first_200_bytes": content[:200],
         "top_level_node_kinds": _top_level_kinds(module),
         "default_export_kind": default_export_kind,
         "named_export_count": len(top_classes) + len(top_funcs),
+        "named_export_names": named_export_names,
+        "export_set_open": export_set_open,
         "import_specifiers": collector.import_specifiers,
+        "import_symbols": collector.import_symbols,
+        "namespace_imports": collector.namespace_imports,
         "has_jsx": False,
         "parse_diagnostics_count": 0,
         "function_scopes": collector.function_scopes,
