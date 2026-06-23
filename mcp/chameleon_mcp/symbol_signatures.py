@@ -55,8 +55,8 @@ def _clean_params(params: object) -> list[dict]:
     """Keep the dump param shapes a consumer can render, dropping junk.
 
     Each retained entry carries name / optional / kind, and ``type`` (length-
-    capped) when the dump emitted a declared annotation (TypeScript). Non-dict
-    entries drop out.
+    capped) when the dump emitted a declared annotation (TypeScript or Python).
+    Non-dict entries drop out.
     """
     if not isinstance(params, list):
         return []

@@ -190,6 +190,10 @@ def _extractor_for_ext(suffix: str):
             from chameleon_mcp.extractors.ruby import RubyExtractor
 
             return RubyExtractor()
+        if s in (".py", ".pyi"):
+            from chameleon_mcp.extractors.python import PythonExtractor
+
+            return PythonExtractor()
         if s in _TS_EXTS:
             from chameleon_mcp.extractors.typescript import TypeScriptExtractor
 
@@ -258,16 +262,21 @@ def _batch_parse(repo_root, abs_paths) -> dict[str, dict[str, list]]:
     by_lang: dict[str, list[Path]] = {}
     for ap in abs_paths:
         p = Path(ap)
-        lang = (
-            "rb" if p.suffix.lower() == ".rb" else ("ts" if p.suffix.lower() in _TS_EXTS else None)
-        )
-        if lang is None:
+        s = p.suffix.lower()
+        if s == ".rb":
+            lang = "rb"
+        elif s in (".py", ".pyi"):
+            lang = "py"
+        elif s in _TS_EXTS:
+            lang = "ts"
+        else:
             continue
         by_lang.setdefault(lang, []).append(p)
 
+    _lang_suffix = {"rb": ".rb", "py": ".py", "ts": ".ts"}
     out: dict[str, dict[str, list]] = {}
     for lang, paths in by_lang.items():
-        extractor = _extractor_for_ext(".rb" if lang == "rb" else ".ts")
+        extractor = _extractor_for_ext(_lang_suffix[lang])
         if extractor is None:
             continue
         try:

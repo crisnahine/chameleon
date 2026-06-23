@@ -47,10 +47,10 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [ ] removed-export-breaks-importers Python
 - [ ] calls index import grade (named/namespace import call edges) Python
 - [ ] forward definition hydration Python
-- [ ] signature contract-diff (.py in _CONTRACT_DIFF_EXTS + signature_diff extractor)
+- [x] signature contract-diff (.py in _CONTRACT_DIFF_EXTS + signature_diff extractor)
 - [ ] get_callers/get_drift caller facts (unlocked by import grade)
-- [ ] signature index param/return type text (Python)
-- [ ] doctor advisory-emission source-edit check (.py in _source_exts)
+- [x] signature index param/return type text (Python)
+- [x] doctor advisory-emission source-edit check (.py in _source_exts)
 
 ## PKG-4 — Security lint (lint_engine.py)
 - [x] weak-hash (add python to gate — hashlib.md5/sha1)

@@ -6089,7 +6089,7 @@ def _fan_out_block(files_changed: int, lines_changed: int) -> dict:
 # because bootstrap does not scan them, so they are never in the calls index and
 # a contract finding for one could never be attributed. (.d.ts ends with .ts and
 # is covered, but declaration files carry no positional call sites.)
-_CONTRACT_DIFF_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".rb")
+_CONTRACT_DIFF_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".rb", ".py", ".pyi")
 
 
 def get_contract_breaks(repo: str, base_ref: str = "main") -> dict:
@@ -10574,7 +10574,19 @@ def doctor() -> dict:
         # Rows usually carry file_rel=None (it is only attributed at the block
         # gates); when present, a non-source attribution (README edits) is a
         # normal null-archetype row, so it is excluded rather than counted.
-        _source_exts = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".rb")
+        _source_exts = (
+            ".ts",
+            ".tsx",
+            ".mts",
+            ".cts",
+            ".js",
+            ".jsx",
+            ".mjs",
+            ".cjs",
+            ".rb",
+            ".py",
+            ".pyi",
+        )
         recent_rows: list[dict] = []
         if cwd_repo_id:
             for _row in _iter_rows(_metrics_path()):
