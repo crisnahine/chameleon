@@ -13,7 +13,9 @@ edit.
 
 from __future__ import annotations
 
+import ast
 import json
+import os
 import re
 from pathlib import Path
 
@@ -88,14 +90,19 @@ def _py_imported_names(clause: str) -> list[str]:
     """Imported names from a single-line `import a, b as c` clause.
 
     Returns the SOURCE name (left of any ``as``) of each binding -- the name the
-    target module must export. A parenthesized/multi-line clause (just ``(``) or
-    a star import yields nothing, so the symbol check conservatively skips it.
+    target module must export. The single-line parenthesized form
+    (``from m import (a, b)``, which PEP 8 and the formatters favor) is handled by
+    stripping the wrapping parens; a genuine multi-line clause whose visible text
+    is just ``(`` strips to empty and yields nothing, so the symbol check
+    conservatively skips it (the names live on lines this single-line scan can't
+    see). A star import also yields nothing.
     """
-    clause = clause.strip()
-    if not clause or clause.startswith("(") or clause == "*":
+    # Drop a trailing inline comment, then strip wrapping parens BEFORE the
+    # empty/star test, so a single-line `(a, b)` flows through the splitter while
+    # the bare-`(` multi-line opener still collapses to empty.
+    clause = clause.split("#", 1)[0].strip().lstrip("(").rstrip(")").strip()
+    if not clause or clause == "*":
         return []
-    # Drop a trailing inline comment and any wrapping parens content past EOL.
-    clause = clause.split("#", 1)[0].strip().rstrip(")").lstrip("(")
     names: list[str] = []
     for part in clause.split(","):
         part = part.strip()
@@ -992,50 +999,86 @@ def _broken_export_violation(name: str, importers: list) -> Violation:
     )
 
 
-# Top-level (column-0) Python declarations, for the live export-set read. Mirror
-# the dump's _module_exports: def/class names, assignment targets, and import-
-# bound locals (re-exports). A `from x import *` opens the set (non-authoritative).
-_PY_TL_DEF_RE = re.compile(r"^(?:async\s+)?def\s+(\w+)", re.MULTILINE)
-_PY_TL_CLASS_RE = re.compile(r"^class\s+(\w+)", re.MULTILINE)
-_PY_TL_ASSIGN_RE = re.compile(r"^([A-Za-z_]\w*)\s*(?::[^=\n]+)?=(?!=)", re.MULTILINE)
-_PY_TL_FROM_IMPORT_RE = re.compile(r"^from\s+[.\w]+\s+import\s+(.+)$", re.MULTILINE)
-_PY_TL_IMPORT_RE = re.compile(r"^import\s+(.+)$", re.MULTILINE)
-_PY_TL_STAR_RE = re.compile(r"^from\s+\S+\s+import\s+\*", re.MULTILINE)
-
-
-def _python_current_export_names(content: str) -> tuple[frozenset[str], bool]:
+def _python_current_export_names(
+    content: str, file_path: str | Path | None = None
+) -> tuple[frozenset[str], bool]:
     """Names the edited Python file currently exports, plus an open-set flag.
 
-    Regex over a strings/comments-stripped copy (so a name inside a string or a
-    method body does not count -- only column-0 statements). Mirrors the dump's
-    ``_module_exports`` so the live read and the stored index agree on what is
-    importable. Returns ``(names, open)``; ``open`` True (a ``from x import *``)
-    means the set is non-authoritative and the existence check is skipped.
+    Parsed with the stdlib ``ast`` (the same parser the dimension extractor uses),
+    so multi-line / parenthesized imports and bindings inside top-level
+    ``try``/``if``/``with`` blocks are read exactly as the dump's
+    ``_module_exports`` records them -- the live read and the stored index cannot
+    drift on the same content. A def/class body is a new scope and is not
+    descended. An ``__init__`` module also re-exports its sibling submodules.
+    Returns ``(names, open)``; ``open`` True (a ``from x import *``, or an
+    unparseable in-progress edit) means the set is non-authoritative and the
+    existence check is skipped.
     """
-    from chameleon_mcp.lint_engine import _strip_python_strings_and_comments
-
-    scan = _strip_python_strings_and_comments(content)
-    if _PY_TL_STAR_RE.search(scan):
+    try:
+        tree = ast.parse(content)
+    except (SyntaxError, ValueError):
         return frozenset(), True
+
     names: set[str] = set()
-    names.update(_PY_TL_DEF_RE.findall(scan))
-    names.update(_PY_TL_CLASS_RE.findall(scan))
-    names.update(_PY_TL_ASSIGN_RE.findall(scan))
-    for clause in _PY_TL_FROM_IMPORT_RE.findall(scan):
-        for part in clause.split(","):
-            part = part.strip().rstrip(")").lstrip("(")
-            if not part or part == "*":
-                continue
-            local = part.split(" as ")[-1].strip() if " as " in part else part
-            if local.isidentifier():
-                names.add(local)
-    for clause in _PY_TL_IMPORT_RE.findall(scan):
-        for part in clause.split(","):
-            part = part.strip()
-            local = part.split(" as ")[-1].strip() if " as " in part else part.split(".")[0].strip()
-            if local.isidentifier():
-                names.add(local)
-    return frozenset(names), False
+    open_set = False
+    _try_types = (ast.Try, getattr(ast, "TryStar", ast.Try))
+
+    def _walk(stmts) -> None:
+        nonlocal open_set
+        for node in stmts:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        names.add(t.id)
+            elif isinstance(node, ast.AnnAssign):
+                if isinstance(node.target, ast.Name):
+                    names.add(node.target.id)
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    if alias.name == "*":
+                        open_set = True
+                    else:
+                        names.add(alias.asname or alias.name)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    names.add(alias.asname or alias.name.split(".")[0])
+            elif isinstance(node, ast.If):
+                _walk(node.body)
+                _walk(node.orelse)
+            elif isinstance(node, _try_types):
+                _walk(node.body)
+                for handler in node.handlers:
+                    _walk(handler.body)
+                _walk(node.orelse)
+                _walk(node.finalbody)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+                _walk(node.body)
+                _walk(node.orelse)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                _walk(node.body)
+
+    _walk(tree.body)
+
+    if file_path is not None:
+        base = os.path.basename(str(file_path))
+        if base in ("__init__.py", "__init__.pyi"):
+            try:
+                pkg_dir = os.path.dirname(str(file_path))
+                for entry in os.listdir(pkg_dir):
+                    if entry.startswith("__"):
+                        continue
+                    if entry.endswith((".py", ".pyi")):
+                        names.add(entry.rsplit(".", 1)[0])
+                    elif os.path.isfile(
+                        os.path.join(pkg_dir, entry, "__init__.py")
+                    ) or os.path.isfile(os.path.join(pkg_dir, entry, "__init__.pyi")):
+                        names.add(entry)
+            except OSError:
+                pass
+
+    return frozenset(names), open_set
 
 
 def lint_cross_file_imports(
@@ -1105,7 +1148,7 @@ def lint_cross_file_imports(
         return []  # nothing imports this module by name -> no cross-file context
 
     if language == "python":
-        current, open_set = _python_current_export_names(content)
+        current, open_set = _python_current_export_names(content, fp)
     else:
         current, open_set = _current_export_names(content)
     if open_set:

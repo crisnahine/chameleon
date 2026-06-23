@@ -385,3 +385,35 @@ def test_class_shapes_extends_mirrors_first_base(tmp_path):
     shape = next(c for c in rec["class_shapes"] if c["name"] == "V")
     assert shape["extends"] == "models.Model"
     assert shape["bases"] == ["models.Model", "Mixin"]
+
+
+# --------------------------------------------------------------------------- #
+# Regression (cloud review): _module_exports must see bindings inside top-level
+# try/if blocks, and an __init__ must re-export sibling submodules.
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.skipif(not _have_libcst(), reason="libcst not installed")
+def test_module_exports_includes_try_block_bindings(tmp_path):
+    src = (
+        "try:\n"
+        "    from typing import Self\n"
+        "except ImportError:\n"
+        "    from typing_extensions import Self\n\n"
+        "DEFAULT = 1\n"
+    )
+    rec = _dump(_write(tmp_path, "compat.py", src))
+    assert "Self" in rec["named_export_names"]
+    assert rec["export_set_open"] is False
+
+
+@pytest.mark.skipif(not _have_libcst(), reason="libcst not installed")
+def test_module_exports_init_includes_sibling_submodules(tmp_path):
+    pkg = tmp_path / "models"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
+    (pkg / "user.py").write_text("class User:\n    pass\n", encoding="utf-8")
+    (pkg / "post.py").write_text("class Post:\n    pass\n", encoding="utf-8")
+    rec = _dump(pkg / "__init__.py")
+    names = set(rec["named_export_names"])
+    assert {"VERSION", "user", "post"} <= names

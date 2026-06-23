@@ -333,3 +333,75 @@ def test_hydrate_imported_definitions_python(tmp_path):
     blob = "\n".join(out)
     # The imported symbol's signature is rendered for the reviewer.
     assert "fetch(" in blob and "bool" in blob
+
+
+# --------------------------------------------------------------------------- #
+# Regression (cloud review): the live export read must match the dump on
+# multi-line / parenthesized imports, try-block bindings, and __init__ siblings.
+# --------------------------------------------------------------------------- #
+
+
+def test_py_imported_names_parenthesized_single_line():
+    from chameleon_mcp.phantom_imports import _py_imported_names
+
+    assert _py_imported_names("(User, GhostName)") == ["User", "GhostName"]
+    assert _py_imported_names("(User, Widget as W)") == ["User", "Widget"]
+    # The bare multi-line opener still collapses to nothing (names are off-line).
+    assert _py_imported_names("(") == []
+
+
+def test_current_export_names_multiline_parenthesized():
+    from chameleon_mcp.phantom_imports import _python_current_export_names
+
+    content = "from .submod import (\n    PublicClass,\n    public_function,\n)\nDEFAULT = 1\n"
+    names, is_open = _python_current_export_names(content)
+    assert {"PublicClass", "public_function", "DEFAULT"} <= names
+    assert is_open is False
+
+
+def test_current_export_names_try_block_bindings():
+    from chameleon_mcp.phantom_imports import _python_current_export_names
+
+    content = (
+        "try:\n    from typing import Self\nexcept ImportError:\n"
+        "    from typing_extensions import Self\n\nTIMEOUT = 30\n"
+    )
+    names, is_open = _python_current_export_names(content)
+    assert "Self" in names and "TIMEOUT" in names
+
+
+def test_current_export_names_init_siblings(tmp_path):
+    from chameleon_mcp.phantom_imports import _python_current_export_names
+
+    pkg = tmp_path / "models"
+    pkg.mkdir()
+    (pkg / "user.py").write_text("class User:\n    pass\n", encoding="utf-8")
+    names, _ = _python_current_export_names("VERSION = 1\n", pkg / "__init__.py")
+    assert {"VERSION", "user"} <= names
+
+
+def test_current_export_names_unparseable_opens_set():
+    from chameleon_mcp.phantom_imports import _python_current_export_names
+
+    # A mid-edit syntax error must not read as "exports nothing" (removed-export
+    # FP storm); the set opens so the existence check is skipped.
+    names, is_open = _python_current_export_names("def broken(:\n")
+    assert is_open is True and names == frozenset()
+
+
+def test_live_read_converges_with_dump(tmp_path):
+    # The live read and the dump's _module_exports must agree on the same content,
+    # or removed-export drifts. Exercises try-block + multi-line + plain bindings.
+    from chameleon_mcp.extractors.python import PythonExtractor
+    from chameleon_mcp.phantom_imports import _python_current_export_names
+
+    content = (
+        "try:\n    from a import X\nexcept ImportError:\n    from b import X\n\n"
+        "from .m import (\n    Foo,\n    Bar,\n)\n\nCONST = 1\n\n\ndef helper():\n    pass\n"
+    )
+    f = tmp_path / "mod.py"
+    f.write_text(content, encoding="utf-8")
+    pf = PythonExtractor().parse_repo(tmp_path, paths=[f]).files[0]
+    producer = set((getattr(pf, "extras", None) or {}).get("named_export_names") or [])
+    live, _ = _python_current_export_names(content)
+    assert producer == live
