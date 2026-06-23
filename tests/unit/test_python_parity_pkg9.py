@@ -62,3 +62,49 @@ def test_ast_shape_fallback_names_python_class():
     # not the generic cluster-<hash>.
     name = _base_name_for(c)
     assert name == "class" or name.startswith("class-")
+
+
+# --------------------------------------------------------------------------- #
+# Hybrid frontend: python<->ts language_hint, both directions.
+# --------------------------------------------------------------------------- #
+
+
+def test_count_source_files_prunes_node_modules(tmp_path):
+    from chameleon_mcp.bootstrap.orchestrator import _count_source_files
+
+    (tmp_path / "src").mkdir()
+    for i in range(3):
+        (tmp_path / "src" / f"a{i}.tsx").write_text("x", encoding="utf-8")
+    # A node_modules full of vendored .d.ts must NOT inflate the count.
+    nm = tmp_path / "node_modules" / "dep"
+    nm.mkdir(parents=True)
+    for i in range(100):
+        (nm / f"t{i}.d.ts").write_text("x", encoding="utf-8")
+    assert _count_source_files(tmp_path, (".ts", ".tsx")) == 3
+
+
+def test_count_source_files_prunes_venv(tmp_path):
+    from chameleon_mcp.bootstrap.orchestrator import _count_source_files
+
+    (tmp_path / "app.py").write_text("x", encoding="utf-8")
+    venv = tmp_path / ".venv" / "lib" / "site-packages" / "dep"
+    venv.mkdir(parents=True)
+    for i in range(100):
+        (venv / f"m{i}.py").write_text("x", encoding="utf-8")
+    assert _count_source_files(tmp_path, (".py",)) == 1
+
+
+def test_js_frontend_dir_recognized_and_none(tmp_path):
+    from chameleon_mcp.bootstrap.orchestrator import _js_frontend_dir
+
+    assert _js_frontend_dir(tmp_path) is None
+    (tmp_path / "frontend").mkdir()
+    assert _js_frontend_dir(tmp_path) == tmp_path / "frontend"
+
+
+def test_python_backend_marker(tmp_path):
+    from chameleon_mcp.bootstrap.orchestrator import _has_python_backend_marker
+
+    assert _has_python_backend_marker(tmp_path) is False
+    (tmp_path / "manage.py").write_text("x", encoding="utf-8")
+    assert _has_python_backend_marker(tmp_path) is True

@@ -24,6 +24,7 @@ interview.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -199,6 +200,84 @@ def _count_ruby_files_under(directory: Path) -> int:
     except OSError:
         pass
     return count
+
+
+# Dirs that hold vendored / generated code, not the project's own source. A
+# language-presence count must prune them: a `.venv` full of `site-packages`
+# or a `node_modules` full of `.d.ts` would otherwise make every repo look
+# hybrid (a Django repo with npm tooling counts thousands of vendored `.ts`).
+_VENDOR_DIRS = frozenset(
+    {
+        "node_modules",
+        ".venv",
+        "venv",
+        "site-packages",
+        ".git",
+        "dist",
+        "build",
+        "__pycache__",
+        ".tox",
+        ".mypy_cache",
+        ".next",
+        "vendor",
+    }
+)
+
+
+def _count_source_files(directory: Path, suffixes: tuple[str, ...]) -> int:
+    """Count source files under ``directory`` by suffix, pruning vendored dirs.
+
+    Unlike the plain ``rglob`` counters this walks with ``os.walk`` so it can
+    prune ``node_modules`` / ``.venv`` / ``site-packages`` mid-descent — the
+    difference between "this repo has a real second-language tree" and "this
+    repo installed dependencies". Bounded by a hard 50_000 stop.
+    """
+    if not directory.is_dir():
+        return 0
+    count = 0
+    cap = 50_000
+    try:
+        for _dirpath, dirnames, filenames in os.walk(directory):
+            dirnames[:] = [d for d in dirnames if d not in _VENDOR_DIRS]
+            for fn in filenames:
+                if fn.endswith(suffixes):
+                    count += 1
+                    if count >= cap:
+                        return count
+    except OSError:
+        pass
+    return count
+
+
+def _js_frontend_dir(repo_root: Path) -> Path | None:
+    """First recognized JS/TS frontend subtree of a Python-backend repo, or None.
+
+    Django/Flask/FastAPI + SPA repos colocate the frontend under a conventional
+    dir (``frontend/``, ``client/``, ``web/``, ``ui/``, ``app/javascript/``).
+    No repo-root fallback: a hint that scans the whole repo would count vendored
+    ``.d.ts`` and misfire on any backend with npm tooling, so an unrecognized
+    layout emits no hint at all (the conservative, Ruby-precedent choice).
+    """
+    for sub in (
+        ("frontend",),
+        ("client",),
+        ("web",),
+        ("ui",),
+        ("app", "javascript"),
+        ("assets", "js"),
+    ):
+        candidate = repo_root.joinpath(*sub)
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _has_python_backend_marker(repo_root: Path) -> bool:
+    """True when the root carries a Python-project marker (not stray scripts)."""
+    return any(
+        (repo_root / m).is_file()
+        for m in ("manage.py", "pyproject.toml", "requirements.txt", "setup.py", "Pipfile")
+    )
 
 
 def _select_extractor(repo_root: Path) -> Extractor | None:
@@ -1492,6 +1571,31 @@ def _bootstrap_single(
                         f"Run bootstrap_repo({js_dir_persisted}) for the JS half."
                     ),
                 }
+    elif extractor.language == "python":
+        # Python backend + a recognized JS/TS frontend subtree (Django/DRF + React
+        # SPA is the common shape). Point at the real checkout path: under a pinned
+        # derivation the analysis worktree is disposable.
+        fe_dir = _js_frontend_dir(repo_root)
+        if fe_dir is not None:
+            ts_count = _count_source_files(fe_dir, (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"))
+            if ts_count >= 50:
+                try:
+                    fe_display = str(fe_dir.relative_to(repo_root))
+                    fe_persisted = target_root / fe_dir.relative_to(repo_root)
+                except ValueError:
+                    fe_display = str(fe_dir)
+                    fe_persisted = fe_dir
+                language_hint = {
+                    "primary": "python",
+                    "secondary_detected": "typescript",
+                    "secondary_file_count": ts_count,
+                    "secondary_path": str(fe_persisted),
+                    "note": (
+                        "Python-with-frontend repo detected; JS/TS sidecar in "
+                        f"{fe_display}/ not scanned by this bootstrap. "
+                        f"Run bootstrap_repo({fe_persisted}) for the JS half."
+                    ),
+                }
     elif extractor.language == "typescript" and (repo_root / "Gemfile").is_file():
         ruby_count = _count_ruby_files_under(repo_root)
         if ruby_count >= 50:
@@ -1506,6 +1610,23 @@ def _bootstrap_single(
                     "detected. Run bootstrap_repo on a Ruby-only subtree "
                     "(or re-organize the repo with a recognized Rails "
                     "frontend layout) to get Ruby archetype coverage."
+                ),
+            }
+    elif extractor.language == "typescript" and _has_python_backend_marker(repo_root):
+        # TS took precedence at the root, but a Python backend lives alongside.
+        # Count `.py` with vendored dirs pruned so a `.venv` doesn't fake it.
+        py_count = _count_source_files(repo_root, (".py",))
+        if py_count >= 50:
+            language_hint = {
+                "primary": "typescript",
+                "secondary_detected": "python",
+                "secondary_file_count": py_count,
+                "secondary_path": str(target_root),
+                "note": (
+                    "TypeScript signals took precedence at the repo root, "
+                    "but a Python project marker and a substantive Python tree "
+                    "were also detected. Run bootstrap_repo on a Python-only "
+                    "subtree to get Python archetype coverage."
                 ),
             }
 

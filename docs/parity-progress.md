@@ -90,7 +90,7 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] counterexample render + multi-off-pattern (free once capture works)
 
 ## PKG-9 — Framework awareness (cochange.py + orchestrator.py + naming.py)
-- [ ] hybrid frontend (python<->ts language_hint, both directions)
+- [x] hybrid frontend (python<->ts language_hint, both directions)
 - [x] Django model→migration co-change rule (+ _normalize_language python)
 - [x] stale-test advisory eligibility (python in _normalize_language)
 - [x] inheritance-convention derivation (Django models.Model / DRF APIView)
