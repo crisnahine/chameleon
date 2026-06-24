@@ -333,6 +333,14 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # turns every turn into a billable spawn).
     "DUPLICATION_REVIEW_MAX_FILES": 12,
     "DUPLICATION_REVIEW_MAX_FINDINGS": 8,
+    # Cap on the session files re-parsed into the body-hash candidate index per
+    # turn. Distinct from DUPLICATION_REVIEW_MAX_FILES (12), which bounds the
+    # files the gate CHECKS; this bounds the search space they are checked
+    # AGAINST, so on a long execute turn the index build no longer re-parses every
+    # touched file unbounded. Must stay >= the check cap so the checked files can
+    # always match against an index at least as wide; the caller passes files
+    # most-recent-first, so over-cap the freshest working set is kept.
+    "DUPLICATION_INDEX_MAX_FILES": 40,
     # Precision bar for the turn-end SEMANTIC duplication pass (different-body,
     # same-intent candidates from select_candidates). Turn-end nags mid-edit, so
     # it needs higher precision than the pr-review prefilter: a body-identical

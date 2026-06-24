@@ -134,10 +134,78 @@ def test_inline_ignore_directive_opts_out(tmp_path):
 
 
 def test_non_typescript_file_skipped(tmp_path):
-    # A Ruby file in state must never be probed against the TS reverse index.
+    # A Ruby file in state must never be probed against the reverse index -- Ruby
+    # has no reverse index, so it stays excluded even now that Python is allowed.
     src = _touch(tmp_path, "p.rb", "class Foo; end\n")
     _touch(tmp_path, "c.ts", "import { gone } from './p';\ngone();\n")
     _write_reverse_index(tmp_path, {"p.rb": {"gone": [{"path": "c.ts", "line": 1}]}})
+    lines = _crossfile_existence_advisory_lines(
+        repo_root=tmp_path, state=_state_for([src]), cfg=_cfg()
+    )
+    assert lines == []
+
+
+def test_flags_removed_python_export_with_live_importer(tmp_path):
+    # A removed Python export with a live importer is flagged: the reverse index
+    # covers Python, and the Python reader (not the TS regex) reads the live set.
+    src = _touch(tmp_path, "pkg/pricing.py", "def edit_price():\n    pass\n")
+    _touch(
+        tmp_path,
+        "pkg/cart.py",
+        "from pkg.pricing import old_name\n\nold_name()\n",
+    )
+    _write_reverse_index(
+        tmp_path,
+        {
+            "pkg/pricing.py": {
+                "edit_price": [{"path": "pkg/cart.py", "line": 1}],
+                "old_name": [{"path": "pkg/cart.py", "line": 1}],
+            }
+        },
+    )
+    lines = _crossfile_existence_advisory_lines(
+        repo_root=tmp_path, state=_state_for([src]), cfg=_cfg()
+    )
+    text = "\n".join(lines)
+    assert "old_name" in text
+    assert "pkg/cart.py:1" in text
+    # The still-defined function is not a break.
+    assert "edit_price" not in text
+
+
+def test_python_still_exported_name_not_flagged(tmp_path):
+    # When the Python module still defines the imported name, the Python reader
+    # sees it and stays silent -- no false break. Guards against the TS regex
+    # being used on a Python module (it would find zero exports and false-positive).
+    src = _touch(tmp_path, "pkg/pricing.py", "def edit_price():\n    pass\n")
+    _touch(
+        tmp_path,
+        "pkg/cart.py",
+        "from pkg.pricing import edit_price\n\nedit_price()\n",
+    )
+    _write_reverse_index(
+        tmp_path,
+        {"pkg/pricing.py": {"edit_price": [{"path": "pkg/cart.py", "line": 1}]}},
+    )
+    lines = _crossfile_existence_advisory_lines(
+        repo_root=tmp_path, state=_state_for([src]), cfg=_cfg()
+    )
+    assert lines == []
+
+
+def test_python_star_import_open_set_skipped(tmp_path):
+    # `from x import *` makes the Python export set unenumerable; skip rather than
+    # claim a break, matching the TS `export *` stance.
+    src = _touch(tmp_path, "pkg/barrel.py", "from pkg.other import *\n")
+    _touch(
+        tmp_path,
+        "pkg/cart.py",
+        "from pkg.barrel import maybe\n\nmaybe()\n",
+    )
+    _write_reverse_index(
+        tmp_path,
+        {"pkg/barrel.py": {"maybe": [{"path": "pkg/cart.py", "line": 1}]}},
+    )
     lines = _crossfile_existence_advisory_lines(
         repo_root=tmp_path, state=_state_for([src]), cfg=_cfg()
     )

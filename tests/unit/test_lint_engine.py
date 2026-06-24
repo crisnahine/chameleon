@@ -345,6 +345,62 @@ class TestLint:
         assert len(violations) == 1
         assert violations[0].rule == "top-level-node-kinds-mismatch"
 
+    def test_ruby_messages_humanized_no_parser_jargon_or_js_isms(self):
+        # Parser node-kind names (ClassNode/ModuleNode) and TS-only "default
+        # export" must never leak into a Ruby user's message.
+        node_kind = lint(
+            DimensionSnapshot(top_level_node_kinds=["ModuleNode"]),
+            {"top_level_node_kinds": ["ClassNode", "DslCall:validates"]},
+            language="ruby",
+        )
+        assert len(node_kind) == 1
+        assert node_kind[0].rule == "top-level-node-kinds-mismatch"
+        msg = node_kind[0].message
+        assert "classes" in msg
+        assert "ClassNode" not in msg
+        assert "default export" not in msg
+
+        # An uncategorized custom DSL macro normalizes to a bare "DslCall" and a
+        # mixin to "IncludeCall"; neither may leak raw into a Ruby message.
+        dsl = lint(
+            DimensionSnapshot(top_level_node_kinds=["ClassNode"]),
+            {
+                "top_level_node_kinds": [
+                    "ClassNode",
+                    "DslCall:acts_as_list",
+                    "IncludeCall:Comparable",
+                ]
+            },
+            language="ruby",
+        )
+        dsl_msg = dsl[0].message
+        assert "DSL calls" in dsl_msg and "includes" in dsl_msg
+        assert "DslCall" not in dsl_msg and "IncludeCall" not in dsl_msg
+
+        default_export = lint(
+            DimensionSnapshot(default_export_kind="ModuleNode"),
+            {"default_export_kind": "ClassNode"},
+            language="ruby",
+        )
+        assert len(default_export) == 1
+        dmsg = default_export[0].message
+        assert dmsg == "this archetype's primary construct is a class; this file defines a module"
+        assert "default export" not in dmsg
+        assert "ClassNode" not in dmsg and "ModuleNode" not in dmsg
+
+    def test_typescript_default_export_keeps_export_wording(self):
+        # TS files genuinely have default exports; keep the export framing,
+        # but still humanize the kind names.
+        violations = lint(
+            DimensionSnapshot(default_export_kind="FunctionDeclaration"),
+            {"default_export_kind": "ClassDeclaration"},
+            language="typescript",
+        )
+        assert len(violations) == 1
+        msg = violations[0].message
+        assert "default export" in msg
+        assert "ClassDeclaration" not in msg and "FunctionDeclaration" not in msg
+
     def test_null_ast_query_fields_not_flagged(self):
         snap = DimensionSnapshot(
             default_export_kind="ClassDeclaration",

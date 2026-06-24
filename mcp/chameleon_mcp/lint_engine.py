@@ -52,9 +52,28 @@ from pathlib import Path
 from typing import Literal
 
 from chameleon_mcp.conventions import _classify_casing, _split_compound_suffix
+from chameleon_mcp.kind_labels import humanize_kind
 from chameleon_mcp.signatures import bucket_named_export_count, content_signal_match_for
 
 Severity = Literal["info", "warning", "error"]
+
+
+def _singular(label: str) -> str:
+    """Render a plural humanized kind label as "a/an <singular>" for prose.
+
+    ``humanize_kind`` yields plurals ("classes", "modules", "imports"); a
+    single-construct sentence reads as "a class", "a module". Irregulars are
+    spelled out; the default strips a trailing "s" and picks the article by the
+    leading vowel sound.
+    """
+    irregular = {
+        "classes": "class",
+        "type aliases": "type alias",
+    }
+    word = irregular.get(label) or (label[:-1] if label.endswith("s") else label)
+    article = "an" if word[:1].lower() in "aeiou" else "a"
+    return f"{article} {word}"
+
 
 _TS_EXTENSIONS: frozenset[str] = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"})
 _RUBY_EXTENSIONS: frozenset[str] = frozenset({".rb"})
@@ -940,8 +959,14 @@ def _namespace_local_base(class_name: str, known_bases: set[str], dominant: str)
     return best
 
 
-def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]:
+def lint(
+    snapshot: DimensionSnapshot, ast_query: dict | None, *, language: str | None = None
+) -> list[Violation]:
     """Compare a snapshot against the archetype's ast_query; return violations.
+
+    `language` (when supplied) only shapes the user-facing message wording:
+    Ruby and Python have no default export, so their messages describe the
+    archetype's primary construct instead of borrowing the TS export framing.
 
     Encoding rule (from `derive_ast_query`):
     - A non-null ast_query field carries an expectation.
@@ -974,16 +999,30 @@ def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]
     expected_default = ast_query.get("default_export_kind")
     actual_default = snapshot.default_export_kind
     if expected_default is not None and expected_default != actual_default:
+        exp_label = humanize_kind(expected_default)
+        if language in ("ruby", "python"):
+            # Ruby and Python have no default export; describe the construct the
+            # archetype leads with instead of borrowing the TS export framing.
+            if actual_default is None:
+                message = (
+                    f"this archetype's primary construct is {_singular(exp_label)}; "
+                    "this file does not define one"
+                )
+            else:
+                message = (
+                    f"this archetype's primary construct is {_singular(exp_label)}; "
+                    f"this file defines {_singular(humanize_kind(actual_default))}"
+                )
+        else:
+            act_label = humanize_kind(actual_default) if actual_default is not None else "none"
+            message = f"archetype expects a default export of {exp_label}; file has {act_label}"
         violations.append(
             Violation(
                 rule="default-export-kind-mismatch",
                 expected=str(expected_default),
                 actual=str(actual_default) if actual_default is not None else "none",
                 severity="warning",
-                message=(
-                    f"archetype expects default export of kind '{expected_default}'; "
-                    f"file has '{actual_default or 'none'}'"
-                ),
+                message=message,
             )
         )
 
@@ -995,7 +1034,8 @@ def lint(snapshot: DimensionSnapshot, ast_query: dict | None) -> list[Violation]
             missing = Counter(_normalize_kind(k) for k in expected_kinds) - Counter(
                 _normalize_kind(k) for k in snapshot.top_level_node_kinds
             )
-            missing_desc = ", ".join(sorted(missing)) or "(structural shape)"
+            missing_labels = sorted({humanize_kind(k) for k in missing})
+            missing_desc = ", ".join(missing_labels) or "(structural shape)"
             violations.append(
                 Violation(
                     rule="top-level-node-kinds-mismatch",

@@ -4,6 +4,52 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.30.0] - 2026-06-25
+
+A round of relevance and cross-language fixes from a real-usage assessment on a
+Rails monolith.
+
+### Changed
+
+- **Team idioms are ordered by the edited file's archetype.** `idioms.md` is a
+  sequence of `### <name>` blocks each tagged `Archetype: <name>`, but the
+  per-edit context (and the turn-end self-review nudge) cap the text by taking
+  its top — so a controller edit got whichever idioms sit at the top of the
+  file, often an unrelated archetype's, with the relevant one truncated away.
+  Both paths now reorder the blocks first: the edited archetype's idioms, then
+  untagged/general, then others (stable, nothing dropped). A controller edit now
+  surfaces the controller idioms instead of losing them behind the model idiom.
+
+### Added
+
+- **Cross-file existence advisory now covers Python.** The Stop "a removed
+  export still has importers" advisory ran only for TypeScript even though the
+  reverse index spans the Python module graph too. Python modules are now
+  checked, using the Python export reader (not the TS one). Ruby stays excluded
+  (no static named-export surface — a Ruby constant-reference graph is separate
+  future work).
+
+### Fixed
+
+- **Degraded-telemetry no longer over-counts a single burst.** A broken session
+  emits many identical degradation lines at one timestamp; these were counted
+  per-line, so one incident read as chronic. A contiguous run of identical
+  same-second entries now collapses to one incident (distinct timestamps stay
+  distinct).
+- **Duplication index build is bounded.** `build_candidate_index` re-parsed every
+  session file unbounded on a long edit turn; it now caps to the most-recently
+  edited files (`CHAMELEON_DUPLICATION_INDEX_MAX_FILES`, default 40) and logs
+  what it dropped.
+- **Idiom novelty gate recognizes preferred-import restatements.** An idiom that
+  merely restated an already-derived preferred-import convention passed as
+  "novel"; the coverage gate now has a `covered-by-preferred-import` check
+  (archetype-scoped, basename-matched to avoid false positives on common module
+  names).
+- **No parser jargon or JS-isms in Ruby/Python lint messages.** Wording like
+  "default export ClassNode" leaked into non-JS output; node kinds are now
+  humanized through a shared label map and the export phrasing is language-aware
+  (dropped entirely for Ruby/Python).
+
 ## [2.29.2] - 2026-06-25
 
 ### Fixed

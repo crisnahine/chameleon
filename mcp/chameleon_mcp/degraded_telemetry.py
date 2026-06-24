@@ -115,11 +115,19 @@ def parse_degradations(text: str, since_epoch: float) -> tuple[int, int, str | N
     timestamp prefix) and out-of-window lines are ignored. Returns
     ``(no_interpreter, spawn_failed, last_ts)`` where ``last_ts`` is the ISO
     string of the most recent counted event (None if nothing counted).
+
+    A contiguous run of byte-identical countable lines collapses to one incident.
+    One broken session writes a burst of the same ``[ts] <hook> <reason>`` line at
+    a single second; counting each raw line reads as chronic. Adjacency is over the
+    previous *counted* line, so interleaved non-matching noise (raw stderr) does not
+    split a run. The full-line identity keys on the second, hook, and reason, so
+    distinct seconds, hooks, or reasons stay separate incidents.
     """
     no_interpreter = 0
     spawn_failed = 0
     last_when = -1.0
     last_ts: str | None = None
+    prev_counted: str | None = None
     for line in text.splitlines():
         m = _TS_RE.match(line)
         if not m:
@@ -132,11 +140,18 @@ def parse_degradations(text: str, since_epoch: float) -> tuple[int, int, str | N
         if when < since_epoch:
             continue
         if "no-interpreter" in line:
-            no_interpreter += 1
+            kind = "no_interpreter"
         elif "failed (python=" in line:
-            spawn_failed += 1
+            kind = "spawn_failed"
         else:
             continue
+        if line == prev_counted:
+            continue
+        prev_counted = line
+        if kind == "no_interpreter":
+            no_interpreter += 1
+        else:
+            spawn_failed += 1
         if when > last_when:
             last_when = when
             last_ts = ts

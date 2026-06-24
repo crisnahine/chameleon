@@ -192,13 +192,10 @@ def test_violating_file_emits_real_deviation_feedback(tmp_path: Path):
     # Exactly the two violations the real engine produces for a function
     # default export against a class archetype.
     assert "[🦎 chameleon: 2 violations]" in ctx
-    assert (
-        "archetype expects default export of kind 'ClassDeclaration'; "
-        "file has 'FunctionDeclaration'" in ctx
-    )
+    assert "archetype expects a default export of classes; file has functions" in ctx
     assert "file is missing top-level constructs the archetype expects" in ctx
     # Numbered list shape.
-    assert "1. archetype expects default export of kind 'ClassDeclaration'" in ctx
+    assert "1. archetype expects a default export of classes" in ctx
     assert ctx.startswith("<chameleon-context>")
     assert ctx.rstrip().endswith("</chameleon-context>")
 

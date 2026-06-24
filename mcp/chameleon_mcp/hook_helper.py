@@ -217,6 +217,47 @@ def _emit_check_event(
         pass
 
 
+def _duplication_index_files(
+    edited: list[str],
+    state,
+    *,
+    repo_id: str | None,
+    session_id: str | None,
+) -> list[str]:
+    """Order the duplication-index input most-recently-edited first.
+
+    build_candidate_index caps its re-parse at DUPLICATION_INDEX_MAX_FILES; that
+    cap only knows about the file order it receives, and ``state.files`` is
+    insertion-ordered, not recency-ordered. Sort a separate view by
+    last_verified_at descending so the freshest working set survives the cap, and
+    record the dropped count as a check event so the trim is never silent. The
+    caller keeps ``edited`` itself untouched (its first element drives language
+    inference).
+    """
+    ordered = sorted(
+        edited,
+        key=lambda p: (state.files[p].last_verified_at or 0) if p in state.files else 0,
+        reverse=True,
+    )
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+
+        cap = threshold_int("DUPLICATION_INDEX_MAX_FILES")
+        dropped = len(ordered) - cap
+        if dropped > 0:
+            _emit_check_event(
+                repo_id,
+                session_id,
+                "duplication_review",
+                "truncated",
+                "index_files_capped",
+                detail={"dropped": dropped, "cap": cap, "total": len(ordered)},
+            )
+    except Exception:
+        pass
+    return ordered
+
+
 # A `// chameleon-ignore...` / `# chameleon-ignore...` directive comment (any
 # variant: bare, `-file`, rule-named). Stripped from content ONLY to re-detect a
 # bypassed banned import for override auditing -- never used to change a decision.
@@ -3118,7 +3159,7 @@ def _lint_file_in_process(
     violations: list[dict] = []
     if ast_query:
         snapshot = extract_dimensions(content, language=language, file_path=file_path)
-        violations = [v.to_dict() for v in lint(snapshot, ast_query)]
+        violations = [v.to_dict() for v in lint(snapshot, ast_query, language=language)]
 
     try:
         conv_data = (
@@ -4830,6 +4871,27 @@ def _idiom_review_gate(
 
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
+        # Surface idioms for this turn's edited archetypes first, so the char-cap
+        # below keeps the relevant ones instead of truncating them away behind an
+        # unrelated archetype's block at the top of idioms.md. This is the turn-end
+        # Stop path (not the <100ms hot path), so resolving a few archetypes is
+        # fine; cap to edited[:5] and fail open to the unchanged text.
+        try:
+            from chameleon_mcp.tools import (
+                _reorder_idioms_by_archetypes,
+                get_pattern_context,
+            )
+
+            edited_archetypes: list[str] = []
+            for f in edited[:5]:
+                arch = get_pattern_context(file_path=f)["data"]["archetype"]["archetype"]
+                if arch:
+                    edited_archetypes.append(arch)
+            if edited_archetypes:
+                idioms_text = _reorder_idioms_by_archetypes(idioms_text, edited_archetypes)
+        except Exception:
+            pass
+
         names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in edited[:5])
         idioms_block = sanitize_for_chameleon_context(idioms_text.strip())[:_IDIOM_CONTEXT_CHAR_CAP]
         principles_block = sanitize_for_chameleon_context(principles_text.strip())[
@@ -5729,7 +5791,10 @@ def _crossfile_existence_advisory_lines(
             return []
 
         from chameleon_mcp.lint_engine import detect_language
-        from chameleon_mcp.phantom_imports import _current_export_names
+        from chameleon_mcp.phantom_imports import (
+            _current_export_names,
+            _python_current_export_names,
+        )
         from chameleon_mcp.symbol_index import load_reverse_index, module_key_for_path
         from chameleon_mcp.violation_class import ignored_rules
 
@@ -5775,7 +5840,11 @@ def _crossfile_existence_advisory_lines(
                 content = p.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
             except OSError:
                 continue
-            if detect_language(str(p)) != "typescript":
+            lang = detect_language(str(p))
+            # The reverse index spans the TS and Python module graphs (Ruby has no
+            # reverse index), so both languages must be checked here. Ruby and
+            # anything else is skipped.
+            if lang not in ("typescript", "python"):
                 continue
             ign = ignored_rules(content, file_path=path) or set()
             if "" in ign or "removed-export-breaks-importers" in ign:
@@ -5783,7 +5852,14 @@ def _crossfile_existence_advisory_lines(
             target_key = module_key_for_path(p, repo_root)
             if target_key is None:
                 continue
-            current, open_set = _current_export_names(content)
+            # Read each module's live export set with its own language reader: the
+            # TS regex finds zero exports in a Python module, which would misreport
+            # every Python importer as a broken reference. Pass the path so the
+            # Python reader can add an __init__.py package's sibling re-exports.
+            if lang == "python":
+                current, open_set = _python_current_export_names(content, p)
+            else:
+                current, open_set = _current_export_names(content)
             if open_set:
                 # `export * from` re-exports an unknown set, so a name absent from
                 # the visible set may still be exported -- skip, matching the
@@ -5895,7 +5971,10 @@ def _duplication_advisory_lines(
         # so infer it from the first edited file and let gather drop the rest.
         lang = dr._lang_of(edited[0])
 
-        index = dr.build_candidate_index(repo_root, edited)
+        index = dr.build_candidate_index(
+            repo_root,
+            _duplication_index_files(edited, state, repo_id=repo_id, session_id=session_id),
+        )
 
         # Only files not already judged at their CURRENT content contribute, so a
         # repeated unchanged turn never re-spawns. Digest is sha256 of the first
@@ -6078,7 +6157,10 @@ def _multi_lens_review_lines(
             if not edited:
                 return []
             lang = dr._lang_of(edited[0])
-            index = dr.build_candidate_index(repo_root, edited)
+            index = dr.build_candidate_index(
+                repo_root,
+                _duplication_index_files(edited, state, repo_id=repo_id, session_id=session_id),
+            )
             try:
                 from chameleon_mcp.function_catalog import load_function_catalog
 

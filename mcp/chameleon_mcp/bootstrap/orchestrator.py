@@ -1565,35 +1565,11 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
 
 
 # Plain-word labels for the AST node kinds that lead the Tier 1 pointer —
-# "imports, declarations" reads; "ImportDeclaration, FirstStatement" is
-# parser jargon in the single most frequent injection a user sees.
-_KIND_LABELS: dict[str, str] = {
-    "ImportDeclaration": "imports",
-    "ExportDeclaration": "exports",
-    "ExportNamedDeclaration": "exports",
-    "ExportAssignment": "default export",
-    "FunctionDeclaration": "functions",
-    "ClassDeclaration": "classes",
-    "InterfaceDeclaration": "interfaces",
-    "TypeAliasDeclaration": "type aliases",
-    "EnumDeclaration": "enums",
-    "VariableStatement": "declarations",
-    "FirstStatement": "declarations",
-    "CodeDeclaration": "declarations",
-    "ExpressionStatement": "statements",
-    "ClassNode": "classes",
-    "ModuleNode": "modules",
-    "DefNode": "methods",
-    "CallNode": "method calls",
-    "ConstantWriteNode": "constant assignments",
-    "LocalVariableWriteNode": "assignments",
-}
-
-
-def _humanize_kind(kind: str) -> str:
-    if kind.startswith("DslCall:"):
-        return kind.split(":", 1)[1] + " calls"
-    return _KIND_LABELS.get(kind, kind)
+# "imports, declarations" reads; "ImportDeclaration, FirstStatement" is parser
+# jargon in the single most frequent injection a user sees. Shared with the
+# lint-engine violation messages via kind_labels so both surfaces humanize the
+# same way.
+from chameleon_mcp.kind_labels import humanize_kind as _humanize_kind
 
 
 def _generate_archetype_summary(

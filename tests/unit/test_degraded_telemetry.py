@@ -68,6 +68,26 @@ def test_parse_counts_both_classes():
     assert (no_interp, spawn_fail) == (2, 1)
 
 
+def test_parse_collapses_identical_burst_but_keeps_distinct_seconds():
+    # One broken session writes a burst of the SAME line at one second; that is a
+    # single incident, not ~25. But two no-interpreter lines from different hooks
+    # at different seconds (30s vs 40s apart) are genuinely distinct events.
+    now = time.time()
+    burst = _line("preflight-and-advise", "no_interpreter", age_seconds=10, now=now)
+    burst_text = "\n".join([burst] * 25)
+    no_interp, spawn_fail, _ = parse_degradations(burst_text, since_epoch=now - 86400)
+    assert (no_interp, spawn_fail) == (1, 0)  # 25 identical -> 1 incident
+
+    distinct = "\n".join(
+        [
+            _line("preflight-and-advise", "no_interpreter", age_seconds=30, now=now),
+            _line("session-start", "no_interpreter", age_seconds=40, now=now),
+        ]
+    )
+    no_interp, spawn_fail, _ = parse_degradations(distinct, since_epoch=now - 86400)
+    assert (no_interp, spawn_fail) == (2, 0)  # 30s/40s pair stays distinct
+
+
 def test_parse_window_excludes_events_before_cutoff():
     now = time.time()
     text = "\n".join(

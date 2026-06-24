@@ -336,3 +336,51 @@ def test_no_edited_file_no_block(make_trusted_repo):
         env={"CHAMELEON_ENFORCE": "1"},
     )
     assert out.get("decision") != "block"
+
+
+def test_idioms_reordered_by_edited_archetype_survive_cap(make_trusted_repo, monkeypatch):
+    # The gate reorders idioms by the turn's edited archetypes before the char-cap
+    # truncation, so the relevant block survives even when an unrelated archetype's
+    # idioms sit first and overflow the cap. Patch the archetype resolver so the
+    # edited file resolves to "service" without a full bootstrap.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    _touch_edited_file(file_path, data_dir, sid)
+
+    filler = "x" * 1600
+    _write_idioms(
+        profile_dir,
+        f"### unrelated\nArchetype: controller\n{filler}\n\n"
+        "### relevant\nArchetype: service\nuse the ServiceClient wrapper\n",
+    )
+
+    def _fake_pattern_context(file_path):
+        return {"data": {"archetype": {"archetype": "service"}}}
+
+    monkeypatch.setattr("chameleon_mcp.tools.get_pattern_context", _fake_pattern_context)
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("decision") == "block"
+    assert "ServiceClient" in out.get("reason", "")
+
+
+def test_idiom_gate_fails_open_when_archetype_resolver_raises(make_trusted_repo, monkeypatch):
+    # The reorder is a best-effort nudge: a resolver that raises must not crash the
+    # Stop hook -- the gate still emits the (unreordered) idioms.
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    _touch_edited_file(file_path, data_dir, sid)
+    _write_idioms(profile_dir)
+
+    def _boom(file_path):
+        raise RuntimeError("resolver down")
+
+    monkeypatch.setattr("chameleon_mcp.tools.get_pattern_context", _boom)
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("decision") == "block"
+    assert "idiom" in out.get("reason", "").lower() or "principle" in out.get("reason", "").lower()

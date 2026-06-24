@@ -411,7 +411,7 @@ def _violations_for_file(
 
     if baseline:
         snap = extract_dimensions(content, language=language, file_path=rel)
-        violations += [v.to_dict() for v in lint(snap, baseline)]
+        violations += [v.to_dict() for v in lint(snap, baseline, language=language)]
 
     conv = (getattr(loaded, "conventions", {}) or {}).get("conventions", {}) or {}
     arch_conv: dict = {}

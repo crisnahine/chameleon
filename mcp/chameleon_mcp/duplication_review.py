@@ -53,6 +53,10 @@ def build_candidate_index(repo_root: Path, session_files: list[str]) -> Candidat
 
     Fail-open: a missing/unreadable catalog or an unparseable session file simply
     contributes nothing. The session side reuses parse_edited_functions.
+
+    The session re-parse is capped at DUPLICATION_INDEX_MAX_FILES so a long
+    execute turn does not re-parse every touched file. Callers pass the files
+    most-recent-first, so the cap keeps the freshest working set as the index.
     """
     idx = CandidateIndex()
     try:
@@ -67,9 +71,10 @@ def build_candidate_index(repo_root: Path, session_files: list[str]) -> Candidat
     except Exception:
         pass
     try:
+        from chameleon_mcp._thresholds import threshold_int
         from chameleon_mcp.tools import parse_edited_functions
 
-        for path in session_files:
+        for path in session_files[: threshold_int("DUPLICATION_INDEX_MAX_FILES")]:
             rel = _repo_rel(repo_root, path)
             for pf in parse_edited_functions(repo_root, path):
                 idx.add_function(

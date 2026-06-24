@@ -127,6 +127,31 @@ _FILE_NAMING_PHRASES = (
     "name of the file",
 )
 
+# An idiom restates the preferred-import convention (SessionStart's "Prefer X"
+# lines) only when it PRESCRIBES importing from the module — not when it merely
+# names the module in passing ("memoize expensive React subtrees" names react
+# but prescribes nothing about importing it). Mirrors the file-naming /
+# inheritance gates: require an explicit import-prescription construction.
+#
+# Two tiers, because "prefer X" is ambiguous on its own. An explicit import verb
+# ("import from", "always import") prescribes the import for ANY matched module.
+# The bare "prefer" is import-agnostic — "prefer memoizing React subtrees" is a
+# perf idiom, not an import rule — so it only counts when the matched module is
+# import-distinctive and named in its distinctive form (see _prefer_tier_matches),
+# never for a bare framework name. "use X" is excluded the same way "use React"
+# would over-fire.
+_IMPORT_VERB_PHRASES = (
+    "import from",
+    "import it from",
+    "imported from",
+    "import via",
+    "always import",
+    "use the import",
+    "standard import",
+    "canonical import",
+)
+_IMPORT_PREFER_PHRASES = ("prefer", "preferred")
+
 # Formatting/lint topic words, matched as whole tokens (not substrings, so
 # 'indent' no longer fires inside 'tree-row indentation depth'). A candidate is
 # covered-by-lint only when formatting is its actual SUBJECT, measured by the
@@ -530,6 +555,29 @@ def _competing_pairs(conventions: dict) -> list[dict]:
     return pairs
 
 
+def _preferred_modules(conventions: dict) -> dict[str, list[str]]:
+    """Per-archetype preferred import modules ({arch: [module, ...]}) read from
+    imports.<arch>.preferred[].module — the "Prefer X" lines SessionStart renders.
+    The covered-by-preferred-import dedup respects the candidate archetype the
+    same way the naming/inheritance branches do, so it consults this per-arch map
+    rather than a flattened union."""
+    out: dict[str, list[str]] = {}
+    imports = conventions.get("imports", {})
+    if not isinstance(imports, dict):
+        return out
+    for arch, data in imports.items():
+        if not isinstance(data, dict):
+            continue
+        modules = [
+            str(p["module"])
+            for p in data.get("preferred") or []
+            if isinstance(p, dict) and p.get("module")
+        ]
+        if modules:
+            out[arch] = modules
+    return out
+
+
 def _naming_casings(conventions: dict) -> dict[str, str]:
     out: dict[str, str] = {}
     naming = conventions.get("naming", {})
@@ -541,6 +589,38 @@ def _naming_casings(conventions: dict) -> dict[str, str]:
         casing = (data.get("file_naming") or {}).get("casing")
         if isinstance(casing, str) and casing:
             out[arch] = casing
+    return out
+
+
+def _naming_prefixes(conventions: dict) -> dict[str, dict[str, str]]:
+    """Per-archetype interface/type/enum identifier prefixes ({arch: {"interface":
+    "I", ...}}), the second axis SessionStart renders under naming alongside the
+    file-naming casing.
+
+    Surfaced as informational coverage only. Their value is a bare PATTERN
+    ("I", "T", "E"), not a casing family, so they cannot ride the casing-synonym
+    substring match: a single-char pattern checked against lowercased prose
+    ("i" in text_lower) matches almost everything. Keeping them out of the
+    deterministic casing dict avoids that false-positive while still letting the
+    auto-idiom model see the convention and self-censor.
+    """
+    out: dict[str, dict[str, str]] = {}
+    naming = conventions.get("naming", {})
+    if not isinstance(naming, dict):
+        return out
+    for arch, data in naming.items():
+        if not isinstance(data, dict):
+            continue
+        prefixes: dict[str, str] = {}
+        for key in ("interface_prefix", "type_prefix", "enum_prefix"):
+            entry = data.get(key)
+            if not isinstance(entry, dict):
+                continue
+            pattern = entry.get("pattern")
+            if isinstance(pattern, str) and pattern:
+                prefixes[key[: -len("_prefix")]] = pattern
+        if prefixes:
+            out[arch] = prefixes
     return out
 
 
@@ -637,19 +717,7 @@ def build_coverage(profile_dir: Path) -> tuple[dict, list[str]]:
             deprecated.append({"slug": block["slug"]})
 
     conventions = artifacts["conventions"]
-    import_preferences: dict[str, list[str]] = {}
-    imports = conventions.get("imports", {})
-    if isinstance(imports, dict):
-        for arch, data in imports.items():
-            if not isinstance(data, dict):
-                continue
-            modules = [
-                str(p.get("module"))
-                for p in data.get("preferred") or []
-                if isinstance(p, dict) and p.get("module")
-            ]
-            if modules:
-                import_preferences[arch] = modules
+    import_preferences = _preferred_modules(conventions)
 
     error_handling: dict[str, str] = {}
     eh = conventions.get("error_handling", {})
@@ -685,6 +753,7 @@ def build_coverage(profile_dir: Path) -> tuple[dict, list[str]]:
             "import_preferences": import_preferences,
             "competing_imports": _competing_pairs(conventions),
             "naming": _naming_casings(conventions),
+            "naming_prefixes": _naming_prefixes(conventions),
             "inheritance": _inheritance_bases(conventions),
             "class_contract": _class_contract(conventions),
             "error_handling": error_handling,
@@ -719,6 +788,45 @@ def _is_formatting_idiom(rationale: str) -> bool:
         return False
     fmt_hits = sum(1 for t in word_tokens if t in _LINT_TOPIC_WORDS) + phrase_hits
     return fmt_hits / len(word_tokens) >= _LINT_DOMINANCE
+
+
+# SessionStart's "Prefer X" render skips entry/barrel basenames so a preferred
+# module literally named "utils" / "types" / "index" (or a 1-2 char stem) is not
+# shown. The dedup mirrors that skip — a candidate cannot duplicate a convention
+# the user never sees rendered, and "utils" / "types" are common idiom prose.
+_PREFERRED_IMPORT_SKIP_BASENAMES = frozenset({"index", "types", "utils"})
+
+
+def _module_in_text(module: str, text_lower: str) -> bool:
+    """True when ``module``'s basename appears as a whole word in the idiom text.
+
+    Word-boundary, not substring: 'react' must not fire on 'reactive'. Mirrors
+    the SessionStart render filter (skip index/types/utils and <=2-char stems) so
+    a barrel-name module the user never sees rendered cannot mark a candidate
+    covered."""
+    basename = module.rsplit("/", 1)[-1].lower()
+    if len(basename) <= 2 or basename in _PREFERRED_IMPORT_SKIP_BASENAMES:
+        return False
+    return re.search(rf"\b{re.escape(basename)}\b", text_lower) is not None
+
+
+def _prefer_tier_matches(module: str, text_lower: str) -> bool:
+    """True when a bare "prefer X" (no explicit import verb) is enough to count
+    ``module`` as restated, because the module is import-distinctive AND its
+    distinctive form actually appears in the text.
+
+    A scoped/path module (``@app/date``) must appear VERBATIM — matching only its
+    common last segment ("date") would re-admit the bare-name false positive one
+    level down ("prefer storing the date in UTC" is novel, not an import rule).
+    A hyphenated, non-scoped module (``react-query``, ``date-fns``) carries its
+    distinctiveness in the basename itself, so the whole-word basename match
+    (already checked by the caller) is the verbatim form. A bare framework name
+    (``react``) is not distinctive enough — it needs an explicit import verb."""
+    if "/" in module:
+        return module.lower() in text_lower
+    if "-" in module:
+        return True
+    return False
 
 
 _CONTRACT_VERB_PHRASES = (
@@ -775,6 +883,30 @@ def _covered_reasons(
             )
 
     candidate_arch = candidate.get("archetype")
+
+    # Only an idiom that PRESCRIBES the import restates the preferred-import
+    # convention. A bare mention of the module is not enough — "memoize expensive
+    # React subtrees" names react but is genuinely novel, so an intent gate, not a
+    # substring scan, is the false-positive defense. An explicit import verb
+    # ("import from") prescribes any matched module; the bare "prefer X" only
+    # counts for an import-distinctive module whose distinctive form actually
+    # appears (a scoped "@app/date" must be named verbatim, not collapsed to its
+    # common "date" segment). Respects the candidate archetype like the naming /
+    # inheritance branches.
+    has_import_verb = any(p in text_lower for p in _IMPORT_VERB_PHRASES)
+    has_prefer = any(re.search(rf"\b{p}\b", text_lower) for p in _IMPORT_PREFER_PHRASES)
+    if has_import_verb or has_prefer:
+        for arch, modules in _preferred_modules(conventions).items():
+            if candidate_arch and arch != candidate_arch:
+                continue
+            covered = any(
+                _module_in_text(m, text_lower)
+                and (has_import_verb or _prefer_tier_matches(m, text_lower))
+                for m in modules
+            )
+            if covered:
+                reasons.append(f"covered-by-preferred-import:{_sanitize(arch)}")
+
     # Only an idiom that is explicitly about FILE naming restates the
     # file-naming-casing convention. The bare word "file" is not enough — an
     # export-identifier-casing rule mentions files in passing.
