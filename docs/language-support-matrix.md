@@ -1,15 +1,23 @@
 # Language & Framework Support Matrix
 
-> The authoritative parity reference for chameleon's supported languages and
-> frameworks. **The goal: every supported language gets the same capability,
-> with the same purpose, except where a capability is genuinely specific to a
-> language or framework.** This doc is the basis for closing the gap.
+> The authoritative parity reference for chameleon's supported languages. The
+> unit of support is the LANGUAGE: chameleon is framework-agnostic by default,
+> learning each repo's own conventions from its structure (clustering, naming,
+> signatures), so it works on any framework in a supported language. Where a
+> framework's conventions are strong and well-known, a framework-aware layer
+> sits ON TOP of that agnostic base for deeper guidance — currently Rails for
+> Ruby, and Django / DRF / Flask / FastAPI for Python. (TypeScript / JavaScript
+> is structural-only today, with no framework-specific layer.) **The goal: every
+> supported language gets the same capability, with the same purpose, except
+> where a capability is genuinely specific to a language or framework.** This doc
+> is the basis for closing the gap.
 
-Supported languages:
+Supported languages (the agnostic core works on any framework; the named
+frameworks add a deeper, framework-aware layer on top):
 
-- **TypeScript / JavaScript** — `.ts .tsx .js .jsx .mjs .cjs`, parsed with the TypeScript Compiler API (`ts_dump.mjs`).
-- **Ruby (on Rails)** — `.rb`, parsed with Prism (`prism_dump.rb`).
-- **Python (Django / Flask / FastAPI)** — `.py .pyi`, parsed with libcst (`libcst_dump.py`), bundled with the plugin.
+- **TypeScript / JavaScript** — `.ts .tsx .js .jsx .mjs .cjs`, parsed with the TypeScript Compiler API (`ts_dump.mjs`). Structural-only; no framework-specific layer.
+- **Ruby** — `.rb`, parsed with Prism (`prism_dump.rb`). Agnostic across any Ruby repo, with a deeper framework-aware layer for Rails.
+- **Python** — `.py .pyi`, parsed with libcst (`libcst_dump.py`), bundled with the plugin. Agnostic across any Python repo, with a deeper framework-aware layer for Django / DRF / Flask / FastAPI.
 
 Legend: ✅ full · ⚠️ partial · ❌ missing (parity gap) · — n/a (legitimate exclusive)
 
@@ -18,7 +26,7 @@ Legend: ✅ full · ⚠️ partial · ❌ missing (parity gap) · — n/a (legit
 - **198** capabilities mapped across the three languages, in 14 dimensions.
 - **63** are at full parity today (the shared contract below).
 - **83** are verified parity gaps a language should close (the roadmap below).
-- Legitimate exclusives: **12** TypeScript, **17** Ruby/Rails, **4** Python — capabilities that exist only where the language/framework warrants them.
+- Legitimate exclusives: **12** TypeScript, **17** Ruby (mostly its Rails-aware layer), **4** Python — capabilities that exist only where the language or its framework-aware layer warrants them.
 
 The headline asymmetry: **Python is structurally the closest language to TypeScript
 (named imports, enumerable exports, type annotations) yet currently gets the least
@@ -342,7 +350,7 @@ language or framework provides the construct. Not gaps.
 - **naming: TS prefix conventions (interface/type/enum I-prefix)** — Dominant single-letter prefix on interface/type/enum declaration names.
 - **jsx-presence-mismatch block rule** — Errors when a file HAS JSX but its archetype is a non-JSX one (severity-gated: only the error 'has JSX' form blocks, the warning 'missing JSX' form stays advisory).
 
-### Ruby / Rails
+### Ruby (and its Rails-aware layer)
 
 - **extras.class_body_calls (receiverless DSL macros)** — Class-body DSL macros are the Ruby/Rails pattern (ActiveInteraction, validates, has_many); TS/Python express the same intent differently (decorators, base classes), which class_shapes.decorators / class_shapes already c…
 - **Rails prior table (_RAILS_PRIORS)** — Directory-chain prior table mapping app/controllers, app/models, app/services, db/migrate, config/initializers etc. to clean archetype names (controller, model, service, job, mailer, helper, policy, serializer, presente…

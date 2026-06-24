@@ -68,15 +68,22 @@ language, below a sample-size threshold, or in a file class the engine does not
 verify goes to a human regardless of gate color. See
 [What stays human](#what-stays-human) for the full list.
 
-**Supported stacks:** TypeScript / JavaScript, Ruby on Rails, and Python
-(Django, Flask, FastAPI). Claude Code only. All three languages are
-first-class: the TypeScript extractor uses the TypeScript Compiler API, the
-Ruby extractor uses Prism, and the Python extractor uses libcst (bundled with
-the plugin, so Python repos need nothing extra installed). Python framework
-awareness keys on filename conventions (`models.py`/`views.py`/`serializers.py`
-→ cross-app role archetypes) and the web-layer directory (`routes/`,
-`blueprints/`), with decorators and base classes captured for finer
-discrimination.
+**Supported stacks:** TypeScript / JavaScript, Ruby, and Python as first-class
+languages. Claude Code only. The core is framework-agnostic: it learns each
+repo's conventions from the repo's own structure (clustering, naming,
+signatures), so it works on any framework, not just well-known ones. Where a
+framework has strong, well-known conventions, chameleon adapts for deeper,
+framework-aware guidance — currently Rails for Ruby, and Django, DRF, Flask,
+and FastAPI for Python. TypeScript / JavaScript is purely structural today (no
+framework-specific layer), which is why no TS framework is named.
+
+All three languages are first-class at the extractor level: the TypeScript
+extractor uses the TypeScript Compiler API, the Ruby extractor uses Prism, and
+the Python extractor uses libcst (bundled with the plugin, so Python repos need
+nothing extra installed). Python framework awareness keys on filename
+conventions (`models.py`/`views.py`/`serializers.py` → cross-app role
+archetypes) and the web-layer directory (`routes/`, `blueprints/`), with
+decorators and base classes captured for finer discrimination.
 
 ---
 
@@ -1309,7 +1316,7 @@ anyone considering dropping mandatory review.
   heuristics.
 - **Intent and rationale** why a pattern exists and when it is correct to break
   it. `idioms.md` stores one sentence per idiom; it does not reason.
-- **Unsupported languages** Python, Go, Rust, Java, SQL, YAML return an empty
+- **Unsupported languages** Go, Rust, Java, SQL, YAML return an empty
   snapshot and zero violations.
 - **Anything below sample-size thresholds** sparse repos and brand-new
   directories where conventions are still forming.

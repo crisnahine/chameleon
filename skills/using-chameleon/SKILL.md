@@ -1,6 +1,6 @@
 ---
 name: using-chameleon
-description: "Active when .chameleon/ profile directory exists. Explains hook-injected pattern context and violation feedback for TypeScript, Ruby on Rails, and Python (Django/Flask/FastAPI)."
+description: "Active when .chameleon/ profile directory exists. Explains hook-injected pattern context and violation feedback for TypeScript/JavaScript, Ruby, and Python as first-class languages — framework-agnostic by default (it learns your repo's own conventions), with deeper awareness where conventions are strong: Rails for Ruby, and Django/DRF/Flask/FastAPI for Python."
 ---
 
 <SUBAGENT-STOP>

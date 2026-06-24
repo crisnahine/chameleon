@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## What this repo is
 
-`chameleon` — a Claude Code plugin that auto-derives codebase conventions and injects archetype-aware guidance per-edit. Supports TypeScript, Ruby on Rails, and Python (Django, Flask, FastAPI) repos.
+`chameleon` — a Claude Code plugin that auto-derives codebase conventions and injects archetype-aware guidance per-edit. Supports TypeScript/JavaScript, Ruby, and Python as first-class languages — framework-agnostic by default (it learns each repo's own conventions, so any framework works), with deeper framework-aware guidance where conventions are strong: Rails for Ruby, and Django, DRF, Flask, and FastAPI for Python.
 
 See [docs/architecture.md](./docs/architecture.md) for the full design.
 
@@ -80,8 +80,8 @@ Faster and free vs the journey harness. These import the MCP tools and call them
 CHAMELEON_TEST_TS_REPO=/abs/path/to/ts-repo \
   PYTHONPATH=. mcp/.venv/bin/python tests/qa_typescript.py
 
-# Ruby on Rails repo battery
-CHAMELEON_TEST_RUBY_REPO=/abs/path/to/rails-repo \
+# Ruby repo battery (any Ruby repo; Rails repos exercise the Rails-aware layer)
+CHAMELEON_TEST_RUBY_REPO=/abs/path/to/ruby-repo \
   PYTHONPATH=. mcp/.venv/bin/python tests/qa_ruby.py
 
 # Python repo battery (Django / Flask / FastAPI)

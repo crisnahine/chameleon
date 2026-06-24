@@ -1,6 +1,6 @@
 # Installing chameleon
 
-chameleon is a Claude Code plugin that learns your repo's conventions and feeds the model archetype-aware context on every edit. It supports TypeScript, Ruby on Rails, and Python (Django, Flask, FastAPI) repos.
+chameleon is a Claude Code plugin that learns your repo's conventions and feeds the model archetype-aware context on every edit. It supports TypeScript/JavaScript, Ruby, and Python as first-class languages. The core is framework-agnostic — it learns each repo's own conventions, so any framework works — with deeper awareness where a framework's conventions are strong: Rails for Ruby, and Django, DRF, Flask, and FastAPI for Python.
 
 Two ways to read this guide:
 
@@ -22,7 +22,7 @@ You have `uv` on your `PATH` and Node.js 20 or newer. Inside any Claude Code ses
 
 Restart Claude Code. Done. Verify it worked: [Verify the plugin loaded](#verify-the-plugin-loaded).
 
-Editing Ruby on Rails repos too? You also need Ruby 3.0+ with the `prism` gem. The [Full setup](#full-setup) section has the per-OS commands. Python repos (Django / Flask / FastAPI) need nothing extra — chameleon parses them with its own bundled libcst.
+Editing Ruby repos too? You also need Ruby 3.0+ with the `prism` gem. The [Full setup](#full-setup) section has the per-OS commands. Python repos need nothing extra — chameleon parses them with its own bundled libcst.
 
 ---
 
@@ -35,7 +35,7 @@ Editing Ruby on Rails repos too? You also need Ruby 3.0+ with the `prism` gem. T
 | Claude Code | the harness chameleon plugs into | Always |
 | `uv` | runs chameleon's Python server | Always |
 | Node.js 20+ | reads TypeScript/JavaScript files | Always |
-| Ruby 3.0+ with `prism` | reads Ruby files | Only if you edit Rails repos |
+| Ruby 3.0+ with `prism` | reads Ruby files | Only if you edit Ruby repos |
 
 You never run `uv sync` or `npm install` by hand. chameleon builds its own Python environment and Node dependencies the first time it runs. You only install the three tools above; chameleon handles the rest. See [How dependencies resolve](#how-dependencies-resolve) if you want the detail.
 
@@ -65,7 +65,7 @@ brew install coreutils
 
 Optional but recommended. Without it the hooks still run, they just lose the external wall-clock cap (chameleon's own internal timeouts still apply).
 
-Ruby (only if you edit Rails repos):
+Ruby (only if you edit Ruby repos):
 
 ```bash
 brew install ruby
@@ -90,7 +90,7 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt-get install -y nodejs
 ```
 
-Ruby (only if you edit Rails repos):
+Ruby (only if you edit Ruby repos):
 
 ```bash
 sudo apt-get install -y ruby-full
@@ -112,7 +112,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 Node.js 20+: download the LTS installer from https://nodejs.org (or `winget install OpenJS.NodeJS.LTS`).
 
-Ruby (only if you edit Rails repos): use [RubyInstaller](https://rubyinstaller.org), pick 3.3+ so `prism` is bundled.
+Ruby (only if you edit Ruby repos): use [RubyInstaller](https://rubyinstaller.org), pick 3.3+ so `prism` is bundled.
 
 On Windows, chameleon serializes its profile writes with a small `.chameleon.winlock` file in the repo root (POSIX locks a directory handle instead and leaves no file). It is safe to ignore or add to `.gitignore`.
 
@@ -126,7 +126,7 @@ node --version     # expect: v20.x.x or higher
 npm --version      # expect: 10.x.x or similar (ships with Node)
 ```
 
-Only if you edit Rails repos:
+Only if you edit Ruby repos:
 
 ```bash
 ruby --version                                  # expect: ruby 3.0.0 or higher
@@ -166,7 +166,7 @@ The very first time the server starts it builds a Python environment (about 5 to
 
 ## Your first profile
 
-Open a TypeScript, Ruby on Rails, or Python (Django / Flask / FastAPI) repo in Claude Code.
+Open a TypeScript/JavaScript, Ruby, or Python repo in Claude Code.
 
 1. **Bootstrap a profile.** Skip this only if `.chameleon/` already exists and you trust who committed it.
 
@@ -292,7 +292,7 @@ If `gem install` needs sudo and you do not want system-wide gems, use a version 
 
 ### Bootstrap fails with `failed_unsupported_language`
 
-The repo has no TypeScript signal (`tsconfig.json` or `package.json`) and no Ruby signal (`Gemfile`). chameleon supports only those two stacks. There is nothing to fix; the repo is out of scope.
+The repo has no TypeScript signal (`tsconfig.json` or `package.json`), no Ruby signal (`Gemfile`), and no Python signal (a project marker like `pyproject.toml`, `setup.py`, `requirements.txt`, or `manage.py`, or any `.py` file). chameleon supports only those three languages. There is nothing to fix; the repo is out of scope.
 
 ### First MCP start is slow
 
