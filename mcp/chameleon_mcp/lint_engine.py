@@ -2556,14 +2556,18 @@ _NETWORK_STUB_TOKENS = (
     "setupServer",
     "mockServer",
     "VCR",
-    # Python network-stub libs.
-    "responses",
+    # Python network-stub libs. `responses` and `vcr` are plain English words
+    # that substring-collide with common identifiers (expected_responses,
+    # vcr_cassette), so they are matched on a word boundary below, not here.
     "respx",
-    "vcr",
     "httpretty",
     "requests_mock",
     "aioresponses",
 )
+# Word-boundary-matched stub tokens: bare substring matching would misfire on
+# expected_responses / mock_responses / vcr_cassette, but `\bresponses\b` only
+# matches the standalone name (import responses, @responses.activate, vcr.use_*).
+_NETWORK_STUB_WORD_RE = re.compile(r"\b(?:responses|vcr)\b")
 # Tokens that indicate a candidate touches the real network at all. Without one
 # of these present there is nothing to stub, so the unstubbed-network rule stays
 # silent regardless of the witness.
@@ -2976,11 +2980,14 @@ def _witness_gated_setup_violations(
     def _has_any(text: str, tokens: tuple[str, ...]) -> bool:
         return any(tok in text for tok in tokens)
 
+    def _has_stub(text: str) -> bool:
+        return _has_any(text, _NETWORK_STUB_TOKENS) or bool(_NETWORK_STUB_WORD_RE.search(text))
+
     out: list[Violation] = []
 
     if (
-        _has_any(witness_content, _NETWORK_STUB_TOKENS)
-        and not _has_any(scan_content, _NETWORK_STUB_TOKENS)
+        _has_stub(witness_content)
+        and not _has_stub(scan_content)
         and _has_any(scan_content, _NETWORK_CALL_TOKENS)
     ):
         out.append(
@@ -3153,8 +3160,10 @@ _RUBY_CONSTANT_ASSIGN_LINT_RE = re.compile(
 _PY_FUNC_DEF_LINT_RE = re.compile(r"^[ \t]*(?:async\s+)?def\s+([A-Za-z_]\w*)", re.MULTILINE)
 _PY_CLASS_DECL_LINT_RE = re.compile(r"^[ \t]*class\s+([A-Za-z_]\w*)", re.MULTILINE)
 # Captures the base list too (group 3, None when bare) for the inheritance check.
+# The optional `\[...\]` after the name is a PEP 695 (3.12+) type-parameter list
+# (`class Foo[T](Base):`); without it a generic class would silently skip the lint.
 _PY_CLASS_BASES_LINT_RE = re.compile(
-    r"^([ \t]*)class\s+([A-Za-z_]\w*)\s*(?:\(([^)]*)\))?\s*:", re.MULTILINE
+    r"^([ \t]*)class\s+([A-Za-z_]\w*)(?:\s*\[[^\]]*\])?\s*(?:\(([^)]*)\))?\s*:", re.MULTILINE
 )
 
 

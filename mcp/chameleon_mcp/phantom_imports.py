@@ -1066,11 +1066,19 @@ def _python_current_export_names(
         if base in ("__init__.py", "__init__.pyi"):
             try:
                 pkg_dir = os.path.dirname(str(file_path))
+                # Mirror the dump's _module_exports exactly so the live read and
+                # the stored index cannot drift: a PEP 562 __getattr__ opens the
+                # set (lazy exports are unenumerable), and compiled .so/.pyd
+                # submodules are importable siblings.
+                if "__getattr__" in names:
+                    open_set = True
                 for entry in os.listdir(pkg_dir):
                     if entry.startswith("__"):
                         continue
                     if entry.endswith((".py", ".pyi")):
                         names.add(entry.rsplit(".", 1)[0])
+                    elif entry.endswith((".so", ".pyd")):
+                        names.add(entry.split(".", 1)[0])
                     elif os.path.isfile(
                         os.path.join(pkg_dir, entry, "__init__.py")
                     ) or os.path.isfile(os.path.join(pkg_dir, entry, "__init__.pyi")):

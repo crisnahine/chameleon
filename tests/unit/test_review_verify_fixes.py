@@ -126,3 +126,47 @@ def test_counterexample_find_import_line_respects_language():
     assert _find_import_line(ts_witness, "useThing", language="typescript") is None
     # the Python form still matches a real Python import when so scoped
     assert _find_import_line("import useThing\n", "useThing", language="python")
+
+
+def test_live_read_converges_with_dump_on_getattr_and_so(tmp_path):
+    # The live export read must mirror the dump on PEP 562 __getattr__ (opens the
+    # set) and compiled .so submodules, or removed-export-breaks-importers false-
+    # fires when an importer references a lazy/compiled name.
+    from chameleon_mcp.extractors.python import PythonExtractor
+    from chameleon_mcp.phantom_imports import _python_current_export_names
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    content = "def __getattr__(name):\n    return None\n"
+    (pkg / "__init__.py").write_text(content, encoding="utf-8")
+    (pkg / "_speedups.cpython-311-darwin.so").write_text("", encoding="utf-8")
+
+    live_names, live_open = _python_current_export_names(content, pkg / "__init__.py")
+    pf = PythonExtractor().parse_repo(tmp_path, paths=[pkg / "__init__.py"]).files[0]
+    ex = getattr(pf, "extras", {}) or {}
+    assert live_open == ex.get("export_set_open") is True
+    assert ("_speedups" in live_names) == ("_speedups" in set(ex.get("named_export_names") or []))
+    assert "_speedups" in live_names
+
+
+def test_inheritance_lint_handles_pep695_generic_class():
+    # class Foo[T](Base): (PEP 695, 3.12+) must not silently skip the lint.
+    from chameleon_mcp.lint_engine import lint_conventions
+
+    conv = {"inheritance": {"dominant_base": "models.Model", "frequency": 0.9}}
+    v = lint_conventions("class Widget[T](SomethingElse):\n    pass\n", conv, language="python")
+    assert any(x.rule == "inheritance-convention-violation" for x in v)
+    # a generic class on the right base is clean
+    ok = lint_conventions("class Widget[T](models.Model):\n    pass\n", conv, language="python")
+    assert not any(x.rule == "inheritance-convention-violation" for x in ok)
+
+
+def test_network_stub_responses_vcr_word_boundary():
+    # `responses`/`vcr` must match the libraries, not collide with common
+    # identifiers (expected_responses, vcr_cassette).
+    from chameleon_mcp.lint_engine import _NETWORK_STUB_WORD_RE
+
+    for ident in ("expected_responses = []", "mock_responses = 1", "vcr_cassette", "api_responses"):
+        assert not _NETWORK_STUB_WORD_RE.search(ident)
+    for use in ("import responses", "@responses.activate", "import vcr", "vcr.use_cassette"):
+        assert _NETWORK_STUB_WORD_RE.search(use)
