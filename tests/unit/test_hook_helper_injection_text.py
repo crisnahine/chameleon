@@ -475,10 +475,13 @@ def test_counterexample_neutralizes_fence_in_snippet(tmp_path, monkeypatch):
 
 def test_preflight_wires_counterexample_after_witness():
     src = _preflight_source()
-    call = "_counterexample_section(archetype_name, repo_root_path, excerpt_content)"
+    call = "_counterexample_section("
     assert call in src
-    region_at = src.index("block += untrusted_region")
     ce_at = src.index(call)
+    # threaded with the edited file's language so the witness-suppression check
+    # uses the right per-language import form (not the agnostic both-forms match)
+    assert "language=" in src[ce_at : ce_at + 300]
+    region_at = src.index("block += untrusted_region")
     assert region_at < ce_at
 
 

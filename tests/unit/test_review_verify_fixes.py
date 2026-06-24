@@ -59,3 +59,70 @@ def _skip_hit(s: str) -> bool:
 )
 def test_python_skip_markers_recognized(line, hit):
     assert _skip_hit(line) is hit
+
+
+def test_ruby_heredoc_token_in_comment_does_not_hide_sinks():
+    # Regression: the Ruby stripper must blank a `#` comment (incl a `<<~TOKEN`
+    # it merely mentions) BEFORE the heredoc pass, or the comment-embedded token
+    # is honored as a heredoc and swallows the eval/exec sink below it to EOF.
+    from chameleon_mcp.lint_engine import scan_dangerous_sinks
+
+    rules = [
+        v.rule
+        for v in scan_dangerous_sinks("a = 1 # see <<~EOF note\nb = eval(x)\n", language="ruby")
+    ]
+    assert "eval-call" in rules
+
+
+def test_ruby_quoted_heredoc_delimiter_body_blanked():
+    # A quoted heredoc delimiter (<<~"EOF" / <<-'EOF') opens a heredoc, not a
+    # string: its body must be blanked, not scanned as code.
+    from chameleon_mcp.lint_engine import _strip_ruby_strings_and_comments as strip
+
+    assert "secret_token" not in strip('x = <<~"EOF"\n  secret_token = 1\nEOF\ny = 2\n')
+    assert "body_line" not in strip("x = <<-'EOF'\n  body_line\nEOF\nz = 3\n")
+
+
+def test_init_export_set_opens_on_getattr_and_enumerates_compiled(tmp_path):
+    # __init__ with PEP 562 __getattr__ -> open set (lazy exports unenumerable);
+    # a compiled .so submodule is enumerated so importing it is not phantom.
+    from chameleon_mcp.extractors.python import PythonExtractor
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("def __getattr__(name):\n    return None\n", encoding="utf-8")
+    ex = (
+        getattr(
+            PythonExtractor().parse_repo(tmp_path, paths=[pkg / "__init__.py"]).files[0],
+            "extras",
+            {},
+        )
+        or {}
+    )
+    assert ex.get("export_set_open") is True
+
+    pkg2 = tmp_path / "pkg2"
+    pkg2.mkdir()
+    (pkg2 / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
+    (pkg2 / "_speedups.cpython-311-darwin.so").write_text("", encoding="utf-8")
+    ex2 = (
+        getattr(
+            PythonExtractor().parse_repo(tmp_path, paths=[pkg2 / "__init__.py"]).files[0],
+            "extras",
+            {},
+        )
+        or {}
+    )
+    assert "_speedups" in set(ex2.get("named_export_names") or [])
+    assert not ex2.get("export_set_open")  # still closed (no __getattr__)
+
+
+def test_counterexample_find_import_line_respects_language():
+    # The witness-suppression check must use the archetype language: the Python
+    # unquoted import form must not match a TypeScript witness.
+    from chameleon_mcp.counterexamples import _find_import_line
+
+    ts_witness = "import foo from 'bar'\nconst x = useThing()\n"
+    assert _find_import_line(ts_witness, "useThing", language="typescript") is None
+    # the Python form still matches a real Python import when so scoped
+    assert _find_import_line("import useThing\n", "useThing", language="python")

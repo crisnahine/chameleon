@@ -52,9 +52,12 @@ _RUBY_CODE_KINDS = frozenset(
     }
 )
 # Python structural kinds that always read as commented-out code. The kinds are
-# the dumper's top-level node names: libcst emits FunctionDef for sync and async
-# defs (async is an attribute, not a separate node), the stdlib-ast fallback
-# emits AsyncFunctionDef separately, so both are accepted. A commented-out
+# the dumper's top-level node names: libcst emits FunctionDef for both sync and
+# async defs (async is an attribute, not a separate node), so a commented-out
+# `async def` is caught by FunctionDef. AsyncFunctionDef is kept defensively for
+# the stdlib-ast fallback's node names; that path currently never reaches the
+# kinds check (it carries a non-zero diagnostics count, which _span_is_code
+# rejects first), so the entry is inert today but harmless. A commented-out
 # import surfaces in import_specifiers and is caught by the same fall-through
 # Ruby uses for its require-family calls. Bare expression/assignment kinds are
 # NOT here: prose parses into them with zero diagnostics and would flood the

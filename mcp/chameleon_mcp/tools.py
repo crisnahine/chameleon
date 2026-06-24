@@ -7680,7 +7680,7 @@ def teach_profile(repo: str, feedback: str) -> dict:
             {
                 "status": "failed",
                 "error": (
-                    f"another /chameleon-teach is in progress (PID {e.holder_pid}); retry shortly"
+                    f"another operation holds the idioms lock (PID {e.holder_pid}); retry shortly"
                 ),
             }
         )
@@ -9708,7 +9708,7 @@ def _transition_slug_to_deprecated(
             {
                 "status": "failed",
                 "error": (
-                    f"another /chameleon-teach is in progress (PID {e.holder_pid}); retry shortly"
+                    f"another operation holds the idioms lock (PID {e.holder_pid}); retry shortly"
                 ),
             }
         )
@@ -9800,7 +9800,7 @@ def _write_new_deprecated_idiom(
             {
                 "status": "failed",
                 "error": (
-                    f"another /chameleon-teach is in progress (PID {e.holder_pid}); retry shortly"
+                    f"another operation holds the idioms lock (PID {e.holder_pid}); retry shortly"
                 ),
             }
         )
