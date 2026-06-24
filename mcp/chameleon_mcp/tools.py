@@ -1596,6 +1596,51 @@ def _classify_profile_load_failure(profile_file: Path) -> str:
     return "profile_corrupted"
 
 
+_IDIOM_ARCHETYPE_LINE_RE = re.compile(r"(?im)^[ \t]*Archetype:[ \t]*(.+?)[ \t]*$")
+
+
+def _reorder_idioms_by_archetype(idioms_text: str, archetype: str | None) -> str:
+    """Surface the edited file's archetype idioms FIRST so the downstream
+    char-cap truncation keeps them.
+
+    idioms.md is a sequence of ``### <name>`` blocks, each carrying an
+    ``Archetype: <name>`` line. The per-edit block (and the idiom judge that
+    reads this same ``idioms`` field) caps the text by taking its top, so a
+    controller edit got whichever idioms sit at the top of the file -- often an
+    unrelated archetype's -- with the controller-relevant one truncated away.
+    Reorder (not filter, so nothing is lost) into three stable groups: blocks
+    matching the edit's archetype, then untagged/general blocks, then
+    other-archetype blocks. No archetype, no ``### `` blocks, or nothing matching
+    -> returned unchanged.
+    """
+    if not archetype or "### " not in idioms_text:
+        return idioms_text
+    lines = idioms_text.splitlines(keepends=True)
+    starts = [i for i, ln in enumerate(lines) if ln.startswith("### ")]
+    if not starts:
+        return idioms_text
+    preamble = "".join(lines[: starts[0]])
+    blocks = [
+        "".join(lines[s : (starts[j + 1] if j + 1 < len(starts) else len(lines))])
+        for j, s in enumerate(starts)
+    ]
+    arch_l = archetype.strip().lower()
+    matching: list[str] = []
+    general: list[str] = []
+    other: list[str] = []
+    for b in blocks:
+        m = _IDIOM_ARCHETYPE_LINE_RE.search(b)
+        if m is None:
+            general.append(b)
+        elif m.group(1).strip().lower() == arch_l:
+            matching.append(b)
+        else:
+            other.append(b)
+    if not matching:
+        return idioms_text
+    return preamble + "".join(matching + general + other)
+
+
 def get_pattern_context(file_path: str) -> dict:
     """Collapsed call: archetype + canonical + rules + meta in one round trip.
 
@@ -1807,6 +1852,10 @@ def get_pattern_context(file_path: str) -> dict:
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
         idioms_text = sanitize_for_chameleon_context(idioms_text)
+        # Surface the edited file's archetype idioms first so the per-edit block's
+        # (and the idiom judge's) char-cap keeps them instead of truncating them
+        # away behind an unrelated archetype's idioms at the top of idioms.md.
+        idioms_text = _reorder_idioms_by_archetype(idioms_text, arch_data.get("archetype"))
 
     # Rule keys and config values are profile-derived strings; sanitize them
     # before they reach the model, matching get_rules' direct-call path.
