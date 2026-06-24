@@ -7,6 +7,8 @@ versioning envelope:
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 import math
@@ -5379,10 +5381,27 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             # then reads the post-teach idioms.md. .refresh.lock is always taken
             # before .idioms.lock and teach never takes .refresh.lock, so the two
             # cannot deadlock.
+            # Hold BOTH teach write locks across the whole re-derive: .idioms.lock
+            # (idioms.md, written by teach/deprecate) and .conventions.lock
+            # (conventions.json + renames.json, written by teach_competing_import /
+            # apply_archetype_renames). Without the latter, a competing-import teach
+            # landing between the derive's conventions read and the dir-swap was
+            # silently clobbered by the swap. Set the contextvar so the nested
+            # bootstrap_repo sees the locks are already held and does not re-acquire
+            # (same-process self-deadlock). Order .refresh -> .idioms -> .conventions
+            # -> .bootstrap matches bootstrap_repo's direct path, so no AB-BA.
             idioms_lock_path = _lock_dir / ".idioms.lock"
+            conventions_lock_path = _lock_dir / ".conventions.lock"
             try:
-                with acquire_advisory_lock(idioms_lock_path, blocking_timeout=10.0):
-                    envelope = _refresh_repo_locked(repo_path, force=force)
+                with (
+                    acquire_advisory_lock(idioms_lock_path, blocking_timeout=10.0),
+                    acquire_advisory_lock(conventions_lock_path, blocking_timeout=10.0),
+                ):
+                    _wl_token = _REFRESH_HOLDS_WRITE_LOCKS.set(True)
+                    try:
+                        envelope = _refresh_repo_locked(repo_path, force=force)
+                    finally:
+                        _REFRESH_HOLDS_WRITE_LOCKS.reset(_wl_token)
             except LockHeldError as e:
                 return _envelope(
                     {
@@ -6178,6 +6197,43 @@ def _iso_to_epoch(ts: str) -> float:
 _PRODUCTION_REF_ARG_RE = re.compile(r"^(?!.*\.\.)[0-9A-Za-z._/-]{1,200}$")
 
 
+# A (re-)bootstrap reads idioms.md + conventions.json early and carries those
+# snapshots forward into the atomic profile swap. teach_profile writes idioms.md
+# under .idioms.lock and teach_competing_import / apply_archetype_renames write
+# conventions.json (and renames.json) under .conventions.lock -- disjoint from the
+# .bootstrap.lock the derive holds. So a teach that lands between the carry-read
+# and the swap was silently clobbered by the swap (its success-reported write
+# vanished). The derive must therefore serialize against BOTH write locks across
+# its read->swap window. refresh_repo pre-acquires them around its whole
+# re-derive and sets this contextvar so the nested bootstrap_repo does NOT
+# re-acquire (a same-process flock re-acquire would self-deadlock). A direct
+# bootstrap_repo (e.g. /chameleon-init force re-init) sees False and acquires them
+# itself. Fixed order everywhere -- .idioms before .conventions, both before
+# .bootstrap.lock -- so a refresh and a direct re-init cannot AB-BA deadlock.
+_REFRESH_HOLDS_WRITE_LOCKS: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "chameleon_refresh_holds_write_locks", default=False
+)
+
+
+@contextlib.contextmanager
+def _bootstrap_write_locks(lock_dir: Path):
+    """Serialize a (re-)bootstrap's carry-read -> profile-swap against the teach
+    write locks (.idioms.lock + .conventions.lock). No-op when an outer refresh
+    already holds them (avoids a self-deadlock); otherwise acquires both in the
+    canonical order. A held write lock blocks briefly so an in-flight teach
+    finishes first and the derive reads its post-teach state."""
+    from chameleon_mcp.locks import acquire_advisory_lock
+
+    if _REFRESH_HOLDS_WRITE_LOCKS.get():
+        yield
+        return
+    with (
+        acquire_advisory_lock(lock_dir / ".idioms.lock", blocking_timeout=10.0),
+        acquire_advisory_lock(lock_dir / ".conventions.lock", blocking_timeout=10.0),
+    ):
+        yield
+
+
 def bootstrap_repo(
     path: str,
     paths_glob: str | None = None,
@@ -6235,7 +6291,10 @@ def bootstrap_repo(
     lock_dir = repo_data_dir(repo_id)
     lock_dir.mkdir(parents=True, exist_ok=True)
     try:
-        with acquire_advisory_lock(lock_dir / ".bootstrap.lock"):
+        with (
+            _bootstrap_write_locks(lock_dir),
+            acquire_advisory_lock(lock_dir / ".bootstrap.lock"),
+        ):
             result = _bootstrap_repo_unlocked(path, paths_glob, force, now, production_ref)
         # A successful (re-)derive re-baselines drift: observations were scored
         # against the now-superseded profile, so the drift window resets to

@@ -4,6 +4,28 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.29.2] - 2026-06-25
+
+### Fixed
+
+- **A teach racing a profile re-derive is no longer silently lost.** A
+  `(re-)bootstrap` reads `idioms.md` and `conventions.json` early and carries
+  those snapshots into the atomic profile swap, holding only `.bootstrap.lock`.
+  `teach_profile` writes `idioms.md` under `.idioms.lock` and
+  `teach_competing_import` / `apply_archetype_renames` write `conventions.json`
+  (and `renames.json`) under `.conventions.lock` — disjoint locks. A teach that
+  landed between the carry-read and the swap returned `success` but was then
+  clobbered by the swap, with no integrity check to catch it. The refresh
+  wrapper already guarded `idioms.md` with `.idioms.lock`, but the common
+  `/chameleon-refresh --force` (and background auto-refresh) path left
+  `conventions.json` exposed, and a direct `bootstrap_repo(force=True)`
+  (`/chameleon-init` re-init) left `idioms.md` exposed. The (re-)derive now
+  serializes against both teach write locks across its read-to-swap window, so
+  a concurrent teach gets a clean "retry shortly" rejection instead of a silent
+  loss. Locks are acquired in one fixed order everywhere (`.idioms` →
+  `.conventions` → `.bootstrap`), so a refresh and a direct re-init cannot
+  deadlock; verified under concurrent stress.
+
 ## [2.29.1] - 2026-06-24
 
 ### Security
