@@ -4,6 +4,58 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.29.0] - 2026-06-24
+
+Persistent trust, prompt-injection hardening across every model-facing surface,
+and the remaining language and framework parity gaps. Trust is now one-time by
+default, which removed the staleness gate that had doubled as the injection
+defense, so screening moved to each point that renders committed-profile data to
+the model.
+
+### Changed
+
+- **Trust is one-time by default.** Once a repo is trusted it stays trusted
+  across refresh, re-bootstrap, and teach, and never goes stale, so you never
+  re-grant. Set `CHAMELEON_TRUST_REVALIDATE=1` to restore the old behavior where
+  any change to the trust-hashed profile surface re-prompts for a fresh
+  `/chameleon-trust`.
+
+### Security
+
+- **Prompt-injection screening at the read and render site.** Because a profile
+  poisoned after you grant trust is no longer re-reviewed, every channel that
+  renders committed-profile data to the model now screens it: the SessionStart
+  block, the per-edit echo, the PreToolUse deny and PostToolUse block reasons,
+  and the model-facing read tools (`get_idiom_coverage`, `get_rules`,
+  `get_status`, `get_archetype`, `get_pattern_context`). Injection-prose keys and
+  values are dropped and tag-boundary tokens neutralized; code- and path-bearing
+  tools stay on tag-only screening so real symbols, signatures, and globs are not
+  false-dropped. `apply_archetype_renames` now sources conventions from the raw
+  on-disk artifact, so a legitimate value that trips the heuristic is never
+  erased on rename.
+
+### Added
+
+- **Language and framework parity.** Closed the remaining gaps across
+  TypeScript, Ruby, and Python and the Django, DRF, Flask, and FastAPI framework
+  layers, including a framework classifier and a DRF authorization-guard lint.
+
+### Fixed
+
+- Ruby command-injection lint anchors on double-quoted strings (single-quoted
+  strings do not interpolate), fixing a false positive on `system '...#{x}...'`
+  and the missed `system "...'#{x}'..."` shell-wrapper idiom.
+- Ruby insecure-deserialization lint now covers `YAML.load_file`,
+  `YAML.load_stream`, and `YAML.unsafe_load`; `safe_load` stays excluded.
+- Python authorization-guard lint matches PEP 695 generic class bases
+  (`class V[T](Mixin):`), so a properly-guarded generic view is no longer
+  flagged.
+- `ts_dump` drops string-literal ambient module names (`declare module "x"`)
+  from the enclosing class path instead of pushing the literal name.
+- The Python framework classifier reads dependency sections structurally
+  instead of matching whole-file prose, so a description that mentions a
+  framework no longer mis-classifies.
+
 ## [2.28.0] - 2026-06-24
 
 Documentation: the language and framework support is reframed to match what the
