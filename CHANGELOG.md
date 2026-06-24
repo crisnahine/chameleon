@@ -4,6 +4,27 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.28.0] - 2026-06-24
+
+Documentation: the language and framework support is reframed to match what the
+engine actually does. TypeScript/JavaScript, Ruby, and Python are first-class
+**languages** with a framework-agnostic core, learning each repo's conventions
+from its own structure so any framework works. The named frameworks are a deeper,
+framework-aware layer on top, where conventions are strong: Rails for Ruby, and
+Django, DRF, Flask, and FastAPI for Python. No code or behavior change.
+
+### Changed
+
+- README, the architecture doc, the install guide, the support matrix, and the
+  init/trust/using skills now lead with the languages as the unit of support and
+  present the named frameworks as a deeper layer on top of the agnostic core.
+- Per-language tooling notes corrected: editing Ruby needs the Prism parser
+  because the file is Ruby, not because the repo is Rails.
+
+### Fixed
+
+- A stale architecture line that still listed Python as an unsupported language.
+
 ## [2.27.0] - 2026-06-24
 
 Python reaches full feature parity with TypeScript and Ruby. Building on the
