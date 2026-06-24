@@ -2883,6 +2883,59 @@ def _crossfile_unavailable_reason(repo_root: Path) -> str:
     return "index-unavailable"
 
 
+def _ruby_constant_importers(repo_root: Path, file_path: Path) -> dict:
+    """query_symbol_importers for Ruby: the constants the edited file defines and
+    the files that reference each (the constant-reference blast radius).
+
+    Ruby has no named-export reverse index, so the TS "importers/broken-export"
+    pair maps to: ``importers`` = each defined constant with its referencing
+    files (the rename blast radius), ``broken`` = [] (no removed-named-export
+    class -- a removed-method-still-called check would need method-level data the
+    constant index does not carry). Every site is a row the bootstrap recorded.
+    """
+    from chameleon_mcp.constant_index import (
+        constants_defined_in,
+        load_constant_index,
+        referencing_files,
+    )
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    empty = {
+        "found": False,
+        "module": None,
+        "importers": [],
+        "broken": [],
+        "export_set_open": False,
+    }
+    index = load_constant_index(repo_root)
+    if index is None:
+        out = dict(empty)
+        out["reason"] = "no constant index for this repo (re-run /chameleon-refresh)"
+        return out
+    try:
+        rel = file_path.resolve().relative_to(Path(repo_root).resolve()).as_posix()
+    except (ValueError, OSError):
+        return dict(empty)
+    importers = []
+    for const in constants_defined_in(index, rel):
+        refs = referencing_files(index, const)
+        if refs:
+            importers.append(
+                {
+                    "name": sanitize_for_chameleon_context(const),
+                    "count": len(refs),
+                    "sites": [
+                        {"path": sanitize_for_chameleon_context(r), "line": None} for r in refs
+                    ],
+                }
+            )
+    out = dict(empty)
+    out["found"] = True
+    out["module"] = rel
+    out["importers"] = importers
+    return out
+
+
 def query_symbol_importers(repo: str, file_path: str) -> dict:
     """Who imports a TypeScript module's bindings, and which imports it now breaks.
 
@@ -2947,6 +3000,11 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
         out = dict(empty)
         out["status"] = "untrusted"
         return _envelope(out)
+
+    # Ruby has no named-export reverse index; its cross-file surface is the
+    # constant graph. Serve the constant-reference blast radius instead.
+    if detect_language(str(p)) == "ruby":
+        return _envelope(_ruby_constant_importers(repo_root, p))
 
     index = load_reverse_index(repo_root)
     if index is None:

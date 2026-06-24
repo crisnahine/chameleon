@@ -2447,6 +2447,26 @@ def _bootstrap_single(
             )
         except Exception:
             pass
+        # The constant-reference index inverts Ruby's class/constant graph for
+        # cross-file blast-radius. Ruby has no static named-export surface, so it
+        # gets no reverse_index; this is its analogue, built from the call_sites +
+        # callable_signatures extras already parsed. Ruby-only, written inside this
+        # atomic transaction so it is hashed into the trust SHA. Best-effort: a
+        # build failure must not abort the commit.
+        if extractor.language == "ruby":
+            try:
+                from chameleon_mcp.constant_index import build_constant_index
+
+                (txn_dir / "constant_index.json").write_text(
+                    json.dumps(
+                        build_constant_index(parse_result.files, repo_root, language="ruby"),
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
         # The symbol-signature index backs the judge's forward definition
         # hydration (the definitions of the symbols an edited file imports). All
         # supported languages carry callable_signatures (so all are indexed).
