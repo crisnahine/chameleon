@@ -1465,14 +1465,21 @@ _RUBY_INSECURE_RANDOM_RE = re.compile(r"(?<![.\w])rand\s*\(|\bRandom\s*\.\s*rand
 # content (the `#{` lives inside a string the stripper blanks) and is suppressed
 # when the construct itself sits inside a string / heredoc / comment.
 _RUBY_SHELL_INTERP_RES = (
-    ("system/exec", re.compile(r"(?<![.\w])(?:system|exec)\s*\(?\s*['\"][^'\"\n]*\#\{")),
+    # Double-quote only: Ruby single-quoted strings do not interpolate, so
+    # `system '...#{x}...'` is literal bytes (flagging it is a false positive). A
+    # per-delimiter class `[^"\n]*` (not `[^'"\n]*`) lets the match cross an embedded
+    # single quote, so the dominant shell-wrapper idiom
+    # `system "git log --grep='#{x}'"` is caught.
+    ("system/exec", re.compile(r'(?<![.\w])(?:system|exec)\s*\(?\s*"[^"\n]*\#\{')),
     ("backtick command", re.compile(r"`[^`\n]*\#\{[^`\n]*`")),
     ("%x{} command", re.compile(r"%x[\[{(<][^\n]*\#\{")),
 )
-# insecure-deserialization: Marshal.load / YAML.load. YAML.safe_load and
-# Marshal.dump are safe and must not match (the dot-anchored `load` rejects them).
+# insecure-deserialization: Marshal.load / YAML.load and the load_file/load_stream/
+# unsafe_load variants (load_file is the dominant config-read idiom; unsafe_load is
+# the explicit Psych-4 opt-in). The `safe_` prefix is excluded by the alternation and
+# Marshal.dump by the verb, so the safe siblings never match.
 _RUBY_MARSHAL_LOAD_RE = re.compile(r"\bMarshal\s*\.\s*load\b")
-_RUBY_YAML_LOAD_RE = re.compile(r"\bYAML\s*\.\s*load\b")
+_RUBY_YAML_LOAD_RE = re.compile(r"\bYAML\s*\.\s*(?:unsafe_)?load(?:_file|_stream)?\b")
 
 # Non-cryptographic randomness used where unpredictability matters. Same context
 # gate as weak hashes: `Math.random()` for a UI jitter is fine; for a token or
@@ -3833,7 +3840,12 @@ _PY_AUTHZ_DECORATOR_RE = re.compile(
     r"@\s*(?:[\w.]+\.)?(?:login_required|permission_required|user_passes_test|"
     r"staff_member_required)\b"
 )
-_PY_CLASS_DEF_BASES_RE = re.compile(r"^[ \t]*class\s+\w+\s*\(([^)]*)\)", re.MULTILINE)
+# The optional `\[...\]` after the name is a PEP 695 (3.12+) type-parameter list
+# (`class Foo[T](Base):`); without it a generic view skips the mixin-base check and
+# a properly-guarded view is falsely flagged. Mirrors _PY_CLASS_BASES_LINT_RE.
+_PY_CLASS_DEF_BASES_RE = re.compile(
+    r"^[ \t]*class\s+\w+(?:\s*\[[^\]]*\])?\s*\(([^)]*)\)", re.MULTILINE
+)
 _PY_CLASS_OR_DEF_RE = re.compile(r"^[ \t]*(?:class|def|async\s+def)\s+\w+", re.MULTILINE)
 _PY_AUTHZ_MIXIN_TAILS = frozenset(
     {"LoginRequiredMixin", "PermissionRequiredMixin", "UserPassesTestMixin"}

@@ -46,6 +46,31 @@ def test_python_no_marker_none(tmp_path):
     assert _classify_framework(tmp_path, "python") is None
 
 
+def test_flask_extension_only_classifies_as_flask(tmp_path):
+    # A repo pinning only Flask extensions (no bare `flask`) is still a Flask app,
+    # the same way `djangorestframework`/`fastapi-*` imply their framework.
+    (tmp_path / "requirements.txt").write_text("flask-login>=0.6\nflask-cors\n")
+    assert _classify_framework(tmp_path, "python") == "flask"
+
+
+def test_pyproject_prose_does_not_misclassify(tmp_path):
+    # A description field mentioning a framework is prose, not a dependency.
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\ndescription = "A lightweight alternative to flask"\n'
+        'dependencies = ["click>=8"]\n'
+    )
+    assert _classify_framework(tmp_path, "python") is None
+
+
+def test_setup_py_prose_does_not_misclassify(tmp_path):
+    # setup.py is arbitrary code/prose; a long_description mentioning a framework
+    # must not classify. Its real deps live in the declarative manifests.
+    (tmp_path / "setup.py").write_text(
+        'setup(name="x", long_description="Built like FastAPI but simpler, not django")\n'
+    )
+    assert _classify_framework(tmp_path, "python") is None
+
+
 def test_fastapi_in_backend_workspace_member(tmp_path):
     # uv/monorepo: the root manifest only declares the workspace; the framework
     # dep lives in a member subdir (backend/).

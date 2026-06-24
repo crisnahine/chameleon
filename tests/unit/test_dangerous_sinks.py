@@ -236,6 +236,21 @@ def test_ruby_command_injection_percent_x_interpolated_flagged():
     assert "command-injection" in _rules(v)
 
 
+def test_ruby_command_injection_double_quote_with_embedded_single_quote_flagged():
+    # The dominant shell-wrapper idiom: a double-quoted (interpolating) string
+    # whose shell args are single-quoted. The interpolation IS live, so it must be
+    # flagged even though a single quote sits between the opening " and the #{.
+    v = scan_dangerous_sinks("system \"git log --grep='#{pattern}'\"", language="ruby")
+    assert "command-injection" in _rules(v)
+
+
+def test_ruby_command_injection_single_quoted_string_not_flagged():
+    # Ruby single-quoted strings do NOT interpolate: 'cmd #{x}' is the literal
+    # bytes "cmd #{x}", harmless. Flagging it is a false positive.
+    v = scan_dangerous_sinks("system 'cmd #{x}'", language="ruby")
+    assert "command-injection" not in _rules(v)
+
+
 def test_ruby_safe_multiarg_system_not_flagged():
     # Multiple args -> no shell, no injection (the form the Python rule also
     # leaves alone). Was a false positive before interpolation-scoping.
@@ -289,8 +304,27 @@ def test_ruby_yaml_load_flagged():
     assert "insecure-deserialization" in _rules(v)
 
 
+def test_ruby_yaml_load_file_flagged():
+    # load_file is the dominant Ruby idiom for reading a YAML config from disk;
+    # pre-Psych-4 it deserializes arbitrary objects, same RCE surface as load.
+    v = scan_dangerous_sinks("cfg = YAML.load_file(path)", language="ruby")
+    assert "insecure-deserialization" in _rules(v)
+
+
+def test_ruby_yaml_unsafe_load_flagged():
+    # The modern explicit-unsafe opt-in is unambiguously dangerous on any version.
+    v = scan_dangerous_sinks("obj = YAML.unsafe_load(blob)", language="ruby")
+    assert "insecure-deserialization" in _rules(v)
+
+
 def test_ruby_yaml_safe_load_is_clean():
     v = scan_dangerous_sinks("cfg = YAML.safe_load(input)", language="ruby")
+    assert "insecure-deserialization" not in _rules(v)
+
+
+def test_ruby_yaml_safe_load_file_is_clean():
+    # The safe_ sibling of load_file must stay clean after broadening the rule.
+    v = scan_dangerous_sinks("cfg = YAML.safe_load_file(input)", language="ruby")
     assert "insecure-deserialization" not in _rules(v)
 
 

@@ -251,3 +251,28 @@ def test_named_inner_class_enclosing_preserved(tmp_path):
     # Method of a named inner class must record that class, not the outer.
     assert "go" in sigs, "go method must be recorded"
     assert sigs["go"]["enclosing_class"] == "Inner"
+
+
+_FIXTURE_AMBIENT_MODULE = """\
+declare module "express" {
+  export class Foo {
+    m(): void {}
+  }
+}
+export namespace RealNs {
+  export class Bar {
+    n(): void {}
+  }
+}
+"""
+
+
+@pytest.mark.skipif(not _HAVE_TS, reason="node + typescript node_modules not available")
+def test_string_literal_module_name_not_in_enclosing_path(tmp_path):
+    # A string-literal ambient module name (`declare module "express"`) carries no
+    # useful path segment, so a method inside it keeps the bare class path. A real
+    # Identifier namespace still contributes its segment.
+    rec = _dump_src(tmp_path, _FIXTURE_AMBIENT_MODULE, "ambient.ts")
+    sigs = {s["name"]: s for s in rec["callable_signatures"]}
+    assert sigs["m"]["enclosing_class_path"] == "Foo"
+    assert sigs["n"]["enclosing_class_path"] == "RealNs.Bar"

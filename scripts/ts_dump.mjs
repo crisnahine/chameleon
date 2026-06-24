@@ -653,7 +653,12 @@ function extractFile(filePath) {
     // useful path segment, so push null and filter it out when joining.
     const isNamespace = node.kind === ts.SyntaxKind.ModuleDeclaration;
     if (isNamespace) {
-      namespaceStack.push(node.name && typeof node.name.text === "string" ? node.name.text : null);
+      // A string-literal module name (`declare module "x"`) is an Identifier-less
+      // name with no useful path segment, so push null (filtered out when joining);
+      // only a real Identifier namespace contributes a segment. `typeof name.text`
+      // is "string" for BOTH kinds, so it cannot make this distinction.
+      const named = node.name && node.name.kind === ts.SyntaxKind.Identifier;
+      namespaceStack.push(named ? node.name.text : null);
     }
     if (isNamedClass) {
       classStack.push(node.name.text);

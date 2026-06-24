@@ -167,6 +167,15 @@ def test_authz_lint_satisfied_by_mixin_base():
     assert "required-guard-convention" not in _rules(v)
 
 
+def test_authz_lint_satisfied_by_mixin_base_pep695_generic():
+    # PEP 695 generic view (Python 3.12+): the `[T]` type-parameter list sits
+    # between the class name and its bases. The guard regex must still see the
+    # authz mixin, or a properly-guarded generic view is falsely flagged.
+    content = "class V[T](LoginRequiredMixin, View):\n    def get(self):\n        return None\n"
+    v = lint_conventions(content, _REQUIRED, language="python", archetype_name="view")
+    assert "required-guard-convention" not in _rules(v)
+
+
 def test_authz_lint_generic_dominant_base_does_not_suppress():
     # The cohort's GENERIC base (DRF APIView, in known_bases) carries no authz;
     # a view extending only it with no permission_classes must still flag. This

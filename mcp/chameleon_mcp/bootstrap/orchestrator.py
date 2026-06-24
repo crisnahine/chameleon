@@ -335,6 +335,99 @@ def _node_dep_names(repo_root: Path) -> set[str]:
     return names
 
 
+def _python_dep_names(repo_root: Path) -> set[str]:
+    """Normalized dependency names declared in this dir's Python manifests.
+
+    Reads the dependency-declaring SECTIONS only (requirements.txt lines, PEP 621
+    `[project].dependencies` + optional-deps, poetry deps, Pipfile packages,
+    setup.cfg `install_requires`), never free-text prose, so a description or README
+    excerpt mentioning a framework cannot mis-classify. Mirrors `_node_dep_names`.
+    setup.py is intentionally skipped: it is arbitrary code, and its install_requires
+    normally duplicates one of the declarative manifests. Fails open per section.
+    """
+    names: set[str] = set()
+
+    def _norm(raw: object) -> str:
+        # PEP 508 / requirement line: take the leading project name before any
+        # version specifier, extras, environment marker, URL, or comment.
+        m = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", str(raw))
+        return m.group(1).lower().replace("_", "-") if m else ""
+
+    req = repo_root / "requirements.txt"
+    if req.is_file():
+        for line in _read_marker_text(req).splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", "-")):
+                continue
+            n = _norm(line)
+            if n:
+                names.add(n)
+
+    import tomllib
+
+    def _add_list(seq: object) -> None:
+        if isinstance(seq, list):
+            for item in seq:
+                n = _norm(item)
+                if n:
+                    names.add(n)
+
+    def _add_keys(mapping: object) -> None:
+        if isinstance(mapping, dict):
+            for k in mapping:
+                n = _norm(k)
+                if n and n != "python":
+                    names.add(n)
+
+    for fname in ("pyproject.toml", "Pipfile"):
+        f = repo_root / fname
+        if not f.is_file():
+            continue
+        try:
+            data = tomllib.loads(_read_marker_text(f))
+        except (tomllib.TOMLDecodeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        project = data.get("project")
+        if isinstance(project, dict):
+            _add_list(project.get("dependencies"))
+            opt = project.get("optional-dependencies")
+            if isinstance(opt, dict):
+                for grp in opt.values():
+                    _add_list(grp)
+        tool = data.get("tool")
+        if isinstance(tool, dict):
+            poetry = tool.get("poetry")
+            if isinstance(poetry, dict):
+                _add_keys(poetry.get("dependencies"))
+                groups = poetry.get("group")
+                if isinstance(groups, dict):
+                    for grp in groups.values():
+                        if isinstance(grp, dict):
+                            _add_keys(grp.get("dependencies"))
+        # Pipfile sections
+        _add_keys(data.get("packages"))
+        _add_keys(data.get("dev-packages"))
+
+    cfg = repo_root / "setup.cfg"
+    if cfg.is_file():
+        import configparser
+
+        parser = configparser.ConfigParser()
+        try:
+            parser.read_string(_read_marker_text(cfg))
+            if parser.has_option("options", "install_requires"):
+                for line in parser.get("options", "install_requires").splitlines():
+                    n = _norm(line)
+                    if n:
+                        names.add(n)
+        except configparser.Error:
+            pass
+
+    return names
+
+
 def _classify_framework(repo_root: Path, language: str | None) -> str | None:
     """Best-effort discrete framework family for the repo, or None.
 
@@ -358,17 +451,22 @@ def _classify_framework(repo_root: Path, language: str | None) -> str | None:
             # manage.py is the strongest Django marker; a DRF repo is still Django.
             if any((d / "manage.py").is_file() for d in dirs):
                 return "django"
-            deps = "\n".join(
-                _read_marker_text(d / m)
-                for d in dirs
-                for m in ("requirements.txt", "pyproject.toml", "setup.cfg", "Pipfile", "setup.py")
-            )
+            dep_names: set[str] = set()
+            for d in dirs:
+                dep_names |= _python_dep_names(d)
+
+            def _has(family: str) -> bool:
+                # The bare package OR any ecosystem extension (flask-login implies
+                # flask, fastapi-users implies fastapi, django-* implies django) --
+                # symmetric across all three families.
+                return any(n == family or n.startswith(family + "-") for n in dep_names)
+
             # Most specific first; fastapi/flask are unambiguous web frameworks.
-            if re.search(r"(?i)(?<![\w.])fastapi(?![\w])", deps):
+            if _has("fastapi"):
                 return "fastapi"
-            if re.search(r"(?i)(?<![\w.])flask(?![\w-])", deps):
+            if _has("flask"):
                 return "flask"
-            if re.search(r"(?i)(?<![\w.])django(?![\w])", deps):
+            if _has("django"):
                 return "django"
             return None
         if language == "typescript":
