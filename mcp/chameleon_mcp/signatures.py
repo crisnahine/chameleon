@@ -98,11 +98,18 @@ def hash_import_set(import_specifiers: Sequence[tuple[str, str]]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# Top-level dirs that hold per-workspace package roots in a monorepo, so the
+# workspace name is preserved in the bucket (packages/auth/* must not collapse
+# into packages/billing/*). "libs" is the Nx workspace root (JS and Python Nx
+# monorepos alike). "src" is deliberately NOT here: it is the dominant
+# single-package source root (Python src-layout, TS src/), so treating it as a
+# workspace root would re-bucket ordinary deeply-nested source trees.
 _MONOREPO_WORKSPACE_ROOTS: frozenset[str] = frozenset(
     {
         "packages",
         "apps",
         "workspaces",
+        "libs",
     }
 )
 

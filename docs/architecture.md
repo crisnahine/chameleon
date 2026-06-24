@@ -988,9 +988,12 @@ hash map for monorepo workspaces).
   guidance until trust is granted.
 - **stale** the grant covers the root but the profile changed since (the granted
   hash no longer matches). Content injects with a warning that already suggests
-  `/chameleon-trust`.
-- **trusted** the grant covers the root and the hash matches. Content injects
-  normally.
+  `/chameleon-trust`. **This state only occurs under `CHAMELEON_TRUST_REVALIDATE=1`**
+  — by default trust persists across profile changes and never goes stale (see
+  "Trust persistence" below).
+- **trusted** the grant covers the root. Content injects normally. By default
+  this holds across every later profile change; under the kill switch it also
+  requires the hash to still match the grant.
 
 The hash (`hash_profile`) is a SHA-256 over a fixed set of **15 artifacts**,
 each framed by null bytes: `.archetype_renames.json`,
@@ -1007,10 +1010,49 @@ disable blocking).
 `trust_profile` requires a confirmation token equal to the repo basename or the
 literal `yes-trust-<repo_id[:8]>`. On grant it re-scans `idioms.md` and
 `principles.md` for injection and refuses if either looks suspicious. The write
-is flock-serialized and atomic. With the default `trust.auto_preserve_when:
-"always"`, a refresh the same user runs re-grants trust automatically; set it to
-`"pulled_from_remote"` or `null` for stricter re-prompting. Trust from another
-user's commit always re-prompts (per-user records).
+is flock-serialized and atomic. `trust.auto_preserve_when` only controls whether
+a refresh re-stamps the stored grant hash; it does NOT control re-prompting (the
+staleness gate is `CHAMELEON_TRUST_REVALIDATE`, default off — see Trust
+persistence below). By default trust is one-time and survives later profile
+changes, including another user's committed change, so it does not re-prompt;
+re-prompting on change happens only under `CHAMELEON_TRUST_REVALIDATE=1`.
+
+### Trust persistence (default)
+
+Trust is **one-time** by default: once a repo is trusted, the grant holds across
+every later profile change — refresh, re-bootstrap, teach — and never goes stale,
+so the user is never re-prompted to re-trust their own repo. Every staleness
+decision funnels through one predicate, `profile_diverged_from_grant`, which
+returns `False` unless `CHAMELEON_TRUST_REVALIDATE=1` is set; `is_material_change`
+and the three inline hook gates (statusline, the PreToolUse enforcement gate, the
+Stop gate) all route through it, so the policy is enforced in one place and read
+at call time. Setting the kill switch restores the legacy behavior where any
+hash change re-prompts.
+
+Two consequences of persistence are deliberate:
+
+- **Enforcement now applies to post-grant rule changes.** A profile whose
+  `enforcement.json` / `config.json` changed after the grant is `trusted`, not
+  `stale`, so calibrated block rules apply (and a `config.json` flip to
+  `enforcement.mode: "enforce"` takes effect) where they previously fell through to
+  advisory-under-stale. Intended, and bounded: only `BLOCK_ELIGIBLE_RULES` can be
+  promoted (an arbitrary rule can't be planted), the default mode is `shadow`
+  (never blocks), and the block reason is sanitized — so the worst case is a denied
+  edit from a drifted/pulled profile under a non-default `enforce` mode, not code
+  execution. A repo whose `enforcement.json` / `config.json` may change via an
+  un-reviewed `git pull` and which wants those changes to re-prompt before they
+  enforce should set `CHAMELEON_TRUST_REVALIDATE=1`.
+- **Post-grant profile edits are no longer re-reviewed by the staleness gate.**
+  The grant-time injection scan (`grant_trust` scans `idioms.md` / `principles.md`)
+  only runs at the original grant, and render-site sanitization does **not**
+  neutralize injection prose. So the injection defense is decoupled from staleness
+  and moved to the prose READ path: `loader._prose_injection_unsafe` scans
+  `idioms.md` at load (mtime-cached) and the SessionStart read scans
+  `principles.md`, dropping the whole artifact (with a stderr warning) if it trips
+  the same narrow injection / secret / dangerous-pattern scan. A poisoned prose
+  artifact introduced by a manual edit, a malicious pull, or a teach whose
+  re-grant was refused is therefore never served at full trust, even though trust
+  persists.
 
 What untrusted suppresses, at the data layer: the canonical excerpt body is
 redacted, `get_rules` returns nothing, and the cross-file, callers, importers,

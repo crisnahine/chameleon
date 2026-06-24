@@ -538,7 +538,12 @@ class TestTopLevelKindsMatch:
         assert (
             _top_level_kinds_match(
                 ["FirstStatement"],
-                ["ClassDeclaration", "ExportAssignment", "FirstStatement", "ImportDeclaration"],
+                [
+                    "ClassDeclaration",
+                    "ExportAssignment",
+                    "FirstStatement",
+                    "ImportDeclaration",
+                ],
             )
             is False
         )
@@ -554,7 +559,11 @@ class TestTopLevelKindsMatch:
         in the same file should NOT trigger DSL conflict."""
         assert (
             _top_level_kinds_match(
-                ["ClassNode:ApplicationRecord", "DslCall:validates", "DslCall:belongs_to"],
+                [
+                    "ClassNode:ApplicationRecord",
+                    "DslCall:validates",
+                    "DslCall:belongs_to",
+                ],
                 ["ClassNode", "DslCall:attr_reader"],
             )
             is True
@@ -698,7 +707,11 @@ class TestConventionLint:
         content = "interface UserProps {\n  name: string;\n}\n"
         conventions = {
             "naming": {
-                "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 2158},
+                "interface_prefix": {
+                    "pattern": "I",
+                    "consistency": 0.999,
+                    "sample_size": 2158,
+                },
             },
         }
         violations = lint_conventions(content, conventions, language="typescript")
@@ -709,7 +722,11 @@ class TestConventionLint:
         content = "interface IUserProps {\n  name: string;\n}\n"
         conventions = {
             "naming": {
-                "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 2158},
+                "interface_prefix": {
+                    "pattern": "I",
+                    "consistency": 0.999,
+                    "sample_size": 2158,
+                },
             },
         }
         violations = lint_conventions(content, conventions, language="typescript")
@@ -721,7 +738,11 @@ class TestConventionLint:
         content = "interface params {\n  id: number;\n}\n"
         conventions = {
             "naming": {
-                "interface_prefix": {"pattern": "I", "consistency": 1.0, "sample_size": 2158},
+                "interface_prefix": {
+                    "pattern": "I",
+                    "consistency": 1.0,
+                    "sample_size": 2158,
+                },
             },
         }
         violations = lint_conventions(content, conventions, language="typescript")
@@ -790,7 +811,11 @@ class TestConventionLint:
         content = "class User < ApplicationRecord\nend\n"
         conventions = {
             "naming": {
-                "interface_prefix": {"pattern": "I", "consistency": 0.999, "sample_size": 100},
+                "interface_prefix": {
+                    "pattern": "I",
+                    "consistency": 0.999,
+                    "sample_size": 100,
+                },
             },
         }
         violations = lint_conventions(content, conventions, language="ruby")
@@ -833,6 +858,17 @@ class TestRubyImportPreference:
         content = "# Net::HTTP is banned here\nmsg = 'use Net::HTTP never'\n"
         assert lint_conventions(content, self.CONSTANT_PAIR, language="ruby") == []
 
+    def test_require_inside_heredoc_not_flagged(self):
+        # A require quoted inside a heredoc is example text, not a real require;
+        # the string-embedded-import guard must blank it before extraction.
+        content = "DOC = <<~RUBY\n  require 'net/http'\nRUBY\n"
+        assert lint_conventions(content, self.REQUIRE_PAIR, language="ruby") == []
+
+    def test_real_require_still_flagged_with_heredoc_present(self):
+        content = "require 'net/http'\nDOC = <<~RUBY\n  example\nRUBY\n"
+        violations = lint_conventions(content, self.REQUIRE_PAIR, language="ruby")
+        assert [v.rule for v in violations] == ["import-preference-violation"]
+
     def test_es_import_text_in_ruby_not_flagged(self):
         # Regression: the TS import regex used to run on Ruby content, so an
         # ES import line pasted into a .rb file fired while real requires never
@@ -858,8 +894,16 @@ class TestRubyImportPreference:
 class TestRubyNamingConventionLint:
     SNAKE_CONV = {
         "naming": {
-            "method_casing": {"pattern": "snake_case", "consistency": 0.99, "sample_size": 400},
-            "class_casing": {"pattern": "PascalCase", "consistency": 0.99, "sample_size": 120},
+            "method_casing": {
+                "pattern": "snake_case",
+                "consistency": 0.99,
+                "sample_size": 400,
+            },
+            "class_casing": {
+                "pattern": "PascalCase",
+                "consistency": 0.99,
+                "sample_size": 120,
+            },
             "constant_casing": {
                 "pattern": "SCREAMING_SNAKE_CASE",
                 "consistency": 0.97,

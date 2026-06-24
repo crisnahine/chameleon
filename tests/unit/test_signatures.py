@@ -93,6 +93,12 @@ class TestPathPatternBucketFor:
         bucket, sub = path_pattern_bucket_for("apps/web/routes/page.tsx")
         assert bucket == "apps/web/routes"
 
+    def test_monorepo_libs(self):
+        # libs/ is an Nx-style workspace root; it buckets like packages/ and
+        # apps/, folding the workspace name into the bucket.
+        bucket, sub = path_pattern_bucket_for("libs/auth/services/token.py")
+        assert bucket == "libs/auth/services"
+
     def test_include_extension_tsx(self):
         bucket, _ = path_pattern_bucket_for(
             "src/components/Button.tsx",
@@ -171,7 +177,10 @@ class TestComputeSignature:
         b = compute_signature(
             file_path="app/services/s.ts",
             content_first_200_bytes="",
-            top_level_node_kinds=["ImportDeclaration", "ClassDeclaration"],  # different order
+            top_level_node_kinds=[
+                "ImportDeclaration",
+                "ClassDeclaration",
+            ],  # different order
             default_export_kind=None,
             named_export_count=0,
             import_specifiers=[("lodash", "named")],  # different imports

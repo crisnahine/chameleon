@@ -55,7 +55,11 @@ def _write_profile(tmp_path: Path) -> Path:
     }
     (profile / "conventions.json").write_text(json.dumps(conventions), encoding="utf-8")
 
-    archetypes = {"archetypes": {f"arch{_ATTACK}": {}, "benign_arch": {}}}
+    # The benign name must be a schema-valid archetype name (kebab, no underscore):
+    # build_coverage filters archetypes.json names through ARCHETYPE_NAME_RE exactly
+    # like load_profile_dir, so an attack-token name is dropped (not surfaced) and a
+    # legit kebab name survives.
+    archetypes = {"archetypes": {f"arch{_ATTACK}": {}, "benign-arch": {}}}
     (profile / "archetypes.json").write_text(json.dumps(archetypes), encoding="utf-8")
 
     (profile / "profile.json").write_text(json.dumps({"language": "python"}), encoding="utf-8")
@@ -90,7 +94,10 @@ def test_build_coverage_scrubs_all_model_facing_strings_and_keys(tmp_path):
 
     # Benign values survive untouched (the scrub did not nuke legit data).
     assert "@app/benign" in blob
-    assert "benign_arch" in blob
+    assert "benign-arch" in blob
+    # The attack-token archetype name is dropped by the ARCHETYPE_NAME_RE filter,
+    # not surfaced in sanitized form (consistency with load_profile_dir).
+    assert "arch[chameleon-sanitized" not in blob
 
 
 def test_check_candidates_scrubs_reason_strings(tmp_path):

@@ -64,8 +64,9 @@ _GENERIC_TAIL_SEGMENTS = frozenset(
 _TEST_DIR_TOKENS = frozenset({"spec", "specs", "test", "tests", "__tests__"})
 
 # pytest/unittest: the dominant convention is the `test_` PREFIX (test_views.py),
-# which a suffix list can't catch; also `*_test.py` and `conftest.py`.
-_PY_TEST_BASENAME_RE = re.compile(r"^(test_.+|.+_test|conftest)\.pyi?$")
+# which a suffix list can't catch; also `*_test.py`, `conftest.py`, and Django
+# startapp's default bare `tests.py` / `test.py` (no prefix or suffix).
+_PY_TEST_BASENAME_RE = re.compile(r"^(test_.+|.+_test|conftest|tests?)\.pyi?$")
 
 _TEST_FILE_SUFFIXES = (
     "_spec.rb",
@@ -466,6 +467,15 @@ def _fn_starts_with(prefix: str) -> Callable[[str], bool]:
     return _pred
 
 
+def _fn_ends_with(suffix: str) -> Callable[[str], bool]:
+    """Build a predicate that matches basenames ending with ``suffix``."""
+
+    def _pred(name: str) -> bool:
+        return name.endswith(suffix)
+
+    return _pred
+
+
 _NEXT_APP_PAGE_FILES = frozenset({"page.tsx", "page.ts"})
 _NEXT_APP_LAYOUT_FILES = frozenset({"layout.tsx", "layout.ts"})
 _NEXT_APP_SPECIAL_FILES = frozenset({"loading.tsx", "error.tsx", "not-found.tsx"})
@@ -490,6 +500,20 @@ _TS_PRIORS: tuple[
     (("pages", "api"), _fn_any, (), "pages-api-handler"),
     (("pages",), _fn_in(_NEXT_PAGES_SPECIAL_FILES), (("pages", "api"),), "pages-special-component"),
     (("pages",), _fn_not_in(_NEXT_PAGES_SPECIAL_FILES), (("pages", "api"),), "pages-component"),
+    # NestJS / Angular filename-role suffixes. These frameworks co-locate by
+    # feature (users/users.controller.ts), so the role lives in the filename, not
+    # a directory chain -- an empty dir chain matches any location, and the
+    # majority filename predicate gates. Names are framework-neutral (the suffix
+    # IS the role); .controller/.resolver/.gateway are NestJS-distinct while
+    # .service/.module/.guard are shared with Angular. Placed above the generic
+    # directory entries so a *.service.ts wins its role over a coarse services/
+    # bucket; placed below the Next.js/Remix entries so app/pages routing wins.
+    ((), _fn_ends_with(".controller.ts"), (), "controller"),
+    ((), _fn_ends_with(".resolver.ts"), (), "resolver"),
+    ((), _fn_ends_with(".gateway.ts"), (), "gateway"),
+    ((), _fn_ends_with(".service.ts"), (), "service"),
+    ((), _fn_ends_with(".module.ts"), (), "module"),
+    ((), _fn_ends_with(".guard.ts"), (), "guard"),
     (("components",), _fn_any, (), "component"),
     (("ui",), _fn_any, (), "ui-component"),
     (("hooks",), _fn_starts_with("use"), (), "hook"),
@@ -638,7 +662,11 @@ def _base_name_for(
         if prior_name is not None:
             return prior_name
 
-    if _is_python_cluster(member_paths) and not _is_ruby_cluster(member_paths):
+    if (
+        _is_python_cluster(member_paths)
+        and not _is_ruby_cluster(member_paths)
+        and not any(p.endswith(".rb") for p in member_paths)
+    ):
         prior_name = _python_prior_match(member_paths)
         if prior_name is not None:
             return prior_name

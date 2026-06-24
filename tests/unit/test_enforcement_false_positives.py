@@ -362,6 +362,7 @@ def test_stale_trust_does_not_block_at_posttool(tmp_path: Path):
 
     trust = _trust_rec(hash_for_root="STALE-DOES-NOT-MATCH")
 
+    # Staleness only exists under the kill switch; trust persists by default.
     out = _run_verify(
         repo=repo,
         loaded=loaded,
@@ -369,7 +370,7 @@ def test_stale_trust_does_not_block_at_posttool(tmp_path: Path):
         file_path=str(cand),
         session_id=sid,
         trust_rec=trust,
-        env={"CHAMELEON_ENFORCE": "1"},
+        env={"CHAMELEON_ENFORCE": "1", "CHAMELEON_TRUST_REVALIDATE": "1"},
     )
     assert out.get("decision") != "block"
 

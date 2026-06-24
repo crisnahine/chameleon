@@ -1207,18 +1207,24 @@ def _sanitize_profile_obj(obj: object) -> object:
     """Recursively sanitize every string in a JSON-loaded profile structure.
 
     Neutralizes tag-boundary tokens in attacker-controllable committed data
-    (conventions.json values) BEFORE it is formatted into a block. We sanitize
-    the INPUTS, not the assembled block: ``format_conventions_for_session`` adds
-    its own legitimate ``<chameleon-conventions>`` wrapper, and ``<chameleon``
+    (conventions.json keys AND values) BEFORE it is formatted into a block. We
+    sanitize the INPUTS, not the assembled block: ``format_conventions_for_session``
+    adds its own legitimate ``<chameleon-conventions>`` wrapper, and ``<chameleon``
     is itself a dangerous token, so sanitizing the output would corrupt the
-    wrapper.
+    wrapper. Keys are sanitized too -- the archetype-name key renders as prose
+    (``- {arch}: …``), so a tag-boundary token in a key would otherwise break out.
     """
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
     if isinstance(obj, str):
         return sanitize_for_chameleon_context(obj)
     if isinstance(obj, dict):
-        return {k: _sanitize_profile_obj(v) for k, v in obj.items()}
+        return {
+            (sanitize_for_chameleon_context(k) if isinstance(k, str) else k): _sanitize_profile_obj(
+                v
+            )
+            for k, v in obj.items()
+        }
     if isinstance(obj, list):
         return [_sanitize_profile_obj(v) for v in obj]
     return obj
@@ -1425,7 +1431,10 @@ def session_start() -> int:
         pass
 
     try:
-        from chameleon_mcp.profile.trust import hash_profile, trust_state_for
+        from chameleon_mcp.profile.trust import (
+            profile_diverged_from_grant,
+            trust_state_for,
+        )
         from chameleon_mcp.worktree import resolve_profile_root
 
         # Place the statusline cache under the repo root, not the launch cwd. The
@@ -1443,11 +1452,9 @@ def session_start() -> int:
                 # ungranted workspace under a monorepo-shared repo_id
                 return "untrusted"
             pdir = resolve_profile_root(root) / ".chameleon"
-            if pdir.is_dir():
-                cur = hash_profile(pdir)
-                expected = ts.hash_for_root(root)
-                if cur and expected != cur:
-                    return "stale"
+            if pdir.is_dir() and profile_diverged_from_grant(ts, root, pdir):
+                # Only under CHAMELEON_TRUST_REVALIDATE=1; trust persists by default.
+                return "stale"
             return "trusted"
 
         has_own_profile = (
@@ -1518,10 +1525,14 @@ def session_start() -> int:
                     encoding="utf-8"
                 )
                 conv_data = _conv_json.loads(conv_text)
-                pr_text = ""
-                pr_path = _prof_root / ".chameleon" / "principles.md"
-                if pr_path.is_file():
-                    pr_text = pr_path.read_text(encoding="utf-8")
+                # This path reads conventions.json straight from disk (not via
+                # load_profile_dir), so screen its prose values for injection here --
+                # render sanitization does not neutralize injection prose, and trust
+                # persists across changes so the staleness gate no longer covers it.
+                from chameleon_mcp.profile.loader import safe_prose_text, scrub_conventions_prose
+
+                scrub_conventions_prose(conv_data)
+                pr_text = safe_prose_text(_prof_root / ".chameleon" / "principles.md")
                 # Sanitize the attacker-controllable inputs at the boundary (see
                 # _sanitize_profile_obj — sanitizing the assembled block would
                 # mangle its <chameleon-conventions> wrapper).
@@ -2363,6 +2374,12 @@ def preflight_and_advise() -> int:
                         if conv_path.is_file()
                         else {}
                     )
+                    # Fresh disk read (bypasses load_profile_dir): screen the
+                    # conventions values for injection so a poisoned `preferred`
+                    # cannot land in the deny reason. conv is the INNER dict already.
+                    from chameleon_mcp.profile.loader import scrub_conventions_node
+
+                    scrub_conventions_node(conv)
                     banned = banned_imports_in_content(
                         proposed,
                         language=detect_language(file_path),
@@ -2491,13 +2508,14 @@ def preflight_and_advise() -> int:
             )
             if conventions_path and conventions_path.is_file():
                 conv_data = json.loads(conventions_path.read_text(encoding="utf-8"))
-                pr_text = ""
-                pr_path = _enf_profile_dir(repo_root_path) / "principles.md"
-                if pr_path.is_file():
-                    try:
-                        pr_text = pr_path.read_text(encoding="utf-8")
-                    except OSError:
-                        pass
+                # Read straight from disk (not via load_profile_dir), so screen the
+                # conventions prose values + principles.md for injection here: render
+                # sanitization does not neutralize injection prose, and trust persists
+                # across changes so the staleness gate no longer covers this echo path.
+                from chameleon_mcp.profile.loader import safe_prose_text, scrub_conventions_prose
+
+                scrub_conventions_prose(conv_data)
+                pr_text = safe_prose_text(_enf_profile_dir(repo_root_path) / "principles.md")
                 # Sanitize attacker-controllable inputs at the boundary, for
                 # parity with the SessionStart path (the assembled echo carries a
                 # <chameleon-conventions> wrapper the output-sanitizer would mangle).
@@ -4077,7 +4095,7 @@ def posttool_verify() -> int:
             # blocks, because the conventions it would enforce were not re-reviewed.
             try:
                 from chameleon_mcp.profile.config import load_config_enforcement_only
-                from chameleon_mcp.profile.trust import hash_profile
+                from chameleon_mcp.profile.trust import profile_diverged_from_grant
 
                 enforce_off = os.environ.get("CHAMELEON_ENFORCE") == "0"
                 # Isolated enforcement read: an unrelated config-section typo must
@@ -4088,8 +4106,10 @@ def posttool_verify() -> int:
                 gate_band = data.get("confidence_band")
                 gate_ok = (match_quality == "ast") and (gate_band in ("high", "medium"))
                 at_l2 = file_state is not None and file_state.level >= 2
-                trusted_not_stale = _gate_rec.hash_for_root(repo_root) == hash_profile(
-                    _enf_profile_dir(repo_root)
+                # Trust persists across profile changes by default; only stale under
+                # CHAMELEON_TRUST_REVALIDATE=1.
+                trusted_not_stale = not profile_diverged_from_grant(
+                    _gate_rec, repo_root, _enf_profile_dir(repo_root)
                 )
                 if (
                     not enforce_off
@@ -4723,20 +4743,14 @@ def _idiom_review_gate(
 
         # Gather idioms/principles text; the gate needs at least one non-empty.
         profile_dir = _enf_profile_dir(repo_root)
-        idioms_text = ""
-        principles_text = ""
-        try:
-            ip = profile_dir / "idioms.md"
-            if ip.is_file():
-                idioms_text = ip.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            idioms_text = ""
-        try:
-            pp = profile_dir / "principles.md"
-            if pp.is_file():
-                principles_text = pp.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            principles_text = ""
+        # safe_prose_text drops a poisoned idioms.md / principles.md: this Stop
+        # backstop reads them straight from disk (not via load_profile_dir), so the
+        # loader-side scan does not cover it, and trust persists across changes so
+        # the staleness gate no longer does either.
+        from chameleon_mcp.profile.loader import safe_prose_text
+
+        idioms_text = safe_prose_text(profile_dir / "idioms.md")
+        principles_text = safe_prose_text(profile_dir / "principles.md")
         if not idioms_text.strip() and not principles_text.strip():
             return None
 
@@ -6956,7 +6970,10 @@ def stop_backstop() -> int:
     try:
         from chameleon_mcp.optouts import is_chameleon_suppressed
         from chameleon_mcp.profile.loader import find_repo_root
-        from chameleon_mcp.profile.trust import hash_profile, trust_state_for
+        from chameleon_mcp.profile.trust import (
+            profile_diverged_from_grant,
+            trust_state_for,
+        )
         from chameleon_mcp.tools import _compute_repo_id
 
         repo_root = find_repo_root(cwd)
@@ -6974,8 +6991,9 @@ def stop_backstop() -> int:
             return 0
         # A "stale" grant (the profile hash drifted from the one the user trusted)
         # only verifies; it never blocks the turn, mirroring the PreToolUse and
-        # PostToolUse gates.
-        if rec.hash_for_root(repo_root) != hash_profile(_enf_profile_dir(repo_root)):
+        # PostToolUse gates. Trust persists across changes by default, so this is
+        # reached only under CHAMELEON_TRUST_REVALIDATE=1.
+        if profile_diverged_from_grant(rec, repo_root, _enf_profile_dir(repo_root)):
             _emit({})
             return 0
 

@@ -52,6 +52,20 @@ def test_stale_trust_banner_is_cause_agnostic():
     assert "`.chameleon/profile.json`" not in banner_region
 
 
+# --- Trust persistence: the Tier-1 echo screens principles for injection -----
+
+
+def test_preflight_echo_screens_principles_via_safe_prose_text():
+    # Trust persists across profile changes, so the staleness gate no longer keeps
+    # a poisoned principles.md out of the PreToolUse Tier-1 conventions echo. That
+    # render must read principles.md through safe_prose_text (injection-drop), not
+    # a raw read_text the render sanitizer would pass through.
+    src = _preflight_source()
+    assert "safe_prose_text" in src
+    assert 'principles.md").read_text' not in src
+    assert "pr_path.read_text" not in src
+
+
 # --- BUG-F4: violation header pluralizes ------------------------------------
 
 

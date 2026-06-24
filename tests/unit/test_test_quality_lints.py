@@ -101,6 +101,31 @@ class TestTautology:
         v = lint_conventions(content, _CONV, language="typescript", archetype_name="test")
         assert "tautological-assertion" not in _rules(v)
 
+    def test_ruby_expect_to_eq_tautology(self):
+        content = "it 'x' do\n  expect(1).to eq(1)\nend\n"
+        v = lint_conventions(content, _CONV, language="ruby", archetype_name="spec")
+        assert "tautological-assertion" in _rules(v)
+
+    def test_ruby_expect_to_be_true_tautology(self):
+        content = "it 'x' do\n  expect(true).to be(true)\nend\n"
+        v = lint_conventions(content, _CONV, language="ruby", archetype_name="spec")
+        assert "tautological-assertion" in _rules(v)
+
+    def test_ruby_assert_equal_tautology(self):
+        content = "def test_x\n  assert_equal 1, 1\nend\n"
+        v = lint_conventions(content, _CONV, language="ruby", archetype_name="spec")
+        assert "tautological-assertion" in _rules(v)
+
+    def test_ruby_real_assertion_does_not_fire(self):
+        content = "it 'x' do\n  expect(result).to eq(1)\nend\n"
+        v = lint_conventions(content, _CONV, language="ruby", archetype_name="spec")
+        assert "tautological-assertion" not in _rules(v)
+
+    def test_ruby_assert_equal_distinct_values_does_not_fire(self):
+        content = "def test_x\n  assert_equal 1, 2\nend\n"
+        v = lint_conventions(content, _CONV, language="ruby", archetype_name="spec")
+        assert "tautological-assertion" not in _rules(v)
+
 
 class TestRealSleep:
     def test_ts_settimeout_wait(self):

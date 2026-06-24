@@ -47,6 +47,14 @@ class TestIsTestPath:
     def test_plain_ruby_source_is_not_test(self):
         assert not _is_test_path("app/models/user.rb", language="ruby")
 
+    def test_django_bare_tests_py_is_test_path(self):
+        # Django startapp's default app/tests.py is a test module, not source.
+        assert _is_test_path("shop/tests.py", language="python")
+        assert _is_test_path("pkg/test.py", language="python")
+
+    def test_plain_python_source_is_not_test_path(self):
+        assert not _is_test_path("shop/views.py", language="python")
+
     def test_test_dir_component_marks_test(self):
         # A plain-named file living under a test root still reads as a test.
         assert _is_test_path("__tests__/helpers.ts", language="typescript")
@@ -86,6 +94,22 @@ class TestCandidateTestPaths:
         paths = {p for _l, p in _candidate_test_paths("app/models/user.rb", language="ruby")}
         assert "spec/models/user_spec.rb" in paths
         assert "test/models/user_test.rb" in paths
+
+    def test_python_colocated_candidates_present(self):
+        paths = {p for _l, p in _candidate_test_paths("shop/views.py", language="python")}
+        assert "shop/test_views.py" in paths
+        assert "shop/views_test.py" in paths
+
+    def test_python_nested_app_tests_candidate(self):
+        # Django/pytest dominant: a tests/ package sibling to the source's own
+        # directory (myapp/views.py -> myapp/tests/test_views.py).
+        paths = {p for _l, p in _candidate_test_paths("shop/views.py", language="python")}
+        assert "shop/tests/test_views.py" in paths
+
+    def test_python_root_mirrored_candidate_present(self):
+        paths = {p for _l, p in _candidate_test_paths("src/shop/views.py", language="python")}
+        # Leading source root swapped for the test root.
+        assert "tests/shop/test_views.py" in paths
 
     def test_extensionless_basename_yields_no_candidates(self):
         assert _candidate_test_paths("Makefile", language="typescript") == []
@@ -184,6 +208,28 @@ class TestExtractTestPairingRuby:
                 _touch(tmp_path, f"spec/models/m{i}_spec.rb")
         conv = extract_test_pairing_conventions(files, language="ruby", repo_root=tmp_path)
         assert conv == {}
+
+
+class TestExtractTestPairingPython:
+    def test_nested_app_tests_pairing_recorded(self, tmp_path):
+        # The dominant Django/pytest per-app layout: app/tests/test_<stem>.py.
+        files = []
+        for i in range(10):
+            files.append(_FakeFile(_touch(tmp_path, f"shop{i}/views.py")))
+            _touch(tmp_path, f"shop{i}/tests/test_views.py")
+        conv = extract_test_pairing_conventions(files, language="python", repo_root=tmp_path)
+        assert conv["frequency"] == 1.0
+        assert conv["paired"] == 10
+        assert "tests/" in conv["mapping"]
+
+    def test_colocated_pytest_pairing_recorded(self, tmp_path):
+        files = []
+        for i in range(10):
+            files.append(_FakeFile(_touch(tmp_path, f"pkg/svc{i}.py")))
+            _touch(tmp_path, f"pkg/test_svc{i}.py")
+        conv = extract_test_pairing_conventions(files, language="python", repo_root=tmp_path)
+        assert conv["frequency"] == 1.0
+        assert conv["mapping"] == "co-located test_"
 
 
 class TestThresholdOverride:

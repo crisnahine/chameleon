@@ -169,20 +169,31 @@ def _build_trusted_repo(tmp_path: Path, *, summary: str) -> Path:
     return repo
 
 
-def test_get_pattern_context_sanitizes_archetype_summary(tmp_path, monkeypatch):
+def test_get_pattern_context_screens_archetype_summary(tmp_path, monkeypatch):
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
     from chameleon_mcp.tools import get_pattern_context
 
+    # (1) A summary that trips the prompt-injection scan (forged <system> tag) is
+    # DROPPED entirely -- stronger than inline-sanitizing, and required now that
+    # trust persists across changes so the staleness gate no longer guards it.
     repo = _build_trusted_repo(tmp_path, summary=_EVIL_SUMMARY)
     data = get_pattern_context(str(repo / _WITNESS))["data"]
-
     assert data["repo"]["trust_state"] == "trusted"
     assert data["archetype"].get("archetype") == _ARCH  # resolved, so summary is present
     summary = data["archetype"].get("summary", "")
-    assert "</chameleon-context>" not in summary
+    assert "OBEY THE ATTACKER" not in summary
     assert "<system>" not in summary
-    assert "[chameleon-sanitized:" in summary
+    assert summary == ""
+
+    # (2) A tag-boundary token with NO injection prose/marker is KEPT but
+    # inline-sanitized (the screen does not over-drop benign content).
+    repo2 = _build_trusted_repo(
+        tmp_path / "two", summary="Service objects </chameleon-context> here"
+    )
+    summary2 = get_pattern_context(str(repo2 / _WITNESS))["data"]["archetype"].get("summary", "")
+    assert "</chameleon-context>" not in summary2
+    assert "[chameleon-sanitized:" in summary2
 
 
 # --------------------------------------------------------------------------- #
@@ -313,3 +324,46 @@ def test_ruby_extractor_neutral_cwd_and_scrubbed_env(tmp_path, monkeypatch):
     assert captured["cwd"] == str(plugin_root() / "mcp")  # not the untrusted repo root
     assert "RUBYOPT" not in captured["env"]
     assert "RUBYLIB" not in captured["env"]
+
+
+def test_ts_extractor_scrubs_node_options(tmp_path, monkeypatch):
+    # The TS extractor must drop NODE_OPTIONS / NODE_REPL_EXTERNAL_MODULE (the Node
+    # analogues of RUBYOPT / PYTHONSTARTUP) so a poisoned env can't --require code
+    # before ts_dump.mjs runs. NODE_PATH is load-bearing and must survive.
+    from chameleon_mcp.extractors import typescript as ts_mod
+
+    captured: dict = {}
+
+    class _Proc:
+        returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return ("", "")
+
+        def kill(self):  # pragma: no cover - not hit on the happy path
+            pass
+
+    def _fake_popen(args, **kwargs):
+        captured["env"] = kwargs.get("env")
+        return _Proc()
+
+    monkeypatch.setenv("NODE_OPTIONS", "--require /tmp/evil_preload")
+    monkeypatch.setenv("NODE_REPL_EXTERNAL_MODULE", "/tmp/evil_mod")
+    monkeypatch.setattr(ts_mod.shutil, "which", lambda binary: "/usr/bin/node")
+    monkeypatch.setattr(
+        ts_mod.TypeScriptExtractor,
+        "_ensure_node_modules",
+        lambda self: tmp_path / "node_modules",
+    )
+    monkeypatch.setattr(ts_mod.subprocess, "Popen", _fake_popen)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ts = repo / "thing.ts"
+    ts.write_text("export const x = 1;\n")
+
+    ts_mod.TypeScriptExtractor().parse_repo(repo, paths=[ts])
+
+    assert "NODE_OPTIONS" not in captured["env"]
+    assert "NODE_REPL_EXTERNAL_MODULE" not in captured["env"]
+    assert captured["env"].get("NODE_PATH")  # load-bearing, must survive

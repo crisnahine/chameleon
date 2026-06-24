@@ -65,9 +65,10 @@ class AutoRefreshConfig:
 
 @dataclass(frozen=True)
 class TrustConfig:
-    # "always" by default: a refresh (manual or auto) re-grants trust so the user
-    # is not re-prompted on their own repo. Opt out with auto_preserve_when=null
-    # to re-prompt on any non-structurally-identical change.
+    # Controls only whether a refresh re-stamps the stored grant hash. Re-prompting
+    # is gated separately by CHAMELEON_TRUST_REVALIDATE (default off); with it unset,
+    # trust persists across changes and null/pulled_from_remote have no user-visible
+    # effect. "always" re-stamps after any refresh; null skips the re-stamp.
     auto_preserve_when: str | None = "always"
 
 
@@ -205,10 +206,13 @@ class ChameleonConfig:
         return bool(self.canonical_ref)
 
 
-# "always" (default) -> re-grant trust after ANY refresh (manual or auto), so the user
-#             is not re-prompted on their own repo.
-# "pulled_from_remote" -> re-grant only when the change came from a teammate's git pull
-# null  -> opt out: re-prompt for trust on any non-structurally-identical refresh
+# Controls only whether a refresh re-stamps the stored grant hash. Re-prompting is
+# gated by CHAMELEON_TRUST_REVALIDATE (default off), NOT by this knob: with it unset,
+# trust persists across changes and none of these values re-prompt the user.
+# "always" (default) -> re-stamp the grant hash after ANY refresh (manual or auto)
+# "pulled_from_remote" -> re-stamp only when the change came from a teammate's git pull
+# null  -> skip the re-stamp (under CHAMELEON_TRUST_REVALIDATE=1 this is what surfaces
+#          a material refresh as "stale"; with the env unset it has no visible effect)
 _VALID_AUTO_PRESERVE = frozenset({None, "pulled_from_remote", "always"})
 
 _VALID_ENFORCE_MODES = frozenset({"off", "shadow", "enforce"})

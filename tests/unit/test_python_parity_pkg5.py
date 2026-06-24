@@ -8,7 +8,12 @@ the TS/Ruby paths. For Python that config lives in pyproject.toml ([tool.black],
 from __future__ import annotations
 
 from chameleon_mcp.bootstrap.tool_config import read_tool_configs
-from chameleon_mcp.lint_engine import _declared_max_line_length, _declared_quote, scan_style_rules
+from chameleon_mcp.lint_engine import (
+    _declared_indent,
+    _declared_max_line_length,
+    _declared_quote,
+    scan_style_rules,
+)
 
 
 def _rules(**python_format):
@@ -53,6 +58,24 @@ def test_no_python_config(tmp_path):
     assert read_tool_configs(tmp_path).python_format is None
 
 
+def test_reads_ruff_indent_style_and_width(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.ruff]\nindent-width = 2\n\n[tool.ruff.format]\nindent-style = "tab"\n',
+        encoding="utf-8",
+    )
+    res = read_tool_configs(tmp_path)
+    assert res.python_format["indent_style"] == "tab"
+    assert res.python_format["indent_width"] == 2
+
+
+def test_ruff_indent_space_default_width(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.ruff.format]\nindent-style = "space"\n', encoding="utf-8"
+    )
+    res = read_tool_configs(tmp_path)
+    assert res.python_format["indent_style"] == "space"
+
+
 # --------------------------------------------------------------------------- #
 # _declared_* read the python_format section
 # --------------------------------------------------------------------------- #
@@ -64,6 +87,21 @@ def test_declared_max_line_length_python():
 
 def test_declared_quote_python():
     assert _declared_quote(_rules(quote_style="double"), "python") == "double"
+
+
+def test_declared_indent_python_space():
+    assert _declared_indent(_rules(indent_style="space", indent_width=2), "python") == (
+        "space",
+        2,
+    )
+
+
+def test_declared_indent_python_tab():
+    assert _declared_indent(_rules(indent_style="tab"), "python") == ("tab", None)
+
+
+def test_declared_indent_python_none_when_unset():
+    assert _declared_indent(_rules(line_length=88), "python") is None
 
 
 # --------------------------------------------------------------------------- #
@@ -109,3 +147,32 @@ def test_quote_skips_literal_needing_the_other_quote():
     # 'it"s' would need escaping if switched to double -> not flagged.
     v = scan_style_rules("x = 'say \"hi\"'\n", language="python", rules=rules)
     assert not any("quoted string" in x.actual for x in v)
+
+
+# --------------------------------------------------------------------------- #
+# scan_style_rules — indent (ruff indent-style / indent-width)
+# --------------------------------------------------------------------------- #
+
+
+def test_indent_space_pref_flags_tab():
+    rules = _rules(indent_style="space", indent_width=4)
+    v = scan_style_rules("def f():\n\tx = 1\n", language="python", rules=rules)
+    assert any("tab indentation" in x.actual for x in v)
+
+
+def test_indent_tab_pref_flags_space():
+    rules = _rules(indent_style="tab")
+    v = scan_style_rules("def f():\n    x = 1\n", language="python", rules=rules)
+    assert any("space indentation" in x.actual for x in v)
+
+
+def test_indent_space_pref_clean_on_space():
+    rules = _rules(indent_style="space", indent_width=4)
+    v = scan_style_rules("def f():\n    x = 1\n", language="python", rules=rules)
+    assert not any("indentation" in x.actual for x in v)
+
+
+def test_indent_silent_when_unset():
+    rules = _rules(line_length=88)
+    v = scan_style_rules("def f():\n\tx = 1\n", language="python", rules=rules)
+    assert not any("indentation" in x.actual for x in v)

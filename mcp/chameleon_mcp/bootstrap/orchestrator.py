@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -278,6 +279,114 @@ def _has_python_backend_marker(repo_root: Path) -> bool:
         (repo_root / m).is_file()
         for m in ("manage.py", "pyproject.toml", "requirements.txt", "setup.py", "Pipfile")
     )
+
+
+def _read_marker_text(path: Path, cap: int = 50_000) -> str:
+    """Best-effort capped read of a manifest/marker file, '' on any error."""
+    try:
+        return path.read_bytes()[:cap].decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+# Dirs never worth scanning for a framework marker (vendored / build output).
+_MANIFEST_SKIP_DIRS = frozenset(
+    {"node_modules", "vendor", "venv", ".venv", "dist", "build", "__pycache__", "site-packages"}
+)
+
+
+def _candidate_manifest_dirs(repo_root: Path, cap: int = 40) -> list[Path]:
+    """The repo root plus its direct child directories (bounded), so a monorepo
+    whose framework dep lives in a member subdir (``backend/`` / ``frontend/``)
+    is still classified. One level only -- cheap, and covers the dominant
+    backend/frontend split without walking a deep tree."""
+    dirs = [repo_root]
+    try:
+        for child in sorted(repo_root.iterdir()):
+            if len(dirs) > cap:
+                break
+            if (
+                child.is_dir()
+                and not child.name.startswith(".")
+                and child.name not in _MANIFEST_SKIP_DIRS
+            ):
+                dirs.append(child)
+    except OSError:
+        pass
+    return dirs
+
+
+def _node_dep_names(repo_root: Path) -> set[str]:
+    """Dependency names declared in package.json (deps + devDeps + peerDeps)."""
+    pkg = repo_root / "package.json"
+    if not pkg.is_file():
+        return set()
+    try:
+        data = json.loads(_read_marker_text(pkg))
+    except (ValueError, TypeError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    names: set[str] = set()
+    for key in ("dependencies", "devDependencies", "peerDependencies"):
+        section = data.get(key)
+        if isinstance(section, dict):
+            names.update(str(k) for k in section)
+    return names
+
+
+def _classify_framework(repo_root: Path, language: str | None) -> str | None:
+    """Best-effort discrete framework family for the repo, or None.
+
+    Descriptive metadata only -- persisted in profile.json and surfaced in
+    detect_repo, never used to gate behavior. Classified from cheap file markers
+    and dependency manifests (no repo-code execution). Fails open to None.
+    """
+    try:
+        dirs = _candidate_manifest_dirs(repo_root)
+        if language == "ruby":
+            for d in dirs:
+                if (d / "config" / "application.rb").is_file():
+                    return "rails"
+                gemfile = d / "Gemfile"
+                if gemfile.is_file() and re.search(
+                    r"^\s*gem\s+['\"]rails['\"]", _read_marker_text(gemfile), re.MULTILINE
+                ):
+                    return "rails"
+            return None
+        if language == "python":
+            # manage.py is the strongest Django marker; a DRF repo is still Django.
+            if any((d / "manage.py").is_file() for d in dirs):
+                return "django"
+            deps = "\n".join(
+                _read_marker_text(d / m)
+                for d in dirs
+                for m in ("requirements.txt", "pyproject.toml", "setup.cfg", "Pipfile", "setup.py")
+            )
+            # Most specific first; fastapi/flask are unambiguous web frameworks.
+            if re.search(r"(?i)(?<![\w.])fastapi(?![\w])", deps):
+                return "fastapi"
+            if re.search(r"(?i)(?<![\w.])flask(?![\w-])", deps):
+                return "flask"
+            if re.search(r"(?i)(?<![\w.])django(?![\w])", deps):
+                return "django"
+            return None
+        if language == "typescript":
+            deps: set[str] = set()
+            for d in dirs:
+                deps |= _node_dep_names(d)
+            if {"@nestjs/core", "@nestjs/common"} & deps:
+                return "nestjs"
+            if "next" in deps or any(
+                (d / f"next.config{ext}").is_file()
+                for d in dirs
+                for ext in (".js", ".mjs", ".ts", ".cjs")
+            ):
+                return "nextjs"
+            return None
+    except Exception:
+        return None
+    return None
 
 
 def _select_extractor(repo_root: Path) -> Extractor | None:
@@ -2030,6 +2139,13 @@ def _bootstrap_single(
         }
     if language_hint is not None:
         profile_data["language_hint"] = language_hint
+
+    # Discrete framework family (rails / django / flask / fastapi / nextjs /
+    # nestjs), descriptive metadata only. Optional key, so no schema bump and old
+    # profiles load fine without it. Classified from cheap markers; fails open.
+    framework = _classify_framework(repo_root, extractor.language)
+    if framework is not None:
+        profile_data["framework"] = framework
 
     profile_data["clustering_algorithm_version"] = 2
 

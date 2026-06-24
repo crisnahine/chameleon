@@ -247,6 +247,15 @@ def _read_python_format(repo_root: Path) -> tuple[dict | None, str | None]:
         elif "quote_style" not in fmt and black and not black.get("skip-string-normalization"):
             # black normalizes to double quotes unless told not to.
             fmt["quote_style"] = "double"
+        # ruff indent: indent-style ("tab"/"space") lives under [tool.ruff.format];
+        # indent-width is a top-level [tool.ruff] key the formatter inherits. black
+        # has no indent config (it is always 4 spaces).
+        ist = ruff_format.get("indent-style")
+        if ist in ("tab", "space"):
+            fmt["indent_style"] = ist
+        iw = _coerce_positive_int(ruff.get("indent-width"))
+        if iw is not None:
+            fmt["indent_width"] = iw
         if fmt:
             source = "pyproject.toml"
 

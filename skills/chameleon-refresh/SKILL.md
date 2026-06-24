@@ -63,9 +63,9 @@ Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Whe
 
 ## Trust + material change
 
-If the refresh causes a material change to any of the 15 hashed profile artifacts, trust transitions to `"stale"` and the user must re-run `/chameleon-trust`.
+By default trust is one-time and persists across a refresh: even a material change to the hashed profile artifacts keeps the profile `trusted`, so the user is **not** re-prompted to re-run `/chameleon-trust`. Poisoned idioms/principles/conventions prose is screened out at render time instead.
 
-Exception: structurally-identical refreshes (only the generation counter bumped, no archetype/canonical/rules changes) automatically preserve the existing trust grant.
+Only under `CHAMELEON_TRUST_REVALIDATE=1` does a material refresh transition trust to `"stale"` and require a re-run of `/chameleon-trust` (the legacy behavior).
 
 ## Common failure modes
 

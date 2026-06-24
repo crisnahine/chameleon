@@ -1451,6 +1451,29 @@ _PY_PICKLE_RE = re.compile(r"\bpickle\.loads?\s*\(")
 # yaml.load( is unsafe; yaml.safe_load( is the safe sibling and must not match.
 _PY_YAML_LOAD_RE = re.compile(r"\byaml\.load\s*\(")
 
+# Ruby dangerous sinks (advisory warnings), the mirrors of the Python set above.
+# insecure-random: rand(...) / Random.rand in a crypto context -> SecureRandom.
+# SecureRandom is the secure TARGET and must not match (the lookbehind on `rand(`
+# rejects the `.rand` member, and `\bRandom` rejects the `SecureRandom` prefix).
+_RUBY_INSECURE_RANDOM_RE = re.compile(r"(?<![.\w])rand\s*\(|\bRandom\s*\.\s*rand\b")
+# command-injection requires the actual injection vector: a `#{...}` interpolation
+# spliced into a shell construct (system/exec single string arg, backticks, or a
+# %x{} literal). This mirrors the SQL-interpolation rule and matches the
+# command-injection semantic precisely -- a static shell call (`system("ls",
+# "-la")`, `system("git status")`, a literal `` `grep ...` ``) has no untrusted
+# input and is the safe/idiomatic form, so it does not flag. Each runs on raw
+# content (the `#{` lives inside a string the stripper blanks) and is suppressed
+# when the construct itself sits inside a string / heredoc / comment.
+_RUBY_SHELL_INTERP_RES = (
+    ("system/exec", re.compile(r"(?<![.\w])(?:system|exec)\s*\(?\s*['\"][^'\"\n]*\#\{")),
+    ("backtick command", re.compile(r"`[^`\n]*\#\{[^`\n]*`")),
+    ("%x{} command", re.compile(r"%x[\[{(<][^\n]*\#\{")),
+)
+# insecure-deserialization: Marshal.load / YAML.load. YAML.safe_load and
+# Marshal.dump are safe and must not match (the dot-anchored `load` rejects them).
+_RUBY_MARSHAL_LOAD_RE = re.compile(r"\bMarshal\s*\.\s*load\b")
+_RUBY_YAML_LOAD_RE = re.compile(r"\bYAML\s*\.\s*load\b")
+
 # Non-cryptographic randomness used where unpredictability matters. Same context
 # gate as weak hashes: `Math.random()` for a UI jitter is fine; for a token or
 # salt it is a real weakness.
@@ -1695,6 +1718,82 @@ def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violatio
                     ),
                 )
             )
+
+        # insecure-random: rand()/Random.rand in a crypto context. SecureRandom
+        # is the secure target. Matched on the stripped scan (call survives).
+        for m in _RUBY_INSECURE_RANDOM_RE.finditer(scan):
+            if not _sink_security_context(scan, m.start(), m.end()):
+                continue
+            line = _position_to_line(scan, m.start())
+            violations.append(
+                Violation(
+                    rule="insecure-random",
+                    expected="<cryptographic randomness>",
+                    actual=f"rand at line {line}",
+                    severity="warning",
+                    message=(
+                        f"rand at line {line} is not cryptographically secure. For "
+                        "tokens, salts, or nonces use SecureRandom."
+                    ),
+                )
+            )
+
+        # insecure-deserialization: Marshal.load / YAML.load (YAML.safe_load and
+        # Marshal.dump are safe). Matched on the stripped scan (call survives).
+        for rx, what in (
+            (_RUBY_MARSHAL_LOAD_RE, "Marshal.load"),
+            (_RUBY_YAML_LOAD_RE, "YAML.load"),
+        ):
+            for m in rx.finditer(scan):
+                line = _position_to_line(scan, m.start())
+                violations.append(
+                    Violation(
+                        rule="insecure-deserialization",
+                        expected="<safe deserialization>",
+                        actual=f"{what} at line {line}",
+                        severity="warning",
+                        message=(
+                            f"untrusted deserialization at line {line} can execute "
+                            "code. Use a safe loader (YAML.safe_load, JSON) and never "
+                            "Marshal.load untrusted data."
+                        ),
+                    )
+                )
+
+        # command-injection: an interpolated shell construct (see the regex
+        # comment). Each runs on RAW content (the `#{` lives inside the string the
+        # stripper blanks). A construct whose START sits inside a string / heredoc
+        # / comment is suppressed via a mask that blanks DQ/SQ strings, heredocs,
+        # and comments -- but NOT %x{} -- so a top-level %x is still visible while
+        # an embedded one is not.
+        cmd_mask = _RUBY_STRING_DQ.sub(lambda mm: " " * len(mm.group(0)), content)
+        cmd_mask = _RUBY_STRING_SQ.sub(lambda mm: " " * len(mm.group(0)), cmd_mask)
+        cmd_mask = _blank_ruby_heredocs(cmd_mask)
+        cmd_mask = _RUBY_LINE_COMMENT.sub(lambda mm: " " * len(mm.group(0)), cmd_mask)
+        cmd_mask = _RUBY_BLOCK_COMMENT.sub(lambda mm: " " * len(mm.group(0)), cmd_mask)
+
+        cmd_seen: set[int] = set()
+        for what, rx in _RUBY_SHELL_INTERP_RES:
+            for m in rx.finditer(content):
+                pos = m.start()
+                if pos in cmd_seen or (pos < len(cmd_mask) and cmd_mask[pos] == " "):
+                    continue
+                cmd_seen.add(pos)
+                line = _position_to_line(content, pos)
+                violations.append(
+                    Violation(
+                        rule="command-injection",
+                        expected="<no interpolated shell string>",
+                        actual=f"{what} at line {line}",
+                        severity="warning",
+                        message=(
+                            f"interpolated shell command at line {line}. If the "
+                            "interpolated value reaches user input this is command "
+                            "injection; pass an argument list (system(cmd, *args)) "
+                            "instead of building a shell string."
+                        ),
+                    )
+                )
 
     if language == "typescript":
         for m in _MATH_RANDOM_RE.finditer(scan):
@@ -1975,9 +2074,9 @@ def _declared_indent(rules, language: str) -> tuple[str, int | None] | None:
 
     Returns ("tab", None) for tab indentation or ("space", width|None) for space
     indentation. Precedence is the language's primary formatter first, then
-    .editorconfig: prettier for TypeScript, rubocop for Ruby. Only declared
-    values count -- an absent cop / key contributes nothing, so a repo with no
-    indent config gets no indent findings.
+    .editorconfig: prettier for TypeScript, rubocop for Ruby, ruff for Python.
+    Only declared values count -- an absent cop / key contributes nothing, so a
+    repo with no indent config gets no indent findings.
     """
     if language == "typescript":
         prettier = _rules_section(rules, "formatting")
@@ -1997,6 +2096,15 @@ def _declared_indent(rules, language: str) -> tuple[str, int | None] | None:
             return ("tab", None)
         if enforced == "spaces" or width is not None:
             return ("space", width)
+    elif language == "python":
+        pf = _rules_section(rules, "python_format")
+        if pf:
+            style = pf.get("indent_style")
+            if style == "tab":
+                return ("tab", None)
+            width = _coerce_int(pf.get("indent_width"))
+            if style == "space" or width is not None:
+                return ("space", width)
 
     ec_style = _editorconfig_value(rules, "indent_style")
     if ec_style == "tab":
@@ -2169,8 +2277,8 @@ def scan_style_rules(
     Three checks, each silent unless the config declares the rule:
 
     - indentation style/width (prettier useTabs/tabWidth, rubocop
-      Layout/IndentationStyle + Layout/IndentationWidth, .editorconfig
-      indent_style/indent_size)
+      Layout/IndentationStyle + Layout/IndentationWidth, ruff
+      indent-style/indent-width, .editorconfig indent_style/indent_size)
     - quote style (prettier singleQuote, rubocop Style/StringLiterals), checked
       against real string literals so a quote inside a comment never flags
     - max line length (prettier printWidth, rubocop Layout/LineLength Max,
@@ -2636,6 +2744,13 @@ _PY_TAUTOLOGY_RE = re.compile(
     r"assert\s+(True|False|None|\d+)\s*==\s*\1\b"
     r"|(?:self\.)?assertEqual\s*\(\s*(True|False|None|\d+)\s*,\s*\2\s*\)"
 )
+# Ruby self-comparing assertions: RSpec `expect(<lit>).to eq/eql/be(<same>)` (the
+# matcher arg may be parenthesized or bare, `eq 1`) and Minitest `assert_equal
+# <lit>, <same>`. Only literal-vs-same-literal, the near-zero-FP shape.
+_RUBY_TAUTOLOGY_RE = re.compile(
+    r"expect\s*\(\s*(true|false|nil|\d+)\s*\)\s*\.\s*to\s+(?:eql|equal|eq|be)\s*\(?\s*\1\b"
+    r"|assert_equal\s*\(?\s*(true|false|nil|\d+)\s*,\s*\2\b"
+)
 _PY_REAL_SLEEP_RE = re.compile(r"\b(?:time\.sleep|asyncio\.sleep)\s*\(\s*\d")
 _PY_TEST_RANDOM_RE = re.compile(
     r"(?<![.\w])random\.\w+\s*\(|\b(?:np|numpy)\.random\.|(?<![.\w])secrets\.\w+\s*\("
@@ -2851,8 +2966,10 @@ def _test_quality_violations(
             )
         )
 
-    tautology = (language == "typescript" and _TS_TAUTOLOGY_RE.search(scan_content)) or (
-        language == "python" and _PY_TAUTOLOGY_RE.search(scan_content)
+    tautology = (
+        (language == "typescript" and _TS_TAUTOLOGY_RE.search(scan_content))
+        or (language == "python" and _PY_TAUTOLOGY_RE.search(scan_content))
+        or (language == "ruby" and _RUBY_TAUTOLOGY_RE.search(scan_content))
     )
     if tautology:
         out.append(
@@ -3053,6 +3170,24 @@ def _blank_string_embedded_imports(content: str) -> str:
                 if i < len(chars) and chars[i] != "\n":
                     chars[i] = " "
     return "".join(chars)
+
+
+def _import_keyword_is_real(content: str, stripped: str, m: re.Match) -> bool:
+    """True when an import-statement match is real code, not a competing import
+    quoted inside a docstring / heredoc / string literal.
+
+    The Ruby/Python import-preference scans read module specifiers off RAW content
+    (the module name lives inside the require/import string, which the strip would
+    blank). To suppress an import sitting inside a string, we check the keyword
+    against a length-preserving strings/comments-stripped copy: a genuine
+    `import`/`from`/`require` keeps its keyword char visible there; a
+    string-embedded one has that char blanked. Both regexes are ``^[ \\t]*``-
+    anchored, so we walk past leading indentation to the keyword first.
+    """
+    i = m.start()
+    while i < m.end() and content[i] in " \t":
+        i += 1
+    return i >= len(stripped) or stripped[i] != " "
 
 
 def _basename(file_path: str) -> str:
@@ -3378,9 +3513,12 @@ def lint_conventions(
         scan_content = content
 
     # The import-preference scan needs raw content (it reads the `from "<module>"`
-    # specifier, which the strip blanks), but a competing import sitting inside a
-    # string literal is a code snippet, not a real import. Blank only those runs
-    # so PreToolUse and PostToolUse / lint_file / calibration converge.
+    # / `require "<module>"` specifier, which the strip blanks), but a competing
+    # import sitting inside a string literal is a code snippet, not a real import.
+    # TS blanks those runs up front; Ruby/Python instead filter each match by
+    # _import_keyword_is_real against `scan_content` (their module name lives
+    # inside the string the strip blanks, so the run can't be pre-blanked). All
+    # three converge across PreToolUse, PostToolUse / lint_file, and calibration.
     if language == "typescript":
         import_scan_content = _blank_string_embedded_imports(content)
     else:
@@ -3405,9 +3543,17 @@ def lint_conventions(
         # `require` statements and constant references never registered, so the
         # rule was inert on exactly the language it was taught for.
         if language == "ruby":
-            import_specs = [m.group(1) for m in _RUBY_REQUIRE_RE.finditer(content)]
+            import_specs = [
+                m.group(1)
+                for m in _RUBY_REQUIRE_RE.finditer(content)
+                if _import_keyword_is_real(content, scan_content, m)
+            ]
         elif language == "python":
-            import_specs = [m.group(1) or m.group(2) for m in _PY_IMPORT_RE.finditer(content)]
+            import_specs = [
+                m.group(1) or m.group(2)
+                for m in _PY_IMPORT_RE.finditer(content)
+                if _import_keyword_is_real(content, scan_content, m)
+            ]
         else:
             import_specs = [m.group(1) for m in _TS_IMPORT_FROM_RE.finditer(import_scan_content)]
         for competing in (conventions.get("imports") or {}).get("competing", []):
@@ -3577,8 +3723,11 @@ def lint_conventions(
             _python_inheritance_violations(scan_content, conventions.get("inheritance") or {})
         )
 
-    if language == "ruby" and "required-guard-convention" not in ignored_rules:
-        violations.extend(_required_guard_violations(scan_content, conventions))
+    if "required-guard-convention" not in ignored_rules:
+        if language == "ruby":
+            violations.extend(_required_guard_violations(scan_content, conventions))
+        elif language == "python":
+            violations.extend(_python_guard_violations(scan_content, conventions))
 
     # Test-quality lints, scoped to test/spec archetypes so the rules only judge
     # files that are actually tests. The witness for the assertion-helper /
@@ -3673,6 +3822,83 @@ def _required_guard_violations(scan_content: str, conventions: dict) -> list[Vio
             )
         )
     return out
+
+
+# Python authz-decision signals at lint time (presence-semantics, read off the
+# strings/comments-stripped scan so a mention in a docstring does not satisfy).
+_PY_AUTHZ_ATTR_RE = re.compile(
+    r"^[ \t]*(?:permission_classes|authentication_classes)\s*[:=]", re.MULTILINE
+)
+_PY_AUTHZ_DECORATOR_RE = re.compile(
+    r"@\s*(?:[\w.]+\.)?(?:login_required|permission_required|user_passes_test|"
+    r"staff_member_required)\b"
+)
+_PY_CLASS_DEF_BASES_RE = re.compile(r"^[ \t]*class\s+\w+\s*\(([^)]*)\)", re.MULTILINE)
+_PY_CLASS_OR_DEF_RE = re.compile(r"^[ \t]*(?:class|def|async\s+def)\s+\w+", re.MULTILINE)
+_PY_AUTHZ_MIXIN_TAILS = frozenset(
+    {"LoginRequiredMixin", "PermissionRequiredMixin", "UserPassesTestMixin"}
+)
+# A cohort's known bases include its GENERIC dominant base (DRF's APIView, which
+# every view extends and which carries no authz), so a known base only counts as
+# authz-inheritance when its NAME indicates authz. Loose on purpose: over-
+# suppressing misses an unguarded view (a false negative -- silence), which is
+# the safe direction vs flagging an intentionally-guarded view.
+_PY_AUTHZ_BASE_HINT_RE = re.compile(r"(?i)(auth|login|permission|secure|protected|restricted)")
+_PY_IDENT_RE = re.compile(r"[A-Za-z_][\w.]*")
+
+
+def _python_guard_violations(scan_content: str, conventions: dict) -> list[Violation]:
+    """Advisory hint when a Python view omits the cohort's authz decision.
+
+    The Python analog of ``_required_guard_violations``. Fires only when the
+    archetype's ``required_guards`` carries ``authz_required`` (the cohort
+    conventionally restricts access). PRESENCE of any authz decision satisfies
+    it: a ``permission_classes`` / ``authentication_classes`` assignment (any
+    value, including an explicit ``AllowAny``), a ``@login_required`` /
+    ``@permission_required`` decorator, an authz-mixin base, or an authz-named
+    cohort base (a project base that itself carries auth). The cohort's GENERIC
+    dominant base (DRF's APIView) does NOT satisfy it -- it carries no authz, so
+    a view extending only it with no permission_classes is the outlier this
+    flags. Emits at most one advisory ``info`` per file, never block-eligible.
+    """
+    guards = conventions.get("required_guards") or {}
+    if not isinstance(guards, dict) or not guards.get("authz_required"):
+        return []
+    # A real authz decision anywhere in the file satisfies the convention.
+    if _PY_AUTHZ_ATTR_RE.search(scan_content) or _PY_AUTHZ_DECORATOR_RE.search(scan_content):
+        return []
+    # Authz mixins always count; a known cohort base counts only when its name
+    # indicates authz (the generic dominant base does not).
+    accepted_bases = set(_PY_AUTHZ_MIXIN_TAILS)
+    for b in guards.get("known_bases") or ():
+        if isinstance(b, str):
+            tail = b.rsplit(".", 1)[-1]
+            if _PY_AUTHZ_BASE_HINT_RE.search(tail):
+                accepted_bases.add(tail)
+    has_class = False
+    for m in _PY_CLASS_DEF_BASES_RE.finditer(scan_content):
+        has_class = True
+        base_tails = {b.rsplit(".", 1)[-1] for b in _PY_IDENT_RE.findall(m.group(1))}
+        if base_tails & accepted_bases:
+            return []
+    # No authz signal. Only advise when the file actually declares a view
+    # (a class or def); an unrelated mis-bucketed file is left alone.
+    if not has_class and not _PY_CLASS_OR_DEF_RE.search(scan_content):
+        return []
+    return [
+        Violation(
+            rule="required-guard-convention",
+            expected="permission_classes / @login_required / an authz base",
+            actual="none",
+            severity="info",
+            message=(
+                "AUTHZ: views in this archetype usually restrict access "
+                "(permission_classes, @login_required, or a LoginRequiredMixin "
+                "base); this file declares none -- confirm access is intended to "
+                "be open or is inherited from a base view"
+            ),
+        )
+    ]
 
 
 def _python_inheritance_violations(scan_content: str, inheritance: dict) -> list[Violation]:

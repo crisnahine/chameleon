@@ -171,6 +171,33 @@ class TestGrantAndQuery:
         record = trust_state_for("nonexistent-repo")
         assert record is None
 
+    def test_trust_persists_after_profile_change_by_default(self, tmp_path: Path, monkeypatch):
+        # Trust is one-time: once granted, it stays trusted across profile changes
+        # (refresh, re-bootstrap, teach) -- never goes stale -- by default.
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+        monkeypatch.delenv("CHAMELEON_TRUST_REVALIDATE", raising=False)
+        repo_root = tmp_path / "repo"
+        profile_dir = _make_profile_dir(repo_root)
+        repo_id = "persist-001"
+        grant_trust(repo_id, profile_dir)
+        (profile_dir / "profile.json").write_text(
+            json.dumps({"generation": 99, "language": "ruby"}), encoding="utf-8"
+        )
+        assert is_material_change(repo_id, profile_dir) is False
+
+    def test_trust_revalidates_when_kill_switch_set(self, tmp_path: Path, monkeypatch):
+        # CHAMELEON_TRUST_REVALIDATE=1 restores the old "stale on change" behavior.
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+        monkeypatch.setenv("CHAMELEON_TRUST_REVALIDATE", "1")
+        repo_root = tmp_path / "repo"
+        profile_dir = _make_profile_dir(repo_root)
+        repo_id = "persist-002"
+        grant_trust(repo_id, profile_dir)
+        (profile_dir / "profile.json").write_text(
+            json.dumps({"generation": 99, "language": "ruby"}), encoding="utf-8"
+        )
+        assert is_material_change(repo_id, profile_dir) is True
+
     def test_trust_state_stale_after_profile_change(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
         repo_root = tmp_path / "repo"
@@ -292,7 +319,8 @@ class TestGrantsRoot:
         ws = root / "packages" / "svc"
         root_profile = _make_profile_dir(root)
         ws_profile = _make_profile_dir(
-            ws, extra_files={"profile.json": json.dumps({"generation": 1, "language": "ruby"})}
+            ws,
+            extra_files={"profile.json": json.dumps({"generation": 1, "language": "ruby"})},
         )
         from chameleon_mcp.tools import _compute_repo_id
 

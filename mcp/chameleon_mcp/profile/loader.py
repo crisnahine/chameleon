@@ -369,6 +369,105 @@ def _compute_mtime_token(
     return "-".join(parts)
 
 
+def _prose_injection_unsafe(text: str) -> bool:
+    """True when prose (idioms.md / principles.md / any free-prose profile field)
+    trips the prompt-INJECTION scan ``grant_trust`` runs at grant time.
+
+    Uses ONLY ``_looks_suspicious`` -- exactly what grant_trust scans prose with
+    (it deliberately omits the secret / dangerous-code scanners because those
+    false-positive on healthy security-flavored prose like "hash passwords with
+    bcrypt, never MD5"). Applying the broader scanners here would silently drop a
+    profile that PASSED grant, so this matches grant for true parity. The secret /
+    dangerous-code scans belong on canonical witness CODE, which canonical_loader
+    screens separately. Lazy import avoids a circular dependency on ``tools``.
+    Fails OPEN (keeps the prose) on a scanner error, matching grant_trust's
+    fail-open stance -- a scanner bug must not wipe a healthy repo's taught idioms.
+    """
+    try:
+        from chameleon_mcp.tools import _looks_suspicious
+
+        return bool(_looks_suspicious(text)[0])
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def scrub_conventions_node(node) -> None:
+    """Recursively blank/drop injection-bearing strings in a conventions subtree,
+    in place. The archetype-name KEY is itself rendered as prose (``- {arch}: …``),
+    so an entry whose KEY trips the injection scan is DROPPED; a poisoned dict
+    string VALUE is blanked to "" (renderers skip empties); an injection string is
+    dropped from a list. Takes the INNER conventions dict (the ``.get("conventions")``
+    value); callers that already unwrapped it use this directly."""
+    if isinstance(node, dict):
+        for k, v in list(node.items()):
+            if isinstance(k, str) and _prose_injection_unsafe(k):
+                del node[k]
+                continue
+            if isinstance(v, str):
+                if _prose_injection_unsafe(v):
+                    node[k] = ""
+            elif isinstance(v, (dict, list)):
+                scrub_conventions_node(v)
+    elif isinstance(node, list):
+        kept = []
+        for e in node:
+            if isinstance(e, str):
+                if not _prose_injection_unsafe(e):
+                    kept.append(e)
+            else:
+                if isinstance(e, (dict, list)):
+                    scrub_conventions_node(e)
+                kept.append(e)
+        node[:] = kept
+
+
+def scrub_conventions_prose(conventions: dict) -> None:
+    """Blank / drop injection-bearing string values throughout the conventions dict,
+    in place, before any consumer renders them as prose.
+
+    Every free-text ``conventions.json`` value renders into ``<chameleon-context>``
+    as prose: import ``over`` / ``preferred`` / ``module`` (``- Use X, not Y`` /
+    ``- Prefer Z``), inheritance ``dominant_base`` / ``known_bases``, ``key_exports``,
+    ``class_contract``, ``method_calls``, ``naming`` patterns, ``required_guards``,
+    etc. (conventions.py format_conventions_for_session / format_conventions_echo).
+    Trust persists across profile changes, so the staleness gate no longer keeps a
+    poisoned-after-grant conventions.json out of context. A legit value is a short
+    identifier that never trips ``_looks_suspicious``; a multi-word injection phrase
+    is removed. MUST be applied wherever conventions.json reaches a render -- the
+    three render consumers (SessionStart, the per-edit echo, the lint message) each
+    read it from disk, so call it at each (this load path covers only the lint leg).
+    """
+    conv = conventions.get("conventions") if isinstance(conventions, dict) else None
+    if isinstance(conv, dict):
+        scrub_conventions_node(conv)
+
+
+def safe_prose_text(path: Path) -> str:
+    """Read a prose artifact (idioms.md / principles.md) for rendering into
+    ``<chameleon-context>``, returning "" when it is missing, unreadable, OR trips
+    the prompt-injection scan (the same ``_looks_suspicious`` scan grant_trust runs
+    on prose). The single read helper every prose render path must use: trust
+    persists across profile changes by default, so the staleness gate no longer
+    keeps a poisoned prose artifact out of context -- a drop here (with a stderr
+    warning, mirroring canonical_loader) is what keeps it from being served at full
+    trust on a governed edit or at turn-end.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if text and _prose_injection_unsafe(text):
+        import sys as _sys
+
+        print(
+            f"chameleon: {path.name} dropped from context: contains a prompt-injection "
+            "pattern (re-derive or re-teach with safe prose)",
+            file=_sys.stderr,
+        )
+        return ""
+    return text
+
+
 def load_profile_dir(profile_dir: Path) -> LoadedProfile:
     """Load and validate all artifacts from a `.chameleon/` directory.
 
@@ -456,11 +555,32 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
         conventions = _loads_hardened(_safe_read_artifact(conventions_path))
     except FileNotFoundError:
         conventions = {}
+    # Screen poisoned conventions values before the lint consumers render them;
+    # trust persists across changes so the staleness gate no longer screens them.
+    # NOTE: SessionStart and the per-edit echo read conventions.json straight from
+    # disk (not via this loader), so they call scrub_conventions_prose themselves.
+    scrub_conventions_prose(conventions)
 
     idioms_path = profile_dir / "idioms.md"
     try:
         idioms_text = _safe_read_artifact(idioms_path)
     except FileNotFoundError:
+        idioms_text = ""
+    if idioms_text and _prose_injection_unsafe(idioms_text):
+        # Trust persists across profile changes by default (CHAMELEON_TRUST_REVALIDATE
+        # off), so a stale-gate no longer keeps an injected idioms.md out of context.
+        # Refuse the prose at the load path instead -- the same narrow scan
+        # grant_trust runs -- so a post-grant injection (a manual edit, a malicious
+        # pull, or a teach whose re-grant was refused) is dropped, not served at full
+        # trust. Mirrors canonical_loader: drop the whole artifact and warn. The scan
+        # sits inside the mtime-cached load, so it runs only when idioms.md changes.
+        import sys as _sys
+
+        print(
+            "chameleon: idioms.md dropped from context: contains a prompt-injection, "
+            "secret, or dangerous pattern (re-run /chameleon-teach with safe prose)",
+            file=_sys.stderr,
+        )
         idioms_text = ""
 
     mtimes_after = tuple(p.stat().st_mtime_ns for p in artifact_paths)

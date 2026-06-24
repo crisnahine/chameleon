@@ -180,9 +180,123 @@ def test_math_random_without_context_quiet():
 
 
 def test_math_random_not_run_for_ruby():
-    # Ruby has no Math.random; the rule is TS-scoped and must not fabricate hits.
+    # Math.random is a JS construct; Ruby's insecure-random rule keys on rand /
+    # Random.rand, so `Math.random` must not fabricate a hit.
     violations = scan_dangerous_sinks("salt = Math.random", language="ruby")
     assert "insecure-random" not in _rules(violations)
+
+
+# --- insecure-random (Ruby: rand / Random.rand -> SecureRandom) ------------
+
+
+def test_ruby_rand_in_crypto_context_flagged():
+    v = scan_dangerous_sinks("token = rand(1_000_000)  # session token", language="ruby")
+    assert "insecure-random" in _rules(v)
+
+
+def test_ruby_random_rand_in_crypto_context_flagged():
+    v = scan_dangerous_sinks("salt = Random.rand(2**32)", language="ruby")
+    assert "insecure-random" in _rules(v)
+
+
+def test_ruby_securerandom_is_clean():
+    # SecureRandom is the secure target and must never flag.
+    v = scan_dangerous_sinks("token = SecureRandom.hex(16)", language="ruby")
+    assert "insecure-random" not in _rules(v)
+
+
+def test_ruby_rand_without_crypto_context_quiet():
+    v = scan_dangerous_sinks("jitter = rand(100)", language="ruby")
+    assert "insecure-random" not in _rules(v)
+
+
+# --- command-injection (Ruby: interpolated system/exec/backticks/%x{}) ------
+# Command-injection requires the injection vector: a #{...} interpolation spliced
+# into a shell construct. Static shell calls are the safe/idiomatic form and do
+# not flag.
+
+
+def test_ruby_command_injection_system_interpolated_flagged():
+    v = scan_dangerous_sinks('system("rm -rf #{path}")', language="ruby")
+    assert "command-injection" in _rules(v)
+
+
+def test_ruby_command_injection_exec_interpolated_no_paren_flagged():
+    v = scan_dangerous_sinks('exec "rm -rf #{dir}"', language="ruby")
+    assert "command-injection" in _rules(v)
+
+
+def test_ruby_command_injection_backticks_interpolated_flagged():
+    v = scan_dangerous_sinks("output = `ls #{dir}`", language="ruby")
+    assert "command-injection" in _rules(v)
+
+
+def test_ruby_command_injection_percent_x_interpolated_flagged():
+    v = scan_dangerous_sinks("out = %x{ls #{dir}}", language="ruby")
+    assert "command-injection" in _rules(v)
+
+
+def test_ruby_safe_multiarg_system_not_flagged():
+    # Multiple args -> no shell, no injection (the form the Python rule also
+    # leaves alone). Was a false positive before interpolation-scoping.
+    v = scan_dangerous_sinks('system("ls", "-la")', language="ruby")
+    assert "command-injection" not in _rules(v)
+
+
+def test_ruby_static_system_not_flagged():
+    v = scan_dangerous_sinks('system("git status")', language="ruby")
+    assert "command-injection" not in _rules(v)
+
+
+def test_ruby_static_backtick_not_flagged():
+    v = scan_dangerous_sinks("out = `ls`", language="ruby")
+    assert "command-injection" not in _rules(v)
+
+
+def test_ruby_markdown_triple_backtick_fence_not_flagged():
+    # A markdown code fence inside a string/heredoc must not read as a backtick
+    # command (the real false positive found on ef-api).
+    v = scan_dangerous_sinks('doc = "```ruby\\nputs 1\\n```"\n', language="ruby")
+    assert "command-injection" not in _rules(v)
+
+
+def test_ruby_interpolated_command_in_comment_not_flagged():
+    v = scan_dangerous_sinks('# system("rm #{x}") is dangerous\ny = 1\n', language="ruby")
+    assert "command-injection" not in _rules(v)
+
+
+def test_ruby_execute_method_not_command_injection():
+    # ActiveRecord's connection.execute is a SQL call, not a shell exec.
+    v = scan_dangerous_sinks('conn.execute("SELECT #{id}")', language="ruby")
+    assert "command-injection" not in _rules(v)
+
+
+def test_ruby_interpolated_system_inside_string_not_flagged():
+    v = scan_dangerous_sinks('msg = "never call system(\\"rm #{x}\\")"', language="ruby")
+    assert "command-injection" not in _rules(v)
+
+
+# --- insecure-deserialization (Ruby: Marshal.load / YAML.load) -------------
+
+
+def test_ruby_marshal_load_flagged():
+    v = scan_dangerous_sinks("obj = Marshal.load(data)", language="ruby")
+    assert "insecure-deserialization" in _rules(v)
+
+
+def test_ruby_yaml_load_flagged():
+    v = scan_dangerous_sinks("cfg = YAML.load(input)", language="ruby")
+    assert "insecure-deserialization" in _rules(v)
+
+
+def test_ruby_yaml_safe_load_is_clean():
+    v = scan_dangerous_sinks("cfg = YAML.safe_load(input)", language="ruby")
+    assert "insecure-deserialization" not in _rules(v)
+
+
+def test_ruby_marshal_dump_is_clean():
+    v = scan_dangerous_sinks("blob = Marshal.dump(obj)", language="ruby")
+    assert "insecure-deserialization" not in _rules(v)
 
 
 # --- sql-string-interpolation (Ruby only, advisory) ------------------------

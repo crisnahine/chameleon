@@ -419,20 +419,46 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
     return record
 
 
+def _trust_revalidation_enabled() -> bool:
+    """Whether trust re-validates when the profile changes after a grant.
+
+    Default OFF: trust is ONE-TIME. Once a repo is trusted it stays trusted across
+    every later profile change (refresh, re-bootstrap, teach) and never goes
+    "stale", so the user never re-grants. Set ``CHAMELEON_TRUST_REVALIDATE=1`` to
+    restore the old behavior, where any change to the trust-hashed profile surface
+    re-prompts for a fresh grant. Read at call time so it can be toggled per
+    process / test.
+    """
+    return os.environ.get("CHAMELEON_TRUST_REVALIDATE") == "1"
+
+
+def profile_diverged_from_grant(
+    record: TrustRecord, repo_root: Path | str, profile_dir: Path
+) -> bool:
+    """True iff the profile changed since trust was granted AND re-validation is
+    enabled. With trust persistence ON (the default), this is always False --
+    trust is one-time and survives profile changes. The single funnel every
+    staleness decision routes through, so the persistence policy is enforced in
+    one place. An empty / unreadable current profile reads as not-diverged (no
+    trustable surface to compare), matching the legacy hook guard.
+    """
+    if not _trust_revalidation_enabled():
+        return False
+    current = hash_profile(profile_dir)
+    if not current:
+        return False
+    return record.hash_for_root(repo_root) != current
+
+
 def is_material_change(repo_id: str, current_profile_dir: Path) -> bool:
-    """Return True iff the trusted profile_sha256 no longer matches current.
+    """Return True iff the trusted profile changed since grant AND re-validation
+    is enabled (``CHAMELEON_TRUST_REVALIDATE=1``).
 
-    Per docs/architecture.md material-change predicate: hash mismatch → re-prompt
-    on next session. (Phase 2D simplification: any hash change is treated as
-    material; Phase 4 refines to "any new archetype, new canonical witness file,
-    or new active idiom" only.)
-
-    Bug H6: consults the per-root hash map first via
-    ``record.hash_for_root(current_profile_dir.parent)``. When a workspace
-    has its own trust grant, this returns the workspace's hash; when only
-    the root was trusted, it falls back to ``record.profile_sha256``. Pre-
-    Older records (no ``repo_root_specific_hashes``) keep the legacy
-    "single hash per repo_id" semantics.
+    With trust persistence ON (default), this is always False: trust is one-time
+    and never goes stale. Under the kill switch it consults the per-root hash map
+    via ``record.hash_for_root(current_profile_dir.parent)`` (Bug H6: a workspace
+    with its own grant uses the workspace hash; otherwise it falls back to the
+    root hash; legacy records keep single-hash-per-repo_id semantics).
     """
     record = trust_state_for(repo_id)
     if record is None:
@@ -443,8 +469,7 @@ def is_material_change(repo_id: str, current_profile_dir: Path) -> bool:
     # profile it actually reads. resolve_profile_root is the identity for every
     # non-worktree dir, so this is unchanged off the worktree path.
     effective_dir = resolve_profile_root(current_profile_dir.parent) / ".chameleon"
-    expected = record.hash_for_root(current_profile_dir.parent)
-    return expected != hash_profile(effective_dir)
+    return profile_diverged_from_grant(record, current_profile_dir.parent, effective_dir)
 
 
 def _current_user() -> str:

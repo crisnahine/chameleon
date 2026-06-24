@@ -86,6 +86,21 @@ def test_import_preference_not_fooled_by_substring():
     assert not any(x.rule == "import-preference-violation" for x in v)
 
 
+def test_import_preference_skips_docstring_embedded_import():
+    # A competing import quoted inside a docstring is documentation, not a real
+    # import; it must not flag (the string-embedded-import false-positive guard).
+    content = '"""Usage example:\n\nimport requests\nr = requests.get(url)\n"""\n\nx = 1\n'
+    v = lint_conventions(content, _CONV, language="python")
+    assert not any(x.rule == "import-preference-violation" for x in v)
+
+
+def test_import_preference_still_flags_real_import_with_docstring():
+    # A real top-level import still flags even when a docstring also mentions it.
+    content = '"""See import requests below."""\nimport requests\n'
+    v = lint_conventions(content, _CONV, language="python")
+    assert any(x.rule == "import-preference-violation" for x in v)
+
+
 # --------------------------------------------------------------------------- #
 # PKG-4 security sinks (advisory): weak-hash, insecure-random,
 # command-injection, insecure-deserialization

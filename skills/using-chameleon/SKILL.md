@@ -30,8 +30,8 @@ Chameleon enforces codebase conventions through hooks. You don't call MCP tools 
 
 ## Trust gate
 
-- **trusted**: canonical excerpts, rules, and idioms inject normally.
-- **stale**: content injects with a warning that already suggests `/chameleon-trust`. Don't repeat the suggestion.
+- **trusted**: canonical excerpts, rules, and idioms inject normally. This is the steady state by default — trust is one-time and persists across profile changes.
+- **stale**: kill-switch-only (`CHAMELEON_TRUST_REVALIDATE=1`); by default this state is unreachable. When it occurs, content injects with a warning that already suggests `/chameleon-trust`. Don't repeat the suggestion.
 - **untrusted**: no canonical injection. A trust prompt fires once per session suggesting `/chameleon-trust`. Edits proceed without guidance until trust is granted.
 
 ## Enforcement
@@ -80,7 +80,7 @@ Chameleon is an output-layer advisory: archetype + canonical + rules shape the c
     Edit/Write/NotebookEdit called
         |
     PreToolUse: trusted? --no--> untrusted prompt (once) --> edit proceeds without canonical
-        |yes/stale
+        |yes (stale only under CHAMELEON_TRUST_REVALIDATE=1)
     Injects <chameleon-context> with archetype + canonical
         |
     Edit executes

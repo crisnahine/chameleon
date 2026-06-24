@@ -27,21 +27,21 @@ The trust prompt is a security gate. **Don't grant trust mechanically.**
 
 ## Material-change re-prompt
 
-If any of the 16 hashed profile artifacts (`.archetype_renames.json`, `archetypes.json`, `calls_index.json`, `canonicals.json`, `config.json`, `conventions.json`, `counterexamples.json`, `enforcement.json`, `exports_index.json`, `function_catalog.json`, `principles.md`, `idioms.md`, `profile.json`, `reverse_index.json`, `rules.json`, `symbol_signatures.json`) have changed since trust was granted, trust becomes stale and the user must re-confirm.
+**Trust is one-time by default.** Once a repo is trusted, the grant holds across every later profile change (refresh, re-bootstrap, teach) and never goes stale, so the user is never re-prompted to re-trust their own repo. The material-change → stale → re-prompt path below only happens under the `CHAMELEON_TRUST_REVALIDATE=1` kill switch.
 
-The MCP `detect_repo` tool returns `trust_state: "stale"` after a material change (not `"untrusted"` - that means no trust record exists at all). `using-chameleon` surfaces the re-prompt.
+Under the kill switch: if any of the 16 hashed profile artifacts (`.archetype_renames.json`, `archetypes.json`, `calls_index.json`, `canonicals.json`, `config.json`, `conventions.json`, `counterexamples.json`, `enforcement.json`, `exports_index.json`, `function_catalog.json`, `principles.md`, `idioms.md`, `profile.json`, `reverse_index.json`, `rules.json`, `symbol_signatures.json`) have changed since trust was granted, trust becomes stale and the user must re-confirm. The MCP `detect_repo` tool then returns `trust_state: "stale"` (not `"untrusted"` - that means no trust record exists at all), and `using-chameleon` surfaces the re-prompt.
 
-**Default config auto-re-grants trust on refresh.** With the built-in default (`trust.auto_preserve_when="always"`), a `/chameleon-refresh` (manual or auto) re-stamps and re-grants trust, so the user is **not** re-prompted on their own repo — `trust_state` returns to `trusted` without a `/chameleon-trust` step. The stale → re-prompt path above is what a user opts into by setting `trust.auto_preserve_when: null` in `config.json`. So if a user reports "it keeps asking me to trust after every refresh," check whether their `config.json` set `auto_preserve_when` to `null` or `"pulled_from_remote"`, or whether they are on an older engine that predates the `"always"` default.
+**Trust is one-time and survives refresh.** By default trust persists across every profile change (refresh, re-bootstrap, teach) and never goes stale, so the user is **not** re-prompted on their own repo. The `trust.auto_preserve_when` config only controls whether a refresh re-stamps the stored grant hash — it does **not** control re-prompting. The only thing that re-enables the stale → re-prompt path is `CHAMELEON_TRUST_REVALIDATE=1`; with it unset, setting `auto_preserve_when` to `null` or `"pulled_from_remote"` has no user-visible effect. So if a user reports "it keeps asking me to trust after every refresh," check whether `CHAMELEON_TRUST_REVALIDATE=1` is set in their environment.
 
 ## Enforcement starts in shadow
 
 A freshly trusted (or refreshed) profile runs enforcement in `shadow` mode by default: would-have-blocked events are logged but nothing blocks. This lets the repo measure its own false-positive rate before any edit is denied. Promote to `enforce` (set `enforcement.mode: "enforce"` in `config.json`) only after a clean shadow window — zero would-blocks on committed files, which `/chameleon-status` reports. Until then, blocking stays off and chameleon is purely advisory.
 
-Promotion is a TWO-step action: `config.json` is one of the trust-hashed artifacts, so editing it flips the profile to `stale` and disables all enforcement and canonical injection until trust is re-granted. After changing `enforcement.mode`, run `/chameleon-trust` again — otherwise the promotion silently turns chameleon OFF instead of on. The same applies to any other `config.json` edit.
+By default, promotion is a single edit: trust persists across the `config.json` change (it never goes stale), so setting `enforcement.mode: "enforce"` takes effect immediately with no `/chameleon-trust` step. (Only under `CHAMELEON_TRUST_REVALIDATE=1` does editing the trust-hashed `config.json` flip the profile to `stale` and require a re-grant — a TWO-step action there.)
 
 ## What to tell the user before running
 
-> Trust is per-user, per-repo. Granting trust means you've reviewed `profile.summary.md` and accept the canonical patterns it suggests. If a teammate later modifies the profile, you'll be re-prompted before chameleon resumes injecting context for you.
+> Trust is per-user, per-repo, and one-time: granting it means you've reviewed `profile.summary.md` and accept the patterns it suggests, and it stays in effect across later profile changes (including a teammate's). If a profile is later poisoned, the unsafe idioms/principles prose is screened out at the moment it would be shown to you, rather than re-prompting you to re-trust.
 
 > Type the repo root's directory name to confirm: **<basename of the repo root, the directory containing `.chameleon/`>**
 

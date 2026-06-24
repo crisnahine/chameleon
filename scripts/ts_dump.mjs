@@ -529,6 +529,14 @@ function extractFile(filePath) {
   // Enclosing class names, innermost last. Method signatures read this to record
   // which class they belong to without a second parse.
   const classStack = [];
+  // Base class (extends) parallel to classStack, innermost last; null for an
+  // unextended or anonymous class. Methods read the top to record base_class.
+  const classBaseStack = [];
+  // Enclosing namespace/module names, innermost last. Joined with the named
+  // classStack entries to form a method's qualified enclosing_class_path so a
+  // short class name does not collide across namespaces (matches the Python /
+  // Ruby dumps' qualified path).
+  const namespaceStack = [];
   // Enclosing callable names, innermost last. Call sites read this to record
   // which function they were invoked from.
   const callerStack = [];
@@ -640,10 +648,25 @@ function extractFile(filePath) {
         node.kind === ts.SyntaxKind.ClassExpression ||
         node.kind === ts.SyntaxKind.ObjectLiteralExpression);
     const isClass = isNamedClass || isClassSentinel;
+    // Namespace/module nesting contributes to the qualified path but is not a
+    // class frame. A string-literal module name (`declare module "x"`) has no
+    // useful path segment, so push null and filter it out when joining.
+    const isNamespace = node.kind === ts.SyntaxKind.ModuleDeclaration;
+    if (isNamespace) {
+      namespaceStack.push(node.name && typeof node.name.text === "string" ? node.name.text : null);
+    }
     if (isNamedClass) {
       classStack.push(node.name.text);
+      // Base only for real classes (interfaces carry no runtime base here).
+      classBaseStack.push(
+        node.kind === ts.SyntaxKind.ClassDeclaration ||
+          node.kind === ts.SyntaxKind.ClassExpression
+          ? heritageOf(node).ext
+          : null,
+      );
     } else if (isClassSentinel) {
       classStack.push(null);
+      classBaseStack.push(null);
     }
 
     // The class's decorator + heritage shape: the contract a decorator/base
@@ -683,6 +706,27 @@ function extractFile(filePath) {
       const callableName = callableNameOf(node);
       callerStack.push(callableName ?? "<anonymous>");
       if (callableName !== null && result.callable_signatures.length < MAX_CALLABLE_SIGNATURES) {
+        // Methods, constructors, and accessors belong to the enclosing class;
+        // plain functions do not and carry null so callers can distinguish them.
+        // callableKindOf returns "function" for FunctionDeclaration/Expression/Arrow
+        // and a distinct kind for every class-member shape, so != "function" covers all.
+        const isMethod = callableKindOf(node) !== "function";
+        const innermostClass = classStack.length ? classStack[classStack.length - 1] : null;
+        let enclosingClassPath; // omitted unless the method has a NAMED class
+        let baseClass; // omitted unless the named class extends something
+        let methodDecorators;
+        if (isMethod && innermostClass) {
+          // Qualified path: namespace segments then every named class frame
+          // (anonymous/object-literal sentinels are null and dropped).
+          const parts = [...namespaceStack, ...classStack].filter(Boolean);
+          enclosingClassPath = parts.join(".");
+          const innerBase = classBaseStack[classBaseStack.length - 1];
+          if (innerBase) baseClass = innerBase;
+        }
+        if (isMethod) {
+          const decs = decoratorsOf(node);
+          if (decs.length > 0) methodDecorators = decs;
+        }
         result.callable_signatures.push({
           name: callableName,
           kind: callableKindOf(node),
@@ -697,14 +741,13 @@ function extractFile(filePath) {
           // can only be paired by body identity.
           start_line: start,
           end_line: end,
-          // Methods, constructors, and accessors belong to the enclosing class;
-          // plain functions do not and carry null so callers can distinguish them.
-          // callableKindOf returns "function" for FunctionDeclaration/Expression/Arrow
-          // and a distinct kind for every class-member shape, so != "function" covers all.
-          enclosing_class:
-            callableKindOf(node) !== "function"
-              ? classStack[classStack.length - 1] ?? null
-              : null,
+          enclosing_class: isMethod ? innermostClass ?? null : null,
+          // Qualified class path + base + per-method decorators bring TS to
+          // parity with the Python/Ruby dumps. JSON.stringify omits the
+          // undefined ones (plain functions, unextended classes, no decorators).
+          enclosing_class_path: enclosingClassPath,
+          base_class: baseClass,
+          decorators: methodDecorators,
         });
       }
     } else if (frameStack.length > 0) {
@@ -758,6 +801,10 @@ function extractFile(filePath) {
 
     if (isClass) {
       classStack.pop();
+      classBaseStack.pop();
+    }
+    if (isNamespace) {
+      namespaceStack.pop();
     }
   }
   try {

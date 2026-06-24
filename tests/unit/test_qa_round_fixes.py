@@ -26,16 +26,18 @@ def _read(rel: str) -> str:
     return (REPO_ROOT / rel).read_text(encoding="utf-8")
 
 
-def test_trust_skill_documents_two_step_promotion():
+def test_trust_skill_documents_single_step_promotion_by_default():
+    # Trust persists across changes, so promoting enforcement is a single config
+    # edit by default; the two-step (re-trust) path is documented as kill-switch-only.
     text = _read("skills/chameleon-trust/SKILL.md")
-    assert "Promotion is a TWO-step action" in text
-    assert "run `/chameleon-trust` again" in text
+    assert "single edit" in text
+    assert "CHAMELEON_TRUST_REVALIDATE=1" in text
 
 
-def test_status_skill_documents_two_step_promotion():
+def test_status_skill_documents_single_step_promotion_by_default():
     text = _read("skills/chameleon-status/SKILL.md")
-    assert "then re-run `/chameleon-trust`" in text
-    assert "edit `config.json`, then `/chameleon-trust`" in text
+    assert "single edit" in text
+    assert "CHAMELEON_TRUST_REVALIDATE=1" in text
 
 
 @pytest.mark.real_judge_spawn

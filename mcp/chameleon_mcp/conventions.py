@@ -510,8 +510,9 @@ def extract_doc_coverage_conventions(
 # component.
 _TEST_BASENAME_RE = re.compile(r"\.(test|spec|stories|fixture)\.[A-Za-z0-9]+$")
 _RUBY_TEST_BASENAME_RE = re.compile(r"_(spec|test)\.rb$")
-# pytest/unittest: test_<x>.py (dominant), <x>_test.py, conftest.py.
-_PY_TEST_BASENAME_RE = re.compile(r"^(test_.+|.+_test|conftest)\.pyi?$")
+# pytest/unittest: test_<x>.py (dominant), <x>_test.py, conftest.py, and Django
+# startapp's default bare tests.py / test.py.
+_PY_TEST_BASENAME_RE = re.compile(r"^(test_.+|.+_test|conftest|tests?)\.pyi?$")
 _TEST_DIR_COMPONENTS = frozenset({"__tests__", "test", "tests", "spec", "specs", "cypress", "e2e"})
 # Top-level roots a mirrored test tree commonly lives under, paired with the
 # basename transform that turns a source stem into its test stem there.
@@ -571,6 +572,15 @@ def _candidate_test_paths(rel_path: str, *, language: str) -> list[tuple[str, st
         # Co-located: x.py -> test_x.py (pytest dominant) / x_test.py.
         candidates.append(("co-located test_", _join(dir_parts + [f"test_{stem}{ext}"])))
         candidates.append(("co-located _test", _join(dir_parts + [f"{stem}_test{ext}"])))
+        # Nested per-app tests/ package sibling to the source's own directory:
+        # myapp/views.py -> myapp/tests/test_views.py. This is the dominant
+        # Django/pytest layout (the analogue of the TS __tests__ sibling).
+        candidates.append(
+            ("nested tests/ test_", _join(dir_parts + ["tests", f"test_{stem}{ext}"]))
+        )
+        candidates.append(
+            ("nested tests/ _test", _join(dir_parts + ["tests", f"{stem}_test{ext}"]))
+        )
         # Mirrored tests/ tree: swap a leading source root for the test root, else
         # prefix it. The test stem keeps the pytest test_ prefix.
         for root in ("tests", "test"):
@@ -1441,6 +1451,72 @@ def extract_required_guards_conventions(files: list[ParsedFile]) -> dict:
     }
 
 
+# Python authz-guard signals (the DRF/Django analog of a Rails blanket
+# before_action). PRESENCE is the signal: a class that assigns one of these
+# attributes (any value, including AllowAny) has made an authz decision; so has
+# one extending an authz mixin or carrying an authz decorator. Tails only
+# (the last dotted segment) so `auth.login_required` matches `login_required`.
+_PY_AUTHZ_ATTRS = frozenset({"permission_classes", "authentication_classes"})
+_PY_AUTHZ_MIXINS = frozenset(
+    {"LoginRequiredMixin", "PermissionRequiredMixin", "UserPassesTestMixin"}
+)
+_PY_AUTHZ_DECORATORS = frozenset(
+    {"login_required", "permission_required", "user_passes_test", "staff_member_required"}
+)
+
+
+def _tails(names) -> set[str]:
+    """Last dotted segment of each name (``rest_framework.IsAuthenticated`` ->
+    ``IsAuthenticated``), for matching against the bare authz vocabulary."""
+    out: set[str] = set()
+    for n in names or ():
+        if isinstance(n, str) and n:
+            out.add(n.rsplit(".", 1)[-1])
+    return out
+
+
+def _python_file_has_authz_signal(parsed_file) -> bool:
+    """True when a file declares at least one view that made an authz decision:
+    a class assigning permission_classes/authentication_classes, extending an
+    authz mixin, or carrying an authz decorator (class- or function-level)."""
+    extras = getattr(parsed_file, "extras", None) or {}
+    for shape in extras.get("class_shapes", []) or ():
+        if set(shape.get("class_attrs") or ()) & _PY_AUTHZ_ATTRS:
+            return True
+        if _tails(shape.get("bases")) & _PY_AUTHZ_MIXINS:
+            return True
+        if _tails(shape.get("decorators")) & _PY_AUTHZ_DECORATORS:
+            return True
+    for sig in extras.get("callable_signatures", []) or ():
+        if _tails(sig.get("decorators")) & _PY_AUTHZ_DECORATORS:
+            return True
+    return False
+
+
+def extract_python_authz_guard_conventions(files: list[ParsedFile]) -> dict:
+    """Derive whether a Python view archetype conventionally restricts access.
+
+    The Python analog of ``extract_required_guards_conventions``. Per cohort, a
+    file is "guarded" if it declares any view that made an authz decision (see
+    ``_python_file_has_authz_signal``). When at least 60% of a cohort's files are
+    guarded (and the sample is large enough), the cohort records
+    ``authz_required`` so the edit-time lint can flag an unguarded view as an
+    advisory outlier. Self-gating: a non-view cohort (models, serializers) has no
+    authz signal and derives nothing.
+
+    Advisory data only -- authz is routinely inherited from a project base view,
+    so the consuming check treats a miss as a hint to confirm intent (and walks
+    the cohort's known bases first), never a hard failure.
+    """
+    if len(files) < MIN_SAMPLE_SIZE:
+        return {}
+    total = len(files)
+    guarded = sum(1 for f in files if _python_file_has_authz_signal(f))
+    if total == 0 or guarded / total < _REQUIRED_GUARD_THRESHOLD:
+        return {}
+    return {"authz_required": True, "frequency": round(guarded / total, 3), "sample_size": total}
+
+
 # Error-handling contract derivation. We measure, per archetype, how uniformly
 # the archetype's files express error handling, and record the dominant shape so
 # a data-backed principle can say "actions here rescue into the project error
@@ -2015,6 +2091,26 @@ def extract_all_conventions(
         inheritance_section = conventions["conventions"].get("inheritance", {})
         for archetype, files in files_by_archetype.items():
             guard_conv = extract_required_guards_conventions(files)
+            if not guard_conv:
+                continue
+            inh = inheritance_section.get(archetype)
+            if isinstance(inh, dict):
+                bases = list(inh.get("known_bases") or ())
+                dominant = inh.get("dominant_base")
+                if dominant and dominant not in bases:
+                    bases.append(dominant)
+                if bases:
+                    guard_conv["known_bases"] = sorted(bases)
+            conventions["conventions"].setdefault("required_guards", {})[archetype] = guard_conv
+    if language == "python":
+        # The Python analog of the Rails required-guard derivation: a DRF/Django
+        # view cohort that conventionally restricts access. Stored under the same
+        # required_guards key so the edit-time wiring and lint dispatch are
+        # shared; the lint branches on language. Reuses the inheritance result so
+        # a view inheriting authz from a known project base is not flagged.
+        inheritance_section = conventions["conventions"].get("inheritance", {})
+        for archetype, files in files_by_archetype.items():
+            guard_conv = extract_python_authz_guard_conventions(files)
             if not guard_conv:
                 continue
             inh = inheritance_section.get(archetype)

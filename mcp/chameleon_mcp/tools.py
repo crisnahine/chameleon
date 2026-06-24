@@ -82,28 +82,48 @@ def _envelope(data: dict, truncated: bool = False, next_cursor: str | None = Non
     return out
 
 
-def _sanitize_rules_value(value: object) -> object:
-    """Recursively neutralize tag-boundary tokens in a rules.json config value.
+def _sanitize_rules_value(value: object, *, drop_prose_strings: bool = False) -> object:
+    """Recursively screen a profile config value (rules.json / enforcement.json)
+    for the model surface. Trust now persists across changes, so the staleness gate
+    no longer keeps a poisoned-after-grant value out of the model-callable response.
 
-    rules.json is derived from committed (attacker-controllable) eslint /
-    rubocop / tsconfig config and stored largely verbatim: dict/list structures
-    whose keys and scalar values can be free text (eslint custom rule names,
-    message-template strings). Every string reaching the model surface must be
-    sanitized, mirroring the per-source parse_warning scrub get_rules already
-    applies. Non-string scalars (numbers, booleans, None) pass through.
+    A dict KEY that trips the prompt-injection scan drops its whole entry: config
+    KEYS are always identifiers (eslint/rubocop rule names, source names), so the
+    scan never false-drops a legit one. Tag-boundary tokens the scan does not cover
+    are neutralized on every surviving string.
+
+    String VALUES are handled by ``drop_prose_strings``:
+      - default (rules.json): tag-sanitize only. A lint message template legitimately
+        contains ``eval()`` / ``exec()`` / ``system:`` (e.g. "Avoid eval() calls"),
+        which trips the scan -- prose-dropping values would blank real rule messages,
+        a higher-frequency harm than a rare low-potency poisoned message value.
+      - True (enforcement.json): also drop a prose-tripping string value / list item.
+        That artifact carries only rule NAMES (identifiers) and engine-generated
+        reasons, never free-text messages, so dropping is safe and closes a poisoned
+        rule name that reaches the model as an ``active``/``demoted`` list entry.
     """
+    from chameleon_mcp.profile.loader import _prose_injection_unsafe
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
     if isinstance(value, str):
+        if drop_prose_strings and _prose_injection_unsafe(value):
+            return ""
         return sanitize_for_chameleon_context(value)
     if isinstance(value, dict):
-        return {
-            (sanitize_for_chameleon_context(k) if isinstance(k, str) else k): _sanitize_rules_value(
-                v
-            )
-            for k, v in value.items()
-        }
+        out: dict = {}
+        for k, v in value.items():
+            if isinstance(k, str) and _prose_injection_unsafe(k):
+                continue
+            clean_key = sanitize_for_chameleon_context(k) if isinstance(k, str) else k
+            out[clean_key] = _sanitize_rules_value(v, drop_prose_strings=drop_prose_strings)
+        return out
     if isinstance(value, (list, tuple)):
+        if drop_prose_strings:
+            return [
+                _sanitize_rules_value(v, drop_prose_strings=True)
+                for v in value
+                if not (isinstance(v, str) and _prose_injection_unsafe(v))
+            ]
         return [_sanitize_rules_value(v) for v in value]
     return value
 
@@ -130,12 +150,19 @@ def _sanitize_rule_items(items: list) -> list:
     """Sanitize a list of (source_key, config_value) rule entries for the model.
 
     Both the source key and the (nested) config value are profile-derived
-    strings, so both go through _sanitize_rules_value.
+    strings, so both go through _sanitize_rules_value. A source key that trips the
+    injection scan drops its whole entry: source keys are identifiers
+    (eslint/rubocop/formatting/typescript), so a legit one never trips, mirroring
+    the dict-key drop _sanitize_rules_value applies to the nested rule names.
     """
+    from chameleon_mcp.profile.loader import _prose_injection_unsafe
+
     clean: list = []
     for entry in items:
         if isinstance(entry, (list, tuple)) and len(entry) == 2:
             key, val = entry
+            if isinstance(key, str) and _prose_injection_unsafe(key):
+                continue
             clean_key = (
                 _sanitize_rules_value(key) if isinstance(key, (str, dict, list, tuple)) else key
             )
@@ -816,13 +843,15 @@ def detect_repo(file_path: str) -> dict:
     from_origin}`` the init skill reads to decide whether to auto-lock,
     ask, or skip.
 
-    trust_state values:
+    trust_state values (trust is one-time by default: it persists across profile
+    changes and "stale" only occurs under CHAMELEON_TRUST_REVALIDATE=1):
     - "n/a"        — no repo root detected
     - "untrusted"  — repo found, no .trust record
-    - "trusted"    — .trust record exists AND profile hash matches
-    - "stale"      — .trust record exists but profile changed since grant;
-                     user must re-confirm via /chameleon-trust before
-                     chameleon resumes injection
+    - "trusted"    — .trust record covers the root. By default this holds even
+                     after the profile changed since the grant
+    - "stale"      — kill-switch-only (CHAMELEON_TRUST_REVALIDATE=1): the record
+                     exists but the profile hash changed since grant; the user
+                     re-confirms via /chameleon-trust. Unreachable by default
 
     Two distinct ``legacy_trust_hint`` surfaces are emitted, mutually
     exclusive by trigger:
@@ -906,6 +935,8 @@ def detect_repo(file_path: str) -> dict:
     profile_corrupted = False
     profile_unsupported_schema = False
     profile_too_new = False
+    profile_framework: str | None = None
+    profile_language: str | None = None
     if profile_present:
         from chameleon_mcp.bootstrap.transaction import is_committed
 
@@ -922,6 +953,13 @@ def detect_repo(file_path: str) -> dict:
                 _peek = _json.load(fh)
             from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
 
+            if isinstance(_peek, dict):
+                _fw = _peek.get("framework")
+                if isinstance(_fw, str) and _fw:
+                    profile_framework = _fw
+                _lang = _peek.get("language")
+                if isinstance(_lang, str) and _lang:
+                    profile_language = _lang
             _sv = _peek.get("schema_version") if isinstance(_peek, dict) else None
             if _sv is not None and (isinstance(_sv, bool) or not isinstance(_sv, int)):
                 # schema_version is present but not a plain integer: a malformed /
@@ -1000,6 +1038,11 @@ def detect_repo(file_path: str) -> dict:
         "profile_status": profile_status,
         "trust_state": trust_state,
     }
+    # Descriptive profile metadata, surfaced when a healthy profile declares it.
+    if profile_language is not None:
+        data["language"] = profile_language
+    if profile_framework is not None:
+        data["framework"] = profile_framework
     if legacy_trust_hint_value is not None:
         data["legacy_trust_hint"] = legacy_trust_hint_value
         if legacy_repo_id_value is not None:
@@ -1616,11 +1659,16 @@ def get_pattern_context(file_path: str) -> dict:
         summary = arch_entry.get("summary") or ""
         if summary:
             # Free prose from archetypes.json (attacker-controllable in a committed
-            # profile). Sanitize before it enters the model-callable response, for
-            # parity with idioms below: an unsanitized summary could carry a
-            # </chameleon-context> tag-escape or a forged status header.
+            # profile). Two defenses, for parity with the idioms/principles prose:
+            # (1) drop it entirely if it trips the prompt-injection scan -- trust
+            # persists across profile changes, so the staleness gate no longer keeps
+            # a poisoned-after-grant summary out of the model-callable response; then
+            # (2) sanitize tag-escape / forged-header tricks the scan does not cover.
+            from chameleon_mcp.profile.loader import _prose_injection_unsafe
             from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
+            if _prose_injection_unsafe(summary):
+                summary = ""
             arch_data["summary"] = sanitize_for_chameleon_context(summary)
     else:
         arch_data["sub_buckets_count"] = 0
@@ -2800,7 +2848,8 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
     unresolvable / untrusted repo, missing index, unreadable module. Never
     fabricates an importer -- every site is a row the bootstrap recorded.
     """
-    from chameleon_mcp.phantom_imports import _current_export_names
+    from chameleon_mcp.lint_engine import detect_language
+    from chameleon_mcp.phantom_imports import _current_export_names, _python_current_export_names
     from chameleon_mcp.profile.loader import find_repo_root
     from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
     from chameleon_mcp.safe_open import safe_read_text
@@ -2867,7 +2916,15 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
         # current export set the existence check can't run -- fail open.
         return _envelope(dict(empty))
 
-    current, open_set = _current_export_names(content)
+    # The reverse index spans the TS and Python module graphs, so the live export
+    # set must be read with the file's own language reader -- the TS regex finds
+    # zero exports in a Python module, which would misreport every Python importer
+    # as a broken reference. Pass the absolute path so the Python reader can add
+    # an __init__.py package's sibling re-exports.
+    if detect_language(str(p)) == "python":
+        current, open_set = _python_current_export_names(content, p)
+    else:
+        current, open_set = _current_export_names(content)
 
     importers_out: list[dict] = []
     broken_out: list[dict] = []
@@ -3081,10 +3138,12 @@ def get_crossfile_context(repo: str) -> dict:
     Returns ``{"found": bool, "findings": [...]}`` where each finding is
     ``{symbol, module, count, high_confidence, sites: [{path, line}]}``. Fails
     open with ``found: False`` on any ambiguity (unresolvable / untrusted repo,
-    missing index). TS-only; Ruby has no static import-of-named-symbol.
+    missing index). TypeScript and Python (each module read with its own export
+    reader); Ruby has no static import-of-named-symbol.
     """
     from chameleon_mcp._thresholds import threshold_int
-    from chameleon_mcp.phantom_imports import _current_export_names
+    from chameleon_mcp.lint_engine import detect_language
+    from chameleon_mcp.phantom_imports import _current_export_names, _python_current_export_names
     from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
     from chameleon_mcp.safe_open import safe_read_text
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
@@ -3140,7 +3199,13 @@ def get_crossfile_context(repo: str) -> dict:
             # its current export set the existence check can't run for it -- skip
             # rather than guess a break.
             continue
-        current, open_set = _current_export_names(content)
+        # The index spans the TS and Python module graphs; read each module's
+        # live export set with its own language reader so a Python module's real
+        # exports are not all reported broken by the TS regex.
+        if detect_language(target_key) == "python":
+            current, open_set = _python_current_export_names(content, repo_root / target_key)
+        else:
+            current, open_set = _current_export_names(content)
         broken = index.broken_importers(target_key, current)
         if not broken:
             continue
@@ -4081,6 +4146,14 @@ def get_status(repo: str) -> dict:
         degraded = read_degraded_summary(threshold_int("DEGRADED_WINDOW_DAYS"))
     except Exception:
         degraded = None
+
+    # enforcement.json is committed (attacker-controllable) and trust persists
+    # across changes, so screen every rule name / demotion reason for injection
+    # before this status reaches the model. This artifact carries only rule NAMES
+    # and engine-generated reasons (no free-text lint messages), so drop_prose_strings
+    # is safe here -- a poisoned rule name reaching the model as an active/demoted
+    # entry is dropped, not merely tag-neutralized. Counts/booleans pass through.
+    enforcement = _sanitize_rules_value(enforcement, drop_prose_strings=True)
 
     out: dict = {"enforcement": enforcement}
     if review_ledger is not None:
@@ -7498,10 +7571,14 @@ def _regrant_trust_if_was_trusted(
     """Re-stamp the trust grant to the post-write profile hash when the profile
     was trusted before the write.
 
-    Best-effort: a failed re-grant leaves the profile stale (the pre-fix
-    behavior), never raises. ``grant_trust`` re-runs its idioms.md/principles.md
-    injection scan, so a poisoned teach is refused here and stays stale rather
-    than silently re-trusted.
+    Best-effort, never raises. ``grant_trust`` re-runs its idioms.md/principles.md
+    injection scan and raises ProfileInjectionError on a poisoned teach, which is
+    swallowed -- so the re-stamp is skipped. Under the default one-time-trust
+    policy (CHAMELEON_TRUST_REVALIDATE unset) the profile then stays TRUSTED on the
+    PRIOR grant, NOT "stale"; the injection defense for what reaches the model is
+    the render-time prose screen (loader.safe_prose_text / _prose_injection_unsafe
+    + the conventions/summary/idiom-coverage screens), not staleness. Only under
+    CHAMELEON_TRUST_REVALIDATE=1 does a skipped re-stamp surface as "stale".
     """
     if not (was_trusted and repo_id):
         return
@@ -8084,7 +8161,13 @@ _SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "you are now <mode>",
         re.compile(r"you\s+are\s+now\s+(in\s+)?[\w\s]{0,32}mode", re.IGNORECASE),
     ),
-    ("system role injection", re.compile(r"(<\s*/?\s*system\s*>|system\s*:\s*)", re.IGNORECASE)),
+    # `system: <directive>` is role injection; `System::Base` is a Ruby namespace
+    # (the trailing `(?!:)` excludes the `::` so a legit namespaced base/idiom is not
+    # flagged), and `\b` avoids matching inside `subsystem:`.
+    (
+        "system role injection",
+        re.compile(r"(<\s*/?\s*system\s*>|\bsystem\s*:(?!:))", re.IGNORECASE),
+    ),
     ("eval()", re.compile(r"\beval\s*\(", re.IGNORECASE)),
     ("exec()", re.compile(r"\bexec\s*\(", re.IGNORECASE)),
     ("rm -rf", re.compile(r"\brm\s+-rf\b", re.IGNORECASE)),
@@ -8280,13 +8363,21 @@ def propose_archetype_renames(repo: str, top_n: int = 8) -> dict:
         if canonical_entry:
             canonical_path = (canonical_entry.get("witness") or {}).get("path", "")
         alternatives = _propose_alternatives_for(name, arch or {}, canonical_entry)
+        # current_name / canonical_file (witness path) / paths_pattern are
+        # profile-derived strings that reach the model. They are identifiers, file
+        # paths, and globs (not free prose), so tag-boundary sanitization is the
+        # right screen -- a prose-injection scan would false-drop a legit glob like
+        # "app/**". load_profile_dir filters archetype KEYS but never these VALUES,
+        # so scrub them here at the tool boundary.
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _san
+
         rows.append(
             {
-                "current_name": name,
+                "current_name": _san(name),
                 "cluster_size": int((arch or {}).get("cluster_size", 0)),
-                "canonical_file": canonical_path,
-                "paths_pattern": (arch or {}).get("paths_pattern", ""),
-                "suggested_alternatives": alternatives,
+                "canonical_file": _san(canonical_path),
+                "paths_pattern": _san((arch or {}).get("paths_pattern", "")),
+                "suggested_alternatives": [_san(a) for a in alternatives],
             }
         )
 
@@ -8466,8 +8557,10 @@ def _append_rename_ledger_entries(
     balloon the ledger and blow the trust-check memory ceiling.
 
     The ledger lives at ``.chameleon/.archetype_renames.json`` and is
-    in ``_HASHED_ARTIFACTS`` so a teammate cannot smuggle a rename in
-    silently — modifying the ledger trips the material-change re-prompt.
+    in ``_HASHED_ARTIFACTS`` (the hash provides provenance / material-change
+    detection; under the default one-time trust it re-stamps with no re-prompt,
+    and only re-prompts under CHAMELEON_TRUST_REVALIDATE=1). The load-time guard
+    below is what actually keeps a hand-edited ledger from poisoning a refresh.
 
     Reads use ``safe_read_profile_artifact`` (O_NOFOLLOW + size cap),
     validates entries through ``ARCHETYPE_NAME_RE`` (so a hand-edited
@@ -8662,10 +8755,22 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     # whole .chameleon dir and does NOT copy protocol files, so any artifact not
     # written into txn_dir below is LOST — previously rename silently dropped
     # both of these.
+    # Source the RAW on-disk artifact, not loaded.conventions: load_profile_dir
+    # scrubs injection-heuristic hits out of its in-memory render copy, and a
+    # rename PERSISTS what it writes. Sourcing the scrubbed copy would erase a
+    # legitimate convention value (or whole archetype) that merely tripped the
+    # heuristic. Rename only remaps the per-archetype keys; every value must
+    # survive byte-for-byte. Fall back to the loaded copy on a corrupt artifact
+    # so rename never drops conventions.json wholesale.
     conventions_path = profile_dir / "conventions.json"
-    conventions_data = (
-        json.loads(json.dumps(loaded.conventions)) if conventions_path.is_file() else None
-    )
+    conventions_data = None
+    if conventions_path.is_file():
+        try:
+            from chameleon_mcp.profile.loader import _loads_hardened, _safe_read_artifact
+
+            conventions_data = _loads_hardened(_safe_read_artifact(conventions_path))
+        except Exception:
+            conventions_data = json.loads(json.dumps(loaded.conventions))
     if isinstance(conventions_data, dict):
         _conv_block = conventions_data.get("conventions")
         if isinstance(_conv_block, dict):
@@ -10624,13 +10729,13 @@ def doctor() -> dict:
                 "detail": (
                     "no .chameleon/config.json — using defaults. ON by default: "
                     "auto_refresh (drift_threshold=0.2, max_age_hours=168), "
-                    "auto_rename, and trust.auto_preserve_when=always (a refresh "
-                    "auto-re-grants trust, no re-prompt). OFF by default: "
+                    "auto_rename, and one-time trust (it persists across profile "
+                    "changes and a refresh never re-prompts). OFF by default: "
                     "canonical_ref (branch pinning) and production_ref (ref-pinned "
                     "derivation; auto-locked at init/refresh for origin-backed "
-                    "repos). Add a config.json to change these, e.g. "
-                    '{"trust": {"auto_preserve_when": null}} to be '
-                    "re-prompted for trust on each material refresh."
+                    "repos). Add a config.json to change these. To restore "
+                    "re-prompting when the profile changes after a grant, set "
+                    "CHAMELEON_TRUST_REVALIDATE=1 in the environment."
                 ),
             }
         )

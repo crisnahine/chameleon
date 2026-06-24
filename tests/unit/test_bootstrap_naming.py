@@ -255,6 +255,52 @@ class TestTsPriors:
         c = _cluster(bucket="(root)", members=["middleware.ts"])
         assert _base_name_for(c) == "middleware"
 
+    def test_python_prior_skipped_when_any_member_is_ruby(self):
+        # First member is .py (language tell = python), but a stray .rb trips the
+        # no-.rb-anywhere purity gate (mirroring the TS gate), so the python role
+        # prior is skipped rather than mislabeling a mixed cluster.
+        pure = _cluster(
+            bucket="src",
+            members=["src/a/models.py", "src/b/models.py", "src/c/models.py"],
+        )
+        assert _base_name_for(pure) == "model"
+        mixed = _cluster(
+            bucket="src",
+            members=["src/a/models.py", "src/b/models.py", "src/c/legacy.rb"],
+        )
+        assert _base_name_for(mixed) != "model"
+
+    def test_nestjs_controller_suffix(self):
+        # NestJS co-locates by feature; the role is in the filename suffix.
+        c = _cluster(
+            bucket="src/users",
+            members=["src/users/users.controller.ts", "src/auth/auth.controller.ts"],
+        )
+        assert _base_name_for(c) == "controller"
+
+    def test_nestjs_service_suffix(self):
+        c = _cluster(
+            bucket="src/users",
+            members=["src/users/users.service.ts", "src/auth/auth.service.ts"],
+        )
+        assert _base_name_for(c) == "service"
+
+    def test_nestjs_module_suffix(self):
+        c = _cluster(
+            bucket="src",
+            members=["src/app.module.ts", "src/users.module.ts"],
+        )
+        assert _base_name_for(c) == "module"
+
+    def test_nestjs_suffix_does_not_hijack_plain_component(self):
+        # A normal component cluster must still name 'component', not a suffix role.
+        c = _cluster(
+            bucket="src/components",
+            members=["src/components/Button.tsx", "src/components/Card.tsx"],
+            jsx=True,
+        )
+        assert _base_name_for(c) == "component"
+
     def test_ts_prior_skipped_when_any_member_is_ruby(self):
         # First member is .ts so the language tell says TS, but a stray .rb in
         # the cluster trips the no-.rb-anywhere purity gate; the TS prior is
@@ -288,6 +334,18 @@ class TestLooksLikeTest:
 
     def test_all_members_under_spec_dir(self):
         assert _looks_like_test("", ["a/spec/x.rb", "b/spec/y.rb"]) is True
+
+    def test_django_bare_tests_py_is_test(self):
+        # Django startapp's default myapp/tests.py has no test_ prefix or _test
+        # suffix, yet it is the app's test module.
+        assert _looks_like_test("shop", ["shop/tests.py", "blog/tests.py"]) is True
+
+    def test_bare_test_py_is_test(self):
+        assert _looks_like_test("pkg", ["pkg/test.py"]) is True
+
+    def test_django_bare_tests_py_cluster_names_test(self):
+        c = _cluster(bucket="shop", members=["shop/tests.py", "blog/tests.py"])
+        assert propose_archetype_name(c, set()) == "test"
 
     def test_non_test_cluster_returns_false(self):
         assert _looks_like_test("app/models", ["app/models/user.rb"]) is False

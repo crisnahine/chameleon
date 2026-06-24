@@ -384,9 +384,22 @@ def _load_artifacts(profile_dir: Path) -> tuple[dict, list[str]]:
     """
     skipped: list[str] = []
 
+    # Trust persists across profile changes, so the staleness gate no longer keeps
+    # a poisoned-after-grant profile out of the model-callable get_idiom_coverage
+    # response (the /chameleon-auto-idiom + /chameleon-refresh skills feed it to the
+    # model). All artifacts here are read fresh (bypassing load_profile_dir's scrub),
+    # so they get the same prose screen the hook render paths use: idioms.md /
+    # principles.md drop via _prose_injection_unsafe, conventions via
+    # scrub_conventions_node, archetype NAMES via the ARCHETYPE_NAME_RE key filter.
+    from chameleon_mcp.profile.loader import _prose_injection_unsafe, scrub_conventions_node
+    from chameleon_mcp.profile.schema import ARCHETYPE_NAME_RE
+
     idioms_text, idioms_status = _read_text_status(profile_dir / "idioms.md")
     if idioms_status == "unreadable":
         skipped.append("idioms.md unreadable (over-cap, directory, or corrupt)")
+    elif idioms_text and _prose_injection_unsafe(idioms_text):
+        idioms_text = ""
+        skipped.append("idioms.md dropped (contains a prompt-injection pattern)")
     idiom_blocks = parse_idiom_blocks(idioms_text) if idioms_text else []
     # A readable idioms.md with real content but NO recognizable structure (no
     # section header, no blocks) was hand-replaced with non-idiom prose — the
@@ -406,6 +419,9 @@ def _load_artifacts(profile_dir: Path) -> tuple[dict, list[str]]:
     if principles_text is None:
         principles: list[str] = []
         skipped.append("principles.md missing or unreadable")
+    elif _prose_injection_unsafe(principles_text):
+        principles = []
+        skipped.append("principles.md dropped (contains a prompt-injection pattern)")
     else:
         principles = extract_principle_lines(principles_text)
 
@@ -418,6 +434,8 @@ def _load_artifacts(profile_dir: Path) -> tuple[dict, list[str]]:
             loaded = json.loads(conv_text)
             if isinstance(loaded, dict):
                 conventions = loaded.get("conventions", {})
+                if isinstance(conventions, dict):
+                    scrub_conventions_node(conventions)
             else:
                 skipped.append("conventions.json unreadable (not a JSON object)")
         except (json.JSONDecodeError, AttributeError):
@@ -432,6 +450,14 @@ def _load_artifacts(profile_dir: Path) -> tuple[dict, list[str]]:
             loaded = json.loads(rules_text)
             if isinstance(loaded, dict):
                 rules = loaded.get("rules", {})
+                # lint_sources renders these KEYS; drop any that trips the
+                # injection scan. Legit lint-source keys are identifiers.
+                if isinstance(rules, dict):
+                    rules = {
+                        k: v
+                        for k, v in rules.items()
+                        if not (isinstance(k, str) and _prose_injection_unsafe(k))
+                    }
             else:
                 skipped.append("rules.json unreadable (not a JSON object)")
         except (json.JSONDecodeError, AttributeError):
@@ -446,7 +472,14 @@ def _load_artifacts(profile_dir: Path) -> tuple[dict, list[str]]:
             loaded = json.loads(arch_text)
             if isinstance(loaded, dict):
                 arch_map = loaded.get("archetypes", {})
-                archetypes = sorted(arch_map) if isinstance(arch_map, dict) else []
+                # covered.archetypes renders these NAMES; keep only valid archetype
+                # keys, the same filter load_profile_dir applies, so a poisoned name
+                # cannot reach the model.
+                archetypes = (
+                    sorted(k for k in arch_map if isinstance(k, str) and ARCHETYPE_NAME_RE.match(k))
+                    if isinstance(arch_map, dict)
+                    else []
+                )
             else:
                 skipped.append("archetypes.json unreadable (not a JSON object)")
         except (json.JSONDecodeError, AttributeError):

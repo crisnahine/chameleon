@@ -93,6 +93,42 @@ def _base_names(class_node: cst.ClassDef) -> list[str]:
     return out
 
 
+# Cap on captured class-body attribute names per class -- a presence signal, not
+# an inventory, so a generated megaclass cannot bloat the record.
+_MAX_CLASS_ATTRS = 50
+
+
+def _class_attr_names(class_node: cst.ClassDef) -> list[str]:
+    """Simple-name targets of direct class-body assignments, in source order.
+
+    Captures only that an attribute is assigned (e.g. ``permission_classes``,
+    ``queryset``, ``serializer_class``) -- never the value -- as a presence
+    signal for class-level configuration. Direct class-body statements only:
+    assignments inside method bodies are a new scope and are not descended.
+    """
+    out: list[str] = []
+    try:
+        statements = class_node.body.body
+    except AttributeError:
+        return out
+    for stmt in statements:
+        if not isinstance(stmt, cst.SimpleStatementLine):
+            continue
+        for small in stmt.body:
+            target = None
+            if isinstance(small, cst.Assign):
+                for tgt in small.targets:
+                    if isinstance(tgt.target, cst.Name):
+                        out.append(tgt.target.value)
+            elif isinstance(small, cst.AnnAssign) and isinstance(small.target, cst.Name):
+                target = small.target.value
+            if target:
+                out.append(target)
+            if len(out) >= _MAX_CLASS_ATTRS:
+                return out[:_MAX_CLASS_ATTRS]
+    return out
+
+
 def _import_specifier(node) -> list[tuple[str, str]]:
     """``[module, kind]`` pairs for one Import / ImportFrom node.
 
@@ -276,6 +312,9 @@ class _Collector(cst.CSTVisitor):
                         # that read the TS-shaped class_shapes pick up the base too.
                         "extends": bases[0] if bases else None,
                         "decorators": _decorator_targets(node.decorators),
+                        # Presence of class-level config attributes (e.g. DRF's
+                        # permission_classes) -- target names only, no values.
+                        "class_attrs": _class_attr_names(node),
                     }
                 )
             self._classes.append({"name": name, "base": bases[0] if bases else None, "path": path})

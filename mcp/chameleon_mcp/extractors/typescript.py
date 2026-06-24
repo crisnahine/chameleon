@@ -349,6 +349,13 @@ class TypeScriptExtractor:
                 "to use the TypeScript extractor."
             )
         env = os.environ.copy()
+        # Defense-in-depth, matching the Ruby/Python extractors: drop the Node
+        # interpreter-option vars (the analogues of RUBYOPT / PYTHONSTARTUP) so a
+        # poisoned NODE_OPTIONS=--require ... can't preload code before
+        # ts_dump.mjs runs. NODE_PATH is load-bearing (it points Node at the
+        # bundled node_modules) and is set explicitly below, so it is NOT scrubbed.
+        env.pop("NODE_OPTIONS", None)
+        env.pop("NODE_REPL_EXTERNAL_MODULE", None)
         env["NODE_PATH"] = str(node_modules)
         env["CHAMELEON_NODE_MODULES"] = str(node_modules)
 

@@ -224,10 +224,14 @@ def test_stale_trust_does_not_block_stop(make_trusted_repo):
     save_state(st, data_dir, sid)
 
     # Override the fixture's matching hash so the not-stale gate reads "stale".
-    with patch("chameleon_mcp.profile.trust.hash_profile", return_value="DRIFTED-DOES-NOT-MATCH"):
+    # Staleness only exists under the kill switch (trust persists by default).
+    with patch(
+        "chameleon_mcp.profile.trust.hash_profile",
+        return_value="DRIFTED-DOES-NOT-MATCH",
+    ):
         out = _run_stop(
             {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
-            env={"CHAMELEON_ENFORCE": "1"},
+            env={"CHAMELEON_ENFORCE": "1", "CHAMELEON_TRUST_REVALIDATE": "1"},
         )
     assert out.get("decision") != "block"
 

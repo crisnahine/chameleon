@@ -149,7 +149,11 @@ def _run_stop(payload, env, *, still_blockable: bool = True):
 
 
 def _stop_payload(repo, *, subagent: bool = False, stop_hook_active: bool = False) -> dict:
-    payload = {"session_id": SID, "cwd": str(repo), "stop_hook_active": stop_hook_active}
+    payload = {
+        "session_id": SID,
+        "cwd": str(repo),
+        "stop_hook_active": stop_hook_active,
+    }
     if subagent:
         payload["hook_event_name"] = "SubagentStop"
     return payload
@@ -190,7 +194,8 @@ def test_subagent_stop_writes_nothing(make_trusted_repo):
 def test_attestation_env_kill_switch_writes_nothing(make_trusted_repo):
     repo, data_dir, sid, profile_dir = make_trusted_repo(mode="enforce")
     out, _exit = _run_stop(
-        _stop_payload(repo), env={"CHAMELEON_ENFORCE": "1", "CHAMELEON_ATTESTATION": "0"}
+        _stop_payload(repo),
+        env={"CHAMELEON_ENFORCE": "1", "CHAMELEON_ATTESTATION": "0"},
     )
     assert out == {}
     assert _records() == []
@@ -219,9 +224,9 @@ def test_unobservable_paths_write_nothing(make_trusted_repo):
     assert out == {}
     assert _records() == []
 
-    # Stale hash.
+    # Stale hash (only stale under the kill switch; trust persists by default).
     with patch("chameleon_mcp.profile.trust.hash_profile", return_value="DRIFTED"):
-        out, _exit = _run_stop(_stop_payload(repo), env=env)
+        out, _exit = _run_stop(_stop_payload(repo), env={**env, "CHAMELEON_TRUST_REVALIDATE": "1"})
     assert out == {}
     assert _records() == []
 
@@ -279,7 +284,10 @@ def test_suppressed_session_writes_minimal_attestation(make_trusted_repo):
 
 def test_ungoverned_triple_and_classification(make_trusted_repo):
     exports_index = json.dumps(
-        {"schema_version": 1, "files": {"src/Widget.ts": {"names": ["Widget"], "open": False}}}
+        {
+            "schema_version": 1,
+            "files": {"src/Widget.ts": {"names": ["Widget"], "open": False}},
+        }
     )
     repo, data_dir, sid, profile_dir = make_trusted_repo(
         mode="enforce", extra_profile_files={"exports_index.json": exports_index}
@@ -371,7 +379,11 @@ def test_session_overrides_embedded_and_truncation_counted(make_trusted_repo, mo
     record_override(REPO_ID, "eval-call", rel_path="a.rb", session_id=sid, observed_at=100)
     record_override(REPO_ID, "eval-call", rel_path="b.rb", session_id=sid, observed_at=200)
     record_override(
-        REPO_ID, "secret-detected-in-content", rel_path="c.rb", session_id=sid, observed_at=300
+        REPO_ID,
+        "secret-detected-in-content",
+        rel_path="c.rb",
+        session_id=sid,
+        observed_at=300,
     )
     record_override(REPO_ID, "eval-call", rel_path="z.rb", session_id="other", observed_at=400)
 

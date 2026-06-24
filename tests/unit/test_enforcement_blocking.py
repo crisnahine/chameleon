@@ -249,6 +249,7 @@ def test_stale_trust_does_not_block_at_l2(tmp_path: Path):
     sid = "s-stale"
     _seed_level(tmp_path, repo_id, sid, str(cand), level=LEVEL_L2)
 
+    # Staleness only exists under the kill switch; trust persists by default.
     out = _run_verify(
         repo=repo,
         repo_id=repo_id,
@@ -256,7 +257,7 @@ def test_stale_trust_does_not_block_at_l2(tmp_path: Path):
         tmp_path=tmp_path,
         file_path=str(cand),
         session_id=sid,
-        env={"CHAMELEON_ENFORCE": "1"},
+        env={"CHAMELEON_ENFORCE": "1", "CHAMELEON_TRUST_REVALIDATE": "1"},
         stale=True,
     )
     assert out.get("decision") != "block"
