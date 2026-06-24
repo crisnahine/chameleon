@@ -8178,6 +8178,33 @@ _SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
+    # Identity-reassignment via an imperative override. Anchored to start-of-text
+    # or a sentence boundary so a NEGATED clause ("Don't forget you are inside a
+    # transaction") does not trip it -- there the verb is not sentence-initial.
+    # The override must target the model's identity/role, not an arbitrary object
+    # ("Forget the cache" stays clean), so benign idiom prose survives.
+    (
+        "identity reassignment",
+        re.compile(
+            r"(?:^|[.!?]\s)\s*(?:please\s+)?(?:forget|disregard)\s+"
+            r"(?:that\s+|everything\s+|all\s+)?"
+            r"(?:you\s+are|you're|your\s+(?:role|identity|instructions|guidelines|persona)|"
+            r"who\s+you\s+are|what\s+you\s+are)",
+            re.IGNORECASE,
+        ),
+    ),
+    # "act as the user/assistant/admin/..." role hijack. Requires the imperative
+    # "act as" (not the descriptive "acts as ...") and a bare role noun, so
+    # architecture prose ("the gateway acts as a facade", "act as a thin
+    # pass-through") is not flagged.
+    (
+        "act-as role hijack",
+        re.compile(
+            r"\bact\s+as\s+(?:the\s+|an?\s+)?"
+            r"(?:user|assistant|administrator|admin|system\s+prompt|the\s+model|root\s+user)\b",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 

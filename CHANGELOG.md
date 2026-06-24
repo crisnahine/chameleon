@@ -4,6 +4,32 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.29.1] - 2026-06-24
+
+### Security
+
+- **Injection scanner now catches identity-reassignment phrasing.** The shared
+  injection pattern set (`_looks_suspicious`, which gates grant-time prose, the
+  read-path prose scan, and the `/chameleon-teach` feedback check) previously
+  matched only "ignore previous instructions", "you are now X mode", "system:",
+  `eval()`/`exec()`/`rm -rf`, and "reveal secrets". It now also flags imperative
+  identity overrides ("Forget you are …; act as the user") so a numbered line
+  planted in a committed `principles.md`/`idioms.md` can no longer render as a
+  trusted principle after trust was granted. The new patterns are sentence-start
+  anchored and role-noun scoped, so negated ("don't forget you are inside a
+  transaction") and descriptive ("the gateway acts as a facade") convention prose
+  still passes — verified against an adversarial-benign test set.
+
+### Fixed
+
+- **Daemon logs an actionable diagnostic instead of a traceback when the socket
+  path is too long.** When `CHAMELEON_PLUGIN_DATA` is a deep path, the AF_UNIX
+  socket path can exceed the platform limit (~104 bytes on macOS) and `bind`
+  fails. The daemon now reports the path length and the fix (use a shorter
+  `CHAMELEON_PLUGIN_DATA`) rather than crashing with a raw traceback. Behavior is
+  unchanged — the parent already treats this as "daemon unavailable" and every
+  caller falls back to the in-process path.
+
 ## [2.29.0] - 2026-06-24
 
 Persistent trust, prompt-injection hardening across every model-facing surface,

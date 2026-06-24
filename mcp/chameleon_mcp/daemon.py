@@ -750,7 +750,26 @@ def run_daemon() -> int:
         return 1
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.bind(str(sock_path))
+    try:
+        sock.bind(str(sock_path))
+    except OSError as e:
+        # AF_UNIX sun_path is length-capped (~104 bytes on macOS, ~108 on Linux).
+        # A long CHAMELEON_PLUGIN_DATA pushes the socket path past the limit and
+        # bind fails with ENAMETOOLONG. Not fatal: the parent reads a non-zero
+        # exit as "daemon unavailable" and every caller falls back to the
+        # in-process path. Emit an actionable one-liner instead of a raw
+        # traceback so the lost speedup is diagnosable.
+        try:
+            sock.close()
+        except OSError:
+            pass
+        sys.stderr.write(
+            f"[chameleon-daemon] cannot bind socket ({e}); path is "
+            f"{len(str(sock_path).encode())} bytes (AF_UNIX limit ~104). Set "
+            "CHAMELEON_PLUGIN_DATA to a shorter path to enable the daemon; hooks "
+            "use the in-process path meanwhile\n"
+        )
+        return 1
     from chameleon_mcp.plugin_paths import secure_chmod
 
     secure_chmod(sock_path, 0o600)
