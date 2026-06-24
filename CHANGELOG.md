@@ -4,6 +4,41 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.27.0] - 2026-06-24
+
+Python reaches full feature parity with TypeScript and Ruby. Building on the
+libcst-backed Python support, this closes the remaining derivation, cross-file,
+lint, and framework-awareness gaps, so a Python repo is guided exactly the way a
+TypeScript or Ruby repo is. Validated end-to-end on real Django, Flask, and
+FastAPI repos, with TypeScript and Ruby behavior held identical on every shared
+per-language code path.
+
+### Added
+
+- **Cross-file intelligence for Python.** Exports/reverse/calls indexes,
+  phantom-import and phantom-symbol detection, signature contract-diff, and
+  forward-definition hydration, resolving Python's dotted/relative module forms,
+  including `__init__` package re-exports, PEP 562 `__getattr__`, and compiled
+  `.so`/`.pyd` submodules.
+- **Inheritance-convention derivation** for Python (Django `models.Model`, DRF
+  `APIView`), surfaced in the SessionStart block and the per-edit advisory.
+- **Security, style, test-quality, and naming lint** for Python: eval/exec,
+  command-injection and insecure-deserialization sinks, black/ruff/flake8 style,
+  pytest/unittest test-quality, and PEP 8 identifier casing.
+- **Framework awareness:** Django model/migration co-change, the Python<->TS
+  hybrid-frontend hint, and per-edit off-pattern counterexamples.
+
+### Fixed
+
+- A Ruby string/comment stripper that hard-blocked valid Ruby in enforce mode (a
+  `#` inside a string was read as a comment), and the symmetric case where a
+  `<<~` heredoc token mentioned in a comment hid a sink on the lines below it.
+- A teach/refresh race that could silently drop a just-taught idiom, now
+  serialized on the idioms lock.
+- Tool-surface hardening: trust-gating and sanitization of profile-derived
+  strings reaching the model, an atomic `idioms.md` write, and a temp-dir
+  root-guard bypass.
+
 ## [2.26.0] - 2026-06-23
 
 Python support, with framework awareness for Django, Flask, and FastAPI. Python
