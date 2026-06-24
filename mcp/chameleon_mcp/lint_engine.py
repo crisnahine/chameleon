@@ -553,27 +553,37 @@ def _blank_ruby_percent_literals(content: str) -> str:
     return _RUBY_PERCENT_LITERAL.sub(_blank_match_to_spaces, content)
 
 
+# The `(?<!<<)(?<!<<~)(?<!<<-)` guard before each quote makes the string alts skip
+# a QUOTED HEREDOC DELIMITER (`<<~"EOF"` / `<<-'EOF'` / `<<"EOF"`): that quote opens
+# a heredoc, not a string, and must be left for the heredoc pass that runs after.
+# Without it, this pass (which precedes the heredoc pass so a `<<~` inside a comment
+# is blanked as a comment, not honored as a heredoc) would eat the delimiter and the
+# heredoc body below it would be scanned as code.
 _RUBY_STR_OR_LINE_COMMENT = re.compile(
-    r'"(?:\\.|[^"\\])*"'  # double-quoted string (Ruby strings may span newlines)
-    r"|'(?:\\.|[^'\\])*'"  # single-quoted string
+    r'(?<!<<)(?<!<<~)(?<!<<-)"(?:\\.|[^"\\])*"'  # double-quoted string (not a heredoc delim)
+    r"|(?<!<<)(?<!<<~)(?<!<<-)'(?:\\.|[^'\\])*'"  # single-quoted string (not a heredoc delim)
     r"|#[^\n]*",  # line comment
     re.DOTALL,
 )
 
 
 def _strip_ruby_strings_and_comments(content: str) -> str:
-    # Heredocs and =begin/=end block comments are unambiguous multi-line spans;
-    # blank them first so their bodies can't open a stray string/comment below.
-    out = _blank_ruby_heredocs(content)
-    out = _RUBY_BLOCK_COMMENT.sub(_blank_match_to_spaces, out)
+    # =begin/=end block comments first: unambiguous, line-anchored multi-line spans.
+    out = _RUBY_BLOCK_COMMENT.sub(_blank_match_to_spaces, content)
     # Strings and line comments are resolved in ONE alternation pass so that
     # position order decides which claims a shared character: a `#` inside a
     # "..."/'...' string is consumed by the string (not read as a comment opener,
     # which would leave the quote dangling and pair it forward to a later line),
-    # and a `"` inside a `# ...` comment is consumed by the comment. Stripping
-    # comments and strings as separate sequential passes mis-handles whichever
-    # construct the second pass would have claimed.
+    # and a `"` (or a `<<~HEREDOC` token) inside a `# ...` comment is consumed by
+    # the comment. This pass MUST precede the heredoc pass: a `<<~TOKEN` written
+    # inside a comment is not a real heredoc opener, and blanking the comment here
+    # first stops _blank_ruby_heredocs from honoring it and swallowing the code
+    # (incl. eval/exec sinks) below it to end-of-file.
     out = _RUBY_STR_OR_LINE_COMMENT.sub(_blank_match_to_spaces, out)
+    # Heredocs after strings/comments: any `<<~TOKEN` that survives is in real
+    # value position. A heredoc body's own `#`/`"`/`<<` were already blanked above
+    # but the body is blanked wholesale here regardless, so that is harmless.
+    out = _blank_ruby_heredocs(out)
     # Percent-literals last: a `%` inside a now-blanked string can't start one.
     return _blank_ruby_percent_literals(out)
 

@@ -503,11 +503,22 @@ def _module_exports(module: cst.Module, file_path: str | None = None) -> tuple[l
         if base in ("__init__.py", "__init__.pyi"):
             try:
                 pkg_dir = os.path.dirname(file_path)
+                # A PEP 562 module-level __getattr__ can export names that cannot
+                # be enumerated statically, so the package's export set is open --
+                # otherwise adding the enumerable siblings would flip a sparse
+                # __init__ to a CLOSED set that false-flags a lazily-exported name.
+                if "__getattr__" in names:
+                    open_set = True
                 for entry in os.listdir(pkg_dir):
                     if entry.startswith("__"):
                         continue
                     if entry.endswith((".py", ".pyi")):
                         names.add(entry.rsplit(".", 1)[0])
+                    elif entry.endswith((".so", ".pyd")):
+                        # Compiled extension submodule; the module name is the first
+                        # dot segment (platform/ABI tags follow, e.g.
+                        # _speedups.cpython-311-darwin.so).
+                        names.add(entry.split(".", 1)[0])
                     elif os.path.isfile(
                         os.path.join(pkg_dir, entry, "__init__.py")
                     ) or os.path.isfile(os.path.join(pkg_dir, entry, "__init__.pyi")):
@@ -516,16 +527,6 @@ def _module_exports(module: cst.Module, file_path: str | None = None) -> tuple[l
                 pass
 
     return sorted(names), open_set
-
-
-def _ast_dotted_name(node) -> str | None:
-    """Flatten a stdlib-``ast`` Name/Attribute into a dotted string, else None."""
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        base = _ast_dotted_name(node.value)
-        return f"{base}.{node.attr}" if base else None
-    return None
 
 
 def _recover_with_ast(file_path: str, content: str) -> dict | None:

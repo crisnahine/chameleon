@@ -1698,7 +1698,11 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
 
 
 def _counterexample_section(
-    archetype: str | None, repo_root: Path | None, witness_excerpt: str = ""
+    archetype: str | None,
+    repo_root: Path | None,
+    witness_excerpt: str = "",
+    *,
+    language: str | None = None,
 ) -> str:
     """A real off-pattern counterexample for the archetype, paired with the witness.
 
@@ -1766,7 +1770,7 @@ def _counterexample_section(
                 isinstance(over, str)
                 and over
                 and witness_excerpt
-                and _find_import_line(witness_excerpt, over)
+                and _find_import_line(witness_excerpt, over, language)
             ):
                 continue
             snippets.append(_safe(snippet))
@@ -2576,7 +2580,14 @@ def preflight_and_advise() -> int:
     # positive/negative contrast beats a positive example alone. This is a
     # chameleon "do NOT write it this way" directive, so like the match-quality
     # lead it stays OUTSIDE the imitate-spotlight.
-    counterexample = _counterexample_section(archetype_name, repo_root_path, excerpt_content)
+    from chameleon_mcp.lint_engine import detect_language as _detect_lang
+
+    counterexample = _counterexample_section(
+        archetype_name,
+        repo_root_path,
+        excerpt_content,
+        language=_detect_lang(file_path) if file_path else None,
+    )
     if counterexample:
         block += counterexample + "\n\n"
     if canonical.get("missing"):
