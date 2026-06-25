@@ -4,6 +4,33 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.32.0] - 2026-06-25
+
+The turn-end duplication advisory now grounds its reuse argument in how
+load-bearing the original is, and a session-index robustness gap is closed.
+
+### Added
+
+- **Caller-grounded duplication verdict.** When the turn-end gate confirms a new
+  function re-implements an existing one, the advisory now appends how many
+  committed sites already call the original ("... reuse it; already called from
+  N sites"). The count comes from the calls index that already backs the judge's
+  cross-file caller facts, so there is no new artifact and no extra parse, and it
+  draws on the same deterministically graded edges (so it can miss dynamic
+  dispatch and rarely overcount a binding-shadowed import). A function called
+  only by its own recursion is not counted, so a purely recursive original never
+  renders a false "called from 1 site"; an original with no recorded callers
+  keeps the plain "reuse it". Advisory-only, fails open. Existing repos get it
+  immediately (it reads the calls index already in the profile).
+
+### Fixed
+
+- **`build_candidate_index` isolates per session file.** An unparseable file in
+  the session set abandoned every file after it (the within-session duplicate
+  index then held only committed-catalog entries), contradicting the docstring
+  and the per-file handling the gather passes already use. One bad file now
+  contributes nothing without dropping the files after it.
+
 ## [2.31.0] - 2026-06-25
 
 Ruby cross-file blast radius, plus per-language gaps closed by a proactive

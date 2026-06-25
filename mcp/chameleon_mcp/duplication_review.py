@@ -74,14 +74,21 @@ def build_candidate_index(repo_root: Path, session_files: list[str]) -> Candidat
         from chameleon_mcp._thresholds import threshold_int
         from chameleon_mcp.tools import parse_edited_functions
 
-        for path in session_files[: threshold_int("DUPLICATION_INDEX_MAX_FILES")]:
-            rel = _repo_rel(repo_root, path)
-            for pf in parse_edited_functions(repo_root, path):
-                idx.add_function(
-                    rel, pf.name, body_hash=pf.body_hash, body_hash_pnorm=pf.body_hash_pnorm
-                )
+        cap = threshold_int("DUPLICATION_INDEX_MAX_FILES")
     except Exception:
-        pass
+        return idx
+    # Per-file isolation, like the gather passes: one unparseable session file
+    # contributes nothing without abandoning the files after it.
+    for path in session_files[:cap]:
+        rel = _repo_rel(repo_root, path)
+        try:
+            parsed = parse_edited_functions(repo_root, path)
+        except Exception:
+            continue
+        for pf in parsed:
+            idx.add_function(
+                rel, pf.name, body_hash=pf.body_hash, body_hash_pnorm=pf.body_hash_pnorm
+            )
     return idx
 
 
@@ -110,6 +117,14 @@ class Finding:
     # existing body to compare against it conservatively omits everything —
     # even byte-for-byte copies.
     existing_excerpt: str = ""
+    # Committed external callers of the existing function, from the calls
+    # index. A positive int turns "reuse it" into "reuse it; already called
+    # from N sites" — the strongest reuse argument is that the original is
+    # load-bearing. None means the index recorded no callers, only the
+    # function's own recursion, or is absent, so the advisory drops the clause
+    # rather than claim zero. An estimate, not a census: it misses dynamic
+    # dispatch and can rarely overcount a binding-shadowed import.
+    called_from_n_sites: int | None = None
 
 
 def _parse(repo_root: Path, path: str):
@@ -125,12 +140,63 @@ def _lang_of(path: str):
     return _lang_from_path(path)
 
 
+def _load_calls(repo_root):
+    """The committed calls index for ``repo_root``, or None. Fails open.
+
+    Indirection over ``load_calls_index`` so the gatherers can be tested with a
+    stubbed index and so a missing artifact never reaches the per-finding loop.
+    """
+    try:
+        from chameleon_mcp.calls_index import load_calls_index
+
+        return load_calls_index(repo_root)
+    except Exception:
+        return None
+
+
+def _caller_count(calls, rel: str, name: str) -> int | None:
+    """Committed external callers of ``rel::name``, or None.
+
+    None when the calls index is absent, records no callers, or records only the
+    function's own recursion (a function called solely by itself is not
+    "reused", so the advisory drops the clause). The figure is the index's exact
+    graded-edge total — the same edges the judge's caller facts use, so it can
+    miss dynamic dispatch and rarely overcount a binding-shadowed import; an
+    estimate, not a census. Self-calls are only filtered when the stored rows
+    are complete (not truncated); a capped list might hide an external caller,
+    so the total stands.
+    """
+    if calls is None:
+        return None
+    try:
+        entry = calls.callers_of(rel, name)
+        if not entry:
+            return None
+        total = entry.get("total")
+        if not isinstance(total, int) or isinstance(total, bool) or total <= 0:
+            return None
+        rows = entry.get("callers") or []
+        if (
+            not entry.get("truncated")
+            and rows
+            and all(
+                isinstance(r, dict) and r.get("path") == rel and r.get("caller") == name
+                for r in rows
+            )
+        ):
+            return None
+        return total
+    except Exception:
+        return None
+
+
 def gather_body_match_findings(repo_root: Path, edited_files: list[str], index, lang) -> list:
     try:
         from chameleon_mcp._thresholds import threshold_int
 
         max_files = threshold_int("DUPLICATION_REVIEW_MAX_FILES")
         max_findings = threshold_int("DUPLICATION_REVIEW_MAX_FINDINGS")
+        calls = _load_calls(repo_root)
         exact: list = []
         pnorm: list = []
         for path in edited_files[:max_files]:
@@ -165,6 +231,7 @@ def gather_body_match_findings(repo_root: Path, edited_files: list[str], index, 
                     existing_name=hit.name,
                     existing_file=hit.file,
                     existing_excerpt=existing_excerpt,
+                    called_from_n_sites=_caller_count(calls, hit.file, hit.name),
                 )
                 (exact if match_type == "exact" else pnorm).append(f)
         return (exact + pnorm)[:max_findings]
@@ -194,6 +261,7 @@ def gather_semantic_findings(repo_root: Path, edited_files: list[str], catalog, 
         max_findings = threshold_int("DUPLICATION_REVIEW_MAX_FINDINGS")
         excerpt_lines = threshold_int("DUPLICATION_BODY_EXCERPT_LINES")
         min_shared = threshold_int("DUPLICATION_SEMANTIC_MIN_SHARED_TOKENS")
+        calls = _load_calls(repo_root)
         out: list = []
         for path in edited_files[:max_files]:
             if lang is not None and _lang_of(path) != lang:
@@ -258,6 +326,7 @@ def gather_semantic_findings(repo_root: Path, edited_files: list[str], catalog, 
                         existing_name=top["name"],
                         existing_file=top["file"],
                         existing_excerpt=existing_excerpt,
+                        called_from_n_sites=_caller_count(calls, top["file"], top["name"]),
                     )
                 )
         return out[:max_findings]
@@ -455,10 +524,15 @@ def format_duplication_advisory(confirmed: list) -> list:
     n = len(confirmed)
     lines = [f"[\U0001f98e chameleon: {n} possible duplicate{'s' if n != 1 else ''}]"]
     for f in confirmed:
+        suffix = "reuse it"
+        count = f.called_from_n_sites
+        if isinstance(count, int) and count > 0:
+            sites = "1 site" if count == 1 else f"{count} sites"
+            suffix = f"reuse it; already called from {sites}"
         lines.append(
             sanitize_for_chameleon_context(
                 f"{f.new_name} ({f.new_file}:{f.line}) re-implements "
-                f"{f.existing_name} ({f.existing_file}) — reuse it."
+                f"{f.existing_name} ({f.existing_file}) — {suffix}."
             )
         )
     return lines
