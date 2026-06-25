@@ -4,6 +4,25 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.32.2] - 2026-06-25
+
+Archetype renames now serialize against the team-convention writers, closing a
+silent lost-write race.
+
+### Fixed
+
+- **Archetype renames hold the write locks.** `apply_archetype_renames` (the
+  engine behind archetype renaming) did a read-modify-write of conventions.json,
+  counterexamples.json, and idioms.md and committed it via the atomic dir-swap
+  WITHOUT acquiring the `.idioms.lock` / `.conventions.lock` the teach and refresh
+  writers use. A competing-import teach or an auto-refresh that landed between the
+  rename's read and its swap was therefore silently clobbered -- a success-reported
+  write that then vanished. The rename now wraps its whole read-modify-write in the
+  same `.idioms`-then-`.conventions` write-lock pair (`blocking_timeout=10.0`) that
+  bootstrap and refresh already hold, so a concurrent teach finishes first and the
+  rename reads its post-teach state. The lock order is the same everywhere
+  (`.idioms` before `.conventions`), so a rename and a refresh cannot deadlock.
+
 ## [2.32.1] - 2026-06-25
 
 The team-convention write paths now block-and-retry on a contended lock instead

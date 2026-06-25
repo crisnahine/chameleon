@@ -8995,8 +8995,10 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
     """
     from chameleon_mcp import index_db
     from chameleon_mcp.bootstrap.transaction import atomic_profile_commit
+    from chameleon_mcp.locks import LockHeldError
     from chameleon_mcp.profile.loader import load_profile_dir
     from chameleon_mcp.profile.trust import hash_profile
+    from chameleon_mcp.profile.trust import repo_data_dir as _rdd
 
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
     if resolved_path is None:
@@ -9016,251 +9018,269 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
             {"status": "failed", "error": "no .chameleon/ directory (run /chameleon-init first)"}
         )
 
+    lock_dir = _rdd(_compute_repo_id(repo_root))
     try:
-        loaded = load_profile_dir(profile_dir)
-    except Exception as e:  # pragma: no cover - defensive
-        return _envelope({"status": "failed", "error": f"profile load failed: {e}"})
+        with _bootstrap_write_locks(lock_dir):
+            try:
+                loaded = load_profile_dir(profile_dir)
+            except Exception as e:  # pragma: no cover - defensive
+                return _envelope({"status": "failed", "error": f"profile load failed: {e}"})
 
-    existing = set(loaded.archetypes.get("archetypes", {}).keys())
-    effective, err = _validate_renames(renames, existing)
-    if err is not None:
-        return _envelope({"status": "failed", "error": err})
+            existing = set(loaded.archetypes.get("archetypes", {}).keys())
+            effective, err = _validate_renames(renames, existing)
+            if err is not None:
+                return _envelope({"status": "failed", "error": err})
 
-    if not effective:
-        return _envelope(
-            {
-                "status": "success",
-                "renames_applied": 0,
-                "new_profile_sha256": hash_profile(profile_dir),
-                "note": "no effective renames (all no-ops or empty mapping)",
-            }
-        )
+            if not effective:
+                return _envelope(
+                    {
+                        "status": "success",
+                        "renames_applied": 0,
+                        "new_profile_sha256": hash_profile(profile_dir),
+                        "note": "no effective renames (all no-ops or empty mapping)",
+                    }
+                )
 
-    archetypes_data = json.loads(json.dumps(loaded.archetypes))
-    canonicals_data = json.loads(json.dumps(loaded.canonicals))
-    rules_data = json.loads(json.dumps(loaded.rules))
-    profile_data = json.loads(json.dumps(loaded.profile))
+            archetypes_data = json.loads(json.dumps(loaded.archetypes))
+            canonicals_data = json.loads(json.dumps(loaded.canonicals))
+            rules_data = json.loads(json.dumps(loaded.rules))
+            profile_data = json.loads(json.dumps(loaded.profile))
 
-    arch_map = archetypes_data.get("archetypes", {}) or {}
-    canonical_map = canonicals_data.get("canonicals", {}) or {}
-    rules_map = rules_data.get("rules", {}) or {}
+            arch_map = archetypes_data.get("archetypes", {}) or {}
+            canonical_map = canonicals_data.get("canonicals", {}) or {}
+            rules_map = rules_data.get("rules", {}) or {}
 
-    new_arch_map: dict = {}
-    for k, v in arch_map.items():
-        new_arch_map[effective.get(k, k)] = v
-    archetypes_data["archetypes"] = new_arch_map
+            new_arch_map: dict = {}
+            for k, v in arch_map.items():
+                new_arch_map[effective.get(k, k)] = v
+            archetypes_data["archetypes"] = new_arch_map
 
-    new_canonical_map: dict = {}
-    for k, v in canonical_map.items():
-        new_canonical_map[effective.get(k, k)] = v
-    canonicals_data["canonicals"] = new_canonical_map
+            new_canonical_map: dict = {}
+            for k, v in canonical_map.items():
+                new_canonical_map[effective.get(k, k)] = v
+            canonicals_data["canonicals"] = new_canonical_map
 
-    new_rules_map: dict = {}
-    for k, v in rules_map.items():
-        new_rules_map[effective.get(k, k)] = v
-    rules_data["rules"] = new_rules_map
+            new_rules_map: dict = {}
+            for k, v in rules_map.items():
+                new_rules_map[effective.get(k, k)] = v
+            rules_data["rules"] = new_rules_map
 
-    # Preserve + rename conventions.json (its sub-sections are keyed per
-    # archetype) and preserve principles.md. atomic_profile_commit replaces the
-    # whole .chameleon dir and does NOT copy protocol files, so any artifact not
-    # written into txn_dir below is LOST — previously rename silently dropped
-    # both of these.
-    # Source the RAW on-disk artifact, not loaded.conventions: load_profile_dir
-    # scrubs injection-heuristic hits out of its in-memory render copy, and a
-    # rename PERSISTS what it writes. Sourcing the scrubbed copy would erase a
-    # legitimate convention value (or whole archetype) that merely tripped the
-    # heuristic. Rename only remaps the per-archetype keys; every value must
-    # survive byte-for-byte. Fall back to the loaded copy on a corrupt artifact
-    # so rename never drops conventions.json wholesale.
-    conventions_path = profile_dir / "conventions.json"
-    conventions_data = None
-    if conventions_path.is_file():
-        try:
-            from chameleon_mcp.profile.loader import _loads_hardened, _safe_read_artifact
+            # Preserve + rename conventions.json (its sub-sections are keyed per
+            # archetype) and preserve principles.md. atomic_profile_commit replaces the
+            # whole .chameleon dir and does NOT copy protocol files, so any artifact not
+            # written into txn_dir below is LOST — previously rename silently dropped
+            # both of these.
+            # Source the RAW on-disk artifact, not loaded.conventions: load_profile_dir
+            # scrubs injection-heuristic hits out of its in-memory render copy, and a
+            # rename PERSISTS what it writes. Sourcing the scrubbed copy would erase a
+            # legitimate convention value (or whole archetype) that merely tripped the
+            # heuristic. Rename only remaps the per-archetype keys; every value must
+            # survive byte-for-byte. Fall back to the loaded copy on a corrupt artifact
+            # so rename never drops conventions.json wholesale.
+            conventions_path = profile_dir / "conventions.json"
+            conventions_data = None
+            if conventions_path.is_file():
+                try:
+                    from chameleon_mcp.profile.loader import _loads_hardened, _safe_read_artifact
 
-            conventions_data = _loads_hardened(_safe_read_artifact(conventions_path))
-        except Exception:
-            conventions_data = json.loads(json.dumps(loaded.conventions))
-    if isinstance(conventions_data, dict):
-        _conv_block = conventions_data.get("conventions")
-        if isinstance(_conv_block, dict):
-            for _section in (
-                "imports",
-                "naming",
-                "inheritance",
-                "method_calls",
-                "key_exports",
-                "class_contract",
-            ):
-                _sub = _conv_block.get(_section)
-                if isinstance(_sub, dict):
-                    _conv_block[_section] = {effective.get(k, k): v for k, v in _sub.items()}
+                    conventions_data = _loads_hardened(_safe_read_artifact(conventions_path))
+                except Exception:
+                    conventions_data = json.loads(json.dumps(loaded.conventions))
+            if isinstance(conventions_data, dict):
+                _conv_block = conventions_data.get("conventions")
+                if isinstance(_conv_block, dict):
+                    for _section in (
+                        "imports",
+                        "naming",
+                        "inheritance",
+                        "method_calls",
+                        "key_exports",
+                        "class_contract",
+                    ):
+                        _sub = _conv_block.get(_section)
+                        if isinstance(_sub, dict):
+                            _conv_block[_section] = {
+                                effective.get(k, k): v for k, v in _sub.items()
+                            }
 
-    principles_path = profile_dir / "principles.md"
-    principles_text = (
-        principles_path.read_text(encoding="utf-8") if principles_path.is_file() else None
-    )
-
-    # calls_index.json is a protocol file too, so the swap deletes whatever
-    # the txn does not re-emit. A rename never invalidates caller facts (the
-    # index is keyed by file paths and callable names, not archetype names),
-    # so carry the artifact forward verbatim — same posture and 16MB ceiling
-    # as the partial-refresh path.
-    calls_index_text: str | None = None
-    calls_index_path = profile_dir / "calls_index.json"
-    if calls_index_path.is_file():
-        from chameleon_mcp.safe_open import (
-            UnsafeFileError as _UnsafeFileErrorRn,
-        )
-        from chameleon_mcp.safe_open import (
-            safe_read_profile_artifact as _safe_read_profile_artifact_rn,
-        )
-
-        try:
-            calls_index_text = _safe_read_profile_artifact_rn(
-                calls_index_path, max_bytes=16_000_000
+            principles_path = profile_dir / "principles.md"
+            principles_text = (
+                principles_path.read_text(encoding="utf-8") if principles_path.is_file() else None
             )
-        except (OSError, FileNotFoundError, _UnsafeFileErrorRn):
-            calls_index_text = None
 
-    # counterexamples.json + symbol_signatures.json are protocol files, so the swap
-    # drops whatever the txn does not re-emit. symbol_signatures is keyed by file
-    # path, so it carries verbatim; counterexamples is keyed by archetype NAME, so
-    # a rename must remap its keys (the same dangling-reference the idioms
-    # "Archetype:" rewrite below avoids) or the entry points at a vanished archetype.
-    from chameleon_mcp.safe_open import safe_read_profile_artifact as _safe_read_rn2
+            # calls_index.json is a protocol file too, so the swap deletes whatever
+            # the txn does not re-emit. A rename never invalidates caller facts (the
+            # index is keyed by file paths and callable names, not archetype names),
+            # so carry the artifact forward verbatim — same posture and 16MB ceiling
+            # as the partial-refresh path.
+            calls_index_text: str | None = None
+            calls_index_path = profile_dir / "calls_index.json"
+            if calls_index_path.is_file():
+                from chameleon_mcp.safe_open import (
+                    UnsafeFileError as _UnsafeFileErrorRn,
+                )
+                from chameleon_mcp.safe_open import (
+                    safe_read_profile_artifact as _safe_read_profile_artifact_rn,
+                )
 
-    counterexamples_text: str | None = None
-    ce_rename_path = profile_dir / "counterexamples.json"
-    if ce_rename_path.is_file():
-        try:
-            _ce_doc = json.loads(_safe_read_rn2(ce_rename_path, max_bytes=16_000_000))
-        except Exception:
-            _ce_doc = None
-        if isinstance(_ce_doc, dict) and isinstance(_ce_doc.get("archetypes"), dict):
-            _ce_doc["archetypes"] = {
-                effective.get(a, a): row for a, row in _ce_doc["archetypes"].items()
+                try:
+                    calls_index_text = _safe_read_profile_artifact_rn(
+                        calls_index_path, max_bytes=16_000_000
+                    )
+                except (OSError, FileNotFoundError, _UnsafeFileErrorRn):
+                    calls_index_text = None
+
+            # counterexamples.json + symbol_signatures.json are protocol files, so the swap
+            # drops whatever the txn does not re-emit. symbol_signatures is keyed by file
+            # path, so it carries verbatim; counterexamples is keyed by archetype NAME, so
+            # a rename must remap its keys (the same dangling-reference the idioms
+            # "Archetype:" rewrite below avoids) or the entry points at a vanished archetype.
+            from chameleon_mcp.safe_open import safe_read_profile_artifact as _safe_read_rn2
+
+            counterexamples_text: str | None = None
+            ce_rename_path = profile_dir / "counterexamples.json"
+            if ce_rename_path.is_file():
+                try:
+                    _ce_doc = json.loads(_safe_read_rn2(ce_rename_path, max_bytes=16_000_000))
+                except Exception:
+                    _ce_doc = None
+                if isinstance(_ce_doc, dict) and isinstance(_ce_doc.get("archetypes"), dict):
+                    _ce_doc["archetypes"] = {
+                        effective.get(a, a): row for a, row in _ce_doc["archetypes"].items()
+                    }
+                    counterexamples_text = json.dumps(_ce_doc, indent=2, sort_keys=True)
+
+            symbol_signatures_text: str | None = None
+            ss_rename_path = profile_dir / "symbol_signatures.json"
+            if ss_rename_path.is_file():
+                try:
+                    symbol_signatures_text = _safe_read_rn2(ss_rename_path, max_bytes=16_000_000)
+                except Exception:
+                    symbol_signatures_text = None
+
+            # exports_index / reverse_index / function_catalog are protocol files keyed by
+            # file path + symbol (not archetype), so a rename does not change them; carry
+            # the prior copy verbatim (like symbol_signatures) or the dir-swap drops them
+            # and dark-fires phantom-symbol / cross-file existence / duplication.
+            def _carry_rn_index(name: str) -> str | None:
+                p = profile_dir / name
+                if not p.is_file():
+                    return None
+                try:
+                    return _safe_read_rn2(p, max_bytes=16_000_000)
+                except Exception:
+                    return None
+
+            exports_index_text = _carry_rn_index("exports_index.json")
+            reverse_index_text = _carry_rn_index("reverse_index.json")
+            function_catalog_text = _carry_rn_index("function_catalog.json")
+
+            idioms_path = profile_dir / "idioms.md"
+            idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
+
+            # Rewrite taught-idiom archetype references so a rename does not leave a
+            # dangling "Archetype: <old>" pointing at an archetype that no longer exists.
+            for _old, _new in effective.items():
+                idioms_text = re.sub(
+                    rf"(?m)^Archetype: {re.escape(_old)}$",
+                    f"Archetype: {_new}",
+                    idioms_text,
+                )
+
+            summary_md = _rewrite_summary_md(
+                profile_data,
+                archetypes_data,
+                canonicals_data,
+                idioms_text,
+                rules_data=rules_data,
+            )
+
+            try:
+                existing_renames = _read_renames_overlay_strict(profile_dir)
+            except _RenamesOverlayOverCap as exc:
+                return _envelope(
+                    {
+                        "status": "failed",
+                        "error": (
+                            f"refusing to rename: {exc}. The on-disk overlay is too "
+                            "large to safely merge — review .chameleon/renames.json "
+                            "and remove stale entries (or raise CHAMELEON_RENAMES_OVERLAY_CAP) "
+                            "before re-running /chameleon-rename."
+                        ),
+                    }
+                )
+            merged_renames = _merge_rename_overlay(existing_renames, effective)
+            renames_payload = {
+                "schema_version": 1,
+                "renames": merged_renames,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
-            counterexamples_text = json.dumps(_ce_doc, indent=2, sort_keys=True)
+            ledger_payload = _append_rename_ledger_entries(profile_dir, effective)
 
-    symbol_signatures_text: str | None = None
-    ss_rename_path = profile_dir / "symbol_signatures.json"
-    if ss_rename_path.is_file():
-        try:
-            symbol_signatures_text = _safe_read_rn2(ss_rename_path, max_bytes=16_000_000)
-        except Exception:
-            symbol_signatures_text = None
-
-    # exports_index / reverse_index / function_catalog are protocol files keyed by
-    # file path + symbol (not archetype), so a rename does not change them; carry
-    # the prior copy verbatim (like symbol_signatures) or the dir-swap drops them
-    # and dark-fires phantom-symbol / cross-file existence / duplication.
-    def _carry_rn_index(name: str) -> str | None:
-        p = profile_dir / name
-        if not p.is_file():
-            return None
-        try:
-            return _safe_read_rn2(p, max_bytes=16_000_000)
-        except Exception:
-            return None
-
-    exports_index_text = _carry_rn_index("exports_index.json")
-    reverse_index_text = _carry_rn_index("reverse_index.json")
-    function_catalog_text = _carry_rn_index("function_catalog.json")
-
-    idioms_path = profile_dir / "idioms.md"
-    idioms_text = idioms_path.read_text(encoding="utf-8") if idioms_path.exists() else ""
-
-    # Rewrite taught-idiom archetype references so a rename does not leave a
-    # dangling "Archetype: <old>" pointing at an archetype that no longer exists.
-    for _old, _new in effective.items():
-        idioms_text = re.sub(
-            rf"(?m)^Archetype: {re.escape(_old)}$",
-            f"Archetype: {_new}",
-            idioms_text,
-        )
-
-    summary_md = _rewrite_summary_md(
-        profile_data,
-        archetypes_data,
-        canonicals_data,
-        idioms_text,
-        rules_data=rules_data,
-    )
-
-    try:
-        existing_renames = _read_renames_overlay_strict(profile_dir)
-    except _RenamesOverlayOverCap as exc:
+            try:
+                with atomic_profile_commit(profile_dir) as txn_dir:
+                    (txn_dir / "profile.json").write_text(
+                        json.dumps(profile_data, indent=2, sort_keys=True), encoding="utf-8"
+                    )
+                    (txn_dir / "archetypes.json").write_text(
+                        json.dumps(archetypes_data, indent=2, sort_keys=True), encoding="utf-8"
+                    )
+                    (txn_dir / "canonicals.json").write_text(
+                        json.dumps(canonicals_data, indent=2, sort_keys=True), encoding="utf-8"
+                    )
+                    (txn_dir / "rules.json").write_text(
+                        json.dumps(rules_data, indent=2, sort_keys=True), encoding="utf-8"
+                    )
+                    if conventions_data is not None:
+                        (txn_dir / "conventions.json").write_text(
+                            json.dumps(conventions_data, indent=2, sort_keys=True), encoding="utf-8"
+                        )
+                    if principles_text is not None:
+                        (txn_dir / "principles.md").write_text(principles_text, encoding="utf-8")
+                    if calls_index_text is not None:
+                        (txn_dir / "calls_index.json").write_text(
+                            calls_index_text, encoding="utf-8"
+                        )
+                    if counterexamples_text is not None:
+                        (txn_dir / "counterexamples.json").write_text(
+                            counterexamples_text, encoding="utf-8"
+                        )
+                    if symbol_signatures_text is not None:
+                        (txn_dir / "symbol_signatures.json").write_text(
+                            symbol_signatures_text, encoding="utf-8"
+                        )
+                    if exports_index_text is not None:
+                        (txn_dir / "exports_index.json").write_text(
+                            exports_index_text, encoding="utf-8"
+                        )
+                    if reverse_index_text is not None:
+                        (txn_dir / "reverse_index.json").write_text(
+                            reverse_index_text, encoding="utf-8"
+                        )
+                    if function_catalog_text is not None:
+                        (txn_dir / "function_catalog.json").write_text(
+                            function_catalog_text, encoding="utf-8"
+                        )
+                    (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
+                    (txn_dir / "profile.summary.md").write_text(summary_md, encoding="utf-8")
+                    (txn_dir / "renames.json").write_text(
+                        json.dumps(renames_payload, indent=2, sort_keys=True),
+                        encoding="utf-8",
+                    )
+                    if ledger_payload is not None:
+                        (txn_dir / ".archetype_renames.json").write_text(
+                            json.dumps(ledger_payload, indent=2, sort_keys=True),
+                            encoding="utf-8",
+                        )
+            except Exception as e:
+                return _envelope({"status": "failed", "error": f"atomic commit failed: {e}"})
+    except LockHeldError:
         return _envelope(
             {
                 "status": "failed",
-                "error": (
-                    f"refusing to rename: {exc}. The on-disk overlay is too "
-                    "large to safely merge — review .chameleon/renames.json "
-                    "and remove stale entries (or raise CHAMELEON_RENAMES_OVERLAY_CAP) "
-                    "before re-running /chameleon-rename."
-                ),
+                "error": "another operation holds the profile write lock; retry shortly",
             }
         )
-    merged_renames = _merge_rename_overlay(existing_renames, effective)
-    renames_payload = {
-        "schema_version": 1,
-        "renames": merged_renames,
-        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    ledger_payload = _append_rename_ledger_entries(profile_dir, effective)
-
-    try:
-        with atomic_profile_commit(profile_dir) as txn_dir:
-            (txn_dir / "profile.json").write_text(
-                json.dumps(profile_data, indent=2, sort_keys=True), encoding="utf-8"
-            )
-            (txn_dir / "archetypes.json").write_text(
-                json.dumps(archetypes_data, indent=2, sort_keys=True), encoding="utf-8"
-            )
-            (txn_dir / "canonicals.json").write_text(
-                json.dumps(canonicals_data, indent=2, sort_keys=True), encoding="utf-8"
-            )
-            (txn_dir / "rules.json").write_text(
-                json.dumps(rules_data, indent=2, sort_keys=True), encoding="utf-8"
-            )
-            if conventions_data is not None:
-                (txn_dir / "conventions.json").write_text(
-                    json.dumps(conventions_data, indent=2, sort_keys=True), encoding="utf-8"
-                )
-            if principles_text is not None:
-                (txn_dir / "principles.md").write_text(principles_text, encoding="utf-8")
-            if calls_index_text is not None:
-                (txn_dir / "calls_index.json").write_text(calls_index_text, encoding="utf-8")
-            if counterexamples_text is not None:
-                (txn_dir / "counterexamples.json").write_text(
-                    counterexamples_text, encoding="utf-8"
-                )
-            if symbol_signatures_text is not None:
-                (txn_dir / "symbol_signatures.json").write_text(
-                    symbol_signatures_text, encoding="utf-8"
-                )
-            if exports_index_text is not None:
-                (txn_dir / "exports_index.json").write_text(exports_index_text, encoding="utf-8")
-            if reverse_index_text is not None:
-                (txn_dir / "reverse_index.json").write_text(reverse_index_text, encoding="utf-8")
-            if function_catalog_text is not None:
-                (txn_dir / "function_catalog.json").write_text(
-                    function_catalog_text, encoding="utf-8"
-                )
-            (txn_dir / "idioms.md").write_text(idioms_text, encoding="utf-8")
-            (txn_dir / "profile.summary.md").write_text(summary_md, encoding="utf-8")
-            (txn_dir / "renames.json").write_text(
-                json.dumps(renames_payload, indent=2, sort_keys=True),
-                encoding="utf-8",
-            )
-            if ledger_payload is not None:
-                (txn_dir / ".archetype_renames.json").write_text(
-                    json.dumps(ledger_payload, indent=2, sort_keys=True),
-                    encoding="utf-8",
-                )
-    except Exception as e:
-        return _envelope({"status": "failed", "error": f"atomic commit failed: {e}"})
 
     # The rename rewrites canonicals.json (the witness set), so the block-rule
     # verdict in enforcement.json must be re-measured against the renamed profile;
