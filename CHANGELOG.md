@@ -4,6 +4,39 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.32.3] - 2026-06-26
+
+Four advisory/quality bugs found in an adversarial bug-hunt across TypeScript,
+Ruby, and Python and their frameworks. None changes default-on block behavior.
+
+### Fixed
+
+- **Archetype renames rekey every conventions section.** `apply_archetype_renames`
+  rewrote only 6 of the 13 per-archetype `conventions.json` sections, leaving
+  `required_guards`, `test_pairing`, `error_handling`, `import_ordering`,
+  `body_shape`, `doc_coverage`, and `callable_signatures` under the OLD archetype
+  key after a rename. The per-edit hot path looks each up by the new name with no
+  alias, so the required-guards authz hint and the paired-test reminder were
+  silently dropped for every renamed archetype -- and renaming is the default init
+  step. The rekey now iterates all sections except a repo-level denylist
+  (`REPO_LEVEL_CONVENTION_SECTIONS`), so a future per-archetype section cannot
+  regress the same way.
+- **`get_drift_status` fails open on a non-dict profile.json.** A top-level JSON
+  array parsed past the existing `except (OSError, ValueError)` and the following
+  `.get()` raised `AttributeError`, crashing a model-callable read tool instead of
+  failing open. The parse is now guarded with an `isinstance(..., dict)` check.
+- **A `cluster-*` grab-bag no longer says "mirror closely".** An unnamed
+  `cluster-*` archetype has no single role, so its canonical witness can be
+  cross-role (an alembic migration served for a security module). The per-edit
+  lead now downgrades such a witness to a loose reference; named archetypes keep
+  the strong "mirror closely" lead.
+- **Empty files are excluded from canonical selection.** An empty/whitespace-only
+  file (a bare `__init__.py`) could be picked as a witness, and an all-empty
+  cluster picked a blank witness that then merged into a real archetype's
+  sub-buckets. Such files are now excluded from the canonical pool (an all-empty
+  cluster reports no clean canonical, like an all-generated one); files with real
+  content, including thin barrel re-exports, are unaffected.
+
 ## [2.32.2] - 2026-06-25
 
 Archetype renames now serialize against the team-convention writers, closing a
