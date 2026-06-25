@@ -11,7 +11,8 @@ labels: bug
 ## Repo + language
 
 - Repo: <!-- a real project repo, or a synthetic test repo -->
-- Language: <!-- TypeScript / Ruby on Rails -->
+- Language: <!-- TypeScript / JavaScript / Ruby / Python -->
+- Framework (if any): <!-- e.g. Rails / Django / DRF / Flask / FastAPI -->
 - Repo size: <!-- approximate file count -->
 
 ## Steps to reproduce
@@ -44,9 +45,9 @@ paste the relevant excerpt here
 - Claude Code version: <!-- claude --version -->
 - chameleon commit: <!-- git rev-parse --short HEAD -->
 - OS: <!-- macOS / Linux / Windows -->
-- Python venv built: <!-- yes / no — `ls mcp/.venv/bin/chameleon-mcp` -->
+- Python venv built: <!-- yes / no, check with `ls mcp/.venv/bin/chameleon-mcp` -->
 
 ## Additional context
 
-<!-- Anything else that might help. Drift score from /chameleon-status?
-     Trust state from detect_repo? Recent profile changes? -->
+<!-- Anything else that might help. Drift score and trust state from
+     /chameleon-status? Recent profile changes? -->

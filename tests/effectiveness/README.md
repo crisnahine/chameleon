@@ -1,10 +1,10 @@
 # Effectiveness eval
 
-A/B measurement of whether chameleon improves agent output. Design:
-docs/superpowers/specs (local) — summary: per-(task, arm, repeat) git
-worktrees of committed fixtures, identical prompts, deterministic scorers,
-advisory baselines. CI runs only `tests/effectiveness/tests/`; everything
-below spawns real `claude -p` sessions and costs money.
+A/B measurement of whether chameleon improves agent output. Mechanics:
+per-(task, arm, repeat) git worktrees of committed fixtures, identical
+prompts, deterministic scorers, advisory baselines. CI runs only
+`tests/effectiveness/tests/`; everything below spawns real `claude -p`
+sessions and costs money.
 
 ## Smoke run (local, ~$2-3, run before relying on a release's numbers)
 
@@ -20,17 +20,20 @@ Expected shape (check `results/effectiveness_<ts>/`):
 - exit code 0; `run.json` has 8 cells (4 tasks x 2 arms), `"errors"` ideally
   0 (a timeout cell is acceptable iff listed under errors with a reason);
 - every ok cell's `scores.<name>` is either a metrics dict or
-  `{"unscored": "<reason>"}` — never empty, never missing;
+  `{"unscored": "<reason>"}`, never empty, never missing;
 - the verification cells: `test_cmd_in_transcript` present for BOTH arms;
   `test_run_seen` true only ever on the shadow arm (the off arm has no exec
   log by construction);
-- the crossfile cell: `callers_total` == 4 with `callers_updated +
-  callers_stale == 4`;
+- the crossfile cell: `callers_updated + callers_stale == callers_total`
+  (the total counts every recorded formatMoney call site in the worktree's
+  calls_index, both the import sources and the test sites, so it is larger
+  than the 4 import-source files and can differ by a site or two between
+  cells);
 - `run.md` renders the aggregate table, an errors section (possibly empty),
   and "No baseline entries" until baselines.json is populated;
 - `diffs/*.patch` exists for every ok cell; `worktrees/` holds the final trees.
 
-If any scorer key is absent or empty on an ok cell, that is a runner bug —
+If any scorer key is absent or empty on an ok cell, that is a runner bug;
 fix it before trusting any numbers.
 
 ## Full tier (ask before spending; ~$25-45)

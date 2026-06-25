@@ -17,16 +17,19 @@ of human involvement will be sent back.
 
 ## What does this PR change?
 
-<!-- 1-3 sentences. What, not why — the "why" belongs above. -->
+<!-- 1-3 sentences. What, not why. The "why" belongs above. -->
 
 ## Languages affected
 
-<!-- Chameleon currently supports TypeScript and Ruby on Rails.
+<!-- Chameleon supports TypeScript/JavaScript, Ruby, and Python as first-class
+     languages, with deeper framework-aware guidance for Rails (Ruby) and
+     Django/DRF/Flask/FastAPI (Python).
      Mark which language(s) this PR touches: -->
 
-- [ ] TypeScript
-- [ ] Ruby on Rails
-- [ ] Both
+- [ ] TypeScript/JavaScript
+- [ ] Ruby
+- [ ] Python
+- [ ] Multiple languages
 - [ ] Neither (infrastructure / docs / tests)
 
 ## What alternatives did you consider?
@@ -46,7 +49,7 @@ of human involvement will be sent back.
 
 ## Environment tested
 
-| Claude Code version | OS | Repo language (TS / Ruby) | Result |
+| Claude Code version | OS | Repo language (TS / Ruby / Python) | Result |
 |---|---|---|---|
 |  |  |  |  |
 
@@ -54,7 +57,7 @@ of human involvement will be sent back.
 
 - [ ] If this is a skills change: I considered adversarial cases, not just the happy path
 - [ ] If this changes a hook or MCP tool, I added a regression test under `tests/`
-- [ ] I did not modify carefully-tuned content (Red Flags table, rationalizations, "human partner" language) without strong reasoning
+- [ ] I did not modify carefully-tuned content (enforcement rules, trust mechanisms, skill prose) without strong reasoning
 
 ## Human review
 

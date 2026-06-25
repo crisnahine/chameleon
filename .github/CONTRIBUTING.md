@@ -8,7 +8,7 @@ For the design, see [architecture.md](../docs/architecture.md).
 
 chameleon is open source under the [MIT License](../LICENSE). It went public
 on 2026-05-11 (v0.2.0). Solo-maintained by Cris Nahine. External issues
-and PRs are welcome — read this file end-to-end before opening one.
+and PRs are welcome - read this file end-to-end before opening one.
 
 By contributing, you agree your contributions are licensed under MIT.
 
@@ -16,26 +16,26 @@ By contributing, you agree your contributions are licensed under MIT.
 
 Use the GitHub issue templates:
 
-- **Bug report** — incorrect behavior, crashes, or unexpected output.
-- **Feature request** — new languages, new MCP tools, new slash commands.
+- **Bug report** - incorrect behavior, crashes, or unexpected output.
+- **Feature request** - new languages, new MCP tools, new slash commands.
 
 Search existing issues (open AND closed) for duplicates before opening one.
 For anything that touches the architecture surface (hook stack, MCP tool
 shape, profile schema, skill bodies), open an issue or discussion **before**
-writing code — see [Architecture changes](#architecture-changes) below.
+writing code - see [Architecture changes](#architecture-changes) below.
 
 ## Dev prerequisites
 
 - macOS or Linux. Windows via Git for Windows or WSL2 (the lock layer is cross-platform; `bash` is required for the hooks).
-- Python ≥ 3.11
-- Node ≥ 20
-- Ruby ≥ 3.0 with the `prism` gem (ships by default in Ruby ≥ 3.3)
+- Python >= 3.11
+- Node >= 20
+- Ruby >= 3.0 with the `prism` gem (ships by default in Ruby >= 3.3)
 - [uv](https://docs.astral.sh/uv/) for Python dependency management
 - `jq` (for `scripts/bump-version.sh`)
 
 ## First-time local setup
 
-Local contributor install uses `claude --plugin-dir` — the only place this
+Local contributor install uses `claude --plugin-dir` - the only place this
 project documents a local clone install. Marketplace users follow
 [INSTALL.md](../docs/install.md).
 
@@ -71,7 +71,7 @@ All commands run from the repo root.
 ### Architecture changes
 
 For changes that touch more than one of: hook stack, MCP tool surface,
-profile schema, skill bodies — open a discussion or issue first to align
+profile schema, skill bodies - open a discussion or issue first to align
 on approach. Document the *decision* and rejected alternatives in the
 issue, not the code, before implementation proceeds.
 
@@ -126,15 +126,19 @@ Schema files: `archetypes.json`, `rules.json`, `canonicals.json`,
 `mcp/chameleon_mcp/bootstrap/orchestrator.py` and `CURRENT_SCHEMA_VERSION`
 in `mcp/chameleon_mcp/profile/schema.py`.
 
-- **Non-breaking** (additive only) → ship.
-- **Breaking** → bump both version anchors, write a migration at
+- **Non-breaking** (additive only) -> ship.
+- **Breaking** -> bump both version anchors, write a migration at
   `mcp/chameleon_mcp/profile/migrations/v<old>_to_v<new>.py` with a fixture
-  pair `(input_v<old>.json, expected_output_v<new>.json)`, update
-  `SUPPORTED_SCHEMA_RANGE`, and document the decision in an issue. The
+  pair `(input_v<old>.json, expected_output_v<new>.json)`, bump
+  `MAX_SUPPORTED_SCHEMA_VERSION` in `mcp/chameleon_mcp/profile/loader.py`,
+  and document the decision in an issue. The
   migration MUST be idempotent, atomic, and no-op when already at target.
 
-v0.2.0 bumped schema v4 → v5 (`paths_pattern` semantics changed in
-`archetypes.json`). It's the most recent example to study.
+No migration scripts exist yet: the engine is at `schema_version` 8 and
+every bump so far has been load-compatible (an older-schema profile still
+loads and re-bootstrap re-derives it). The first migration script gets
+authored when a breaking bump actually needs one. For the CHANGELOG.md
+format on a breaking change, see the v0.2.0 entry.
 
 ### Skill changes
 
@@ -144,9 +148,9 @@ you'd treat changes to a production rule engine.
 Procedure:
 1. Author adversarial pressure scenarios for the skill in question
    (time pressure, sunk cost, "I know this codebase already", etc.).
-2. Run scenarios WITHOUT your change — document the failures verbatim.
+2. Run scenarios WITHOUT your change - document the failures verbatim.
 3. Write/edit the skill body addressing those specific rationalizations.
-4. Re-run scenarios WITH the change — verify compliance across ≥5 sessions.
+4. Re-run scenarios WITH the change - verify compliance across >=5 sessions.
 5. Iterate until the failure mode doesn't reappear.
 
 The acceptance bar is "the rationalization doesn't reappear under pressure,"
@@ -188,21 +192,21 @@ Run `scripts/bump-version.sh --check` before tagging to catch drift.
 
 Four workflows live under [.github/workflows/](.github/workflows/):
 
-- **`ci.yml`** — fires on every PR against `main` and every push to `main`.
-  Runs the Python test matrix (3.11 + 3.12 on Ubuntu + macOS), ruff lint,
+- **`ci.yml`** - fires on every PR against `main` and every push to `main`.
+  Runs the Python test matrix (3.11, 3.12, and 3.13 on Ubuntu and macOS), ruff lint,
   `bump-version.sh --check`, `check-no-personal-paths.sh`, and a one-shot
   `hooks/session-start` smoke test.
-- **`release.yml`** — fires on tag pushes matching `v*.*.*`. Verifies all
+- **`release.yml`** - fires on tag pushes matching `v*.*.*`. Verifies all
   six manifests agree with the tag, that `CHANGELOG.md` has an entry for
   the version, re-runs the full test matrix, builds a release tarball, and
   publishes a GitHub Release with the CHANGELOG entry as the body.
-- **`real-claude-code-acceptance.yml`** — manual (`workflow_dispatch`)
+- **`real-claude-code-acceptance.yml`** - manual (`workflow_dispatch`)
   plus a weekly cron. Runs `tests.journey.runner --dry-run` (preflight
   check). Trigger manually from the Actions tab; requires the maintainer
   to have configured `CLAUDE_CODE_OAUTH_TOKEN`, `CHAMELEON_TEST_TS_REPO`,
   and `CHAMELEON_TEST_RUBY_REPO` secrets. Fails soft with a SKIP message
   when those secrets aren't present.
-- **`calibration.yml`** — manual only (`workflow_dispatch`). Runs the
+- **`calibration.yml`** - manual only (`workflow_dispatch`). Runs the
   calibration harness against a corpus of repos to measure parameter
   defaults. Requires `CHAMELEON_CALIBRATION_CORPUS_JSON` secret; without
   it, emits `no_corpus_configured` and exits cleanly.
@@ -212,7 +216,7 @@ Workflow run logs live under the repo's Actions tab on GitHub.
 ## Decision-making
 
 Solo maintainer. The maintainer reserves the right to decline PRs that
-don't fit the project's design goals — open an issue first for any
+don't fit the project's design goals - open an issue first for any
 non-trivial change so we can agree on the approach before you invest time.
 
 ## Data handling
