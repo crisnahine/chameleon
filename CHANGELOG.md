@@ -4,6 +4,43 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.31.0] - 2026-06-25
+
+Ruby cross-file blast radius, plus per-language gaps closed by a proactive
+cross-matrix verification of every recent fix.
+
+### Added
+
+- **Ruby constant-reference reverse index (cross-file blast radius).** Ruby has
+  no static named-export surface (`require` pulls a whole file by side effect),
+  so it never got the TS/Python reverse index — the biggest cross-file blind
+  spot on a Rails monolith. The new index inverts Ruby's class/constant graph:
+  for each constant, the files that define it and the files that reference it
+  (via a constant-receiver call site), built from parse data already collected.
+  `query_symbol_importers` now returns the Ruby blast radius (editing the file
+  that defines a widely-used service class lists its callers), and the autopass
+  blast-radius gate consumes it. The index is built for Ruby at bootstrap/refresh
+  and hashed into the trust SHA. Existing Ruby repos pick it up on their next
+  `/chameleon-refresh`.
+
+### Fixed
+
+- **Autopass blast-radius now covers Ruby** (it keyed on the reverse-index
+  extensions and read 0 for `.rb`, inconsistent with the Stop judge-router that
+  already counted Ruby fan-out).
+- **Paren-less Kernel#eval is now detected** (`eval "..."` / `eval s` /
+  `eval %(...)`) — the rule only matched `eval(`, so the idiomatic Ruby form
+  slipped enforcement entirely. Fires at error severity, no false positives on
+  `instance_eval`/`class_eval`, member calls, assignments, or comment/string
+  mentions.
+- **Lint wording is language-correct for Python and Ruby.** The node-kind
+  humanizer had no Python (libcst) labels, so `ClassDef`/`FunctionDef` leaked
+  raw; and the `lint_file` tool never passed the language through, so Ruby and
+  Python output used the TypeScript "default export" framing. Both fixed.
+- **The inline-override hint offers `# chameleon-ignore` to Python** (it only
+  special-cased Ruby; Python developers got the `//` token, a syntax error in
+  their file).
+
 ## [2.30.0] - 2026-06-25
 
 A round of relevance and cross-language fixes from a real-usage assessment on a
