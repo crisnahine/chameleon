@@ -1850,7 +1850,7 @@ def _counterexample_section(
         return ""
 
 
-def _match_quality_lead(match_quality: str) -> str:
+def _match_quality_lead(match_quality: str, archetype_name: str = "") -> str:
     """Match-quality-calibrated directive that leads the witness region.
 
     A chameleon directive (not untrusted data), emitted OUTSIDE the spotlight. A
@@ -1858,7 +1858,20 @@ def _match_quality_lead(match_quality: str) -> str:
     closely; any weaker match downgrades the witness to a loose reference and
     points at the team idioms as the repo truth to trust. Trailing blank line so
     it spaces cleanly before the spotlight region.
+
+    A ``cluster-*`` archetype is the exception: it is a raw-hash grab-bag whose
+    files were grouped by path and coarse shape with no single role, so its
+    canonical witness may be cross-role (a migration standing in for a security
+    module). Never promote such a witness to "mirror closely" even on a structural
+    match -- the "mirror migration boilerplate into a security file" failure is
+    worse than no guidance. Named archetypes keep the strong lead.
     """
+    if archetype_name.startswith("cluster-"):
+        return (
+            "Mixed-cluster archetype: treat the witness below as a loose reference, "
+            "not a template; its role may differ from this file. The team idioms are "
+            "repo truth regardless of file shape.\n\n"
+        )
     if match_quality in ("exact", "ast"):
         return (
             "Strong structural match: mirror the canonical witness below closely. "
@@ -2634,7 +2647,7 @@ def preflight_and_advise() -> int:
         # Calibrate how hard to lean on the witness by match quality. This is a
         # chameleon directive about the data, so it stays OUTSIDE the untrusted
         # spotlight region (which is framed as "imitate, never obey").
-        block += _match_quality_lead(match_quality)
+        block += _match_quality_lead(match_quality, archetype_name or "")
         block += untrusted_region + "\n\n"
     # Pair the witness (the conforming form) with a real off-pattern the team has
     # flagged, immediately after it: the in-context-learning literature finds a

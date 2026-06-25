@@ -206,9 +206,15 @@ def select_canonicals(
         )
 
         signatures: dict[int, tuple[str, ...]] = {}
+        trivial: dict[int, bool] = {}
         for i, pf in enumerate(eligible):
             try:
                 content = pf.path.read_bytes()[:50_000].decode("utf-8", errors="replace")
+                # An empty / whitespace-only file makes a useless canonical example
+                # (no code to mirror), so rank it last. A non-trivial sibling then
+                # wins, while the trivial file stays eligible as a last resort for a
+                # cluster whose members are ALL trivial.
+                trivial[i] = not content.strip()
                 lang = detect_language(str(pf.path))
                 snap = extract_dimensions(content, language=lang, file_path=str(pf.path))
                 jsx_tag = ("jsx",) if snap.jsx_present else ()
@@ -218,14 +224,23 @@ def select_canonicals(
                 )
             except Exception:
                 sig = ()
+                trivial[i] = True
             signatures[i] = sig
 
         sig_counts = Counter(signatures.values())
         typicality = {i: sig_counts[sig] for i, sig in signatures.items()}
 
+        # Exclude empty / whitespace-only files from the canonical pool entirely: a
+        # blank witness teaches nothing, and an all-empty cluster (e.g. a package of
+        # bare __init__.py files) would otherwise pick a blank last-resort witness
+        # that then merges into a real archetype's sub-buckets. A cluster left with
+        # no non-trivial member is reported as lacking a clean canonical, same as an
+        # all-generated cluster. Files with real content (incl. thin barrel
+        # re-exports) are unaffected.
         scored = [
             (pf, _file_recency_weight(pf.path, now=now), typicality.get(i, 0))
             for i, pf in enumerate(eligible)
+            if not trivial.get(i, False)
         ]
         scored.sort(
             key=lambda item: (

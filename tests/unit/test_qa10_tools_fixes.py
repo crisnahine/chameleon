@@ -102,6 +102,41 @@ def test_get_drift_status_no_profile_recommends_init(tmp_path):
     assert "chameleon-init" in rec
 
 
+# ---- damaged profile.json: get_drift_status must fail open on a non-dict -----
+
+
+def test_get_drift_status_fails_open_on_non_dict_profile_json(tmp_path):
+    # A profile.json corrupted to a top-level JSON array (not an object) must not
+    # crash get_drift_status. The schema-version probe does .get() on the parsed
+    # value, and its `except (OSError, ValueError)` does NOT catch the
+    # AttributeError a list raises (a JSON array parses without a ValueError).
+    # Same fail-open class as #4 (merge_profiles on a top-level array).
+    import subprocess
+
+    from chameleon_mcp.profile.trust import grant_trust
+
+    repo = tmp_path / "repo"
+    cham = repo / ".chameleon"
+    cham.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (cham / "profile.json").write_text(
+        json.dumps({"schema_version": 8, "repo_id": "x", "language": "typescript", "generation": 1})
+    )
+    (cham / "archetypes.json").write_text(json.dumps({"generation": 1, "archetypes": {}}))
+    (cham / "canonicals.json").write_text(json.dumps({"generation": 1, "canonicals": {}}))
+    (cham / "rules.json").write_text(json.dumps({"generation": 1, "rules": {}}))
+    (cham / "conventions.json").write_text(json.dumps({"generation": 1, "conventions": {}}))
+    (cham / "idioms.md").write_text("# idioms\n")
+    (cham / "COMMITTED").touch()
+    grant_trust(tools._compute_repo_id(repo), cham)
+
+    # Corrupt profile.json to a top-level array, then the drift probe must not raise.
+    (cham / "profile.json").write_text(json.dumps([1, 2, 3]))
+
+    result = tools.get_drift_status(str(repo))
+    assert isinstance(result, dict) and "data" in result
+
+
 # ---- #2: refresh must not orphan trust on a remote-less, config-less repo ----
 
 

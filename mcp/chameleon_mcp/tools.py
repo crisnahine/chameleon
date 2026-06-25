@@ -3938,9 +3938,14 @@ def get_drift_status(repo: str) -> dict:
         try:
             from chameleon_mcp.profile.schema import CURRENT_SCHEMA_VERSION
 
-            _declared = json.loads(
+            _parsed = json.loads(
                 (resolved_path / ".chameleon" / "profile.json").read_text(encoding="utf-8")
-            ).get("schema_version")
+            )
+            # A hand-edited / corrupt profile.json may parse to a non-dict (a JSON
+            # array parses cleanly past the ValueError guard); .get on it would
+            # raise AttributeError and crash this read tool. Treat any non-dict as
+            # "no declared version" so the probe fails open.
+            _declared = _parsed.get("schema_version") if isinstance(_parsed, dict) else None
             schema_outdated = isinstance(_declared, int) and _declared < CURRENT_SCHEMA_VERSION
         except (OSError, ValueError):
             schema_outdated = False
@@ -9089,19 +9094,20 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
             if isinstance(conventions_data, dict):
                 _conv_block = conventions_data.get("conventions")
                 if isinstance(_conv_block, dict):
-                    for _section in (
-                        "imports",
-                        "naming",
-                        "inheritance",
-                        "method_calls",
-                        "key_exports",
-                        "class_contract",
-                    ):
-                        _sub = _conv_block.get(_section)
-                        if isinstance(_sub, dict):
-                            _conv_block[_section] = {
-                                effective.get(k, k): v for k, v in _sub.items()
-                            }
+                    # Remap EVERY per-archetype section, not a hardcoded subset: the
+                    # edit-time hot path looks each section up by the new archetype
+                    # name with no alias fallback, so a section left under the old
+                    # key (required_guards' authz hint, test_pairing's reminder, ...)
+                    # is silently dropped for the renamed archetype. Iterating the
+                    # block keeps a future-added per-archetype section from regressing.
+                    # Repo-level sections (layering) are keyed by edge/report, not
+                    # archetype, and must be left untouched.
+                    from chameleon_mcp.conventions import REPO_LEVEL_CONVENTION_SECTIONS
+
+                    for _section, _sub in list(_conv_block.items()):
+                        if _section in REPO_LEVEL_CONVENTION_SECTIONS or not isinstance(_sub, dict):
+                            continue
+                        _conv_block[_section] = {effective.get(k, k): v for k, v in _sub.items()}
 
             principles_path = profile_dir / "principles.md"
             principles_text = (

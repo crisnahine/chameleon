@@ -19,6 +19,12 @@ CONVENTIONS_SCHEMA_VERSION = 1
 MIN_SAMPLE_SIZE = 10
 MIN_SAMPLE_SIZE_NAMING = 5
 
+# Conventions sections keyed at the repo level rather than by archetype name.
+# Every other section in the conventions block (see empty_conventions) is keyed
+# by archetype, so an archetype rename must remap those keys and leave these
+# untouched. Source of truth for apply_archetype_renames' rekey loop.
+REPO_LEVEL_CONVENTION_SECTIONS = frozenset({"layering"})
+
 
 def empty_conventions(*, generation: int) -> dict:
     return {

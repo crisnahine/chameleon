@@ -94,3 +94,36 @@ def test_all_generated_cluster_has_no_witness_but_does_not_crash(tmp_path):
     assert "a.gen.rb" not in chosen and "b.gen.rb" not in chosen
     # The cluster is surfaced as lacking an eligible canonical, not crashed over.
     assert sel.clusters_without_eligible_canonical or not sel.selections
+
+
+def test_nonempty_wins_witness_over_empty_sibling(tmp_path):
+    # An empty / whitespace-only file makes a useless canonical example (no code to
+    # mirror). When a cluster has a non-trivial sibling, the non-trivial file must
+    # win even though the empty file sorts first by path. (Defect A: a 0-byte
+    # __init__.py was selected over a real model file.)
+    repo = tmp_path / "repo"
+    # a_empty sorts before z_real lexicographically, so without the trivial-file
+    # deprioritization the empty file would win the tie-break.
+    empty = _write(repo, "app/services/a_empty.rb", "")
+    real = _write(repo, "app/services/z_real.rb", "class A\n  def call; end\nend\n")
+    result = cluster_files([_pf(empty), _pf(real)], repo, min_cluster_size=2)
+    sel = select_canonicals(result.clusters, repo)
+    assert sel.selections, "expected a witness"
+    witnesses = {s.witness_path.name for s in sel.selections.values()}
+    assert "z_real.rb" in witnesses
+    assert "a_empty.rb" not in witnesses
+
+
+def test_all_empty_cluster_has_no_witness(tmp_path):
+    # A cluster whose every member is empty / whitespace-only (e.g. a package of
+    # bare __init__.py files) must yield NO witness rather than a blank one: a blank
+    # witness teaches nothing and would otherwise merge into a real archetype's
+    # sub-buckets. Same posture as an all-generated cluster.
+    repo = tmp_path / "repo"
+    a = _write(repo, "app/services/a_empty.rb", "")
+    b = _write(repo, "app/services/b_empty.rb", "   \n")
+    result = cluster_files([_pf(a), _pf(b)], repo, min_cluster_size=2)
+    sel = select_canonicals(result.clusters, repo)
+    chosen = {s.witness_path.name for s in sel.selections.values()}
+    assert "a_empty.rb" not in chosen and "b_empty.rb" not in chosen
+    assert sel.clusters_without_eligible_canonical or not sel.selections

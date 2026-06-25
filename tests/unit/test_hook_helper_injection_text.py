@@ -183,12 +183,26 @@ def test_match_quality_lead_is_weak_otherwise():
         assert "loose reference" in lead.lower()
 
 
+def test_match_quality_lead_loose_for_cluster_grabbag():
+    # A cluster-* archetype is a raw-hash grab-bag: its files were grouped by path
+    # and coarse shape with no single role, so its canonical witness may be
+    # cross-role (a migration standing in for a security module). Even a structural
+    # ast/exact match must NOT tell the model to mirror it closely.
+    for q in ("ast", "exact"):
+        lead = hook_helper._match_quality_lead(q, "cluster-2e8fcd18")
+        assert "mirror" not in lead.lower()
+        assert "loose reference" in lead.lower()
+    # A named archetype keeps the strong "mirror closely" lead on an ast match.
+    named = hook_helper._match_quality_lead("ast", "service")
+    assert "mirror" in named.lower()
+
+
 def test_preflight_emits_match_quality_lead_before_the_spotlight_region():
     # The imperative is a chameleon directive, so it must be added OUTSIDE (before)
     # the untrusted spotlight region, not inside it.
     src = _preflight_source()
-    assert "_match_quality_lead(match_quality)" in src
-    lead_at = src.index("_match_quality_lead(match_quality)")
+    assert "_match_quality_lead(match_quality, archetype_name" in src
+    lead_at = src.index("_match_quality_lead(match_quality, archetype_name")
     region_at = src.index("block += untrusted_region")
     assert lead_at < region_at
 
