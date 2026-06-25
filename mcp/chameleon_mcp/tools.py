@@ -8000,7 +8000,13 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
 
     lock_path = _rdd(_compute_repo_id(idioms_path.parent.parent)) / ".idioms.lock"
     try:
-        with acquire_advisory_lock(lock_path):
+        # Block-and-retry briefly on contention, matching every sibling idiom
+        # writer (refresh re-derive, structured deprecate, competing-import
+        # teach all pass blocking_timeout=10.0). Without it this free-form teach
+        # was the lone non-blocking idiom writer, so a second concurrent teach or
+        # a default-on background auto-refresh holding .idioms.lock failed the
+        # capture outright instead of waiting out the brief hold.
+        with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
             current = (
                 idioms_path.read_text(encoding="utf-8")
                 if idioms_path.exists()
@@ -9359,7 +9365,7 @@ def teach_competing_import(
 
     lock_path = _rdd(_compute_repo_id(repo_path)) / ".conventions.lock"
     try:
-        with acquire_advisory_lock(lock_path):
+        with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
             try:
                 conv = (
                     json.loads(safe_read_profile_artifact(conv_path))
@@ -9433,7 +9439,7 @@ def teach_competing_import(
                 # lock the source-of-truth write used, so a concurrent teach on a
                 # different archetype cannot clobber this row (the scan above needs
                 # no lock; only the shared-file update does).
-                with acquire_advisory_lock(lock_path):
+                with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
                     try:
                         ce_doc = (
                             json.loads(safe_read_profile_artifact(ce_path))
@@ -9584,7 +9590,7 @@ def unteach_competing_import(
     removed = False
     lock_path = _rdd(_compute_repo_id(repo_path)) / ".conventions.lock"
     try:
-        with acquire_advisory_lock(lock_path):
+        with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
             try:
                 conv = json.loads(safe_read_profile_artifact(conv_path))
             except Exception:
@@ -9652,7 +9658,7 @@ def unteach_competing_import(
                 # Rebuild this archetype's FULL row list from the REMAINING taught
                 # pairs so unteaching one competing import leaves the others' rows.
                 new_rows = capture_counterexamples_in_repo(repo_path, kept)
-                with acquire_advisory_lock(lock_path):
+                with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
                     try:
                         ce_doc = json.loads(safe_read_profile_artifact(ce_path))
                     except Exception:
@@ -10040,7 +10046,7 @@ def _transition_slug_to_deprecated(
 
     lock_path = _rdd(_compute_repo_id(idioms_path.parent.parent)) / ".idioms.lock"
     try:
-        with acquire_advisory_lock(lock_path):
+        with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
             text = idioms_path.read_text(encoding="utf-8")
             header = f"### {slug}"
             lines = text.splitlines(keepends=True)
@@ -10171,7 +10177,7 @@ def _write_new_deprecated_idiom(
 
     lock_path = _rdd(_compute_repo_id(idioms_path.parent.parent)) / ".idioms.lock"
     try:
-        with acquire_advisory_lock(lock_path):
+        with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
             if idioms_path.is_file():
                 current = idioms_path.read_text(encoding="utf-8")
             else:

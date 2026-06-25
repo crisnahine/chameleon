@@ -4,6 +4,27 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.32.1] - 2026-06-25
+
+The team-convention write paths now block-and-retry on a contended lock instead
+of failing the capture outright.
+
+### Fixed
+
+- **Idiom and convention writes wait out a contended lock.** `/chameleon-teach`,
+  `/chameleon-teach-competing-import` (and its unteach), and the structured
+  idiom-deprecation paths acquired their `.idioms.lock` / `.conventions.lock`
+  non-blocking, so a capture that raced a second teach -- or, more commonly, the
+  default-on background auto-refresh, which holds both locks across the whole
+  7-36s re-derive -- failed immediately with "another operation holds the lock;
+  retry shortly". They now block-and-retry for up to 10s, matching the sibling
+  writers that already did (the refresh re-derive and the structured-teach
+  helper). The `.refresh.lock` and `.bootstrap.lock` singletons stay non-blocking
+  by design (a second concurrent refresh or bootstrap should fail fast, not
+  queue). No data was ever lost -- the failure was clean -- but a capture no
+  longer spuriously fails under the normal concurrency of a teach landing while
+  auto-refresh runs.
+
 ## [2.32.0] - 2026-06-25
 
 The turn-end duplication advisory now grounds its reuse argument in how
