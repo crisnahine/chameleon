@@ -68,6 +68,40 @@ That's it. From here, every edit Claude makes to that repo gets convention conte
 
 ---
 
+## Usage
+
+Once a repo is profiled and trusted, chameleon runs on its own. The things you will actually do:
+
+**Edit code normally (zero commands).** Before Claude writes to a file, it sees a block like the one above: the matched archetype, a real example from your repo, your team's idioms, and any anti-pattern to avoid.
+
+**Teach a rule the parser can't infer:**
+
+```
+/chameleon-teach
+# then describe it, e.g. "use @/lib/http, never raw axios (archetype: api-client)"
+```
+
+Every later edit to that archetype gets the rule, paired with a real off-pattern line from your own code as the counterexample.
+
+**Review a PR against your own conventions:**
+
+```
+/chameleon-pr-review <PR-URL>
+```
+
+A multi-round, self-refuting review grounded in your repo's patterns and cross-file contracts, reported as BLOCK / FIX / NIT.
+
+**Check health, then refresh when the code has moved:**
+
+```
+/chameleon-status     # profile state, drift, enforcement mode, rule precision
+/chameleon-refresh    # re-derive from the production branch's current tip
+```
+
+The full [command reference](#command-reference) has the rest.
+
+---
+
 ## How it learns your repo
 
 `/chameleon-init` parses your codebase with real compilers, not regex guesses:
