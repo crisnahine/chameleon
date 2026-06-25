@@ -5792,6 +5792,7 @@ def _crossfile_existence_advisory_lines(
         if cfg.mode == "off" or not cfg.crossfile_existence_advisory:
             return []
 
+        from chameleon_mcp.constant_index import load_constant_index
         from chameleon_mcp.lint_engine import detect_language
         from chameleon_mcp.phantom_imports import (
             _current_export_names,
@@ -5801,7 +5802,9 @@ def _crossfile_existence_advisory_lines(
         from chameleon_mcp.violation_class import ignored_rules
 
         index = load_reverse_index(repo_root)
-        if index is None:
+        # Ruby carries no reverse index but a constant index (the Ruby branch in
+        # the loop reads it); proceed when either exists.
+        if index is None and load_constant_index(repo_root) is None:
             return []
 
         from chameleon_mcp._thresholds import threshold_int
@@ -5828,9 +5831,10 @@ def _crossfile_existence_advisory_lines(
 
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-        # symbol@module -> list of sanitized "path:line" sites, in touch order so
-        # the advisory lists the breaks this turn introduced.
-        breaks: list[tuple[str, str, list[str]]] = []
+        # (symbol, module, sites, kind) where kind is "export" (TS/Python named
+        # export) or "constant" (Ruby class/module), in touch order so the
+        # advisory lists the breaks this turn introduced.
+        breaks: list[tuple[str, str, list[str], str]] = []
         seen_files = 0
         for path in state.files:
             if seen_files >= max_files:
@@ -5843,10 +5847,46 @@ def _crossfile_existence_advisory_lines(
             except OSError:
                 continue
             lang = detect_language(str(p))
-            # The reverse index spans the TS and Python module graphs (Ruby has no
-            # reverse index), so both languages must be checked here. Ruby and
-            # anything else is skipped.
-            if lang not in ("typescript", "python"):
+            if lang == "ruby":
+                # Ruby uses the constant graph, not a named-export reverse index:
+                # a class/module the index records as defined here that the file
+                # no longer defines, while referencers still name it, is the Ruby
+                # existence break. High-confidence only: one defining file, bare
+                # top-level name.
+                from chameleon_mcp.constant_index import (
+                    load_constant_index,
+                    referencing_files,
+                )
+
+                cidx = load_constant_index(repo_root)
+                if cidx is None:
+                    continue
+                ign = ignored_rules(content, file_path=path) or set()
+                if "" in ign or "removed-export-breaks-importers" in ign:
+                    continue
+                try:
+                    rrel = p.resolve().relative_to(Path(repo_root).resolve()).as_posix()
+                except (ValueError, OSError):
+                    continue
+                seen_files += 1
+                for const, entry in sorted((cidx.get("constants") or {}).items()):
+                    dl = entry.get("defined_in") or []
+                    if "::" in const or dl != [rrel] or not entry.get("referenced_by"):
+                        continue
+                    if re.search(r"(?m)^(?:class|module)\s+" + re.escape(const) + r"\b", content):
+                        continue
+                    rlive = [
+                        r for r in referencing_files(cidx, const) if _name_present(r, const, None)
+                    ]
+                    if not rlive:
+                        continue
+                    rsites = [sanitize_for_chameleon_context(r) for r in sorted(rlive)[:max_sites]]
+                    breaks.append((sanitize_for_chameleon_context(const), rrel, rsites, "constant"))
+                continue
+            # The reverse index spans the TS and Python module graphs, so both
+            # languages are checked here; anything else is skipped. A Ruby-only
+            # repo has no reverse index, so a stray TS/Python file is skipped too.
+            if lang not in ("typescript", "python") or index is None:
                 continue
             ign = ignored_rules(content, file_path=path) or set()
             if "" in ign or "removed-export-breaks-importers" in ign:
@@ -5885,27 +5925,33 @@ def _crossfile_existence_advisory_lines(
                     )
                     for imp in live_sorted[:max_sites]
                 ]
-                breaks.append((sanitize_for_chameleon_context(name), target_key, sites))
+                breaks.append((sanitize_for_chameleon_context(name), target_key, sites, "export"))
 
         if not breaks:
             return []
 
+        plural = len(breaks) != 1
         lines = [
-            f"[🦎 chameleon: {len(breaks)} export"
-            f"{'s' if len(breaks) != 1 else ''} you removed still ha"
-            f"{'ve' if len(breaks) != 1 else 's'} live importers]",
-            "These exports are gone from the files you edited but other files "
-            "still import them by name; their call sites are now broken. Restore "
-            "the export or update the importers. This is advisory, not a block.",
+            f"[🦎 chameleon: {len(breaks)} definition{'s' if plural else ''} you "
+            f"removed still ha{'ve' if plural else 's'} live call sites]",
+            "These names are gone from the files you edited but other files still "
+            "reference them; their call sites are now broken. Restore the "
+            "definition or update the references. This is advisory, not a block.",
         ]
-        for name, _module, sites in breaks:
+        for name, _module, sites, kind in breaks:
             shown = ", ".join(sites)
             more = " ..." if len(sites) >= max_sites else ""
-            lines.append(f"- '{name}' no longer exported; still imported by {shown}{more}")
+            verb = (
+                "defined; still referenced by"
+                if kind == "constant"
+                else "exported; still imported by"
+            )
+            lines.append(f"- '{name}' no longer {verb} {shown}{more}")
         lines.append(
             "To silence this for a file, add "
-            "`// chameleon-ignore removed-export-breaks-importers` in the source "
-            "you touched."
+            "`# chameleon-ignore removed-export-breaks-importers` (Ruby) / "
+            "`// chameleon-ignore removed-export-breaks-importers` (TS) in the "
+            "source you touched."
         )
         return lines
     except Exception:

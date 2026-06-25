@@ -149,6 +149,64 @@ def test_ruby_constant_importers_helper(tmp_path):
     assert "refresh" in out3.get("reason", "")
 
 
+def test_ruby_constant_existence_break_helper(tmp_path):
+    # get_crossfile_context Ruby: a constant the index says is defined here but
+    # the file no longer defines, with a referencer that still names it.
+    from chameleon_mcp.tools import _ruby_constant_existence_breaks
+
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "foo.rb").write_text("class Renamed\nend\n")  # used to be `class Foo`
+    (tmp_path / "app" / "caller.rb").write_text("Foo.bar\n")  # still references Foo
+    ch = tmp_path / ".chameleon"
+    ch.mkdir()
+    (ch / "constant_index.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "constants": {
+                    "Foo": {"defined_in": ["app/foo.rb"], "referenced_by": ["app/caller.rb"]}
+                },
+            }
+        )
+    )
+    out = _ruby_constant_existence_breaks(tmp_path)
+    assert out["found"] is True
+    assert len(out["findings"]) == 1
+    f = out["findings"][0]
+    assert f["symbol"] == "Foo"
+    assert f["module"] == "app/foo.rb"
+    assert f["high_confidence"] is True
+    assert [s["path"] for s in f["sites"]] == ["app/caller.rb"]
+
+    # Still defined on disk -> no break.
+    (tmp_path / "app" / "foo.rb").write_text("class Foo\nend\n")
+    assert _ruby_constant_existence_breaks(tmp_path)["findings"] == []
+
+    # Removed but no live referencer -> no break.
+    (tmp_path / "app" / "foo.rb").write_text("class Renamed\nend\n")
+    (tmp_path / "app" / "caller.rb").write_text("Bar.bar\n")
+    assert _ruby_constant_existence_breaks(tmp_path)["findings"] == []
+
+    # Ambiguous (two defining files) -> skipped even when removed.
+    (ch / "constant_index.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "constants": {
+                    "Foo": {"defined_in": ["app/foo.rb", "app/foo2.rb"], "referenced_by": ["x.rb"]}
+                },
+            }
+        )
+    )
+    assert _ruby_constant_existence_breaks(tmp_path)["findings"] == []
+
+    # No index -> _index_missing flag (caller falls back to the reason).
+    import shutil
+
+    shutil.rmtree(ch)
+    assert _ruby_constant_existence_breaks(tmp_path).get("_index_missing") is True
+
+
 def test_empty_and_malformed_inputs(tmp_path):
     assert build_constant_index([], tmp_path)["constants"] == {}
     assert build_constant_index(None, tmp_path)["constants"] == {}

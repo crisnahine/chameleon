@@ -22,6 +22,15 @@ cross-matrix verification of every recent fix.
   blast-radius gate consumes it. The index is built for Ruby at bootstrap/refresh
   and hashed into the trust SHA. Existing Ruby repos pick it up on their next
   `/chameleon-refresh`.
+- **Ruby constant-existence break for PR review.** `get_crossfile_context` and
+  the turn-end advisory now flag a class/module that the index records as defined
+  in an edited file but the file no longer defines, while other files still
+  reference it — the Ruby analogue of a removed export still imported.
+  High-confidence only (one defining file, bare top-level name, a referencer that
+  still names it).
+- **`/chameleon-teach` accepts an optional archetype** to scope a free-form
+  idiom (so it surfaces first on that archetype's edits); omitted, the idiom
+  stays general and applies to every archetype.
 
 ### Fixed
 
@@ -40,6 +49,10 @@ cross-matrix verification of every recent fix.
 - **The inline-override hint offers `# chameleon-ignore` to Python** (it only
   special-cased Ruby; Python developers got the `//` token, a syntax error in
   their file).
+- **Contract breaks now detect the canonical Ruby service-object.** A class with
+  both a class method and an instance method of the same name (`def self.call` +
+  `def call`) was dropped as ambiguous, missing the very method that has callers;
+  the singleton (the constant-receiver target) is now kept.
 
 ## [2.30.0] - 2026-06-25
 

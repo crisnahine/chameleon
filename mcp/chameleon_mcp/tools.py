@@ -3219,6 +3219,80 @@ def _name_still_referenced(repo_root: Path, importer_rel: str, name: str, line: 
     return bool(needle.search(content))
 
 
+def _ruby_constant_existence_breaks(repo_root: Path) -> dict:
+    """get_crossfile_context for Ruby: constants the index records as defined in a
+    file that the file NO LONGER defines on disk, while referencers still name
+    them -- a removed/renamed referenced class, the Ruby analogue of a removed
+    export.
+
+    high_confidence requires an UNAMBIGUOUS constant: exactly one defining file in
+    the index AND a bare top-level name (no ``::`` namespace, which a call site
+    cannot disambiguate) AND at least one referencer that still names it on disk.
+    Namespaced or multiply-defined constants are skipped -- accepted
+    undercoverage, matching the constant-receiver grade. Returns the same finding
+    shape as the TS path; every finding is high_confidence.
+    """
+    import re as _re
+
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.constant_index import load_constant_index
+    from chameleon_mcp.safe_open import safe_read_text
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
+
+    index = load_constant_index(repo_root)
+    if index is None:
+        return {"found": False, "findings": [], "_index_missing": True}
+    max_findings = threshold_int("CROSSFILE_MAX_FINDINGS")
+    max_sites = threshold_int("CROSSFILE_MAX_SITES_PER_FINDING")
+    findings: list[dict] = []
+    truncated = False
+    for name in sorted(index.get("constants") or {}):
+        if len(findings) >= max_findings:
+            truncated = True
+            break
+        entry = index["constants"][name]
+        defined_in = entry.get("defined_in") or []
+        referenced_by = entry.get("referenced_by") or []
+        # Unambiguous + referenced: exactly one defining file, bare top-level name.
+        if len(defined_in) != 1 or "::" in name or not referenced_by:
+            continue
+        def_file = defined_in[0]
+        try:
+            content = safe_read_text(repo_root, def_file, max_size_bytes=1_000_000)
+        except Exception:
+            continue
+        # Still defined on disk? A top-level `class Foo` / `module Foo`.
+        if _re.search(r"(?m)^(?:class|module)\s+" + _re.escape(name) + r"\b", content):
+            continue
+        # Removed/renamed -- keep only referencers that still name the constant.
+        live = []
+        for ref in referenced_by:
+            try:
+                rc = safe_read_text(repo_root, ref, max_size_bytes=1_000_000)
+            except Exception:
+                continue
+            if _re.search(r"(?<![:.\w])" + _re.escape(name) + r"\b", rc):
+                live.append(ref)
+        if not live:
+            continue
+        live.sort()
+        findings.append(
+            {
+                "symbol": _sanitize(name),
+                "module": _sanitize(def_file),
+                "count": len(live),
+                "high_confidence": True,
+                "sites": [{"path": _sanitize(r), "line": None} for r in live[:max_sites]],
+            }
+        )
+    return {
+        "found": True,
+        "findings": findings,
+        "low_confidence_dropped": 0,
+        "_truncated": truncated,
+    }
+
+
 def get_crossfile_context(repo: str) -> dict:
     """Cross-file existence breaks across a TypeScript repo, for PR review.
 
@@ -3283,6 +3357,19 @@ def get_crossfile_context(repo: str) -> dict:
 
     index = load_reverse_index(repo_root)
     if index is None:
+        # No named-export reverse index -> Ruby (the constant graph) instead of
+        # the typescript-only stance: a referenced class removed/renamed on disk
+        # is the Ruby existence break.
+        ruby = _ruby_constant_existence_breaks(repo_root)
+        if not ruby.get("_index_missing"):
+            return _envelope(
+                {
+                    "found": True,
+                    "findings": ruby["findings"],
+                    "low_confidence_dropped": 0,
+                },
+                truncated=ruby.get("_truncated", False),
+            )
         out = dict(empty)
         out["reason"] = _crossfile_unavailable_reason(repo_root)
         return _envelope(out)
@@ -7766,8 +7853,13 @@ def _regrant_trust_if_was_trusted(
         pass
 
 
-def teach_profile(repo: str, feedback: str) -> dict:
+def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dict:
     """Append a captured idiom to .chameleon/idioms.md.
+
+    ``archetype`` optionally scopes a free-form idiom to one archetype (e.g.
+    ``controller``); the per-edit block and turn-end nudge then surface it first
+    on edits of that archetype. Omitted (or unrecognized), the idiom is written
+    untagged and treated as general, which applies to every archetype.
 
     Sanitization is delegated to `sanitize_for_chameleon_context` (ANSI,
     zero-width, NFC, tag-boundary). On top of that we:
@@ -7891,8 +7983,17 @@ def teach_profile(repo: str, feedback: str) -> dict:
                 file=sys.stderr,
             )
             language = "any"
+        # An optional, recognized archetype scopes the idiom (P3 then surfaces it
+        # first on that archetype's edits). An unrecognized value is dropped, not
+        # erroring, so a typo leaves a general idiom rather than failing the teach.
+        from chameleon_mcp.profile.schema import ARCHETYPE_NAME_RE
+
+        archetype_line = ""
+        if isinstance(archetype, str) and ARCHETYPE_NAME_RE.match(archetype.strip()):
+            archetype_line = f"Archetype: {archetype.strip()}\n"
         addition = (
-            f"\n### {slug}\nLanguage: {language}\nStatus: active (added {timestamp})\n{body}\n"
+            f"\n### {slug}\nLanguage: {language}\n{archetype_line}"
+            f"Status: active (added {timestamp})\n{body}\n"
         )
 
     from chameleon_mcp.profile.trust import repo_data_dir as _rdd

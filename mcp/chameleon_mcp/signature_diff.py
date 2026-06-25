@@ -211,13 +211,21 @@ def _callables_of_parsed_file(pf) -> dict[str, list]:
     index keys on the bare name, so a contract diff for a duplicated name could
     not be attributed reliably -- fail-safe (a possible missed break) over a
     misattributed false positive.
+
+    Exception (the canonical Ruby service-object shape): a same-name collision
+    between exactly one class method (``def self.call``, kind
+    ``singleton_method``) and an instance method (``def call``) is NOT ambiguous
+    for the constant-receiver join -- ``Const.call`` binds only to the singleton.
+    Keep the lone singleton so its contract break is still detected; the instance
+    method has no constant-receiver callers, so dropping it loses nothing. A
+    genuine ambiguity (no singleton, or two same-name singletons across classes)
+    is still dropped.
     """
     extras = getattr(pf, "extras", None) or {}
     raw = extras.get("callable_signatures")
     if not isinstance(raw, list):
         return {}
-    seen: dict[str, list] = {}
-    ambiguous: set[str] = set()
+    by_name: dict[str, list[tuple[list, str]]] = {}
     for entry in raw:
         if not isinstance(entry, dict):
             continue
@@ -225,11 +233,16 @@ def _callables_of_parsed_file(pf) -> dict[str, list]:
         params = entry.get("params")
         if not isinstance(name, str) or not name or not isinstance(params, list):
             continue
-        if name in seen:
-            ambiguous.add(name)
-        else:
-            seen[name] = params
-    return {n: p for n, p in seen.items() if n not in ambiguous}
+        by_name.setdefault(name, []).append((params, entry.get("kind") or ""))
+    result: dict[str, list] = {}
+    for name, entries in by_name.items():
+        if len(entries) == 1:
+            result[name] = entries[0][0]
+            continue
+        singletons = [p for p, k in entries if k == "singleton_method"]
+        if len(singletons) == 1:
+            result[name] = singletons[0]
+    return result
 
 
 def parse_callables(repo_root, abs_path) -> dict[str, list]:
