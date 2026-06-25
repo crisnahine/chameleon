@@ -1,26 +1,32 @@
-# Python parity — implementation progress
+# Python parity - implementation progress
 
-Closing the 77 Python-parity gaps from [language-support-matrix.md](./language-support-matrix.md).
-Dependency-ordered work packages; hot files (`lint_engine.py`, `conventions.py`)
-are edited serially in one pass per package to avoid breaking the TS/Ruby paths.
-The full unit suite must pass before every commit; for any shared
-`if language ==` function touched, a TS and a Ruby fixture must still produce
-identical output.
+Historical snapshot. This tracked the Python language-parity work that landed in
+v2.27.0 (2026-06-24); every item below is done. It is kept for provenance, not as
+a live tracker. For the current per-language capability state, see
+[language-support-matrix.md](./language-support-matrix.md), which is the
+authoritative live reference.
 
-**Excluded (not Python parity — surfaced, not built on this branch):** TS
-per-method decorators, TS `base_class`/`enclosing_class_path` on signatures, TS
-`NODE_OPTIONS` scrub, Ruby `tautological-assertion`, `stored-framework-tag`
-(no language has it — net-new for all), `import_module_set_hash` (intentionally
-dead for all three).
+Original goal: close the open Python gaps recorded in the language-support-matrix
+at the time. Work was dependency-ordered into the packages below; hot files
+(`lint_engine.py`, `conventions.py`) were edited serially in one pass per package
+to avoid breaking the TS/Ruby paths. The full unit suite had to pass before every
+commit, and for any shared `if language ==` function touched, a TS and a Ruby
+fixture had to still produce identical output.
 
-Legend: `[ ]` todo · `[~]` in progress · `[x]` done
+Excluded (not Python parity - surfaced, not built on this branch): TS per-method
+decorators, TS `base_class`/`enclosing_class_path` on signatures, TS
+`NODE_OPTIONS` scrub, Ruby `tautological-assertion`, `stored-framework-tag` (no
+language has it, net-new for all), `import_module_set_hash` (intentionally dead
+for all three).
 
-## PKG-0 — P0 wiring bugs (correctness, tiny)
-- [x] class_shapes base: consumer reads `extends` but Python emits `bases` (conventions.py:1038 one-line `extends or bases[0]`)
-- [x] file-naming enforcement gate omits `_PY_EXTENSIONS` (lint_engine.py:2829)
-- [x] vacuous-active calibration: scope phantom-import + file-naming `BLOCK_RULE_LANGUAGES` so Python doesn't certify inert rules active (violation_class.py:226,231)
+Legend: `[ ]` todo, `[~]` in progress, `[x]` done
 
-## PKG-1 — Extractor foundation (libcst_dump.py + python.py); re-bootstrap to validate
+## PKG-0 - P0 wiring bugs (correctness, tiny)
+- [x] class_shapes base: consumer reads `extends` but Python emits `bases` (conventions.py:1204, dual-read `extends or bases[0]`)
+- [x] file-naming enforcement gate omits `_PY_EXTENSIONS` (lint_engine.py:3304)
+- [x] vacuous-active calibration: scope phantom-import + file-naming `BLOCK_RULE_LANGUAGES` so Python doesn't certify inert rules active (violation_class.py:230)
+
+## PKG-1 - Extractor foundation (libcst_dump.py + python.py); re-bootstrap to validate
 - [x] emit `import_symbols` rows `{name, local, module, line}` (match ts_dump shape)
 - [x] emit `namespace_imports` rows `{alias, module, line}`
 - [x] emit `named_export_names` + `export_set_open`
@@ -28,20 +34,20 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] emit param `type` annotation on param shapes
 - [x] class_shapes also carry `extends` (first base) to match TS consumer
 
-## PKG-2 — Conventions derivation (conventions.py + import_graph.py)
+## PKG-2 - Conventions derivation (conventions.py + import_graph.py)
 - [x] naming casing conventions for Python (PEP8 snake/Pascal/UPPER)
 - [x] class_contract base fix (read `extends`/`bases`) + accept staticmethod/classmethod kinds
 - [x] key_exports (top-level public names / `__all__`)
 - [x] error_handling (`try:` shape)
-- [x] doc_coverage (docstring detection — scan line AFTER def/class, not before)
+- [x] doc_coverage (docstring detection: scan line AFTER def/class, not before)
 - [x] test_pairing: `_is_test_path` + `_candidate_test_paths` Python branches (test_*.py, *_test.py, conftest.py)
 - [x] inheritance derivation (dominant_base/known_bases for Python)
 - [x] layering: `_resolve_python` dotted-relative resolver in import_graph.py
 
-## PKG-3 — Cross-file intelligence (depends on PKG-1)
-- [x] exports index for Python (named_export_names → exports_index.json)
-- [x] reverse index for Python (import_symbols → reverse_index.json)
-- [x] phantom-import (relative import → file on disk) Python branch
+## PKG-3 - Cross-file intelligence (depends on PKG-1)
+- [x] exports index for Python (named_export_names to exports_index.json)
+- [x] reverse index for Python (import_symbols to reverse_index.json)
+- [x] phantom-import (relative import to file on disk) Python branch
 - [x] phantom-symbol (imported name in target exports) Python
 - [x] cross-file-importers (blast-radius advisory) Python
 - [x] removed-export-breaks-importers Python
@@ -52,13 +58,13 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] signature index param/return type text (Python)
 - [x] doctor advisory-emission source-edit check (.py in _source_exts)
 
-## PKG-4 — Security lint (lint_engine.py)
-- [x] weak-hash (add python to gate — hashlib.md5/sha1)
+## PKG-4 - Security lint (lint_engine.py)
+- [x] weak-hash (add python to gate: hashlib.md5/sha1)
 - [x] insecure-random (random.* vs secrets in crypto context) Python (+Ruby)
 - [x] command-injection sink (os.system / subprocess shell=True / os.popen) [net-new, Python]
 - [x] insecure-deserialization sink (pickle.load(s) / yaml.load non-Safe) [net-new, Python]
 
-## PKG-5 — Style lint (lint_engine.py + tool_config.py)
+## PKG-5 - Style lint (lint_engine.py + tool_config.py)
 - [x] Python formatter-config reader at bootstrap (black/ruff/flake8: line-length, quote)
 - [x] scan_style_rules gate + python stripper branch
 - [x] indent rule (editorconfig fallback)
@@ -66,12 +72,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] max-line-length rule
 - [x] (emission cap + summary tail come free once the scan runs)
 
-## PKG-6 — Naming + file-naming lint (lint_engine.py + conventions.py + violation_class.py)
+## PKG-6 - Naming + file-naming lint (lint_engine.py + conventions.py + violation_class.py)
 - [x] naming-convention-violation identifier scan (Python snake/Pascal/UPPER, mirror Ruby path)
 - [x] naming-convention block-eligibility (BLOCK_RULE_LANGUAGES add python)
-- [x] (file-naming enforcement — done in PKG-0)
+- [x] (file-naming enforcement: done in PKG-0)
 
-## PKG-7 — Test-quality lint (lint_engine.py + conventions.py)
+## PKG-7 - Test-quality lint (lint_engine.py + conventions.py)
 - [x] test-quality pass language gate + python branch
 - [x] skipped-test (pytest mark.skip/skipif/xfail, unittest skip)
 - [x] tautological-assertion (assert True==True / assertEqual(1,1))
@@ -83,26 +89,26 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done
 - [x] witness assertion-helper self-calibration (Python)
 - [x] test-archetype naming (_looks_like_test Python predicate, not just suffix list)
 
-## PKG-8 — Import lint + counterexamples (lint_engine.py + counterexamples.py)
+## PKG-8 - Import lint + counterexamples (lint_engine.py + counterexamples.py)
 - [x] string-embedded-import false-positive guard (Python)
 - [x] inline-ignore directive Python string blanker (_blank_string_literals)
 - [x] off-pattern counterexample capture (_import_of Python branch: import x / from x import)
 - [x] counterexample render + multi-off-pattern (free once capture works)
 
-## PKG-9 — Framework awareness (cochange.py + orchestrator.py + naming.py)
-- [x] hybrid frontend (python<->ts language_hint, both directions)
-- [x] Django model→migration co-change rule (+ _normalize_language python)
+## PKG-9 - Framework awareness (cochange.py + orchestrator.py + naming.py)
+- [x] hybrid frontend (python/ts language_hint, both directions)
+- [x] Django model-to-migration co-change rule (+ _normalize_language python)
 - [x] stale-test advisory eligibility (python in _normalize_language)
 - [x] inheritance-convention derivation (Django models.Model / DRF APIView)
-- [x] class-contract decorator/base recognition (one-line extends/bases — overlaps PKG-2)
+- [x] class-contract decorator/base recognition (one-line extends/bases, overlaps PKG-2)
 - [x] AST-shape fallback: add ClassDef to is_class_default (naming.py)
 
-## PKG-10 — Calibration (violation_class.py + enforcement_calibration.py)
+## PKG-10 - Calibration (violation_class.py + enforcement_calibration.py)
 - [x] phantom-import block rule Python (after PKG-3 phantom-import lands)
 - [x] naming-convention block rule Python (after PKG-6)
 - [x] file-naming block rule Python (after PKG-0)
 - [x] block-eligible rule set parity audit (scope correctly)
 
-## PKG-11 — Idioms (idiom_coverage.py + conventions.py)
+## PKG-11 - Idioms (idiom_coverage.py + conventions.py)
 - [x] covered-by-inheritance dedup for non-Ruby (consult class_contract.base)
 - [x] covered-by-class-contract content for non-Ruby

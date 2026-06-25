@@ -9,7 +9,7 @@ Five standing QA engineers, defined as dispatchable agents under `.claude/agents
 | 1 | `qa-upgrade-migration` | What happens to existing users when this update ships - old state under new code, trust/data survival, downgrade, mid-workflow upgrade | Any release; any schema/engine/artifact change |
 | 2 | `qa-regression` | Re-run every original failing scenario from the prior campaign; attack each fix with adjacent inputs | After any remediation release |
 | 3 | `qa-enforcement` | Blocking paths in anger: mode matrix, escape hatches, Stop backstop, escalation, calibration honesty | Any enforcement/blocking/calibration change |
-| 4 | `qa-language-depth` | Full hostile treatment of the TS/Ruby pipelines on real repos: rule precision, archetype quality, boundary inputs, monorepos | Any AST/lint/bootstrap/cross-file change |
+| 4 | `qa-language-depth` | Full hostile treatment of the TS/Ruby/Python pipelines on real repos: rule precision, archetype quality, boundary inputs, monorepos | Any AST/lint/bootstrap/cross-file change |
 | 5 | `qa-failure-recovery` | SIGKILL mid-write, races, corrupt state, stale sockets, closed pipes - and whether it recovers | Any hook/daemon/transport/locking/atomic-write change |
 
 ## The mindset (all five)
@@ -17,7 +17,7 @@ Five standing QA engineers, defined as dispatchable agents under `.claude/agents
 - Relentless: "it works on my machine" is the start of testing, not the end. Keep going until every feature, workflow, tool, and edge case in the charter has been exercised against real state.
 - Real-world first: existing users, production scenarios, integrations, deployments, performance, reliability, and recovery from failures - not just happy paths.
 - Evidence or it didn't happen: every finding carries a repro command, expected vs actual, and the root-cause file:line, reproduced twice. Bug vs designed-behavior is settled by reading `docs/architecture.md` before reporting.
-- Do no harm: destructive work happens on `qa<NN>-*` copies with isolated `CHAMELEON_PLUGIN_DATA`; the nine real Testing Apps repos and the real `~/.local/share/chameleon` are sacred.
+- Do no harm: destructive work happens on `qa<NN>-*` copies with isolated `CHAMELEON_PLUGIN_DATA`; the twelve real Testing Apps repos and the real `~/.local/share/chameleon` are sacred.
 
 ## Incentive structure
 

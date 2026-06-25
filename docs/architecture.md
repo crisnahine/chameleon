@@ -5,7 +5,7 @@
 This document describes how chameleon works as built. It is the reference for
 the bootstrap pipeline, the hook stack, the MCP tool surface, the enforcement
 and review gate, the profile schema, the state stores, and the security model.
-It tracks engine version **2.22.0** and profile **schema version 8**. When the
+It tracks engine version **2.32.2** and profile **schema version 8**. When the
 code and this document disagree, the code is right; please file an issue.
 
 ## Contents
@@ -73,7 +73,7 @@ languages. Claude Code only. The core is framework-agnostic: it learns each
 repo's conventions from the repo's own structure (clustering, naming,
 signatures), so it works on any framework, not just well-known ones. Where a
 framework has strong, well-known conventions, chameleon adapts for deeper,
-framework-aware guidance — currently Rails for Ruby, and Django, DRF, Flask,
+framework-aware guidance - currently Rails for Ruby, and Django, DRF, Flask,
 and FastAPI for Python. TypeScript / JavaScript is purely structural today (no
 framework-specific layer), which is why no TS framework is named.
 
@@ -128,9 +128,9 @@ no repo-specific knowledge; the profile carries no code.
 |              +---------------+----------------+                          |
 |              v                                v                          |
 |  AST extractors                     Bootstrap / refresh pipeline         |
-|  - ts_dump.mjs   (TS Compiler API)  detect -> discover -> parse ->       |
-|  - prism_dump.rb (Prism)            cluster -> canonical -> conventions  |
-|                                     -> atomic commit                     |
+|  - ts_dump.mjs    (TS Compiler API) detect -> discover -> parse ->       |
+|  - prism_dump.rb  (Prism)           cluster -> canonical -> conventions  |
+|  - libcst_dump.py (libcst CST)      -> atomic commit                     |
 +--------------------------------------------------------------------------+
 
 Per-repo, committed to git:           Per-user, local only (never committed):
@@ -186,6 +186,7 @@ chameleon/
 ├── scripts/
 │   ├── ts_dump.mjs                # TypeScript AST extractor (Node)
 │   ├── prism_dump.rb              # Ruby AST extractor (Prism)
+│   ├── libcst_dump.py            # Python AST extractor (libcst)
 │   ├── bump-version.sh            # keeps six manifests in sync
 │   ├── chameleon-merge-driver.sh  # git merge driver for .chameleon
 │   └── ...
@@ -232,9 +233,10 @@ All JSON artifacts carry `schema_version`, `engine_min_version`, and a
 | `profile.summary.md` | Human-readable summary for PR review and the trust prompt. |
 | `enforcement.json` | Per-rule block-calibration verdict (`{rule: {active, fp_rate, sampled}}`). |
 | `exports_index.json`, `reverse_index.json` | TypeScript symbol export map and its inverse importer graph. TS only. |
-| `function_catalog.json` | Per-function name, shape, and body-hash for the duplication prefilter. Both languages. |
-| `calls_index.json` | Deterministic caller -> callee edges for the judge. Both languages. |
-| `symbol_signatures.json` | Per-callable signature and body span for forward-definition hydration. Both languages (declared types TS only). |
+| `function_catalog.json` | Per-function name, shape, and body-hash for the duplication prefilter. All three languages. |
+| `calls_index.json` | Deterministic caller -> callee edges for the judge. All three languages. |
+| `symbol_signatures.json` | Per-callable signature and body span for forward-definition hydration. All three languages (declared types TS only). |
+| `constant_index.json` | Ruby-only: per-constant reverse index mapping constant references to their defining class, backing the cross-file call-site analysis. |
 | `counterexamples.json` | Per-archetype off-pattern counterexample: a real instance of a taught discouraged import, paired with the witness at edit time as a "do NOT write it this way" example. Built at teach time and bootstrap/refresh; drop-stale. |
 | `renames.json` | User archetype-rename overlay (written only when a rename map exists). |
 | `config.json` | Operator-managed: `production_ref`, `auto_refresh`, `enforcement`, `trust`, `canonical_ref`. Read, never produced, by bootstrap. |
@@ -278,17 +280,20 @@ The pipeline stages, in order:
 1. **Workspace detection.** Detect pnpm/yarn/lerna/turbo/nx workspaces and
    monorepo layouts; fan out to each workspace root.
 2. **Tool-config read.** Read eslint, prettier, tsconfig, rubocop, editorconfig.
-3. **Language detect.** Select the extractor. TypeScript wins on a `tsconfig.json`,
-   or a `package.json` naming `typescript`/`ts-node`/`vite`, or a bounded scan
-   of `.ts`/`.tsx` files. Ruby wins on a `Gemfile` or any `*.gemspec`. No
+3. **Language detect.** Select the extractor, first match wins. TypeScript wins
+   on a `tsconfig.json`, or a `package.json` naming `typescript`/`ts-node`/`vite`,
+   or a bounded scan of `.ts`/`.tsx` files. Ruby wins on a `Gemfile` or any
+   `*.gemspec`. Python wins on a project marker
+   (`pyproject.toml`, `setup.py`, `setup.cfg`, `requirements.txt`, `manage.py`,
+   `Pipfile`, `tox.ini`) or, absent all of them, any `*.py` file in the tree. No
    supported signal yields `failed_unsupported_language`.
 4. **Discovery and exclusion.** Enumerate candidate source files, excluding
    generated, vendored, and test directories from the canonical pool. A
    post-exclusion ceiling of 200k files raises `TooManyFilesError`; large repos
    pass an explicit `paths_glob`.
-5. **AST parse.** Run the extractor over the candidates. A missing Node or Ruby
-   toolchain degrades to a typed `failed_node_unavailable` /
-   `failed_ruby_unavailable` report, not a crash. A corpus that parsed too
+5. **AST parse.** Run the extractor over the candidates. A missing language
+   toolchain degrades to a typed report (`failed_node_unavailable` for TS,
+   `failed_ruby_unavailable` otherwise), not a crash. A corpus that parsed too
    poorly degrades to `failed_extractor_degraded`.
 6. **Clustering.** Group files by their [cluster signature](#cluster-signature-function),
    then run loose-merge, shape-fuzzy-merge, and sub-bucket-split passes.
@@ -311,9 +316,9 @@ The pipeline stages, in order:
 
 ### Extractors and limits
 
-Both extractors are long-lived subprocesses fed file paths on stdin, emitting
-NDJSON on stdout, read under a 600-second wall-clock timeout. They are spawned
-from a neutral working directory with `RUBYOPT`/`RUBYLIB` (Ruby) or
+All three extractors are long-lived subprocesses fed file paths on stdin,
+emitting NDJSON on stdout, read under a 600-second wall-clock timeout. They are
+spawned from a neutral working directory with `RUBYOPT`/`RUBYLIB` (Ruby) or
 `NODE_PATH`/`CHAMELEON_NODE_MODULES` (TypeScript) controlled, so they never load
 repo-controlled startup code.
 
@@ -401,7 +406,7 @@ which committed `.chameleon` snapshot the hooks *read*.
 An archetype is a named cluster of files that share a structural signature. The
 signature `sig: file -> ClusterKey` is computed in a single AST pass. The
 `ClusterKey` dataclass declares seven fields for shape and JSON compatibility,
-but two of them are degenerate by construction, so the **live discriminating
+but one of them is degenerate by construction, so the **live discriminating
 signature is six dimensions**:
 
 1. **`path_pattern_bucket`** the depth- and monorepo-aware path glob, with the
@@ -516,7 +521,7 @@ their gate stay empty. All thresholds live in `_thresholds.py`.
 
 ## Cross-file indexes
 
-Five committed index artifacts make the cross-file checks possible without
+Six committed index artifacts make the cross-file checks possible without
 re-parsing callers on the hot path. All key on repo-relative paths, are
 byte-reproducible, are hashed into the trust SHA, and fail open to "no facts"
 (never a crash, never a fabricated claim) on any corruption.
@@ -529,29 +534,32 @@ byte-reproducible, are hashed into the trust SHA, and fail open to "no facts"
   files that import it by name plus the import line. Backs the edit-time
   blast-radius advisory and the cross-file symbol-existence check (a name that
   was exported is gone and an indexed importer still references it).
-- **`function_catalog.json`** (both languages): per function, the name, kind,
+- **`function_catalog.json`** (all three languages): per function, the name, kind,
   arity, and two body hashes (plain and parameter-normalized). The body hash
   drops the name line, collapses whitespace, and hashes the rest, but only for
   bodies past a minimum length. No body text is stored. This is the cheap
   candidate-narrowing layer for cross-file duplication; the LLM caller judges
   equivalence against real bodies.
-- **`calls_index.json`** (both languages): callee file to callable name to
+- **`calls_index.json`** (all three languages): callee file to callable name to
   recorded caller rows. It stores exactly three deterministic grades and never
   name-only repo-wide matches (the false-positive bulk):
   - `same_file` a bare call to a same-file callable, or a `this.`/`self.` call
     to a same-file class member.
-  - `import` (TS only) a call of a named import matched on its local binding and
-    recorded under the exported name, where the callee exists in the target's
-    closed export set.
+  - `import` (TS and Python) a call of a named import matched on its local
+    binding and recorded under the exported name, where the callee exists in the
+    target's closed export set.
   - `constant_receiver` (Ruby only) `Const.method` where `Const` resolves to
     exactly one defining class and the member is class-level.
   Each entry carries an honest `total` and a `truncated` flag so a capped count
   reads as a lower bound, not an undercount. Unlike the other indexes, a failed
   rebuild drops the old copy rather than carrying it forward: stale caller facts
   fed to the judge are worse than none.
-- **`symbol_signatures.json`** (both languages): per callable, the parameter
+- **`symbol_signatures.json`** (all three languages): per callable, the parameter
   shape, declared types (TS only), and body span, for the judge's
   forward-definition hydration.
+- **`constant_index.json`** (Ruby only): each referenced constant to its defining
+  class, so a `Const.method` call site resolves to exactly one class for the
+  cross-file blast-radius and call-site checks.
 
 The primary consumer is the turn-end correctness judge, which renders a bounded
 caller-facts block (including multi-hop transitive callers) for the callables a
@@ -988,19 +996,20 @@ hash map for monorepo workspaces).
   guidance until trust is granted.
 - **stale** the grant covers the root but the profile changed since (the granted
   hash no longer matches). Content injects with a warning that already suggests
-  `/chameleon-trust`. **This state only occurs under `CHAMELEON_TRUST_REVALIDATE=1`**
-  — by default trust persists across profile changes and never goes stale (see
+  `/chameleon-trust`. **This state only occurs under `CHAMELEON_TRUST_REVALIDATE=1`**:
+  by default trust persists across profile changes and never goes stale (see
   "Trust persistence" below).
 - **trusted** the grant covers the root. Content injects normally. By default
   this holds across every later profile change; under the kill switch it also
   requires the hash to still match the grant.
 
-The hash (`hash_profile`) is a SHA-256 over a fixed set of **15 artifacts**,
+The hash (`hash_profile`) is a SHA-256 over a fixed set of **17 artifacts**,
 each framed by null bytes: `.archetype_renames.json`,
 `archetypes.json`, `calls_index.json`, `canonicals.json`, `config.json`,
-`conventions.json`, `enforcement.json`, `exports_index.json`,
-`function_catalog.json`, `idioms.md`, `principles.md`, `profile.json`,
-`reverse_index.json`, `rules.json`, and `symbol_signatures.json`. Because all
+`constant_index.json`, `conventions.json`, `counterexamples.json`,
+`enforcement.json`, `exports_index.json`, `function_catalog.json`, `principles.md`,
+`idioms.md`, `profile.json`, `reverse_index.json`, `rules.json`, and
+`symbol_signatures.json`. Because all
 the convention, index, and calibration artifacts are in the set, a refresh that
 changes any of them flips the profile to stale until re-approval. `config.json`
 is in the hash deliberately: it is why the override audit never rewrites
@@ -1012,7 +1021,7 @@ literal `yes-trust-<repo_id[:8]>`. On grant it re-scans `idioms.md` and
 `principles.md` for injection and refuses if either looks suspicious. The write
 is flock-serialized and atomic. `trust.auto_preserve_when` only controls whether
 a refresh re-stamps the stored grant hash; it does NOT control re-prompting (the
-staleness gate is `CHAMELEON_TRUST_REVALIDATE`, default off — see Trust
+staleness gate is `CHAMELEON_TRUST_REVALIDATE`, default off, see Trust
 persistence below). By default trust is one-time and survives later profile
 changes, including another user's committed change, so it does not re-prompt;
 re-prompting on change happens only under `CHAMELEON_TRUST_REVALIDATE=1`.
@@ -1020,7 +1029,7 @@ re-prompting on change happens only under `CHAMELEON_TRUST_REVALIDATE=1`.
 ### Trust persistence (default)
 
 Trust is **one-time** by default: once a repo is trusted, the grant holds across
-every later profile change — refresh, re-bootstrap, teach — and never goes stale,
+every later profile change (refresh, re-bootstrap, teach) and never goes stale,
 so the user is never re-prompted to re-trust their own repo. Every staleness
 decision funnels through one predicate, `profile_diverged_from_grant`, which
 returns `False` unless `CHAMELEON_TRUST_REVALIDATE=1` is set; `is_material_change`
@@ -1037,7 +1046,7 @@ Two consequences of persistence are deliberate:
   `enforcement.mode: "enforce"` takes effect) where they previously fell through to
   advisory-under-stale. Intended, and bounded: only `BLOCK_ELIGIBLE_RULES` can be
   promoted (an arbitrary rule can't be planted), the default mode is `shadow`
-  (never blocks), and the block reason is sanitized — so the worst case is a denied
+  (never blocks), and the block reason is sanitized, so the worst case is a denied
   edit from a drifted/pulled profile under a non-default `enforce` mode, not code
   execution. A repo whose `enforcement.json` / `config.json` may change via an
   un-reviewed `git pull` and which wants those changes to re-prompt before they
@@ -1311,7 +1320,7 @@ in `mcp/chameleon_mcp/_thresholds.py`, each overridable with a
 
 Engine versions stay in lockstep across six manifests, kept in sync by
 `scripts/bump-version.sh` (the plugin cache is version-keyed). The current
-engine is 2.22.0 and the current profile schema is 8.
+engine is 2.32.2 and the current profile schema is 8.
 
 **Compatibility contract for committed `.chameleon/`:** chameleon will not break
 a committed profile schema without a major version bump. An engine reads any
@@ -1373,7 +1382,7 @@ anyone considering dropping mandatory review.
 | Term | Definition |
 |---|---|
 | **archetype** | A category of file with shared patterns. A named cluster. |
-| **AST** | Abstract syntax tree, from the TypeScript Compiler API or Prism. |
+| **AST** | Abstract syntax tree, from the TypeScript Compiler API, Prism, or libcst. |
 | **atomic transaction** | Write all artifacts to `.chameleon.tmp/<txn-id>/`, write `COMMITTED` last, flock-serialize the rename. |
 | **bootstrap** | First-time profile generation via `/chameleon-init`. |
 | **canonical** | An archetype's reference example, trichotomized into witness, normative shape, and normative idiom. |

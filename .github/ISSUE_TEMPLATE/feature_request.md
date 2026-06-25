@@ -6,8 +6,8 @@ labels: enhancement
 
 ## What problem does this solve?
 
-<!-- The user-facing problem you've actually run into. Not "improve X" —
-     describe a concrete situation where chameleon fell short. -->
+<!-- The user-facing problem you've actually run into. Not "improve X".
+     Describe a concrete situation where chameleon fell short. -->
 
 ## Proposed change
 
@@ -15,7 +15,7 @@ labels: enhancement
 
 ## Affected surface
 
-- [ ] Skill bodies (one of the 10 SKILL.md files)
+- [ ] Skill bodies (one of the 14 SKILL.md files)
 - [ ] MCP tools (chameleon_mcp/tools.py)
 - [ ] Hooks (hooks/*)
 - [ ] Bootstrap pipeline (extractor / clustering / canonical selection)
@@ -25,9 +25,10 @@ labels: enhancement
 
 ## Languages affected
 
-- [ ] TypeScript
-- [ ] Ruby on Rails
-- [ ] Both / language-agnostic
+- [ ] TypeScript / JavaScript
+- [ ] Ruby
+- [ ] Python
+- [ ] Multiple / language-agnostic
 
 ## Alternatives considered
 
