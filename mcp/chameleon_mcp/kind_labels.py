@@ -27,6 +27,22 @@ _KIND_LABELS: dict[str, str] = {
     "CallNode": "method calls",
     "ConstantWriteNode": "constant assignments",
     "LocalVariableWriteNode": "assignments",
+    # Python (libcst node names emitted by libcst_dump's top_level_node_kinds).
+    "ClassDef": "classes",
+    "FunctionDef": "functions",
+    "AsyncFunctionDef": "functions",
+    "Import": "imports",
+    "ImportFrom": "imports",
+    "Assign": "assignments",
+    "AnnAssign": "assignments",
+    "AugAssign": "assignments",
+    "If": "conditionals",
+    "For": "loops",
+    "While": "loops",
+    "With": "context blocks",
+    "Try": "try blocks",
+    "Return": "returns",
+    "Decorator": "decorators",
     # The lint engine normalizes an uncategorized DSL macro to a bare "DslCall"
     # and any mixin to "IncludeCall"; both reach user text without the colon
     # that the DslCall: prefix branch keys on, so map them explicitly.

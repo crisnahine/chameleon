@@ -421,10 +421,12 @@ def _ignore_hint(paths: object, rule: str = "<rule>") -> str:
     langs = {detect_language(str(p)) for p in paths if p}
     # Unknown extensions never carry violations, so they don't shape the hint.
     langs.discard(None)
-    if langs == {"ruby"}:
+    # Ruby and Python both use `#`; TypeScript/JS uses `//`.
+    hash_langs = {"ruby", "python"}
+    if langs and langs <= hash_langs:
         return f"`# chameleon-ignore {rule}`"
-    if "ruby" in langs:
-        return f"`// chameleon-ignore {rule}` (`# chameleon-ignore {rule}` in Ruby)"
+    if langs & hash_langs:
+        return f"`// chameleon-ignore {rule}` (`# chameleon-ignore {rule}` in Ruby/Python)"
     return f"`// chameleon-ignore {rule}`"
 
 

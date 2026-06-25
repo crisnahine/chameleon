@@ -1473,6 +1473,21 @@ _EVAL_CALL_RE = re.compile(r"(?<![.\w])eval\s*\(")
 _RUBY_EVAL_VARIANT_RE = re.compile(r"(?<![:\w])(instance_eval|class_eval|module_eval)\b")
 _RUBY_EVAL_STRING_ARG_RE = re.compile(r"\A\s*\(?\s*(?:\"|'|<<[~-]?[A-Z'\"])")
 _RUBY_SEND_EVAL_RE = re.compile(r"\b((?:public_)?send)\s*\(\s*(?::eval\b|[\"']eval[\"'])")
+# Paren-less Kernel#eval: `eval "..."`, `eval s`, `eval %(...)`. _EVAL_CALL_RE
+# only catches the `eval(` form, so the paren-less call (idiomatic Ruby) slipped
+# the rule entirely. Unlike class_eval, Kernel#eval has no block form -- every
+# call executes a string as code -- so any argument fires at error severity. The
+# method name is matched in the stripped scan (lookbehind excludes
+# `instance_eval`/`x.eval`/`:eval`); the argument shape is then read from the
+# ORIGINAL content at the matched offset (the stripper blanks the string literal),
+# so a value start (string, %-literal, identifier/variable, paren) fires while
+# `eval = ...` / `eval ||= ...` / a bare reference does not.
+# Match the method + ONE whitespace only: the stripper blanks a string-literal
+# argument into spaces, so a greedy ``[ \t]+`` would run past the opening quote
+# in the scan. The arg shape is then checked in the ORIGINAL content, skipping
+# any further real whitespace, so both ``eval "x"`` and ``eval   s`` resolve.
+_RUBY_PARENLESS_EVAL_RE = re.compile(r"(?<![.:\w])eval[ \t]")
+_RUBY_PARENLESS_EVAL_ARG_RE = re.compile(r"\A[ \t]*(?:[\"'`]|%[qQ]?[({\[<|/!]|[A-Za-z_@$:(])")
 
 # Weak message-digest constructors. Only meaningful as a security signal when a
 # crypto keyword sits nearby (a stable cache key or an ETag built from MD5 is
@@ -1713,6 +1728,27 @@ def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violatio
                 )
 
     if language == "ruby":
+        # Paren-less Kernel#eval (`eval "..."` / `eval s` / `eval %(...)`).
+        # Every call is the dynamic-eval sink, so it fires at error severity like
+        # `eval(` -- there is no benign block form to exempt.
+        for m in _RUBY_PARENLESS_EVAL_RE.finditer(scan):
+            if not _RUBY_PARENLESS_EVAL_ARG_RE.match(content[m.end() : m.end() + 40]):
+                continue
+            line = _position_to_line(scan, m.start())
+            violations.append(
+                Violation(
+                    rule="eval-call",
+                    expected="<no dynamic eval>",
+                    actual=f"eval at line {line}",
+                    severity="error",
+                    message=(
+                        f"dynamic eval at line {line} executes arbitrary code. "
+                        "If the argument can reach user input this is remote code "
+                        "execution; replace it with an explicit parser or dispatch "
+                        "table."
+                    ),
+                )
+            )
         # String-argument *_eval forms. The method name is matched in the
         # stripped scan (comment/string mentions are blanked there); the
         # argument shape is read from the ORIGINAL content at the same offset,

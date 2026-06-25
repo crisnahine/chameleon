@@ -2677,7 +2677,7 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     best_confidence = 0.0
     best_struct_count = float("inf")
     for cq in candidate_queries:
-        v_list = _lint(snapshot, cq)
+        v_list = _lint(snapshot, cq, language=language)
         c = _canonical_confidence(snapshot, cq)
         struct_count = sum(1 for v in v_list if v.rule == "top-level-node-kinds-mismatch")
         if struct_count < best_struct_count or (
@@ -6786,12 +6786,17 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         ".cjs",
         ".py",
         ".pyi",
+        ".rb",
     )
 
     def importers_of(rel: str) -> int | None:
-        # The reverse index covers the JS/TS and Python module graphs (both are
-        # built at bootstrap). A file outside those extensions is uncovered by
-        # design and contributes 0 (not "unknown"); for a covered file, any
+        # query_symbol_importers covers the JS/TS and Python module graphs (the
+        # reverse index) and the Ruby constant graph (the constant index), all
+        # built at bootstrap; it dispatches each by language. This must stay in
+        # step with the Stop judge-router, which already counts .rb fan-out -- a
+        # Ruby file uncovered here read blast_radius=0 and skipped the blast gate.
+        # A file outside those extensions is uncovered by design and contributes
+        # 0 (not "unknown"); for a covered file, any
         # unreadable answer -- untrusted profile, missing index,
         # deleted/unreadable module, a raise -- returns None so the router counts
         # it as UNKNOWN fan-out instead of assuming 0, which is the auto-pass

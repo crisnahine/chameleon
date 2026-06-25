@@ -26,6 +26,25 @@ def test_eval_call_ruby_flagged():
     assert _rules(violations) == ["eval-call"]
 
 
+def test_parenless_ruby_eval_flagged():
+    # Kernel#eval without parens slipped the rule (it only matched `eval(`).
+    for src in ('eval "puts 1"', "eval user_code", "eval %(puts 1)", "eval %q{x}"):
+        assert "eval-call" in _rules(scan_dangerous_sinks(src, language="ruby")), src
+
+
+def test_parenless_ruby_eval_no_false_positives():
+    for src in (
+        "instance_eval { 1 }",
+        "obj.eval_thing",
+        "thing.eval(x)",
+        "eval = 5",
+        "eval ||= compute",
+        "# eval bad",
+        "val = evaluate(y)",
+    ):
+        assert "eval-call" not in _rules(scan_dangerous_sinks(src, language="ruby")), src
+
+
 def test_eval_inside_string_literal_not_flagged():
     # The literal mentions eval( but does not invoke it.
     violations = scan_dangerous_sinks('const s = "please eval(this)";', language="typescript")

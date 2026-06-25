@@ -216,15 +216,16 @@ def test_unreadable_fanout_on_covered_file_reads_unknown(tmp_path, monkeypatch):
 
 
 def test_uncovered_extension_contributes_zero_not_unknown(tmp_path, monkeypatch):
-    # The reverse index covers the JS/TS module graph only; a Ruby file is
-    # uncovered by design and must not read as unknown blast radius.
+    # The blast-radius gate covers JS/TS + Python (reverse index) and Ruby
+    # (constant index); a file in an unsupported language is uncovered by design
+    # and must not read as unknown blast radius.
     from chameleon_mcp import tools
 
     _wire(
         monkeypatch,
         tmp_path,
-        numstat="20\t5\tapp/models/listing.rb\n",
-        name_status="M\tapp/models/listing.rb\n",
+        numstat="20\t5\tcmd/server/main.go\n",
+        name_status="M\tcmd/server/main.go\n",
         active=[],
         violations=[],
     )
@@ -238,6 +239,30 @@ def test_uncovered_extension_contributes_zero_not_unknown(tmp_path, monkeypatch)
 
     assert not any("unknown" in r for r in v["reasons"])
     assert v["auto_pass_eligible"] is True
+
+
+def test_ruby_file_blast_radius_is_counted(tmp_path, monkeypatch):
+    # A .rb file is covered via the constant index; its blast radius routes
+    # through query_symbol_importers and must count, not read 0 like an
+    # unsupported extension (the cross-matrix autopass/Ruby consistency fix).
+    from chameleon_mcp import tools
+
+    _wire(
+        monkeypatch,
+        tmp_path,
+        numstat="20\t5\tapp/services/payment_processor.rb\n",
+        name_status="M\tapp/services/payment_processor.rb\n",
+        active=[],
+        violations=[],
+    )
+    monkeypatch.setattr(
+        tools,
+        "query_symbol_importers",
+        lambda repo, fp: {"data": {"found": True, "importers": [{"count": 13}]}},
+    )
+
+    v = tools.get_autopass_verdict("rid")["data"]
+    assert v["facts"]["blast_radius"] == 13
 
 
 def test_importers_query_raising_reads_unknown_not_zero(tmp_path, monkeypatch):
