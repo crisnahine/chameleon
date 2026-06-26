@@ -66,6 +66,67 @@ def test_clean_file_yields_no_secret_violation(tmp_path):
     assert [v for v in out if v.get("rule") == "secret-detected-in-content"] == []
 
 
+def test_scan_archetype_independent_skips_eval_on_non_code_file():
+    # eval-call must not fire on a non-code file (detect_language None): the
+    # literal `eval(` in markdown / doc prose is not a runnable sink, and such a
+    # file cannot carry an inline chameleon-ignore directive. Under enforce-default
+    # this would otherwise turn-trap a session that merely documents eval().
+    md = "Docs: never write eval(userInput) for parsing user input.\n"
+    out = hook_helper._scan_archetype_independent(md, "README.md")
+    assert [v for v in out if v.get("rule") == "eval-call"] == []
+
+
+def test_scan_archetype_independent_flags_eval_on_code_file():
+    out = hook_helper._scan_archetype_independent("x = eval(user_input)\n", "app.py")
+    evals = [v for v in out if v.get("rule") == "eval-call"]
+    assert evals, "a real eval() in a .py file must still flag"
+    assert any(is_hard_class(v) for v in evals)
+
+
+def test_with_archetype_path_drops_eval_secret_on_non_code(tmp_path):
+    # Guard the legacy-blind-archetype path: a non-code file CAN resolve to an
+    # archetype via an old extension-blind paths_pattern, routing it through
+    # _lint_file_in_process (which runs scan_dangerous_sinks + scan_secrets) and
+    # the with-archetype block sites. Those sites now apply block_eligible_on_file,
+    # so eval/secret in a doc still never hard-block. This mirrors the composition
+    # at posttool_verify and _stop_file_still_blockable's with-archetype branch.
+    from chameleon_mcp.lint_engine import detect_language, scan_dangerous_sinks, scan_secrets
+    from chameleon_mcp.violation_class import block_eligible_on_file, tag_secret_hardness
+
+    md_path = "apps/web/src/README.md"
+    lang = detect_language(md_path)
+    assert lang is None
+    content = f'eval(user_input)\nKEY = "{AWS_KEY}"\n'
+    viol = [v.to_dict() for v in scan_dangerous_sinks(content, language=lang)]
+    secs = [v.to_dict() for v in scan_secrets(content)]
+    tag_secret_hardness(secs)
+    viol += secs
+    active = {"eval-call", "secret-detected-in-content"}
+    hard = hard_class_violations(viol, active)
+    assert {v["rule"] for v in hard} == active, "raw with-archetype lint emits both on a doc"
+    assert block_eligible_on_file(hard, language=lang) == [], "both must drop from the block set"
+
+
+def test_secret_in_non_code_file_is_advisory_not_block_eligible():
+    from chameleon_mcp.lint_engine import detect_language
+    from chameleon_mcp.violation_class import block_eligible_on_file
+
+    # A deterministic AKIA in a markdown doc still surfaces (advisory), but is
+    # dropped from the BLOCK set: a non-code file can't carry a chameleon-ignore,
+    # so blocking it would turn-trap with no escape.
+    md_out = hook_helper._scan_archetype_independent(f"example key {AWS_KEY}\n", "NOTES.md")
+    md_secrets = [v for v in md_out if v.get("rule") == "secret-detected-in-content"]
+    assert md_secrets, "the credential must still surface as an advisory in a doc"
+    md_hard = hard_class_violations(md_out, active_rules={"secret-detected-in-content"})
+    assert block_eligible_on_file(md_hard, language=detect_language("NOTES.md")) == []
+
+    # The same key in a .py file stays block-eligible.
+    py_out = hook_helper._scan_archetype_independent(f'KEY = "{AWS_KEY}"\n', "settings.py")
+    py_hard = hard_class_violations(py_out, active_rules={"secret-detected-in-content"})
+    assert py_hard, "a credential in code must stay block-eligible"
+    assert block_eligible_on_file(py_hard, language=detect_language("settings.py")) == py_hard
+
+
 def test_benign_base64_run_on_plain_line_does_not_surface(tmp_path):
     # 40 base64 chars on a line with no credential token: a long identifier or a
     # checksum, not a secret. The broad fallback is gated on credential context,

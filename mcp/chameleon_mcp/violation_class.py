@@ -415,3 +415,24 @@ def is_hard_class(violation: dict) -> bool:
 def hard_class_violations(violations: list[dict], active_rules: set[str]) -> list[dict]:
     """Hard-class violations whose rule is also in the repo's active block set."""
     return [v for v in violations if is_hard_class(v) and v.get("rule") in active_rules]
+
+
+def block_eligible_on_file(hard: list[dict], *, language: str | None) -> list[dict]:
+    """Drop archetype-independent hard rules on a non-code file.
+
+    ``eval-call`` and ``secret-detected-in-content`` run on raw content, so the
+    literal text ``eval(`` or a credential-shaped token in markdown / plain-text /
+    config PROSE (an unrecognized extension, ``detect_language`` is None) would
+    otherwise hard-block under enforce -- and such a file cannot carry an inline
+    ``chameleon-ignore`` directive, so the block has no escape. They stay in the
+    advisory violation list; only the BLOCK set drops them here. On a recognized
+    code language the set is returned unchanged. Pass the file's
+    ``detect_language()`` result; a code string keeps the rules, None drops the
+    archetype-independent ones. Archetype-dependent rules are untouched (only the
+    archetype-independent ones are dropped). A non-code file CAN still resolve to
+    an archetype via a legacy extension-blind ``paths_pattern``, so this gate is
+    applied at the with-archetype block sites too, not only the no-archetype
+    ones."""
+    if language is not None:
+        return hard
+    return [v for v in hard if not is_archetype_independent(v.get("rule"))]

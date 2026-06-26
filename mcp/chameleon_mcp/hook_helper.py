@@ -3005,7 +3005,9 @@ def _record_bash_write_mutations(
         # set only when a calibrated block-eligible rule actually fired here.
         try:
             from chameleon_mcp.enforcement_calibration import active_block_rules
+            from chameleon_mcp.lint_engine import detect_language
             from chameleon_mcp.violation_class import (
+                block_eligible_on_file,
                 build_ignore_index,
                 hard_class_violations,
                 is_archetype_independent,
@@ -3014,6 +3016,11 @@ def _record_bash_write_mutations(
 
             active = active_block_rules(_enf_profile_dir(repo_root))
             hard = hard_class_violations(violations, active)
+            # A non-code file (detect_language None) never hard-blocks on an
+            # archetype-independent rule -- it has no inline chameleon-ignore
+            # escape -- so it must not arm the Stop backstop either, keeping the
+            # arming and the backstop re-lint consistent.
+            hard = block_eligible_on_file(hard, language=detect_language(file_path))
             # Without an archetype only the archetype-independent hard rules (a
             # deterministic secret) can be enforced at Stop, so record only those
             # as blockable here -- matching the backstop's no-archetype re-lint.
@@ -3345,12 +3352,19 @@ def _scan_archetype_independent(
         out.extend(secret_violations)
     except Exception:
         pass
-    try:
-        from chameleon_mcp.lint_engine import scan_dangerous_sinks
+    if language is not None:
+        # Gate the dangerous-sink scan to recognized code languages, mirroring the
+        # PreToolUse proposed-content gate: on a non-code file (markdown / plain
+        # text / config prose) scan_dangerous_sinks falls through to its raw-content
+        # branch and flags the literal text `eval(` in documentation, which is not
+        # a runnable sink. A non-code file also cannot carry a chameleon-ignore
+        # directive, so under enforce that eval-call would turn-trap with no escape.
+        try:
+            from chameleon_mcp.lint_engine import scan_dangerous_sinks
 
-        out.extend(v.to_dict() for v in scan_dangerous_sinks(content, language=language))
-    except Exception:
-        pass
+            out.extend(v.to_dict() for v in scan_dangerous_sinks(content, language=language))
+        except Exception:
+            pass
     if rules is not None:
         try:
             from chameleon_mcp.lint_engine import scan_style_rules
@@ -3412,7 +3426,12 @@ def _posttool_no_archetype_advisory(
 
     hard: list[dict] = []
     try:
-        from chameleon_mcp.violation_class import is_archetype_independent, is_hard_class
+        from chameleon_mcp.lint_engine import detect_language
+        from chameleon_mcp.violation_class import (
+            block_eligible_on_file,
+            is_archetype_independent,
+            is_hard_class,
+        )
 
         # Only an archetype-INDEPENDENT hard rule can be enforced without an
         # archetype: the Stop backstop's no-archetype re-lint filters to the same
@@ -3425,6 +3444,11 @@ def _posttool_no_archetype_advisory(
         hard = [
             v for v in violations if is_hard_class(v) and is_archetype_independent(v.get("rule"))
         ]
+        # A non-code file (markdown / config prose, detect_language None) never
+        # hard-blocks on an archetype-independent rule: the token stays advisory in
+        # `violations`, it just does not arm the Stop backstop. Such a file cannot
+        # carry a chameleon-ignore directive, so a block would have no escape.
+        hard = block_eligible_on_file(hard, language=detect_language(file_path))
         try:
             from chameleon_mcp.violation_class import build_ignore_index, is_violation_ignored
 
@@ -4080,7 +4104,9 @@ def posttool_verify() -> int:
             decision_outcome = "advised"
             try:
                 from chameleon_mcp.enforcement_calibration import active_block_rules
+                from chameleon_mcp.lint_engine import detect_language
                 from chameleon_mcp.violation_class import (
+                    block_eligible_on_file,
                     build_ignore_index,
                     hard_class_violations,
                     is_deferred_to_turn_end,
@@ -4088,7 +4114,14 @@ def posttool_verify() -> int:
                 )
 
                 active = active_block_rules(_enf_profile_dir(repo_root))
-                hard = hard_class_violations(violations, active)
+                # A non-code file (detect_language None) never hard-blocks on an
+                # archetype-independent rule: it can resolve to an archetype via a
+                # legacy extension-blind paths_pattern, but it still has no inline
+                # chameleon-ignore escape, so eval/secret stay advisory, not armed.
+                hard = block_eligible_on_file(
+                    hard_class_violations(violations, active),
+                    language=detect_language(file_path),
+                )
                 # An inline `chameleon-ignore <rule>` directive (or a bare one)
                 # downgrades the matching rule to advisory on the annotated
                 # line. The lint layer already suppresses some rules on the
@@ -4660,7 +4693,9 @@ def _stop_file_still_blockable(
             confidence_band = data.get("confidence_band")
             match_quality = data.get("match_quality")
 
+        from chameleon_mcp.lint_engine import detect_language
         from chameleon_mcp.violation_class import (
+            block_eligible_on_file,
             build_ignore_index,
             hard_class_violations,
             is_archetype_independent,
@@ -4681,7 +4716,13 @@ def _stop_file_still_blockable(
                 from chameleon_mcp.enforcement_calibration import active_block_rules
 
                 active = active_block_rules(_enf_profile_dir(repo_root))
-            hard = hard_class_violations(indep, active)
+            # A non-code file (detect_language None) cannot hard-block on an
+            # archetype-independent rule: a credential-shaped token in doc/config
+            # prose stays advisory but never turn-traps (it has no inline-ignore
+            # escape). Matches the posttool arming gate so the two paths agree.
+            hard = block_eligible_on_file(
+                hard_class_violations(indep, active), language=detect_language(file_path)
+            )
             idx = build_ignore_index(content, file_path=file_path)
             if idx is not None:
                 hard = [v for v in hard if not is_violation_ignored(v, idx)]
@@ -4700,7 +4741,13 @@ def _stop_file_still_blockable(
             from chameleon_mcp.enforcement_calibration import active_block_rules
 
             active = active_block_rules(_enf_profile_dir(repo_root))
-        hard = hard_class_violations(violations, active)
+        # A non-code file (detect_language None) can resolve to an archetype via a
+        # legacy extension-blind paths_pattern; it still has no inline
+        # chameleon-ignore escape, so archetype-independent rules (eval/secret)
+        # stay advisory and never turn-trap here. Mirrors the no-archetype branch.
+        hard = block_eligible_on_file(
+            hard_class_violations(violations, active), language=detect_language(file_path)
+        )
         idx = build_ignore_index(content, file_path=file_path)
         if idx is not None:
             hard = [v for v in hard if not is_violation_ignored(v, idx)]

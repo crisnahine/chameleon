@@ -1,5 +1,6 @@
 from chameleon_mcp.violation_class import (
     BLOCK_ELIGIBLE_RULES,
+    block_eligible_on_file,
     hard_class_violations,
     ignored_rules,
     is_archetype_independent,
@@ -135,6 +136,31 @@ def test_secret_stays_in_inline_block_set_after_deferral_filter():
     hard = hard_class_violations(vs, active_rules={"secret-detected-in-content", "phantom-import"})
     blockable_now = [x for x in hard if not is_deferred_to_turn_end(x["rule"])]
     assert [x["rule"] for x in blockable_now] == ["secret-detected-in-content"]
+
+
+def test_block_eligible_on_file_drops_archetype_independent_on_non_code():
+    # eval-call / secret-detected run on raw content, so the literal `eval(` or a
+    # credential-shaped token in markdown / doc / config prose (detect_language
+    # None) would otherwise hard-block under enforce -- and such a file cannot
+    # carry an inline chameleon-ignore directive, so the block has no escape. They
+    # stay advisory; only the BLOCK set drops them on a non-code file.
+    vs = [v("eval-call", severity="error"), secret("aws_access_key")]
+    tag_secret_hardness(vs)
+    hard = hard_class_violations(vs, active_rules={"eval-call", "secret-detected-in-content"})
+    assert {x["rule"] for x in hard} == {"eval-call", "secret-detected-in-content"}
+    # non-code file (detect_language None): both drop out of the block set
+    assert block_eligible_on_file(hard, language=None) == []
+    # recognized code language: the block set is unchanged
+    assert block_eligible_on_file(hard, language="python") == hard
+
+
+def test_block_eligible_on_file_keeps_archetype_dependent_on_non_code():
+    # An archetype-dependent rule is not what this gate targets; it is only ever
+    # in the hard set when an archetype resolved (which a non-code file never
+    # gets), so the helper leaves non-archetype-independent rules untouched.
+    vs = [v("naming-convention-violation")]
+    hard = hard_class_violations(vs, active_rules={"naming-convention-violation"})
+    assert block_eligible_on_file(hard, language=None) == hard
 
 
 def test_deterministic_secret_kinds_hard_block():

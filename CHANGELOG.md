@@ -4,6 +4,24 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.33.1] - 2026-06-26
+
+### Fixed
+
+- **Enforce mode no longer hard-blocks on `eval(`/credential text in non-code
+  files.** The archetype-independent `eval-call` and `secret-detected-in-content`
+  rules ran on raw content, so a literal `eval(` or a credential-shaped token in
+  markdown / plain-text / config PROSE (e.g. documentation that explains the rules,
+  or a CHANGELOG entry) was treated as a runnable sink. Under the new enforce
+  default this turn-trapped a session with no escape — a non-code file cannot carry
+  an inline `// chameleon-ignore` directive. `eval-call` is now gated to recognized
+  code languages, and a new `block_eligible_on_file` gate drops the
+  archetype-independent rules from the BLOCK set on any `detect_language()`-None
+  file (they remain advisory). Applied at every block/arming site, including the
+  with-archetype paths reachable by a legacy extension-blind `paths_pattern`.
+  Enforcement on real code (`.ts`/`.js`/`.rb`/`.py`) is unchanged: a real
+  `eval()`/`exec()` or a committed credential still blocks.
+
 ## [2.33.0] - 2026-06-26
 
 ### Changed
