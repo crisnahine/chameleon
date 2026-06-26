@@ -75,9 +75,19 @@ class TrustConfig:
 @dataclass(frozen=True)
 class EnforcementConfig:
     # mode master switch: "off" = advisory only; "shadow" = log would-have-blocked
-    # but never block; "enforce" = real deny/block. Default shadow so a newly
-    # enabled repo measures before it enforces.
-    mode: str = "shadow"
+    # but never block; "enforce" = real deny/block. Default enforce. All blocking
+    # requires a trusted profile and is overridable inline (CHAMELEON_ENFORCE=0
+    # forces advisory). The per-block guard differs by class: the per-edit
+    # convention denies (naming/import/jsx/file-naming) additionally require
+    # per-repo zero-false-positive calibration against the repo's own committed
+    # files AND a high- or medium-confidence archetype match; the
+    # archetype-independent security facts (hard-kind secrets, eval/exec sinks)
+    # block on deterministic detection with no confidence gate; the turn-end idiom
+    # review blocks once per session when idioms/principles are present. So enforce
+    # is a safe default for the calibrated convention rules without a measure-first
+    # shadow period. It is NOT a blanket "every block is calibrated" guarantee (see
+    # the security and idiom-review paths).
+    mode: str = "enforce"
     stop_backstop: bool = True
     stop_block_cap: int = 3
     # idiom_review: at turn end, when the session edited files governed by team
@@ -231,7 +241,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
     # and surface a scary ChameleonConfigError in /chameleon-doctor). Known keys
     # are still type-validated below, so a typo in a known key's VALUE still
     # raises; only a key this engine does not recognize is skipped.
-    mode = raw.get("mode", "shadow")
+    mode = raw.get("mode", "enforce")
     if not isinstance(mode, str) or mode not in _VALID_ENFORCE_MODES:
         raise ChameleonConfigError(
             f"`enforcement.mode` must be one of {sorted(_VALID_ENFORCE_MODES)}, got {mode!r}"

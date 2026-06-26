@@ -124,7 +124,7 @@ Two honest details a skeptic should know. First: conventions are derived from **
 
 ## What you get beyond the per-edit nudge
 
-The convention injection is the headline. Underneath it are layers that catch the mistakes a single edit can't see. All advisory by default. You opt into blocking.
+The convention injection is the headline. Underneath it are layers that catch the mistakes a single edit can't see. Most are advisory; the few that enforce are gated and always overridable inline: a convention rule blocks only after it's calibrated against your own committed code, deterministic facts like a leaked credential block on sight, and a once-per-session nudge asks you to self-review against your team's idioms.
 
 - **Calibrated enforcement.** A block rule never fires until chameleon has measured it against your own committed files and confirmed a near-zero false-positive rate. Rules that fight your team get auto-demoted to advisory. You won't get nagged by a rule your repo disagrees with. ([enforcement_calibration.py](mcp/chameleon_mcp/enforcement_calibration.py))
 - **A turn-end correctness judge.** When a turn ends, chameleon can spawn a separate reviewer that reads only your diff for the bugs static analysis misses: inverted conditions, dropped `await`s, off-by-one, missing guards. Advisory, runs on its own budget, never blocks the turn. ([judge.py](mcp/chameleon_mcp/judge.py))

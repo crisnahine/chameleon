@@ -50,8 +50,8 @@ Most chameleon feedback is advisory - it shapes the code you write but never blo
 **Modes** (from `.chameleon/config.json` `enforcement.mode`):
 
 - `off` — advisory only, nothing blocks.
-- `shadow` — default; logs would-have-blocked events but never blocks. A repo runs in shadow first so it measures before it enforces.
-- `enforce` — real deny/block on rules calibration kept active for this repo.
+- `shadow` — logs would-have-blocked events but never blocks. Opt into it to measure a repo's false-positive rate before enforcing.
+- `enforce` — default; real deny/block on rules calibration kept active for this repo, plus deterministic security facts (hard-kind credentials, `eval`/`exec`) and the once-per-session idiom review.
 
 Only block rules with a near-zero false-positive rate against the repo's own committed files stay active; the rest are demoted to advisory. This includes `naming-convention-violation` (TypeScript interface prefix) and `inheritance-convention-violation` (Ruby dominant base class), which block only when calibration confirms the repo's own files all conform. `/chameleon-status` shows the active set and any demoted rule with its measured fp_rate.
 

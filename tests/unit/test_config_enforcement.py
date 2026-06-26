@@ -12,11 +12,22 @@ def _write(tmp_path: Path, obj: dict) -> Path:
     return tmp_path
 
 
-def test_default_enforcement_is_shadow(tmp_path):
+def test_default_enforcement_is_enforce(tmp_path):
     cfg = load_config(tmp_path)  # no file
-    assert cfg.enforcement.mode == "shadow"
+    assert cfg.enforcement.mode == "enforce"
     assert cfg.enforcement.stop_backstop is True
     assert cfg.enforcement.stop_block_cap == 3
+
+
+def test_enforcement_section_without_mode_defaults_to_enforce(tmp_path):
+    # The dataclass default and the _coerce_enforcement fallback must agree: a
+    # config.json that ships an enforcement section but omits `mode` must read the
+    # same default as a config with no enforcement section at all. If the two
+    # defaults drift, a partial enforcement section silently picks the wrong mode.
+    d = _write(tmp_path, {"enforcement": {"stop_block_cap": 5}})
+    cfg = load_config(d)
+    assert cfg.enforcement.mode == "enforce"
+    assert cfg.enforcement.stop_block_cap == 5
 
 
 def test_enforce_mode_parsed(tmp_path):

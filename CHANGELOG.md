@@ -4,6 +4,22 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.33.0] - 2026-06-26
+
+### Changed
+
+- **Enforcement now defaults to `enforce`.** A newly bootstrapped or sparse-config
+  repo (no `enforcement` section in `config.json`) now blocks for real instead of
+  running shadow-only. Blocking stays gated: the convention rules
+  (naming/import/jsx/file-naming) require per-repo zero-false-positive calibration
+  against the repo's own committed files plus a high-confidence archetype match;
+  deterministic security facts (hard-kind credentials, `eval`/`exec`) block on
+  detection; the turn-end idiom review blocks once per session. Every block needs
+  a trusted profile, is overridable inline with `// chameleon-ignore`, and
+  `CHAMELEON_ENFORCE=0` forces advisory. Set `enforcement.mode: "shadow"` to
+  log-only or `"off"` for advisory. Existing repos with an explicit `mode` are
+  unaffected; a sparse-config repo flips on its next session with no migration step.
+
 ## [2.32.3] - 2026-06-26
 
 Four advisory/quality bugs found in an adversarial bug-hunt across TypeScript,

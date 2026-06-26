@@ -42,7 +42,7 @@ def _git(*args: str, cwd: Path) -> None:
     subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
 
 
-def _make_enforce_main(root: Path) -> Path:
+def _make_enforce_main(root: Path, *, mode: str = "enforce") -> Path:
     root.mkdir(parents=True)
     _git("init", "-q", cwd=root)
     _git("config", "user.email", "t@t.t", cwd=root)
@@ -58,8 +58,8 @@ def _make_enforce_main(root: Path) -> Path:
         '{"schema_version": 8, "language": "ruby"}', encoding="utf-8"
     )
     (cham / "COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
-    # enforce mode + the language-independent secret rule active
-    (cham / "config.json").write_text('{"enforcement": {"mode": "enforce"}}', encoding="utf-8")
+    # enforce mode (default) + the language-independent secret rule active
+    (cham / "config.json").write_text(json.dumps({"enforcement": {"mode": mode}}), encoding="utf-8")
     (cham / "enforcement.json").write_text(
         json.dumps({"block_rules": {"secret-detected-in-content": {"active": True}}}),
         encoding="utf-8",
@@ -89,14 +89,18 @@ class TestWorktreeEnforcementReadsResolveToMain:
             "secret-detected-in-content"
         }
 
-    def test_enforce_mode_seen_via_resolved_dir_in_worktree(self, tmp_path):
-        main = _make_enforce_main(tmp_path / "main")
+    def test_mode_seen_via_resolved_dir_in_worktree(self, tmp_path):
+        # Pin the main to a NON-default mode so the resolved path's answer is
+        # distinguishable from the bare default the raw worktree path falls back
+        # to (the default is "enforce", so the real config must differ to prove
+        # resolution actually reached it).
+        main = _make_enforce_main(tmp_path / "main", mode="shadow")
         wt = tmp_path / "wt"
         _git("worktree", "add", "-q", str(wt), "-b", "feature", cwd=main)
-        # raw worktree path -> missing config -> default "shadow" (the bug)
-        assert load_config(wt / ".chameleon").enforcement.mode == "shadow"
-        # resolved -> the real "enforce"
-        assert load_config(hook_helper._enf_profile_dir(wt)).enforcement.mode == "enforce"
+        # raw worktree path -> missing config -> the bare default "enforce" (the bug)
+        assert load_config(wt / ".chameleon").enforcement.mode == "enforce"
+        # resolved -> the main's real, non-default "shadow"
+        assert load_config(hook_helper._enf_profile_dir(wt)).enforcement.mode == "shadow"
 
 
 class TestSiblingClonePicksFreshest:
