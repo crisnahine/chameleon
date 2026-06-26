@@ -250,6 +250,48 @@ def _count_source_files(directory: Path, suffixes: tuple[str, ...]) -> int:
     return count
 
 
+# Minimum file count for a marked backend to override a weak TypeScript root
+# selection. Below this, a few backend scripts in a genuine TS repo must not
+# flip the language.
+_RETIE_MIN_BACKEND_FILES = 10
+
+
+def _retie_root_extractor(repo_root: Path, extractor: Extractor | None) -> Extractor | None:
+    """Apply a language-magnitude tiebreak to a WEAK TypeScript root selection.
+
+    The TypeScript extractor's ``can_handle`` accepts ANY shallow ``.ts`` file
+    when the root has no ``tsconfig.json`` and no package.json TS dependency
+    (``typescript.py`` ``_has_typescript_source_files``). So a few stray ``.ts``
+    files in a Python/Ruby-dominant repo would misclassify the whole repo as
+    TypeScript and yield a 0-archetype profile. When TS was picked on that weak
+    signal AND a marked backend (manage.py/pyproject for Python, Gemfile for
+    Ruby) clearly dominates by file count, prefer the backend language. Strong TS
+    signals (tsconfig / package.json TS dep) are never overridden. Mirrors the
+    inherited-signals file-count tiebreak used when no root extractor is found.
+    """
+    if extractor is None or extractor.language != "typescript":
+        return extractor
+    if (repo_root / "tsconfig.json").is_file():
+        return extractor
+    pkg = repo_root / "package.json"
+    if pkg.is_file() and any(
+        tok in _read_marker_text(pkg) for tok in ("typescript", '"ts-node"', '"vite"')
+    ):
+        return extractor
+    ts_count = _count_source_files(repo_root, (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"))
+    if _has_python_backend_marker(repo_root):
+        py_count = _count_source_files(repo_root, (".py",))
+        if py_count >= _RETIE_MIN_BACKEND_FILES and py_count > ts_count:
+            from chameleon_mcp.extractors.python import PythonExtractor
+
+            return PythonExtractor()
+    if (repo_root / "Gemfile").is_file() or any(repo_root.glob("*.gemspec")):
+        ruby_count = _count_ruby_files_under(repo_root)
+        if ruby_count >= _RETIE_MIN_BACKEND_FILES and ruby_count > ts_count:
+            return RubyExtractor()
+    return extractor
+
+
 def _js_frontend_dir(repo_root: Path) -> Path | None:
     """First recognized JS/TS frontend subtree of a Python-backend repo, or None.
 
@@ -1668,6 +1710,10 @@ def _bootstrap_single(
         tool_configs = read_tool_configs(repo_root)
 
     extractor = _select_extractor(repo_root)
+    # A weak "any shallow .ts file" TS selection loses to a marked backend that
+    # dominates the repo by file count (a stray .ts in a Django/Rails tree must
+    # not produce a 0-archetype TS profile). Strong TS signals are untouched.
+    extractor = _retie_root_extractor(repo_root, extractor)
     if extractor is None and inherited_signals_from is not None:
         # Specialized fallback, NOT the registry's can_handle precedence: when the
         # repo root carries no extractor signal but inherits one from a workspace
@@ -1890,14 +1936,23 @@ def _bootstrap_single(
         parse_result = extractor.parse_repo(repo_root, paths=candidates)
     except ExtractorUnavailableError as exc:
         # The language toolchain couldn't be provisioned (node/ts_dump.mjs for
-        # TS, ruby/prism_dump.rb for Ruby). Degrade to a clean report instead
-        # of aborting the whole bootstrap run.
+        # TS, ruby/prism_dump.rb for Ruby, libcst for Python). Degrade to a clean
+        # report instead of aborting the whole bootstrap run. The status names the
+        # ACTUAL missing toolchain so the error label does not contradict the
+        # exception body (a Python repo must not report failed_ruby_unavailable).
+        from chameleon_mcp.extractors.python import PythonUnavailableError
+        from chameleon_mcp.extractors.ruby import RubyUnavailableError
+
+        if isinstance(exc, NodeUnavailableError):
+            _unavailable_status = "failed_node_unavailable"
+        elif isinstance(exc, PythonUnavailableError):
+            _unavailable_status = "failed_python_unavailable"
+        elif isinstance(exc, RubyUnavailableError):
+            _unavailable_status = "failed_ruby_unavailable"
+        else:
+            _unavailable_status = "failed_extractor_unavailable"
         return BootstrapReport(
-            status=(
-                "failed_node_unavailable"
-                if isinstance(exc, NodeUnavailableError)
-                else "failed_ruby_unavailable"
-            ),
+            status=_unavailable_status,
             archetypes_detected=0,
             rules_extracted=0,
             idioms_collected=0,

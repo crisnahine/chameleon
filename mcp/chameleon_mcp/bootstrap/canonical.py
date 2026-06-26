@@ -217,6 +217,13 @@ def select_canonicals(
                 trivial[i] = not content.strip()
                 lang = detect_language(str(pf.path))
                 snap = extract_dimensions(content, language=lang, file_path=str(pf.path))
+                # A file with non-whitespace content but NO top-level code/export
+                # nodes (a comment-only header, a license block) teaches nothing as
+                # a canonical exemplar, like a blank file. Rank it trivial so a
+                # structured sibling wins. Barrels / imports-only files keep a
+                # non-empty signature (export/import nodes) and stay eligible.
+                if not snap.top_level_node_kinds:
+                    trivial[i] = True
                 jsx_tag = ("jsx",) if snap.jsx_present else ()
                 sig = (
                     tuple(sorted(set(_normalize_kind(k) for k in snap.top_level_node_kinds)))

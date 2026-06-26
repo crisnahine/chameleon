@@ -4,6 +4,42 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.34.0] - 2026-06-26
+
+### Fixed
+
+Bootstrap/refresh derivation-pipeline correctness pass (detect → discover →
+parse → cluster → canonical → conventions → atomic commit):
+
+- **detect: root extractor selection now applies a language-magnitude
+  tiebreak.** The TypeScript extractor's `can_handle` accepts any shallow `.ts`
+  file when there is no `tsconfig.json` / package.json TS dependency, so a few
+  stray `.ts` files in a Python/Ruby-dominant repo (e.g. a Django app with a
+  `static/*.ts`) misclassified the whole repo as TypeScript and produced a
+  0-archetype profile. When TS is picked on that weak signal AND a marked
+  backend (manage.py/pyproject for Python, Gemfile for Ruby) dominates by file
+  count, the backend language now wins. Strong TS signals are never overridden.
+- **discover: an absolute `paths_glob` no longer crashes the bootstrap.** A
+  user-supplied absolute glob raised an uncaught `NotImplementedError` out of
+  the tool instead of a clean failure. `_glob_candidates` now guards
+  `base.glob` the same way `workspace.py` already does.
+- **parse: a missing Python toolchain reports `failed_python_unavailable`.** The
+  extractor-unavailable branch labelled every non-Node failure
+  `failed_ruby_unavailable`, so a Python repo's libcst-missing failure
+  contradicted its own error body.
+- **canonical: comment-only files are no longer chosen as canonical
+  witnesses.** A file that is all comments has non-whitespace content but no
+  code structure, so it survived the empty-file exclusion and its comment text
+  was injected as the per-edit "imitate this" exemplar. A file with an empty
+  signature (no top-level code/export nodes) is now ranked trivial; barrels and
+  imports-only files keep a non-empty signature and stay eligible.
+- **conventions: a malformed value in one section no longer wipes the whole
+  injected block.** The naming / inheritance / method_calls / key_exports render
+  loops lacked the `isinstance(data, dict)` guard their siblings have, so one
+  non-dict value (corrupt / hand-edited / 3-way-merged `conventions.json`)
+  dropped the entire conventions block, well-formed sections included. Each loop
+  now skips a malformed entry and keeps rendering the rest.
+
 ## [2.33.3] - 2026-06-26
 
 ### Fixed

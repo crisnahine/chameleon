@@ -156,7 +156,16 @@ def _glob_candidates(
         if not base.is_dir():
             continue
         for pattern in expanded_globs:
-            for p in base.glob(pattern):
+            try:
+                matches = base.glob(pattern)
+            except (ValueError, IndexError, NotImplementedError, OSError):
+                # A user-supplied absolute paths_glob raises NotImplementedError
+                # ('Non-relative patterns are unsupported'); a malformed pattern
+                # raises ValueError/IndexError. Skip the bad pattern so one bad
+                # glob never aborts discovery with a raw traceback. Mirrors
+                # expand_workspace_globs_with_diagnostics in workspace.py.
+                continue
+            for p in matches:
                 if p not in seen:
                     seen.add(p)
                     candidates.append(p)

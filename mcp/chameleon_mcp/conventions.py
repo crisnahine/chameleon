@@ -2383,6 +2383,8 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     seen_naming: set[str] = set()
     seen_file_naming: set[str] = set()
     for arch, data in conv.get("naming", {}).items():
+        if not isinstance(data, dict):
+            continue
         for key in ("interface_prefix", "type_prefix", "enum_prefix"):
             entry = data.get(key)
             if not entry or key in seen_naming:
@@ -2416,6 +2418,8 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     inheritance_lines: list[str] = []
     seen_inheritance: set[str] = set()
     for _arch, data in conv.get("inheritance", {}).items():
+        if not isinstance(data, dict):
+            continue
         base = data.get("dominant_base")
         if base and base not in seen_inheritance:
             seen_inheritance.add(base)
@@ -2459,6 +2463,8 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     method_lines: list[str] = []
     seen_methods: set[str] = set()
     for _arch, data in conv.get("method_calls", {}).items():
+        if not isinstance(data, dict):
+            continue
         for call in data.get("common_top5", []):
             if call not in seen_methods:
                 seen_methods.add(call)
@@ -2471,6 +2477,8 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     export_lines: list[str] = []
     all_exports: set[str] = set()
     for _arch, names in conv.get("key_exports", {}).items():
+        if not isinstance(names, (list, tuple, set)):
+            continue
         for n in names:
             all_exports.add(n)
     if all_exports:
@@ -2707,6 +2715,8 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
     arch_naming = conv.get("naming", {}).get(archetype, {})
     if not arch_naming and conv.get("naming"):
         arch_naming = next(iter(conv["naming"].values()), {})
+    if not isinstance(arch_naming, dict):
+        arch_naming = {}
     for key in ("interface_prefix", "type_prefix"):
         entry = arch_naming.get(key)
         if entry and entry.get("consistency", 0) >= _STRONG_THRESHOLD:
@@ -2716,6 +2726,8 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
     arch_inheritance = conv.get("inheritance", {}).get(archetype, {})
     if not arch_inheritance and conv.get("inheritance"):
         arch_inheritance = next(iter(conv["inheritance"].values()), {})
+    if not isinstance(arch_inheritance, dict):
+        arch_inheritance = {}
     base = arch_inheritance.get("dominant_base")
     if base and arch_inheritance.get("frequency", 0) >= _STRONG_THRESHOLD:
         parts.append(f"Base: {base}")
