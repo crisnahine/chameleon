@@ -37,7 +37,9 @@ from chameleon_mcp.profile.loader import LoadedProfile
 
 WITNESS_REL = "src/widget.ts"
 WITNESS_SRC = "export default function widget() {}\n"
-SECRET_CONTENT = "key = AKIAIOSFODNN7EXAMPLE\nsecret = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+# Known-fake AWS documentation example credentials, used as a fixture so the
+# breaker's deterministic secret scan fires. Not a real secret.
+SECRET_CONTENT = "key = AKIAIOSFODNN7EXAMPLE\nsecret = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"  # chameleon-ignore secret-detected-in-content
 
 
 def _build_loaded(chameleon: Path) -> LoadedProfile:
