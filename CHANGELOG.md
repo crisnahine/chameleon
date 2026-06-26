@@ -4,6 +4,22 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.34.2] - 2026-06-26
+
+### Fixed
+
+- **discover: gitignored files are no longer profiled.** Discovery relied on a
+  hardcoded directory denylist (node_modules / vendor / dist / ...) and did not
+  consult `.gitignore`, so a gitignored source file in a non-denylisted dir
+  (a local `secrets.ts`, scratch output) had its path and export symbol names
+  catalogued in `exports_index` / conventions. Discovery now runs one batched
+  `git check-ignore` over the candidates and drops the ignored ones. The filter
+  reports only files that are BOTH untracked AND match a gitignore rule, so
+  tracked source (even matching a loose pattern) and untracked-but-not-ignored
+  new files are still profiled; on a non-git tree, or when git is unavailable,
+  it fails open and keeps everything. Validated against excalidraw / maybe /
+  readthedocs: zero source files excluded (no archetype-coverage change).
+
 ## [2.34.1] - 2026-06-26
 
 ### Fixed

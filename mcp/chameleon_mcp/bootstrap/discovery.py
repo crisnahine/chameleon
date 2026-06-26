@@ -15,7 +15,63 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import subprocess
 from pathlib import Path
+
+# Bound the one-shot `git check-ignore` batch so a stuck git never wedges
+# discovery. Bootstrap-time only; fails open (keep all candidates) on any error.
+_GITIGNORE_CHECK_TIMEOUT_SECONDS = 10.0
+
+
+def _git_ignored_paths(repo_root: Path, candidates: list[Path]) -> set[Path]:
+    """The subset of ``candidates`` that git treats as ignored.
+
+    Gitignored files (local secrets, scratch output, build artifacts in dirs the
+    hardcoded denylist does not cover) are not part of the committed codebase, so
+    they must not pollute the derived profile -- otherwise their paths and export
+    symbol names get catalogued in exports_index / conventions. ``git
+    check-ignore`` reports only paths that are BOTH untracked AND match a
+    gitignore rule: a tracked source file matching a loose pattern is NOT reported
+    (it stays in the profile), and an untracked-but-not-ignored new file is NOT
+    reported either (uncommitted work is still profiled).
+
+    Returns an empty set when the repo is not a git checkout or git is
+    unavailable -- a fail-open that preserves the pre-gitignore behavior.
+    Origin-backed repos derive from a materialized worktree of the production ref
+    that contains no ignored files, so this primarily guards local-only
+    working-tree derivation.
+    """
+    if not candidates:
+        return set()
+    rel_to_abs: dict[str, Path] = {}
+    for p in candidates:
+        try:
+            rel_to_abs[p.relative_to(repo_root).as_posix()] = p
+        except ValueError:
+            continue
+    if not rel_to_abs:
+        return set()
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "check-ignore", "--stdin", "-z"],
+            input="\0".join(rel_to_abs),
+            capture_output=True,
+            text=True,
+            timeout=_GITIGNORE_CHECK_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return set()
+    # exit 0 = at least one ignored, 1 = none ignored, 128 = not a repo / error.
+    if result.returncode not in (0, 1):
+        return set()
+    ignored: set[Path] = set()
+    for rel in (result.stdout or "").split("\0"):
+        abs_path = rel_to_abs.get(rel.strip())
+        if abs_path is not None:
+            ignored.add(abs_path)
+    return ignored
+
 
 REPO_SIZE_GUARD = 200_000
 
@@ -299,6 +355,7 @@ def discovery_stats(
     target_glob = paths_glob if paths_glob else glob
     candidates = _glob_candidates(repo_root, target_glob, workspace_roots=workspace_roots)
     resolved_root = repo_root.resolve()
+    git_ignored = _git_ignored_paths(repo_root, candidates)
 
     pre = 0
     post = 0
@@ -306,6 +363,8 @@ def discovery_stats(
         if os.path.islink(p):
             continue
         if not p.is_file():
+            continue
+        if p in git_ignored:
             continue
         pre += 1
         try:
@@ -368,12 +427,15 @@ def discover_files(
     target_glob = paths_glob if paths_glob else glob
     candidates = _glob_candidates(repo_root, target_glob, workspace_roots=workspace_roots)
     resolved_root = repo_root.resolve()
+    git_ignored = _git_ignored_paths(repo_root, candidates)
 
     filtered: list[Path] = []
     for p in candidates:
         if os.path.islink(p):
             continue
         if not p.is_file():
+            continue
+        if p in git_ignored:
             continue
         try:
             rel = p.relative_to(repo_root)
