@@ -179,6 +179,25 @@ def test_principles_only_also_blocks(make_trusted_repo):
     assert out.get("decision") == "block"
 
 
+def test_sparse_config_blocks_via_default_enforce(make_trusted_repo):
+    # Blast-radius guard for enforce-by-default: a trusted repo whose config.json
+    # omits the enforcement section relies on the default mode. With the default
+    # now "enforce", the idiom-review gate must block at turn end, not go advisory.
+    # This pins the gate-level behavior the scalar default test cannot see (a
+    # refactor that restored advisory-by-default at the gate would pass that one).
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    # A config with no enforcement section at all: the mode comes from the default.
+    profile_dir.joinpath("config.json").write_text("{}", encoding="utf-8")
+    _touch_edited_file(file_path, data_dir, sid)
+    _write_idioms(profile_dir)
+
+    out = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert out.get("decision") == "block"
+
+
 def test_poisoned_principles_dropped_at_stop_backstop(make_trusted_repo):
     # Trust persists across changes, so a poisoned principles.md reads as
     # "trusted". The Stop backstop must drop it (not serve injection prose at full

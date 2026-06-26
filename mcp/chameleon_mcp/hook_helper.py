@@ -4936,8 +4936,8 @@ def _idiom_review_gate(
             # name with no rule. The shadow report counts it as a turn-level
             # signal, never as a per-rule promotion candidate. The review text
             # itself still goes out as a non-blocking advisory: taught idioms
-            # are not in the verify lint path, so without this the default
-            # (shadow) config delivers NO turn-end idiom feedback at all.
+            # are not in the verify lint path, so without this an explicitly
+            # shadow config delivers NO turn-end idiom feedback at all.
             try:
                 from chameleon_mcp.metrics import emit_hook_metric
 

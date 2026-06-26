@@ -275,9 +275,9 @@ _ARCHETYPE_INDEPENDENT: frozenset[str] = frozenset(
 # escalated to L2 — on a lower-escalation file a deterministic secret is
 # recorded as blockable_unresolved and, in enforce mode, the Stop backstop
 # refuses the turn instead, so under enforce the credential cannot leave the
-# turn either way; only the block's timing differs. In shadow mode (the
-# default) nothing blocks: the backstop records a would_block preview and the
-# turn ends, so this no-escape guarantee holds only under enforce. There is
+# turn either way; only the block's timing differs. In shadow mode nothing
+# blocks: the backstop records a would_block preview and the turn ends, so this
+# no-escape guarantee holds only under enforce (the default). There is
 # also a per-session stop_block_cap: after that many backstop blocks the hook
 # goes advisory to avoid a stuck turn, so the no-escape guarantee is bounded by
 # that cap even under enforce.

@@ -11065,13 +11065,15 @@ def doctor() -> dict:
                 "detail": (
                     "no .chameleon/config.json — using defaults. ON by default: "
                     "auto_refresh (drift_threshold=0.2, max_age_hours=168), "
-                    "auto_rename, and one-time trust (it persists across profile "
-                    "changes and a refresh never re-prompts). OFF by default: "
-                    "canonical_ref (branch pinning) and production_ref (ref-pinned "
-                    "derivation; auto-locked at init/refresh for origin-backed "
-                    "repos). Add a config.json to change these. To restore "
-                    "re-prompting when the profile changes after a grant, set "
-                    "CHAMELEON_TRUST_REVALIDATE=1 in the environment."
+                    "auto_rename, one-time trust (it persists across profile "
+                    "changes and a refresh never re-prompts), and enforcement.mode "
+                    "'enforce' (calibrated block rules deny for real on a trusted "
+                    "repo; set 'shadow' to log-only or 'off' for advisory). OFF by "
+                    "default: canonical_ref (branch pinning) and production_ref "
+                    "(ref-pinned derivation; auto-locked at init/refresh for "
+                    "origin-backed repos). Add a config.json to change these. To "
+                    "restore re-prompting when the profile changes after a grant, "
+                    "set CHAMELEON_TRUST_REVALIDATE=1 in the environment."
                 ),
             }
         )

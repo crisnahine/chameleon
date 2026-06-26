@@ -741,13 +741,22 @@ block, gated so a block fires only where it will not produce false positives.
 ### Modes
 
 From `config.json` `enforcement.mode`, validated against `{off, shadow, enforce}`,
-**default `shadow`**:
+**default `enforce`**:
 
 - **off** advisory only; no block point fires.
-- **shadow** (default) every gate computes its decision and logs a `would_block`
-  metric, but the edit or turn proceeds. A repo runs shadow first so its
-  false-positive rate is measured before any block.
-- **enforce** the gates block for real, gated by per-repo calibration.
+- **shadow** every gate computes its decision and logs a `would_block`
+  metric, but the edit or turn proceeds. Use it to measure a repo's
+  false-positive rate before turning on real blocks.
+- **enforce** (default) the gates block for real. Every block needs a trusted
+  profile and is overridable inline. The guard differs by class: the per-edit
+  convention denies (naming/import/jsx/file-naming) require per-repo
+  zero-false-positive calibration against the repo's own committed files plus a
+  high- or medium-confidence archetype match; the archetype-independent security
+  facts (hard-kind secrets, eval/exec sinks) block on deterministic detection
+  with no confidence gate; the turn-end idiom review blocks once per session when
+  idioms/principles are present. So enforce is the safe default for the
+  calibrated convention rules without a measure-first shadow period, not a
+  blanket "every block is calibrated" guarantee.
 
 `CHAMELEON_ENFORCE=0` forces advisory-only for the whole session regardless of
 mode. `/chameleon-disable` and `/chameleon-pause-15m` suppress all behavior for
@@ -910,16 +919,18 @@ does not verify goes to a human regardless of gate color.
 ### Staged rollout
 
 - **Stage 0, bootstrap and trust.** Run `/chameleon-init`, review
-  `profile.summary.md`, run `/chameleon-trust`. Default mode is `shadow`;
-  nothing blocks yet.
-- **Stage 1, shadow.** Leave shadow for two to three weeks of real editing. The
-  lead reads `get_shadow_report` / `/chameleon-status --shadow`: per-rule
-  would-block counts over a non-truncated window, distinct files and sessions,
-  and a sampled file:line list to eyeball. Promotion is a human read of the
-  sample, not a computed FP fraction.
-- **Stage 2, enforce.** Flip `enforcement.mode` to `enforce`, then re-run
-  `/chameleon-trust` (config.json is trust-hashed, so the edit flips the profile
-  to stale until re-granted). The lead watches the override-rate panel
+  `profile.summary.md`, run `/chameleon-trust`. The default mode is `enforce`, so
+  calibrated block rules are live once trust is granted.
+- **Stage 1, shadow (optional).** A team that wants to measure before any edit is
+  denied can set `enforcement.mode` to `shadow` first and leave it for two to
+  three weeks of real editing. The lead reads `get_shadow_report` /
+  `/chameleon-status --shadow`: per-rule would-block counts over a non-truncated
+  window, distinct files and sessions, and a sampled file:line list to eyeball.
+  Promotion is a human read of the sample, not a computed FP fraction.
+- **Stage 2, enforce.** Set `enforcement.mode` back to `enforce` (the default).
+  Trust persists across the config edit, so it takes effect immediately; only
+  under `CHAMELEON_TRUST_REVALIDATE=1` does the trust-hashed edit require a
+  re-grant. The lead watches the override-rate panel
   (`get_override_audit`): a rule overridden in a large fraction of edits is
   fighting the team, so either the convention is wrong (refresh/teach) or the
   rule is miscalibrated.
@@ -1045,10 +1056,12 @@ Two consequences of persistence are deliberate:
   `stale`, so calibrated block rules apply (and a `config.json` flip to
   `enforcement.mode: "enforce"` takes effect) where they previously fell through to
   advisory-under-stale. Intended, and bounded: only `BLOCK_ELIGIBLE_RULES` can be
-  promoted (an arbitrary rule can't be planted), the default mode is `shadow`
-  (never blocks), and the block reason is sanitized, so the worst case is a denied
-  edit from a drifted/pulled profile under a non-default `enforce` mode, not code
-  execution. A repo whose `enforcement.json` / `config.json` may change via an
+  promoted (an arbitrary rule can't be planted), a promoted rule blocks only on
+  the calibrated verdict in `enforcement.json` (recomputed locally at every
+  bootstrap/refresh; a pulled artifact carries the author's verdict until the next
+  local refresh), and the block reason is sanitized, so the worst case is a denied
+  edit from a drifted/pulled profile, not code execution. A repo whose
+  `enforcement.json` / `config.json` may change via an
   un-reviewed `git pull` and which wants those changes to re-prompt before they
   enforce should set `CHAMELEON_TRUST_REVALIDATE=1`.
 - **Post-grant profile edits are no longer re-reviewed by the staleness gate.**
@@ -1296,7 +1309,7 @@ under `enforcement` are tolerated for forward compatibility; unknown keys under
 | `auto_refresh.max_age_hours` | `168` | Age that triggers auto-refresh. |
 | `auto_refresh.fetch_production_ref` | `true` | The default-on production fetch before refresh. |
 | `trust.auto_preserve_when` | `"always"` | `always` / `pulled_from_remote` / `null` re-grant policy. |
-| `enforcement.mode` | `"shadow"` | `off` / `shadow` / `enforce`. |
+| `enforcement.mode` | `"enforce"` | `off` / `shadow` / `enforce`. |
 | `enforcement.stop_backstop` | `true` | Stop-hook enforcement backstop. |
 | `enforcement.stop_block_cap` | `3` | Max Stop blocks per session. |
 | `enforcement.idiom_review` | `true` | Once-per-session idiom self-review. |
