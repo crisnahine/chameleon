@@ -2055,6 +2055,14 @@ def preflight_and_advise() -> int:
             "profile_corrupted",
             "profile_unsupported_schema_version",
             "no_profile",
+            # Repo resolution is environment-sensitive (CHAMELEON_ALLOW_TMP_REPO,
+            # HOME, cwd). The version+fingerprint-keyed daemon socket is shared
+            # across sessions with its env frozen at spawn, so a daemon spawned in
+            # a divergent environment can return no_repo for a path the in-process
+            # path resolves to a real, trusted profile. Trusting that negative
+            # silently skips injection AND the enforcement deny; re-check
+            # in-process so the daemon stays a latency layer, not a correctness one.
+            "no_repo",
         ):
             result = None
 

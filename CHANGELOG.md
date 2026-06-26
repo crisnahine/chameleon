@@ -4,6 +4,23 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.33.2] - 2026-06-26
+
+### Fixed
+
+- **PreToolUse no longer trusts a stale daemon `no_repo` result.** The daemon
+  fast-path discards a degraded daemon verdict (`profile_corrupted`,
+  `profile_unsupported_schema_version`, `no_profile`) and re-checks in-process,
+  but `no_repo` was missing from that set. Because the daemon socket is keyed by
+  version and code fingerprint (not by session) and the daemon's environment is
+  frozen at spawn, a daemon spawned in a divergent environment could return
+  `no_repo` for a path the in-process path resolves to a real, trusted profile.
+  The hook then trusted that negative and silently skipped BOTH archetype
+  injection AND the enforcement deny — a credential or `eval(` that should have
+  been blocked could reach disk. `no_repo` now triggers the same in-process
+  fallback, restoring the daemon to a pure latency layer. `posttool_verify` was
+  unaffected (it resolves the repo root in-process before consulting the daemon).
+
 ## [2.33.1] - 2026-06-26
 
 ### Fixed
