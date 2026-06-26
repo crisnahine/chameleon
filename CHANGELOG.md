@@ -4,6 +4,17 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.34.1] - 2026-06-26
+
+### Fixed
+
+- **The absolute-`paths_glob` guard now works on Python 3.11.** The 2.34.0 fix
+  wrapped `base.glob(pattern)` in a try/except, but `Path.glob` is lazy on
+  Python 3.11 (it raises `NotImplementedError` during iteration, not at the
+  call), so an absolute glob still crashed there. Materialize the matches with
+  `list(...)` inside the guard, mirroring `workspace.py`, so the exception is
+  caught on every supported Python version.
+
 ## [2.34.0] - 2026-06-26
 
 ### Fixed

@@ -157,7 +157,11 @@ def _glob_candidates(
             continue
         for pattern in expanded_globs:
             try:
-                matches = base.glob(pattern)
+                # list() forces evaluation INSIDE the guard: on Python 3.11
+                # Path.glob is lazy and raises NotImplementedError during
+                # iteration, not at the call, so a bare `base.glob(pattern)`
+                # would leak the exception past the except. (3.13 raises eagerly.)
+                matches = list(base.glob(pattern))
             except (ValueError, IndexError, NotImplementedError, OSError):
                 # A user-supplied absolute paths_glob raises NotImplementedError
                 # ('Non-relative patterns are unsupported'); a malformed pattern
