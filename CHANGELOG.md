@@ -4,6 +4,25 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.33.3] - 2026-06-26
+
+### Fixed
+
+- **The corrections-exhausted breaker no longer arms the Stop backstop on a
+  non-code file's credential.** Once a file is corrected
+  `MAX_CORRECTIONS_PER_FILE` times, advisory feedback is suppressed but a
+  deterministic-hard secret still arms the Stop backstop so a credential cannot
+  slip in unblocked. Every other arming site and both Stop re-lint branches run
+  that secret through `block_eligible_on_file(..., language=detect_language())`,
+  so a credential-shaped token in markdown / config prose (no recognized
+  language) stays advisory and never arms the backstop — such a file has no
+  inline `chameleon-ignore` escape and the re-lint drops it anyway. This breaker
+  site skipped that gate, so a non-code file that resolved to an archetype (via a
+  legacy extension-blind `paths_pattern`) at the corrections cap could be armed
+  inconsistently with the re-lint that then clears it. It now arms only on a
+  recognized code language, matching the sibling sites. No behavior change for
+  code files.
+
 ## [2.33.2] - 2026-06-26
 
 ### Fixed

@@ -3950,12 +3950,22 @@ def posttool_verify() -> int:
                     secret_note = ""
                     try:
                         if _content_has_hard_secret(content, file_path):
-                            record_violation(
-                                file_state,
-                                now=_started,
-                                archetype=archetype_name,
-                                hard_class=True,
-                            )
+                            from chameleon_mcp.lint_engine import detect_language
+
+                            # Only a recognized code language arms the backstop:
+                            # a credential-shaped token in markdown / config PROSE
+                            # (detect_language None) stays advisory, has no inline
+                            # chameleon-ignore escape, and the Stop re-lint drops
+                            # it anyway. Arming it would only over-arm, diverging
+                            # from the other arming sites and the re-lint, which
+                            # all gate non-code via block_eligible_on_file.
+                            if detect_language(file_path) is not None:
+                                record_violation(
+                                    file_state,
+                                    now=_started,
+                                    archetype=archetype_name,
+                                    hard_class=True,
+                                )
                             secret_note = (
                                 "A hardcoded credential was detected in this "
                                 "edit — remove it before ending the turn.\n"
