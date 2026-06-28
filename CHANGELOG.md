@@ -4,6 +4,51 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.0] - 2026-06-28
+
+Both review skills now faithfully follow the superpowers code-review discipline
+(`code-reviewer` and `receiving-code-review`) they layer their repo-grounding on,
+closing the discipline elements they had omitted.
+
+### Added
+
+- **pr-review covers the superpowers what-to-check categories it was missing**, as
+  hunk-gated advisory judgments: performance / scalability (a query or IO inside a
+  loop, an unbounded load, an O(n^2) over request data on an added line), type
+  safety, and documentation completeness. Edge cases (Step 3c) and signature drift
+  (3c-i) now run ALWAYS, not only when a ticket is supplied.
+- **pr-review states the read-only-on-checkout discipline** (never mutate the
+  working tree / index / HEAD / branch; use `git worktree` for another revision),
+  carries a one-line Reasoning under the Verdict (the superpowers Ready-to-merge
+  assessment), and gained a grounded Recommendations section.
+- **receiving-code-review adds the five external-reviewer pre-implementation
+  checks**, the when-to-push-back trigger list (including legacy / backward-compat
+  and lacks-context) with the uncomfortable-pushing-back rule, the
+  gracefully-correct-your-own-pushback path, and the final verify-no-regressions
+  pass.
+
+### Changed
+
+- **pr-review flags plan-level issues**, not only the implementation: a spec line
+  that is itself contradictory, infeasible, or wrong is called out, and a
+  significant deviation is framed as a confirm-intent advisory.
+- **receiving-code-review's no-gratitude rule is now emphatic** (no "Excellent
+  feedback!", no "Thanks" for anything, delete it before sending), adds
+  "Good catch - ..." as an allowed acknowledgment, and spells out the GitHub and
+  Bitbucket inline-thread reply mechanism.
+
+### Fixed
+
+- **Edge cases (3c) no longer skipped in a no-ticket review.** It was nested under
+  "only when a Jira ticket is provided" while `reviewer.md` already delegated it
+  per slice unconditionally; the two are now consistent, and only task context,
+  completeness, and spec compliance remain ticket-gated.
+
+### Tests
+
+- New `tests/unit/test_superpowers_review_alignment.py` pins every imported
+  superpowers discipline element in both skill bodies.
+
 ## [2.37.0] - 2026-06-28
 
 ### Added
