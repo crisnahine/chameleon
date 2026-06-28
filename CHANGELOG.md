@@ -4,6 +4,22 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.1] - 2026-06-29
+
+### Fixed
+
+- **The call-graph tools now accept a repo-relative `file_path`.** `get_callers`,
+  `get_blast_radius`, `get_callees`, `get_duplication_candidates`, and
+  `query_symbol_importers` ran `find_repo_root` on the raw `file_path`, so a
+  relative path (the natural form: the calls index keys, `search_codebase`, and
+  `describe_codebase` all emit relative paths) resolved against the server's
+  working directory instead of the repo and the tool failed open with a bare
+  `{found: false}` and no reason, a silently-wrong "no callers" on valid input.
+  Each tool now resolves a non-absolute `file_path` against its `repo` argument's
+  root first, and tags the genuinely-unresolvable case `reason: "path-unresolved"`
+  so it fails loud. This most helps a weaker driving model (e.g. Sonnet), which
+  would otherwise relay the empty answer rather than self-correct.
+
 ## [2.38.0] - 2026-06-28
 
 Both review skills now faithfully follow the superpowers code-review discipline
