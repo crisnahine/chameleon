@@ -4,6 +4,35 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.36.3] - 2026-06-28
+
+### Added
+
+- **One-command setup: `scripts/setup.sh`.** Collapses "install all the
+  requirements" into a single step. It verifies every prerequisite (`uv`,
+  Node 20+, `npm`, optional Ruby + `prism`, optional `timeout`) and prints the
+  exact per-OS install command for anything missing, then warms the Python and
+  Node environments so the first session is instant instead of building
+  mid-edit. `--check` verifies without installing; `--dev` adds the test extras
+  (pytest, ruff) for contributors. It never installs system packages itself, it
+  only reports what to run, so it is safe to re-run. Wired into the install
+  guide and CONTRIBUTING.
+
+### Changed
+
+- **CONTRIBUTING first-time setup uses `scripts/setup.sh --dev`.** The previous
+  `uv sync` one-liner installed runtime deps only and pruned the dev extras,
+  leaving a fresh clone without pytest and ruff.
+
+### Tests
+
+- **The production-tip auto-refresh trigger is now covered.** Auto-refresh
+  re-derives a production-pinned profile in the background when the locked
+  branch's tip moves past the recorded derivation SHA (the freshness signal
+  after a teammate merges). That gate previously had no unit test; added one
+  for the tip-moved (spawn) and tip-unchanged (no spawn) cases, alongside the
+  existing drift, age, migration, and cooldown coverage.
+
 ## [2.36.2] - 2026-06-28
 
 ### Fixed
