@@ -3382,6 +3382,189 @@ def get_prose_rule_candidates(repo: str) -> dict:
     )
 
 
+def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
+    """Find symbols by name or file, ranked, from the committed profile (comprehension).
+
+    The "where is X / find Y" query chameleon's conformance profile can also
+    answer: it walks the committed symbol index (every recorded callable across
+    all profiled languages) and returns the matches for ``query``, ranked exact
+    name > prefix > substring > all-tokens > file-path, with a more-called symbol
+    breaking ties (it is more central). Each result carries
+    ``{name, file, line, signature, callers}``. ``limit`` is clamped to
+    ``COMPREHEND_SEARCH_MAX_RESULTS``.
+
+    Read-only over the committed index, offline, no repo-code execution. Fails
+    open with ``found: False`` on an unresolvable / untrusted repo or empty query.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.comprehension import search_symbols
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+
+    empty = {"found": False, "query": "", "results": []}
+
+    resolved_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None or resolved_path is None:
+        return _envelope(dict(empty))
+    repo_root = Path(resolved_path)
+
+    gate = _trust_state_for(repo_id)
+    if gate is None or not gate.grants_root(repo_root):
+        out = dict(empty)
+        out["status"] = "untrusted"
+        return _envelope(out)
+
+    cap = threshold_int("COMPREHEND_SEARCH_MAX_RESULTS")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        n = 10
+    else:
+        n = limit
+    n = max(1, min(n, cap))
+
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _s
+
+    def _ss(v):
+        return _s(v) if isinstance(v, str) else v
+
+    results = [
+        {
+            "name": _ss(r.get("name")),
+            "file": _ss(r.get("file")),
+            "line": r.get("line"),
+            "signature": _ss(r.get("signature")),
+            "callers": r.get("callers"),
+        }
+        for r in search_symbols(repo_root, query, limit=n)
+    ]
+    return _envelope({"found": True, "query": _ss(query), "results": results})
+
+
+def describe_codebase(repo: str) -> dict:
+    """A structural overview of the repo from its committed profile (comprehension).
+
+    The "what is this codebase" answer, read off chameleon's own profile: the
+    primary ``language`` and ``framework``, the ``archetypes`` (the kinds of files
+    the repo contains, each with its size, summary, and canonical witness), the
+    file/symbol totals, and the ``god_symbols`` (the most-called production
+    functions, test files excluded). All from committed artifacts, offline.
+
+    Fails open with ``found: False`` on an unresolvable / untrusted repo, and to
+    an empty-shaped overview when no profile is present.
+    """
+    from chameleon_mcp.comprehension import describe_codebase as _describe
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+
+    empty = {"found": False}
+
+    resolved_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None or resolved_path is None:
+        return _envelope(dict(empty))
+    repo_root = Path(resolved_path)
+
+    gate = _trust_state_for(repo_id)
+    if gate is None or not gate.grants_root(repo_root):
+        out = dict(empty)
+        out["status"] = "untrusted"
+        return _envelope(out)
+
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _s
+
+    def _ss(v):
+        return _s(v) if isinstance(v, str) else v
+
+    d = _describe(repo_root)
+    archetypes = [
+        {
+            "name": _ss(a.get("name")),
+            "summary": _ss(a.get("summary")),
+            "size": a.get("size"),
+            "paths": _ss(a.get("paths")),
+            "witness": _ss(a.get("witness")),
+        }
+        for a in d.get("archetypes", [])
+    ]
+    god = [
+        {"name": _ss(g.get("name")), "file": _ss(g.get("file")), "callers": g.get("callers")}
+        for g in d.get("god_symbols", [])
+    ]
+    return _envelope(
+        {
+            "found": True,
+            "language": _ss(d.get("language")),
+            "framework": _ss(d.get("framework")),
+            "file_count": d.get("file_count"),
+            "symbol_count": d.get("symbol_count"),
+            "archetypes": archetypes,
+            "god_symbols": god,
+        }
+    )
+
+
+def get_callees(repo: str, file_path: str, function_name: str) -> dict:
+    """What a function calls (forward edges), from the committed calls snapshot.
+
+    The forward counterpart to ``get_callers`` / ``get_blast_radius``: it inverts
+    the reverse ``calls_index`` to answer "what does this function call". Each
+    result is ``{callee, file, grade}`` with the same three deterministic grades
+    (same_file, import, constant_receiver). Absence of a callee is NOT proof the
+    function calls nothing: dynamic dispatch and unsupported call paths are
+    invisible. Fails open with ``found: False`` on any ambiguity.
+    """
+    from chameleon_mcp.calls_index import load_calls_index
+    from chameleon_mcp.comprehension import callees_of
+    from chameleon_mcp.profile.loader import find_repo_root
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+    from chameleon_mcp.symbol_index import module_key_for_path
+
+    empty = {"found": False, "module": None, "function": None, "callees": []}
+
+    if not _validate_file_path_arg(file_path):
+        return _envelope(dict(empty))
+
+    p = Path(file_path).expanduser()
+    repo_root = find_repo_root(p)
+    if repo_root is None:
+        return _envelope(dict(empty))
+
+    expected_repo_id = _compute_repo_id(repo_root)
+    if isinstance(repo, str) and _REPO_ID_RE.match(repo):
+        if repo != expected_repo_id:
+            return _envelope(dict(empty))
+    else:
+        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
+        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
+            return _envelope(dict(empty))
+
+    gate = _trust_state_for(expected_repo_id)
+    if gate is None or not gate.grants_root(repo_root):
+        out = dict(empty)
+        out["status"] = "untrusted"
+        return _envelope(out)
+
+    if load_calls_index(repo_root) is None:
+        out = dict(empty)
+        out["reason"] = "no-calls-index"
+        return _envelope(out)
+
+    rel = module_key_for_path(p, repo_root)
+    if rel is None:
+        out = dict(empty)
+        out["reason"] = "file-outside-repo"
+        return _envelope(out)
+
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _s
+
+    def _ss(v):
+        return _s(v) if isinstance(v, str) else v
+
+    clean = [
+        {"callee": _ss(r.get("callee")), "file": _ss(r.get("file")), "grade": r.get("grade")}
+        for r in callees_of(repo_root, rel, function_name)
+    ]
+    return _envelope(
+        {"found": True, "module": _ss(rel), "function": _ss(function_name), "callees": clean}
+    )
+
+
 def _name_still_referenced(repo_root: Path, importer_rel: str, name: str, line: int | None) -> bool:
     """Cheap regex presence check: does ``importer_rel`` still name ``name``?
 

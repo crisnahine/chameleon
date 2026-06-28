@@ -173,6 +173,46 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
 
 
 @mcp.tool()
+def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
+    """Find symbols by name or file from the committed profile (comprehension).
+
+    The "where is X / find Y" query, answered off chameleon's own profile: walks
+    the committed symbol index and returns matches for `query` ranked exact name >
+    prefix > substring > all-tokens > file-path, with the more-called symbol
+    breaking ties. Each result carries name, file, line, signature, and caller
+    count. Read-only, offline, no repo-code execution. Fails open with
+    found=False on an unresolvable / untrusted repo or empty query.
+    """
+    return tools.search_codebase(repo, query, limit)
+
+
+@mcp.tool()
+def describe_codebase(repo: str) -> dict:
+    """A structural overview of the repo from its committed profile (comprehension).
+
+    The "what is this codebase" answer: primary language and framework, the
+    archetypes (kinds of files, each with size, summary, and canonical witness),
+    file/symbol totals, and the god symbols (most-called production functions,
+    test files excluded). All from committed artifacts, offline. Fails open with
+    found=False on an unresolvable / untrusted repo.
+    """
+    return tools.describe_codebase(repo)
+
+
+@mcp.tool()
+def get_callees(repo: str, file_path: str, function_name: str) -> dict:
+    """What a function calls (forward edges), from the committed calls snapshot.
+
+    The forward counterpart to get_callers / get_blast_radius: inverts the reverse
+    calls_index to answer "what does this function call". Each result is
+    {callee, file, grade} with the three deterministic grades (same_file, import,
+    constant_receiver). Absence of a callee is NOT proof it calls nothing
+    (dynamic dispatch is invisible). Fails open with found=False on any ambiguity.
+    """
+    return tools.get_callees(repo, file_path, function_name)
+
+
+@mcp.tool()
 def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     """ADVISORY: is this branch's diff vs base_ref safe to auto-pass, or human?
 

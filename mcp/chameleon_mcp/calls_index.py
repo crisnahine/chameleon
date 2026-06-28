@@ -408,6 +408,15 @@ class CallsIndex:
             "truncated": entry["truncated"],
         }
 
+    def items(self):
+        """``(callee_rel, {name: entry})`` pairs for the whole index.
+
+        The full-index walk comprehension needs: ranking callees by caller count
+        (god symbols) and inverting caller rows into forward callees. The reverse
+        lookup hot path uses :meth:`callers_of` instead. Entries are the live
+        internal dicts; callers walk them read-only, never mutate."""
+        return self._callees.items()
+
     def __len__(self) -> int:
         return len(self._callees)
 

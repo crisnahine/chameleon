@@ -152,6 +152,14 @@ class SymbolSignatures:
         when the file carries no recorded signatures)."""
         return self._entries.get(rel) or {}
 
+    def items(self):
+        """``(rel, {name: row})`` pairs for every file with recorded signatures.
+
+        The whole-index walk a comprehension search needs (locate a symbol by
+        name across the repo); the per-edit hot path uses :meth:`for_file`.
+        """
+        return self._entries.items()
+
     def __len__(self) -> int:
         return len(self._entries)
 

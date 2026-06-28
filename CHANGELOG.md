@@ -4,6 +4,34 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.36.0] - 2026-06-28
+
+### Added
+
+- **Comprehension surface: chameleon now does both conformance and
+  comprehension.** The committed conformance profile (symbol index, calls index,
+  archetypes, canonicals) doubles as a queryable comprehension layer, so an
+  assistant can understand and navigate existing code, not just shape new edits,
+  off ONE profile, offline and with no repo-code execution. Three new MCP tools:
+  - **`search_codebase(query)`** finds symbols by name or file from the committed
+    symbol index, ranked exact name > prefix > substring > all-tokens > file-path
+    with the more-called symbol breaking ties. The "where is X / find Y" query
+    chameleon previously could not answer. Each result carries name, file, line,
+    signature, and caller count; the result count is clamped to
+    `COMPREHEND_SEARCH_MAX_RESULTS`.
+  - **`describe_codebase()`** returns a structural overview from the profile: the
+    primary language and framework, the archetypes (kinds of files, each with
+    size, summary, and canonical witness), file/symbol totals, and the god
+    symbols (the most-called production functions, test files excluded).
+  - **`get_callees(file, function)`** answers "what does this function call"
+    (forward edges) by inverting the reverse calls index, completing the
+    navigation surface alongside `get_callers` and `get_blast_radius`, with the
+    same three deterministic grades.
+
+  All three are trust-gated, sanitized, fail open, and read only the committed
+  artifacts. `SymbolSignatures` and `CallsIndex` gained `items()` accessors for
+  the whole-index walks comprehension needs.
+
 ## [2.35.0] - 2026-06-28
 
 ### Added

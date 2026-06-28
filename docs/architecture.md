@@ -123,7 +123,7 @@ no repo-specific knowledge; the profile carries no code.
 |  - stop-backstop         (Stop / SubagentStop)                          |
 |                              |                                           |
 |                              v                                           |
-|  MCP server (chameleon-mcp, FastMCP, stdio) -- 43 tools                  |
+|  MCP server (chameleon-mcp, FastMCP, stdio) -- 46 tools                  |
 |                              |                                           |
 |              +---------------+----------------+                          |
 |              v                                v                          |
@@ -654,7 +654,7 @@ Every tool is a `@mcp.tool()`-decorated function in `server.py` that delegates t
 `tools.py`. Every file-reading tool goes through `safe_open` (lstat first,
 realpath, repo-boundary prefix match) and re-checks artifact mtimes per call so
 a `/chameleon-teach` or `/chameleon-refresh` is picked up without a stale cache.
-The server exposes **43 tools**:
+The server exposes **46 tools**:
 
 ### Detection and context
 
@@ -724,6 +724,9 @@ All read-only except `record_review_verdict` (ledger append) and `dep_audit`
 | `query_symbol_importers` | Importers of a module's exports plus which break on rename. TS. |
 | `get_callers` | Deterministic committed callers of a function. |
 | `get_blast_radius` | Bounded transitive callers of a function (multi-hop change reach); the judge's own walk, surfaced as a tool. |
+| `get_callees` | What a function calls (forward edges), inverting the reverse calls index. Comprehension. |
+| `search_codebase` | Find symbols by name or file from the committed index, ranked. Comprehension. |
+| `describe_codebase` | Structural overview: language, framework, archetypes, totals, god symbols. Comprehension. |
 | `get_contract_breaks` | Deterministic caller-contract (positional narrowing) breaks for a diff. |
 | `get_duplication_candidates` | Existing functions a file's new functions may re-implement. |
 | `scan_dependency_changes` | No-network supply-chain review of a manifest/lockfile diff. |

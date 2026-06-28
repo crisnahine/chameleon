@@ -141,6 +141,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # cannot turn the on-demand mine into an unbounded read.
     "PROSE_RULE_MAX_DOCS": 60,
     "PROSE_RULE_MAX_DOC_BYTES": 200_000,
+    # Comprehension surface (tool-time queries over the committed indexes, never a
+    # hook hot path). Cap on search results returned, and on the god-symbol
+    # (most-called) overview list, so a query over a huge monorepo's index stays a
+    # bounded, readable answer.
+    "COMPREHEND_SEARCH_MAX_RESULTS": 25,
+    "COMPREHEND_GOD_SYMBOLS": 10,
     # Cap on the unified-diff text scanned for the deterministic content
     # signals (removed-guard lexicon, in-diff ignore directives, test skip
     # markers, assertion delta). Past the cap the scan truncates and says so;
