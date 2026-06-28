@@ -4,6 +4,64 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.37.0] - 2026-06-28
+
+### Added
+
+- **pr-review now routes the deterministic security sinks `lint_file` already
+  returns (new Step 2.6d).** `eval-call` (error severity) and `command-injection`
+  drive a BLOCK; `sql-string-interpolation`, `insecure-deserialization`,
+  `weak-hash`, and `insecure-random` are FIX; the test-quality rules
+  (`then-without-catch`, `skipped-test`, and so on) are NIT. The convention loop
+  already fetched these violations and discarded them, so the review silently
+  missed witnessed SQL-injection, RCE, and error-swallowing findings while
+  hand-rolling weaker taint heuristics. They are refuter-exempt and hunk-gated. A
+  warning-severity `eval-call` (the Rails `class_eval` string idiom the engine
+  deliberately downgrades) caps at FIX, never escalated by rule name.
+- **receiving-code-review now grounds its adjudication in engine data.** It builds
+  the PR's hunk map (so a comment on an untouched line is flagged pre-existing,
+  not a PR defect) and runs `get_callers` / `lint_file` / `get_crossfile_context`
+  / `get_duplication_candidates` to back an apply or a pushback with evidence
+  instead of plain judgment.
+
+### Changed
+
+- **A new direct dependency is an "Acknowledge before merge" ACK, not a BLOCK.**
+  The old BLOCK forced a BLOCK verdict that `record_review_verdict` then wrote to
+  the durable ledger, recording every routine dependency add as a BLOCK and
+  corrupting the per-tier review-clean metric. The provenance gate stays as its
+  own non-verdict channel, matching the engine's own NIT classification of
+  `new-dependency`.
+
+### Fixed
+
+- **The caller-contract pass (Step 2.9e) is now wired into every consistency
+  surface.** It was defined but missing from both grounding-loop exemption lists,
+  the severity table, the verdict rules, the integrity rule, and the output
+  template, so a faithful reader either hunk-gated its non-diff caller lines (and
+  dropped every valid finding) or sent it to the refuter, which cannot re-derive
+  cross-file evidence and refuted the strongest finding away.
+- **Fan-out could not run the dependency pass.** Step 2.5 was delegated per-slice
+  but the fan-out reviewer was never granted `scan_dependency_changes`, so it
+  silently fell back to hand-parsing. It now runs once at whole-diff synthesis.
+- **receiving-code-review referenced gates it never defined and called
+  `refute_finding` with an underspecified payload.** Step 6 named a "hunk/severity
+  gate" that did not exist; the refuter call omitted the `{id, file, line, claim,
+  evidence}` shape, `base_ref`, and the disabled-envelope (empty verdicts list)
+  handling. All fixed, and the repo is resolved once in Step 3 so the grounding
+  tools have `repo.id` before they run.
+
+### Tests
+
+- New unit coverage for Step 2.6d (including the warning-severity `eval-call`
+  cap), the contract-break wiring, and the dependency ACK. The tool-contract test
+  is generalized to parse every tool call in both review skills and `reviewer.md`
+  and check each name and kwarg against the live MCP registry.
+- Two new journey acts: `12b` (deep pr-review: secret / migration / dependency-ACK
+  / eval-sink BLOCK paths) and `12c` (receiving: ground-before-draft,
+  never-ledger, pre-existing gate). Both use evidence-based cross-checks that
+  demote a self-reported PASS when the evidence does not hold.
+
 ## [2.36.3] - 2026-06-28
 
 ### Added
