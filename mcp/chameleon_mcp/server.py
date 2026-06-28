@@ -141,7 +141,7 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
 
     Reads the prebuilt calls_index.json artifact. Returns the recorded caller
     rows for ``function_name`` defined in the file at ``file_path``. Grades are
-    deterministic: same_file, import (TypeScript only), constant_receiver
+    deterministic: same_file, import (TypeScript and Python), constant_receiver
     (Ruby only). Dynamic/unsupported call paths are absent by design.
 
     Absence of callers is NOT evidence of dead code -- dynamic dispatch and

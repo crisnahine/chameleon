@@ -3078,9 +3078,11 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
 
     Grades are deterministic: ``same_file`` (bare call to a file-local name or
     ``this.``/``self.`` to a class member defined in the same file),
-    ``import`` (TypeScript named-import or namespace-import call, closed export
-    set only), ``constant_receiver`` (Ruby ``Const.method`` with exactly one
-    defining class). Name-only / dynamic / inheritance-based call paths are
+    ``import`` (a named-import or namespace-import call against the target's
+    closed export set -- TypeScript named/namespace imports AND Python
+    ``from m import f; f()`` / ``import a.b as x; x.f()`` calls),
+    ``constant_receiver`` (Ruby ``Const.method`` with exactly one defining
+    class). Name-only / dynamic / inheritance-based call paths are
     deliberately absent -- the index asserts only what is unambiguous.
 
     Interpretation note: absence of callers is NOT evidence of dead code.
@@ -6417,12 +6419,22 @@ def _profile_needs_rederive(profile_dir) -> bool:
     - ``archetypes/canonicals/rules/conventions.json`` must exist and parse as
       JSON objects;
     - the generated indexes must exist and parse as JSON objects:
-      ``calls_index.json`` and ``function_catalog.json`` for every supported
-      language, plus ``exports_index.json`` / ``reverse_index.json`` when the
-      manifest says the profile is TypeScript (a Ruby profile never writes
-      the symbol indexes, so their absence must not force a rebuild there);
-    - ``profile.summary.md`` must exist;
+      ``calls_index.json``, ``function_catalog.json``, ``symbol_signatures.json``
+      and ``counterexamples.json`` for every supported language;
+    - ``enforcement.json`` must parse to a dict whose ``block_rules`` is itself a
+      dict (the shape ``active_block_rules`` reads);
+    - ``exports_index.json`` / ``reverse_index.json`` for any language that writes
+      them (TypeScript always; Python writes them too, so a corrupt one there must
+      also repair; a Ruby profile never writes them, so their absence must not
+      force a rebuild), and ``constant_index.json`` (Ruby's analogue) when present;
+    - ``profile.summary.md`` must exist and be non-empty;
     - ``principles.md`` must carry the anti-hallucination protocol.
+
+    ``enforcement.json`` matters most: ``active_block_rules`` fails open to an
+    empty rule set on a missing/corrupt file OR one whose ``block_rules`` is not a
+    dict, so a damaged one silently voids ALL block-rule enforcement while
+    ``mode=enforce`` still reads normal. The noop refresh would never repair it
+    without this check.
 
     ``idioms.md`` is user-taught content (preserved across a re-derive), so a
     missing idioms file does NOT force a rebuild.
@@ -6469,8 +6481,6 @@ def _profile_needs_rederive(profile_dir) -> bool:
         "symbol_signatures.json",
         "counterexamples.json",
     ]
-    if manifest.get("language") == "typescript":
-        index_names += ["exports_index.json", "reverse_index.json"]
     for name in index_names:
         try:
             obj = _json.loads((profile_dir / name).read_text(encoding="utf-8"))
@@ -6478,7 +6488,50 @@ def _profile_needs_rederive(profile_dir) -> bool:
             return True
         if not isinstance(obj, dict):
             return True
-    if not (profile_dir / "profile.summary.md").is_file():
+    # Block-rule calibration. active_block_rules reads enforcement.json's inner
+    # "block_rules" value and falls open to an EMPTY set on anything that is not a
+    # dict -- so a missing file, a non-dict top level, OR a block_rules that is not
+    # itself a dict all silently void ALL block-rule enforcement under
+    # mode=enforce. Mirror load_block_rules' shape check so the noop refresh
+    # repairs every one of those states, not just unparseable JSON.
+    try:
+        enf = _json.loads((profile_dir / "enforcement.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    if not isinstance(enf, dict) or not isinstance(enf.get("block_rules"), dict):
+        return True
+    # Symbol indexes: TypeScript always writes them (absence == damage). Other
+    # languages that write them (Python) must repair a corrupt one; Ruby never
+    # writes them, so validate-if-present and don't force a rebuild on absence.
+    for name in ("exports_index.json", "reverse_index.json"):
+        path = profile_dir / name
+        if manifest.get("language") == "typescript" or path.exists():
+            try:
+                obj = _json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return True
+            if not isinstance(obj, dict):
+                return True
+    # constant_index.json is Ruby's analogue of the symbol indexes (Ruby has no
+    # static export surface). It is Ruby-only and written inside the atomic txn;
+    # a corrupt one silently voids the Ruby cross-file existence-break advisory +
+    # get_blast_radius / get_contract_breaks. Validate-if-present (no other
+    # language writes it, so absence must not force a rebuild).
+    const_idx = profile_dir / "constant_index.json"
+    if const_idx.exists():
+        try:
+            obj = _json.loads(const_idx.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return True
+        if not isinstance(obj, dict):
+            return True
+    # profile.summary.md is preserved verbatim by the noop path; an empty or
+    # whitespace-only summary (truncated write / bad merge) must repair too.
+    try:
+        summary_text = (profile_dir / "profile.summary.md").read_text(encoding="utf-8")
+    except OSError:
+        return True
+    if not summary_text.strip():
         return True
     return _principles_incomplete(profile_dir)
 

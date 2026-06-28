@@ -4,6 +4,35 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.36.2] - 2026-06-28
+
+### Fixed
+
+- **Refresh now repairs a damaged `enforcement.json` instead of preserving it.**
+  A corrupt enforcement file — or a valid object whose `block_rules` is not a
+  dict — made `active_block_rules` fall open to an empty set, silently voiding
+  all block-rule enforcement while `mode=enforce` still read as healthy, and a
+  normal refresh noop-preserved the damage. The repair predicate now requires
+  `enforcement.json` to parse to a dict whose `block_rules` is itself a dict, so
+  `/chameleon-refresh` re-derives and restores it.
+- **Refresh now repairs a corrupt Ruby `constant_index.json`.** The Ruby
+  cross-file constant graph (the analogue of the TypeScript/Python symbol
+  indexes) was missing from the repair set, so a corrupt one silently killed the
+  cross-file existence-break advisory, `get_blast_radius`, and
+  `get_contract_breaks` with no recovery path. It is now validated and repaired.
+- **Refresh now repairs corrupt Python `exports_index.json` /
+  `reverse_index.json` and an empty `profile.summary.md`.** The symbol-index
+  repair check was TypeScript-only; Python writes these indexes too. The summary
+  check was existence-only.
+- **The Python extractor no longer drops large valid files.** The libcst node
+  ceiling counted dense CST nodes against a cap meant for sparser AST nodes, so a
+  valid sub-1 MB file (≈3500 lines) was silently skipped. The cap is retuned to
+  libcst density; `MAX_FILE_SIZE` remains the real bound.
+- **The status line strips box-drawing characters from cached profile fields,**
+  so a poisoned cache name can no longer forge a `│`-delimited trust segment.
+- **`get_callers` documentation now credits Python import-grade callers** (the
+  docstrings said the import grade was TypeScript-only; Python emits it too).
+
 ## [2.36.1] - 2026-06-28
 
 ### Documentation

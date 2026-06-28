@@ -33,7 +33,13 @@ import sys
 import libcst as cst
 from libcst.metadata import MetadataWrapper, PositionProvider
 
-MAX_AST_NODES = 50_000
+# Pathological-file guard on the node walk. Counts libcst CST nodes, which are
+# ~3.3x denser than the CPython `ast` nodes the TS/Ruby extractors' equivalent
+# 50_000 cap effectively counts (measured: a 3561-line file = 17_453 ast vs
+# 57_994 CST nodes). Set to 165_000 (~3.3x of 50_000) so a valid sub-MAX_FILE_SIZE
+# Python file is not dropped where the line-equivalent TS/Ruby file survives;
+# MAX_FILE_SIZE remains the real DoS bound.
+MAX_AST_NODES = 165_000
 MAX_FILE_SIZE = 1_000_000
 # A real module declares a few dozen callables; cap the recorded headers so one
 # outlier file cannot bloat the dump record (consensus needs a sample, not all).

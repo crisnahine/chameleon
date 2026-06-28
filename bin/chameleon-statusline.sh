@@ -27,9 +27,9 @@ if [[ -f "$cache_file" ]]; then
     # terminal escape -- locale-independent, and no per-render process spawn.
     records=$(jq -r '
       (.profiles // [])[] as $p
-        | "P\t" + (($p.name // "") | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069]"; "")) + "\t" + ($p.trust // ""),
-      "A\t" + ((.activity // "") | tostring | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069]"; "")),
-      "U\t" + ((.update // "") | tostring | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069]"; ""))
+        | "P\t" + (($p.name // "") | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069\u2500-\u259f]"; "")) + "\t" + ($p.trust // ""),
+      "A\t" + ((.activity // "") | tostring | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069\u2500-\u259f]"; "")),
+      "U\t" + ((.update // "") | tostring | gsub("[\u0000-\u001f\u007f\u0080-\u009f\u200b-\u200d\ufeff\u200e-\u200f\u202a-\u202e\u2066-\u2069\u2500-\u259f]"; ""))
     ' "$cache_file" 2>/dev/null || true)
     if [[ -n "$records" ]]; then
       parts=""
@@ -80,7 +80,7 @@ if [[ -f "$cache_file" ]]; then
 import json, os, re
 d=json.load(open(os.environ['CACHE_PATH']))
 ps=d.get('profiles',[])
-_CTRL=re.compile(r'[\x00-\x1f\x7f\x80-\x9f\u200b-\u200d\ufeff\u200e\u200f\u202a-\u202e\u2066-\u2069]')
+_CTRL=re.compile(r'[\x00-\x1f\x7f\x80-\x9f\u200b-\u200d\ufeff\u200e\u200f\u202a-\u202e\u2066-\u2069\u2500-\u259f]')
 def _s(v): return _CTRL.sub('',str(v))
 def _t(v):
     v=_s(v)

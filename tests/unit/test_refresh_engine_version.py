@@ -79,6 +79,7 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
     (pd / "function_catalog.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     (pd / "symbol_signatures.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     (pd / "counterexamples.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    (pd / "enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
     (pd / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
     (pd / "principles.md").write_text(
         "# principles\n\n## anti-hallucination protocol\n\n- Don't invent symbols.\n",
@@ -229,6 +230,10 @@ def _complete_profile(tmp_path):
         "counterexamples.json",
     ):
         pd.joinpath(name).write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+    # enforcement.json is written by every bootstrap (all languages); a complete
+    # profile carries it with block_rules as a DICT (the shape write_block_rules
+    # emits and active_block_rules reads).
+    pd.joinpath("enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
     pd.joinpath("profile.json").write_text(
         json.dumps({"generation": 1, "schema_version": 8}), encoding="utf-8"
     )
@@ -260,6 +265,87 @@ def test_profile_needs_rederive_on_corrupt_json(tmp_path):
 def test_profile_needs_rederive_on_stale_principles(tmp_path):
     pd = _complete_profile(tmp_path)
     pd.joinpath("principles.md").write_text("# principles\n1. foo\n", encoding="utf-8")
+    assert t._profile_needs_rederive(pd) is True
+
+
+def test_profile_needs_rederive_on_corrupt_enforcement(tmp_path):
+    # A corrupt enforcement.json silently voids ALL block-rule enforcement
+    # (active_block_rules fails open to an empty set), and the noop/partial
+    # refresh paths preserve it verbatim -- so refresh must REPAIR it. Both the
+    # corrupt and the missing case force a re-derive.
+    pd = _complete_profile(tmp_path)
+    assert t._profile_needs_rederive(pd) is False
+    pd.joinpath("enforcement.json").write_text("STALE not json\n", encoding="utf-8")
+    assert t._profile_needs_rederive(pd) is True
+    pd.joinpath("enforcement.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    assert t._profile_needs_rederive(pd) is True
+    pd.joinpath("enforcement.json").unlink()
+    assert t._profile_needs_rederive(pd) is True
+    # Valid top-level dict but block_rules is NOT a dict: active_block_rules falls
+    # open to an empty set (silent non-enforcement), so these must repair too.
+    for bad in ({}, {"block_rules": "not a dict"}, {"block_rules": []}, {"block_rules": None}):
+        pd.joinpath("enforcement.json").write_text(json.dumps(bad), encoding="utf-8")
+        assert t._profile_needs_rederive(pd) is True, bad
+    pd.joinpath("enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
+    assert t._profile_needs_rederive(pd) is False
+
+
+def test_profile_needs_rederive_on_corrupt_ruby_constant_index(tmp_path):
+    # constant_index.json is Ruby's analogue of the symbol indexes; a corrupt one
+    # silently voids the Ruby cross-file existence-break advisory and refresh
+    # never repairs it. Validate-if-present: corrupt repairs, absent does not
+    # force a rebuild for a language (TS/Python) that never writes it.
+    pd = _complete_profile(tmp_path)
+    pd.joinpath("profile.json").write_text(
+        json.dumps({"generation": 1, "schema_version": 8, "language": "ruby"}),
+        encoding="utf-8",
+    )
+    assert not (pd / "constant_index.json").exists()
+    assert t._profile_needs_rederive(pd) is False  # absent -> no forced rebuild
+    pd.joinpath("constant_index.json").write_text(json.dumps({"User": []}), encoding="utf-8")
+    assert t._profile_needs_rederive(pd) is False  # present + valid dict
+    pd.joinpath("constant_index.json").write_text("{ CORRUPT not json", encoding="utf-8")
+    assert t._profile_needs_rederive(pd) is True
+    pd.joinpath("constant_index.json").write_text(json.dumps([1, 2]), encoding="utf-8")
+    assert t._profile_needs_rederive(pd) is True
+
+
+def test_profile_needs_rederive_on_corrupt_python_indexes(tmp_path):
+    # Python profiles ship exports_index.json / reverse_index.json with real
+    # content; a corrupt one must force a repair (the TS-only guard missed this).
+    for lang in ("python", "typescript"):
+        sub = tmp_path / lang
+        sub.mkdir()
+        pd = _complete_profile(sub)
+        pd.joinpath("profile.json").write_text(
+            json.dumps({"generation": 1, "schema_version": 8, "language": lang}),
+            encoding="utf-8",
+        )
+        pd.joinpath("exports_index.json").write_text(json.dumps({"a": 1}), encoding="utf-8")
+        pd.joinpath("reverse_index.json").write_text(json.dumps({"a": 1}), encoding="utf-8")
+        assert t._profile_needs_rederive(pd) is False, lang
+        pd.joinpath("exports_index.json").write_text("{not json", encoding="utf-8")
+        assert t._profile_needs_rederive(pd) is True, lang
+
+
+def test_profile_needs_rederive_ruby_omits_symbol_indexes(tmp_path):
+    # Regression guard: a Ruby profile legitimately never writes the symbol
+    # indexes, so their ABSENCE must not force a perpetual rebuild.
+    pd = _complete_profile(tmp_path)
+    pd.joinpath("profile.json").write_text(
+        json.dumps({"generation": 1, "schema_version": 8, "language": "ruby"}),
+        encoding="utf-8",
+    )
+    assert not (pd / "exports_index.json").exists()
+    assert t._profile_needs_rederive(pd) is False
+
+
+def test_profile_needs_rederive_on_empty_summary(tmp_path):
+    # profile.summary.md is preserved verbatim by the noop path; an empty or
+    # whitespace-only summary (truncated write / bad merge) must force a repair,
+    # not just a missing one.
+    pd = _complete_profile(tmp_path)
+    pd.joinpath("profile.summary.md").write_text("   \n\n", encoding="utf-8")
     assert t._profile_needs_rederive(pd) is True
 
 

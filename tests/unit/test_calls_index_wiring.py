@@ -175,6 +175,8 @@ def test_needs_rederive_index_checks(tmp_path):
         "counterexamples.json",
     ):
         (cham / name).write_text("{}", encoding="utf-8")
+    # enforcement.json needs block_rules as a dict (active_block_rules's shape).
+    (cham / "enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
     (cham / "profile.json").write_text(json.dumps({"language": "ruby"}), encoding="utf-8")
     (cham / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
     (cham / "principles.md").write_text("anti-hallucination protocol\n", encoding="utf-8")
@@ -209,6 +211,18 @@ def test_needs_rederive_index_checks(tmp_path):
     (cham / "counterexamples.json").write_text("{not json", encoding="utf-8")
     assert tools._profile_needs_rederive(cham) is True
     (cham / "counterexamples.json").write_text("{}", encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is False
+
+    # enforcement.json is built for every language; a corrupt/missing one, or a
+    # valid dict whose block_rules is not itself a dict, silently voids block-rule
+    # enforcement, so each must force a repair re-derive.
+    (cham / "enforcement.json").write_text("{not json", encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is True
+    (cham / "enforcement.json").unlink()
+    assert tools._profile_needs_rederive(cham) is True
+    (cham / "enforcement.json").write_text(json.dumps({"block_rules": []}), encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is True
+    (cham / "enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
     assert tools._profile_needs_rederive(cham) is False
 
     # TS profiles additionally require the two symbol indexes.
