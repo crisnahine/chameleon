@@ -4,6 +4,28 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.2] - 2026-06-29
+
+### Fixed
+
+- **pr-review is now faithfully executable on a Sonnet-class model.** A live
+  Sonnet skill-execution run found three mandatory-pass drops, all in
+  chameleon-pr-review (receiving-code-review, status, and auto-idiom executed
+  cleanly on Sonnet). (1) Fan-out had no degraded path when no Task tool is
+  available, so a Sonnet subagent that could not dispatch reviewers rationalized
+  a bypass; it now falls back to a single-pass inline review (the correct, complete
+  outcome) and logs `fan-out-recommended-but-unavailable`. (2) The "run `lint_file`
+  on every changed file" rule was buried mid-step and the word "source" let Sonnet
+  sample out doc files, silently skipping the pre-archetype secret scan; Step 2 now
+  leads with a coverage-ledger forcing function and an `lint_file run on N/N changed
+  files` accounting line, and 2b reads "every changed FILE (source or not)".
+  (3) Step 2b had no branch for a null archetype, so Sonnet improvised the string
+  `"none"` (which happened to work); it now explicitly passes a non-null
+  placeholder archetype string (`"none"` or the suggested fallback) and never
+  `null` / omitted. `archetype` is a required string and `lint_file` returns early
+  before the secret and sink scans on a non-str value, so a non-null string is
+  required to keep those scans running on an unmatched file.
+
 ## [2.38.1] - 2026-06-29
 
 ### Fixed
