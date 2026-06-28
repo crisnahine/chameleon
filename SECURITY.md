@@ -28,3 +28,9 @@ the context chameleon injects or slip past the trust gate, a hook that fails
 unsafe, or any path that exfiltrates code or executes repository code without an
 explicit opt-in (`CHAMELEON_ALLOW_DEP_AUDIT`, `CHAMELEON_ALLOW_TESTS`,
 `CHAMELEON_ALLOW_TSC`, `CHAMELEON_ALLOW_ESLINT_EVAL`).
+
+One outbound network path is on by default: at refresh time, a repo with a
+locked `production_ref` runs a bounded, timeout-capped, non-interactive
+`git fetch origin <branch>` so derivation sees the latest production tip. It
+self-suppresses under CI, never runs on a hook hot path, fails open to the
+last-fetched ref, and is killed with `CHAMELEON_FETCH_PRODUCTION_REF=0`.

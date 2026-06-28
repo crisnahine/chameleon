@@ -4,6 +4,34 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.36.1] - 2026-06-28
+
+### Documentation
+
+- **Full documentation refresh: every doc is now current and honest.** Audited
+  README, architecture, install, the language-support matrix, CLAUDE, SECURITY,
+  and CONTRIBUTING against the v2.36.1 source and fixed all drift:
+  - Corrected stale counts (README "Proof" table and badge: 4,777 unit tests,
+    125 released versions, 3,299-line changelog; architecture engine version
+    2.32.2 -> 2.36.1).
+  - Documented the comprehension layer (`search_codebase`, `describe_codebase`,
+    `get_callees`) and the `get_blast_radius` and `get_prose_rule_candidates`
+    tools across README, architecture, CLAUDE, install, and the support matrix.
+    chameleon is now described as conformance AND comprehension.
+  - Fixed the now-false "TypeScript has no framework layer" claim: TS/JS has
+    Next.js and NestJS awareness (detection, naming roles, framework-specific
+    anti-hallucination).
+  - Documented the default-on proximity-ranked nearby-collaborator signatures,
+    the `teach_profile_structured` `source` provenance param, the default-on
+    production-ref git fetch in SECURITY.md, and corrected the CONTRIBUTING CI
+    job list (10 jobs, hook-smoke matrix) and a broken workflows link.
+  - Added a direct "What it truly resolves (and what it doesn't)" section to the
+    README, grounded in the measured 2026 AI-coding problem landscape: it owns
+    the conformance and codebase-context slice (off-pattern code, hallucinated
+    dependencies and symbols, duplication, secrets, comprehension) and does not
+    claim to fix the model's correctness/security ceiling, agent autonomy, or
+    cost.
+
 ## [2.36.0] - 2026-06-28
 
 ### Added

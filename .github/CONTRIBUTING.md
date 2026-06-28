@@ -60,6 +60,7 @@ cd mcp
 |---|---|---|
 | Unit tests | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ -v` | Fast, no external deps. Run before every PR. |
 | Harness library self-tests | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/journey/harness/tests/ -v` | Verifies the journey harness itself. |
+| Effectiveness eval self-tests | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/effectiveness/tests/ -v` | Verifies the effectiveness eval harness. CI's `test-python` job runs these alongside unit + harness tests. |
 | Journey harness (full) | `mcp/.venv/bin/python -m tests.journey.runner` | Drives real `claude -p` subprocesses. ~$33, ~65 min. |
 | Journey harness (dry-run) | `mcp/.venv/bin/python -m tests.journey.runner --dry-run` | Preflight only, no Claude spawn. |
 | Journey harness (list acts) | `mcp/.venv/bin/python -m tests.journey.runner --list` | Lists available acts. |
@@ -100,7 +101,9 @@ echo '{"tool_name":"Edit","tool_input":{"file_path":"/abs/path/to/file.ts"},"ses
 
 ### MCP tool changes
 
-MCP tools (`mcp/chameleon_mcp/tools.py`) are a public API surface.
+MCP tools are a public API surface. The 46 `@mcp.tool()` registrations (the
+public surface) live in `mcp/chameleon_mcp/server.py`;
+`mcp/chameleon_mcp/tools.py` holds the implementations `server.py` wraps.
 Compatibility contract per [architecture.md](../docs/architecture.md):
 
 **Non-breaking** (no major version bump):
@@ -190,12 +193,18 @@ Run `scripts/bump-version.sh --check` before tagging to catch drift.
 
 ## Continuous integration
 
-Four workflows live under [.github/workflows/](.github/workflows/):
+Four workflows live under [.github/workflows/](workflows/):
 
 - **`ci.yml`** - fires on every PR against `main` and every push to `main`.
-  Runs the Python test matrix (3.11, 3.12, and 3.13 on Ubuntu and macOS), ruff lint,
-  `bump-version.sh --check`, `check-no-personal-paths.sh`, and a one-shot
-  `hooks/session-start` smoke test.
+  Ten jobs: the Python test matrix (3.11, 3.12, and 3.13 on Ubuntu and macOS,
+  running unit + harness + effectiveness tests), `test-windows` (native Windows
+  import + cross-platform locking, py3.11-3.13), `runtime-windows` (drives the
+  hook stack plus a bootstrap/trust/refresh lifecycle on native Windows), ruff
+  lint, `bump-version.sh --check`, `check-no-personal-paths.sh`, a `hook-smoke`
+  matrix over 5 hooks (`session-start`, `preflight-and-advise`,
+  `posttool-recorder`, `posttool-verify`, `callout-detector`) each fed synthetic
+  stdin and asserted to emit valid JSON, `dependency-audit` (`pip-audit` +
+  `npm audit`), `shellcheck`, and `hooks-manifest-check`.
 - **`release.yml`** - fires on tag pushes matching `v*.*.*`. Verifies all
   six manifests agree with the tag, that `CHANGELOG.md` has an entry for
   the version, re-runs the full test matrix, builds a release tarball, and

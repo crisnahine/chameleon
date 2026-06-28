@@ -3,11 +3,18 @@
 > The authoritative parity reference for chameleon's supported languages. The
 > unit of support is the LANGUAGE: chameleon is framework-agnostic by default,
 > learning each repo's own conventions from its structure (clustering, naming,
-> signatures), so it works on any framework in a supported language. Where a
+> signatures), so it works on any framework in a supported language. Off that one
+> committed profile chameleon does both conformance (the per-edit convention
+> guidance this matrix measures) and comprehension: `search_codebase`,
+> `describe_codebase`, and `get_callees` (`comprehension.py`) answer 'where is X',
+> 'what is this codebase', and 'what does this call' from the same derived
+> artifacts. Where a
 > framework's conventions are strong and well-known, a framework-aware layer
 > sits ON TOP of that agnostic base for deeper guidance - currently Rails for
-> Ruby, and Django / DRF / Flask / FastAPI for Python. (TypeScript / JavaScript
-> is structural-only today, with no framework-specific layer.) **The goal: every
+> Ruby, Django / DRF / Flask / FastAPI for Python, and Next.js / NestJS for
+> TypeScript / JavaScript. (TypeScript / JavaScript now adds Next.js + NestJS
+> framework awareness, with detection, naming roles, and framework-specific
+> anti-hallucination, on top of its structural base.) **The goal: every
 > supported language gets the same capability, with the same purpose, except
 > where a capability is genuinely specific to a language or framework.** This doc
 > is the basis for closing the gap.
@@ -15,7 +22,7 @@
 Supported languages (the agnostic core works on any framework; the named
 frameworks add a deeper, framework-aware layer on top):
 
-- **TypeScript / JavaScript** - `.ts .tsx .js .jsx .mjs .cjs`, parsed with the TypeScript Compiler API (`ts_dump.mjs`). Structural-only; no framework-specific layer.
+- **TypeScript / JavaScript** - `.ts .tsx .js .jsx .mjs .cjs`, parsed with the TypeScript Compiler API (`ts_dump.mjs`). Agnostic across any TS/JS repo, with a deeper framework-aware layer for Next.js and NestJS.
 - **Ruby** - `.rb`, parsed with Prism (`prism_dump.rb`). Agnostic across any Ruby repo, with a deeper framework-aware layer for Rails.
 - **Python** - `.py .pyi`, parsed with libcst (`libcst_dump.py`), bundled with the plugin. Agnostic across any Python repo, with a deeper framework-aware layer for Django / DRF / Flask / FastAPI.
 
@@ -47,8 +54,8 @@ the matrix measures against - derivation, per-edit injection, and safety behave
 identically regardless of language.
 
 > The enumerated set below is the original all-three-✅ baseline (63 capabilities).
-> Full parity is now **108** capabilities (see At a glance) - the Python parity work
-> added 45 more rows to the all-✅ set than are listed here; the per-dimension tables
+> Full parity is now **125** capabilities (see At a glance) - the parity work
+> added 62 more rows to the all-✅ set than are listed here; the per-dimension tables
 > are authoritative for the current state.
 
 **1. AST extraction & language detection** - Dump-script backend / parser; Interpreter resolution strategy; Unavailable-toolchain degradation; can_handle detection signals; Detection precedence ordering; Default file glob; Pipe-deadlock-safe IO + timeout/exit truncation marking; MAX_AST_NODES cap (50000); MAX_FILE_SIZE cap (1MB) + file_too_large; MAX_CALLABLE_SIGNATURES cap (200); MAX_CALL_SITES cap (2000) + honest truncation flag; Symlink refusal + read-error guard; Per-file crash isolation; ParsedFile.top_level_node_kinds; ParsedFile.sha_hint (xxhash64); extras.function_scopes (body-shape: span/depth/branch/param); extras.callable_signatures (name/kind/params/spans); callable_signatures.params structured shape (name/optional/kind); callable_signatures.enclosing_class; callable kind taxonomy; extras.call_sites (caller->callee edges); extras.call_sites_total / call_sites_truncated
@@ -65,7 +72,7 @@ identically regardless of language.
 
 **10. Conventions derivation** - import conventions (preferred + competing); import ordering (external-vs-relative grouping); naming: file-naming (basename casing + compound suffix); body_shape (per-function complexity norms); callable_signatures (consensus param shapes)
 
-**11. Cross-file intelligence (symbols / calls / contracts)** - Calls index - same_file grade (file-local caller edges); Nearby-collaborator signatures (per-edit, experimental); Function catalog + duplication-candidate prefilter
+**11. Cross-file intelligence (symbols / calls / contracts)** - Calls index - same_file grade (file-local caller edges); Nearby-collaborator signatures (per-edit, default-ON); Function catalog + duplication-candidate prefilter
 
 **12. Framework awareness** - Test-runner command recognition
 
@@ -281,9 +288,11 @@ identically regardless of language.
 | Calls index - import grade (cross-file named/namespace-import call ed... | ✅ | - | ✅ | Python: full. `from .svc import run; run()` grades as an import edge (resolved against the target's closed export set) and `import a.b as x; x.f()` via the namespace alias (calls_index.py:276,309). The TS-only `new Foo()` grade is correctly excluded. Verified: import-grade cross-file edges in calls_index.json. |
 | Calls index - constant_receiver grade (Ruby Const.method edges) | - | ✅ | - | _exclusive: ruby_ |
 | get_callers / get_drift caller facts (tool read over calls index) | ✅ | ✅ | ✅ | Python: full. With the import grade built for Python, get_callers reads calls_index.json via load_calls_index (tools.py:2966) - no TS export regex - and the judge's committed-callers grounding reads the same artifact (judge.py:299). Real import-grade Python callers. No longer starved. |
+| get_callees (forward callees over the calls index) | ✅ | ✅ | ✅ | Forward counterpart of get_callers: inverts the committed calls_index to answer 'what does this function call', returning {callee, file, grade} over the deterministic same_file / import / constant_receiver grades (server.py, tools.py). All three read the same artifact. Full parity. |
+| get_blast_radius (transitive / multi-hop callers) | ✅ | ✅ | ✅ | Walks calls_index UPWARD from a function and returns the bounded transitive caller chains - the 'if I change this, what transitively reaches it' question beyond one-hop get_callers - depth-clamped and fanout/total-node capped, the same reach the turn-end judge walks (blast_radius.py, server.py). Same calls snapshot for all three. Full parity. |
 | Callable signatures index (per-symbol params/return/span) | ✅ | ⚠️ | ✅ | Python: full (typed). libcst_dump emits declared param `type` + `return_type` (omitted when unannotated), so Python signature rows carry params+types+return+span (orchestrator.py:2273). Verified: typed entries in symbol_signatures.json. Ruby stays ⚠️ (no static types). |
 | Forward definition hydration (definitions of imported symbols for the... | ✅ | ❌ | ✅ | Python: full. _parse_import_symbols + hydrate_imported_definitions handle .py/.pyi: each named import resolves to its defining module and renders as a typed one-line signature (symbol_signatures.py:224,318). Verified: `add(x: int, y?: int): int - pkg/typed.py:1`. Ruby stays ❌. |
-| Nearby-collaborator signatures (per-edit, experimental) | ✅ | ✅ | ✅ | Python renders param shapes but no types/returns (none stored), so the rendered signature is thinner than TS's typed one - same limitation as the underlying signature index, not a separate gap. Default-OFF for all three pending an A/B. |
+| Nearby-collaborator signatures (per-edit, default-ON) | ✅ | ✅ | ✅ | Python renders param shapes but no types/returns (none stored), so the rendered signature is thinner than TS's typed one - same limitation as the underlying signature index, not a separate gap. Default-ON for all three (kill switch `CHAMELEON_NEARBY_SIGNATURES=0`), ranked by call proximity. |
 | Signature contract-diff / contract-breaks (narrowed positional contra... | ✅ | ✅ | ✅ | Python: full. The narrowing diff parses changed .py/.pyi via the Python extractor, counts required positionals over libcst param kinds (excluding keyword/rest), and joins to committed Python callers (signature_diff.py:193, tools.py:6224). Verified: a 2->3 positional narrowing flagged; adding a keyword-only param + **kwargs did not. Full parity. |
 | Function catalog + duplication-candidate prefilter | ✅ | ✅ | ✅ | Python: full on name-token + arity + exact body_hash. Minor: the param-normalized body hash (body_hash_pnorm) skips block/closure-param renaming for Python because _lang_from_path returns None for .py (function_catalog.py:200-207 handles o... |
 | Doctor advisory-emission health check (source-edit attribution) | ✅ | ✅ | ✅ | Python: full. .py/.pyi are in the doctor _source_exts set (tools.py:10783), so a Python repo where archetype resolution silently stops firing triggers the 'advisories not firing' diagnostic, like TS/Ruby. Full parity. |
@@ -312,6 +321,7 @@ identically regardless of language.
 | teach_profile_structured (structured idiom capture) | ✅ | ✅ | ✅ |  |
 | teach_competing_import (wrapper-preference convention) | ✅ | ✅ | ✅ |  |
 | unteach_competing_import | ✅ | ✅ | ✅ |  |
+| get_prose_rule_candidates (offline prose-rule miner) | ✅ | ✅ | ✅ | Mines repo docs (README, docs/) for a stated 'use X not Y' import rule and corroborates each candidate against the repo's ACTUAL imports before proposing it as a teachable idiom (prose_rules.py, server.py). Text + import scan, language-agnostic across the three. Offline, no repo-code execution. Full parity. |
 | Per-edit counterexample capture (build counterexamples.json from a re... | ✅ | ✅ | ✅ | Implemented (PKG-8). _import_of has a Python unquoted-import branch (counterexamples.py:183) and the repo scan resolves detect_language per file (:365), so a taught competing import captures the real off-pattern line; the unquoted form is gated off non-Python. Full parity. |
 | Per-edit counterexample render ('do NOT write it this way' paired wit... | ✅ | ✅ | ✅ | Implemented. Render emits from stored data (hook_helper.py:1762) and the edited file's language threads into the witness-vs-counterexample suppression (:2589->:1773); with PKG-8 capture storing Python off-patterns, render works. Full parity. |
 | Multi-off-pattern-per-archetype counterexamples (schema v2 list) | ✅ | ✅ | ✅ | Implemented by composition. The v2 per-archetype list machinery (normalize/capture/render) has no language branch and keys only on the `over` module string (counterexamples.py:341), so a Python archetype taught several competing imports keeps every off-pattern. Full parity. |
@@ -372,11 +382,8 @@ language or framework provides the construct. Not gaps.
 - **sql-string-interpolation** - Scoped to ActiveRecord's #{}-into-SQL shape, which is a Rails-specific injection idiom. A general string-built-SQL detector for TS (knex/template-literal queries) or Python (f-string/`%`-formatted cursor.execute) would ...
 - **Line-length AllowedPatterns / AllowedURI exemption** - ruff/flake8 do support per-line noqa and pycodestyle has noqa/URL leniency conventions, but this specific exemption shape (config-declared AllowedPatterns + AllowedURI) is a rubocop construct. If Python line-length is e...
 - **rubocop path Exclude (AllCops + per-cop)** - This is legitimately rubocop-specific (it models rubocop's own Exclude glob semantics). TS arguably lacks a .prettierignore/.eslintignore equivalent path filter, but that is a separate TS gap, not a Python one. Python's...
-- **required-guard-convention (Rails before_action syntax)** - NO LONGER a pure exclusive: the required-guard CONVENTION + lint now derive for Python too (DRF permission_classes / @login_required / LoginRequiredMixin; see dim 7 / dim 12). Only the Rails `before_action` *callback syntax* (blanket vs only:/except:/if:/unless: scoping, skip_before_action) is genuinely Ruby-shaped.
 - **method_calls (Rails DSL fingerprint)** - Legitimately Rails-specific. Python's analog (route/validation decorators, Django model Meta) flows through class_contract decorators instead, so this is not a true parity gap.
-- **required_guards (controller before_action authz)** - The Rails before_action *derivation* (blanket vs scoped callbacks) is Rails-shaped, but the Python analog now exists: `extract_python_authz_guard_conventions` derives the equivalent authz convention from permission_classes / decorators / mixin bases (presence-semantics). Not a Python gap.
 - **Calls index - constant_receiver grade (Ruby Const.method edges)** - Caller->callee edge where Const.method or Const.new dispatches to a singleton/instance method of a uniquely-defined fully-qualified class.
-- **Authz-base-class exemption note** - The Rails before_action authz SEMANTIC (a base-class/decorator enforcing auth on every member) is now implemented for Python (DRF permission_classes, a LoginRequiredMixin base, a @login_required decorator; see dim 12). The Rails `before_action` callback form remains the Ruby-specific expression of it.
 - **Authz-base-class exemption (_RAILS_APP_ROOT_BASES)** - Rails-specific: it exempts ApplicationController/ApplicationRecord-style app-root bases from Rails' required-guard/inheritance checks. Python now has its own inheritance-convention check (`_python_inheritance_violations`), but it needs no Rails-app-root exemption - it exempts the cohort's own known bases and bare/nested classes instead. A genuine Rails exclusive, not downstream of a missing Python derivation.
 - **Class-body-contract derivation: DSL macros** - Derives the repo-specific class-body DSL macros (e.g. Rails acts_as_*, has_many beyond the allowlist) shared across a cohort anchored on a dominant base.
 
@@ -437,7 +444,10 @@ gaps the original audit flagged are all built, unit-tested, and validated:
 ---
 
 _Audit basis: a full-codebase parity audit, re-verified against the code on
-2026-06-24, then updated after the cross-language parity sweep closed the
-remaining closable gaps (every change unit-tested). Re-run and regenerate when the
-language pipelines change; the per-dimension tables above are the authoritative
-current state._
+2026-06-28 (v2.36.0). Covers the cross-language parity sweep, the comprehension
+layer (`search_codebase` / `describe_codebase` / `get_callees` in
+`comprehension.py`, plus `get_blast_radius` and `get_prose_rule_candidates`), the
+now-default-ON nearby-collaborator signatures, and the Next.js / NestJS framework
+awareness for TypeScript / JavaScript (every change unit-tested). Re-run and
+regenerate when the language pipelines change; the per-dimension tables above are
+the authoritative current state._

@@ -1,6 +1,6 @@
 # Installing chameleon
 
-chameleon is a Claude Code plugin that learns your repo's conventions and feeds the model archetype-aware context on every edit. It supports TypeScript/JavaScript, Ruby, and Python as first-class languages. The core is framework-agnostic (it learns each repo's own conventions, so any framework works), with deeper awareness where a framework's conventions are strong: Rails for Ruby, and Django, DRF, Flask, and FastAPI for Python.
+chameleon is a Claude Code plugin that learns your repo's conventions and feeds the model archetype-aware context on every edit, and adds a comprehension layer (`search_codebase`, `describe_codebase`, `get_callees`) for asking how the codebase fits together. See the [README.md](../README.md) for the full picture. It supports TypeScript/JavaScript, Ruby, and Python as first-class languages. The core is framework-agnostic (it learns each repo's own conventions, so any framework works), with deeper awareness where a framework's conventions are strong: Next.js and NestJS for TypeScript/JavaScript, Rails for Ruby, and Django, DRF, Flask, and FastAPI for Python.
 
 Two ways to read this guide:
 

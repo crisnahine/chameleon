@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED.svg)](https://docs.claude.com/claude-code)
 [![Languages](https://img.shields.io/badge/languages-TS%20%7C%20Ruby%20%7C%20Python-2ea44f.svg)](#what-it-actually-supports)
-[![Tests](https://img.shields.io/badge/unit%20tests-4%2C671-blue.svg)](#proof-not-promises)
+[![Tests](https://img.shields.io/badge/unit%20tests-4%2C777-blue.svg)](#proof-not-promises)
 [![Listed on ClaudePluginHub](https://www.claudepluginhub.com/badge/crisnahine-chameleon)](https://www.claudepluginhub.com/plugins/crisnahine-chameleon?ref=badge)
 
 **Your AI writes code that works. It just doesn't write code that looks like yours.**
@@ -129,9 +129,38 @@ The convention injection is the headline. Underneath it are layers that catch th
 - **Calibrated enforcement.** A block rule never fires until chameleon has measured it against your own committed files and confirmed a near-zero false-positive rate. Rules that fight your team get auto-demoted to advisory. You won't get nagged by a rule your repo disagrees with. ([enforcement_calibration.py](mcp/chameleon_mcp/enforcement_calibration.py))
 - **A turn-end correctness judge.** When a turn ends, chameleon can spawn a separate reviewer that reads only your diff for the bugs static analysis misses: inverted conditions, dropped `await`s, off-by-one, missing guards. Advisory, runs on its own budget, never blocks the turn. ([judge.py](mcp/chameleon_mcp/judge.py))
 - **Duplication detection.** It notices when the model just re-implemented a function that already exists, grounded in your real call graph ("reuse it, it's already called from 7 sites"), not a fuzzy name match. ([duplication_review.py](mcp/chameleon_mcp/duplication_review.py))
-- **Cross-file blast radius and contract breaks.** Change a function's signature and chameleon knows which committed callers you just broke, from a prebuilt import index, with zero re-parsing on the hot path. It flags phantom imports (paths that resolve to nothing) and exports you removed that other files still import. ([signature_diff.py](mcp/chameleon_mcp/signature_diff.py), [phantom_imports.py](mcp/chameleon_mcp/phantom_imports.py))
+- **Cross-file blast radius and contract breaks.** Change a function's signature and chameleon knows which committed callers you just broke, from a prebuilt import index, with zero re-parsing on the hot path. The `get_blast_radius` tool walks the same index to the transitive callers a change reaches, not just the direct ones. It flags phantom imports (paths that resolve to nothing) and exports you removed that other files still import. ([signature_diff.py](mcp/chameleon_mcp/signature_diff.py), [blast_radius.py](mcp/chameleon_mcp/blast_radius.py), [phantom_imports.py](mcp/chameleon_mcp/phantom_imports.py))
+- **Comprehension, not just conformance.** The same committed profile answers questions about code that already exists: `search_codebase` finds a symbol by name or file, ranked, with its signature and caller count; `describe_codebase` gives a structural overview (language, framework, archetypes, the most-called production functions); `get_callees` answers "what does this function call." All offline, deterministic, off one profile, so the model can understand and navigate your repo, not only conform new edits to it. ([comprehension.py](mcp/chameleon_mcp/comprehension.py))
 - **Two real review commands.** `/chameleon-pr-review` runs a multi-round, self-refuting review of a PR or branch diff against your repo's own conventions, with a final independent refuter pass to kill findings that can't survive scrutiny. `/chameleon-receiving-code-review` helps you verify a teammate's review against the code before you blindly apply it. ([skills/chameleon-pr-review](skills/chameleon-pr-review/SKILL.md))
-- **Teach what AST can't see.** `/chameleon-teach` captures the rules no parser can infer ("use our HTTP wrapper, never raw `fetch`"). `/chameleon-auto-idiom` mines the repo for those rules itself, grounded in occurrence counts, and proposes them for your approval.
+- **Teach what AST can't see.** `/chameleon-teach` captures the rules no parser can infer ("use our HTTP wrapper, never raw `fetch`"). `/chameleon-auto-idiom` mines the repo for those rules itself, grounded in occurrence counts, and proposes them for your approval. The `get_prose_rule_candidates` miner reads your CONTRIBUTING / STYLE / AGENTS docs for stated "use X not Y" rules and proposes only the ones your code already backs.
+
+---
+
+## What it truly resolves (and what it doesn't)
+
+Straight, because a tool that overstates what it fixes is not worth trusting. Measured against the real problems of AI-assisted coding in 2026, here is the honest line.
+
+**It resolves:**
+
+- **Code that doesn't fit your repo.** The most-cited comprehension complaint of 2026 ("the AI doesn't know how OUR codebase works") is chameleon's whole reason to exist: the witness, the idioms, the archetype rules, shown before the model types.
+- **Hallucinated dependencies and symbols.** The anti-hallucination protocol bans importing a package that is not already in your manifest or lockfile, and inventing a symbol the repo does not define. That is the direct, deterministic counter to "slopsquatting" (about 1 in 5 AI-recommended packages do not exist, and the same fake names recur, so attackers pre-register them).
+- **Code duplication.** It catches a re-implemented function against your real call graph ("reuse it, called from 7 sites") and `search_codebase` finds the existing one first. AI's biggest measured maintainability regression is duplication up, reuse down.
+- **Leaked secrets.** A hardcoded credential is a deterministic write-time block, on sight, even on a brand-new file.
+- **Not understanding the codebase.** The comprehension layer (`search_codebase` / `describe_codebase` / `get_callees`) lets the model query and navigate the repo it is editing.
+
+**It partially helps:**
+
+- **The review bottleneck.** `/chameleon-pr-review` and the cross-file contract checks offload the mechanical part of review (conventions, duplication, broken callers); human judgment on logic still stays.
+- **Plausible-but-wrong code.** The turn-end judge reads your diff for inverted conditions, dropped `await`s, off-by-one, and missing guards. A real but bounded set, not all of it.
+- **Insecure code.** Secrets and `eval`/`exec` are caught deterministically; taint, SSRF, and authz are advisory in pr-review. This is not a full SAST.
+
+**It does not resolve, and will not pretend to:**
+
+- **The model's correctness and security ceiling.** Roughly 45% of AI-generated code ships an OWASP Top 10 vulnerability regardless of model or tooling (Veracode, 2026), and it is not improving with scale. chameleon catches a slice, never the ceiling.
+- **Destructive agent autonomy, token cost, and latency.** chameleon adds some cost and latency; it does not gate an agent from deleting your database, and it does not make agent loops cheaper.
+- **Whether your tests actually test anything.**
+
+Those need better models, runtime and dataflow analysis, sandboxing, and team process, not a write-time conformance tool. chameleon owns the conformance and codebase-context slice, and owns it well. That is the pitch, and the whole of it.
 
 ---
 
@@ -172,9 +201,9 @@ Everything below is checkable in the repo right now:
 
 | What | Count | Verify |
 |------|-------|--------|
-| Unit tests | **4,671** | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
-| Released versions | **114** (v0.1.1 to v2.32.2) | `git tag \| wc -l` |
-| Changelog | **3,051 lines** | `wc -l CHANGELOG.md` |
+| Unit tests | **4,777** | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
+| Released versions | **125** (v0.1.1 to v2.36.1) | `git tag \| wc -l` |
+| Changelog | **3,299 lines** | `wc -l CHANGELOG.md` |
 | First-class languages | **3** (TS/JS, Ruby, Python) | [extractors/registry.py](mcp/chameleon_mcp/extractors/registry.py) |
 | CI matrix | Ubuntu + macOS + **native Windows**, Python 3.11 to 3.13 | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
 
@@ -184,7 +213,7 @@ On top of unit tests, there are real-repo QA batteries per language, a hook-simu
 
 ## What it actually supports
 
-- **TypeScript / JavaScript** (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`), framework-agnostic. It learns whatever your repo does.
+- **TypeScript / JavaScript** (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`), framework-agnostic, with awareness for **Next.js and NestJS** (framework detection, naming roles, and framework-specific anti-hallucination guidance).
 - **Ruby**, framework-agnostic, with deeper structural awareness for **Rails** (sidecar detection, controller guards, archetype-aware base classes).
 - **Python**, framework-agnostic, with awareness for **Django, DRF, Flask, and FastAPI**.
 
@@ -206,6 +235,7 @@ On top of unit tests, there are real-repo QA batteries per language, a hook-simu
 | `/chameleon-receiving-code-review` | Verify a teammate's review before you apply it |
 | `/chameleon-explain` | Why a rule is active, or replay what chameleon knew the last time a file was edited |
 | `/chameleon-doctor` | Triage your installation health |
+| `/chameleon-journey` | Run the end-to-end journey test harness (release verification) |
 | `/chameleon-disable`, `/chameleon-pause-15m` | Turn it off for the session, or pause it briefly |
 
 ---

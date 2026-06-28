@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## What this repo is
 
-`chameleon` — a Claude Code plugin that auto-derives codebase conventions and injects archetype-aware guidance per-edit. Supports TypeScript/JavaScript, Ruby, and Python as first-class languages — framework-agnostic by default (it learns each repo's own conventions, so any framework works), with deeper framework-aware guidance where conventions are strong: Rails for Ruby, and Django, DRF, Flask, and FastAPI for Python.
+`chameleon` — a Claude Code plugin that auto-derives codebase conventions and injects archetype-aware guidance per-edit (conformance), and answers codebase-comprehension queries like search_codebase, describe_codebase, get_callees, and get_blast_radius (comprehension). Supports TypeScript/JavaScript, Ruby, and Python as first-class languages — framework-agnostic by default (it learns each repo's own conventions, so any framework works), with deeper framework-aware guidance where conventions are strong: Rails for Ruby, Django, DRF, Flask, and FastAPI for Python, and Next.js and NestJS for TypeScript/JavaScript.
 
 See [docs/architecture.md](./docs/architecture.md) for the full design.
 
@@ -14,13 +14,14 @@ See [docs/architecture.md](./docs/architecture.md) for the full design.
 chameleon/
 ├── .claude-plugin/    plugin.json + marketplace.json (Claude Code plugin manifest)
 ├── hooks/             session-start, preflight-and-advise, posttool-recorder,
-│                      posttool-verify, callout-detector (+ run-hook.cmd, hooks.json)
+│                      posttool-verify, callout-detector, stop-backstop
+│                      (+ _resolve-python.sh, run-hook.cmd, hooks.json)
 ├── skills/            using-chameleon (auto) + 13 user-invocable slash commands
 ├── mcp/               chameleon-mcp Python server (FastMCP, stdio transport)
 ├── scripts/           ts_dump.mjs, prism_dump.rb, bump-version.sh, merge driver
 ├── bin/               chameleon-statusline.sh (status line, <100ms budget)
-├── tests/             unit/ + journey/ harness + qa_*.py real-repo batteries
-└── docs/              architecture.md (design) + install.md
+├── tests/             unit/ + journey/ + effectiveness/ harnesses + qa_*.py real-repo batteries
+└── docs/              architecture.md (design) + install.md + language-support-matrix.md + parity-progress.md + qa-team.md
 ```
 
 The user-invocable commands: `init`, `refresh`, `status`, `teach`, `auto-idiom`, `trust`, `disable`, `pause-15m`, `doctor`, `journey`, `pr-review`, `receiving-code-review`, `explain` (all invoked as `/chameleon-*`).
@@ -197,7 +198,7 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 
 - `CHAMELEON_DISABLE=1` — disable plugin globally for this session
 - `CHAMELEON_VERIFY=0` — disable PostToolUse archetype verification (default ON)
-- `CHAMELEON_ENFORCE=0` — kill switch for all blocking enforcement (PreToolUse deny, PostToolUse block, Stop backstop). Forces advisory-only regardless of `enforcement.mode`. Blocking otherwise follows `.chameleon/config.json` `enforcement.mode`: `off` = advisory only, `shadow` = log would-have-blocked but never block, `enforce` = real deny/block on calibrated rules (default). A blocked edit is overridable inline with `// chameleon-ignore <rule>` (`# chameleon-ignore <rule>` in Ruby).
+- `CHAMELEON_ENFORCE=0` — kill switch for all blocking enforcement (PreToolUse deny, PostToolUse block, Stop backstop). Forces advisory-only regardless of `enforcement.mode`. Blocking otherwise follows `.chameleon/config.json` `enforcement.mode`: `off` = advisory only, `shadow` = log would-have-blocked but never block, `enforce` = real deny/block on calibrated rules (default). A blocked edit is overridable inline with `// chameleon-ignore <rule>` (`# chameleon-ignore <rule>` in Ruby/Python).
 - `CHAMELEON_ALLOW_ESLINT_EVAL=1` — opt into loading JS ESLint configs via Node `require()`/`import()` during bootstrap (default OFF; off uses a static parser that never executes repo code). Enable only for repos you trust.
 - `CHAMELEON_ALLOW_DEP_AUDIT=1` - opt into the `dep_audit` MCP tool, which shells the repo's own `npm audit` / `bundler-audit` (default OFF). Off refuses rather than spawning a network process behind your back. This is the only supply-chain check that touches the network and runs tool-time only, never on a hook hot path; it fails open to an "unavailable" result when the binary, manifest, or network is absent. The no-network manifest/lockfile diff checks in the pr-review skill run regardless of this flag.
 - `CHAMELEON_ALLOW_TSC=1` — opt into the auto-pass router's `tsc --noEmit` grounding run (default OFF). Executes the repo's own tsc binary, resolved exclusively from `<repo>/node_modules/.bin` (never PATH, never a download), with a hard timeout. Tool-time only, never on a hook hot path. Off (or no root tsconfig.json, or no installed tsc) reads as a recorded "typecheck unavailable" fact — it never blocks auto-pass eligibility on its own.

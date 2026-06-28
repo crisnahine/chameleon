@@ -5,7 +5,7 @@
 This document describes how chameleon works as built. It is the reference for
 the bootstrap pipeline, the hook stack, the MCP tool surface, the enforcement
 and review gate, the profile schema, the state stores, and the security model.
-It tracks engine version **2.32.2** and profile **schema version 8**. When the
+It tracks engine version **2.36.1** and profile **schema version 8**. When the
 code and this document disagree, the code is right; please file an issue.
 
 ## Contents
@@ -73,9 +73,11 @@ languages. Claude Code only. The core is framework-agnostic: it learns each
 repo's conventions from the repo's own structure (clustering, naming,
 signatures), so it works on any framework, not just well-known ones. Where a
 framework has strong, well-known conventions, chameleon adapts for deeper,
-framework-aware guidance - currently Rails for Ruby, and Django, DRF, Flask,
-and FastAPI for Python. TypeScript / JavaScript is purely structural today (no
-framework-specific layer), which is why no TS framework is named.
+framework-aware guidance: Rails for Ruby; Django, DRF, Flask, and FastAPI for
+Python; and Next.js and NestJS for TypeScript / JavaScript. The TS framework
+layer is lighter than the Rails/Django ones (framework detection, naming roles,
+and framework-specific anti-hallucination guidance, rather than the full
+guard/contract derivation), but it is no longer absent.
 
 All three languages are first-class at the extractor level: the TypeScript
 extractor uses the TypeScript Compiler API, the Ruby extractor uses Prism, and
@@ -616,7 +618,12 @@ banner and the other hooks fail open silently and log a `no-interpreter` line.
   (secret, banned import), and injects tiered context: a short pointer for an
   archetype already seen this session, or the full canonical excerpt on the
   first edit in an archetype or after a prior violation. The full witness is
-  injected (quality over token cost), bounded only by a 5 MB safety read.
+  injected (quality over token cost), bounded only by a 5 MB safety read. The
+  Tier-2 block also injects proximity-ranked "Nearby collaborator signatures":
+  the real callable signatures of source files in the edited file's directory,
+  from the precomputed `symbol_signatures.json`, ranked by recorded call
+  proximity from `calls_index.json` so the closest collaborators lead.
+  Default-on, kill switch `CHAMELEON_NEARBY_SIGNATURES=0`.
 - **posttool-recorder** records the drift observation and the HMAC-signed Bash
   exec log, and re-lints single-target Bash file writes (`>`, `>>`, `tee`,
   `sed -i`) into the enforcement state so the Stop backstop covers them.
@@ -683,7 +690,7 @@ The server exposes **46 tools**:
 | Tool | Purpose |
 |---|---|
 | `teach_profile` | Apply a free-form correction (idiom, banned import, wrapper). |
-| `teach_profile_structured` | Structured idiom capture (slug, rationale, example, counterexample). |
+| `teach_profile_structured` | Structured idiom capture (slug, rationale, example, counterexample, archetype, status, and a `source` provenance line). |
 | `teach_competing_import` | Capture a wrapper preference ("use X, not Y"). |
 | `unteach_competing_import` | Remove a taught wrapper preference. |
 | `get_idiom_coverage` | Read-only map of guidance already captured. |
@@ -1338,7 +1345,7 @@ in `mcp/chameleon_mcp/_thresholds.py`, each overridable with a
 
 Engine versions stay in lockstep across six manifests, kept in sync by
 `scripts/bump-version.sh` (the plugin cache is version-keyed). The current
-engine is 2.32.2 and the current profile schema is 8.
+engine is 2.36.1 and the current profile schema is 8.
 
 **Compatibility contract for committed `.chameleon/`:** chameleon will not break
 a committed profile schema without a major version bump. An engine reads any
