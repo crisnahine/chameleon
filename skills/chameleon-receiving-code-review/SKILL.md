@@ -30,6 +30,16 @@ a real reason to push back, not something to apply blindly.
   comments.
 - **Jira key**: resolve the PR(s), then as above (see multi-PR below).
 
+Also fetch the PR's unified DIFF (`gh pr diff <n>` for GitHub, the Bitbucket diff
+endpoint via `bbcurl`, or `git diff <base>...HEAD` for a local branch where
+`<base>` is the locked `production_ref` from `.chameleon/config.json`, else
+`main`) and build a per-file HUNK MAP exactly as pr-review Step 1a does: the
+added/changed line ranges in the post-change file, plus the removed (`-`) lines
+per hunk. Step 3 applies the hunk gate (PR-introduced vs pre-existing) and Step 6
+re-applies it. If you have only pasted comments and no diff,
+say so: without the diff you cannot prove pre-existing vs introduced, so treat
+each claim as un-scoped and tell the user that caveat.
+
 ## Step 2: Normalize into a checklist
 
 Each item: reviewer, `file:line` (nullable), the ask, type, and comment-class:
@@ -44,14 +54,47 @@ If reproducing a "this breaks" claim needs execution: no installs, no network,
 honor chameleon's refusal posture, and fail open to "I can't verify without
 running X — should I?"
 
+Run the cited line through the Step 1 hunk map FIRST. If it is NOT inside an
+added/changed range, the code the reviewer is commenting on is PRE-EXISTING — not
+introduced by this PR. Tell the user: fixing pre-existing code is a valid choice
+but a separate decision from this PR, and a "you introduced a bug here" claim on
+an untouched line is simply wrong. (An `inline-outdated` / `original_line` comment
+from Step 2 may map to a moved line — re-resolve it before calling it pre-existing.)
+
+Then GROUND the adjudication with engine data, not just your reading of the code.
+First resolve the repo ONCE: call `get_pattern_context(file_path=<absolute path>)`
+to get `repo.id`, `repo.trust_state`, and the canonical — Step 4 reuses these, so
+do not call it a second time. Then:
+- Reviewer says "remove this / this is unused / dead code" → call
+  `get_callers(repo=<repo.id>, file_path=<abs>, function_name=<fn>)` and
+  `get_crossfile_context(repo=<repo.id>)`. Live callers or a high-confidence
+  importer are an evidence-backed PUSH BACK ("4 recorded callers: `a.ts:8` ..."). An
+  EMPTY `get_callers` is NOT proof of dead code (dynamic/unsupported call paths are
+  invisible) — never assert dead code from it.
+- Reviewer says "this is fine / no security issue" on a line → call
+  `lint_file(repo=<repo.id>, archetype=<the archetype from get_pattern_context>, content=<the file content>, file_path=<abs>)`
+  and check for a sink (`eval-call`, `command-injection`, `sql-string-interpolation`,
+  `insecure-deserialization`, `weak-hash`, `insecure-random`) or
+  `secret-detected-in-content` on that line (the line is the ` at line N` token in
+  the violation's `actual`); a witnessed hit means the reviewer is wrong — the
+  verdict is APPLY (implement it under Step 8 after approval, not during
+  verification), citing the violation.
+- Reviewer says "this duplicates X" → `get_duplication_candidates(repo=<repo.id>,
+  file_path=<abs>)` to confirm or deny with the returned candidate.
+
+The security/secret lint runs PRE-trust, so it grounds a claim even on an
+untrusted profile; the caller/cross-file/duplication tools and convention-based
+adjudication (Step 4) require `trust_state == "trusted"`.
+
 ## Step 4: Adjudicate against chameleon conventions
 
-FIRST call `get_pattern_context(file_path=<absolute path>)` to get `repo.id` and
-`repo.trust_state`. Gate convention-based pushback on `trust_state == "trusted"`;
-if untrusted/stale/absent, fall back to plain technical judgment labeled "profile
-untrusted/absent" and suggest `/chameleon-trust`. Carry the `match_quality =
-none/fallback` caveat. Reuse `repo.id` for the repo-scoped tools (`lint_file`,
-`get_crossfile_context`, `get_callers`, `get_duplication_candidates`). Outcomes:
+Use the `repo.id`, `repo.trust_state`, and canonical already resolved by the
+`get_pattern_context` call in Step 3 (do not call it again). Gate convention-based
+pushback on `trust_state == "trusted"`; if untrusted/stale/absent, fall back to
+plain technical judgment labeled "profile untrusted/absent" and suggest
+`/chameleon-trust`. Carry the `match_quality = none/fallback` caveat. The same
+`repo.id` feeds the repo-scoped tools (`lint_file`, `get_crossfile_context`,
+`get_callers`, `get_duplication_candidates`). Outcomes:
 reviewer ALIGNS with the convention (strong apply), reviewer CONTRADICTS the
 canonical (strong, evidence-backed pushback citing the witness), convention SILENT
 (plain technical judgment, labeled).
@@ -65,13 +108,27 @@ implementing anything (this gate blocks Step 8 only).
 
 ## Step 6: Ground (3-round loop) — BEFORE drafting
 
-Run rounds 1-2 inline (re-read the evidence; re-apply the hunk/severity gates).
-For surviving MODEL-JUDGMENT verdicts that would change code (a PUSH BACK, an
-AGREE you'd implement), call `refute_finding(repo=<repo.id>, findings=[...])`
-ONCE. Apply the verdicts: `refuted` → drop; `confirmed` → keep; `unverified`
-(disabled/unavailable/timeout/cap) → for a code-changing PUSH BACK, HOLD it or
-downgrade to NEEDS CLARIFICATION — never present it as a confident pushback. Do
-this BEFORE drafting any reply, so the user never sees a draft the loop would kill.
+Run rounds 1-2 inline (re-read the evidence; re-apply the Step 3 hunk gate — a
+claim on a pre-existing line is not a PR defect). For surviving MODEL-JUDGMENT
+verdicts that would change code (a PUSH BACK, an AGREE you'd implement), call
+`refute_finding` ONCE with the full finding shape and the PR base:
+
+`refute_finding(repo=<repo.id>, findings=[{id, file, line, claim, evidence}, ...], base_ref=<the PR base / merge-base, or the locked production_ref, else "main">)`
+
+Each finding MUST carry a unique `id` (verdicts map back by `id`) and `file`/`line`
+(the refuter prefetches that excerpt; omit them and it silently degrades to the
+whole branch diff). TOOL-GROUNDED verdicts are EXEMPT — never send a pushback
+backed by `get_callers` / `get_crossfile_context` / `get_duplication_candidates` /
+a `lint_file` sink-or-secret hit to the refuter; verify those inline. Read the
+envelope `refuter` field, not only the per-finding verdicts: when `refuter` is
+`disabled` the call returns an EMPTY `verdicts` list (no per-finding entries at
+all); `unavailable` / `untrusted` return one `unverified` per finding. Apply:
+`refuted` → drop; `confirmed` → keep (never authorizes a post/edit); `unverified`
+OR `refuter ∈ {disabled, unavailable, untrusted}` OR any finding with no matching
+verdict `id` → for a code-changing verdict (a PUSH BACK, or an AGREE you'd
+implement), HOLD it or downgrade to NEEDS CLARIFICATION, never present it as a
+confident pushback and never implement it on an unverified AGREE. Do this BEFORE
+drafting any reply, so the user never sees a draft the loop would kill.
 
 ## Step 7: Draft replies (surviving verdicts only)
 

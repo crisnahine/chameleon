@@ -113,7 +113,10 @@ def test_judgments_never_claim_the_witnessed_fact_guarantee():
     # The pass must keep the secret (witnessed) and authz/taint (judgment) tiers
     # separate; the weaker two never borrow the secret's confidence.
     assert "do not claim they honor the integrity/calibration guarantee" in text
-    assert "the secret finding (2.6a) is the only witnessed fact in this pass" in text
+    assert (
+        "the secret finding (2.6a) and the deterministic lint sinks (2.6d below) "
+        "are the witnessed facts in this pass" in text
+    )
 
 
 def test_security_findings_have_their_own_output_section():
@@ -123,12 +126,13 @@ def test_security_findings_have_their_own_output_section():
 
 def test_severity_table_caps_authz_and_taint_at_fix():
     text = _skill_text()
-    assert "Authz and taint/SSRF/traversal findings are capped at FIX" in text
-    # Only a hard-kind secret on an added/changed line blocks; soft heuristics cap
-    # at NIT and out-of-hunk hard secrets go to the repo-hygiene note.
-    assert "only a hard-kind secret on an added/changed line blocks from the security pass" in text
+    assert "Authz and taint/SSRF/traversal findings (2.6b/2.6c) are capped at FIX" in text
+    # Two witnessed facts block from the security pass on an added/changed line: a
+    # hard-kind secret AND a deterministic eval-call/command-injection sink (2.6d).
+    # Soft heuristics cap at NIT; out-of-hunk hard secrets/sinks go to repo-hygiene.
+    assert "Two witnessed facts in the security pass DO block on an added/changed line" in text
     assert "Low-precision secret heuristics cap at NIT" in text
-    assert "out-of-hunk hard secrets go to the repo-hygiene note" in text
+    assert "out-of-hunk hard secrets and out-of-hunk sinks go to the repo-hygiene note" in text
 
 
 def test_hunk_gate_covers_taint_and_secret_findings():
@@ -153,6 +157,6 @@ def test_verdict_rule_makes_secret_drive_block():
         "A hard-kind secret on an added/changed line (Step 2.6a, both gates passed) "
         "is a BLOCK and drives a BLOCK verdict" in text
     )
-    assert "Pre-existing-hygiene secret notes never affect the verdict" in text
+    assert "Pre-existing-hygiene secret/sink notes never affect the verdict" in text
     # The advisory findings never force a BLOCK verdict on their own.
     assert "never force a BLOCK verdict on their own" in text

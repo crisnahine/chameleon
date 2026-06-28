@@ -51,37 +51,98 @@ def test_ledger_final_step_calls_record_review_verdict():
         assert arg in text, f"ledger call omits {arg!r}"
 
 
-def test_skill_cited_tools_are_actually_registered_with_matching_params():
-    """The tool names the skill calls must be real registered MCP tools.
+# The chameleon MCP tools the two review skills + reviewer.md are expected to
+# call. Driven from a list so a newly-cited tool is added in one place.
+_REVIEW_TOOLS = (
+    "get_pattern_context",
+    "lint_file",
+    "scan_dependency_changes",
+    "get_autopass_verdict",
+    "get_duplication_candidates",
+    "get_crossfile_context",
+    "get_callers",
+    "get_contract_breaks",
+    "refute_finding",
+    "record_review_verdict",
+    "get_review_history",
+)
 
-    The text-only assertions above pin the instruction, but a model following
-    the skill calls these as MCP tools. If a name in the skill is not registered
-    (or a kwarg the skill passes is not a real parameter), the call fails at run
-    time. Pin the seam: every tool the skill names exists in the server, and
-    every kwarg the skill passes to the ledger tools maps to a real parameter.
+_RECEIVING_SKILL = REPO_ROOT / "skills" / "chameleon-receiving-code-review" / "SKILL.md"
+_REVIEWER_MD = REPO_ROOT / "skills" / "chameleon-pr-review" / "reviewer.md"
+
+
+def _registered_tools_by_name() -> dict[str, set[str]]:
+    """name -> set of real parameter names, from the live FastMCP registry.
+
+    Uses the PRIVATE sync `_tool_manager.list_tools()` returning FastMCP Tool
+    objects whose `.parameters` is the JSON schema (NOT the async public
+    `mcp.list_tools()`, which returns protocol Tools with `.inputSchema`).
+    """
+    from chameleon_mcp import server
+
+    return {
+        t.name: set(t.parameters.get("properties", {}))
+        for t in server.mcp._tool_manager.list_tools()
+    }
+
+
+def test_all_skill_cited_tool_calls_match_real_signatures():
+    """Every chameleon tool CALL in either review skill or reviewer.md must hit a
+    real registered tool with real kwargs.
+
+    Generalized from the old record_review_verdict-only check: it parses every
+    ``tool(...)`` call site out of BOTH SKILL.md files AND reviewer.md and asserts
+    (a) the tool is registered and (b) each kwarg shown is a real parameter. A
+    drifted arg name (``base_ref`` vs ``ref``, ``repo`` vs ``repo_id``) or a
+    phantom tool now fails here instead of silently at model runtime. This is the
+    "works 100%" contract seam; it would have caught the fan-out gap where
+    reviewer.md delegated a pass whose tool it never granted.
     """
     import re
 
-    from chameleon_mcp import server
+    tools_by_name = _registered_tools_by_name()
+    texts = {
+        "pr-review/SKILL.md": _skill_text(),
+        "receiving/SKILL.md": _RECEIVING_SKILL.read_text(encoding="utf-8"),
+        "pr-review/reviewer.md": _REVIEWER_MD.read_text(encoding="utf-8"),
+    }
 
-    registered = {t.name for t in server.mcp._tool_manager.list_tools()}
-    text = _skill_text()
-    for name in (
-        "get_duplication_candidates",
-        "get_crossfile_context",
-        "record_review_verdict",
-        "get_review_history",
-        "get_autopass_verdict",
-    ):
-        assert name in text, f"skill stopped citing {name!r}"
-        assert name in registered, f"{name!r} is cited by the skill but not a registered MCP tool"
+    # (a) Every named review tool is a real registered MCP tool.
+    for name in _REVIEW_TOOLS:
+        assert name in tools_by_name, (
+            f"review skills cite {name!r} but it is not a registered MCP tool"
+        )
 
-    # The kwargs the skill passes to record_review_verdict must be real params.
-    tool = next(
-        t for t in server.mcp._tool_manager.list_tools() if t.name == "record_review_verdict"
+    # (b) Every call-shape's kwargs map to real parameters of that tool.
+    problems: list[str] = []
+    for name in _REVIEW_TOOLS:
+        real = tools_by_name[name]
+        for label, text in texts.items():
+            for m in re.finditer(rf"{re.escape(name)}\(([^)]*)\)", text):
+                kwargs = {
+                    part.split("=", 1)[0].strip().lstrip("*")
+                    for part in m.group(1).split(",")
+                    if "=" in part
+                }
+                kwargs = {k for k in kwargs if k.isidentifier()}
+                unknown = kwargs - real
+                if unknown:
+                    problems.append(
+                        f"{label}: {name}(...) passes unknown kwarg(s) "
+                        f"{sorted(unknown)} (real params: {sorted(real)})"
+                    )
+    assert not problems, "skill tool-call kwargs drifted from real signatures:\n" + "\n".join(
+        problems
     )
-    params = set(tool.parameters.get("properties", {}))
-    call = re.search(r"record_review_verdict\(([^)]*)\)", text)
+
+
+def test_record_review_verdict_call_kwargs_are_real():
+    """Keep the focused ledger-call check (subset of the generalized test)."""
+    import re
+
+    tools_by_name = _registered_tools_by_name()
+    params = tools_by_name["record_review_verdict"]
+    call = re.search(r"record_review_verdict\(([^)]*)\)", _skill_text())
     assert call is not None, "skill no longer shows a record_review_verdict call"
     skill_kwargs = {a.split("=", 1)[0].strip() for a in call.group(1).split(",") if "=" in a}
     unknown = skill_kwargs - params
@@ -312,5 +373,102 @@ def test_output_template_and_severity_table_cover_new_classes():
     assert "### Cross-file findings" in text
     # The severity table gained a Cross-file examples column.
     assert "Cross-file examples" in text
-    # The cross-file caps are stated: FIX max for existence break, advisory rest.
-    assert "Only a high-confidence existence break" in text
+    # The cross-file witnessed FIXes are the existence break AND the contract break.
+    assert "high-confidence existence break" in text
+    assert "caller-contract signature break" in text
+
+
+# --- 11. Contract-break (2.9e) is wired into the grounding loop ---------------
+
+
+def test_contract_break_is_grounding_loop_exempt_and_in_summaries():
+    """get_contract_breaks (Step 2.9e) is deterministic + cross-file, so it must be
+    exempt from BOTH the hunk gate (its callers live in non-diff files) and the
+    round-3 refuter (which cannot re-derive cross-file evidence). It must also
+    appear in the severity/verdict/integrity/output surfaces, not just be defined.
+    """
+    text = _skill_text()
+    assert "get_contract_breaks" in text
+    # Step 4a hunk-gate exemption names contract-break.
+    hunk_gate = text.split("#### 4a.")[1].split("#### 4b.")[0]
+    assert "contract-break" in hunk_gate, (
+        "Step 4a does not exempt contract-break from the hunk gate"
+    )
+    # Step 4b refuter-exempt verify-inline list names contract-break.
+    refuter = text.split("#### 4b.")[1].split("Format the review")[0]
+    assert "contract-break" in refuter, "Step 4b does not list contract-break as refuter-exempt"
+    # It appears in the severity table cross-file FIX cell and the output template.
+    assert "caller-contract signature break" in text
+    assert "Caller-contract signature break" in text  # output-template example line
+
+
+# --- 12. Step 2.6d deterministic lint-sink routing ---------------------------
+
+
+def test_2_6d_routes_lint_sinks_with_correct_caps():
+    """lint_file already returns deterministic sinks + test-quality rules; Step
+    2.6d routes them with the approved severity: eval-call/command-injection BLOCK,
+    the other sinks FIX, test-quality NIT, refuter-exempt, line parsed from actual.
+    """
+    text = _skill_text()
+    assert "2.6d" in text and "Deterministic lint-sink" in text
+    block = text.split("#### 2.6d.")[1].split("### Step 2.7")[0]
+    # RCE sinks BLOCK — but eval-call BLOCKs only at error severity (the engine
+    # deliberately emits the Ruby class_eval/instance_eval string idiom at warning,
+    # which must cap at FIX, not escalate by rule name).
+    assert (
+        "`eval-call` (only the `severity: error` forms) and `command-injection` → **BLOCK**"
+        in block
+    )
+    assert "class_eval" in block and "warning" in block
+    assert "RESPECT the returned `severity`" in block
+    # The witnessed FIX sinks.
+    for rule in (
+        "sql-string-interpolation",
+        "insecure-deserialization",
+        "weak-hash",
+        "insecure-random",
+    ):
+        assert rule in block, f"2.6d omits FIX sink {rule!r}"
+    assert "**FIX**" in block
+    # Test-quality NIT bucket.
+    for rule in ("then-without-catch", "skipped-test", "tautological-assertion"):
+        assert rule in block, f"2.6d omits NIT rule {rule!r}"
+    assert "**NIT**" in block
+    # Witnessed -> refuter-exempt, and the line is parsed from `actual`.
+    assert "refuter-EXEMPT" in block or "refuter-exempt" in block
+    assert "at line N" in block
+    # It supersedes the hand-rolled taint pass on overlap.
+    assert "2.6c" in block and "WINS" in block
+
+
+def test_2_6d_block_drives_verdict_and_is_in_severity_table():
+    text = _skill_text()
+    # The verdict rule escalates an error-severity eval-call / command-injection to
+    # a BLOCK verdict (the warning eval-call form caps at FIX).
+    assert (
+        "error-severity `eval-call` or `command-injection` sink on an added/changed line (Step 2.6d"
+        in text
+    )
+    # Severity table security cells carry the 2.6d rules.
+    assert "Step 2.6d)" in text
+
+
+# --- 13. New dependency is an ACK, not a verdict-driving BLOCK ----------------
+
+
+def test_new_dependency_is_ack_not_block():
+    """A new direct dependency must NOT raise a BLOCK (which would drive a BLOCK
+    verdict written to the ledger). It is a human provenance ACK that does not
+    affect the verdict, matching the engine's NIT classification of new-dependency.
+    """
+    text = _skill_text()
+    s = text.split("#### 2.5a.")[1].split("#### 2.5b.")[0]
+    assert "ACK" in s, "Step 2.5a no longer uses the ACK channel"
+    assert "does NOT drive the verdict" in s or "does not drive the verdict" in s.lower()
+    # It must NOT instruct a BLOCK for a new dependency.
+    assert "raise a **BLOCK**" not in s, "Step 2.5a still raises a BLOCK for a new dependency"
+    # The output template has the dedicated ACK section.
+    assert "Acknowledge before merge" in text
+    # The verdict rules note the ACK never affects the verdict.
+    assert "new-dependency ACK" in text

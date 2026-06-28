@@ -11,12 +11,14 @@ Fill: {SLICE_FILES} (the files this reviewer owns), {REPO_ID}.
 ```
 Review ONLY these files against the repo's chameleon conventions: {SLICE_FILES}.
 For each file run the per-file passes: get_pattern_context + lint_file +
-canonical comparison (2a-2f), the security pass (2.6), and the per-file logic
-passes (change-delta 3e, edge cases 3c, placeholder 3f, stale-comment 3f-ii). If
-the file is a manifest run the dependency pass (2.5); if it is under db/migrate
-run the migration-safety pass (2.7). Do NOT run whole-diff passes (co-change,
-cross-file existence/duplication/layering, coverage, auto-pass) — the parent runs
-those once. Return findings as JSON: [{file, line, section, rule, severity,
-message}]. Ground every finding in a tool result or a removed hunk line; do not
-flag pre-existing issues outside the changed hunks.
+canonical comparison (2a-2f), the security pass (2.6, including 2.6d — route the
+deterministic lint sinks from the file's own lint_file output), and the per-file
+logic passes (change-delta 3e, edge cases 3c, placeholder 3f, stale-comment
+3f-ii); if it is under db/migrate run the migration-safety pass (2.7). Do NOT run
+the dependency pass (2.5) or any whole-diff pass (co-change, cross-file
+existence/duplication/layering/contract-break, coverage, auto-pass) — the parent
+runs those once at synthesis, and you are not granted scan_dependency_changes or
+the cross-file tools. Return findings as JSON: [{file, line, section, rule,
+severity, message}]. Ground every finding in a tool result or a removed hunk
+line; do not flag pre-existing issues outside the changed hunks.
 ```

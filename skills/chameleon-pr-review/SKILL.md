@@ -62,13 +62,18 @@ STOP here and continue with Step 2. If `recommended` is true, fan out:
 - Partition the changed files (from your Step 1a hunk map) into ~4-6 slices,
   MULTIPLE files per slice — never one slice per file.
 - Dispatch one in-session Task reviewer per slice using `reviewer.md`. Each runs
-  ONLY the per-file passes for its files: 2a-2f (convention/lint/canonical), 2.5
-  (the slice owning a manifest), 2.6 (security), 2.7 (the slice owning a
-  migration), 3c, 3e, 3f, 3f-ii. Reviewers are read-only (Read + read-only MCP).
+  ONLY the per-file passes for its files: 2a-2f (convention/lint/canonical), 2.6
+  (security, including the 2.6d deterministic lint-sink routing — it reads the
+  slice's own per-file `lint_file` output), 2.7 (the slice owning a migration),
+  3c, 3e, 3f, 3f-ii. Reviewers are read-only (Read + read-only MCP). Step 2.5
+  (dependency-change) is NOT delegated per-slice: it is a whole-diff tool and the
+  reviewers are not granted `scan_dependency_changes`, so it runs once at synthesis.
 - Synthesize in two parts: (a) merge + dedup the slice findings with the key
   `(file, section, rule, message-fingerprint)` — a `(file, line, rule)` key would
   mis-merge the file-anchored and missing-requirement findings that have no line;
-  then (b) run the WHOLE-DIFF passes ONCE on the merged set: 2.8 (co-change), 2.9a
+  then (b) run the WHOLE-DIFF passes ONCE on the merged set: 2.5 (dependency-change —
+  `scan_dependency_changes` parses the whole diff in one call, so it runs once here,
+  never per slice), 2.8 (co-change), 2.9a
   (layering — needs the import graph), 2.9b (duplication), 2.9c (existence-break),
   2.9d (caller), 2.9e (contract-break), 3a (task context), 3b (completeness), 3f-i (stale paired-test),
   3g (coverage), 3h (auto-pass). Any pass not listed runs whole-diff at synthesis.
@@ -100,7 +105,7 @@ Call the `get_pattern_context` MCP tool with the file's absolute path:
 get_pattern_context(file_path="/absolute/path/to/changed_file")
 ```
 
-From the response, extract:
+Every chameleon MCP tool returns a `{"api_version": "1", "data": {...}}` envelope; every field path in this skill is relative to `data` (so `archetype.archetype` below means `data.archetype.archetype`, `fan_out.recommended` in Step 2.0 means `data.fan_out.recommended`, and so on). From the response `data`, extract:
 - `archetype.archetype` — which archetype this file matches
 - `archetype.confidence_band` — how confident the match is
 - `archetype.match_quality` — exact, ast, fallback, or none
@@ -175,13 +180,15 @@ It parses the manifest/lockfile diff (no network) and returns structured `findin
 
 Each finding cites the exact lockfile line or manifest key. The four checks are independent; run every one that applies even if an earlier check fired.
 
-#### 2.5a. New direct dependency → verify provenance (BLOCK until acknowledged)
+#### 2.5a. New direct dependency → acknowledge provenance (ACK, does NOT drive the verdict)
 
-Parse the manifest diff (`package.json` `dependencies`/`devDependencies`/`optionalDependencies`/`peerDependencies`; `Gemfile` `gem` lines) for a dependency name that was NOT present before this change. A bump of an already-present dependency is NOT this finding (it may be a different finding under 2.5b/2.5d); only a name that did not exist in the manifest before counts as new.
+Parse the manifest diff (`package.json` `dependencies`/`devDependencies`/`optionalDependencies`/`peerDependencies`; `Gemfile` `gem` lines) for a dependency name that was NOT present before this change. A bump of an already-present dependency is NOT this finding (it may be a different finding under 2.5b/2.5d); only a name that did not exist in the manifest before counts as new. `scan_dependency_changes` reports each as a `new-dependency` finding at severity `NIT`.
 
-For each new direct dependency, raise a **BLOCK** labeled "verify provenance". This is a deliberate human gate, not a precision claim: the reviewer must confirm the package is the intended one (not a typosquat of a popular name, e.g. `lodahs` for `lodash`, `cross-env.js` for `cross-env`) and that adding it is intended. State the dependency name, the version range added, and the manifest file. The BLOCK clears only when a human acknowledges the dependency is wanted; the review cannot clear it on its own.
+For each new direct dependency, emit an **ACK** line in the dedicated "Acknowledge before merge" section. An ACK is NOT a BLOCK and does NOT drive the verdict. This is a deliberate human gate, not a defect claim: the reviewer must confirm the package is the intended one (not a typosquat of a popular name, e.g. `lodahs` for `lodash`, `cross-env.js` for `cross-env`) and that adding it is wanted. State the dependency name, the version range added, and the manifest file. A routine PR that only adds a legitimate dependency stays at its findings verdict (APPROVE if nothing else fired) with an outstanding ACK the human clears out-of-band.
 
-When several new dependencies land in one change, list each as its own BLOCK line so each gets its own acknowledgement.
+(Earlier versions raised a BLOCK here. That conflated "must fix before merge" with "please confirm this is intended" and recorded every routine dependency add as a BLOCK verdict in the durable ledger, corrupting the per-`complexity_tier` review-clean metric. The provenance gate stays — it just lives in its own non-verdict ACK channel now, matching the engine's own `NIT`/advisory classification of `new-dependency`.)
+
+When several new dependencies land in one change, list each as its own ACK line so each gets its own acknowledgement.
 
 #### 2.5b. Lockfile resolved host is not the expected registry (FIX)
 
@@ -193,7 +200,7 @@ A resolved URL pointing at any other host (a private mirror the repo does not al
 
 #### 2.5c. New install lifecycle script (FIX)
 
-In the `package.json` diff, flag a newly added `scripts.preinstall`, `scripts.install`, or `scripts.postinstall` as a **FIX**. An install-lifecycle script runs automatically on `npm install` with no further prompt, which is the classic vector for code that executes the moment a dependency tree is materialized. Cite the script key and its command. (A script that already existed and is merely edited is still worth a look, but the BLOCK-worthy signal is a NEW install hook on a diff that also adds or bumps dependencies.)
+In the `package.json` diff, flag a newly added `scripts.preinstall`, `scripts.install`, or `scripts.postinstall` as a **FIX**. An install-lifecycle script runs automatically on `npm install` with no further prompt, which is the classic vector for code that executes the moment a dependency tree is materialized. Cite the script key and its command. (A script that already existed and is merely edited is still worth a look, but the FIX-worthy signal is a NEW install hook on a diff that also adds or bumps dependencies.)
 
 #### 2.5d. Non-registry dependency source (FIX)
 
@@ -241,7 +248,24 @@ These are judgment calls, not witnessed facts. Cap every one at **FIX** (never B
 
 The cited tainted line MUST be inside the diff. If the source or the sink is not on an added/changed line in the hunk map, do not raise the finding: a flow you cannot point at inside the change is exactly the cross-file case this single-hunk pass cannot see, and reporting it would be a guess. These findings go through the Step 4 hunk gate like every other per-line finding.
 
-Never let any 2.6b or 2.6c finding reach BLOCK, and do not claim they honor the integrity/calibration guarantee the same way a lint violation or a removed-guard hunk finding does. They are judgments; the secret finding (2.6a) is the only witnessed fact in this pass.
+Never let any 2.6b or 2.6c finding reach BLOCK, and do not claim they honor the integrity/calibration guarantee the same way a lint violation or a removed-guard hunk finding does. They are judgments; the secret finding (2.6a) and the deterministic lint sinks (2.6d below) are the witnessed facts in this pass.
+
+#### 2.6d. Deterministic lint-sink and quality findings (witnessed facts)
+
+Step 2b's `lint_file` already returns more than secrets and style. Beyond `secret-detected-in-content` (Step 2.6a), the `violations` list carries deterministic security-sink and test-quality rules the convention loop never routes — so route them here. Each violation is `{rule, severity, message, expected, actual}`; there is NO integer line field. The line, WHEN PRESENT, is the ` at line N` token inside `actual` (parse it with the same `at line N` rule the secret hunk gate uses in Step 2.6a). A violation also carries `ignored: true` when an inline `chameleon-ignore` directive already covers it — skip those.
+
+These are WITNESSED facts (the engine's own deterministic rules), so they are refuter-EXEMPT (Step 4b): verify each inline by re-confirming the returned violation, never send it to `refute_finding`. Where this pass and the hand-rolled taint pass (Step 2.6c) fire on the SAME line, the deterministic hit here WINS — drop the 2.6c judgment for that line.
+
+Two groups, with different scope and severity:
+
+**Security sinks — pre-trust, every linted file, line-anchored → hunk-gated.** These fire before the trust gate and before the archetype match, so they are present for every file you linted (trusted or not), and each carries ` at line N` in `actual`. Run each through the Step 4a hunk gate; an out-of-hunk hit goes to the "Pre-existing repo hygiene" note like an out-of-hunk secret, never the verdict.
+- `eval-call` (only the `severity: error` forms) and `command-injection` → **BLOCK**. A code-execution sink introduced on an added line is the same tier as a secret: a witnessed structural fact in the diff. Cite the file, the parsed line, the rule, and carry the violation `message`. The error-severity `eval-call` forms are TS/Python `eval(`, Python `exec(`, and the Ruby paren-less `eval`/`send(:eval)`. RESPECT the returned `severity`: the engine DELIBERATELY emits `eval-call` at `severity: warning` for the Ruby string-argument `class_eval`/`instance_eval`/`module_eval` metaprogramming forms (an established Rails idiom it refuses to hard-block), so route a `warning`-severity `eval-call` at **FIX**, never BLOCK — do not escalate by rule name alone.
+- `sql-string-interpolation` (Ruby only), `insecure-deserialization`, `weak-hash`, `insecure-random`, and any `warning`-severity `eval-call` → **FIX**. A witnessed dangerous pattern on an added line; cite the rule and parsed line.
+
+**Test-quality / discipline — trusted path, whole-file, no line → NIT.** These run only when the profile is trusted (the test-discipline rules additionally require a `test`/`spec` archetype; `then-without-catch` fires for any TypeScript file). They carry NO line — they are whole-file advisories — so they are NOT hunk-gated; report each at **NIT** anchored to the file (they only ever run on a changed file you are already reviewing).
+- `then-without-catch` (a `.then` with no `.catch`, i.e. an unhandled promise rejection), `unfrozen-clock`, `unstubbed-network`, `skipped-test`, `tautological-assertion`, `assertion-free-test`, `real-sleep-in-test`, `random-in-test` → **NIT**, citing the rule.
+
+A clean file emits none of these; only route what `lint_file` actually returned, never a sink you reasoned about yourself (that is Step 2.6c's job, capped at FIX). Render them in the Security / quality findings output section.
 
 ### Step 2.7: Migration-safety pass (Rails `db/migrate/*.rb` only)
 
@@ -466,9 +490,9 @@ Read it together with the findings verdict, never instead of it: a change is a c
 
 #### 4a. Hunk gate (apply before formatting any logic finding)
 
-Every logic finding (from Step 3b through 3f) must anchor to a specific line in a changed file. Look that line up in the per-file hunk map from Step 1a. If the anchor line is NOT inside an added or changed range for that file, drop the finding. No exceptions and no judgment call: a logic finding on a line this change did not touch is pre-existing by construction, and the integrity rule forbids flagging pre-existing issues.
+Every per-line finding must anchor to a specific line in a changed file. This is every section, not just the logic passes: the logic findings (Steps 3b-3f), the security findings (taint/SSRF/traversal Step 2.6c and secret Step 2.6a), the deterministic lint-sink findings (Step 2.6d), and the line-anchored lint/naming/inheritance violations (Steps 2b/2d). Look the anchor line up in the per-file hunk map from Step 1a. If it is NOT inside an added or changed range for that file, drop the finding. No exceptions and no judgment call: a per-line finding on a line this change did not touch is pre-existing by construction, and the integrity rule forbids flagging pre-existing issues.
 
-This gate is the mechanical replacement for "decide by hand whether this is PR-introduced." It does not apply to convention findings whose anchor is the file as a whole (duplication NITs, missing-test NITs), the whole-diff cross-file passes (co-change FIX in Step 2.8, layering/duplication/existence-break findings in Step 2.9, which anchor to a file or an artifact entry, not a single changed line), nor to missing-requirement BLOCKs in Step 3b (those flag the ABSENCE of code, so they have no anchor line). It applies to every per-line logic claim: removed guards, inverted conditions, dropped awaits, null-guard gaps, placeholder names, the stale-comment NIT (Step 3f-ii) and the stale-test removed-export anchor (Step 3f-i), the taint/SSRF/traversal findings from Step 2.6c, AND the secret findings from Step 2.6a. The secret scanner reads the full file content, not the diff, so a hit is not in the change by construction: an out-of-hunk hard-kind secret goes to the "Pre-existing repo hygiene" note (Step 2.6a) instead of the verdict.
+This gate is the mechanical replacement for "decide by hand whether this is PR-introduced." It does not apply to convention findings whose anchor is the file as a whole (duplication NITs, missing-test NITs), the whole-diff cross-file passes (co-change FIX in Step 2.8, and the layering / duplication / existence-break / contract-break findings in Step 2.9), nor to missing-requirement BLOCKs in Step 3b (those flag the ABSENCE of code, so they have no anchor line). The cross-file passes are exempt because they are gated on their tool/artifact backing instead, NOT because they are line-free: a co-change or layering finding anchors to a file or an artifact entry, but an existence-break (Step 2.9c) and a contract-break (Step 2.9e) each anchor to a real importer/caller `file:line` that by construction lives in a NON-diff file — applying the hunk gate to that caller line would wrongly drop every valid cross-file finding, so these are gated on `high_confidence` / a returned caller list, never on the hunk map. The gate applies to every per-line claim: removed guards, inverted conditions, dropped awaits, null-guard gaps, placeholder names, the stale-comment NIT (Step 3f-ii) and the stale-test removed-export anchor (Step 3f-i), the taint/SSRF/traversal findings from Step 2.6c, the deterministic lint-sink findings from Step 2.6d, AND the secret findings from Step 2.6a. The secret scanner reads the full file content, not the diff, so a hit is not in the change by construction: an out-of-hunk hard-kind secret goes to the "Pre-existing repo hygiene" note (Step 2.6a) instead of the verdict.
 
 It ALSO applies to any line-anchored convention/style finding from `lint_file` (Step 2b/2d). `lint_file` reads the whole file, not the diff, so a `style-rule-violation` (e.g. "line 19 is 103 cols"), a `naming-convention-violation`, or an `inheritance-convention-violation` can sit on a line this change never touched. Parse the line number out of the violation `message` (the `line N` / `:N` it carries) and run it through the hunk map the same way as a logic finding: if the line is outside an added or changed range, drop it from the verdict. A line-anchored style/convention nit that pre-dates the change is pre-existing by construction and the integrity rule forbids reporting it; if it is worth mentioning at all, it goes to the "Pre-existing repo hygiene" note, never the Convention-findings section. Only convention findings with NO parseable line (duplication, missing-test, key-export overlap, which anchor to the file) stay exempt.
 
@@ -484,10 +508,14 @@ placeholder-name, stale-comment. Send them in ONE call:
 
 TOOL-GROUNDED findings are EXEMPT — never send them to the refuter; verify them
 inline by re-confirming the tool flag still holds (existence-break with
-`high_confidence`, duplication with a returned candidate, co-change `rule_id`,
-layering, a secret `lint_file` hit, a lint/naming/inheritance violation with a
-parsed line). The refuter sees one excerpt and cannot re-derive cross-file
-evidence, so sending these would wrongly drop the strongest findings.
+`high_confidence`, contract-break with a returned caller list (Step 2.9e),
+duplication with a returned candidate, co-change `rule_id`, layering, a secret
+`lint_file` hit (Step 2.6a), a deterministic lint-sink hit (Step 2.6d), a
+lint/naming/inheritance violation with a parsed line). The refuter sees one
+excerpt and cannot re-derive cross-file evidence, so sending these would wrongly
+drop the strongest findings. Send to the refuter ONLY the model-judgment findings
+listed above (change-delta logic, canonical divergence, taint/SSRF/traversal,
+callable-signature drift, spec/requirement, placeholder, stale-comment).
 
 Apply each returned verdict:
 - `refuted` → DROP the finding (the refuter rebutted the cited evidence).
@@ -545,26 +573,34 @@ The change-delta pass (Step 3e) always runs; the spec-compliance findings (Step 
 
 ### Dependency / supply-chain findings (Z issues)
 
-Only present when the diff touched a manifest or lockfile (Step 2.5). Omit the section otherwise.
-
-**BLOCK:**
-- `package.json:31` — New direct dependency `left-pad@^1.3.0`; verify provenance (not a typosquat, intended addition) before merge
+Only present when the diff touched a manifest or lockfile (Step 2.5). Omit the section otherwise. New direct dependencies do NOT appear here — they go to the "Acknowledge before merge" section below and never drive the verdict.
 
 **FIX:**
 - `package-lock.json:204` — Resolved host `evil.example.com` is not `registry.npmjs.org`
 - `package.json:12` — New `scripts.postinstall`: `node ./setup.js` runs automatically on install
 - `package.json:9` — Dependency `acme-utils` pulled from `git+ssh://git@github.com/acme/utils.git`, not the registry
 
+### Acknowledge before merge (ACK — does not affect the verdict)
+
+Only present when the diff adds a new direct dependency (Step 2.5a). Each line is a human provenance gate, not a finding: it never changes the verdict and is never recorded as a BLOCK in the ledger.
+
+- ACK `package.json:31` — New direct dependency `left-pad@^1.3.0`. Confirm it is the intended package (not a typosquat) and that adding it is wanted.
+
 ### Security findings (W issues)
 
-Always present (the security pass runs on every changed source file, ticket or not). Secret BLOCKs are witnessed facts; the authz and taint findings are labeled advisory judgments — keep the labels.
+Always present (the security pass runs on every changed source file, ticket or not). Secret BLOCKs and the deterministic 2.6d sinks are witnessed facts; the authz and taint findings (2.6b/2.6c) are labeled advisory judgments — keep the labels.
 
 **BLOCK:**
 - `config/initializers/stripe.rb:4` — Secret detected: Stripe Secret Key. Rotate it and move to an env var. Verify this is not a live credential; if it is a test fixture, it is safe to keep.
+- `app/jobs/import_job.rb:22` — `eval-call` sink on an added line (Step 2.6d, witnessed): request-reachable code execution; carry the lint message and rewrite without `eval`.
 
 **FIX:**
 - `app/controllers/orders_controller.rb` — Presence-only authz check: the witness controller declares before_action callbacks; this changed controller declares none and adds a new action. Cannot confirm the new action is covered; authorization may be inherited from a base controller.
 - `app/controllers/reports_controller.rb:31` — Advisory, single-hunk scope: `params[:cmd]` flows into `system(...)` on this line with no sanitization in the hunk. May be a false positive if sanitized elsewhere.
+- `app/lib/token.rb:14` — `weak-hash` sink on an added line (Step 2.6d, witnessed): MD5/SHA1 in a security context; use SHA-256+.
+
+**NIT:**
+- `src/api/poll.ts` — `then-without-catch` (Step 2.6d, whole-file): a `.then` with no `.catch` (unhandled promise rejection).
 
 ### Migration-safety findings (V issues)
 
@@ -584,6 +620,7 @@ Present when a cross-file pass fired (co-change Step 2.8, or the layering/duplic
 **FIX:**
 - `app/models/order.rb` — New model added without a db/migrate migration in the same change (co-change `cochange-model-migration`); confirm the migration isn't needed
 - `src/api/client.ts:8` — Cross-file existence break: `editPrice` is no longer exported from `./pricing`, but `src/checkout.ts:42` still imports it (get_crossfile_context, high_confidence)
+- `src/pricing/calc.ts:12` — Caller-contract signature break: `applyDiscount` narrowed from 2 to 3 required positional args; 5 recorded callers now mis-match, e.g. `src/cart.ts:88`, `src/quote.ts:21` (get_contract_breaks, Step 2.9e)
 - `src/domain/order.ts:3` — Upward-edge violation: `domain` imports `transport`, inverting the observed `transport -> domain` direction (layering)
 
 **NIT:**
@@ -643,29 +680,29 @@ Render the `complexity_tier` field as `Tier: <easy|medium|hard|complex>` with a 
 
 | Severity | Meaning | Convention examples | Logic examples | Dependency examples | Security examples | Migration examples | Cross-file examples |
 |----------|---------|-------------------|----------------|---------------------|-------------------|--------------------|---------------------|
-| **BLOCK** | Must fix before merge | Missing base class/mixin the archetype requires | Missing requirement, race condition, removed guard/error branch | New direct dependency (verify provenance) | Secret detected in the diff | Irreversible op in a `change` block | — |
-| **FIX** | Should fix | Wrong response pattern, missing naming convention | Missing null guard, spec divergence, dropped await, inverted condition, error-handling/required-guard divergence (advisory), callable-signature drop (advisory), stale paired test | Non-registry resolved host, new install script, git+ssh:/file: source | Presence-only authz gap (advisory), taint/SSRF/traversal in hunk (advisory) | null:false without default (advisory), add_index without concurrently (advisory) | High-confidence existence break (get_crossfile_context); missing companion (co-change, advisory); upward-edge layering violation (advisory) |
-| **NIT** | Optional improvement | Potential duplication with existing utility | Minor inconsistency, placeholder name vs descriptive siblings, stale comment | — | — | — | Semantic duplication of a new function vs a returned candidate (get_duplication_candidates); borderline layering edge |
+| **BLOCK** | Must fix before merge | Missing base class/mixin the archetype requires | Missing requirement, race condition, removed guard/error branch | — (new dependency is an ACK, not a BLOCK) | Secret in the diff; `eval-call` / `command-injection` sink in the diff (Step 2.6d) | Irreversible op in a `change` block | — |
+| **FIX** | Should fix | Wrong response pattern, missing naming convention | Missing null guard, spec divergence, dropped await, inverted condition, error-handling/required-guard divergence (advisory), callable-signature drop (advisory), stale paired test | Non-registry resolved host, new install script, git+ssh:/file: source | Presence-only authz gap (advisory), taint/SSRF/traversal in hunk (advisory), deterministic sink `sql-string-interpolation`/`insecure-deserialization`/`weak-hash`/`insecure-random` (Step 2.6d, witnessed) | null:false without default (advisory), add_index without concurrently (advisory) | High-confidence existence break (get_crossfile_context); caller-contract signature break (get_contract_breaks, Step 2.9e); missing companion (co-change, advisory); upward-edge layering violation (advisory) |
+| **NIT** | Optional improvement | Potential duplication with existing utility | Minor inconsistency, placeholder name vs descriptive siblings, stale comment | — | Test-quality / `then-without-catch` / `unfrozen-clock` / `unstubbed-network` (Step 2.6d, whole-file) | — | Semantic duplication of a new function vs a returned candidate (get_duplication_candidates); borderline layering edge |
 
 For reviewers used to the superpowers vocabulary: BLOCK ≈ Critical, FIX ≈
 Important, NIT ≈ Minor. Chameleon keeps BLOCK/FIX/NIT because the review ledger
 (`record_review_verdict`) is keyed on them.
 
-Authz and taint/SSRF/traversal findings are capped at FIX. They are advisory judgments and never escalate to BLOCK; only a hard-kind secret on an added/changed line blocks from the security pass (Step 2.6a kind gate + hunk gate). Low-precision secret heuristics cap at NIT; out-of-hunk hard secrets go to the repo-hygiene note.
+Authz and taint/SSRF/traversal findings (2.6b/2.6c) are capped at FIX. They are advisory judgments and never escalate to BLOCK. Two witnessed facts in the security pass DO block on an added/changed line: a hard-kind secret (Step 2.6a kind gate + hunk gate) and a deterministic error-severity `eval-call` or `command-injection` sink (Step 2.6d, hunk-gated; a `warning`-severity `eval-call`, the Rails `class_eval` idiom, caps at FIX). The other deterministic sinks (Step 2.6d `sql-string-interpolation` / `insecure-deserialization` / `weak-hash` / `insecure-random`) cap at FIX; the 2.6d test-quality rules cap at NIT. Low-precision secret heuristics cap at NIT; out-of-hunk hard secrets and out-of-hunk sinks go to the repo-hygiene note.
 
 The migration null:false and add_index advisories are capped at FIX. They are "verify table size" reminders the author resolves by checking the row count; only the irreversible-`change` check blocks from the migration-safety pass.
 
-The cross-file findings (Step 2.8 co-change, Step 2.9 layering/duplication/existence-break) cap at FIX. Only a high-confidence existence break from `get_crossfile_context` is a witnessed FIX; co-change, layering, and duplication are advisory and never reach BLOCK. The error-handling, required-guard, callable-signature, and stale-comment findings are advisory too: required-guard and callable-signature drops cap at FIX, the stale comment caps at NIT.
+The cross-file findings (Step 2.8 co-change, Step 2.9 layering/duplication/existence-break/contract-break) cap at FIX. The high-confidence existence break from `get_crossfile_context` (Step 2.9c) and the caller-contract signature break from `get_contract_breaks` (Step 2.9e) are witnessed FIXes; co-change, layering, and duplication are advisory and never reach BLOCK. The error-handling, required-guard, callable-signature, and stale-comment findings are advisory too: required-guard and callable-signature drops cap at FIX, the stale comment caps at NIT.
 
 ### Verdict rules
 
-- **BLOCK**: any BLOCK finding → verdict is BLOCK. A hard-kind secret on an added/changed line (Step 2.6a, both gates passed) is a BLOCK and drives a BLOCK verdict; an irreversible op in a `change` block (Step 2.7a) is a BLOCK and drives a BLOCK verdict; the advisory authz/taint findings and the migration table-size advisories (Step 2.7b/2.7c) are capped at FIX and never force a BLOCK verdict on their own. Pre-existing-hygiene secret notes never affect the verdict.
+- **BLOCK**: any BLOCK finding → verdict is BLOCK. A hard-kind secret on an added/changed line (Step 2.6a, both gates passed) is a BLOCK and drives a BLOCK verdict; a deterministic error-severity `eval-call` or `command-injection` sink on an added/changed line (Step 2.6d, hunk-gated) is a BLOCK and drives a BLOCK verdict (a `warning`-severity `eval-call` caps at FIX); an irreversible op in a `change` block (Step 2.7a) is a BLOCK and drives a BLOCK verdict; the advisory authz/taint findings, the other 2.6d sinks (FIX) and 2.6d test-quality rules (NIT), and the migration table-size advisories (Step 2.7b/2.7c) are capped below BLOCK and never force a BLOCK verdict on their own. A new-dependency ACK (Step 2.5a) is not a finding and never affects the verdict. Pre-existing-hygiene secret/sink notes never affect the verdict.
 - **NEEDS CHANGES**: any FIX finding but no BLOCKs → NEEDS CHANGES
 - **APPROVE WITH NITS**: only NIT findings → APPROVE WITH NITS
 - **APPROVE**: zero findings → APPROVE
 - The coverage-delta view (Step 3g) is advisory and carries no severity. It never adds a BLOCK, FIX, or NIT and never changes the verdict; an untested-source heads-up alone still leaves an otherwise clean PR at APPROVE.
 - The auto-pass routing (Step 3h) is advisory and carries no severity. It never adds a finding and never changes the verdict. It is a separate signal: a change is a "no human review needed" candidate only when the verdict is APPROVE AND auto-pass is ELIGIBLE; a NEEDS-HUMAN routing on an otherwise-APPROVE change means a human should still look, and an ELIGIBLE routing never upgrades a NEEDS CHANGES/BLOCK verdict.
-- The cross-file findings (Step 2.8 co-change, Step 2.9 layering/duplication/existence-break) cap at FIX, so they can drive NEEDS CHANGES but never BLOCK. A high-confidence existence break is a real FIX; co-change, layering, and duplication are advisory FIX/NIT that the reviewer can confirm away.
+- The cross-file findings (Step 2.8 co-change, Step 2.9 layering/duplication/existence-break/contract-break) cap at FIX, so they can drive NEEDS CHANGES but never BLOCK. A high-confidence existence break (Step 2.9c) and a caller-contract signature break (Step 2.9e) are witnessed FIXes; co-change, layering, and duplication are advisory FIX/NIT that the reviewer can confirm away.
 
 ### Step 5: Record the verdict in the review ledger
 
@@ -683,11 +720,11 @@ This is a best-effort final step. If the tool call fails (no ledger, no signing 
 
 - **Be honest.** If you're unsure about a finding, say so. Don't guess whether something is a violation — verify it against the canonical witness and conventions data. If the data doesn't clearly show a violation, don't flag it.
 - **Don't hallucinate findings.** Every convention/logic BLOCK and FIX must reference specific chameleon data (a lint violation, a canonical mismatch, a convention entry, a principle) or, for logic findings, the removed (`-`) lines of a hunk. If you can't point to the data, it's not a finding. Dependency findings (Step 2.5) are the one exception to the chameleon-data requirement: they are backed by the manifest/lockfile diff itself, so every one must cite the exact added line or manifest key it parsed, not the profile. The error-handling, required-guard, and callable-signature findings (Step 3c/3c-i) cite the matching `conventions.json` entry (`error_handling`/`required_guards`/`callable_signatures` for the file's archetype); without that entry, fall back to the witness and do not invent the convention. The stale-test finding (Step 3f-i) cites the removed export and the line in the paired test that still names it.
-- **Cross-file findings cite their tool or artifact, not intuition.** The existence-break FIX (Step 2.9c) relays only `get_crossfile_context` findings with `high_confidence=true`, citing the symbol, the module, and the importer file:line the tool returned; a finding without that flag is dropped. The duplication finding (Step 2.9b) is allowed only when `get_duplication_candidates` returned a candidate you judged equivalent, citing that candidate's symbol and path; never claim duplication with no returned candidate. The layering finding (Step 2.9a) cites a `conventions.layering` `forbidden_upward_edges` entry. The co-change FIX (Step 2.8) cites the curated `rule_id` and the added trigger file. None of these is bare model intuition; each points at a tool result or an artifact entry, same bar as a lint violation.
-- **Security findings carry their own honesty bar.** A secret BLOCK (Step 2.6a) cites the `secret-detected-in-content` violation the scanner returned — a witnessed fact, like a lint violation — but only after both 2.6a gates passed: `secret_hard` is true AND the line sits inside an added/changed hunk. A low-precision heuristic hit or an out-of-hunk hit presented as a BLOCK is a false claim, the exact kind that destroys trust in a green gate. The authz FIX (2.6b) and the taint/SSRF/traversal FIX (2.6c) are judgments, not witnessed facts: they must carry their advisory labels, must never claim a structured profile cite (no profile data maps callbacks to actions), and the taint line must be inside the diff. Do not present a judgment as if it had the same backing as a gated secret hit or a lint violation.
+- **Cross-file findings cite their tool or artifact, not intuition.** The existence-break FIX (Step 2.9c) relays only `get_crossfile_context` findings with `high_confidence=true`, citing the symbol, the module, and the importer file:line the tool returned; a finding without that flag is dropped. The duplication finding (Step 2.9b) is allowed only when `get_duplication_candidates` returned a candidate you judged equivalent, citing that candidate's symbol and path; never claim duplication with no returned candidate. The layering finding (Step 2.9a) cites a `conventions.layering` `forbidden_upward_edges` entry. The co-change FIX (Step 2.8) cites the curated `rule_id` and the added trigger file. The caller-contract signature break (Step 2.9e) relays only `get_contract_breaks` findings that NARROWED a positional contract AND have committed callers, citing the symbol, the `old`->`new` required-positional count, and the returned caller `file:line` list. None of these is bare model intuition; each points at a tool result or an artifact entry, same bar as a lint violation.
+- **Security findings carry their own honesty bar.** A secret BLOCK (Step 2.6a) cites the `secret-detected-in-content` violation the scanner returned — a witnessed fact, like a lint violation — but only after both 2.6a gates passed: `secret_hard` is true AND the line sits inside an added/changed hunk. The deterministic lint sinks (Step 2.6d: error-severity `eval-call` + `command-injection` → BLOCK, `sql-string-interpolation`/`insecure-deserialization`/`weak-hash`/`insecure-random` + the `warning`-severity `eval-call` Rails idiom → FIX) are witnessed facts too: cite the returned violation and its parsed ` at line N`, respect its `severity`, run it through the hunk gate, and never send it to the refuter. The 2.6d test-quality rules are whole-file NITs. A new-dependency ACK (Step 2.5a) is a human provenance gate, not a finding — never render it as BLOCK/FIX/NIT and never let it change the verdict or the ledger record. A low-precision heuristic hit or an out-of-hunk hit presented as a BLOCK is a false claim, the exact kind that destroys trust in a green gate. The authz FIX (2.6b) and the taint/SSRF/traversal FIX (2.6c) are judgments, not witnessed facts: they must carry their advisory labels, must never claim a structured profile cite (no profile data maps callbacks to actions), and the taint line must be inside the diff. Do not present a judgment as if it had the same backing as a gated secret hit or a lint violation.
 - **Migration findings carry their own honesty bar.** The irreversible-`change` BLOCK (Step 2.7a) cites the irreversible operation in the diff — a witnessed structural fact. The null:false and add_index FIXes (2.7b/2.7c) are table-size reminders, not confirmed defects: the dangerous condition is a row count this static read cannot see, and the repo's own safe migrations share the same shapes. They must keep their "verify table size" label and never reach BLOCK. Do not present either reminder as if it were a confirmed migration bug.
 - **The coverage-delta view is advisory and grounded only in archetypes.** The Step 3g partition rests on the file's archetype name (source vs test) and the test-vs-source archetype path mirror in `archetypes.json`. It must not claim a specific missing test file ("`foo.rb` needs `foo_spec.rb`") — chameleon has no source-to-test path map, and the diff lists only changed files, so a pre-existing untouched test is invisible. Keep it as a heads-up listing changed source in a test-paired layer, never a FIX or BLOCK, and never count an assertions delta: there is no assertion counter in chameleon, so an eyeball count of diff hunks would be exactly the ungrounded finding the integrity rule forbids.
-- **3-round grounding loop.** After producing the review, re-read each BLOCK, FIX, and NIT finding. For each one, verify: (1) does the canonical witness, conventions data (`error_handling`/`required_guards`/`callable_signatures`/`test_pairing`/`layering`), the removed (`-`) lines of the hunk, a parsed manifest/lockfile line, a returned secret violation, or a returned tool result (`get_duplication_candidates` candidate, `get_crossfile_context` finding with `high_confidence=true`) actually support this claim? (2) for per-line logic findings, the stale-comment NIT (3f-ii), AND the taint/SSRF/traversal findings (2.6c), is the anchor line inside an added/changed hunk range (Step 4a)? Drop any finding that fails either check. The hunk gate is the deterministic answer to "PR-introduced vs pre-existing"; do not override it by judgment. The whole-diff cross-file findings (Step 2.8/2.9) are not hunk-gated; they are gated on their tool/artifact backing instead. Round 3 is the independent engine refutation pass for surviving model-judgment findings — see Step 4b.
+- **3-round grounding loop.** After producing the review, re-read each BLOCK, FIX, and NIT finding. For each one, verify: (1) does the canonical witness, conventions data (`error_handling`/`required_guards`/`callable_signatures`/`test_pairing`/`layering`), the removed (`-`) lines of the hunk, a parsed manifest/lockfile line, a returned secret violation, a returned deterministic lint-sink violation (Step 2.6d), or a returned tool result (`get_duplication_candidates` candidate, `get_crossfile_context` finding with `high_confidence=true`, `get_contract_breaks` finding with returned callers) actually support this claim? (2) for per-line logic findings, the stale-comment NIT (3f-ii), the taint/SSRF/traversal findings (2.6c), AND the line-anchored 2.6d security sinks, is the anchor line inside an added/changed hunk range (Step 4a)? Drop any finding that fails either check. The hunk gate is the deterministic answer to "PR-introduced vs pre-existing"; do not override it by judgment. The whole-diff cross-file findings (Step 2.8/2.9) are not hunk-gated; they are gated on their tool/artifact backing instead. Round 3 is the independent engine refutation pass for surviving model-judgment findings — see Step 4b.
 
 ## Important
 

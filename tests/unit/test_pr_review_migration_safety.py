@@ -124,7 +124,8 @@ def test_verdict_rule_makes_irreversible_drive_block():
         in text
     )
     # The migration table-size advisories never force a BLOCK verdict on their own.
-    assert "the migration table-size advisories (Step 2.7b/2.7c) are capped at FIX" in text
+    assert "the migration table-size advisories (Step 2.7b/2.7c) are capped below BLOCK" in text
+    assert "never force a BLOCK verdict on their own" in text
 
 
 def test_integrity_rule_keeps_migration_tiers_honest():

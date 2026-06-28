@@ -59,6 +59,18 @@ _ACTS = [
     ),
     ("10b_log_rotation", "Log rotation + auto_refresh.log truncate", 1.50, [36]),
     ("12_pr_review", "PR review (convention + logic findings, anti-hallucination)", 1.50, [38, 39]),
+    (
+        "12b_pr_review_deep",
+        "PR review deep paths (secret / migration / dependency-ACK / eval sink)",
+        2.00,
+        [40, 41],
+    ),
+    (
+        "12c_receiving_review",
+        "Receiving code review (ground-before-draft, never-ledger, pre-existing gate)",
+        1.50,
+        [42, 43],
+    ),
     ("11_uninstall_cleanup", "Uninstall + cleanup", 0.50, [37]),
 ]
 

@@ -64,17 +64,22 @@ def test_dependency_change_step_present_and_no_network():
     assert "Do not run a security audit, hit a network, or install packages" in text
 
 
-def test_new_direct_dependency_is_block_until_acknowledged():
+def test_new_direct_dependency_is_ack_not_verdict_block():
     text = _skill_text()
     assert "New direct dependency" in text
-    assert "verify provenance" in text
-    # It is a deliberate human gate, cleared only by a human acknowledgement.
-    assert "BLOCK until acknowledged" in text
-    assert "human acknowledges" in text
+    s = text.split("#### 2.5a.")[1].split("#### 2.5b.")[0]
+    # It is a human provenance ACK, NOT a verdict-driving BLOCK (which would be
+    # written to the durable ledger and corrupt the per-tier review-clean metric).
+    assert "ACK" in s
+    assert "does NOT drive the verdict" in s
+    assert "raise a **BLOCK**" not in s, "new dependency must not raise a BLOCK"
+    # The provenance gate (acknowledge before merge) is preserved.
+    assert "Acknowledge before merge" in text
+    assert "new-dependency" in s  # cites the engine's NIT-severity finding kind
     # A bump of an existing dependency is explicitly not this finding.
-    assert "A bump of an already-present dependency is NOT this finding" in text
+    assert "A bump of an already-present dependency is NOT this finding" in s
     # Typosquatting is the concrete risk the provenance gate guards against.
-    assert "typosquat" in text
+    assert "typosquat" in s
 
 
 def test_non_registry_resolved_host_check():
