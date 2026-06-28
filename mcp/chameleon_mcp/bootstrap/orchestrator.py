@@ -2423,6 +2423,7 @@ def _bootstrap_single(
             (txn_dir / "principles.md").write_text(
                 generate_principles(
                     language=extractor.language,
+                    framework=framework,
                     conventions=conventions_data,
                     archetypes=archetypes_data,
                 ),

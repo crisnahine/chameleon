@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_int
+from chameleon_mcp.blast_radius import transitive_caller_chains as _transitive_caller_chains
 from chameleon_mcp.safe_open import is_forbidden_segment_path
 
 # Reuse the canonical-loader git timeout budget for the per-file diff reads: each
@@ -401,75 +402,6 @@ _TRANSITIVE_HEADER = (
     "committed calls snapshot; deterministic grades only, absence is not dead "
     "code, and a stale intermediate edge can shorten a chain):"
 )
-
-
-# Caller "names" that don't identify an actionable function: a chain that hops
-# into one reads as noise to the reviewer, so the walk stops at the last named
-# function instead of extending into them.
-_UNINFORMATIVE_CALLERS = frozenset({"<anonymous>", "<module>"})
-
-
-def _transitive_caller_chains(
-    index, start_path: str, start_name: str, *, max_depth: int, fanout: int, total_nodes: int
-) -> list[list[tuple]]:
-    """Bounded upward caller chains from ``(start_path, start_name)``.
-
-    Returns a list of chains; each chain is ``[(path, name, line), ...]`` root
-    first (the root carries no call-site line), deepest hop last. Walks up the
-    caller graph at most ``max_depth`` hops, expanding at most ``fanout`` named
-    callers per node and ``total_nodes`` nodes total.
-
-    Cycle-safety is per CHAIN, not global: a node is never revisited within the
-    same chain (so ``A <- B <- A`` terminates), but a node reached by two
-    distinct paths (a DAG diamond) is preserved in BOTH chains -- a global
-    visited set would silently drop one path and understate the impact. The
-    ``total_nodes`` counter still hard-bounds total work. Anonymous / module-scope
-    callers are not extended into. Caller rows are sorted before expansion and the
-    chains sorted before returning, so the result is deterministic.
-    """
-    chains: list[list[tuple]] = []
-    nodes = 0
-    # DFS; each stack item is (chain so far, set of (path,name) already in it).
-    stack: list[tuple[list[tuple], set]] = [
-        ([(start_path, start_name, None)], {(start_path, start_name)})
-    ]
-    while stack:
-        chain, seen = stack.pop()
-        cur_path, cur_name, _line = chain[-1]
-        if len(chain) - 1 >= max_depth or nodes >= total_nodes:
-            chains.append(chain)
-            continue
-        entry = index.callers_of(cur_path, cur_name)
-        callers = (entry or {}).get("callers") if entry else None
-        ordered = sorted(
-            (r for r in (callers or []) if r.get("caller") not in _UNINFORMATIVE_CALLERS),
-            key=lambda r: (
-                str(r.get("path") or ""),
-                str(r.get("caller") or ""),
-                r.get("line") if isinstance(r.get("line"), int) else -1,
-            ),
-        )
-        expanded: list[tuple[list[tuple], set]] = []
-        for r in ordered:
-            if len(expanded) >= fanout or nodes >= total_nodes:
-                break
-            key = (r.get("path"), r.get("caller"))
-            if key in seen:  # a cycle within THIS chain
-                continue
-            nodes += 1
-            expanded.append(
-                (chain + [(r.get("path"), r.get("caller"), r.get("line"))], seen | {key})
-            )
-        if not expanded:
-            chains.append(chain)  # entry point, depth cap, or all-cyclic: terminal
-        else:
-            # Push reversed so the deterministic caller order is preserved on pop.
-            for e in reversed(expanded):
-                stack.append(e)
-    chains.sort(
-        key=lambda c: tuple((p or "", n or "", ln if isinstance(ln, int) else -1) for p, n, ln in c)
-    )
-    return chains
 
 
 def _render_transitive_chain(chain: list[tuple], sanitize) -> str:

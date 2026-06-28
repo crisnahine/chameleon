@@ -233,3 +233,10 @@ whatever you pass — it does not preserve the original text. If you want to
 keep the original guidance for the record, read the active block from
 `idioms.md` first and re-pass its body (append a deprecation note to the
 rationale), rather than passing only a short "replaced by X" line.
+
+## Honesty Rules
+
+- Capture only a real rule: one observed in the repo or stated by the user. Never invent an archetype name, a wrapper, or a banned import that does not exist; grep or read before naming it.
+- Record the rationale truthfully and the `source` provenance where the rule came from; don't dress up a guess as a derived convention.
+- Teaching is append-only: it never edits or deletes an existing idiom. Run `check_idiom_candidates` to avoid duplicating or contradicting one already captured.
+- Don't claim a taught rule is enforced: a captured idiom shapes guidance and review; only calibrated block rules deny an edit.

@@ -3192,6 +3192,196 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     )
 
 
+def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int = 0) -> dict:
+    """Transitive callers of a function (the change blast radius), from the calls snapshot.
+
+    Walks the prebuilt ``calls_index.json`` upward from ``function_name`` defined
+    in the file at ``file_path`` and returns the bounded caller chains that reach
+    it: "if I change this, what transitively calls it". Each chain is root first
+    (``function_name`` -> its caller -> its caller's caller ...), one
+    ``{path, name, line}`` hop per step. ``depth`` is the number of hops; it
+    defaults to the judge's transitive depth and is clamped to
+    ``[1, BLAST_RADIUS_MAX_DEPTH]``. The walk shares the judge's fanout /
+    total-node caps, so total work is hard-bounded regardless of depth.
+
+    This is the same conservative reach the turn-end correctness judge already
+    walks, surfaced as a tool so pr-review and the human can ask it directly
+    instead of being limited to one-hop ``get_callers``. Grades are deterministic
+    (same_file, import, constant_receiver); name-only / dynamic / inheritance
+    call paths are absent by design.
+
+    Interpretation note (returned in ``note``): absence of a caller is NOT
+    evidence of dead code. Dynamic dispatch, reflection, and callers added after
+    the last bootstrap are invisible, and a stale intermediate edge can shorten a
+    chain. The reach is a grounding fact for review, not a reachability oracle.
+
+    Fails open with ``found: False`` on any ambiguity: unresolvable / untrusted
+    repo, missing artifact, path outside the repo. Never fabricates a caller.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+    from chameleon_mcp.blast_radius import BLAST_RADIUS_NOTE, compute_blast_radius
+    from chameleon_mcp.calls_index import load_calls_index
+    from chameleon_mcp.profile.loader import find_repo_root
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+    from chameleon_mcp.symbol_index import module_key_for_path
+
+    empty = {
+        "found": False,
+        "module": None,
+        "function": None,
+        "depth": 0,
+        "chains": [],
+        "reached": 0,
+        "truncated": False,
+    }
+
+    if not _validate_file_path_arg(file_path):
+        return _envelope(dict(empty))
+
+    p = Path(file_path).expanduser()
+    repo_root = find_repo_root(p)
+    if repo_root is None:
+        return _envelope(dict(empty))
+
+    # The repo arg must agree with the file's own repo, mirroring get_callers'
+    # cross-arg consistency check.
+    expected_repo_id = _compute_repo_id(repo_root)
+    if isinstance(repo, str) and _REPO_ID_RE.match(repo):
+        if repo != expected_repo_id:
+            return _envelope(dict(empty))
+    else:
+        _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
+        if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
+            return _envelope(dict(empty))
+
+    # Trust-gate: the calls index is a committed artifact whose caller paths must
+    # not reach the model surface from an untrusted profile.
+    gate = _trust_state_for(expected_repo_id)
+    if gate is None or not gate.grants_root(repo_root):
+        out = dict(empty)
+        out["status"] = "untrusted"
+        return _envelope(out)
+
+    index = load_calls_index(repo_root)
+    if index is None:
+        out = dict(empty)
+        out["reason"] = "no-calls-index"
+        return _envelope(out)
+
+    rel = module_key_for_path(p, repo_root)
+    if rel is None:
+        out = dict(empty)
+        out["reason"] = "file-outside-repo"
+        return _envelope(out)
+
+    # depth <= 0 (or a non-int) means "use the judge's default transitive depth";
+    # any explicit request is clamped into [1, BLAST_RADIUS_MAX_DEPTH].
+    if not isinstance(depth, int) or isinstance(depth, bool) or depth <= 0:
+        resolved_depth = threshold_int("JUDGE_TRANSITIVE_DEPTH")
+    else:
+        resolved_depth = depth
+    resolved_depth = max(1, min(resolved_depth, threshold_int("BLAST_RADIUS_MAX_DEPTH")))
+
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
+
+    radius = compute_blast_radius(index, rel, function_name, depth=resolved_depth)
+    clean_chains = []
+    for chain in radius["chains"]:
+        clean_chains.append(
+            [
+                {
+                    "path": _sanitize(hop["path"])
+                    if isinstance(hop.get("path"), str)
+                    else hop.get("path"),
+                    "name": _sanitize(hop["name"])
+                    if isinstance(hop.get("name"), str)
+                    else hop.get("name"),
+                    "line": hop.get("line"),
+                }
+                for hop in chain
+            ]
+        )
+
+    return _envelope(
+        {
+            "found": True,
+            "module": _sanitize(rel),
+            "function": _sanitize(function_name),
+            "depth": resolved_depth,
+            "chains": clean_chains,
+            "reached": radius["reached"],
+            "truncated": radius["truncated"],
+            "note": BLAST_RADIUS_NOTE,
+        }
+    )
+
+
+def get_prose_rule_candidates(repo: str) -> dict:
+    """Doc-stated import-preference rules, corroborated against the repo's own code.
+
+    Reads a bounded allowlist of convention-bearing docs (CONTRIBUTING / STYLE /
+    AGENTS.md / docs) for high-precision ``use X not Y`` / ``prefer X over Y``
+    rules -- the conventions AST analysis cannot infer -- and tags each with how
+    the repo's own imports back it:
+      - ``corroborated`` (``teachable: true``): the preferred form is imported and
+        the discouraged form is absent, so the code already follows the rule. Ready
+        to capture via ``teach_competing_import``.
+      - ``contested``: the discouraged form is still imported. Doc and code
+        disagree; a human reconciles (fix the doc or the code), never auto-taught.
+      - ``unsupported``: neither form imported; cannot verify from code.
+
+    PROPOSE-ONLY: this never writes the profile. It returns candidates with their
+    ``source`` provenance (``doc-path:line``) so an approval step decides. Fully
+    offline, no repo-code execution, bounded. Fails open with ``found: False`` on
+    an unresolvable / untrusted repo.
+    """
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+    from chameleon_mcp.prose_rules import mine_prose_rule_candidates
+
+    empty = {"found": False, "candidates": []}
+
+    resolved_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None or resolved_path is None:
+        return _envelope(dict(empty))
+    repo_root = Path(resolved_path)
+
+    # Trust-gate: the candidates echo repo doc/source text to the model surface,
+    # so an untrusted profile must not reach it (the read-tool trust idiom).
+    gate = _trust_state_for(repo_id)
+    if gate is None or not gate.grants_root(repo_root):
+        out = dict(empty)
+        out["status"] = "untrusted"
+        return _envelope(out)
+
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
+
+    clean = []
+    for c in mine_prose_rule_candidates(repo_root):
+        clean.append(
+            {
+                "preferred": _sanitize(c["preferred"]),
+                "over": _sanitize(c["over"]),
+                "source": _sanitize(c["source"]),
+                "status": c["status"],
+                "teachable": c["teachable"],
+                "preferred_files": c["preferred_files"],
+                "over_files": c["over_files"],
+            }
+        )
+
+    return _envelope(
+        {
+            "found": True,
+            "candidates": clean,
+            "note": (
+                "Propose-only. Corroborated rules are ready to teach via "
+                "teach_competing_import; contested / unsupported are advisory. "
+                "chameleon never writes idioms.md without your approval."
+            ),
+        }
+    )
+
+
 def _name_still_referenced(repo_root: Path, importer_rel: str, name: str, line: int | None) -> bool:
     """Cheap regex presence check: does ``importer_rel`` still name ``name``?
 

@@ -1685,24 +1685,54 @@ _CONFIG_MALFORMED_BANNER = (
 )
 
 
+def _nearby_call_proximity(calls, rel: str | None, by_name: dict, edited_key: str | None) -> int:
+    """How many of ``rel``'s recorded symbols the edited file is shown calling.
+
+    Read from the reverse calls index (callee -> caller rows): a sibling the
+    edited file actually calls is a closer collaborator than an arbitrary
+    same-directory file, so it should rank first. Returns 0 on no index, no key,
+    or no recorded edge, which collapses the ranking to deterministic name order.
+    Bounded by the same per-file symbol cap the rendering applies, so the lookup
+    stays trivial on the hot path. Fails open to 0.
+    """
+    if calls is None or not rel or not edited_key:
+        return 0
+    try:
+        score = 0
+        for name in list(by_name)[:_NEARBY_SIG_MAX_SYMBOLS]:
+            entry = calls.callers_of(rel, name)
+            if not entry:
+                continue
+            if any(r.get("path") == edited_key for r in entry.get("callers", [])):
+                score += 1
+        return score
+    except Exception:
+        return 0
+
+
 def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
-    """Sibling export signatures for the edited file's directory (experimental).
+    """Sibling collaborator signatures for the edited file's directory.
 
     Renders up to a few callable signatures from source files in the SAME
     directory as the target, read from the precomputed ``symbol_signatures.json``
     (no live parse, no edited-file read), so the model sees the CONTRACTS of
     nearby collaborators it may call, not just their filenames -- the cross-file
-    gap the effectiveness review measured. Index reads are mtime-cached and stay
-    warm under the daemon, so the cost amortizes to ~0 across a session.
+    gap the effectiveness review measured. Candidates are ranked by call
+    proximity: a sibling the edited file is recorded calling (from the reverse
+    ``calls_index.json``) leads, and deterministic name order breaks ties and is
+    the full order when no call facts exist. Index reads are mtime-cached and
+    stay warm under the daemon, so the cost amortizes to ~0 across a session.
 
-    Default-OFF, gated on ``CHAMELEON_NEARBY_SIGNATURES=1`` pending an
-    effectiveness A/B: its own cited research ("more retrieval can hurt") means
-    the lift must be measured before this ships default-on. Fails open to "" on
-    any missing index / error.
+    Default-ON, kill switch ``CHAMELEON_NEARBY_SIGNATURES=0``: it adds no
+    repo-code execution and no network, only cached artifact reads, so it follows
+    the default-on-with-kill-switch principle. Fails open to "" on any missing
+    index / error.
     """
-    if os.environ.get("CHAMELEON_NEARBY_SIGNATURES") != "1" or repo_root is None:
+    if os.environ.get("CHAMELEON_NEARBY_SIGNATURES") == "0" or repo_root is None:
         return ""
     try:
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.calls_index import load_calls_index
         from chameleon_mcp.conventions import _SOURCE_EXTENSIONS
         from chameleon_mcp.symbol_signatures import (
             load_symbol_signatures,
@@ -1710,32 +1740,44 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
         )
         from chameleon_mcp.worktree import resolve_profile_root
 
-        sigs = load_symbol_signatures(resolve_profile_root(repo_root))
+        profile_root = resolve_profile_root(repo_root)
+        sigs = load_symbol_signatures(profile_root)
         if sigs is None or len(sigs) == 0:
             return ""
         target = Path(file_path)
         parent = target.parent
         if not parent.is_dir():
             return ""
+        calls = load_calls_index(profile_root)
+        edited_key = _repo_rel(repo_root, file_path)
         # Filter to source-suffix siblings in one cheap pass BEFORE sorting, so a
         # flat directory of thousands of asset/config files does not sort its
-        # whole listing on every edit -- the sort then runs only over the source
-        # candidates. Deterministic name order is preserved.
+        # whole listing on every edit. Cap the scored set so proximity ranking
+        # over a pathological directory stays bounded on the hot path.
+        scan_cap = threshold_int("NEARBY_SIG_SCAN_CAP")
         candidates = sorted(
             (e for e in parent.iterdir() if e != target and e.suffix in _SOURCE_EXTENSIONS),
             key=lambda p: p.name,
-        )
-        rendered: list[str] = []
-        files_used = 0
+        )[:scan_cap]
+        scored: list[tuple[int, str, str, dict]] = []
         for entry in candidates:
-            if files_used >= _NEARBY_SIG_MAX_FILES or len(rendered) >= _NEARBY_SIG_MAX_TOTAL:
-                break
             if not entry.is_file():
                 continue
             rel = _repo_rel(repo_root, str(entry))
             by_name = sigs.for_file(rel) if rel else {}
             if not by_name:
                 continue
+            score = _nearby_call_proximity(calls, rel, by_name, edited_key)
+            scored.append((score, entry.name, rel, by_name))
+        # Proximity DESC, then name ASC: collaborators the edited file actually
+        # calls lead; name order breaks ties and is the entire order when the
+        # calls index is absent (every score 0), preserving prior behavior.
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        rendered: list[str] = []
+        files_used = 0
+        for _score, _name, rel, by_name in scored:
+            if files_used >= _NEARBY_SIG_MAX_FILES or len(rendered) >= _NEARBY_SIG_MAX_TOTAL:
+                break
             files_used += 1
             for name, row in list(by_name.items())[:_NEARBY_SIG_MAX_SYMBOLS]:
                 rendered.append(render_imported_definition(name, row, rel))

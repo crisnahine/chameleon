@@ -101,13 +101,14 @@ def test_apply_arm_config_disables_auto_refresh(tmp_path):
 def test_env_toggle_creates_paired_arm_via_env_not_config():
     from tests.effectiveness.arms import arm_env, parse_arms
 
+    # nearby_signatures is default-ON, so its A/B paired arm turns it OFF ("0").
     specs = parse_arms("off,shadow", "nearby_signatures")
-    assert "shadow~nearby_signatures=on" in [s.name for s in specs]
+    assert "shadow~nearby_signatures=off" in [s.name for s in specs]
     paired = next(s for s in specs if s.env_key)
     assert paired.env_key == "CHAMELEON_NEARBY_SIGNATURES"
     assert paired.toggle_key is None  # not a config enforcement key
     # the paired arm sets the env var for its sessions
-    assert arm_env(paired, {})["CHAMELEON_NEARBY_SIGNATURES"] == "1"
+    assert arm_env(paired, {})["CHAMELEON_NEARBY_SIGNATURES"] == "0"
     # the off arm never carries the toggle
     off = next(s for s in specs if s.disable_env)
     assert "CHAMELEON_NEARBY_SIGNATURES" not in arm_env(off, {})

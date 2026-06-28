@@ -135,6 +135,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # only binds when the taught module is absent (no counterexample to capture).
     "COUNTEREXAMPLE_SCAN_MAX_FILES": 50000,
     "COUNTEREXAMPLE_SCAN_BUDGET_SECONDS": 10.0,
+    # Prose-rule miner bounds (tool-time, never a hook hot path). Cap on the
+    # convention-bearing doc files scanned for "use X not Y" rules, and the bytes
+    # read per doc, so a repo with a huge docs/ tree or a giant generated doc
+    # cannot turn the on-demand mine into an unbounded read.
+    "PROSE_RULE_MAX_DOCS": 60,
+    "PROSE_RULE_MAX_DOC_BYTES": 200_000,
     # Cap on the unified-diff text scanned for the deterministic content
     # signals (removed-guard lexicon, in-diff ignore directives, test skip
     # markers, assertion delta). Past the cap the scan truncates and says so;
@@ -311,6 +317,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # under the file cap. High enough to admit a real hand-written wide module
     # (a util grab-bag, a wide Rails concern) without losing its tail.
     "DUPLICATION_CATALOG_MAX_FNS_PER_FILE": 120,
+    # Upper bound on same-directory source files scored for call-proximity before
+    # the nearby-collaborator-signatures section ranks them. A flat directory of
+    # thousands of files would otherwise turn the per-edit ranking into an
+    # unbounded scan; 200 ranks any real directory in full while capping the
+    # pathological case on the <100ms hot path.
+    "NEARBY_SIG_SCAN_CAP": 200,
     # Minimum shared domain-word tokens between a new function's name and a
     # catalog candidate before the candidate is surfaced. One shared token (date,
     # slug, total) is enough to be worth the judge's look; zero overlap means the
@@ -470,6 +482,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "JUDGE_TRANSITIVE_FANOUT_PER_NODE": 10,
     "JUDGE_TRANSITIVE_TOTAL_NODES": 50,
     "JUDGE_TRANSITIVE_CHAR_CAP": 600,
+    # Ceiling on the depth the get_blast_radius read tool will walk. It shares the
+    # judge's fanout / total-nodes caps (so total work stays hard-bounded at
+    # TOTAL_NODES regardless of depth), but unlike the per-turn judge it is a
+    # tool-time call off the hot path, so it may reach a few hops deeper than the
+    # judge's default DEPTH when a caller explicitly asks. Requested depth is
+    # clamped to [1, this].
+    "BLAST_RADIUS_MAX_DEPTH": 4,
     # Lookback for the cumulative degraded-delivery count /chameleon-status
     # surfaces (no-interpreter / spawn-failed hook fail-opens from
     # .hook_errors.log plus in-process fail_open rows from metrics.jsonl). A week

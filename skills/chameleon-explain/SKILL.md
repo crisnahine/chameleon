@@ -85,3 +85,9 @@ The single question a postmortem must answer: did chameleon *not see* the file's
 ## Out of scope
 
 One file, one row: the most-recent edit only. This is a per-edit replay, not a history view; it does not trend a file's edits over time or correlate across files. It reconstructs the last decision so a human can classify and route the miss; it does not itself decide whether the code was wrong.
+
+## Honesty Rules
+
+- Report only the real recorded state: the rule's actual calibration, would-block frequency, and inline-override rate, or the file's actual last-edit replay. Never fabricate a number, a rule, or an event the profile / telemetry does not hold.
+- If the data is missing (no telemetry, no recorded edit, an unknown rule), say so plainly; don't infer a plausible answer.
+- A post-incident replay names the gap between what chameleon knew and what it could not see honestly; it doesn't excuse the miss or decide whether the code was wrong.

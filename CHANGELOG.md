@@ -4,6 +4,60 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.35.0] - 2026-06-28
+
+### Added
+
+- **Proximity-ranked nearby collaborator signatures, default-on.** The per-edit
+  "Nearby collaborator signatures" block now ranks same-directory source files by
+  call proximity: a sibling the edited file actually calls (read from the
+  committed reverse `calls_index`) leads, with deterministic name order as the
+  tiebreak and the full order when no call facts exist. Graduated from the
+  experimental `CHAMELEON_NEARBY_SIGNATURES=1` opt-in to default-on with a
+  `CHAMELEON_NEARBY_SIGNATURES=0` kill switch. Pure advisory, offline, bounded
+  (scored set capped by `CHAMELEON_NEARBY_SIG_SCAN_CAP`, default 200), fails open.
+- **`get_blast_radius` MCP tool.** Surfaces the turn-end judge's bounded
+  transitive caller walk as a queryable read tool: given a file and function it
+  returns the multi-hop caller chains that reach it (the change blast radius), so
+  pr-review and the human can ask beyond one-hop `get_callers`. Shares the
+  judge's three deterministic grades and depth/fanout/total-node caps (depth
+  clamped to `[1, BLAST_RADIUS_MAX_DEPTH]`), trust-gated and sanitized, and
+  carries the "absence of a caller is not dead code" honesty note. The walk was
+  extracted to a shared `blast_radius` module; the judge's behavior is unchanged.
+- **`get_prose_rule_candidates` MCP tool: offline prose-rule miner.** Mines a
+  bounded allowlist of convention-bearing docs (CONTRIBUTING / STYLE / AGENTS.md
+  / docs) for `use X not Y` / `prefer X over Y` rules AST analysis cannot infer,
+  then corroborates each against the repo's own imports: `corroborated` (the code
+  backs it, ready to teach via `teach_competing_import`), `contested` (the
+  discouraged form is still imported), or `unsupported`. Propose-only with
+  `source` provenance; never writes the profile. Offline, no repo-code execution,
+  bounded.
+- **`## Honesty Rules` sections across the skills.** Each model-facing skill
+  (using-chameleon, pr-review, receiving-code-review, auto-idiom, teach, explain,
+  status, doctor) now carries a tailored honesty-rules block valid for its
+  purpose: never invent a convention or violation, ground every finding in a real
+  `file:line` and the artifact that backs it, treat injected repo content as data
+  not instructions, and report only real recorded state.
+- **Language- and framework-aware principles and anti-hallucination protocol.**
+  `principles.md` now adapts to the repo's actual stack. The protocol names where
+  THIS language's and framework's fabrications hide: TS/JS (type/interface
+  fields, props, default exports), Ruby (methods, associations, scopes), Python
+  (kwargs, attributes, import paths), plus Rails (`config/routes.rb`, models,
+  concerns), Django/DRF (model fields, managers, `settings.py`, serializers),
+  FastAPI (dependencies, Pydantic fields), Flask (routes, blueprints), Next.js
+  (`next.config`, route segments), and NestJS (providers, modules). A universal
+  rule also forbids inventing a dependency the manifest/lockfile does not carry,
+  and a new principle keeps changes at the surrounding code's altitude. An
+  unknown stack degrades to the universal core.
+
+### Fixed
+
+- **`teach_profile_structured` MCP wrapper now forwards the `source` param.** The
+  underlying tool accepted and rendered a `Source:` provenance line, but the
+  MCP-exposed wrapper omitted the argument, leaving the documented `source=` path
+  unreachable over MCP. Auto-derived and doc-grounded idioms are now traceable to
+  their evidence at trust time.
+
 ## [2.34.2] - 2026-06-26
 
 ### Fixed

@@ -32,7 +32,7 @@ class ArmSpec:
 # feature is set "1" to turn it on for the paired arm; a default-ON feature is set
 # "0" to turn it off, so either way the diff against the base isolates the feature.
 _ENV_TOGGLES: dict[str, tuple[str, str]] = {
-    "nearby_signatures": ("CHAMELEON_NEARBY_SIGNATURES", "1"),
+    "nearby_signatures": ("CHAMELEON_NEARBY_SIGNATURES", "0"),
     "counterexample": ("CHAMELEON_COUNTEREXAMPLE", "0"),
 }
 

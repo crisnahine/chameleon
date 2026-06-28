@@ -123,7 +123,7 @@ no repo-specific knowledge; the profile carries no code.
 |  - stop-backstop         (Stop / SubagentStop)                          |
 |                              |                                           |
 |                              v                                           |
-|  MCP server (chameleon-mcp, FastMCP, stdio) -- 41 tools                  |
+|  MCP server (chameleon-mcp, FastMCP, stdio) -- 43 tools                  |
 |                              |                                           |
 |              +---------------+----------------+                          |
 |              v                                v                          |
@@ -654,7 +654,7 @@ Every tool is a `@mcp.tool()`-decorated function in `server.py` that delegates t
 `tools.py`. Every file-reading tool goes through `safe_open` (lstat first,
 realpath, repo-boundary prefix match) and re-checks artifact mtimes per call so
 a `/chameleon-teach` or `/chameleon-refresh` is picked up without a stale cache.
-The server exposes **41 tools**:
+The server exposes **43 tools**:
 
 ### Detection and context
 
@@ -688,6 +688,7 @@ The server exposes **41 tools**:
 | `unteach_competing_import` | Remove a taught wrapper preference. |
 | `get_idiom_coverage` | Read-only map of guidance already captured. |
 | `check_idiom_candidates` | Novelty gate (novel/duplicate/covered/invalid) before teaching. |
+| `get_prose_rule_candidates` | Doc-stated "use X not Y" rules, corroborated against the repo's imports. Propose-only. |
 | `get_drift_antipatterns` | Recurring-violation signals from drift history; drives auto-idiom. |
 
 ### Trust and opt-out
@@ -722,6 +723,7 @@ All read-only except `record_review_verdict` (ledger append) and `dep_audit`
 | `get_crossfile_context` | Cross-file existence breaks (removed/renamed exports still imported). TS. |
 | `query_symbol_importers` | Importers of a module's exports plus which break on rename. TS. |
 | `get_callers` | Deterministic committed callers of a function. |
+| `get_blast_radius` | Bounded transitive callers of a function (multi-hop change reach); the judge's own walk, surfaced as a tool. |
 | `get_contract_breaks` | Deterministic caller-contract (positional narrowing) breaks for a diff. |
 | `get_duplication_candidates` | Existing functions a file's new functions may re-implement. |
 | `scan_dependency_changes` | No-network supply-chain review of a manifest/lockfile diff. |

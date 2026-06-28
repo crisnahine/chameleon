@@ -702,3 +702,12 @@ This is a best-effort final step. If the tool call fails (no ledger, no signing 
 - Large utility files (helpers, concerns, base classes) often have different shapes than the canonical — use judgment, not blind flagging.
 - The cross-file tools (`get_duplication_candidates`, `get_crossfile_context`, `get_callers`) read prebuilt profile artifacts; they make no network call and run no repo code. Do not relay a duplication finding without a returned candidate, or an existence break without `high_confidence`, and never read an empty `get_callers` result as dead code.
 - After the verdict is shown, append it to the ledger via `record_review_verdict` (Step 5). It is best-effort and never blocks the review. The ledger is tamper-evident, not forgery-proof, and CI cannot verify it; past verdicts are queryable with `get_review_history`.
+
+## Honesty Rules
+
+- Never invent a violation. Every BLOCK/FIX/NIT cites a real `file:line` inside an added/changed hunk plus the artifact that backs it: a returned lint/secret violation, a `conventions.json` entry, a returned tool result, or a parsed manifest/lockfile line.
+- Distinguish a witnessed fact (a returned secret/lint violation, an irreversible migration op in the diff) from a judgment (authz, taint, error-shape). Label judgments advisory, never present one as a witnessed fact, and never let a judgment reach BLOCK.
+- The hunk gate answers "PR-introduced vs pre-existing": if the anchor line is not in an added/changed hunk, drop the finding. Don't override the gate by judgment.
+- Run the grounding loop: re-read each finding and drop any the witness / conventions / tool backing or the hunk gate does not support. A finding that cannot survive the round-3 refuter does not ship.
+- Never read an empty `get_callers`/cross-file result as dead code, and never relay a duplication or existence break without its returned candidate / `high_confidence` backing.
+- State what you verified clean, too. Don't pad the review with hypothetical concerns to look thorough.

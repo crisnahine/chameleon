@@ -130,6 +130,26 @@ def test_source_newline_injection_is_collapsed(tmp_path, monkeypatch):
     assert [b["slug"] for b in blocks] == ["real-idiom"]
 
 
+def test_server_wrapper_forwards_source(tmp_path, monkeypatch):
+    # Regression: the MCP-exposed wrapper must forward ``source`` to the tools
+    # impl. It previously omitted the param, leaving the documented source= path
+    # unreachable over MCP even though the impl rendered it.
+    from chameleon_mcp import server
+
+    repo = _setup_repo(tmp_path, monkeypatch)
+    res = _data(
+        server.teach_profile_structured(
+            str(repo),
+            slug="wrapper-prov",
+            rationale="use the wrapper",
+            source="src/lib/http.ts @ abc1234",
+        )
+    )
+    assert res["status"] == "success"
+    idioms = (repo / ".chameleon" / "idioms.md").read_text(encoding="utf-8")
+    assert "Source: src/lib/http.ts @ abc1234" in idioms
+
+
 def test_deprecated_idiom_carries_source(tmp_path, monkeypatch):
     # Provenance is preserved on the deprecated (audit-history) path too.
     from chameleon_mcp import tools

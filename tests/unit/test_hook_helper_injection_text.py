@@ -289,9 +289,14 @@ def _repo_with_signatures(tmp_path: _Path) -> tuple[_Path, str]:
     return tmp_path, str(svc / "invoiceService.ts")
 
 
-def test_nearby_signatures_off_by_default(tmp_path, monkeypatch):
+def test_nearby_signatures_on_by_default(tmp_path, monkeypatch):
     monkeypatch.delenv("CHAMELEON_NEARBY_SIGNATURES", raising=False)
     repo, target = _repo_with_signatures(tmp_path)
+    # Graduated to default-on: the sibling contract renders with no env flag set.
+    out = hook_helper._nearby_signatures_section(target, repo)
+    assert "record(event: AuditEvent): void" in out
+    # Kill switch still fully suppresses it.
+    monkeypatch.setenv("CHAMELEON_NEARBY_SIGNATURES", "0")
     assert hook_helper._nearby_signatures_section(target, repo) == ""
 
 

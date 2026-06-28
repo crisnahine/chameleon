@@ -152,6 +152,27 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
 
 
 @mcp.tool()
+def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int = 0) -> dict:
+    """Transitive callers of a function (change blast radius), from the calls snapshot.
+
+    Walks the committed calls_index.json UPWARD from ``function_name`` in
+    ``file_path`` and returns the bounded caller chains that reach it: "if I
+    change this, what transitively calls it". Each chain is root first
+    (function -> caller -> caller's caller ...). ``depth`` is the hop count;
+    it defaults to the judge's transitive depth and is clamped to
+    [1, BLAST_RADIUS_MAX_DEPTH], sharing the judge's fanout / total-node caps.
+
+    This is the same conservative reach the turn-end correctness judge walks,
+    surfaced so pr-review and the human can ask beyond one-hop get_callers.
+    Grades are deterministic (same_file, import, constant_receiver). Absence of a
+    caller is NOT dead code (dynamic dispatch / reflection / post-bootstrap
+    callers are invisible). Fails open with found=False on any ambiguity. Never
+    fabricates a caller.
+    """
+    return tools.get_blast_radius(repo, file_path, function_name, depth)
+
+
+@mcp.tool()
 def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     """ADVISORY: is this branch's diff vs base_ref safe to auto-pass, or human?
 
@@ -502,6 +523,7 @@ def teach_profile_structured(
     counterexample: str | None = None,
     archetype: str | None = None,
     status: str = "active",
+    source: str | None = None,
 ) -> dict:
     """Structured-form idiom capture for /chameleon-teach.
 
@@ -510,6 +532,10 @@ def teach_profile_structured(
     the same format as free-form teach_profile, and delegates to
     teach_profile for the downstream protections (advisory lock,
     sanitization, placeholder strip).
+
+    ``source`` records where the idiom came from (a doc path:line, a git ref,
+    or a free-form note) as a ``Source:`` line in idioms.md, so an auto-derived
+    or doc-grounded idiom is traceable back to its evidence at trust-review time.
     """
     return tools.teach_profile_structured(
         repo,
@@ -519,6 +545,7 @@ def teach_profile_structured(
         counterexample=counterexample,
         archetype=archetype,
         status=status,
+        source=source,
     )
 
 
@@ -598,6 +625,25 @@ def check_idiom_candidates(repo: str, candidates: list) -> dict:
     never modified or removed by this flow).
     """
     return tools.check_idiom_candidates(repo, candidates)
+
+
+@mcp.tool()
+def get_prose_rule_candidates(repo: str) -> dict:
+    """Doc-stated "use X not Y" rules, corroborated against the repo's own imports.
+
+    Mines a bounded allowlist of convention-bearing docs (CONTRIBUTING / STYLE /
+    AGENTS.md / docs) for import-preference rules AST analysis cannot infer, then
+    tags each by how the code backs it: ``corroborated`` (teachable -- preferred
+    imported, discouraged absent), ``contested`` (discouraged still imported; doc
+    and code disagree), or ``unsupported`` (cannot verify). Each candidate carries
+    its ``source`` provenance (doc-path:line).
+
+    PROPOSE-ONLY and read-only: it never writes idioms.md. Feed a corroborated
+    candidate to teach_competing_import on approval. Offline, no repo-code
+    execution, bounded. Fails open with found=False on an unresolvable / untrusted
+    repo.
+    """
+    return tools.get_prose_rule_candidates(repo)
 
 
 @mcp.tool()

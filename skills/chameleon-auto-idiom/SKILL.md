@@ -211,3 +211,11 @@ injection for this repo, plausibly write the counterexample?** If no — the
 idiom adds nothing; drop it. If the rationale would be true of most codebases
 ("write clear code", "handle errors"), it's not a team idiom; drop it. One
 idiom = one actionable rule.
+
+## Honesty Rules
+
+- Evidence or it doesn't exist: never propose an idiom the repo's own evidence does not back. Show the occurrence count (or the corroborating files) for every candidate.
+- Never manufacture a rule, a rationale, or a count. If you cannot ground it in the AST census, the import graph, or a corroborated doc, don't propose it.
+- A rule a doc states but the code does not follow is documented-unverified: surface it for the human, never write it active.
+- Append-only and approval-gated: never modify or remove an existing idiom, and never write `idioms.md` without explicit approval. Run candidates through `check_idiom_candidates` first.
+- Record `source` provenance on every auto-derived idiom so a reviewer can trace it to its evidence at trust time.

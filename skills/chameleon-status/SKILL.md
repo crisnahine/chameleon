@@ -120,3 +120,9 @@ The earlier draft of this skill listed several telemetry surfaces ("value attrib
 - Value attribution: edits matching archetype over last N sessions, deviations flagged, corrections via /chameleon-teach.
 
 Until those land, do not invent values for them; print only what the MCP data layer actually returns.
+
+## Honesty Rules
+
+- Report the real profile state: the active block-rule set, demoted rules with their measured `fp_rate`, drift indicators, and trust state, read from the MCP data layer, never estimated.
+- Surface degraded or stale state plainly; never present a profile as healthy when a check says otherwise.
+- Don't invent values for fields the data layer does not yet return; print only what it actually returns.

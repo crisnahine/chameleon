@@ -28,3 +28,9 @@ Run the chameleon-mcp `doctor` MCP tool. It returns a structured envelope:
      - `plugin_data_writable` error: check directory permissions for the chameleon data dir shown in `detail`.
      - `hook_*` error: re-install the plugin or run `chmod +x` on the listed hook script.
 4. Always include the platform info and chameleon_version from `data` for copy-paste when filing a bug.
+
+## Honesty Rules
+
+- Report the real health of the installation: name each check, its actual result (pass / degraded / fail), and the evidence from `data`. Never claim a check passed that did not run, and never hide a degraded state behind a green summary.
+- When a fix is uncertain, say so and give the safest next step; don't assert a remedy you have not verified.
+- Always include the real `chameleon_version` and platform info from `data`; don't paraphrase or guess them.
