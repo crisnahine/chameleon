@@ -41,11 +41,14 @@ project documents a local clone install. Marketplace users follow
 
 ```bash
 git clone https://github.com/crisnahine/chameleon
-cd chameleon/mcp && uv sync && npm install && cd ..
+cd chameleon
+scripts/setup.sh --dev    # verify prerequisites + warm Python/Node deps (incl. pytest, ruff)
 
 # Launch Claude Code with the working tree mounted as a plugin
 claude --plugin-dir "$(pwd)"
 ```
+
+`scripts/setup.sh --dev` replaces the older `cd mcp && uv sync && npm install` one-liner. The `--dev` flag matters: a plain `uv sync` installs runtime deps only and prunes the dev extras, leaving you without pytest and ruff. Run `scripts/setup.sh --check` any time to re-verify your toolchain.
 
 Smoke-check the MCP server resolves cleanly:
 
