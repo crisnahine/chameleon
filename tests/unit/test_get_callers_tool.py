@@ -111,6 +111,40 @@ def test_get_callers_returns_callers(trusted_repo):
 
 
 # ---------------------------------------------------------------------------
+# Repo-relative file_path resolves against the repo arg (not the server CWD)
+# ---------------------------------------------------------------------------
+
+
+def test_get_callers_accepts_relative_file_path(trusted_repo):
+    """A repo-relative file_path is the natural input form: the calls index keys,
+    search_codebase, and describe_codebase all emit relative paths. It must
+    resolve against the repo arg's root, not the server CWD (which silently fails
+    open), and return the SAME callers as the absolute form."""
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(
+        cham,
+        {
+            "service.ts": {
+                "makeService": {
+                    "callers": [
+                        {"path": "consumer.ts", "caller": "setup", "line": 5, "grade": "import"}
+                    ],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
+    )
+    res = tools.get_callers(str(trusted_repo), "service.ts", "makeService")  # RELATIVE path
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True, f"relative path silently failed open: {data}"
+    assert data["module"] == "service.ts"
+    assert data["total"] == 1
+    assert len(data["callers"]) == 1
+
+
+# ---------------------------------------------------------------------------
 # Artifact absent -> found False, reason no-calls-index
 # ---------------------------------------------------------------------------
 

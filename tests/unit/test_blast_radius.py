@@ -126,6 +126,19 @@ def test_get_blast_radius_returns_chain(trusted_repo):
     assert "note" in data and "dead code" in data["note"].lower()
 
 
+def test_get_blast_radius_accepts_relative_file_path(trusted_repo):
+    """A repo-relative file_path must resolve against the repo arg's root (not the
+    server CWD) and return the same chains as the absolute form."""
+    cham = trusted_repo / ".chameleon"
+    _write_calls_index(cham, _TWO_HOP)
+    res = tools.get_blast_radius(str(trusted_repo), "service.ts", "makeService")  # RELATIVE
+    _assert_envelope(res)
+    data = res["data"]
+    assert data["found"] is True, f"relative path silently failed open: {data}"
+    assert data["module"] == "service.ts"
+    assert data["chains"]
+
+
 def test_get_blast_radius_no_artifact(trusted_repo):
     res = tools.get_blast_radius(str(trusted_repo), str(trusted_repo / "service.ts"), "makeService")
     _assert_envelope(res)

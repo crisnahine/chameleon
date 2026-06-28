@@ -2976,9 +2976,17 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
         return _envelope(dict(empty))
 
     p = Path(file_path).expanduser()
+    if not p.is_absolute():
+        # A repo-relative file_path is the natural input form: the calls index
+        # keys, search_codebase, and describe_codebase all emit relative paths.
+        # Resolve it against the repo arg's root before find_repo_root, which
+        # otherwise walks up from the server CWD and silently fails open.
+        _arg_root, _ = _resolve_repo_arg(repo)
+        if _arg_root is not None:
+            p = (_arg_root / p).resolve()
     repo_root = find_repo_root(p)
     if repo_root is None:
-        return _envelope(dict(empty))
+        return _envelope({**empty, "reason": "path-unresolved"})
 
     # The repo arg must agree with the file's own repo, mirroring get_archetype's
     # cross-arg consistency check (a mismatched repo id must not read another
@@ -3113,9 +3121,17 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
         return _envelope(dict(empty))
 
     p = Path(file_path).expanduser()
+    if not p.is_absolute():
+        # A repo-relative file_path is the natural input form: the calls index
+        # keys, search_codebase, and describe_codebase all emit relative paths.
+        # Resolve it against the repo arg's root before find_repo_root, which
+        # otherwise walks up from the server CWD and silently fails open.
+        _arg_root, _ = _resolve_repo_arg(repo)
+        if _arg_root is not None:
+            p = (_arg_root / p).resolve()
     repo_root = find_repo_root(p)
     if repo_root is None:
-        return _envelope(dict(empty))
+        return _envelope({**empty, "reason": "path-unresolved"})
 
     # The repo arg must agree with the file's own repo, mirroring
     # query_symbol_importers' cross-arg consistency check.
@@ -3241,9 +3257,17 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
         return _envelope(dict(empty))
 
     p = Path(file_path).expanduser()
+    if not p.is_absolute():
+        # A repo-relative file_path is the natural input form: the calls index
+        # keys, search_codebase, and describe_codebase all emit relative paths.
+        # Resolve it against the repo arg's root before find_repo_root, which
+        # otherwise walks up from the server CWD and silently fails open.
+        _arg_root, _ = _resolve_repo_arg(repo)
+        if _arg_root is not None:
+            p = (_arg_root / p).resolve()
     repo_root = find_repo_root(p)
     if repo_root is None:
-        return _envelope(dict(empty))
+        return _envelope({**empty, "reason": "path-unresolved"})
 
     # The repo arg must agree with the file's own repo, mirroring get_callers'
     # cross-arg consistency check.
@@ -3523,9 +3547,17 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
         return _envelope(dict(empty))
 
     p = Path(file_path).expanduser()
+    if not p.is_absolute():
+        # A repo-relative file_path is the natural input form: the calls index
+        # keys, search_codebase, and describe_codebase all emit relative paths.
+        # Resolve it against the repo arg's root before find_repo_root, which
+        # otherwise walks up from the server CWD and silently fails open.
+        _arg_root, _ = _resolve_repo_arg(repo)
+        if _arg_root is not None:
+            p = (_arg_root / p).resolve()
     repo_root = find_repo_root(p)
     if repo_root is None:
-        return _envelope(dict(empty))
+        return _envelope({**empty, "reason": "path-unresolved"})
 
     expected_repo_id = _compute_repo_id(repo_root)
     if isinstance(repo, str) and _REPO_ID_RE.match(repo):
@@ -4109,9 +4141,17 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
         return _envelope(dict(empty))
 
     p = Path(file_path).expanduser()
+    if not p.is_absolute():
+        # A repo-relative file_path is the natural input form: the calls index
+        # keys, search_codebase, and describe_codebase all emit relative paths.
+        # Resolve it against the repo arg's root before find_repo_root, which
+        # otherwise walks up from the server CWD and silently fails open.
+        _arg_root, _ = _resolve_repo_arg(repo)
+        if _arg_root is not None:
+            p = (_arg_root / p).resolve()
     repo_root = find_repo_root(p)
     if repo_root is None:
-        return _envelope(dict(empty))
+        return _envelope({**empty, "reason": "path-unresolved"})
 
     # The repo arg must agree with the file's own repo, mirroring the other
     # cross-file reads (a mismatched repo id must not read another repo's
