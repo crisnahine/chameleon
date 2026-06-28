@@ -29,6 +29,8 @@ grounded in chameleon data or a removed hunk line — see the grounding loop bel
 
 Follow these steps in order. Do not skip steps.
 
+**Read-only review.** This review never mutates the repo: do not edit the working tree, stage changes, move HEAD, or switch/reset/create branches. Inspect with `git diff` / `git show` / `git log` (and `gh` / `bbcurl` for a PR) only. If you must inspect another revision, use `git worktree add` into a temp dir, never `git checkout` / `git reset` on this checkout. (You also do NOT auto-fix code, per the Important section.)
+
 ### Step 1: Parse input
 
 Determine what to review:
@@ -75,8 +77,8 @@ STOP here and continue with Step 2. If `recommended` is true, fan out:
   `scan_dependency_changes` parses the whole diff in one call, so it runs once here,
   never per slice), 2.8 (co-change), 2.9a
   (layering — needs the import graph), 2.9b (duplication), 2.9c (existence-break),
-  2.9d (caller), 2.9e (contract-break), 3a (task context), 3b (completeness), 3f-i (stale paired-test),
-  3g (coverage), 3h (auto-pass). Any pass not listed runs whole-diff at synthesis.
+  2.9d (caller), 2.9e (contract-break), 3a (task context), 3b (completeness), 3c-i (callable-signature drift),
+  3f-i (stale paired-test), 3g (coverage), 3h (auto-pass). Any pass not listed runs whole-diff at synthesis.
   These whole-diff passes run once during synthesis, never in a slice.
 - THEN run the 3-round grounding loop (Step 4a/4b) on the merged findings.
 - Log that fan-out fired and how files were partitioned.
@@ -360,7 +362,11 @@ get_contract_breaks(repo=<repo_id>, base_ref=<the PR base branch, or the branch'
 ```
 It compares each changed TS/Ruby callable's POSITIONAL parameter contract at the merge-base of `base_ref` and HEAD vs HEAD (three-dot semantics, matching the rest of the diff so a divergent base does not read as this branch's change) and returns `findings` only for a callable that NARROWED (a new required positional argument, or an optional positional flipped required) AND has committed callers. Each is a **FIX**: the narrowed callable now mis-matches `caller_total` recorded call sites. Cite the symbol, the `old`->`new` required-positional count, and the affected `callers` file:line list the tool returned (a deterministic fact, same bar as 2.9c). This is the deterministic complement to the LLM contract check: a required-positional narrowing in a low-importer file that the size/blast gates miss. The tool flags ONLY positional narrowing — never a removed/reordered param, a new optional/keyword arg, or a return-type change; for those, fall back to the logic review. If `get_contract_breaks` is unavailable, skip and note it in one line.
 
-### Step 3: Logic review (only when Jira ticket provided)
+### Step 3: Logic review
+
+Edge cases (3c) and callable-signature drift (3c-i) run ALWAYS, ticket or not; neither is gated on a ticket. In fan-out, 3c is delegated per slice (like the change-delta pass 3e, per `reviewer.md`) while 3c-i runs once at whole-diff synthesis. Only task context (3a), implementation completeness (3b), and spec compliance (3d) require a Jira ticket; skip those three in the no-args convention-only review.
+
+**Plan-level concern (calibration).** Review the implementation against the spec, but if an acceptance criterion or spec line is itself contradictory, infeasible, or wrong (not merely unimplemented), say so as a plan-level note rather than only flagging the code. And surface a significant, justified-looking deviation from the spec as a confirm-intent advisory ("the change does X where the spec says Y; confirm this is intended") so the author can distinguish an intentional improvement from a problematic departure, rather than reading it as a flat FIX.
 
 #### 3a. Gather task context
 
@@ -374,7 +380,7 @@ For each requirement or acceptance criterion in the ticket:
 - Is there corresponding code in the diff that implements it?
 - If not, flag as BLOCK: "Requirement X has no implementation in this diff."
 
-#### 3c. Check edge cases
+#### 3c. Check edge cases, performance, and type safety (always)
 
 For each changed file, consider:
 - **Null/nil/undefined guards**: can any input be empty or missing? Is it handled?
@@ -382,6 +388,9 @@ For each changed file, consider:
 - **Authorization**: does the endpoint check permissions? Does it match the ticket's permission requirements? For a Ruby controller, look up the file's archetype in the `required_guards` section of `.chameleon/conventions.json` (`conventions.required_guards[<archetype>]`). When it carries `required_guards` (the authorization guards present in at least 60% of that archetype's controllers, e.g. `["authorize!"]`) and the changed controller declares none of them, raise a **FIX** naming the specific expected guard (`before_action :authorize!`) and the archetype it was derived from. Keep the same honesty label as Step 2.6b: "cannot confirm the new action is covered; authorization may be inherited from a base controller." Check the archetype's `known_guards` first, a guard listed there is a legitimate variant, not a miss. When the archetype has no `required_guards` entry, fall back to the presence-only check (Step 2.6b). Never reach BLOCK; this is advisory.
 - **Error handling**: look up the file's archetype in the `error_handling` section of `.chameleon/conventions.json` (`conventions.error_handling[<archetype>]`). When present, it carries the archetype's dominant shape: `try_catch` or `rescues` frequency, `sample_size`, and an optional `error_shape` naming the project error target (e.g. `render json: { error`, `render_error`, an `*Error`/`*Serializer` call). Cite that entry: "this archetype handles errors via `<error_shape>` in `<frequency>` of its files; this change does not." Raise a **FIX** when the changed code adds an error path that does not match the recorded shape. When the archetype has no `error_handling` entry, fall back to comparing against the canonical witness for the pattern (Step 2c).
 - **Race conditions**: for async or background operations, can two requests conflict?
+- **Performance / scalability (advisory)**: did an added line introduce a query or network/IO call inside a loop (an N+1), an unbounded collection load, or an O(n^2) pass over request-controlled data? These are judgments, not witnessed facts: cap at **FIX**, label advisory, anchor to the added line (the Step 4a hunk gate applies), and raise one only when the cost is visible in the diff, never a hypothetical.
+- **Type safety (advisory)**: did an added boundary drop to `any` / untyped where the archetype's siblings are typed? Note it as a **NIT** (advisory); otherwise type errors are covered by `lint_file` and the Step 3h typecheck fact.
+- **Documentation (advisory)**: a new public export/endpoint that the archetype's siblings document but this change leaves undocumented is a **NIT**, cited against a documented sibling. Do not invent a doc convention the archetype does not show.
 
 Flag genuine risks as FIX. Don't flag hypothetical concerns.
 
@@ -484,6 +493,8 @@ It returns `{auto_pass_eligible, risk, complexity_tier, reasons, facts, changed_
 
 The verdict also carries `typecheck` (three-state) and deterministic test-integrity/content facts inside `facts` (`deleted_test_files`, `net_test_line_delta`, added skip markers, assertion delta, removed guard lines, chameleon-ignore directives added, `blast_radius_unknown`, `diff_scan_truncated`) — all engine-computed. Relay them verbatim; never recompute them by eyeballing the diff. This does NOT loosen the Step 3g integrity rule against hand-counting assertions: the assertion delta is now engine-grounded and arrives in the tool result, and the skill still never counts by hand. The three-state typecheck rule: `typecheck: unavailable` (the default — the runner is opt-in via `CHAMELEON_ALLOW_TSC`) is reported as one fact line and is NOT a needs-human reason; `errors` appears in `reasons` and routes needs-human.
 
+The superpowers reviewer asks "are all tests passing?" — that is OUT OF SCOPE for this static review: it runs nothing and makes no network call. The deterministic test-integrity facts above (and the opt-in typecheck/test states) are the proxy; relay them as the heads-up and say plainly that the suite's actual pass/fail was not executed here.
+
 Read it together with the findings verdict, never instead of it: a change is a credible "no human review needed" candidate only when the findings verdict is APPROVE AND `auto_pass_eligible` is true. A clean findings verdict on a change the router sent to a human (an auth/payment/migration surface, say) is NOT a skip candidate — state that plainly. If the tool is unavailable this session, skip this step and note it in one line, the same as the cross-file passes.
 
 ### Step 4: Output
@@ -534,6 +545,8 @@ Format the review as follows:
 ## Verdict: [APPROVE / APPROVE WITH NITS / NEEDS CHANGES / BLOCK]
 
 Reviewed N files against chameleon conventions + [ticket KEY / branch diff].
+
+Reasoning: <one or two sentences naming the decisive finding(s) behind the verdict — e.g. "Blocks on a removed nil guard in order.rb:47; otherwise in-pattern." For APPROVE, name what made it clean. This is the superpowers "Ready to merge + reasoning" assessment.>
 
 Grounding: rounds 1-2 self-verified; round 3 independently refuted <b> dropped, <c> inline-exempt, <d> self-verified (round 3 unavailable).
 Review fan-out: <inline | M parallel agents over N files>.
@@ -666,6 +679,10 @@ Typecheck: 2 changed file(s) with type errors
 ```
 
 Render the `complexity_tier` field as `Tier: <easy|medium|hard|complex>` with a short reason drawn from the facts, then `auto_pass_eligible` as ELIGIBLE / NEEDS HUMAN, the `risk`, and the `reasons` list verbatim; render the `typecheck` field as `Typecheck: unavailable (<reason>)` / `Typecheck: clean` / `Typecheck: N changed file(s) with type errors`. If the tool was unavailable, write one line saying the auto-pass routing was skipped. Omit nothing: an ELIGIBLE verdict is only a skip candidate when the findings verdict is APPROVE — state that pairing explicitly. The tier is the change's inherent complexity (structural), independent of whether it is clean: an `easy`/`medium` change that is APPROVE + ELIGIBLE is the review-clean routine slice; `hard`/`complex` changes carry an irreducible human-judgment residual even when the findings verdict is clean.
+
+### Recommendations (advisory)
+
+Optional. The superpowers reviewer ends with improvement suggestions for code quality, architecture, or process. Include this section ONLY when you have a concrete, grounded suggestion that is not already a finding above (e.g. "the new util duplicates the date-format helper the repo already wraps; consolidating would remove the off-pattern import", or "this archetype has no test-pairing convention; consider adding one"). Each recommendation must cite the chameleon data or diff fact it rests on, the same integrity bar as a finding; it never carries a severity and never changes the verdict. Omit the section entirely when you have nothing grounded to add — do not pad it with generic best-practice advice.
 
 ### Per-file details
 

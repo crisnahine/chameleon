@@ -86,6 +86,16 @@ The security/secret lint runs PRE-trust, so it grounds a claim even on an
 untrusted profile; the caller/cross-file/duplication tools and convention-based
 adjudication (Step 4) require `trust_state == "trusted"`.
 
+Before agreeing to an external reviewer's suggestion, confirm five things (the
+reviewer can be wrong or lack your context): (1) is it technically correct for
+THIS codebase, not just in general? (2) does it break existing functionality?
+(3) is there a reason the code is currently written this way that the comment
+misses? (4) does it hold on all platforms / runtime versions and not break
+backward compatibility? (5) does the reviewer have the full context? Repo
+grounding answers #1 and part of #2; you answer #3 to #5 by reading the code and
+its history. If you cannot verify one, say so and ask rather than implementing
+blind.
+
 ## Step 4: Adjudicate against chameleon conventions
 
 Use the `repo.id`, `repo.trust_state`, and canonical already resolved by the
@@ -105,6 +115,14 @@ Each item → AGREE / PUSH BACK / NEEDS CLARIFICATION / YAGNI (AGREE is an inter
 triage label, not user-facing copy). YAGNI greps for actual usage first. Order:
 blocking/bugs → simple → complex. If ANY item is unclear, STOP and ask before
 implementing anything (this gate blocks Step 8 only).
+
+Push back (with technical reasoning, never defensiveness) when: the suggestion
+breaks existing functionality; contradicts the repo's canonical / convention; a
+live caller or importer relies on the current shape; it violates YAGNI (no
+usage); it is technically wrong for this stack; a legacy / backward-compat reason
+exists; or the reviewer lacks the full context. If you are reluctant to push back
+out loud, name that tension and surface the issue to the user anyway: honesty
+over comfort.
 
 ## Step 6: Ground (3-round loop) — BEFORE drafting
 
@@ -130,19 +148,33 @@ implement), HOLD it or downgrade to NEEDS CLARIFICATION, never present it as a
 confident pushback and never implement it on an unverified AGREE. Do this BEFORE
 drafting any reply, so the user never sees a draft the loop would kill.
 
+When the refuter or your own re-check shows YOUR pushback was wrong, correct it
+factually and briefly ("Checked X, you're right, it does Y. Fixing."): no long
+apology, no defending why you pushed back, no over-explaining. State the
+correction and move on.
+
 ## Step 7: Draft replies (surviving verdicts only)
 
-Non-performative ("Fixed. <what changed>" / "Checked X: the canonical for
-archetype Y does Z, so ..."). The DRAFT TEXT obeys the global tone rules (hyphens
-only, straight quotes, no filler adjectives). Drafts only — never auto-post. If
-GitHub, note the thread-reply mechanism but draft first and wait for explicit
-approval.
+Non-performative. ALLOWED acknowledgments: "Fixed. <what changed>", "Good catch -
+<specific issue>. Fixed in <location>.", "Checked X: the canonical for archetype Y
+does Z, so ...". FORBIDDEN: "You're absolutely right!", "Great point!", "Excellent
+feedback!", and ANY gratitude ("Thanks", "Thanks for catching that", "Thanks for
+[anything]"). If you catch yourself about to write "Thanks", DELETE IT and state
+the fix instead: actions show you heard the feedback, words do not. The DRAFT TEXT
+obeys the global tone rules (hyphens only, straight quotes, no filler adjectives).
+Drafts only — never auto-post. On GitHub, reply IN the inline comment thread
+(`gh api repos/{owner}/{repo}/pulls/{pr}/comments/{id}/replies`), NOT as a
+top-level PR comment; on Bitbucket, reply on the inline comment's thread via
+`bbcurl`, not a new general comment. Draft first and wait for explicit approval
+before any post.
 
 ## Step 8: Implement on approval — one at a time
 
 After the user approves an item, edit the working tree for that ONE item (the
 edit flows through chameleon's hooks, so it follows conventions), verify it, then
-move to the next. Never batch.
+move to the next. Never batch. After the last approved item lands, run a final
+pass to verify no regressions across the whole set, distinct from the per-item
+verify.
 
 ## Multi-PR (full-stack) branch
 
