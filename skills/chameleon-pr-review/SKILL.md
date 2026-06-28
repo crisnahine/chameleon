@@ -61,6 +61,7 @@ is false (the diff is under the threshold, or the engine saw `CHAMELEON_REVIEW_F
 when it computed the verdict), run the review single-pass inline exactly as today —
 STOP here and continue with Step 2. If `recommended` is true, fan out:
 
+- **If you cannot dispatch in-session Task reviewers** (no Task tool is available in this context — e.g. you are yourself running as a subagent), do NOT skip the review and do NOT rationalize a bypass: run the review single-pass inline exactly as the `recommended=false` path (every pass yourself, over the whole diff), and log `fan-out-recommended-but-unavailable`. The inline run is the correct, complete outcome; fan-out is only a parallelism optimization, never a precondition for reviewing.
 - Partition the changed files (from your Step 1a hunk map) into ~4-6 slices,
   MULTIPLE files per slice — never one slice per file.
 - Dispatch one in-session Task reviewer per slice using `reviewer.md`. Each runs
@@ -90,6 +91,8 @@ does file-reading + judgment only.
 ### Step 2: Convention review
 
 This is the core chameleon review. For EACH changed file:
+
+**Coverage ledger (forcing function).** Before the per-file loop, take the FULL list of changed files from the Step 1a hunk map and run the per-file passes on EVERY one (minus the explicit skips below) — do not sample a subset. `lint_file` (Step 2b) in particular runs on every changed FILE, source or not, because its secret scan is pre-archetype. In the output's Per-file details, account for it explicitly with an `lint_file run on N/N changed files` line (and name any file deliberately skipped per the rules below). A count under N/N is a self-evident gap to close before you render the verdict.
 
 **Skip these files** (false positives):
 - Auto-generated files: `schema.rb`, `*.generated.*`, vendored/third-party files
@@ -126,7 +129,7 @@ lint_file(repo=<repo_id>, archetype=<archetype_name>, content=<file_content>, fi
 
 Collect ALL violations from the response. Each violation has `rule`, `severity`, `message`, `expected`, `actual`.
 
-**Run this on every changed source file, even when no archetype matches.** `lint_file` scans for secrets before it looks at the archetype, so it returns `secret-detected-in-content` violations regardless of whether the file matches a known shape or the profile is trusted. Step 2.6 reads those secret violations, so the lint call cannot be skipped just because `match_quality` is "none". For a file with no archetype, pass the archetype name `get_pattern_context` returned (or the fallback it suggests) and ignore the structural violations; the secret scan still runs.
+**Run this on every changed FILE (source or not), even when no archetype matches.** `lint_file` scans for secrets before it looks at the archetype, so it returns `secret-detected-in-content` violations regardless of whether the file matches a known shape or the profile is trusted. Step 2.6 reads those secret violations, so the lint call cannot be skipped just because `match_quality` is "none" or the file is a doc/config file — the secret scan runs on all of them. When `get_pattern_context` returns `archetype` null/none (no match), STILL call `lint_file`, but pass a non-null placeholder archetype STRING — the fallback `get_pattern_context` suggests, or the literal `"none"`. Do NOT pass `null` and do NOT omit the `archetype` argument: it is a required string, and a null/omitted value makes `lint_file` return early BEFORE the secret and sink scans run, defeating the purpose. With a non-null string the secret scan and the dangerous-sink scan both run regardless of the archetype, and the structural part simply stubs/noops for an unknown archetype (an expected fail-open, not an error) — those `secret-detected-in-content` and sink violations are exactly what Step 2.6a / 2.6d read. Ignore the structural violations for an unmatched file.
 
 #### 2c. Check against canonical witness
 
@@ -685,6 +688,8 @@ Render the `complexity_tier` field as `Tier: <easy|medium|hard|complex>` with a 
 Optional. The superpowers reviewer ends with improvement suggestions for code quality, architecture, or process. Include this section ONLY when you have a concrete, grounded suggestion that is not already a finding above (e.g. "the new util duplicates the date-format helper the repo already wraps; consolidating would remove the off-pattern import", or "this archetype has no test-pairing convention; consider adding one"). Each recommendation must cite the chameleon data or diff fact it rests on, the same integrity bar as a finding; it never carries a severity and never changes the verdict. Omit the section entirely when you have nothing grounded to add — do not pad it with generic best-practice advice.
 
 ### Per-file details
+
+Coverage: lint_file run on N/N changed files. [If under N/N, name the skipped files and why — a gap to close before the verdict.]
 
 #### `path/to/changed_file`
 - Archetype: `name` (confidence: band, match: quality)

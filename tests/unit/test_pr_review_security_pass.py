@@ -39,10 +39,11 @@ def test_security_pass_step_present_and_always_runs():
     assert "every changed source file regardless of whether a Jira ticket" in text
 
 
-def test_lint_runs_on_every_source_file_even_with_no_archetype():
-    """The secret scan needs lint_file to run even when no archetype matches."""
+def test_lint_runs_on_every_file_even_with_no_archetype():
+    """The secret scan needs lint_file to run on every changed file (source or not),
+    even when no archetype matches."""
     text = _skill_text()
-    assert "Run this on every changed source file, even when no archetype matches" in text
+    assert "Run this on every changed FILE (source or not), even when no archetype matches" in text
     # The reason: the secret scan precedes the archetype match and trust gate.
     assert "scans for secrets before it looks at the archetype" in text
     assert 'just because `match_quality` is "none"' in text
