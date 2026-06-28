@@ -486,6 +486,84 @@ def test_auto_refresh_migration_fires_on_missing_enforcement(tmp_path, monkeypat
     _reset_drift_conn_cache()
 
 
+def _run_auto_refresh_prodtip(tmp_path, *, repo_id, resolved_sha, recorded_sha):
+    """Drive _maybe_auto_refresh for a production-pinned repo with no drift and a
+    young profile, so the locked-tip comparison is the ONLY live trigger. Returns
+    the mocked Popen. resolved_sha is the locked ref's current tip; recorded_sha
+    is the SHA the profile was last derived from."""
+    from chameleon_mcp.production_ref import ResolvedRef
+
+    repo = tmp_path / "repo"
+    (repo / ".chameleon").mkdir(parents=True, exist_ok=True)
+    profile_json = repo / ".chameleon" / "profile.json"
+    profile_json.write_text("{}", encoding="utf-8")
+    # enforcement.json present + empty engine stamp -> the migration trigger stays
+    # inert, isolating the production-tip gate.
+    (repo / ".chameleon" / "enforcement.json").write_text('{"block_rules": {}}', encoding="utf-8")
+    now = time.time()
+    os.utime(profile_json, (now, now))  # young profile -> age gate inert
+
+    popen = MagicMock()
+    with (
+        patch("chameleon_mcp.profile.loader.find_repo_root", return_value=repo),
+        patch("chameleon_mcp.tools._compute_repo_id", return_value=repo_id),
+        patch(
+            "chameleon_mcp.profile.config.load_config",
+            return_value=_make_config(drift_threshold=0.9, max_age_hours=168),
+        ),
+        patch(
+            "chameleon_mcp.drift.observations.compute_drift_stats",
+            return_value={"score": 0.0, "count": 0},  # no drift -> drift gate inert
+        ),
+        patch("chameleon_mcp.tools._persisted_production_ref", return_value="main"),
+        patch(
+            "chameleon_mcp.production_ref.resolve_production_ref",
+            return_value=ResolvedRef(ref="origin/main", sha=resolved_sha),
+        ),
+        patch("chameleon_mcp.tools._recorded_derivation_sha", return_value=recorded_sha),
+        patch("subprocess.Popen", popen),
+    ):
+        hh._maybe_auto_refresh(repo)
+    return popen
+
+
+def test_auto_refresh_spawns_on_production_tip_moved(tmp_path, monkeypatch):
+    """Production-pinned repo whose locked tip moved past the recorded derivation
+    SHA (a teammate merged to the production branch) -> spawn refresh even with no
+    working-tree drift and a young profile. This is THE freshness signal for
+    pinned repos, and it fires hands-off at the next session start."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    _reset_drift_conn_cache()
+    popen = _run_auto_refresh_prodtip(
+        tmp_path,
+        repo_id="rid_ar_tipmoved",
+        resolved_sha="newtipsha1234",
+        recorded_sha="oldderivedsha99",
+    )
+    assert popen.called
+    argv = popen.call_args[0][0]
+    assert argv[1] == "-c"
+    assert "refresh_repo" in argv[2]
+    assert popen.call_args.kwargs.get("start_new_session") is True
+    _reset_drift_conn_cache()
+
+
+def test_auto_refresh_skips_when_production_tip_unchanged(tmp_path, monkeypatch):
+    """Production-pinned repo whose locked tip still matches the recorded
+    derivation SHA, with no drift and a young profile -> no spawn. A feature-branch
+    session never moves a production-pinned profile, so chameleon stays quiet."""
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    _reset_drift_conn_cache()
+    popen = _run_auto_refresh_prodtip(
+        tmp_path,
+        repo_id="rid_ar_tipsame",
+        resolved_sha="sametip5678",
+        recorded_sha="sametip5678",
+    )
+    assert not popen.called
+    _reset_drift_conn_cache()
+
+
 def test_auto_refresh_skips_without_chameleon_dir(tmp_path, monkeypatch):
     """No .chameleon/ profile dir -> return before reading config or spawning."""
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
