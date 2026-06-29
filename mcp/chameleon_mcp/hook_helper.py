@@ -419,6 +419,11 @@ def _ignore_hint(paths: object, rule: str = "<rule>") -> str:
     if isinstance(paths, str) or paths is None:
         paths = [paths] if paths else []
     langs = {detect_language(str(p)) for p in paths if p}
+    # A notebook cell is Python (detect_language('.ipynb') is None), so a deny on
+    # cell content must offer the `#` token, not the `//` fallback that would be a
+    # SyntaxError in the cell.
+    if any(str(p).lower().endswith(".ipynb") for p in paths if p):
+        langs.add("python")
     # Unknown extensions never carry violations, so they don't shape the hint.
     langs.discard(None)
     # Ruby and Python both use `#`; TypeScript/JS uses `//`.
@@ -2176,12 +2181,18 @@ def preflight_and_advise() -> int:
             and trust_state == "trusted"
             and repo_root_path is not None
         ):
-            proposed = (
-                tool_input.get("new_string")
-                or tool_input.get("content")
-                or tool_input.get("new_source")
-                or ""
-            )
+            # Bind the proposed content to the field the tool actually writes,
+            # keyed by tool_name. A NotebookEdit writes ``new_source``; the old
+            # ``new_string or content or new_source`` chain let a decoy
+            # ``content``/``new_string`` key on a NotebookEdit shadow it, so the
+            # real cell source reached disk past both the secret and eval scans.
+            # Edit/Write keep the lenient fallback -- their own field has no
+            # shadowing sibling under this matcher.
+            _proposed_tool = str(payload.get("tool_name") or "")
+            if _proposed_tool == "NotebookEdit":
+                proposed = tool_input.get("new_source") or ""
+            else:
+                proposed = tool_input.get("new_string") or tool_input.get("content") or ""
             if proposed and isinstance(proposed, str):
                 from chameleon_mcp.enforcement_calibration import active_block_rules
 
@@ -2288,10 +2299,12 @@ def preflight_and_advise() -> int:
                     # instance_eval stay advisory.
                     session_id = payload.get("session_id")
                     repo_id = repo_info.get("id") or repo_id_hint
+                    _ct = tool_input.get("cell_type")
                     hard_eval, eval_suppressed = _proposed_hard_eval_violations(
                         proposed,
                         file_path,
                         tool_name=str(payload.get("tool_name") or ""),
+                        cell_type=_ct if isinstance(_ct, str) else None,
                     )
                     if eval_suppressed:
                         _record_overrides(
@@ -3656,8 +3669,84 @@ def _proposed_hard_secret_violations(
     return hard, named_suppressed
 
 
+def _notebook_cell_scans_as_python(clipped: str, cell_type: str | None) -> bool:
+    """True when a NotebookEdit's proposed cell source should be scanned as Python.
+
+    A notebook CODE cell is Python (the dominant kernel), so an ``eval()``/
+    ``exec()`` there is the same RCE sink as in a ``.py`` file -- but
+    ``detect_language('.ipynb')`` is None, so the eval-call deny that guards a
+    ``.py`` write would silently skip the notebook path. A MARKDOWN cell is prose
+    (a sentence mentioning ``eval()`` must never hard-block) and is excluded by
+    the caller before this is reached. When the cell type is unstated (an
+    ``edit_mode='replace'`` payload often omits it), the content is treated as
+    code only if it actually parses as Python, so a prose remainder can never
+    false-positive into a block.
+    """
+    if cell_type == "code":
+        return True
+    try:
+        import ast
+
+        ast.parse(clipped)
+        return True
+    except Exception:  # noqa: BLE001 - any parse trouble -> not code -> no scan
+        return False
+
+
+def _notebook_python_to_scan(
+    clipped: str, file_path: str, tool_name: str, cell_type: str | None
+) -> str | None:
+    """Python source to eval-scan for a notebook edit, or None to skip.
+
+    ``detect_language('.ipynb')`` is None, so the eval-call deny that guards a
+    ``.py`` write would skip every notebook path. Recover the Python the edit
+    really writes so an ``eval()``/``exec()`` in a notebook is denied like one in
+    a ``.py``:
+
+    - NotebookEdit: ``clipped`` IS one cell's source. A code cell (or an unstated
+      cell whose source parses as Python) is returned; a markdown cell is prose
+      and any other explicit type (e.g. a non-executed ``raw`` cell) is skipped,
+      so a sentence mentioning ``eval()`` never hard-blocks.
+    - Write/Edit on a ``.ipynb``: ``clipped`` is the notebook JSON, so parse it
+      and return the concatenated source of every code cell. Editing the raw
+      notebook file is as much in the model's control as a NotebookEdit, so the
+      same sink is closed there; a fragment Edit whose ``new_string`` is not whole
+      JSON simply fails to parse and returns None.
+
+    Bounded (the caller already clipped to the scan ceiling) and fully fail-open.
+    """
+    if tool_name == "NotebookEdit":
+        # Only an executed code cell (or an unstated cell that parses as Python) is
+        # scanned; markdown and any other explicit type (raw, ...) are not code.
+        if cell_type not in (None, "code"):
+            return None
+        return clipped if _notebook_cell_scans_as_python(clipped, cell_type) else None
+    if str(file_path).lower().endswith(".ipynb"):
+        try:
+            import json as _json
+
+            nb = _json.loads(clipped)
+            cells = nb.get("cells") if isinstance(nb, dict) else None
+            if not isinstance(cells, list):
+                return None
+            parts: list[str] = []
+            for cell in cells:
+                if not isinstance(cell, dict) or cell.get("cell_type") != "code":
+                    continue
+                src = cell.get("source")
+                if isinstance(src, list):
+                    parts.append("".join(s for s in src if isinstance(s, str)))
+                elif isinstance(src, str):
+                    parts.append(src)
+            joined = "\n".join(p for p in parts if p)
+            return joined or None
+        except Exception:  # noqa: BLE001 - unparseable notebook -> skip, fail open
+            return None
+    return None
+
+
 def _proposed_hard_eval_violations(
-    proposed: str, file_path: str, *, tool_name: str
+    proposed: str, file_path: str, *, tool_name: str, cell_type: str | None = None
 ) -> tuple[list[dict], bool]:
     """Hard-class eval-call violations in proposed content, after ignore filtering.
 
@@ -3679,6 +3768,13 @@ def _proposed_hard_eval_violations(
     inside a string or comment never fires; only a real call in code does.
     Without the gate an unrecognized extension falls through to that scanner's
     raw-content branch and denies on a documented ``eval()`` mention.
+
+    Notebooks are the exception (see :func:`_notebook_python_to_scan`): a
+    NotebookEdit's ``proposed`` is a cell's SOURCE and a Write/Edit on a ``.ipynb``
+    carries the notebook JSON, neither of which ``detect_language`` recognizes
+    even though a code cell is real Python. The code a notebook edit writes is
+    recovered and scanned as Python so an ``eval()`` there is denied exactly like
+    one in a ``.py``; markdown/prose cells are never scanned.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.lint_engine import detect_language, scan_dangerous_sinks
@@ -3690,9 +3786,13 @@ def _proposed_hard_eval_violations(
     )
 
     language = detect_language(file_path)
-    if language is None:
-        return [], False
     clipped = proposed[: threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS")]
+    if language is None:
+        notebook_src = _notebook_python_to_scan(clipped, file_path, tool_name, cell_type)
+        if notebook_src is None:
+            return [], False
+        clipped = notebook_src[: threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS")]
+        language = "python"
     violations = [v.to_dict() for v in scan_dangerous_sinks(clipped, language=language)]
     hard = [v for v in violations if v.get("rule") == "eval-call" and is_hard_class(v)]
     if not hard:
