@@ -4,6 +4,30 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.4] - 2026-06-29
+
+### Added
+
+- **NestJS controller→module co-change advisory.** A new `*.controller.ts` added
+  without a `*.module.ts` companion in the same change-set now surfaces a turn-end
+  advisory: a controller that is never registered in a `@Module`'s
+  `controllers: [...]` array is never routed. This is the TypeScript sibling of the
+  Rails controller→route and Django model→migration co-change rules. It is
+  framework-gated — it fires only where a `package.json` declares `@nestjs`, so an
+  Angular (`*.module.ts`) or routing-controllers / Express (`*.controller.ts`)
+  repo that merely shares the filename suffix never arms it. Advisory, new-file-
+  only, honors `# chameleon-ignore`.
+
+### Changed
+
+- **`docs/language-support-matrix.md` revalidated against the code and its parity
+  gaps re-audited.** Every `file:line` reference was re-derived against the current
+  source, the At-a-glance tallies recomputed from the tables, and all remaining
+  ⚠️/❌ cells re-confirmed as settled language-specific exceptions (each either
+  structurally impossible or false-positive-inducing to "close") — except the
+  NestJS companion pairing added above, which moves TypeScript companion-co-change
+  to full parity (130 all-three-✅ capabilities).
+
 ## [2.38.3] - 2026-06-29
 
 ### Fixed
