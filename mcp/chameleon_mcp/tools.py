@@ -1330,6 +1330,14 @@ def get_archetype(repo: str, file_path: str) -> dict:
         return _envelope(_empty_archetype_envelope("none", False))
 
     p = Path(file_path).expanduser()
+    if not p.is_absolute():
+        # Mirror the call-graph tools (v2.38.1): a repo-relative file_path is a
+        # natural input form, so resolve it against the repo arg's root before
+        # find_repo_root, which otherwise walks up from the server CWD and
+        # silently returns archetype=null with file_exists=false.
+        _arg_root, _ = _resolve_repo_arg(repo)
+        if _arg_root is not None:
+            p = (_arg_root / p).resolve()
 
     content_signal_value: str = _content_signal_for_path(p)
 
@@ -6490,7 +6498,17 @@ def _profile_needs_rederive(profile_dir) -> bool:
     """
     import json as _json
 
+    from chameleon_mcp.bootstrap.transaction import is_committed
     from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
+
+    # COMMITTED sentinel -- the loader's FIRST rejection (loader.py, checked before
+    # generation/schema). A profile missing it is hard-rejected at read time
+    # (profile_corrupted) with the message "run /chameleon-refresh", but the noop
+    # refresh preserved it verbatim, looping that advice forever. Mirror the
+    # sentinel gate here -- a re-derive rewrites COMMITTED -- so refresh repairs an
+    # incomplete/torn-down profile like every other shape the loader rejects.
+    if not is_committed(profile_dir):
+        return True
 
     parsed_artifacts: dict[str, dict] = {}
     for name in ("archetypes.json", "canonicals.json", "rules.json", "conventions.json"):

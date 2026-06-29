@@ -4,6 +4,52 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.7] - 2026-06-29
+
+### Fixed
+
+- **`/chameleon-refresh` left a profile missing its `COMMITTED` sentinel
+  unrepaired** — a recovery dead-end. The loader rejects an uncommitted profile
+  (`profile_corrupted`, "run /chameleon-refresh"), but the re-derive gate only
+  mirrored the loader's later generation/schema checks, not its first one (the
+  sentinel), so a plain refresh noop-preserved it and the advice looped. The
+  gate now re-derives an uncommitted profile (a re-derive rewrites `COMMITTED`),
+  like every other shape the loader rejects.
+- **A non-UTF8 `config.json` crashed `detect_repo` and `get_pattern_context`**
+  on a no-remote repo instead of failing open. `_persisted_repo_uuid` guarded
+  the read with `except OSError` only, but a binary/corrupt config raises
+  `UnicodeDecodeError` (a `ValueError` subclass), which escaped and propagated
+  out of two public tools (one of them the hot-path tool). Now fails open to the
+  path-hash identity. The hooks already wrapped this and were unaffected.
+- **The Next.js app-router role bucketer mis-classified Rails `app/javascript`
+  files.** The `app`-ancestor guard matched any path with a dir literally named
+  `app`, so a Rails TS/JS file stem-named `page`/`layout`/`error` nested under
+  `app/javascript` was bucketed as a Next.js app-router role. The bucketer now
+  excludes a file only when a Rails JS source root (`javascript`/`javascripts`)
+  is an *ancestor* of its route segment — distinguishing the deep Rails
+  `app/javascript/...` tree from a Next.js route literally named `/javascript`
+  (e.g. `app/docs/javascript/page.tsx`), which is preserved.
+- **`edit_observations.rel_path` was stored as an absolute path**, contradicting
+  the drift schema (which documents it repo-relative) and the `decision_log`
+  writer (which stored relative). Claude Code passes an absolute
+  `tool_input.file_path`; it is now relativized against the repo root before
+  recording. A path already relative is kept verbatim.
+- **The merge driver resurrected the "no idioms yet" placeholder** on the first
+  `idioms.md` union merge — the long bootstrap placeholder string was absent
+  from the placeholder set, so a 3-way merge re-added it into a file that now
+  holds real idioms. Added it to the set.
+- **`scan_dependency_changes` silently passed a minified single-line
+  `package.json`.** The per-key supply-chain scanners parse `+  "key": value`
+  lines, so a one-line manifest object (which could hide a `postinstall` script
+  or a non-registry dependency) returned zero findings, indistinguishable from a
+  clean change. A minified manifest now raises one FIX flagging that the
+  structural checks were skipped and the raw diff needs a manual read.
+- Corrected the `daemon_client` module docstring: `call()` returns the full
+  response envelope, not just the `data` payload (callers unwrap `data`).
+- `get_archetype` now resolves a repo-relative `file_path` against the `repo`
+  argument, matching the call-graph tools — a relative path previously resolved
+  against the server CWD and silently returned `archetype: null`.
+
 ## [2.38.6] - 2026-06-29
 
 ### Fixed

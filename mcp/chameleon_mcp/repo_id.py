@@ -158,7 +158,11 @@ def _persisted_repo_uuid(repo_root: Path) -> str | None:
     """
     try:
         raw = (repo_root / ".chameleon" / "config.json").read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
+        # A non-UTF8 config.json (binary/corrupt bytes at the path) must fail open
+        # to the path-hash identity, not raise. UnicodeDecodeError is a ValueError
+        # subclass, not an OSError, so a bare OSError guard let it escape and crash
+        # detect_repo and the hot-path get_pattern_context on a no-remote repo.
         return None
     try:
         data = json.loads(raw)

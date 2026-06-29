@@ -136,7 +136,9 @@ def test_no_archetype_clean_edit_records_observation_decision_and_state(repo, tm
         ).fetchall()
     finally:
         conn.close()
-    assert obs_rows == [(str(f), None, 0)]
+    # rel_path is repo-relative, consistent with the decision_log row above: the
+    # absolute tool_input path is relativized before recording (was stored raw).
+    assert obs_rows == [("src/notes.py", None, 0)]
 
     from chameleon_mcp.enforcement import load_state
 
@@ -148,7 +150,9 @@ def test_no_archetype_clean_edit_records_observation_decision_and_state(repo, tm
 def test_no_archetype_advised_edit_and_existing_state_not_clobbered(repo, tmp_path):
     from chameleon_mcp.enforcement import EnforcementState, FileState, load_state, save_state
 
-    content = 'key = "AKIAIOSFODNN7EXAMPLE"\n'
+    # AWS's published example access key id (not a real credential); this test
+    # deliberately feeds a secret-shaped string to exercise secret detection.
+    content = 'key = "AKIAIOSFODNN7EXAMPLE"\n'  # chameleon-ignore secret-detected-in-content
     f = repo / "src" / "creds.py"
     f.write_text(content, encoding="utf-8")
 

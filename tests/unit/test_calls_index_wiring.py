@@ -184,6 +184,8 @@ def test_needs_rederive_index_checks(tmp_path):
     )
     (cham / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
     (cham / "principles.md").write_text("anti-hallucination protocol\n", encoding="utf-8")
+    # COMMITTED sentinel: the repair gate mirrors the loader's sentinel check.
+    (cham / "COMMITTED").write_text("ok\n", encoding="utf-8")
 
     assert tools._profile_needs_rederive(cham) is False
 

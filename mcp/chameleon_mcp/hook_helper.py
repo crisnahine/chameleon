@@ -124,6 +124,28 @@ def _repo_rel(repo_root: Path | None, file_path: str | None) -> str | None:
         return None
 
 
+def _observation_rel_path(repo_root: Path | None, file_path: str) -> str:
+    """Repo-relative path for an edit_observations row.
+
+    Claude Code passes an ABSOLUTE ``tool_input.file_path``; the drift schema
+    documents ``rel_path`` as repo-relative, so an absolute path under the repo
+    is relativized. A path that is ALREADY relative is kept verbatim -- it is the
+    best repo-relative form available, and resolving it against the process CWD
+    (which is not the repo root) would corrupt it. Falls back to the original
+    string on any resolution failure (e.g. an absolute path outside the repo).
+    Unlike ``_repo_rel`` this never collapses a relative path to its basename.
+    """
+    if not file_path:
+        return file_path
+    p = Path(file_path)
+    if not p.is_absolute() or repo_root is None:
+        return file_path
+    try:
+        return p.resolve().relative_to(repo_root.resolve()).as_posix()
+    except (ValueError, OSError):
+        return file_path
+
+
 def _enf_profile_dir(repo_root: Path) -> Path:
     """The ``.chameleon`` dir the hook's enforcement/profile reads should use.
 
@@ -3972,7 +3994,7 @@ def posttool_verify() -> int:
 
                     record_edit_observation(
                         repo_id,
-                        rel_path=str(file_path),
+                        rel_path=_observation_rel_path(repo_root, file_path),
                         archetype=None,
                         confidence_band=None,
                         matched_canonical=False,
@@ -4041,7 +4063,7 @@ def posttool_verify() -> int:
 
                 record_edit_observation(
                     repo_id=repo_id,
-                    rel_path=str(file_path),
+                    rel_path=_observation_rel_path(repo_root, file_path),
                     archetype=archetype_name,
                     confidence_band=decision_confidence_band,
                     matched_canonical=True,

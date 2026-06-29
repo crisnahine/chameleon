@@ -144,7 +144,9 @@ def test_one_edit_records_exactly_one_drift_row(repo, tmp_path):
     _run_hook("posttool_verify", payload, repo, tmp_path)
     rows = _observation_rows(tmp_path)
     assert len(rows) == 1
-    assert rows[0][0] == file_path
+    # rel_path is repo-relative (schema contract): the absolute tool_input path
+    # is relativized against the repo root before recording.
+    assert rows[0][0] == "src/Widget.ts"
     assert rows[0][1] == "component"
 
 

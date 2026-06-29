@@ -1213,8 +1213,17 @@ def _parse_idioms_for_merge(text: str) -> dict[str, dict[str, str]]:
     return sections
 
 
-# Placeholder lines the empty-section template emits; never user content.
-_IDIOM_PLACEHOLDERS = frozenset({"_(no idioms yet)_", "_(none)_"})
+# Placeholder lines the empty-section template emits; never user content. Both
+# the short form and the long bootstrap form (emitted by the profile writer) must
+# be here, else a 3-way idioms.md union merge resurrects the "no idioms yet" line
+# into a file that now holds real idioms.
+_IDIOM_PLACEHOLDERS = frozenset(
+    {
+        "_(no idioms yet)_",
+        "_(no idioms yet — run /chameleon-teach to capture team conventions)_",
+        "_(none)_",
+    }
+)
 
 
 def _parse_loose_for_merge(text: str) -> dict[str, list[str]]:

@@ -8,11 +8,12 @@ POSIX-only: AF_UNIX does not exist on Windows. `call()` returns None there
 before touching a socket, so the hook helper falls back to the in-process path.
 
 Contract:
-- `call()` returns the response `data` payload on success, or `None` on
-  ANY failure (refused connection, oversize, timeout, parse error). The
-  hook helper takes `None` as the signal to fall back to the in-process
-  path. We deliberately never raise from this module — the daemon is a
-  performance optimization, not a correctness layer.
+- `call()` returns the full decoded response envelope dict on success (the
+  caller unwraps `data` itself), or `None` on ANY failure (refused
+  connection, oversize, timeout, parse error). The hook helper takes `None`
+  as the signal to fall back to the in-process path. We deliberately never
+  raise from this module — the daemon is a performance optimization, not a
+  correctness layer.
 """
 
 from __future__ import annotations

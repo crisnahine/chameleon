@@ -97,6 +97,9 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
         "# principles\n\n## anti-hallucination protocol\n\n- Don't invent symbols.\n",
         encoding="utf-8",
     )
+    # COMMITTED sentinel: the repair gate mirrors the loader's sentinel check, so
+    # a noop-eligible (complete) profile must carry it.
+    (pd / "COMMITTED").write_text("ok\n", encoding="utf-8")
 
     repo_root = repo.resolve()
     repo_id = t._compute_repo_id(repo_root)
@@ -261,6 +264,9 @@ def _complete_profile(tmp_path):
     pd.joinpath("principles.md").write_text(
         "# principles\n\n## anti-hallucination protocol\n\n- x\n", encoding="utf-8"
     )
+    # COMMITTED sentinel: a real bootstrap writes it last, and the repair gate
+    # mirrors the loader's sentinel check, so a complete fixture must carry it.
+    pd.joinpath("COMMITTED").write_text("ok\n", encoding="utf-8")
     return pd
 
 

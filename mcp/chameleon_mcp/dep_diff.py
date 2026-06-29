@@ -33,6 +33,7 @@ mistaken for full coverage.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -417,6 +418,51 @@ def _scan_new_dependencies_gem(path: str, diff_text: str) -> list[DepFinding]:
     return out
 
 
+# Manifest keys whose presence in a single added JSON OBJECT means a whole
+# package.json was (re)written on ONE line. The per-key scanners parse
+# ``+  "key": value`` lines, so a minified manifest defeats every check silently
+# -- a postinstall script or git-source dep hidden in a one-line object yields
+# zero findings, reading as a clean change. This surfaces it as a degraded review.
+_MANIFEST_KEYS = frozenset(
+    {"dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "scripts"}
+)
+
+
+def _scan_minified_manifest(path: str, diff_text: str) -> list[DepFinding]:
+    """Flag a package.json change minified to a single JSON line.
+
+    The per-key scanners cannot decompose a one-line object, so they would
+    silently return nothing. Emit one FIX so the reviewer knows the structural
+    checks were skipped and the raw diff needs a manual read. A normal
+    pretty-printed diff never has a full ``{...}`` object on one added line, so
+    this does not fire on the common case.
+    """
+    for raw in _added_lines(diff_text):
+        stripped = raw.strip().rstrip(",")
+        if not (stripped.startswith("{") and stripped.endswith("}")):
+            continue
+        try:
+            obj = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict) and _MANIFEST_KEYS & obj.keys():
+            return [
+                DepFinding(
+                    check="minified-manifest",
+                    severity="FIX",
+                    path=path,
+                    evidence=(stripped[:120] + "…") if len(stripped) > 120 else stripped,
+                    message=(
+                        "package.json change is minified to a single line; the per-key "
+                        "supply-chain checks (install scripts, non-registry sources, new "
+                        "dependencies) could not run. Review the raw diff manually."
+                    ),
+                    detail={"reason": "single-line-manifest"},
+                )
+            ]
+    return []
+
+
 def scan_dependency_diff(files: dict[str, str]) -> list[DepFinding]:
     """Scan a mapping of ``rel_path -> unified diff text`` for supply-chain signals.
 
@@ -433,6 +479,7 @@ def scan_dependency_diff(files: dict[str, str]) -> list[DepFinding]:
                 out.extend(_scan_install_scripts(path, diff_text))
                 out.extend(_scan_nonregistry_source_npm(path, diff_text))
                 out.extend(_scan_new_dependencies_npm(path, diff_text))
+                out.extend(_scan_minified_manifest(path, diff_text))
             elif base == "Gemfile":
                 out.extend(_scan_nonregistry_source_gem(path, diff_text))
                 out.extend(_scan_new_dependencies_gem(path, diff_text))

@@ -234,6 +234,17 @@ _NEXT_APP_ROLE_NAMES: dict[str, str] = {
     "default": "app-special",
 }
 
+# Source-root directory names that are NOT Next.js route segments. Rails puts its
+# TS/JS under app/javascript (Webpacker/jsbundling) or the legacy
+# app/assets/javascripts, so a file stem-named page/layout/error living under one
+# of those is a Rails file, not an app-router role. Kept DELIBERATELY NARROW to
+# the two names that are unambiguously Rails JS roots and never plausible Next.js
+# route names -- `assets`/`images`/`fonts`/`stylesheets` are all valid Next.js
+# route segments (e.g. an /images gallery route), so excluding them would drop
+# genuine app-router pages. The legacy app/assets/javascripts path is still caught
+# because `javascripts` appears as a segment.
+_NEXT_NON_ROUTE_DIRS: frozenset[str] = frozenset({"javascript", "javascripts"})
+
 
 def nextjs_role_for_path(file_path: str) -> str | None:
     """Return the Next.js app-router role archetype for a TS/JS path, or None.
@@ -261,6 +272,19 @@ def nextjs_role_for_path(file_path: str) -> str | None:
     if role is None:
         return None
     if "app" not in parts[:-1]:
+        return None
+    # The `app` ancestor must be a Next.js ROUTING root, not a Rails source root
+    # named `app`. `javascript`/`javascripts` CAN be a real Next.js route name
+    # (a /javascript tutorial route), so a bare directory-name match over-excludes.
+    # The discriminator is depth: Rails nests its source DEEP under app/javascript
+    # (app/javascript/entrypoints/error.ts, app/javascript/packs/...), while a
+    # Next.js route file sits DIRECTLY in its route segment (app/docs/javascript/
+    # page.tsx). So exclude only when the Rails source name is an ANCESTOR of the
+    # file's immediate route segment -- ``parts[app_idx+1 : -2]`` drops the segment
+    # itself from the check, preserving a route literally named /javascript while
+    # still excluding the deep Rails app/javascript tree.
+    app_idx = parts.index("app")
+    if any(seg in _NEXT_NON_ROUTE_DIRS for seg in parts[app_idx + 1 : -2]):
         return None
     return role
 
