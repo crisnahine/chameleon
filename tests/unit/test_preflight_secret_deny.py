@@ -27,8 +27,10 @@ from unittest.mock import patch
 from chameleon_mcp.enforcement_calibration import write_block_rules
 
 # The canonical documented AWS example key — deterministic kind, never a real
-# credential. The same fixture the sibling secret tests use.
-AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+# credential. The same fixture the sibling secret tests use. The ignore directive
+# is required because this secret-scanner test file must, by its nature, carry a
+# hard-class example token, and the rule is calibration-active in enforce mode.
+AWS_KEY = "AKIAIOSFODNN7EXAMPLE"  # chameleon-ignore secret-detected-in-content
 
 SECRET_CONTENT = f'const k = "{AWS_KEY}";\n'
 
@@ -41,7 +43,7 @@ BARE_IGNORED_CONTENT = f'const k = "{AWS_KEY}"; // chameleon-ignore\n'
 
 # A 40-char base64 run next to a credential keyword: entropy/advisory kind
 # only, excluded from the deny by construction.
-ENTROPY_ONLY_CONTENT = 'const awsSecretKey = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0";\n'
+ENTROPY_ONLY_CONTENT = 'const awsSecretKey = "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0";\n'  # chameleon-ignore secret-detected-in-content
 
 ACTIVE_SECRET_RULE = {"secret-detected-in-content": {"active": True, "fp_rate": 0.0, "sampled": 3}}
 
@@ -75,8 +77,13 @@ def _run_preflight(
     match_quality: str = "ast",
     tool_name: str = "Write",
     archetype: str | None = "component",
+    extra_input: dict | None = None,
 ) -> dict:
-    """Drive preflight_and_advise() through the in-process pattern-context path."""
+    """Drive preflight_and_advise() through the in-process pattern-context path.
+
+    ``extra_input`` merges decoy/extra keys into tool_input (e.g. a clean
+    ``new_string`` alongside a malicious ``content`` to test decoy shadowing).
+    """
     result = {
         "data": {
             "repo": {"id": repo_id, "trust_state": trust_state},
@@ -98,6 +105,8 @@ def _run_preflight(
         tool_input = {"notebook_path": file_path, "new_source": content}
     else:
         tool_input = {"file_path": file_path, "new_string": content}
+    if extra_input:
+        tool_input.update(extra_input)
 
     payload = {
         "tool_name": tool_name,
@@ -651,5 +660,149 @@ def test_eval_shadow_mode_does_not_deny(tmp_path: Path):
         content=EVAL_CONTENT,
         session_id="s-eval-shadow",
         env={"CHAMELEON_ENFORCE": "1"},
+    )
+    assert _decision(out) != "deny"
+
+
+# --- secret scan covers ALL notebook cells (unlike the eval deny) ------------
+# A credential is a leak in ANY notebook cell: it is committed to the .ipynb in
+# version control whether the cell is code, markdown, or raw, and cell_type is a
+# model-supplied field that must not be able to exempt a key. So the secret scan
+# reads the whole proposed content raw (no cell_type exemption) — the opposite of
+# the eval deny, where a markdown cell is safe because it never executes. The .md
+# FILE exclusion stays (it keys on an immutable extension; a cell type is not one).
+# These reuse the module's AWS_KEY fixture so this file carries no new literal token.
+
+from chameleon_mcp.hook_helper import _proposed_hard_secret_violations as _SECRETS  # noqa: E402
+
+
+def test_secret_notebook_markdown_cell_is_flagged():
+    # A credential in a markdown cell still lands in the committed .ipynb -> deny.
+    hard, _ = _SECRETS(
+        f"key for env: {AWS_KEY}\n",
+        "/x/analysis.ipynb",
+        tool_name="NotebookEdit",
+    )
+    assert len(hard) == 1
+
+
+def test_secret_notebook_code_cell_is_flagged():
+    # Neutral variable name (no credential keyword) so this test's own source does
+    # not trip the password_assignment scanner; the AKIA token still detects.
+    hard, _ = _SECRETS(f'k = "{AWS_KEY}"\n', "/x/a.ipynb", tool_name="NotebookEdit")
+    assert len(hard) == 1
+
+
+def test_secret_write_ipynb_scans_all_cells():
+    # Both a markdown-cell and a code-cell credential in a written .ipynb are caught
+    # (the raw JSON carries every cell's source verbatim).
+    nb_md = json.dumps({"cells": [{"cell_type": "markdown", "source": [f"key: {AWS_KEY}"]}]})
+    nb_code = json.dumps({"cells": [{"cell_type": "code", "source": [f'k = "{AWS_KEY}"']}]})
+    assert len(_SECRETS(nb_md, "/x/a.ipynb", tool_name="Write")[0]) == 1
+    assert len(_SECRETS(nb_code, "/x/a.ipynb", tool_name="Write")[0]) == 1
+
+
+def test_secret_non_notebook_paths_unchanged():
+    # The notebook handling must not weaken the .env / .py / code deny, nor the
+    # .md prose exclusion. Neutral variable names keep this test's source clean.
+    code = f'k = "{AWS_KEY}"\n'
+    assert len(_SECRETS(f"k={AWS_KEY}", "/x/.env", tool_name="Write")[0]) == 1
+    assert len(_SECRETS(code, "/x/a.py", tool_name="Write")[0]) == 1
+    assert len(_SECRETS(code, "/x/a.ts", tool_name="Edit")[0]) == 1
+    assert _SECRETS(code, "/x/README.md", tool_name="Write")[0] == []
+
+
+# --- decoy-shadow bypass: per-tool field binding (P1) ------------------------
+# The deny gates must scan the field the tool ACTUALLY writes (Edit=new_string,
+# Write=content, NotebookEdit=new_source). The old "new_string or content" chain
+# let a Write carry a clean decoy new_string that shadowed a malicious content,
+# so the credential/eval/import scans saw the decoy and the real content landed.
+
+from chameleon_mcp.hook_helper import _proposed_content_for_tool  # noqa: E402
+
+
+def test_proposed_content_binds_to_the_tools_real_field():
+    # Each tool's real field wins even when a sibling decoy key is present.
+    ti = {"content": "C", "new_string": "NS", "new_source": "SRC"}
+    assert _proposed_content_for_tool("Write", ti) == "C"
+    assert _proposed_content_for_tool("Edit", ti) == "NS"
+    assert _proposed_content_for_tool("NotebookEdit", ti) == "SRC"
+
+
+def test_proposed_content_non_string_field_coerces_empty():
+    assert _proposed_content_for_tool("Write", {"content": 123}) == ""
+    assert _proposed_content_for_tool("Edit", {"new_string": None}) == ""
+
+
+def test_proposed_content_unknown_tool_scans_all_fields():
+    # An unknown tool (not under the matcher) must scan every candidate so a
+    # decoy can't hide the real one — concatenation, never a single pick.
+    out = _proposed_content_for_tool("Mystery", {"new_string": "A", "content": "B"})
+    assert "A" in out and "B" in out
+
+
+def test_proposed_content_tool_name_is_case_insensitive():
+    ti = {"content": "C", "new_string": "NS", "new_source": "SRC"}
+    assert _proposed_content_for_tool("write", ti) == "C"
+    assert _proposed_content_for_tool("EDIT", ti) == "NS"
+    assert _proposed_content_for_tool("notebookedit", ti) == "SRC"
+
+
+def test_secret_scan_notebook_tool_name_case_insensitive():
+    # A non-canonical "notebookedit" casing must not change the secret scan: a
+    # credential is caught in any cell regardless of tool-name casing.
+    code = f'k = "{AWS_KEY}"\n'
+    for tn in ("notebookedit", "NotebookEdit", "NOTEBOOKEDIT"):
+        assert len(_SECRETS(code, "/x/a.ipynb", tool_name=tn)[0]) == 1
+
+
+def test_eval_scan_notebook_celltype_case_insensitive():
+    # The eval deny IS cell-aware (markdown never executes). Both tool_name and
+    # cell_type casing must be normalized: a code cell typed "Code"/"CODE" is still
+    # scanned (eval caught); a markdown cell is still exempt. The old exact-case
+    # checks let "Code" / a lowercase tool_name fall through and skip the scan.
+    from chameleon_mcp.hook_helper import _proposed_hard_eval_violations as _EVAL
+
+    for tn in ("notebookedit", "NotebookEdit"):
+        for ct in ("code", "Code", "CODE"):
+            assert len(_EVAL("eval(x)", "/x/a.ipynb", tool_name=tn, cell_type=ct)[0]) == 1
+        assert _EVAL("eval(x)", "/x/a.ipynb", tool_name=tn, cell_type="markdown")[0] == []
+        assert _EVAL("eval(x)", "/x/a.ipynb", tool_name=tn, cell_type="Markdown")[0] == []
+
+
+def test_write_decoy_new_string_does_not_shadow_malicious_content(tmp_path: Path):
+    # End-to-end: a Write with a clean decoy new_string + malicious content must
+    # still DENY (the bypass this fix closes).
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    write_block_rules(repo / ".chameleon", ACTIVE_SECRET_RULE)
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/config.ts"),
+        content=SECRET_CONTENT,
+        session_id="s-decoy",
+        env={"CHAMELEON_ENFORCE": "1"},
+        tool_name="Write",
+        extra_input={"new_string": CLEAN_CONTENT},
+    )
+    assert _decision(out) == "deny"
+
+
+def test_write_clean_content_with_decoy_does_not_false_deny(tmp_path: Path):
+    # The mirror: clean content + a (secret-bearing) decoy new_string must NOT
+    # deny — only the real written field (content) is scanned.
+    repo, repo_id = _build_repo(tmp_path, mode="enforce")
+    write_block_rules(repo / ".chameleon", ACTIVE_SECRET_RULE)
+    out = _run_preflight(
+        repo=repo,
+        repo_id=repo_id,
+        tmp_path=tmp_path,
+        file_path=str(repo / "src/config.ts"),
+        content=CLEAN_CONTENT,
+        session_id="s-decoy-clean",
+        env={"CHAMELEON_ENFORCE": "1"},
+        tool_name="Write",
+        extra_input={"new_string": SECRET_CONTENT},
     )
     assert _decision(out) != "deny"

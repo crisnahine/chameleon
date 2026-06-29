@@ -361,6 +361,45 @@ def parse_idiom_blocks(text: str) -> list[dict]:
     return blocks
 
 
+def has_idiom_content(text: str) -> bool:
+    """True when idioms.md carries real content, not just the empty bootstrap scaffold.
+
+    The bootstrap scaffold is structure only — the ``# idioms`` title, the
+    ``## active`` / ``## deprecated`` section headers, and the ``_(no idioms yet …)_``
+    / ``_(none)_`` placeholders. It carries no signal, so a caller that injects
+    idioms.md into the per-edit block or the idiom judge should treat a
+    scaffold-only file as empty (otherwise the model spends attention on a
+    "no idioms yet" placeholder framed as content to imitate).
+
+    A file with ANY substantive line beyond that scaffold returns True: a real
+    ``### slug`` block (active OR deprecated — a retired idiom is still real
+    guidance the team captured), and a hand-edited idioms.md with bare prose that
+    never adopted the ``### slug`` structure. Strict "must have a ### active
+    block" was too aggressive: it silently dropped a hand-written file. Cheap
+    (idioms.md is small); fails closed to False on any parse trouble (no idioms
+    surfaced is the safe degraded state).
+    """
+    if not text or not text.strip():
+        return False
+    try:
+        for line in text.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            # Structural scaffold lines carry no idiom signal.
+            if s == "# idioms" or s.startswith("## "):
+                continue
+            # Only the SPECIFIC bootstrap placeholders are scaffold — matching any
+            # ``_(...)_`` italic line would drop a hand-written idiom wrapped in
+            # markdown italics (the very content this predicate exists to preserve).
+            if s == "_(none)_" or s.startswith("_(no idioms yet"):
+                continue
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def extract_principle_lines(text: str) -> list[str]:
     """Numbered principles + anti-hallucination bullets from principles.md."""
     lines: list[str] = []

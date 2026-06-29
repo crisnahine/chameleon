@@ -4,6 +4,52 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.8] - 2026-06-30
+
+Hardening and effectiveness pass on the PreToolUse hot path and per-edit
+injection — the most important surface — across Edit / Write / NotebookEdit.
+
+### Fixed
+
+- **A `Write`/`MultiEdit` could bypass all three PreToolUse deny gates** via a
+  decoy field. The proposed-content binding was `new_string or content`, so a
+  `Write` (whose real field is `content`) carrying a clean decoy `new_string`
+  shadowed a malicious `content`, and a `MultiEdit` (payload nested in
+  `edits[].new_string`) presented empty content — the credential / eval /
+  banned-import scans saw nothing and the violation reached disk. Content is now
+  bound to the exact field each tool writes (Edit→`new_string`, Write→`content`,
+  NotebookEdit→`new_source`, MultiEdit→`edits[].new_string`) via a shared helper
+  used by both deny-gate sites; an unknown tool scans every candidate field
+  concatenated. Tool-name and notebook `cell_type` matching are case-insensitive,
+  so a non-canonical casing (`notebookedit`, a `"Code"` cell) can never route a
+  credential or `eval()` past a gate.
+- **Three fail-open edges hardened** (all previously fail-safe, now also
+  correct): the per-edit archetype-facts directive screens each rendered
+  `conventions.json` value through the injection-prose scan + fence-break every
+  other render path applies (a poisoned value can no longer render as a chameleon
+  directive); `_emit` no longer raises on a fully-closed stdout
+  (`sys.stdout is None`); and a torn `config.json` on a repo with no git remote
+  now surfaces the "repair the JSON" degraded banner instead of a misleading
+  "untrusted / re-trust" prompt (a torn config resets such a repo's identity).
+
+### Changed
+
+- **Empty-idioms scaffold is no longer injected** into the per-edit block or the
+  turn-end idiom judge. Most repos never run `/chameleon-teach`, so their
+  `idioms.md` is just the bootstrap scaffold (`## active` + `_(no idioms yet …)_`);
+  that placeholder was injected as content to imitate, and is now suppressed.
+  Real idioms — active, deprecated, or hand-edited prose (including markdown
+  italics) — still flow.
+- **The Tier-2 (first-in-archetype) block now leads with archetype-scoped
+  facts**: the class contract the archetype's files implement — base class,
+  required methods, DSL macros, and decorators (e.g. a Rails ActiveInteraction
+  service `extends ActiveInteraction::Base, define execute`, or a NestJS
+  `@Controller`) — and the symbols it already exports ("reuse these before
+  creating a new one"). A compact chameleon directive scoped to the edited
+  archetype, injection-screened and bounded with `+N more` tails, additive over
+  the repo-wide convention block injected once at SessionStart. Default-on, kill
+  switch `CHAMELEON_ARCHETYPE_FACTS=0`.
+
 ## [2.38.7] - 2026-06-29
 
 ### Fixed

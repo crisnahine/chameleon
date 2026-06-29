@@ -554,6 +554,12 @@ def load_profile_dir(profile_dir: Path) -> LoadedProfile:
     try:
         conventions = _loads_hardened(_safe_read_artifact(conventions_path))
     except FileNotFoundError:
+        # ABSENT conventions.json is fine (optional enrichment). A CORRUPT one
+        # (ProfileLoadError: torn JSON, schema-rejected, OR the symlink/size
+        # UnsafeFileError refusal) is NOT swallowed here: it propagates so the
+        # profile reports profile_corrupted with a /chameleon-refresh prompt and
+        # trust_profile refuses it — degrading it to {} instead would mislead
+        # status as healthy and silently load a symlinked artifact.
         conventions = {}
     # Screen poisoned conventions values before the lint consumers render them;
     # trust persists across changes so the staleness gate no longer screens them.

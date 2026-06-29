@@ -51,7 +51,12 @@ def _emit(output: dict) -> None:
     A consumer that closed the pipe (harness timeout-kill, mid-write teardown)
     must not turn into a noisy crash: nobody is left to read the JSON, so
     EPIPE is absorbed and stdout is neutralized for the rest of the process.
+    A fully-closed fd 1 at process start makes CPython set ``sys.stdout`` to
+    None; writing then raises AttributeError, which is absorbed the same way
+    (no reader, nothing to emit).
     """
+    if sys.stdout is None:
+        return
     try:
         sys.stdout.write(json.dumps(output))
         sys.stdout.write("\n")
@@ -1919,6 +1924,121 @@ def _counterexample_section(
         return ""
 
 
+# Bounds for the Tier-2 archetype-facts directive. Kept small so the section is a
+# compact signal (the contract + the names to reuse), never a wall of identifiers.
+_ARCH_FACTS_MAX_METHODS = 8
+_ARCH_FACTS_MAX_MACROS = 8
+_ARCH_FACTS_MAX_EXPORTS = 40
+
+
+def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> str:
+    """Compact, archetype-SCOPED facts for the Tier-2 block: the contract this
+    archetype's files implement and the symbols it already exports.
+
+    Two high-signal, low-volume directives, both scoped to the EDITED archetype
+    (additive over the repo-wide convention union injected once at SessionStart,
+    which the per-edit block never repeats):
+
+    - **Class contract** — for a class-heavy archetype, the base it extends, the
+      methods its files define, and the DSL macros they use (e.g. a Rails
+      ActiveInteraction service: extends ActiveInteraction::Base, define execute,
+      macro object). Surfacing this on the FIRST edit prevents the
+      silently-incomplete class a single witness does not force the model to
+      complete -- the "ActiveInteraction class of miss".
+    - **Check before creating** — the archetype's OWN exported symbols, so the
+      model reuses an existing name instead of duplicating it. Scoped to this one
+      archetype, which is sharper than the SessionStart repo-wide union.
+
+    A chameleon directive (not untrusted repo prose), so the caller renders it
+    OUTSIDE the imitate-spotlight. conventions.json is read straight from disk and
+    scrubbed for injection (trust persists across profile changes, so the
+    staleness gate no longer guards this read path); every rendered value is also
+    sanitized at the boundary. Bounded by the caps above and fully fail-open to "".
+
+    Default-ON, kill switch ``CHAMELEON_ARCHETYPE_FACTS=0``: it adds no repo-code
+    execution and no network (one cached-ish artifact read), so it follows the
+    default-on-with-kill-switch principle.
+    """
+    if os.environ.get("CHAMELEON_ARCHETYPE_FACTS") == "0" or not archetype or repo_root is None:
+        return ""
+    try:
+        conv_path = _enf_profile_dir(repo_root) / "conventions.json"
+        if not conv_path.is_file():
+            return ""
+        conv = json.loads(conv_path.read_text(encoding="utf-8")).get("conventions", {})
+        if not isinstance(conv, dict):
+            return ""
+        from chameleon_mcp.counterexamples import neutralize_fences
+        from chameleon_mcp.profile.loader import _prose_injection_unsafe
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        # Every rendered value (base / method / macro / decorator / export name) is
+        # an attacker-controllable string from a committed profile. This read is RAW
+        # (not via the loader, which scrub_conventions_prose's its copy), and trust
+        # persists across profile changes, so each value must be screened HERE the
+        # way every other conventions render path is: drop it if the injection scan
+        # flags it (a poisoned value that would render as a chameleon directive), then
+        # sanitize tag boundaries and break a smuggled ``` fence. _safe returns "" for
+        # a dropped/empty value; callers skip empties.
+        def _safe(text: object) -> str:
+            # Drop non-string / empty (a None must never render as the literal
+            # "None") and injection-prose values; sanitize + fence-break the rest.
+            if not isinstance(text, str) or not text:
+                return ""
+            if _prose_injection_unsafe(text):
+                return ""
+            return neutralize_fences(sanitize_for_chameleon_context(text))
+
+        def _capped(values: object, cap: int) -> tuple[list[str], str]:
+            # Screen the whole list first, THEN cap, so the "+N more" tail counts
+            # only real (non-empty, non-poisoned) values that were truncated — never
+            # inflated by dropped entries inside the displayed window.
+            if not isinstance(values, (list, tuple)):
+                return [], ""
+            safe_all = [s for v in values if (s := _safe(v))]
+            shown = safe_all[:cap]
+            overflow = len(safe_all) - len(shown)
+            return shown, (f" (+{overflow} more)" if overflow > 0 else "")
+
+        lines: list[str] = []
+        cc_map = conv.get("class_contract")
+        cc = cc_map.get(archetype) if isinstance(cc_map, dict) else None
+        if isinstance(cc, dict):
+            parts: list[str] = []
+            base = cc.get("base")
+            if isinstance(base, str) and base:
+                safe_base = _safe(base)
+                if safe_base:
+                    parts.append(f"extends {safe_base}")
+            # Decorator-anchored archetypes (NestJS @Controller/@Injectable, DRF /
+            # FastAPI) carry their contract in `decorators` with no base/methods, so
+            # omitting it left those exact framework archetypes with no contract line.
+            decs, dec_tail = _capped(cc.get("decorators"), _ARCH_FACTS_MAX_MACROS)
+            if decs:
+                rendered = ", ".join(d if d.startswith("@") else f"@{d}" for d in decs)
+                parts.append(f"decorated with {rendered}{dec_tail}")
+            methods, m_tail = _capped(cc.get("required_methods"), _ARCH_FACTS_MAX_METHODS)
+            if methods:
+                parts.append(f"define {', '.join(methods)}{m_tail}")
+            macros, mac_tail = _capped(cc.get("dsl_macros"), _ARCH_FACTS_MAX_MACROS)
+            if macros:
+                parts.append(f"use macros {', '.join(macros)}{mac_tail}")
+            if parts:
+                lines.append("Class contract for this archetype: " + "; ".join(parts) + ".")
+
+        exports, e_tail = _capped(
+            conv.get("key_exports", {}).get(archetype), _ARCH_FACTS_MAX_EXPORTS
+        )
+        if exports:
+            lines.append(
+                "Already defined in this archetype — reuse these before creating a "
+                "new one: " + ", ".join(exports) + e_tail + "."
+            )
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def _match_quality_lead(match_quality: str, archetype_name: str = "") -> str:
     """Match-quality-calibrated directive that leads the witness region.
 
@@ -2004,6 +2124,54 @@ def _build_untrusted_region(
     if not parts:
         return ""
     return spotlight_untrusted("\n\n".join(parts))
+
+
+def _proposed_content_for_tool(tool_name: str, tool_input: dict) -> str:
+    """The proposed content the given tool actually writes, bound to ITS field.
+
+    Edit writes ``new_string``, Write writes ``content``, NotebookEdit writes
+    ``new_source``, MultiEdit writes ``edits[].new_string``. Binding to the exact
+    field per tool prevents a decoy-shadow bypass of the credential / eval / import
+    deny gates: a lenient ``new_string or content`` fallback would let a Write
+    (whose real field is ``content``) carry a clean decoy ``new_string`` that hides
+    a malicious ``content`` from the scans, so the credential reaches disk. The
+    matcher regex ``Edit|Write|NotebookEdit`` substring-matches ``MultiEdit``, so it
+    can reach this hook with empty top-level fields; reading its nested ``edits``
+    keeps it from skipping every gate. An unknown tool scans every candidate field
+    concatenated, so nothing can hide. Non-string fields coerce to "". Tool-name
+    matching is case-insensitive so a non-canonical casing can never silently route
+    past a deny gate.
+    """
+    tn = tool_name.lower() if isinstance(tool_name, str) else ""
+    if tn == "notebookedit":
+        v = tool_input.get("new_source")
+        return v if isinstance(v, str) else ""
+    if tn == "write":
+        v = tool_input.get("content")
+        return v if isinstance(v, str) else ""
+    if tn == "edit":
+        v = tool_input.get("new_string")
+        return v if isinstance(v, str) else ""
+    if tn == "multiedit":
+        edits = tool_input.get("edits")
+        if isinstance(edits, list):
+            return "\n".join(
+                e["new_string"]
+                for e in edits
+                if isinstance(e, dict) and isinstance(e.get("new_string"), str)
+            )
+        return ""
+    return "\n".join(
+        v
+        for v in (
+            tool_input.get("new_string"),
+            tool_input.get("content"),
+            tool_input.get("new_source"),
+            # MultiEdit-style nested payload, in case an unknown tool carries it.
+            *(e.get("new_string") for e in (tool_input.get("edits") or []) if isinstance(e, dict)),
+        )
+        if isinstance(v, str) and v
+    )
 
 
 def preflight_and_advise() -> int:
@@ -2203,18 +2371,13 @@ def preflight_and_advise() -> int:
             and trust_state == "trusted"
             and repo_root_path is not None
         ):
-            # Bind the proposed content to the field the tool actually writes,
-            # keyed by tool_name. A NotebookEdit writes ``new_source``; the old
-            # ``new_string or content or new_source`` chain let a decoy
-            # ``content``/``new_string`` key on a NotebookEdit shadow it, so the
-            # real cell source reached disk past both the secret and eval scans.
-            # Edit/Write keep the lenient fallback -- their own field has no
-            # shadowing sibling under this matcher.
+            # Bind the proposed content to the exact field the tool writes
+            # (Edit=new_string, Write=content, NotebookEdit=new_source). A lenient
+            # ``new_string or content`` chain let a decoy key shadow the real one
+            # (a Write with a clean decoy ``new_string`` hid its malicious
+            # ``content`` from all three deny scans); per-tool binding closes it.
             _proposed_tool = str(payload.get("tool_name") or "")
-            if _proposed_tool == "NotebookEdit":
-                proposed = tool_input.get("new_source") or ""
-            else:
-                proposed = tool_input.get("new_string") or tool_input.get("content") or ""
+            proposed = _proposed_content_for_tool(_proposed_tool, tool_input)
             if proposed and isinstance(proposed, str):
                 from chameleon_mcp.enforcement_calibration import active_block_rules
 
@@ -2226,6 +2389,11 @@ def preflight_and_advise() -> int:
                 if "secret-detected-in-content" in active_rules:
                     session_id = payload.get("session_id")
                     repo_id = repo_info.get("id") or repo_id_hint
+                    # No cell_type: a credential is a leak in ANY notebook cell
+                    # (it is committed to the .ipynb regardless of cell type), and
+                    # cell_type is model-supplied, so the secret scan reads the
+                    # whole proposed content raw. (The eval deny is cell-aware
+                    # because eval only matters when executed.)
                     hard, named_suppressed = _proposed_hard_secret_violations(
                         proposed,
                         file_path,
@@ -2426,6 +2594,42 @@ def preflight_and_advise() -> int:
 
     session_id = payload.get("session_id")
     if trust_state == "untrusted" and repo_id:
+        # A torn/unparseable config.json can present as "untrusted" rather than as
+        # the enforcement-degraded state: on a repo with NO git remote, identity
+        # falls back to config.json's repo_uuid, so a torn config flips the repo_id
+        # to a path-hash that no trust record matches. Telling the user to
+        # /chameleon-trust then is misleading (and re-granting binds the path-hash
+        # id, so a later JSON repair silently drops trust). Detect a torn config and
+        # lead with the repair guidance instead. Fail-open: any read trouble keeps
+        # the normal trust prompt.
+        _config_torn = False
+        try:
+            if repo_root_path is not None:
+                _cfgp = _enf_profile_dir(repo_root_path) / "config.json"
+                if _cfgp.is_file():
+                    try:
+                        json.loads(_cfgp.read_text(encoding="utf-8"))
+                    except Exception:
+                        _config_torn = True
+        except Exception:
+            _config_torn = False
+        if _config_torn and _should_emit_untrusted_prompt(repo_id, session_id):
+            _metric(
+                advisory_emitted=True,
+                repo_id=repo_id,
+                trust_state="untrusted",
+                archetype=archetype_name,
+                confidence=confidence_band,
+            )
+            _emit_chameleon_context(
+                "<chameleon-context>\n[🦎 chameleon]\n\n"
+                + _CONFIG_MALFORMED_BANNER.rstrip()
+                + "\nOn a repo with no git remote, a torn config.json also resets "
+                "the repo's identity, which can surface as 'untrusted' — repair the "
+                "JSON first, then re-run /chameleon-trust only if still prompted.\n"
+                "</chameleon-context>"
+            )
+            return 0
         if _should_emit_untrusted_prompt(repo_id, session_id):
             block = (
                 "<chameleon-context>\n"
@@ -2497,7 +2701,10 @@ def preflight_and_advise() -> int:
 
                 active_rules = active_block_rules(profile_dir)
             if "import-preference-violation" in active_rules:
-                proposed = tool_input.get("new_string") or tool_input.get("content") or ""
+                # Per-tool field binding via the shared helper (as the secret/eval gate uses).
+                proposed = _proposed_content_for_tool(
+                    str(payload.get("tool_name") or ""), tool_input
+                )
                 # Gate on a confident archetype match. "ast" is the structural
                 # match on existing content; "exact" is the path-based match a
                 # brand-new file (Write target, no content on disk yet) resolves
@@ -2703,6 +2910,14 @@ def preflight_and_advise() -> int:
             "current profile. Suggest /chameleon-trust to re-confirm. Do not block "
             "the edit; chameleon advisory is provided below for reference only.\n\n"
         )
+    # Archetype-scoped facts (the class contract this archetype implements + the
+    # symbols it already exports) lead the block as a chameleon directive, OUTSIDE
+    # the imitate-spotlight: "what to implement / what to reuse" is sharper on the
+    # FIRST edit than a single witness, and scoped to this archetype it is additive
+    # over the repo-wide convention union injected once at SessionStart.
+    facts = _archetype_facts_section(archetype_name, repo_root_path)
+    if facts:
+        block += facts + "\n\n"
     # Gather the sibling listing first, then emit the whole verbatim repo-derived
     # region (canonical witness + team idioms + sibling listing) as ONE
     # spotlighted block. The marker gives the model a provenance signal that this
@@ -3645,6 +3860,19 @@ def _proposed_hard_secret_violations(
     high-precision. A real secret lives inside a string literal, so the scan runs
     against RAW content (the per-language string strip would blank the token
     itself and find nothing).
+
+    Notebooks are NOT cell-type-exempt, unlike the eval deny. The two sinks have
+    different risk models: an ``eval()`` only matters if EXECUTED, so a markdown
+    cell (never run) is genuinely safe and the eval path skips it; a credential
+    matters if PERSISTED, and a notebook markdown/raw cell is committed to the
+    ``.ipynb`` in version control exactly like a code cell. ``cell_type`` is also
+    a model-supplied field, so honoring it would let a code-bearing cell be
+    mislabeled ``markdown`` to slip a key past the gate. The whole proposed
+    content is therefore scanned RAW: for a NotebookEdit that is the cell source,
+    for a Write/Edit of a ``.ipynb`` it is the notebook JSON (whose cell-source
+    strings carry the token verbatim) — a secret in any cell is caught. The
+    ``.md``/``.txt`` exclusion above stays file-extension-based (immutable,
+    unambiguously a docs file), which a notebook cell is not.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.lint_engine import scan_hard_secrets
@@ -3678,7 +3906,7 @@ def _proposed_hard_secret_violations(
         kept = [v for v in hard if not is_violation_ignored(v, idx)]
         named_suppressed = len(kept) < len(hard)
         hard = kept
-    if hard and tool_name in ("Edit", "NotebookEdit"):
+    if hard and isinstance(tool_name, str) and tool_name.lower() in ("edit", "notebookedit"):
         disk_idx = build_ignore_index(_read_file_for_ignore(file_path), file_path=file_path)
         if disk_idx is not None and (disk_idx.file_rules or disk_idx.named_anywhere):
             file_scope = IgnoreIndex(
@@ -3736,13 +3964,19 @@ def _notebook_python_to_scan(
       JSON simply fails to parse and returns None.
 
     Bounded (the caller already clipped to the scan ceiling) and fully fail-open.
+    Tool-name AND cell_type matching are case-insensitive: a non-canonical
+    ``notebookedit`` casing must be treated as a cell-source edit (not fall through
+    to the ``.ipynb`` whole-notebook JSON branch and skip the scan), and a code
+    cell typed ``"Code"``/``"CODE"`` must still be scanned rather than read as a
+    non-code cell and skipped.
     """
-    if tool_name == "NotebookEdit":
+    ct = cell_type.lower() if isinstance(cell_type, str) else None
+    if isinstance(tool_name, str) and tool_name.lower() == "notebookedit":
         # Only an executed code cell (or an unstated cell that parses as Python) is
         # scanned; markdown and any other explicit type (raw, ...) are not code.
-        if cell_type not in (None, "code"):
+        if ct not in (None, "code"):
             return None
-        return clipped if _notebook_cell_scans_as_python(clipped, cell_type) else None
+        return clipped if _notebook_cell_scans_as_python(clipped, ct) else None
     if str(file_path).lower().endswith(".ipynb"):
         try:
             import json as _json
@@ -3753,7 +3987,10 @@ def _notebook_python_to_scan(
                 return None
             parts: list[str] = []
             for cell in cells:
-                if not isinstance(cell, dict) or cell.get("cell_type") != "code":
+                if not isinstance(cell, dict):
+                    continue
+                _cct = cell.get("cell_type")
+                if not (isinstance(_cct, str) and _cct.lower() == "code"):
                     continue
                 src = cell.get("source")
                 if isinstance(src, list):
@@ -3825,7 +4062,7 @@ def _proposed_hard_eval_violations(
         kept = [v for v in hard if not is_violation_ignored(v, idx)]
         named_suppressed = len(kept) < len(hard)
         hard = kept
-    if hard and tool_name in ("Edit", "NotebookEdit"):
+    if hard and isinstance(tool_name, str) and tool_name.lower() in ("edit", "notebookedit"):
         disk_idx = build_ignore_index(_read_file_for_ignore(file_path), file_path=file_path)
         if disk_idx is not None and (disk_idx.file_rules or disk_idx.named_anywhere):
             file_scope = IgnoreIndex(
@@ -5032,10 +5269,16 @@ def _idiom_review_gate(
         # backstop reads them straight from disk (not via load_profile_dir), so the
         # loader-side scan does not cover it, and trust persists across changes so
         # the staleness gate no longer does either.
+        from chameleon_mcp.idiom_coverage import has_idiom_content
         from chameleon_mcp.profile.loader import safe_prose_text
 
         idioms_text = safe_prose_text(profile_dir / "idioms.md")
         principles_text = safe_prose_text(profile_dir / "principles.md")
+        # A scaffold-only idioms.md (the common no-/chameleon-teach case) is no
+        # signal: drop it so the judge does not surface "no idioms yet" placeholder
+        # prose as team-idiom content, matching the per-edit get_pattern_context path.
+        if not has_idiom_content(idioms_text):
+            idioms_text = ""
         if not idioms_text.strip() and not principles_text.strip():
             return None
 

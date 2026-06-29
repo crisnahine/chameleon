@@ -1862,6 +1862,17 @@ def get_pattern_context(file_path: str) -> dict:
 
     idioms_text = loaded.idioms_text or ""
     if idioms_text:
+        # A scaffold-only idioms.md ("## active" + "_(no idioms yet …)_") is the
+        # common case (most repos never run /chameleon-teach). Treat it as empty:
+        # injecting the scaffold into the per-edit spotlight or the idiom judge
+        # spends the model's attention on a "no idioms yet" placeholder framed as
+        # content to imitate. Real content (active OR deprecated blocks, or a
+        # hand-edited file) still flows.
+        from chameleon_mcp.idiom_coverage import has_idiom_content
+
+        if not has_idiom_content(idioms_text):
+            idioms_text = ""
+    if idioms_text:
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
         idioms_text = sanitize_for_chameleon_context(idioms_text)
