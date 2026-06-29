@@ -284,6 +284,71 @@ def _python_module_base(module: str, importer_dir: Path, root: Path) -> Path:
     return root / Path(module.replace(".", "/"))
 
 
+_PY_NON_SOURCE_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "vendor",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "env",
+        ".tox",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".chameleon",
+        "build",
+        "dist",
+        ".eggs",
+        "site-packages",
+    }
+)
+
+
+def _python_source_roots(root: Path) -> list[Path]:
+    """Package roots an absolute Python import may resolve against.
+
+    The repo root (flat layout); the PyPA ``src/`` root, always probed because it
+    is the universal convention (and a PEP 420 namespace src-layout has no
+    ``__init__`` for discovery to key on); plus any other immediate child that is
+    NOT itself a package but DIRECTLY CONTAINS one (e.g. a ``backend/`` service
+    dir). An absolute ``pkg.sub`` then resolves under whichever root holds
+    ``pkg/``. A child that is itself a package (has ``__init__``) is the package,
+    not a root, so it is skipped -- flat-layout and package-rooted repos are
+    unchanged because the root is probed first. Build-time only, bounded to one
+    directory level; a root that holds nothing simply yields None on probe.
+    """
+    roots = [root]
+    src = root / "src"
+    try:
+        if src.is_dir():
+            roots.append(src)
+    except OSError:
+        src = None
+    try:
+        children = sorted(p for p in root.iterdir() if p.is_dir())
+    except OSError:
+        return roots
+    for child in children:
+        if child == src or child.name in _PY_NON_SOURCE_DIRS or child.name.startswith("."):
+            continue
+        try:
+            if (child / "__init__.py").exists() or (child / "__init__.pyi").exists():
+                # child is itself a package: its modules import from the root.
+                continue
+            if any(
+                (sub / "__init__.py").exists() or (sub / "__init__.pyi").exists()
+                for sub in child.iterdir()
+                if sub.is_dir() and sub.name not in _PY_NON_SOURCE_DIRS
+            ):
+                roots.append(child)
+        except OSError:
+            continue
+    return roots
+
+
 def make_module_resolver(
     root: Path, language: str = "typescript"
 ) -> Callable[[str, Path], str | None]:
@@ -306,11 +371,22 @@ def make_module_resolver(
     specifier identically -- a target the one can see, the other can too.
     """
     if language == "python":
-        # Python: relative (.mod / ..pkg) joins onto the importer's package,
-        # absolute (pkg.sub) is repo-root-relative; both probe .py/.pyi/__init__.
+        # Relative (.mod / ..pkg) joins onto the importer's package; absolute
+        # (pkg.sub) is probed against each source root (repo root first, then a
+        # src-layout src/ root) so src-layout absolute imports resolve instead of
+        # silently dropping every cross-file edge. All probe .py/.pyi/__init__.
+        src_roots = _python_source_roots(root)
+
         def _resolve_python(module: str, importer_dir: Path) -> str | None:
-            base = _python_module_base(module, importer_dir, root)
-            return resolve_python_index_key(base, root)
+            if module.startswith("."):
+                base = _python_module_base(module, importer_dir, root)
+                return resolve_python_index_key(base, root)
+            rel = Path(module.replace(".", "/"))
+            for src_root in src_roots:
+                key = resolve_python_index_key(src_root / rel, root)
+                if key is not None:
+                    return key
+            return None
 
         return _resolve_python
 

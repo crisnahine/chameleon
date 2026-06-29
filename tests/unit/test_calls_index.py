@@ -1243,3 +1243,123 @@ class TestDumpTimeTruncation:
         idx = build_calls_index([pf], tmp_path, "typescript")
         entry = idx["callees"]["src/small.ts"]["helper"]
         assert entry["truncated"] is False
+
+
+class TestPythonSrcLayout:
+    """Regression: absolute Python imports resolve against a PyPA src-layout
+    src/ package root, not only the repo root. Resolving only the root left
+    every absolute-import edge unresolved, building an empty calls index for
+    the entire class of src-layout repos."""
+
+    def test_absolute_import_resolves_under_src_root(self, tmp_path):
+        _touch(tmp_path, "src/pkg/models/record.py")
+        _touch(tmp_path, "src/pkg/readers/csv_reader.py")
+        target = FakeParsed(
+            tmp_path / "src" / "pkg" / "models" / "record.py",
+            {"named_export_names": ["Record"], "export_set_open": False},
+        )
+        caller = FakeParsed(
+            tmp_path / "src" / "pkg" / "readers" / "csv_reader.py",
+            {
+                # absolute import (pkg.sub) — the package lives under src/
+                "import_symbols": [{"name": "Record", "module": "pkg.models.record", "line": 1}],
+                "call_sites": [_site("Record", None, "bare", 11, "read_csv")],
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "python")
+        entry = idx["callees"]["src/pkg/models/record.py"]["Record"]
+        assert entry["callers"] == [
+            {
+                "path": "src/pkg/readers/csv_reader.py",
+                "caller": "read_csv",
+                "line": 11,
+                "grade": "import",
+            }
+        ]
+
+    def test_flat_layout_absolute_import_still_resolves_at_root(self, tmp_path):
+        # Root is probed first, so a flat-layout repo is unchanged.
+        _touch(tmp_path, "pkg/models/record.py")
+        _touch(tmp_path, "pkg/readers/csv_reader.py")
+        target = FakeParsed(
+            tmp_path / "pkg" / "models" / "record.py",
+            {"named_export_names": ["Record"], "export_set_open": False},
+        )
+        caller = FakeParsed(
+            tmp_path / "pkg" / "readers" / "csv_reader.py",
+            {
+                "import_symbols": [{"name": "Record", "module": "pkg.models.record", "line": 1}],
+                "call_sites": [_site("Record", None, "bare", 11, "read_csv")],
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "python")
+        assert idx["callees"]["pkg/models/record.py"]["Record"]["callers"][0]["grade"] == "import"
+
+    def test_absolute_import_resolves_under_non_package_source_root(self, tmp_path):
+        # A `backend/`-rooted layout (e.g. the FastAPI template): the package
+        # `app` lives under backend/, imported as `app.sub`. backend/ is a source
+        # root because it is not itself a package but contains one.
+        _touch(tmp_path, "backend/app/__init__.py")
+        _touch(tmp_path, "backend/app/models/record.py")
+        _touch(tmp_path, "backend/app/readers/csv_reader.py")
+        target = FakeParsed(
+            tmp_path / "backend" / "app" / "models" / "record.py",
+            {"named_export_names": ["Record"], "export_set_open": False},
+        )
+        caller = FakeParsed(
+            tmp_path / "backend" / "app" / "readers" / "csv_reader.py",
+            {
+                "import_symbols": [{"name": "Record", "module": "app.models.record", "line": 1}],
+                "call_sites": [_site("Record", None, "bare", 11, "read_csv")],
+            },
+        )
+        idx = build_calls_index([target, caller], tmp_path, "python")
+        entry = idx["callees"]["backend/app/models/record.py"]["Record"]
+        assert entry["callers"][0]["grade"] == "import"
+        assert entry["callers"][0]["path"] == "backend/app/readers/csv_reader.py"
+
+    def test_package_at_root_is_not_treated_as_source_root(self, tmp_path):
+        # A child that is itself a package (has __init__) must NOT be added as a
+        # source root, or a flat-layout `pkg.sub` could double-resolve. Here the
+        # only valid resolution is under the repo root.
+        from chameleon_mcp.symbol_index import _python_source_roots
+
+        _touch(tmp_path, "pkg/__init__.py")
+        _touch(tmp_path, "pkg/sub/__init__.py")
+        roots = _python_source_roots(tmp_path.resolve())
+        assert roots == [tmp_path.resolve()]
+
+
+class TestLoadReadCap:
+    """Regression: the read ceiling derives from the edge cap so the two cannot
+    drift. A fixed 16MB cap rejected a legitimately-built large index, silently
+    zeroing get_callers / get_blast_radius / get_callees on big repos."""
+
+    def _big_payload(self, n):
+        callees = {}
+        for i in range(n):
+            callees[f"src/mod{i}.ts"] = {
+                "fn": {
+                    "callers": [
+                        {"path": f"src/c{i}.ts", "caller": "go", "line": 1, "grade": "import"}
+                    ],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        return {"schema_version": SCHEMA_VERSION, "callees": callees}
+
+    def test_large_valid_index_loads_under_default_cap(self, tmp_path):
+        _write_index(tmp_path, self._big_payload(300))
+        size = (tmp_path / ".chameleon" / CALLS_INDEX_FILENAME).stat().st_size
+        assert size > 7000
+        assert load_calls_index(tmp_path) is not None
+
+    def test_read_cap_tracks_edge_threshold(self, tmp_path, monkeypatch):
+        _write_index(tmp_path, self._big_payload(300))
+        size = (tmp_path / ".chameleon" / CALLS_INDEX_FILENAME).stat().st_size
+        # Derived ceiling is edge_cap * 700; shrink edge_cap so it falls below
+        # the file size and the loader must reject (cap can never drift below
+        # build output without this firing).
+        monkeypatch.setenv("CHAMELEON_CALLS_INDEX_MAX_TOTAL_EDGES", str(max(1, size // 700 - 1)))
+        assert load_calls_index(tmp_path) is None

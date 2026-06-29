@@ -1141,6 +1141,17 @@ def looks_like_idioms_markdown(text: str) -> bool:
     stripped = text.lstrip()
     if stripped.startswith("{") or stripped.startswith("["):
         return False
+    # A document with its OWN non-idioms top-level (`# `) title is not idioms.md,
+    # even when it embeds idioms as a subsection. profile.summary.md
+    # ("# chameleon profile summary") carries a "## Idioms" section of "### slug"
+    # blocks; without this guard the bare-### check below misrouted it to the
+    # idioms union merge, which silently rewrote the summary on a merge conflict
+    # (exit 0) instead of declining it. The merge driver must DECLINE the non-
+    # idioms companion files (summary.md / principles.md / COMMITTED) so git
+    # leaves a conflict rather than corrupting them — per .gitattributes-template.
+    top_title = re.search(r"(?m)^#[ \t]+(.+)$", text)
+    if top_title is not None and "idiom" not in top_title.group(1).lower():
+        return False
     # Tolerate a hand-edited header (`# Idioms`, any case) and the canonical
     # section markers; also accept a file carrying real `### slug` blocks even
     # without section headers, so a hand-maintained idioms.md still routes

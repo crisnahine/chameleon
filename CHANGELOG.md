@@ -4,6 +4,34 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.5] - 2026-06-29
+
+### Fixed
+
+- **Cross-file call graph on src-layout Python repos.** Absolute imports
+  (`pkg.sub`) are now resolved against a PyPA `src/` package root, not only the
+  repo root. A src-layout repo (package under `src/`, declared via pyproject)
+  previously dropped every absolute-import edge, building an empty
+  `calls_index.json` / `reverse_index.json` and silently zeroing `get_callers`,
+  `get_blast_radius`, `query_symbol_importers`, contract-break detection, and
+  cross-file duplication. The resolver probes the repo root first (flat-layout
+  unchanged), then `src/`.
+- **Large valid calls index rejected by a too-small read cap.** The builder caps
+  on edge count (`CALLS_INDEX_MAX_TOTAL_EDGES`) while the reader rejected any file
+  over a hardcoded 16MB, so a legitimately-built index on a large repo (~21MB on a
+  big monorepo) was refused and `get_callers` / `get_callees` / `get_blast_radius`
+  returned `no-calls-index` despite a correct committed index. The read ceiling now
+  derives from the edge cap so the two can never drift. This loader is tool-time and
+  the turn-end judge only, never the per-edit hot path.
+- **Merge driver silently rewrote an idiom-bearing `profile.summary.md`.** The
+  idioms-markdown detector matched any `### ` header, so a `profile.summary.md` that
+  lists idioms under a `## Idioms` subsection was misrouted to the idioms union merge
+  on a conflict — rewriting the summary and exiting 0 (git staged a mangled file as
+  resolved), violating the `.gitattributes-template` contract that the non-idioms
+  companion files (`profile.summary.md` / `principles.md` / `COMMITTED`) must DECLINE
+  and leave a conflict. The detector now treats a document whose top-level title is not
+  an idioms title as non-idioms, so the summary declines cleanly (OURS preserved).
+
 ## [2.38.4] - 2026-06-29
 
 ### Added

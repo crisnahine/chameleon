@@ -1396,6 +1396,29 @@ def test_merge_profiles_unions_idioms_markdown(tmp_path):
     assert "from-ours" in merged and "from-theirs" in merged
 
 
+def test_merge_profiles_declines_idiom_bearing_summary(tmp_path):
+    """Regression: an idiom-bearing profile.summary.md must DECLINE (leave the
+    conflict, preserve OURS), not be silently rewritten as idioms.md. Per the
+    .gitattributes-template contract for the non-idioms companion files."""
+    from chameleon_mcp import tools
+
+    summary = (
+        "# chameleon profile summary\n\n"
+        "## 12 archetypes detected\n\n- model\n\n"
+        "## Idioms\n\n### use-encrypted\nLanguage: ruby\nUse has_encrypted.\n"
+    )
+    base = tmp_path / "base.md"
+    ours = tmp_path / "ours.md"
+    theirs = tmp_path / "theirs.md"
+    base.write_text(summary)
+    ours.write_text(summary)
+    theirs.write_text(summary + "\n- extra\n")
+    res = tools.merge_profiles("", str(base), str(ours), str(theirs))
+    # Declines (not a union "success"); OURS content is left whole for git to flag.
+    assert res["data"]["status"] != "success"
+    assert ours.read_text(encoding="utf-8").startswith("# chameleon profile summary")
+
+
 # ---------------------------------------------------------------------------
 # server registration
 # ---------------------------------------------------------------------------
@@ -1435,3 +1458,33 @@ class TestLooksLikeIdiomsMarkdown:
 
         assert not looks_like_idioms_markdown('{"schema_version": 1, "files": []}')
         assert not looks_like_idioms_markdown("[1, 2, 3]")
+
+    def test_profile_summary_with_idioms_subsection_is_not_idioms(self):
+        # Regression: an idiom-bearing profile.summary.md embeds "### slug" blocks
+        # under a "## Idioms" subsection. Its non-idioms top-level title means it
+        # is NOT idioms.md, so the merge driver declines (not silently rewrites) it.
+        from chameleon_mcp.idiom_coverage import looks_like_idioms_markdown
+
+        summary = (
+            "# chameleon profile summary\n\n"
+            "## 15 archetypes detected\n\n- model\n- service\n\n"
+            "## Rules\n\n- some rule\n\n"
+            "## Idioms\n\n"
+            "### sensitive-attributes-use-has-encrypted\nLanguage: ruby\nUse has_encrypted.\n\n"
+            "### controller-actions-delegate-to-interactions\nLanguage: ruby\nDelegate.\n"
+        )
+        assert looks_like_idioms_markdown(summary) is False
+
+    def test_non_idioms_top_level_title_is_not_idioms(self):
+        from chameleon_mcp.idiom_coverage import looks_like_idioms_markdown
+
+        # principles.md is safe by content, not luck, now.
+        assert not looks_like_idioms_markdown(
+            "# principles\n\n1. foo\n\n## anti-hallucination protocol\n\n### a\nx\n"
+        )
+
+    def test_hand_edited_idioms_title_still_recognized(self):
+        from chameleon_mcp.idiom_coverage import looks_like_idioms_markdown
+
+        # A top-level title that names idioms still routes to the union merge.
+        assert looks_like_idioms_markdown("# Team Idioms\n\n### use-x\nUse x.\n")

@@ -446,10 +446,16 @@ def load_calls_index(repo_root: Path | str | None) -> CallsIndex | None:
         st = os.stat(artifact)
     except OSError:
         return None
-    if not st.st_size or st.st_size > 16_000_000:
-        # Empty or implausibly large; skip rather than read a pathological
-        # file. Sized like the reverse index (one row per call site, not per
-        # file), the roomier of the two existing ceilings.
+    # Derive the read ceiling from the build edge cap so the two can never
+    # drift: a fixed 16MB cap rejected a legitimately-built index on a large
+    # repo (a real index reached ~21MB / ~40k edges at ~555 bytes/edge, and a
+    # full CALLS_INDEX_MAX_TOTAL_EDGES index reaches ~120MB), silently zeroing
+    # get_callers / get_blast_radius / get_callees. ~700 bytes/edge gives
+    # headroom over the observed density. This loader is tool-time + the Stop
+    # judge, never the per-edit hot path, so a large read here is acceptable; it
+    # still rejects a genuinely pathological (build-cap-exceeding) file.
+    max_read_bytes = threshold_int("CALLS_INDEX_MAX_TOTAL_EDGES") * 700
+    if not st.st_size or st.st_size > max_read_bytes:
         return None
 
     key = str(artifact)
