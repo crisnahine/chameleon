@@ -316,6 +316,9 @@ regression blocks verification. Date: 2026-06-29, v2.38.4.
 | Clean-install simulation (subsystem #12, item 4) | fresh copy (no prebuilt deps) → `setup.sh` builds Python (uv) + Node (npm) deps from scratch; preflight hook fires from the installed location (exit 0, injects context); MCP server serves 46 tools; bootstrap succeeds; runtime state lands in an isolated data dir (real `~/.local/share/chameleon` untouched); uninstall (`rm`) leaves nothing behind. The literal fresh-physical-machine + full real Claude Code session remains the human part of item 4. |
 | Depth/robustness panel (7 dims, v2.38.5) | 6/7 clean (daemon concurrency, migrations/old-schema, data-dir isolation, degraded-artifact, boundary inputs, all-6-hook fuzzing); 1 defect found+confirmed → G-010 (now fixed) |
 | Full unit suite after G-010 | 4823 passed, 3 skipped; ruff + format clean |
+| Skills/comprehension panel (7 areas, v2.38.5) | pr-review clean; 10 defects found → 9 fixed (G-011..G-019), 1 scoped WONT-FIX (G-020) |
+| Full unit suite after all 12 fixes | 4829 passed, 3 skipped; ruff + format clean |
+| Final integration pass on post-fix code | qa_typescript 59/59, qa_ruby 66/66, qa_python 20/20, qa_crosscutting 15/15, qa_hook_simulation all PASS; 4 golden repos healthy — no cross-interaction regression |
 
 **No real defects found.** Three apparent merge failures during testing were traced
 to malformed synthetic fixtures (wrong idioms header, list-vs-dict archetypes shape),
