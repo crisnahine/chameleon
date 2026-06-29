@@ -4,6 +4,31 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.3] - 2026-06-29
+
+### Fixed
+
+- **`eval()`/`exec()` in a notebook cell is now denied pre-write, matching the
+  `.py` path.** The PreToolUse eval-call deny gates on
+  `detect_language(file_path)`, which is `None` for a `.ipynb` path, so the same
+  `eval(user_input)` that hard-blocks in a `.py` file sailed through when written
+  to a notebook. The Python a notebook edit actually writes is now recovered and
+  scanned: a `NotebookEdit` proposes a cell's SOURCE (a code cell — or an
+  unstated cell whose source parses as Python — is scanned; a markdown/prose cell
+  never is, so a sentence mentioning `eval()` can't false-block), and a
+  `Write`/`Edit` of a whole `.ipynb` has its code cells extracted from the JSON
+  and scanned so the same sink can't be smuggled in through the raw file tool.
+  The inline `# chameleon-ignore eval-call` escape hatch works in a cell, and the
+  deny now hands a notebook the `#` directive instead of the `//` that would be a
+  syntax error in a Python cell.
+- **Pre-write secret/eval scans no longer shadowable by a decoy field.** The
+  proposed-content read was `new_string or content or new_source`, so a
+  `NotebookEdit` carrying a benign `content` (or `new_string`) alongside the real
+  `new_source` bound the scan to the decoy while the actual cell source reached
+  disk unscanned. The content is now selected by `tool_name` (a NotebookEdit
+  reads `new_source`), closing the bypass for both the deterministic-secret and
+  eval-call denies.
+
 ## [2.38.2] - 2026-06-29
 
 ### Fixed
