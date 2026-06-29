@@ -1,0 +1,4 @@
+# Canonical author identity. Folds the work email used briefly during a release
+# into the personal GitHub identity so git shortlog / contributor views show one
+# person, not two. See https://git-scm.com/docs/gitmailmap
+Cris Nahine <crisjosephnahine@gmail.com> <crisn@empireflippers.com>
