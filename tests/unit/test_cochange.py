@@ -12,9 +12,20 @@ from pathlib import Path
 from chameleon_mcp.cochange import (
     _COCHANGE_RULES,
     changed_exports_in_content,
+    changeset_completeness_items,
     cochange_rule_disabled,
     stale_test_items,
 )
+
+
+def _detect_lang(abs_path: str):
+    from chameleon_mcp.lint_engine import detect_language
+
+    return detect_language(abs_path)
+
+
+_NEST_PKG = '{"dependencies": {"@nestjs/core": "^10.0.0", "@nestjs/common": "^10.0.0"}}\n'
+_ANGULAR_PKG = '{"dependencies": {"@angular/core": "^17.0.0"}}\n'
 
 
 def _touch(root: Path, rel: str, body: str = "// x\n") -> Path:
@@ -308,3 +319,78 @@ class TestCochangeRuleDisabled:
         _touch(tmp_path, "app/models/only.rb", "class M\nend\n")
         _touch(tmp_path, "db/migrate/20240101_create.rb", "class C\nend\n")
         assert cochange_rule_disabled(_rule("cochange-model-migration"), tmp_path) is True
+
+
+class TestNestjsControllerModule:
+    """The NestJS controller->module co-change rule is framework-gated: it fires
+    only where package.json names @nestjs, so an Angular (`*.module.ts`) or
+    routing-controllers / Express (`*.controller.ts`) repo that merely shares the
+    filename suffix never arms it.
+    """
+
+    RULE = "cochange-nestjs-controller-module"
+
+    def _make_nest_repo(self, root: Path, *, n_controllers: int, module: bool, pkg: str) -> None:
+        _touch(root, "package.json", pkg)
+        for i in range(n_controllers):
+            _touch(
+                root,
+                f"src/r{i}/r{i}.controller.ts",
+                f"export class R{i}Controller {{}}\n",
+            )
+        if module:
+            _touch(root, "src/app.module.ts", "export class AppModule {}\n")
+
+    def test_enabled_on_real_nestjs_repo(self, tmp_path):
+        self._make_nest_repo(tmp_path, n_controllers=10, module=True, pkg=_NEST_PKG)
+        assert cochange_rule_disabled(_rule(self.RULE), tmp_path) is False
+
+    def test_disabled_without_nestjs_dependency(self, tmp_path):
+        # Same filenames, but an Angular manifest: the suffix is shared, the
+        # framework is not -> the gate must keep the rule silent.
+        self._make_nest_repo(tmp_path, n_controllers=10, module=True, pkg=_ANGULAR_PKG)
+        assert cochange_rule_disabled(_rule(self.RULE), tmp_path) is True
+
+    def test_disabled_when_no_module_companion(self, tmp_path):
+        self._make_nest_repo(tmp_path, n_controllers=10, module=False, pkg=_NEST_PKG)
+        assert cochange_rule_disabled(_rule(self.RULE), tmp_path) is True
+
+    def test_disabled_below_trigger_floor(self, tmp_path):
+        self._make_nest_repo(tmp_path, n_controllers=3, module=True, pkg=_NEST_PKG)
+        assert cochange_rule_disabled(_rule(self.RULE), tmp_path) is True
+
+    def test_advisory_fires_for_new_controller_without_module(self, tmp_path):
+        ctrl = _touch(
+            tmp_path,
+            "src/users/users.controller.ts",
+            "export class UsersController {}\n",
+        )
+        items = changeset_completeness_items(
+            repo_root=tmp_path,
+            new_files_abs={str(ctrl)},
+            edited_abs={str(ctrl)},
+            language_of=_detect_lang,
+            rule_enabled=lambda _r: True,
+        )
+        assert any(it.rule_id == self.RULE for it in items)
+
+    def test_silent_when_module_edited_same_turn(self, tmp_path):
+        ctrl = _touch(
+            tmp_path,
+            "src/users/users.controller.ts",
+            "export class UsersController {}\n",
+        )
+        mod = _touch(tmp_path, "src/app.module.ts", "export class AppModule {}\n")
+        items = changeset_completeness_items(
+            repo_root=tmp_path,
+            new_files_abs={str(ctrl)},
+            edited_abs={str(ctrl), str(mod)},
+            language_of=_detect_lang,
+            rule_enabled=lambda _r: True,
+        )
+        assert not any(it.rule_id == self.RULE for it in items)
+
+    def test_spec_file_is_not_a_trigger(self):
+        rule = _rule(self.RULE)
+        assert rule.trigger("src/users/users.controller.ts") is True
+        assert rule.trigger("src/users/users.controller.spec.ts") is False

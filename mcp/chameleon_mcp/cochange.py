@@ -249,17 +249,23 @@ class CoChangeRule:
     TypeScript change-set. ``trigger`` decides whether a NEW file demands the
     companion; ``companion`` decides whether some other file in the change-set
     satisfies it. ``message`` is the human-readable expectation surfaced when the
-    companion is absent.
+    companion is absent. ``framework`` (optional) gates the rule to a single
+    framework family: a filename suffix that is not unique to one framework (a
+    ``.controller.ts`` is NestJS, routing-controllers or Express MVC; a
+    ``.module.ts`` is NestJS or Angular) only fires where the repo's dependency
+    manifest names that framework, so it never nags a repo that merely shares the
+    suffix.
     """
 
-    __slots__ = ("rule_id", "language", "trigger", "companion", "message")
+    __slots__ = ("rule_id", "language", "trigger", "companion", "message", "framework")
 
-    def __init__(self, rule_id, language, trigger, companion, message) -> None:
+    def __init__(self, rule_id, language, trigger, companion, message, framework=None) -> None:
         self.rule_id = rule_id
         self.language = language
         self.trigger = trigger
         self.companion = companion
         self.message = message
+        self.framework = framework
 
 
 def _is_rails_model(rel: str) -> bool:
@@ -339,6 +345,40 @@ def _is_store_registration(rel: str) -> bool:
     )
 
 
+def _is_nestjs_controller(rel: str) -> bool:
+    # A NestJS HTTP controller. Test files end in `.controller.spec.ts` /
+    # `.controller.e2e-spec.ts`, i.e. `.spec.ts`, so the `.controller.ts` suffix
+    # match excludes them. The suffix alone is not NestJS-unique (routing-
+    # controllers, tsoa, Express MVC), so the rule is `framework="nestjs"`-gated.
+    return rel.endswith(".controller.ts")
+
+
+def _is_nestjs_module(rel: str) -> bool:
+    # A NestJS module declaration: its `controllers: [...]` array is where a new
+    # controller is registered to be routed. `.module.ts` is also Angular's
+    # NgModule suffix, hence the framework gate on the rule.
+    return rel.endswith(".module.ts")
+
+
+# Dependency-manifest markers that confirm a framework family for a framework-
+# gated rule. Cheap substring probe of package.json (no code execution); mirrors
+# the nestjs arm of the bootstrap classifier (orchestrator._classify_framework).
+_FRAMEWORK_DEP_MARKERS: dict[str, tuple[str, ...]] = {
+    "nestjs": ('"@nestjs/core"', '"@nestjs/common"'),
+}
+
+
+def _manifest_declares(pkg_path: Path, framework: str) -> bool:
+    markers = _FRAMEWORK_DEP_MARKERS.get(framework)
+    if not markers:
+        return False
+    try:
+        text = pkg_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(m in text for m in markers)
+
+
 # Ordered most-broadly-applicable first; the disable gate prunes the rest.
 _COCHANGE_RULES: tuple[CoChangeRule, ...] = (
     CoChangeRule(
@@ -376,6 +416,15 @@ _COCHANGE_RULES: tuple[CoChangeRule, ...] = (
         _is_redux_slice,
         _is_store_registration,
         "new state slice added without wiring it into the store/reducers",
+    ),
+    CoChangeRule(
+        "cochange-nestjs-controller-module",
+        "typescript",
+        _is_nestjs_controller,
+        _is_nestjs_module,
+        "new NestJS controller added without registering it in a @Module "
+        "(add it to a module's controllers: [...] array, or it is never routed)",
+        framework="nestjs",
     ),
 )
 
@@ -483,11 +532,21 @@ def cochange_rule_disabled(rule: CoChangeRule, repo_root: Path) -> bool:
 
         triggers = 0
         has_companion = False
+        # A framework-gated rule fires only where the repo's manifest names that
+        # framework, so a shared filename suffix (.controller.ts / .module.ts) does
+        # not arm it on an Angular / routing-controllers / Express repo. Resolved
+        # in the same single walk as triggers/companions (no extra repo scan).
+        framework_ok = rule.framework is None
         for rel in _iter_repo_files(repo_root, max_files):
             if not has_companion and rule.companion(rel):
                 has_companion = True
             if rule.trigger(rel):
                 triggers += 1
+            if not framework_ok and rel.rsplit("/", 1)[-1] == "package.json":
+                framework_ok = _manifest_declares(repo_root / rel, rule.framework)
+        if not framework_ok:
+            # The rule names a framework this repo does not declare.
+            return True
         if triggers < min_trigger:
             # Too few committed trigger files to trust the pairing signal.
             return True
