@@ -58,7 +58,7 @@ def test_walk_returns_two_hop_chain():
             ("service.ts", "getUser"): [("controller.ts", "handle", 5)],
         }
     )
-    chains = judge._transitive_caller_chains(
+    chains, _ = judge._transitive_caller_chains(
         idx, "repo.ts", "fetchUser", max_depth=2, fanout=10, total_nodes=50
     )
     # The deepest chain reaches the controller at depth 2.
@@ -76,7 +76,7 @@ def test_walk_is_cycle_safe():
             ("b.ts", "B"): [("a.ts", "A", 2)],
         }
     )
-    chains = judge._transitive_caller_chains(
+    chains, _ = judge._transitive_caller_chains(
         idx, "a.ts", "A", max_depth=5, fanout=10, total_nodes=50
     )
     assert chains  # returned, did not hang
@@ -95,12 +95,41 @@ def test_walk_respects_total_nodes_cap():
     for i in range(20):
         graph[(f"c{i}.ts", f"g{i}")] = [(f"d{i}_{j}.ts", f"h{i}_{j}", j) for j in range(20)]
     idx = _FakeIndex(graph)
-    chains = judge._transitive_caller_chains(
+    chains, _ = judge._transitive_caller_chains(
         idx, "root.ts", "f", max_depth=2, fanout=10, total_nodes=15
     )
     # Total distinct non-root nodes visited never exceeds the cap.
     nodes = {(h[0], h[1]) for c in chains for h in c[1:]}
     assert len(nodes) <= 15
+
+
+def test_fanout_clip_is_signalled_when_total_cap_not_hit():
+    # Regression: a node with MORE direct callers than the per-node fanout cap
+    # must report the clip even when the total-node cap is nowhere near hit (the
+    # shallow-but-wide case), so the caller's `truncated` is honest.
+    from chameleon_mcp.blast_radius import transitive_caller_chains
+
+    idx = _FakeIndex({("root.ts", "f"): [(f"c{i}.ts", f"g{i}", i) for i in range(4)]})
+    _chains, clipped = transitive_caller_chains(
+        idx, "root.ts", "f", max_depth=2, fanout=2, total_nodes=50
+    )
+    assert clipped is True
+    _chains2, clipped2 = transitive_caller_chains(
+        idx, "root.ts", "f", max_depth=2, fanout=10, total_nodes=50
+    )
+    assert clipped2 is False
+
+
+def test_compute_blast_radius_truncated_on_fanout_clip(monkeypatch):
+    from chameleon_mcp.blast_radius import compute_blast_radius
+
+    monkeypatch.setenv("CHAMELEON_JUDGE_TRANSITIVE_FANOUT_PER_NODE", "2")
+    idx = _FakeIndex({("root.ts", "f"): [(f"c{i}.ts", f"g{i}", i) for i in range(5)]})
+    out = compute_blast_radius(idx, "root.ts", "f", depth=2)
+    # Only 2 of 5 callers fit the fanout cap; reached < total_nodes, but the
+    # result must still flag truncated rather than claim a complete blast radius.
+    assert out["truncated"] is True
+    assert out["reached"] == 2
 
 
 def test_walk_is_deterministic():
@@ -217,7 +246,7 @@ def test_walk_preserves_dag_diamond_paths():
             ("b.ts", "B"): [("c.ts", "C", 4)],
         }
     )
-    chains = judge._transitive_caller_chains(
+    chains, _ = judge._transitive_caller_chains(
         idx, "root.ts", "f", max_depth=2, fanout=10, total_nodes=50
     )
     deep = {tuple(h[1] for h in c) for c in chains if len(c) == 3}
@@ -232,7 +261,7 @@ def test_walk_skips_anonymous_and_module_callers():
             ("svc.ts", "getThing"): [("h.ts", "<anonymous>", 2), ("m.ts", "<module>", 3)],
         }
     )
-    chains = judge._transitive_caller_chains(
+    chains, _ = judge._transitive_caller_chains(
         idx, "repo.ts", "f", max_depth=3, fanout=10, total_nodes=50
     )
     names = {h[1] for c in chains for h in c}

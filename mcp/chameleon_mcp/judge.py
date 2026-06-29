@@ -463,7 +463,7 @@ def caller_facts_transitive_for_diffs(repo_root: Path, diffs: list[FileDiff], in
                         if not any(fn.start_line <= hi and fn.end_line >= lo for lo, hi in ranges):
                             continue
                     seen.add(fn.name)
-                    chains = _transitive_caller_chains(
+                    chains, _fanout_clipped = _transitive_caller_chains(
                         index,
                         fd.rel_path,
                         fn.name,

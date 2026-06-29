@@ -108,7 +108,7 @@ if ps:
                         if _m: _cv=_m.group(1)
                         break
             except: pass
-        if _cv and _cv!=upd: parts+=' │ ⬆ v'+upd+' ready'
+        if _cv and _cv!=upd: parts+=' │ ⬆ v'+upd+' ready — /reload-plugins or reopen session'
     print(f'🦎 chameleon │ {parts}')
 " 2>/dev/null || true)
     if [[ -n "$result" ]]; then

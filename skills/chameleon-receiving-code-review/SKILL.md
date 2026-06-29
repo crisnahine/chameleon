@@ -72,8 +72,14 @@ do not call it a second time. Then:
   EMPTY `get_callers` is NOT proof of dead code (dynamic/unsupported call paths are
   invisible) — never assert dead code from it.
 - Reviewer says "this is fine / no security issue" on a line → call
-  `lint_file(repo=<repo.id>, archetype=<the archetype from get_pattern_context>, content=<the file content>, file_path=<abs>)`
-  and check for a sink (`eval-call`, `command-injection`, `sql-string-interpolation`,
+  `lint_file(repo=<repo.id>, archetype=<the archetype from get_pattern_context>, content=<the file content>, file_path=<abs>)`.
+  When `get_pattern_context` returned a null/none archetype (no match), pass a
+  non-null placeholder STRING — the fallback it suggests, or the literal `"none"` —
+  never `null` and never omit the argument: `lint_file` returns early BEFORE the
+  secret and sink scans on a non-string archetype, silently defeating this
+  grounding. With a non-null string the secret + dangerous-sink scans run
+  regardless of the archetype (the structural part simply stubs for an unknown one).
+  Check for a sink (`eval-call`, `command-injection`, `sql-string-interpolation`,
   `insecure-deserialization`, `weak-hash`, `insecure-random`) or
   `secret-detected-in-content` on that line (the line is the ` at line N` token in
   the violation's `actual`); a witnessed hit means the reviewer is wrong — the

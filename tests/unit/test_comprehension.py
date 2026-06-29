@@ -184,6 +184,15 @@ def test_search_codebase_tool(profiled_repo):
     assert any(r["name"] == "make_service" for r in data["results"])
 
 
+def test_search_codebase_blank_query_found_false(profiled_repo):
+    # Regression: the docstring contracts found:False on an empty/blank query, so
+    # a caller can branch on `found`. It used to return found:True with results:[].
+    for q in ("", "   "):
+        data = _data(tools.search_codebase(str(profiled_repo), q))
+        assert data["found"] is False
+        assert data["results"] == []
+
+
 def test_search_codebase_limit_clamped(profiled_repo):
     data = _data(tools.search_codebase(str(profiled_repo), "service", limit=1))
     assert len(data["results"]) == 1
@@ -217,3 +226,23 @@ def test_comprehension_tools_untrusted(profiled_repo):
         ).get("status")
         == "untrusted"
     )
+
+
+def test_bootstrap_repo_server_wrapper_forwards_production_ref(monkeypatch):
+    # Regression: the MCP wrapper must EXPOSE and FORWARD production_ref, else the
+    # init/refresh skills' explicit production-branch answer is silently dropped
+    # (FastMCP ignores an extra kwarg the wrapper doesn't declare).
+    import inspect
+
+    from chameleon_mcp import server
+
+    assert "production_ref" in inspect.signature(server.bootstrap_repo).parameters
+    captured = {}
+
+    def fake(path, paths_glob=None, force=False, production_ref=None, now=None):
+        captured["production_ref"] = production_ref
+        return {"data": {"status": "ok"}}
+
+    monkeypatch.setattr(tools, "bootstrap_repo", fake)
+    server.bootstrap_repo(path="/x", production_ref="release-1")
+    assert captured["production_ref"] == "release-1"

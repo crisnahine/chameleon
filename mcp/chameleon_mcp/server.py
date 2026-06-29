@@ -451,12 +451,16 @@ def bootstrap_repo(
     path: str,
     paths_glob: str | None = None,
     force: bool = False,
+    production_ref: str | None = None,
 ) -> dict:
     """First-time analysis: AST scan + interview + atomic profile commit.
 
-    Pass force=true to overwrite a committed profile (BUG-026).
+    Pass force=true to overwrite a committed profile (BUG-026). Pass
+    production_ref to pin derivation to a production branch (the init skill's
+    confirmed answer to "which branch is production?"); omitted, the lock comes
+    from persisted config or origin auto-detection.
     """
-    return tools.bootstrap_repo(path, paths_glob, force)
+    return tools.bootstrap_repo(path, paths_glob, force, production_ref=production_ref)
 
 
 @mcp.tool()

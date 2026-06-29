@@ -3439,6 +3439,12 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
         out["status"] = "untrusted"
         return _envelope(out)
 
+    # A blank/empty query is a no-op search; return found:False per the contract
+    # (so a caller can branch on `found` to detect it) rather than found:True with
+    # an empty result list.
+    if not isinstance(query, str) or not query.strip():
+        return _envelope(dict(empty))
+
     cap = threshold_int("COMPREHEND_SEARCH_MAX_RESULTS")
     if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
         n = 10
@@ -3733,8 +3739,11 @@ def get_crossfile_context(repo: str) -> dict:
     Returns ``{"found": bool, "findings": [...]}`` where each finding is
     ``{symbol, module, count, high_confidence, sites: [{path, line}]}``. Fails
     open with ``found: False`` on any ambiguity (unresolvable / untrusted repo,
-    missing index). TypeScript and Python (each module read with its own export
-    reader); Ruby has no static import-of-named-symbol.
+    missing index). TypeScript and Python read the named-export reverse index
+    (each module read with its own export reader); Ruby has no static
+    import-of-named-symbol, so it falls back to the constant graph
+    (``_ruby_constant_existence_breaks``) and returns the same shape for a
+    referenced class removed/renamed on disk.
     """
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.lint_engine import detect_language
@@ -10574,6 +10583,10 @@ def _transition_slug_to_deprecated(
                     continue
                 if phase == "active":
                     active_body.append(line)
+                elif stripped == "_(none)_":
+                    # Drop the deprecated section's placeholder: we are adding a
+                    # real deprecated idiom, so "none" no longer applies.
+                    pass
                 else:
                     deprecated_body.append(line)
                 i += 1
@@ -10679,6 +10692,10 @@ def _write_new_deprecated_idiom(
                 "",
                 1,
             )
+            # Drop the deprecated section's "_(none)_" placeholder when adding a
+            # real deprecated idiom, so the populated section doesn't keep showing
+            # "none" beneath real entries. "_(none)_" is unique to this section.
+            current = current.replace("_(none)_\n", "", 1)
             if "## deprecated" in current:
                 new_content = current.replace(
                     "## deprecated\n",
@@ -11440,7 +11457,15 @@ def doctor() -> dict:
     else:
         checks.append({"name": "recent_hook_errors", "status": "ok", "detail": "no errors logged"})
 
-    cwd_config = Path.cwd() / ".chameleon" / "config.json"
+    # Walk up to the repo root so doctor reports the repo's config even when the
+    # session cwd is a subdirectory (a monorepo workspace, app/ under a Rails
+    # repo). Reading Path.cwd()/.chameleon directly reported a configured repo as
+    # unconfigured from any subdir, contradicting the rest of the status flow
+    # (which resolves the repo via a file path that walks to root).
+    from chameleon_mcp.profile.loader import find_repo_root
+
+    _doctor_root = find_repo_root(Path.cwd()) or Path.cwd()
+    cwd_config = _doctor_root / ".chameleon" / "config.json"
     if cwd_config.is_file():
         try:
             from chameleon_mcp.profile.config import (
@@ -11469,7 +11494,7 @@ def doctor() -> dict:
                 try:
                     from chameleon_mcp.production_ref import resolve_production_ref
 
-                    _doctor_resolved = resolve_production_ref(Path.cwd(), cfg.production_ref)
+                    _doctor_resolved = resolve_production_ref(_doctor_root, cfg.production_ref)
                     if _doctor_resolved is None:
                         checks.append(
                             {

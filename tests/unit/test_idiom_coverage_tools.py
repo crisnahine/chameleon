@@ -1488,3 +1488,30 @@ class TestLooksLikeIdiomsMarkdown:
 
         # A top-level title that names idioms still routes to the union merge.
         assert looks_like_idioms_markdown("# Team Idioms\n\n### use-x\nUse x.\n")
+
+
+def test_deprecated_placeholder_stripped_when_idiom_added(tmp_path, monkeypatch):
+    # Regression: adding a real deprecated idiom must remove the section's
+    # "_(none)_" placeholder, not leave a stale "none" beneath real entries.
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    from chameleon_mcp import tools as _tools
+
+    repo = tmp_path / "repo"
+    (repo / ".chameleon").mkdir(parents=True)
+    (repo / ".chameleon" / "profile.json").write_text(
+        '{"language": "typescript", "schema_version": 8}'
+    )
+    (repo / ".chameleon" / "idioms.md").write_text(
+        "# idioms\n\n## active\n\n_(no idioms yet — run /chameleon-teach to capture team conventions)_\n\n"
+        "## deprecated\n\n_(none)_\n"
+    )
+    res = _tools.teach_profile_structured(
+        repo=str(repo),
+        slug="legacy-helper",
+        rationale="Do not use the legacy helper.",
+        status="deprecated",
+    )
+    assert res["data"]["status"] == "success"
+    text = (repo / ".chameleon" / "idioms.md").read_text()
+    assert "legacy-helper" in text
+    assert "_(none)_" not in text

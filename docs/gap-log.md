@@ -242,6 +242,41 @@ were confirmed real and are now fixed with regression tests.
   Regression tests in `tests/unit/test_idiom_coverage_tools.py`
   (`TestLooksLikeIdiomsMarkdown` + `test_merge_profiles_declines_idiom_bearing_summary`).
 
+## Skills + comprehension panel defects (4th expert panel)
+
+A 7-area audit of the previously-untested surface — the 13 `/chameleon-*` skill flows
+and the comprehension tools — found **10 confirmed defects** (pr-review area clean).
+Nine are fixed with regression tests; one is an accepted scoped limitation.
+
+| ID | Sev | Defect | Status |
+|---|---|---|---|
+| G-011 | fix | `bootstrap_repo` MCP wrapper dropped `production_ref` (init/refresh skills' branch answer lost) | FIXED (`server.py`) + test |
+| G-012 | fix | `doctor` config check cwd-anchored → reports configured repo as unconfigured from a subdir | FIXED (`tools.py`, walk to root) + test |
+| G-013 | fix | `get_blast_radius` dropped callers at the fanout cap but reported `truncated:false` | FIXED (`blast_radius.py`) + 2 tests |
+| G-014 | fix | receiving-review Step 3 security grounding no-ops on a null archetype (lint_file early-return) | FIXED (SKILL.md placeholder, matches pr-review) |
+| G-015 | nit | deprecated-idiom write left the `## deprecated` `_(none)_` placeholder | FIXED (both write paths) + test |
+| G-016 | nit | `search_codebase` returned `found:true` on an empty query (docstring promised false) | FIXED (`tools.py`) + test |
+| G-017 | nit | `doctor` SKILL.md omitted `hook_interpreter_deps` from the check list + error remediation | FIXED (SKILL.md) |
+| G-018 | nit | statusline update badge dropped the apply instruction in the no-`jq` fallback | FIXED (`statusline.sh`) |
+| G-019 | nit | `get_crossfile_context` docstring undersold its Ruby constant-graph fallback | FIXED (docstring) |
+| G-020 | nit | `search_codebase` does not index class/type/interface/module names (callable-only) | WONT-FIX (scoped) |
+
+Verification note: the report also claimed `doctor` emits an `index_db` check — it does
+NOT (the 12 real check names were confirmed in code), so that part was a false report and
+no `index_db` reference was added (anti-hallucination on the report itself).
+
+### G-020 — class/type/interface/module names not searchable (accepted limitation)
+
+- **Subsystem(s):** 3 (comprehension)
+- **Status:** WONT-FIX (scoped) — re-open as a feature if class search is wanted
+- **Detail:** `search_codebase` / `search_symbols` walk `symbol_signatures` (callables
+  only); class/type/interface/module declarations live in `class_shapes`, which no
+  committed artifact exposes in a searchable form. Making them searchable requires a new
+  class-name index (build + loader + search integration) — a subsystem-scope change, not a
+  contained fix. Per the goal's "if a fix requires a redesign, log it rather than expand
+  scope silently," it is recorded here. Callables remain fully searchable; this is a
+  degraded-recall NIT, not a break.
+
 ## Scaffolding bug-finder results (zero done-credit — informational only)
 
 Run while driving the goal. Per the goal philosophy these earn NO sign-off credit;

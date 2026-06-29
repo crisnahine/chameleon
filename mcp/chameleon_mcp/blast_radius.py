@@ -39,13 +39,16 @@ BLAST_RADIUS_NOTE = (
 
 def transitive_caller_chains(
     index, start_path: str, start_name: str, *, max_depth: int, fanout: int, total_nodes: int
-) -> list[list[tuple]]:
+) -> tuple[list[list[tuple]], bool]:
     """Bounded upward caller chains from ``(start_path, start_name)``.
 
-    Returns a list of chains; each chain is ``[(path, name, line), ...]`` root
-    first (the root carries no call-site line), deepest hop last. Walks up the
+    Returns ``(chains, fanout_clipped)``. Each chain is ``[(path, name, line), ...]``
+    root first (the root carries no call-site line), deepest hop last. Walks up the
     caller graph at most ``max_depth`` hops, expanding at most ``fanout`` named
-    callers per node and ``total_nodes`` nodes total.
+    callers per node and ``total_nodes`` nodes total. ``fanout_clipped`` is True
+    when a node had more named callers than the per-node ``fanout`` cap admits, so
+    the caller surfaces an honest ``truncated`` even when the total-node cap was
+    not the limiting factor.
 
     Cycle-safety is per CHAIN, not global: a node is never revisited within the
     same chain (so ``A <- B <- A`` terminates), but a node reached by two
@@ -57,6 +60,7 @@ def transitive_caller_chains(
     """
     chains: list[list[tuple]] = []
     nodes = 0
+    fanout_clipped = False
     # DFS; each stack item is (chain so far, set of (path,name) already in it).
     stack: list[tuple[list[tuple], set]] = [
         ([(start_path, start_name, None)], {(start_path, start_name)})
@@ -79,7 +83,13 @@ def transitive_caller_chains(
         )
         expanded: list[tuple[list[tuple], set]] = []
         for r in ordered:
-            if len(expanded) >= fanout or nodes >= total_nodes:
+            if nodes >= total_nodes:
+                break
+            if len(expanded) >= fanout:
+                # More named callers exist than the per-node fanout cap admits, so
+                # the reach is incomplete even when the total-node cap was not hit
+                # (the shallow-but-wide case). Mark it so `truncated` is honest.
+                fanout_clipped = True
                 break
             key = (r.get("path"), r.get("caller"))
             if key in seen:  # a cycle within THIS chain
@@ -97,7 +107,7 @@ def transitive_caller_chains(
     chains.sort(
         key=lambda c: tuple((p or "", n or "", ln if isinstance(ln, int) else -1) for p, n, ln in c)
     )
-    return chains
+    return chains, fanout_clipped
 
 
 def compute_blast_radius(index, file_rel: str, function_name: str, *, depth: int) -> dict:
@@ -114,7 +124,7 @@ def compute_blast_radius(index, file_rel: str, function_name: str, *, depth: int
     """
     fanout = threshold_int("JUDGE_TRANSITIVE_FANOUT_PER_NODE")
     total = threshold_int("JUDGE_TRANSITIVE_TOTAL_NODES")
-    raw = transitive_caller_chains(
+    raw, fanout_clipped = transitive_caller_chains(
         index, file_rel, function_name, max_depth=depth, fanout=fanout, total_nodes=total
     )
     chains: list[list[dict]] = []
@@ -125,4 +135,8 @@ def compute_blast_radius(index, file_rel: str, function_name: str, *, depth: int
         chains.append([{"path": p, "name": n, "line": ln} for (p, n, ln) in c])
         for p, n, _ln in c[1:]:
             reached.add((p, n))
-    return {"chains": chains, "reached": len(reached), "truncated": len(reached) >= total}
+    # Honest truncation: either the total-node cap bounded the walk, or a node's
+    # callers exceeded the per-node fanout cap (the shallow-but-wide case that the
+    # total-node count alone misses).
+    truncated = len(reached) >= total or fanout_clipped
+    return {"chains": chains, "reached": len(reached), "truncated": truncated}

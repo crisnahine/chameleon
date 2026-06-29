@@ -32,6 +32,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and leave a conflict. The detector now treats a document whose top-level title is not
   an idioms title as non-idioms, so the summary declines cleanly (OURS preserved).
 
+### Fixed (skills + comprehension audit)
+
+- **`bootstrap_repo` MCP wrapper now forwards `production_ref`.** The wrapper exposed
+  only `(path, paths_glob, force)`, so the init/refresh skills' explicit
+  production-branch answer was silently dropped on the conflict and local-only paths.
+- **`doctor` walks to the repo root** instead of reading `cwd/.chameleon/config.json`
+  directly, which reported a configured repo as unconfigured from any subdirectory
+  (misleading `/chameleon-status`).
+- **`get_blast_radius` reports honest truncation.** The per-node fanout cap silently
+  dropped direct callers while `truncated` stayed false (the shallow-but-wide case);
+  `truncated` now also fires when the fanout cap clips a node.
+- **receiving-code-review security grounding** no longer no-ops on a null archetype
+  (pass a placeholder string so `lint_file`'s pre-archetype secret/sink scans run).
+- **Deprecated-idiom writes strip the `## deprecated` `_(none)_` placeholder.**
+- **`search_codebase` returns `found: false` on an empty/blank query** (per its
+  contract, so a caller can branch on `found`).
+- Doc accuracy: the `doctor` skill lists `hook_interpreter_deps` (+ its error
+  remediation); the statusline update badge shows the apply instruction in the no-`jq`
+  fallback too; the `get_crossfile_context` docstring documents its Ruby
+  constant-graph fallback.
+
 ## [2.38.4] - 2026-06-29
 
 ### Added
