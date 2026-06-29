@@ -9,7 +9,7 @@ Run the journey harness at `tests/journey/`. The harness verifies chameleon's fu
 
 ## Defaults
 
-Full run: 19 acts, ~$33 cost ceiling, ~65 min runtime, $35 hard budget cap (default `--max-budget-usd`).
+Full run: 21 acts, ~$38 cost ceiling, ~65 min runtime, $40 hard budget cap (default `--max-budget-usd`).
 
 ## Run
 
@@ -23,7 +23,7 @@ Variations:
 
 - `--list`: show acts + phase coverage, exit 0.
 - `--dry-run`: run preflight only (claude on PATH, git >= 2.28, fixtures present, mcp/.venv), exit before any Claude spawn.
-- `--max-budget-usd N`: pre-flight + mid-run abort if projected cost exceeds N (default 35).
+- `--max-budget-usd N`: pre-flight + mid-run abort if projected cost exceeds N (default 40).
 - `--results-dir DIR`: override per-run output dir (default `tests/journey/results/`).
 
 ## Output

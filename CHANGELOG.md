@@ -4,6 +4,72 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.6] - 2026-06-29
+
+### Fixed
+
+- **Next.js app-router page/layout files got no per-edit guidance in small and
+  medium repos.** Clustering bucketed TypeScript files by directory, so the
+  app-router role files that scatter one-per-route-dir (`app/page.tsx`,
+  `app/dashboard/page.tsx`, ...) each fell into their own below-threshold bucket
+  and the page archetype never formed; editing a page injected nothing. A new
+  `nextjs_role_for_path` buckets `page`/`layout`/`loading`/`error`/`not-found`/
+  `template`/`default` under an `app/` segment by their filename role — the same
+  way `python_role_for_path` groups Django `models.py` across apps — so they
+  cluster into `app-page`/`app-layout`/`app-special` archetypes. The monorepo
+  workspace prefix is preserved (`apps/web` pages do not merge with `apps/admin`
+  pages), and `route.ts` is left to directory bucketing (it already co-locates
+  under `app/api`). Non-app-router files are bucketed unchanged.
+- **`/chameleon-refresh` left a load-rejected profile damaged instead of
+  repairing it.** A profile with a cross-artifact `generation` skew or an
+  artifact reset to `{}` (the shape a crashed write or a bad 3-way `.chameleon`
+  merge leaves) is rejected by the loader as `profile_corrupted` with the message
+  "/chameleon-refresh recommended" — but the noop refresh preserved it verbatim,
+  making that advice a dead end. The refresh re-derive gate now mirrors the
+  loader's exact cross-artifact generation check, so a plain refresh repairs
+  precisely what the loader rejects. Healthy profiles still noop.
+- **Python profiles never repaired a missing `exports_index.json` /
+  `reverse_index.json`.** The Python pipeline always writes both, so a missing
+  one is unambiguous damage, but the refresh gate only forced a rebuild for
+  TypeScript or a corrupt-present file — a deleted index on a Python repo stayed
+  missing, silently voiding cross-file existence-break, phantom-import, and
+  `query_symbol_importers` advisories until a forced re-derive. The gate now
+  treats Python like TypeScript for index presence.
+- **A trust read could raise instead of failing open.** `trust_state_for`
+  checked `is_file()` then `read_text()` but caught only JSON errors, so a
+  concurrent rotation of the `.trust` file between the two calls raised an
+  uncaught `OSError` out of the gate. It now fails open to "untrusted" on any
+  read error.
+- **Status line rendered a literal `None` for a JSON-null `project_dir`.** The
+  payload-parse fallback used `.get(..., '')`, which returns `None` when the key
+  is present with a null value. Now coalesces to an empty string.
+
+### Changed
+
+- **`enforcement.multi_lens_review` and `enforcement.idiom_judge` now default
+  on.** At turn end (shadow/enforce mode), the coordinated multi-lens pass
+  (correctness + duplication, merged) now runs by default in place of the
+  separate single-spawn correctness-judge and duplication gates, so duplication
+  is no longer starved by the one-spawn-per-turn defer; it is advisory only and
+  never blocks. `idiom_judge` default-on strengthens the once-per-session
+  idiom-review directive (no extra model spawn — the flag only hardens the
+  prompt). Because the defaults live in code, already-trusted repos pick up the
+  new behavior with no re-trust prompt (same as `correctness_judge` shipped).
+  Opt out per repo with `enforcement.multi_lens_review: false` /
+  `enforcement.idiom_judge: false`, or globally with `enforcement.mode: off` or
+  `CHAMELEON_DISABLE=1`.
+- `/chameleon-journey` documented a stale act count and budget (19 acts / $33,
+  default cap $35) while the suite had grown to 21 acts / $38, so the documented
+  bare run command aborted on the budget pre-flight. Default cap raised to $40
+  and the figures synced.
+- `bump-version.sh --audit` no longer flags the regenerated `package-lock.json`
+  or the historical version references in `docs/gap-log.md` /
+  `docs/verification-runbook.md`; the lockfile is now excluded symmetrically with
+  `uv.lock`.
+- `/chameleon-status`, `/chameleon-explain`, and `using-chameleon` skill docs:
+  render a null drift score as "no edits observed yet", a null `match_quality`
+  as "n/a", and drop the unimplemented "value attribution" capability line.
+
 ## [2.38.5] - 2026-06-29
 
 ### Fixed

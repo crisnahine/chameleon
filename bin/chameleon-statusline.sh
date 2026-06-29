@@ -11,7 +11,7 @@ if command -v jq &>/dev/null; then
   project_dir=$(printf '%s' "$input" | jq -r '.workspace.project_dir // empty' 2>/dev/null || true)
 fi
 if [[ -z "$project_dir" ]]; then
-  project_dir=$(printf '%s' "$input" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('workspace',{}).get('project_dir',''))" 2>/dev/null || true)
+  project_dir=$(printf '%s' "$input" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('workspace',{}).get('project_dir') or '')" 2>/dev/null || true)
 fi
 [[ -z "$project_dir" ]] && project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
 

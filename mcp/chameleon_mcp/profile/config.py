@@ -95,10 +95,12 @@ class EnforcementConfig:
     # changes against those idioms/principles. On by default so enforce repos get
     # the reflexive check; the once-per-session marker keeps it from nagging.
     idiom_review: bool = True
-    # idiom_judge: opt-in. When True, the idiom-review directive is strengthened
-    # to demand a thorough review (an independent judge is enabled). The judge
-    # spawn itself is not wired into the hook; the flag only hardens the directive.
-    idiom_judge: bool = False
+    # idiom_judge: on by default. When True, the idiom-review directive is
+    # strengthened to demand a thorough review (an independent judge is enabled).
+    # The judge spawn itself is not wired into the hook; the flag only hardens the
+    # directive, so the default-on cost is a stronger turn-end self-review prompt,
+    # not an extra model spawn. Set false to restore the blanket directive.
+    idiom_judge: bool = True
     # correctness_judge: on by default. When True and mode is shadow/enforce, turn
     # end spawns a separate reviewer model that reads the turn's reconstructed
     # diffs for correctness bugs (logic errors, missing guards, dropped awaits,
@@ -182,14 +184,15 @@ class EnforcementConfig:
     # surface an advisory naming what was weakened. Deterministic, zero model
     # spawn; advisory only, never a block. Set false to opt out.
     test_integrity_review: bool = True
-    # multi_lens_review: OFF by default. When True (and mode is shadow/enforce),
+    # multi_lens_review: on by default. When True (and mode is shadow/enforce),
     # the turn-end review runs a coordinated multi-lens pass (correctness +
     # duplication today) merged through lens_synthesis instead of the separate
     # correctness-judge and duplication gates, so duplication is no longer starved
-    # by the single-spawn defer. Opt-in because it lifts the per-turn reviewer
-    # spawn budget above one; advisory only, never a block. Measure in shadow,
-    # then enable.
-    multi_lens_review: bool = False
+    # by the single-spawn defer. It REPLACES (does not add to) the correctness-judge
+    # and duplication gates for the turn -- the per-turn reviewer budget rises from
+    # one spawn to the lens set, still advisory only, never a block. Set false to
+    # restore the separate single-spawn correctness and duplication gates.
+    multi_lens_review: bool = True
 
 
 @dataclass(frozen=True)
@@ -261,7 +264,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         raise ChameleonConfigError(
             f"`enforcement.idiom_review` must be bool, got {type(idiom_review).__name__}"
         )
-    idiom_judge = raw.get("idiom_judge", False)
+    idiom_judge = raw.get("idiom_judge", True)
     if not isinstance(idiom_judge, bool):
         raise ChameleonConfigError(
             f"`enforcement.idiom_judge` must be bool, got {type(idiom_judge).__name__}"
@@ -322,7 +325,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
             "`enforcement.test_integrity_review` must be bool, got "
             f"{type(test_integrity_review).__name__}"
         )
-    multi_lens_review = raw.get("multi_lens_review", False)
+    multi_lens_review = raw.get("multi_lens_review", True)
     if not isinstance(multi_lens_review, bool):
         raise ChameleonConfigError(
             f"`enforcement.multi_lens_review` must be bool, got {type(multi_lens_review).__name__}"

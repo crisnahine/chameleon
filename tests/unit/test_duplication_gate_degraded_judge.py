@@ -58,6 +58,10 @@ def make_trusted_repo(tmp_path):
                     "enforcement": {
                         "mode": "shadow",
                         "idiom_review": False,
+                        # multi_lens_review (default-on) merges correctness +
+                        # duplication into one pass; disable it so this test
+                        # exercises the separate correctness/duplication gates.
+                        "multi_lens_review": False,
                         "correctness_judge": True,
                         "duplication_review": True,
                     }

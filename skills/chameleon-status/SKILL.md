@@ -81,7 +81,7 @@ The trap is an **all-zeros enforcement-outcome result reading as health**. It do
 
 1. Call `chameleon-mcp::detect_repo(<file-path>)` to get the current repo_id and trust_state.
 2. Read `.chameleon/profile.json` and `archetypes.json` to enumerate archetypes (or call `get_pattern_context` if more convenient).
-3. Call `chameleon-mcp::get_drift_status(repo)` for `days_since_refresh` / `structural_conformance_score` / `conformance_disclaimer` / `recommended_action`.
+3. Call `chameleon-mcp::get_drift_status(repo)` for `days_since_refresh` / `structural_conformance_score` / `conformance_disclaimer` / `recommended_action`. When `structural_conformance_score` is `null` (no edits observed since bootstrap), render "no edits observed yet" in place of a numeric drift and report `recommended_action` (typically "none; profile is fresh") — never a literal "None".
 4. Format the result for the terminal. Keep the conformance disclaimer above the score.
 
 ## Output format

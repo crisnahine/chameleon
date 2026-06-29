@@ -6492,6 +6492,7 @@ def _profile_needs_rederive(profile_dir) -> bool:
 
     from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
 
+    parsed_artifacts: dict[str, dict] = {}
     for name in ("archetypes.json", "canonicals.json", "rules.json", "conventions.json"):
         try:
             obj = _json.loads((profile_dir / name).read_text(encoding="utf-8"))
@@ -6499,6 +6500,7 @@ def _profile_needs_rederive(profile_dir) -> bool:
             return True
         if not isinstance(obj, dict):
             return True
+        parsed_artifacts[name] = obj
     # The manifest itself (profile.json) must exist, parse, and carry a schema
     # version this engine supports. A corrupt or unsupported-schema (too-new /
     # non-int) manifest is rejected at READ time, but a plain refresh would
@@ -6518,6 +6520,24 @@ def _profile_needs_rederive(profile_dir) -> bool:
         or not isinstance(schema, int)
         or schema > MAX_SUPPORTED_SCHEMA_VERSION
     ):
+        return True
+    # Cross-artifact generation gate -- mirrors load_profile_dir (profile/loader.py):
+    # the loader REJECTS a profile whose profile/archetypes/rules/canonicals
+    # generations are absent, non-int, or unequal. That is exactly the shape a
+    # crashed/partial write or a bad 3-way .chameleon merge leaves (an archetypes
+    # reset to ``{}`` -> generation None; or one artifact's generation skewed past
+    # its siblings). Such a profile reads as ``profile_corrupted`` and the loader's
+    # own error says "/chameleon-refresh recommended" -- but the noop refresh would
+    # preserve it verbatim, leaving that advice a dead end. Re-derive so a plain
+    # refresh repairs precisely what the loader rejects. The per-artifact dict check
+    # above (an empty ``{}`` is still a dict) does NOT catch this.
+    gens = (
+        manifest.get("generation"),
+        parsed_artifacts["archetypes.json"].get("generation"),
+        parsed_artifacts["rules.json"].get("generation"),
+        parsed_artifacts["canonicals.json"].get("generation"),
+    )
+    if not all(isinstance(g, int) for g in gens) or len(set(gens)) != 1:
         return True
     # Generated index artifacts: the noop paths preserve the profile dir
     # verbatim, so a deleted or corrupt index would otherwise stay missing
@@ -6554,7 +6574,7 @@ def _profile_needs_rederive(profile_dir) -> bool:
     # writes them, so validate-if-present and don't force a rebuild on absence.
     for name in ("exports_index.json", "reverse_index.json"):
         path = profile_dir / name
-        if manifest.get("language") == "typescript" or path.exists():
+        if manifest.get("language") in ("typescript", "python") or path.exists():
             try:
                 obj = _json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):

@@ -80,7 +80,7 @@ The single question a postmortem must answer: did chameleon *not see* the file's
 
 ## Reading the decision block
 
-`decision` carries: `archetype`, `match_quality` (`none`/`fallback`/`exact`/`ast`), `confidence_band`, `violations_raised`, `blockable_rules` (the block-eligible rules that stood on the file), `outcome` (`advised`/`would-block`/`blocked`/`overridden`/`clean`), `session_id`, and `observed_at`. State the archetype and match quality first — that's the coverage half — then what was raised and what the gate did.
+`decision` carries: `archetype`, `match_quality` (`none`/`fallback`/`exact`/`ast`, or `null` when the gate fired before a canonical was matched — render that as "n/a", not a literal "None"), `confidence_band`, `violations_raised`, `blockable_rules` (the block-eligible rules that stood on the file), `outcome` (`advised`/`would-block`/`blocked`/`overridden`/`clean`), `session_id`, and `observed_at`. State the archetype and match quality first — that's the coverage half — then what was raised and what the gate did.
 
 ## Out of scope
 

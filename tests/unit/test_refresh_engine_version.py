@@ -65,7 +65,15 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
     )
     pd = repo / ".chameleon"
     pd.mkdir()
-    stamp = {"schema_version": 8, "engine_min_version": engine_version, "archetypes": {}}
+    # profile/archetypes/rules/canonicals share an equal integer generation, the
+    # loader's cross-artifact gate that _profile_needs_rederive mirrors -- without
+    # it the repair guard reads cross-artifact skew and forces a rebuild.
+    stamp = {
+        "schema_version": 8,
+        "engine_min_version": engine_version,
+        "archetypes": {},
+        "generation": 1,
+    }
     (pd / "profile.json").write_text(json.dumps(stamp), encoding="utf-8")
     (pd / "archetypes.json").write_text(json.dumps(stamp), encoding="utf-8")
     (pd / "conventions.json").write_text(
@@ -73,8 +81,12 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
     )
     # all core artifacts present + complete so the repair guard doesn't force a
     # rebuild on the noop path (the generated indexes are part of that set)
-    (pd / "canonicals.json").write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
-    (pd / "rules.json").write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+    (pd / "canonicals.json").write_text(
+        json.dumps({"schema_version": 8, "generation": 1}), encoding="utf-8"
+    )
+    (pd / "rules.json").write_text(
+        json.dumps({"schema_version": 8, "generation": 1}), encoding="utf-8"
+    )
     (pd / "calls_index.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     (pd / "function_catalog.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     (pd / "symbol_signatures.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
@@ -219,10 +231,18 @@ def test_principles_incomplete_when_absent(tmp_path):
 def _complete_profile(tmp_path):
     pd = tmp_path / ".chameleon"
     pd.mkdir(exist_ok=True)
+    # Core artifacts the loader cross-checks for an EQUAL integer `generation`: a
+    # real bootstrap stamps the same generation on profile/archetypes/rules/
+    # canonicals, and _profile_needs_rederive mirrors that gate, so a complete
+    # fixture must carry it on all four (a generation-less artifact reads as
+    # cross-artifact skew and correctly forces a rebuild).
+    for name in ("archetypes.json", "canonicals.json", "rules.json"):
+        pd.joinpath(name).write_text(
+            json.dumps({"generation": 1, "schema_version": 8}), encoding="utf-8"
+        )
+    # conventions + the generated index artifacts are validated as JSON objects
+    # only (no generation cross-check), so a bare schema_version is complete.
     for name in (
-        "archetypes.json",
-        "canonicals.json",
-        "rules.json",
         "conventions.json",
         "calls_index.json",
         "function_catalog.json",

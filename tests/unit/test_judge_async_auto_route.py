@@ -65,6 +65,9 @@ def make_trusted_repo(tmp_path):
                     "enforcement": {
                         "mode": "enforce",
                         "idiom_review": False,
+                        # multi_lens_review (default-on) replaces the single
+                        # correctness-judge spawn this routing test exercises.
+                        "multi_lens_review": False,
                         "correctness_judge": True,
                     }
                 }

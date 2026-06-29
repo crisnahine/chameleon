@@ -106,7 +106,7 @@ Chameleon is an output-layer advisory: archetype + canonical + rules shape the c
 |---------|---------|
 | `/chameleon-init` | Bootstrap a new profile |
 | `/chameleon-refresh` | Re-analyze repo, update profile after drift |
-| `/chameleon-status` | View profile state, drift, value attribution |
+| `/chameleon-status` | View profile state, drift, trust state |
 | `/chameleon-teach` | Capture a missed pattern as an idiom |
 | `/chameleon-auto-idiom` | Derive novel team idioms from repo evidence (append-only) |
 | `/chameleon-trust` | Approve a committed profile for this user |

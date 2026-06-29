@@ -70,10 +70,18 @@ def test_bad_value_on_known_enforcement_key_still_rejected(tmp_path):
         load_config(d)
 
 
-def test_idiom_review_defaults_on_judge_off(tmp_path):
+def test_idiom_review_and_judge_default_on(tmp_path):
     cfg = load_config(tmp_path)  # no file
     assert cfg.enforcement.idiom_review is True
-    assert cfg.enforcement.idiom_judge is False
+    assert cfg.enforcement.idiom_judge is True
+
+
+def test_multi_lens_review_default_on(tmp_path):
+    # A repo with no enforcement block gets the coordinated multi-lens turn-end
+    # pass by default; set enforcement.multi_lens_review false to opt out.
+    assert load_config(tmp_path).enforcement.multi_lens_review is True  # no file
+    d = _write(tmp_path, {"enforcement": {"multi_lens_review": False}})
+    assert load_config(d).enforcement.multi_lens_review is False
 
 
 def test_idiom_flags_parsed(tmp_path):

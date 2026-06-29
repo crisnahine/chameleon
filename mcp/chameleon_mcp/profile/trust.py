@@ -293,7 +293,11 @@ def trust_state_for(repo_id: str) -> TrustRecord | None:
         return None
     try:
         return TrustRecord.from_dict(json.loads(trust_path.read_text(encoding="utf-8")))
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, OSError):
+        # OSError covers the TOCTOU window: is_file() saw the file but a
+        # concurrent rotation/removal makes read_text() raise. Fail open to
+        # "untrusted" (None) rather than letting the gate raise -- a trust read
+        # must never crash the caller.
         return None
 
 

@@ -797,8 +797,9 @@ Five places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
 5. **Idiom review.** When the turn edited files governed by idioms or
    principles and no lint block stood, the Stop hook blocks once per session to
    force a self-review against `idioms.md`/`principles.md`. Gated by
-   `enforcement.idiom_review` (default on). `enforcement.idiom_judge` (opt-in)
-   only hardens the directive text; it does not spawn a model.
+   `enforcement.idiom_review` (default on). `enforcement.idiom_judge` (default on)
+   only hardens the directive text; it does not spawn a model. Set it false to
+   restore the blanket self-review directive.
 
 ### Escalation
 
@@ -905,7 +906,7 @@ These run in the Stop backstop after the block gates decline, produce only
   spawn that confirms real re-implementations. Confirmed matches surface as a
   `[🦎 chameleon: N possible duplicates]` advisory. Skipped on SubagentStop,
   capped per session, deduplicated per (file, content).
-- **Multi-lens review** (`enforcement.multi_lens_review`, default off). When on,
+- **Multi-lens review** (`enforcement.multi_lens_review`, default on). When on,
   it replaces the separate correctness and duplication gates with one
   coordinated pass that runs both lenses concurrently and surfaces a finding
   only when two lenses agree or one raises it at high confidence. This lifts the
@@ -1325,10 +1326,10 @@ under `enforcement` are tolerated for forward compatibility; unknown keys under
 | `enforcement.stop_backstop` | `true` | Stop-hook enforcement backstop. |
 | `enforcement.stop_block_cap` | `3` | Max Stop blocks per session. |
 | `enforcement.idiom_review` | `true` | Once-per-session idiom self-review. |
-| `enforcement.idiom_judge` | `false` | Harden the idiom-review directive. |
+| `enforcement.idiom_judge` | `true` | Harden the idiom-review directive. |
 | `enforcement.correctness_judge` | `true` | Turn-end correctness reviewer. |
 | `enforcement.duplication_review` | `true` | Turn-end duplication advisory. |
-| `enforcement.multi_lens_review` | `false` | Coordinated multi-lens pass (replaces the two above). |
+| `enforcement.multi_lens_review` | `true` | Coordinated multi-lens pass (replaces the two above). |
 | `enforcement.judge_crossfile_facts` / `judge_imported_definitions` / `judge_transitive_impact` | `true` | Judge prompt grounding blocks. |
 | `enforcement.signature_contract_diff` | `true` | Deterministic caller-contract diff (tool-time). |
 | `enforcement.stale_test_advisory` / `changeset_completeness` / `crossfile_existence_advisory` / `test_integrity_review` / `intent_scope_advisory` | `true` | Deterministic turn-end advisories. |

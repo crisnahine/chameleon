@@ -211,6 +211,60 @@ def python_role_for_path(file_path: str) -> str | None:
     return None
 
 
+# Next.js app-router expresses a file's role in a SPECIAL FILENAME (page.tsx,
+# layout.tsx, ...) that sits in a per-route directory, NOT in a role directory
+# the way Django uses models/. So app-router role files SCATTER one per route
+# dir (app/page.tsx, app/dashboard/page.tsx, app/about/page.tsx); plain
+# directory bucketing makes each its own below-threshold bucket and the "page"
+# archetype never forms in small/medium repos (large repos cluster only because
+# their app tree has enough sibling files). Bucketing by the filename role lets
+# every page.tsx across route dirs cluster into one app-page archetype, the same
+# way python_role_for_path groups models.py across Django apps. route.ts is
+# deliberately EXCLUDED: app/api/**/route.ts already co-locates under one
+# app/api directory and clusters as app-route-handler, so role-bucketing it
+# would only disturb a cluster that already forms.
+_NEXT_APP_ROLE_NAMES: dict[str, str] = {
+    "page": "app-page",
+    "layout": "app-layout",
+    "loading": "app-special",
+    "error": "app-special",
+    "global-error": "app-special",
+    "not-found": "app-special",
+    "template": "app-special",
+    "default": "app-special",
+}
+
+
+def nextjs_role_for_path(file_path: str) -> str | None:
+    """Return the Next.js app-router role archetype for a TS/JS path, or None.
+
+    Self-gated: fires only for a recognized app-router special filename
+    (``page``/``layout``/``loading``/``error``/``not-found``/``template``/
+    ``default``/``global-error``) that sits UNDER an ``app/`` segment -- the
+    app-router signal. ``route.ts`` is intentionally absent from the role map (it
+    already co-locates under ``app/api``). A ``page.tsx`` outside ``app/``, a
+    Pages-router ``index.tsx``, a NestJS ``*.controller.ts``, or a plain
+    component all return None and are directory-bucketed unchanged, so this never
+    reshapes a non-app-router file.
+    """
+    parts = [p for p in file_path.split("/") if p and p not in (".", "..")]
+    if len(parts) < 2:
+        return None
+    last = parts[-1]
+    for ext in (".tsx", ".ts", ".jsx", ".js"):
+        if last.endswith(ext):
+            stem = last[: -len(ext)]
+            break
+    else:
+        return None
+    role = _NEXT_APP_ROLE_NAMES.get(stem)
+    if role is None:
+        return None
+    if "app" not in parts[:-1]:
+        return None
+    return role
+
+
 def path_pattern_bucket_for(
     file_path: str,
     archetype_paths: dict[str, list[str]] | None = None,
@@ -276,6 +330,26 @@ def path_pattern_bucket_for(
     py_role = python_role_for_path(file_path)
     if py_role is not None:
         bucket = py_role
+        if include_extension:
+            ext = _extension_of(parts[-1])
+            if ext:
+                bucket = f"{bucket}:{ext}"
+        return (bucket, "")
+
+    # Next.js app-router role bucketing: page.tsx/layout.tsx/... scatter one per
+    # route dir, so bucket by the filename role to cluster them. UNLIKE the
+    # Django bucketer above, the monorepo workspace prefix is preserved
+    # (``apps/web`` vs ``apps/admin`` are distinct Next.js apps whose pages must
+    # not merge). sub_bucket is empty so the within-app cross-route merge
+    # survives _split_by_sub_bucket. Naming falls out of the existing _TS_PRIORS
+    # ``app-page-component``/``app-layout`` entries (they read member_paths, not
+    # the bucket), so no naming change is needed here.
+    next_role = nextjs_role_for_path(file_path)
+    if next_role is not None:
+        if len(parts) >= 4 and parts[0] in _MONOREPO_WORKSPACE_ROOTS:
+            bucket = f"{parts[0]}/{parts[1]}/{next_role}"
+        else:
+            bucket = next_role
         if include_extension:
             ext = _extension_of(parts[-1])
             if ext:

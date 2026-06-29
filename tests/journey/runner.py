@@ -4,7 +4,7 @@ Usage:
   mcp/.venv/bin/python -m tests.journey.runner               # full run
   mcp/.venv/bin/python -m tests.journey.runner --list        # list acts
   mcp/.venv/bin/python -m tests.journey.runner --dry-run     # preflight only
-  mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 30
+  mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 40
 """
 
 from __future__ import annotations
@@ -82,8 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--max-budget-usd",
         type=float,
-        default=35.0,
-        help="Abort if projected cost exceeds (default 35)",
+        default=40.0,
+        help="Abort if projected cost exceeds (default 40)",
     )
     p.add_argument(
         "--results-dir",

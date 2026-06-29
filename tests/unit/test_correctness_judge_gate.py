@@ -71,6 +71,10 @@ def make_trusted_repo(tmp_path):
                         # idiom_review off so the idiom gate never blocks first and
                         # the judge gate is the surface under test.
                         "idiom_review": False,
+                        # multi_lens_review is default-on but REPLACES the single
+                        # correctness-judge spawn this gate exercises; disable it so
+                        # the correctness-judge route is the surface under test.
+                        "multi_lens_review": False,
                         "correctness_judge": correctness_judge,
                     }
                 }

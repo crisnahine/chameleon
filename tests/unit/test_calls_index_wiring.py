@@ -164,10 +164,12 @@ def test_needs_rederive_index_checks(tmp_path):
     # perpetual rebuild).
     cham = tmp_path / ".chameleon"
     cham.mkdir(parents=True)
+    # archetypes/canonicals/rules carry profile.json's generation: the repair
+    # predicate mirrors the loader's cross-artifact generation gate, so a complete
+    # profile has them present and equal.
+    for name in ("archetypes.json", "canonicals.json", "rules.json"):
+        (cham / name).write_text(json.dumps({"generation": 1}), encoding="utf-8")
     for name in (
-        "archetypes.json",
-        "canonicals.json",
-        "rules.json",
         "conventions.json",
         "calls_index.json",
         "function_catalog.json",
@@ -177,7 +179,9 @@ def test_needs_rederive_index_checks(tmp_path):
         (cham / name).write_text("{}", encoding="utf-8")
     # enforcement.json needs block_rules as a dict (active_block_rules's shape).
     (cham / "enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
-    (cham / "profile.json").write_text(json.dumps({"language": "ruby"}), encoding="utf-8")
+    (cham / "profile.json").write_text(
+        json.dumps({"generation": 1, "language": "ruby"}), encoding="utf-8"
+    )
     (cham / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
     (cham / "principles.md").write_text("anti-hallucination protocol\n", encoding="utf-8")
 
@@ -225,8 +229,12 @@ def test_needs_rederive_index_checks(tmp_path):
     (cham / "enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
     assert tools._profile_needs_rederive(cham) is False
 
-    # TS profiles additionally require the two symbol indexes.
-    (cham / "profile.json").write_text(json.dumps({"language": "typescript"}), encoding="utf-8")
+    # TS profiles additionally require the two symbol indexes. Keep the generation
+    # stamp on the rewrite so this isolates the index check (a generation-less
+    # profile.json would force a rebuild via the cross-artifact gate instead).
+    (cham / "profile.json").write_text(
+        json.dumps({"generation": 1, "language": "typescript"}), encoding="utf-8"
+    )
     assert tools._profile_needs_rederive(cham) is True
     (cham / "exports_index.json").write_text("{}", encoding="utf-8")
     (cham / "reverse_index.json").write_text("{}", encoding="utf-8")
