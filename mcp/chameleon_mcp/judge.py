@@ -277,6 +277,72 @@ _FACTS_HEADER = (
 )
 
 
+_CALLER_TOO_LARGE = object()  # sentinel: caller file exists but is over the read cap
+
+
+def _caller_needle(callee_name: str):
+    """Word-boundary regex for a call site of ``callee_name``, or None when the
+    name cannot be reliably bareword-matched (so the caller must not be dropped).
+
+    A Ruby setter ``url=`` is written ``record.url = v`` at the call site, never
+    the literal ``url=``, so match the base name. Ruby predicate/bang methods
+    (``foo?`` / ``foo!``) DO appear verbatim, so keep their suffix. An operator
+    method (``[]``, ``[]=``, ``<=>``) has no bareword form, so return None and let
+    the caller be kept rather than falsely verified stale.
+    """
+    name = str(callee_name)
+    if len(name) > 1 and name.endswith("=") and name[:-1].isidentifier():
+        name = name[:-1]  # setter: the call writes the base name with a space
+    core = name[:-1] if name[-1:] in "?!" else name
+    if not core or not all(c == "_" or c == "$" or c.isalnum() for c in core):
+        return None  # operator / unverifiable name
+    return re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
+
+
+def _caller_site_live(repo_root: Path, caller_rel, callee_name: str, line, *, cache=None) -> bool:
+    """True if ``caller_rel`` still exists and still references ``callee_name``.
+
+    The calls index is a bootstrap snapshot; a caller deleted, moved, or
+    refactored to no longer call the changed function is stale. The judge prompt
+    tells the reviewer to flag a finding for any listed caller the change would
+    break, so a stale caller site fed here surfaces as a phantom "stale index"
+    finding. Re-verify the cited edge against the working tree: the file must be
+    readable and still name ``callee_name`` as a whole word (recorded line first,
+    then a whole-file scan). Advisory grounding, so the bias is to KEEP rather
+    than wrongly drop: a deleted file drops (read error), but an over-cap file or
+    a name with no bareword form (Ruby operators) is kept (cannot be confirmed
+    stale). ``cache`` is an optional per-build {rel: content|sentinel|None} dict
+    so a file referenced by many callers/edges is read once.
+    """
+    if not isinstance(caller_rel, str) or not caller_rel:
+        return False
+    if cache is not None and caller_rel in cache:
+        content = cache[caller_rel]
+    else:
+        from chameleon_mcp.safe_open import FileTooLargeError, safe_read_text
+
+        try:
+            content = safe_read_text(repo_root, caller_rel, max_size_bytes=1_000_000)
+        except FileTooLargeError:
+            content = _CALLER_TOO_LARGE  # exists but unverifiable -> keep
+        except Exception:
+            content = None  # deleted / symlinked / unreadable -> drop
+        if cache is not None:
+            cache[caller_rel] = content
+    if content is _CALLER_TOO_LARGE:
+        return True
+    if content is None:
+        return False
+    needle = _caller_needle(callee_name)
+    if needle is None:
+        return True  # name has no bareword form -> cannot confirm stale, keep
+    lines = content.splitlines()
+    if isinstance(line, int) and not isinstance(line, bool) and 1 <= line <= len(lines):
+        if needle.search(lines[line - 1]):
+            return True
+    return bool(needle.search(content))
+
+
 def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
     """Bounded caller-facts block for the callables this turn changed, or ''.
 
@@ -315,6 +381,22 @@ def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
 
     lines: list[str] = [_FACTS_HEADER]
     listed = 0
+    # Per-build cache so a file referenced by many callers is read once, not once
+    # per caller row (the re-verify scans the full caller list, not just the
+    # shown subset). Local to this call -> never serves a stale snapshot.
+    _content_cache: dict = {}
+
+    def _render_sites(rows) -> str:
+        return ", ".join(
+            (
+                f"{sanitize_for_chameleon_context(r['path'])}:{r['line']}"
+                if isinstance(r["line"], int) and not isinstance(r["line"], bool)
+                else sanitize_for_chameleon_context(r["path"])
+            )
+            + f" ({sanitize_for_chameleon_context(r['caller'])})"
+            for r in rows
+        )
+
     for fd in diffs:
         if listed >= max_callables:
             break
@@ -346,33 +428,64 @@ def caller_facts_for_diffs(repo_root: Path, diffs: list[FileDiff]) -> str:
                 entry = index.callers_of(fd.rel_path, fn.name)
                 s_fn_name = sanitize_for_chameleon_context(fn.name)
                 s_rel_path = sanitize_for_chameleon_context(fd.rel_path)
+                # Re-verify each snapshot caller against the working tree before
+                # citing it as a live call site (see _caller_site_live): a deleted,
+                # moved, or no-longer-calling caller is stale and would steer the
+                # judge to flag a phantom finding.
+                live = (
+                    [
+                        r
+                        for r in entry["callers"]
+                        if _caller_site_live(
+                            repo_root, r.get("path"), fn.name, r.get("line"), cache=_content_cache
+                        )
+                    ]
+                    if entry is not None
+                    else []
+                )
                 if entry is None or not entry["callers"]:
                     lines.append(
                         f"- {s_fn_name}() in {s_rel_path}: no committed callers found "
                         "(new, unused, or called dynamically)"
                     )
-                else:
-                    shown = entry["callers"][:max_sites]
-                    sites = ", ".join(
-                        (
-                            f"{sanitize_for_chameleon_context(r['path'])}:{r['line']}"
-                            if isinstance(r["line"], int) and not isinstance(r["line"], bool)
-                            else sanitize_for_chameleon_context(r["path"])
-                        )
-                        + f" ({sanitize_for_chameleon_context(r['caller'])})"
-                        for r in shown
+                    listed += 1
+                elif entry["truncated"]:
+                    # A god-function's caller list is a partial sample, so an empty
+                    # live sample is NOT zero live callers: keep the snapshot total
+                    # as a lower bound and cite whatever live sample sites remain.
+                    # Only add "[+N more]" when examples ARE shown -- otherwise an
+                    # example-less "N callers [+N more]" doubles the apparent count.
+                    shown = live[:max_sites]
+                    line = (
+                        f"- {s_fn_name}() in {s_rel_path}: {entry['total']} committed "
+                        f"caller{'s' if entry['total'] != 1 else ''}"
                     )
-                    total = entry["total"]
+                    sites = _render_sites(shown)
+                    if sites:
+                        line += f", e.g. {sites}"
+                        if entry["total"] > len(shown):
+                            line += f" [+{entry['total'] - len(shown)} more]"
+                    line += " (count is a lower bound)"
+                    lines.append(line)
+                    listed += 1
+                elif not live:
+                    # Complete list, every caller verified stale. We cannot tell
+                    # "all deleted" (truly none) from "all renamed/moved" (callers
+                    # exist at paths the snapshot does not record), so OMIT the line
+                    # rather than assert a false "no callers" that would steer the
+                    # reviewer to skip a real caller. Consumes no cap budget.
+                    pass
+                else:
+                    shown = live[:max_sites]
+                    total = len(live)
                     line = (
                         f"- {s_fn_name}() in {s_rel_path}: {total} committed "
-                        f"caller{'s' if total != 1 else ''}, e.g. {sites}"
+                        f"caller{'s' if total != 1 else ''}, e.g. {_render_sites(shown)}"
                     )
                     if total > len(shown):
                         line += f" [+{total - len(shown)} more]"
-                    if entry["truncated"]:
-                        line += " (count is a lower bound)"
                     lines.append(line)
-                listed += 1
+                    listed += 1
         except Exception:
             continue
 
@@ -414,6 +527,36 @@ def _render_transitive_chain(chain: list[tuple], sanitize) -> str:
     return "- " + " <- ".join(parts)
 
 
+def _live_transitive_chain(repo_root: Path, chain: list[tuple], *, cache=None) -> list[tuple]:
+    """Truncate a snapshot caller chain at the first stale edge against the working
+    tree, returning the still-valid prefix.
+
+    The chain is ``[(changed_fn), (caller), (caller-of-caller), ...]``; edge i is
+    valid when the caller file ``chain[i][0]`` still references the function it is
+    recorded calling (``chain[i-1][1]``). A deleted intermediate file or a caller
+    that dropped the call breaks the chain there. The header already warns a stale
+    intermediate edge can shorten a chain; this enforces it so a deleted/refactored
+    node is never cited with an exact file:line. Fails open to the full chain on
+    error (never lengthens it)."""
+    try:
+        if not chain:
+            return chain
+        kept = [chain[0]]
+        for i in range(1, len(chain)):
+            caller_path = chain[i][0]
+            callee_name = chain[i - 1][1]
+            caller_line = chain[i][2]
+            if _caller_site_live(
+                repo_root, caller_path, str(callee_name), caller_line, cache=cache
+            ):
+                kept.append(chain[i])
+            else:
+                break
+        return kept
+    except Exception:
+        return chain
+
+
 def caller_facts_transitive_for_diffs(repo_root: Path, diffs: list[FileDiff], index=None) -> str:
     """Bounded multi-hop transitive caller-impact block, or ''.
 
@@ -445,6 +588,7 @@ def caller_facts_transitive_for_diffs(repo_root: Path, diffs: list[FileDiff], in
 
         rendered: list[str] = []
         listed = 0
+        _content_cache: dict = {}
         for fd in diffs:
             if listed >= max_callables:
                 break
@@ -479,9 +623,21 @@ def caller_facts_transitive_for_diffs(repo_root: Path, diffs: list[FileDiff], in
                     multi = [c for c in chains if len(c) - 1 >= min_hops]
                     if not multi:
                         continue
+                    listed_any = False
                     for c in multi:
-                        rendered.append(_render_transitive_chain(c, sanitize_for_chameleon_context))
-                    listed += 1
+                        # Re-verify the chain against the working tree: a deleted or
+                        # no-longer-calling intermediate truncates it, and a chain
+                        # shortened below the hop threshold is dropped (it would
+                        # duplicate the one-hop caller_facts block).
+                        live_c = _live_transitive_chain(repo_root, c, cache=_content_cache)
+                        if len(live_c) - 1 < min_hops:
+                            continue
+                        rendered.append(
+                            _render_transitive_chain(live_c, sanitize_for_chameleon_context)
+                        )
+                        listed_any = True
+                    if listed_any:
+                        listed += 1
             except Exception:
                 continue
 

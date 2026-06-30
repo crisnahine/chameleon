@@ -4,6 +4,52 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.12] - 2026-06-30
+
+Multi-lens review and idiom-judge correctness pass (exhaustive audit of both
+paths against real repos).
+
+### Fixed
+
+- **Stale-index facts fed to the correctness reviewer.** The turn-end correctness
+  lens grounds the reviewer prompt with caller facts and transitive caller chains
+  read from the committed calls snapshot, and the prompt tells the reviewer to
+  flag a finding for any listed caller a change would break. Those caller sites
+  were never re-verified against the working tree, so after a refactor the
+  reviewer was handed callers that no longer exist or no longer call the changed
+  function (a deleted file cited with an exact line, a chain through a deleted
+  module) and steered to raise a phantom finding. This is the recurring "stale
+  index" symptom. Both blocks now re-verify each cited caller against the working
+  tree (the file is readable and still references the function) and drop the stale
+  ones: the one-hop block recomputes its count, and a transitive chain is
+  truncated at its first stale edge (dropped if that shortens it below the hop
+  threshold). Advisory grounding, so a renamed caller the snapshot cannot follow
+  simply drops rather than misreports.
+- **The turn-end idiom self-review could truncate an idiom mid-block.** Past the
+  context cap the idioms/principles text was hard-sliced with no marker, so a cut
+  landing inside a counterexample fence could read an anti-pattern as the
+  recommended form, or cut a directive mid-sentence and lose its polarity. The
+  block now ends with a "truncated; see the file" marker (matching the per-edit
+  path) so a shortened block never reads as the complete idiom set.
+- **The once-per-session idiom-review marker was never aged out.** A turn with no
+  session id collapsed every marker to one shared file, after which the idiom
+  review was skipped indefinitely. The marker namespace is now reaped at
+  SessionStart like the other once-per-session markers.
+- **The multi-lens advisory header overstated its coverage.** When the correctness
+  lens ran detached (async mode, or on a bare-auth fallback), only the duplication
+  lens ran synchronously, yet the header still claimed "correctness + duplication."
+  It now names only the lenses that actually ran this turn.
+- **A duplication pair could be permanently suppressed without ever being shown.**
+  The multi-lens duplication lens marked a finding "surfaced" before synthesis and
+  rendering; an error in between left the marker written but no advisory emitted.
+  The mark now happens only after the finding is rendered.
+- **The duplication lens ignored its own per-session spawn cap under multi-lens,**
+  running up to the (larger) correctness budget instead. It now honors the
+  duplication cap.
+- The `idiom_judge` directive no longer claims an "independent judge is enabled"
+  (no separate judge spawns from this gate); it now reads as a high-bar self-review
+  instruction, matching what the flag actually does.
+
 ## [2.38.11] - 2026-06-30
 
 ### Fixed

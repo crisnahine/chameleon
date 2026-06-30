@@ -46,6 +46,32 @@ def _write_calls_index(repo: Path, callees: dict) -> None:
     (d / "calls_index.json").write_text(
         json.dumps({"schema_version": 1, "callees": callees}), encoding="utf-8"
     )
+    # The caller-facts/transitive blocks now re-verify each cited caller against
+    # the working tree (a deleted/no-longer-calling caller is dropped), so the
+    # synthetic callers must exist on disk and still name the callee at the
+    # recorded line.
+    by_file: dict[str, dict[int, str]] = {}
+    for _callee_rel, fns in callees.items():
+        for fn_name, entry in fns.items():
+            for c in entry.get("callers", []):
+                path = c.get("path")
+                if not isinstance(path, str):
+                    continue
+                line = c.get("line")
+                ln = (
+                    line
+                    if isinstance(line, int) and not isinstance(line, bool) and line >= 1
+                    else 1
+                )
+                by_file.setdefault(path, {})[ln] = fn_name
+    for path, line_map in by_file.items():
+        fp = repo / path
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        last = max(line_map)
+        out = [
+            f"  return {line_map[i]}();" if i in line_map else "  // x" for i in range(1, last + 1)
+        ]
+        fp.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
 # --- the bounded walk --------------------------------------------------------
@@ -392,3 +418,21 @@ def test_coerce_findings_rejects_bool_line_and_confidence():
     assert len(out) == 1
     assert out[0].line is None  # bool not treated as int 1
     assert out[0].confidence == 0.0  # bool not coerced to 1.0
+
+
+def test_live_transitive_chain_truncates_at_stale_edge(tmp_path):
+    # leaf <- mid [mid.ts:2] <- top [top.ts:2]; mid.ts is deleted, so the edge
+    # leaf<-mid is stale and the chain truncates to just the root (then a caller
+    # that drops below the hop threshold is dropped by the builder).
+    (tmp_path / "top.ts").write_text("return mid();\n", encoding="utf-8")  # top.ts exists, refs mid
+    # mid.ts intentionally NOT created -> the leaf<-mid edge cannot verify
+    chain = [("leaf.ts", "leaf", None), ("mid.ts", "mid", 2), ("top.ts", "top", 2)]
+    kept = judge._live_transitive_chain(tmp_path, chain)
+    assert kept == [("leaf.ts", "leaf", None)]
+
+
+def test_live_transitive_chain_keeps_fully_live_chain(tmp_path):
+    (tmp_path / "mid.ts").write_text("x\nreturn leaf();\n", encoding="utf-8")  # line 2 refs leaf
+    (tmp_path / "top.ts").write_text("y\nreturn mid();\n", encoding="utf-8")  # line 2 refs mid
+    chain = [("leaf.ts", "leaf", None), ("mid.ts", "mid", 2), ("top.ts", "top", 2)]
+    assert judge._live_transitive_chain(tmp_path, chain) == chain

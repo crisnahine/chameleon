@@ -39,6 +39,32 @@ def _write_calls_index(repo: Path, callees: dict) -> None:
     (d / "calls_index.json").write_text(
         json.dumps({"schema_version": 1, "callees": callees}), encoding="utf-8"
     )
+    # The caller-facts/transitive blocks now re-verify each cited caller against
+    # the working tree (a deleted/no-longer-calling caller is dropped), so the
+    # synthetic callers must exist on disk and still name the callee at the
+    # recorded line.
+    by_file: dict[str, dict[int, str]] = {}
+    for _callee_rel, fns in callees.items():
+        for fn_name, entry in fns.items():
+            for c in entry.get("callers", []):
+                path = c.get("path")
+                if not isinstance(path, str):
+                    continue
+                line = c.get("line")
+                ln = (
+                    line
+                    if isinstance(line, int) and not isinstance(line, bool) and line >= 1
+                    else 1
+                )
+                by_file.setdefault(path, {})[ln] = fn_name
+    for path, line_map in by_file.items():
+        fp = repo / path
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        last = max(line_map)
+        out = [
+            f"  return {line_map[i]}();" if i in line_map else "  // x" for i in range(1, last + 1)
+        ]
+        fp.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
 def _caller(path: str, caller: str, line: int | None = 3, grade: str = "import") -> dict:
@@ -777,3 +803,101 @@ def test_build_prompt_omits_caller_contract_directive_without_caller_facts():
         [_diff("src/util.ts", "@@ -1 +1 @@\n+x\n")],
     )
     assert "listed call site" not in prompt.lower()
+
+
+# --- stale-caller re-verification (the live-drop path) ------------------------
+
+
+def _raw_calls_index(repo: Path, callees: dict) -> None:
+    # Writes ONLY the index (no caller files), so callers are stale unless the
+    # test creates the file itself -- the exact case the live re-verify handles.
+    d = repo / ".chameleon"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "calls_index.json").write_text(
+        json.dumps({"schema_version": 1, "callees": callees}), encoding="utf-8"
+    )
+
+
+def test_caller_facts_drops_deleted_caller_and_recomputes_count(tmp_path, monkeypatch):
+    _raw_calls_index(
+        tmp_path,
+        {
+            "util.ts": {
+                "helper": {
+                    "callers": [
+                        {"path": "live.ts", "caller": "a", "line": 1, "grade": "import"},
+                        {"path": "gone.ts", "caller": "b", "line": 1, "grade": "import"},
+                    ],
+                    "total": 2,
+                    "truncated": False,
+                }
+            }
+        },
+    )
+    (tmp_path / "live.ts").write_text("return helper();\n", encoding="utf-8")  # gone.ts absent
+    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("helper", 1, 1)])
+    block = judge.caller_facts_for_diffs(tmp_path, [_diff("util.ts", "", whole=True)])
+    assert "live.ts" in block and "gone.ts" not in block
+    assert "1 committed caller" in block  # recomputed from snapshot total 2 -> 1 live
+
+
+def test_caller_facts_omits_callable_when_all_callers_stale(tmp_path, monkeypatch):
+    # A renamed/deleted-only caller must NOT produce a false "no callers" line that
+    # steers the reviewer to skip a real caller: the callable is omitted entirely.
+    _raw_calls_index(
+        tmp_path,
+        {
+            "util.ts": {
+                "helper": {
+                    "callers": [{"path": "gone.ts", "caller": "b", "line": 1, "grade": "import"}],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("helper", 1, 1)])
+    block = judge.caller_facts_for_diffs(tmp_path, [_diff("util.ts", "", whole=True)])
+    assert block == ""  # callable omitted -> only the header remains -> ""
+    assert "no live callers" not in block and "no committed callers" not in block
+
+
+def test_caller_facts_drops_caller_that_no_longer_references(tmp_path, monkeypatch):
+    _raw_calls_index(
+        tmp_path,
+        {
+            "util.ts": {
+                "helper": {
+                    "callers": [{"path": "x.ts", "caller": "a", "line": 1, "grade": "import"}],
+                    "total": 1,
+                    "truncated": False,
+                }
+            }
+        },
+    )
+    (tmp_path / "x.ts").write_text("return somethingElse();\n", encoding="utf-8")  # no 'helper'
+    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("helper", 1, 1)])
+    block = judge.caller_facts_for_diffs(tmp_path, [_diff("util.ts", "", whole=True)])
+    assert block == ""  # the only caller no longer references helper -> omitted
+
+
+def test_caller_facts_truncated_all_stale_no_phantom_more(tmp_path, monkeypatch):
+    callers = [{"path": f"g{i}.ts", "caller": "c", "line": 1, "grade": "import"} for i in range(50)]
+    _raw_calls_index(
+        tmp_path, {"util.ts": {"helper": {"callers": callers, "total": 50, "truncated": True}}}
+    )
+    # No caller files -> every sampled site is stale; truncated keeps the snapshot
+    # total as a lower bound but must NOT print an example-less "[+N more]".
+    monkeypatch.setattr(judge, "_parse_changed_file", lambda root, path: [_fn("helper", 1, 1)])
+    block = judge.caller_facts_for_diffs(tmp_path, [_diff("util.ts", "", whole=True)])
+    assert "50 committed callers" in block
+    assert "[+" not in block  # no phantom doubled count
+    assert "e.g." not in block  # no examples shown
+    assert "lower bound" in block
+
+
+def test_caller_needle_handles_ruby_setter_and_operators():
+    assert judge._caller_needle("url=").search("record.url = v") is not None  # setter -> base name
+    assert judge._caller_needle("foo?").search("obj.foo?") is not None  # predicate keeps suffix
+    assert judge._caller_needle("[]=") is None  # operator method -> unverifiable -> keep
+    assert judge._caller_needle("[]") is None

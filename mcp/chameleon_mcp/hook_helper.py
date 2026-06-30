@@ -5211,6 +5211,10 @@ SESSION_REAP_PREFIXES: tuple[str, ...] = (
     ".dup_surfaced.",
     ".intent.",
     ".correctness_judged.",
+    # The once-per-session idiom-review marker had no reaper: a null-session turn
+    # collapses every marker to ".idiom_reviewed.unknown" and would then skip the
+    # idiom review forever. Age it out like the other once-per-session markers.
+    ".idiom_reviewed.",
 )
 
 # Sink kinds from judge.run_correctness_judge that mean the reviewer produced
@@ -5414,10 +5418,23 @@ def _idiom_review_gate(
             pass
 
         names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in edited[:5])
-        idioms_block = sanitize_for_chameleon_context(idioms_text.strip())[:_IDIOM_CONTEXT_CHAR_CAP]
-        principles_block = sanitize_for_chameleon_context(principles_text.strip())[
-            :_IDIOM_CONTEXT_CHAR_CAP
-        ]
+
+        def _capped_block(text: str, source: str) -> str:
+            # Hard-slicing at the cap can cut an idiom mid-block -- e.g. inside a
+            # counterexample fence, so the model reads an anti-pattern as the
+            # recommended form, or mid-sentence so a directive's polarity is lost.
+            # Append a marker (mirroring the per-edit path) so a truncated block
+            # never reads as the complete, authoritative idiom set.
+            s = sanitize_for_chameleon_context(text.strip())
+            if len(s) > _IDIOM_CONTEXT_CHAR_CAP:
+                return (
+                    s[:_IDIOM_CONTEXT_CHAR_CAP].rstrip()
+                    + f"\n... ({source} truncated; see {source}.md)"
+                )
+            return s
+
+        idioms_block = _capped_block(idioms_text, "idioms")
+        principles_block = _capped_block(principles_text, "principles")
 
         body: list[str] = []
         if no_test_for_source_edit:
@@ -5492,8 +5509,9 @@ def _idiom_review_gate(
         if cfg.idiom_judge:
             parts.append("")
             parts.append(
-                "An independent judge is enabled (idiom_judge): make this review "
-                "thorough, not a rubber stamp."
+                "Hold this to a high bar (idiom_judge): check each edited file "
+                "against the idioms above and fix any clear violation; do not "
+                "rubber-stamp it."
             )
         parts.append("")
         parts.append(
@@ -6942,6 +6960,11 @@ def _multi_lens_review_lines(
                 event_sink=_sink,
             )
 
+        # Duplication pairs to mark surfaced only AFTER they are actually rendered
+        # (see the render block), so an exception in synthesis/render never
+        # persistently suppresses a duplication the user never saw.
+        dup_to_mark: list = []
+
         def _run_duplication():
             edited = [p for p in state.files if Path(p).is_file()]
             if not edited:
@@ -6969,8 +6992,7 @@ def _multi_lens_review_lines(
                 for c in confirmed
                 if not dr.finding_already_surfaced(repo_data, session_id or "", c)
             ]
-            for c in unsurfaced:
-                dr.mark_finding_surfaced(repo_data, session_id or "", c)
+            dup_to_mark.extend(unsurfaced)
             return unsurfaced
 
         # When the async/detach route is selected (operator opt-in, or
@@ -7001,13 +7023,24 @@ def _multi_lens_review_lines(
         # Honor the per-lens enforcement flags: multi_lens replaces the gates but
         # must not resurrect a lens the operator turned off (duplication_review /
         # correctness_judge). A lens left out simply does not run.
+        from chameleon_mcp._thresholds import threshold_int
+
         lenses = []
         ran_duplication = False
         if getattr(cfg, "correctness_judge", True) and not corr_detached:
             lenses.append(lens_runner.correctness_lens(_run_correctness))
-        if getattr(cfg, "duplication_review", True):
+        # Gate the duplication lens on its OWN per-session cap, not just the
+        # correctness route's: the two caps differ, so without this the lens would
+        # run up to the (larger) correctness budget instead of the duplication one.
+        if getattr(cfg, "duplication_review", True) and state.duplication_spawns < threshold_int(
+            "DUPLICATION_REVIEW_MAX_SPAWNS_PER_SESSION"
+        ):
             lenses.append(lens_runner.duplication_lens(_run_duplication))
             ran_duplication = True
+        # Name the lenses that actually run SYNCHRONOUSLY this turn, so the
+        # advisory header does not claim "correctness + duplication" when the
+        # correctness lens detached (its findings arrive next turn, separately).
+        ran_lens_names = [ln.name for ln in lenses]
         if not lenses and not corr_detached:
             _emit_check_event(repo_id, session_id, "multi_lens_review", "skipped", "no_lenses")
             return []
@@ -7065,12 +7098,19 @@ def _multi_lens_review_lines(
         if not surfaced:
             return []
 
+        # The findings are about to be rendered: mark the duplication pairs
+        # surfaced NOW (not inside the lens), so an earlier synthesis/render
+        # failure could never persistently suppress a duplication never shown.
+        for c in dup_to_mark:
+            dr.mark_finding_surfaced(repo_data, session_id or "", c)
+
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
         n = len(surfaced)
+        ran_label = " + ".join(ran_lens_names) if ran_lens_names else "review"
         lines = [
             f"[🦎 chameleon: multi-lens review flagged {n} possible issue{'s' if n != 1 else ''}]",
-            "A coordinated review (correctness + duplication) read this turn's changes. "
+            f"A turn-end review ({ran_label}) read this turn's changes. "
             "These are advisory; verify each before acting, they may be wrong.",
         ]
         for f in surfaced:
