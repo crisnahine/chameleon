@@ -5213,6 +5213,25 @@ _JUDGE_FAILURE_KINDS = frozenset(
     {"spawn_timeout", "spawn_exec_error", "spawn_nonzero_exit", "pipeline_error"}
 )
 
+# Informational grounding-event families the judge emits ONCE PER SPAWN to report
+# what context was available (caller facts / imported defs / transitive chains).
+# These are NOT degradations: a spawn that ran fine but had no calls index still
+# emits `judge_defs_skipped_no_index`. They must be recorded as their own check
+# events, never folded into the degraded/spawn_failed tally -- doing so fired a
+# false turn-end-reviewer-failed health banner for a healthy reviewer AND flipped
+# `spawn_failed` True so the duplication gate stopped deferring, firing a second
+# reviewer model in the same Stop. The earlier code special-cased only
+# `judge_facts_`, so `judge_defs_`/`judge_transitive_` leaked into degraded.
+_JUDGE_GROUNDING_FAMILIES = ("judge_facts_", "judge_defs_", "judge_transitive_")
+
+
+def _judge_grounding_family(kind: str) -> str | None:
+    """The grounding-event family prefix ``kind`` belongs to, or None."""
+    for fam in _JUDGE_GROUNDING_FAMILIES:
+        if kind.startswith(fam):
+            return fam
+    return None
+
 
 def _is_source_for_test_signal(rel_path: str, *, language: str) -> bool:
     """True if ``rel_path`` is a real source file (not a test/spec) worth a
@@ -5887,16 +5906,19 @@ def _correctness_judge_gate(
         degraded: list[str] = []
 
         def _sink(kind: str, detail: str | None = None) -> None:
-            # The caller-facts outcome rides the same sink but is its own
-            # check, not a degradation: one judge_facts event per spawn
-            # attempt (included / skipped_no_calls_index / skipped_disabled)
-            # so the attestation can tell a grounded review from a blind one.
-            if kind.startswith("judge_facts_"):
+            # A grounding-context outcome rides the same sink but is its own
+            # check, not a degradation: one event per spawn attempt per family
+            # (facts / imported defs / transitive chains -- included /
+            # skipped_no_index / skipped_disabled) so the attestation can tell a
+            # grounded review from a blind one. All three families are handled
+            # here so none leaks into the degraded/spawn_failed tally.
+            fam = _judge_grounding_family(kind)
+            if fam is not None:
                 _emit_check_event(
                     repo_id,
                     session_id,
-                    "judge_facts",
-                    kind[len("judge_facts_") :],
+                    fam.rstrip("_"),
+                    kind[len(fam) :],
                     detail={"turn_key": turn_key},
                 )
                 return
@@ -6254,6 +6276,86 @@ def _changeset_completeness_lines(
         return []
 
 
+# A single-line Python `from <module> import <names>` (relative or absolute).
+# Captures the dotted module spec (with any leading dots) and the import clause,
+# so the crossfile advisory can tell a repointed import (the name now sourced
+# from a different module) from a genuinely dangling one.
+_PY_FROM_IMPORT_RE = re.compile(r"(?m)^[ \t]*from\s+(\.*[A-Za-z0-9_.]*)\s+import\b(.*)$")
+
+
+def _imported_source_keys(content: str, name: str, importer_dir: Path, lang: str, resolver) -> set:
+    """Module keys every current import that BINDS ``name`` resolves to in ``content``.
+
+    Parses the importer's CURRENT import statements (TS ``import { ... } from
+    '<spec>'``; Python ``from <module> import ...``), keeps the ones that bind
+    the imported name ``name``, and resolves each specifier with ``resolver`` --
+    the same per-build resolver the reverse index used, so a key here is directly
+    comparable to a reverse-index target key. Default/namespace imports carry no
+    named binding (and the reverse index never records them), so they contribute
+    nothing. Returns the set of resolved keys (possibly empty); fails open to an
+    empty set so a parse miss can never manufacture a suppression.
+    """
+    keys: set = set()
+    try:
+        if lang == "python":
+            # AST first so a multi-line parenthesized `from x import (\n A,\n)` --
+            # the dominant style after black/isort -- is read, not just the first
+            # line. The single-line regex below is the fallback for content that
+            # does not parse (a partial mid-edit), so a syntax error still gets
+            # best-effort coverage rather than zero keys (which would wrongly
+            # suppress nothing / fail to suppress a real repoint).
+            import ast as _ast
+
+            tree = None
+            try:
+                tree = _ast.parse(content)
+            except (SyntaxError, ValueError):
+                tree = None
+            if tree is not None:
+                for node in _ast.walk(tree):
+                    if not isinstance(node, _ast.ImportFrom):
+                        continue
+                    if not any(a.name == name for a in node.names):
+                        continue
+                    module_spec = "." * (node.level or 0) + (node.module or "")
+                    if not module_spec:
+                        continue
+                    key = resolver(module_spec, importer_dir)
+                    if key:
+                        keys.add(key)
+            else:
+                from chameleon_mcp.phantom_imports import _py_imported_names
+
+                for m in _PY_FROM_IMPORT_RE.finditer(content):
+                    module_spec = m.group(1)
+                    if not module_spec:
+                        continue
+                    if name not in _py_imported_names(m.group(2) or ""):
+                        continue
+                    key = resolver(module_spec, importer_dir)
+                    if key:
+                        keys.add(key)
+        else:
+            from chameleon_mcp.phantom_imports import _TS_IMPORT_SPEC_RE, _named_specifiers
+
+            for m in _TS_IMPORT_SPEC_RE.finditer(content):
+                raw = m.group(1) or m.group(2) or m.group(3)
+                if not raw:
+                    continue
+                spec = raw.split("?", 1)[0].split("#", 1)[0]
+                if not spec:
+                    continue
+                names = _named_specifiers(m.group(0))
+                if not names or name not in names:
+                    continue
+                key = resolver(spec, importer_dir)
+                if key:
+                    keys.add(key)
+    except Exception:
+        return set()
+    return keys
+
+
 def _crossfile_existence_advisory_lines(
     *,
     repo_root: Path,
@@ -6283,7 +6385,11 @@ def _crossfile_existence_advisory_lines(
             _current_export_names,
             _python_current_export_names,
         )
-        from chameleon_mcp.symbol_index import load_reverse_index, module_key_for_path
+        from chameleon_mcp.symbol_index import (
+            load_reverse_index,
+            make_module_resolver,
+            module_key_for_path,
+        )
         from chameleon_mcp.violation_class import ignored_rules
 
         index = load_reverse_index(repo_root)
@@ -6296,6 +6402,60 @@ def _crossfile_existence_advisory_lines(
 
         max_files = threshold_int("CROSSFILE_STOP_ADVISORY_MAX_FILES")
         max_sites = threshold_int("CROSSFILE_MAX_SITES_PER_FINDING")
+
+        try:
+            resolved_root = Path(repo_root).resolve()
+        except OSError:
+            resolved_root = Path(repo_root)
+        # One specifier resolver per language, built lazily and reused across
+        # importers: it joins a relative/aliased import onto the importer's dir
+        # exactly the way the reverse index did at build, so a key it returns is
+        # comparable to a reverse-index target key. Used to drop a REPOINTED
+        # import (the name now sourced from a different module) from the finding.
+        _resolver_cache: dict[str, object] = {}
+
+        def _resolver_for(language: str):
+            r = _resolver_cache.get(language)
+            if r is None:
+                r = make_module_resolver(resolved_root, language)
+                _resolver_cache[language] = r
+            return r
+
+        def _live_break(
+            importer_rel: str, name: str, line: int | None, target_key: str, language: str
+        ) -> bool:
+            # One read of the importer answers both questions a real break needs:
+            # (1) does it still reference ``name`` (word-boundary bareword), and
+            # (2) is that reference still sourced from the TARGET module. A
+            # move-and-reimport refactor leaves the bareword present but repoints
+            # the import to a NEW module; the reverse index is a bootstrap snapshot
+            # that still attributes the import to the OLD module, so the bareword
+            # check alone would fire a phantom "you broke a call site" finding every
+            # turn until the next refresh -- the recurring "stale index" complaint.
+            # Suppress only when ``name`` IS imported but NONE of those imports
+            # resolve to the target; an unresolved/absent binding falls back to the
+            # bareword result so a parse miss never hides a genuine break.
+            ip = repo_root / importer_rel
+            try:
+                text = ip.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+            except OSError:
+                return False
+            needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
+            text_lines = text.splitlines()
+            present = bool(
+                (
+                    line is not None
+                    and 1 <= line <= len(text_lines)
+                    and needle.search(text_lines[line - 1])
+                )
+                or needle.search(text)
+            )
+            if not present:
+                return False
+            keys = _imported_source_keys(text, name, ip.parent, language, _resolver_for(language))
+            if keys and target_key not in keys:
+                return False  # repointed to a different module -> not broken
+            return True
 
         def _name_present(importer_rel: str, name: str, line: int | None) -> bool:
             # Cheap presence check: the index is a bootstrap snapshot, so confirm
@@ -6313,6 +6473,42 @@ def _crossfile_existence_advisory_lines(
                 if needle.search(text_lines[line - 1]):
                     return True
             return bool(needle.search(text))
+
+        # Ruby move-in-one-turn suppression: the class/module names each edited
+        # Ruby file currently defines, computed once and memoized. A class moved to
+        # another file edited the SAME turn is not a broken reference -- Ruby
+        # constants resolve globally (Zeitwerk/autoload/require), so a still-loaded
+        # redefinition elsewhere keeps every referencer valid. This is the Ruby
+        # analog of the TS/Python repoint suppression; it covers the dominant
+        # same-turn refactor (a cross-turn move would need a full-repo scan, too
+        # costly at Stop, and falls back to the bareword behavior).
+        _ruby_defs_cache: dict | None = None
+
+        def _ruby_defs_by_file() -> dict:
+            nonlocal _ruby_defs_cache
+            if _ruby_defs_cache is None:
+                _ruby_defs_cache = {}
+                for sp in state.files:
+                    spp = Path(sp)
+                    if not spp.is_file() or detect_language(str(spp)) != "ruby":
+                        continue
+                    try:
+                        txt = spp.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    try:
+                        srel = spp.resolve().relative_to(Path(repo_root).resolve()).as_posix()
+                    except (ValueError, OSError):
+                        continue
+                    _ruby_defs_cache[srel] = set(
+                        re.findall(r"(?m)^[ \t]*(?:class|module)\s+([A-Z]\w*)", txt)
+                    )
+            return _ruby_defs_cache
+
+        def _const_redefined_elsewhere(const: str, current_rrel: str) -> bool:
+            return any(
+                const in names for rel, names in _ruby_defs_by_file().items() if rel != current_rrel
+            )
 
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
@@ -6360,6 +6556,11 @@ def _crossfile_existence_advisory_lines(
                         continue
                     if re.search(r"(?m)^(?:class|module)\s+" + re.escape(const) + r"\b", content):
                         continue
+                    # The class was removed from THIS file but redefined in another
+                    # file edited the same turn -> a move, not a break. Ruby resolves
+                    # the constant globally, so every referencer is still valid.
+                    if _const_redefined_elsewhere(const, rrel):
+                        continue
                     rlive = [
                         r for r in referencing_files(cidx, const) if _name_present(r, const, None)
                     ]
@@ -6398,7 +6599,11 @@ def _crossfile_existence_advisory_lines(
                 continue
             for name in sorted(broken):
                 importers = broken[name]
-                live = [imp for imp in importers if _name_present(imp.path, name, imp.line)]
+                live = [
+                    imp
+                    for imp in importers
+                    if _live_break(imp.path, name, imp.line, target_key, lang)
+                ]
                 if not live:
                     continue
                 live_sorted = sorted(
@@ -6677,12 +6882,40 @@ def _multi_lens_review_lines(
 
         def _run_correctness():
             resolver = _archetype_resolver(repo_root, daemon_state or {"available": True})
+            turn_key = route.get("turn_key")
+
+            # Record the same grounding + degraded-spawn check events the separate
+            # gate records, so a silently-dead reviewer surfaces the SessionStart
+            # health banner under the DEFAULT (multi-lens) path too -- without a
+            # sink here the default path emitted no degraded_spawn event and the
+            # banner could never fire, defeating its whole purpose.
+            def _sink(kind: str, detail: str | None = None) -> None:
+                fam = _judge_grounding_family(kind)
+                if fam is not None:
+                    _emit_check_event(
+                        repo_id,
+                        session_id,
+                        fam.rstrip("_"),
+                        kind[len(fam) :],
+                        detail={"turn_key": turn_key},
+                    )
+                    return
+                _emit_check_event(
+                    repo_id,
+                    session_id,
+                    "correctness_judge",
+                    "degraded_spawn",
+                    kind,
+                    detail={"turn_key": turn_key, "detail": detail},
+                )
+
             return judge.run_correctness_judge(
                 repo_root,
                 _enf_profile_dir(repo_root),
                 fresh,
                 resolver,
                 intent_tokens=intent_tokens,
+                event_sink=_sink,
             )
 
         def _run_duplication():
@@ -7001,14 +7234,24 @@ def _stop_gates(
         if not unresolved:
             # No lint block this stop: run the reflexive idiom/principle review
             # gate. It blocks once per session (enforce) to force a self-review of
-            # the turn's edits, else allows the stop.
-            gate = _idiom_review_gate(
-                repo_root=repo_root,
-                repo_id=repo_id,
-                session_id=session_id,
-                state=state,
-                cfg=cfg,
-                repo_data=repo_data,
+            # the turn's edits, else allows the stop. Top-level Stop ONLY -- a
+            # SubagentStop must not run this whole-turn self-review: it would both
+            # false-block a subagent on its narrow task AND burn the once-per-
+            # session marker, so the real parent Stop then short-circuits and the
+            # turn-end review the enforcement is meant to force is silently
+            # skipped. Mirrors the is_subagent guard on every other top-level-only
+            # gate below (multi-lens, duplication, scope-drift, attestation).
+            gate = (
+                None
+                if is_subagent
+                else _idiom_review_gate(
+                    repo_root=repo_root,
+                    repo_id=repo_id,
+                    session_id=session_id,
+                    state=state,
+                    cfg=cfg,
+                    repo_data=repo_data,
+                )
             )
             idiom_advisory: str | None = None
             if gate is not None:
@@ -7204,41 +7447,45 @@ def _stop_gates(
                 }
             return {}
 
-        # Shadow mode records the would-have-blocked signal and allows the stop.
+        # Shadow mode records the would-have-blocked signal and allows the stop;
+        # off mode is advisory-only and stays fully silent (no shadow telemetry),
+        # mirroring the idiom gate's off-handling -- a would_block row on an
+        # enforcement-off repo is itself misleading. Both allow the stop.
         if cfg.mode != "enforce":
-            try:
-                from chameleon_mcp.metrics import emit_hook_metric
+            if cfg.mode == "shadow":
+                try:
+                    from chameleon_mcp.metrics import emit_hook_metric
 
-                # One would_block row per rule per unresolved file, so the shadow
-                # report attributes the backstop block to the specific rule and
-                # can sample the file for spot-check. A file that re-lints
-                # blockable but yielded no rule name still gets one row with a
-                # null rule so the file:line sample is not lost.
-                emitted_any = False
-                for path in unresolved:
-                    file_rel = _repo_rel(repo_root, path)
-                    rules = unresolved_rules.get(path) or [None]
-                    for rule in rules:
+                    # One would_block row per rule per unresolved file, so the shadow
+                    # report attributes the backstop block to the specific rule and
+                    # can sample the file for spot-check. A file that re-lints
+                    # blockable but yielded no rule name still gets one row with a
+                    # null rule so the file:line sample is not lost.
+                    emitted_any = False
+                    for path in unresolved:
+                        file_rel = _repo_rel(repo_root, path)
+                        rules = unresolved_rules.get(path) or [None]
+                        for rule in rules:
+                            emit_hook_metric(
+                                "stop-backstop",
+                                elapsed_ms=0,
+                                repo_id=repo_id,
+                                advisory_emitted=True,
+                                would_block=True,
+                                rule=rule,
+                                file_rel=file_rel,
+                            )
+                            emitted_any = True
+                    if not emitted_any:
                         emit_hook_metric(
                             "stop-backstop",
                             elapsed_ms=0,
                             repo_id=repo_id,
                             advisory_emitted=True,
                             would_block=True,
-                            rule=rule,
-                            file_rel=file_rel,
                         )
-                        emitted_any = True
-                if not emitted_any:
-                    emit_hook_metric(
-                        "stop-backstop",
-                        elapsed_ms=0,
-                        repo_id=repo_id,
-                        advisory_emitted=True,
-                        would_block=True,
-                    )
-            except Exception:
-                pass
+                except Exception:
+                    pass
             return {}
 
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context

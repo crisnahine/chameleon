@@ -4,6 +4,59 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.9] - 2026-06-30
+
+Stop-hook correctness pass: kill a recurring "stale index" false positive across
+all three languages, fix a SubagentStop that stole the parent turn's review, and
+repair the turn-end reviewer health signal in both review paths. Every fix was
+verified end to end through the real Stop hook against real profiled repos.
+
+### Fixed
+
+- **The turn-end cross-file existence advisory falsely reported "you removed X,
+  still imported by ..." after a move-and-reimport refactor** (the recurring
+  "stale index" complaint). The reverse index is a bootstrap snapshot; when a
+  symbol was MOVED to a new module and its call sites were repointed in the same
+  session, the index still attributed the import to the OLD module and the
+  advisory only checked whether the bare name still appeared in the importer (it
+  does, now imported from the new module), so the phantom finding re-fired on
+  every Stop until the next `/chameleon-refresh`. The advisory now resolves each
+  importer's CURRENT import of the name with the same per-build specifier resolver
+  the reverse index used and suppresses the finding when the name is imported but
+  no longer from the edited module. A genuinely dangling import still fires; a
+  parse miss falls back to the prior bareword behavior so a real break is never
+  hidden. TypeScript (named imports, `import {A as B}`, re-exports), Python
+  (`from x import y`, relative and absolute, single-line AND multi-line
+  parenthesized via an `ast` parse), and Ruby (a `class`/`module` moved to a new
+  file edited the same turn is no longer reported broken, since Ruby resolves the
+  constant globally).
+- **A `SubagentStop` fired the once-per-session idiom-review block and stole the
+  parent turn's review.** The reflexive idiom/principle gate was the only blocking
+  gate in the Stop pipeline not guarded by `is_subagent`: a subagent both got a
+  spurious block on its narrow task AND burned the once-per-session marker, so the
+  real top-level Stop then short-circuited and the turn-end self-review the
+  enforcement exists to force was silently skipped. The gate is now top-level Stop
+  only, matching every other top-level-only gate (multi-lens, duplication,
+  scope-drift, attestation).
+- **The turn-end reviewer health signal was broken in both review paths.** Under
+  the default multi-lens path the correctness lens ran with no event sink, so a
+  silently-dead reviewer (broken auth, missing binary) emitted no degraded-spawn
+  event and the SessionStart health banner could never fire. Under the opt-out
+  separate-gate path the reverse happened: the per-spawn grounding events
+  (imported-definition and transitive-caller context availability) were
+  mis-counted as degradations, so a perfectly healthy reviewer recorded a
+  degraded spawn, raised a false "reviewer failed to spawn" banner next session,
+  AND flipped the spawn-failed flag so the duplication gate stopped deferring and
+  fired a SECOND reviewer model in the same Stop (toward the 55s wall-clock cap).
+  Both paths now record the grounding families as their own check events and the
+  degraded tally only on a genuine spawn failure, through one shared classifier so
+  the two paths cannot drift again.
+- **Enforcement mode `off` emitted shadow-mode `would_block` telemetry.** The Stop
+  backstop's shadow branch covered both `shadow` and `off`, so an
+  advisory-only `off` repo recorded would-block rows (misleading on a repo where
+  enforcement is turned off). The telemetry is now gated to `shadow`; `off` stays
+  fully silent, matching the idiom gate's handling. Neither mode blocks.
+
 ## [2.38.8] - 2026-06-30
 
 Hardening and effectiveness pass on the PreToolUse hot path and per-edit
