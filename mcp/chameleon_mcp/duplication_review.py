@@ -190,7 +190,103 @@ def _caller_count(calls, rel: str, name: str) -> int | None:
         return None
 
 
-def gather_body_match_findings(repo_root: Path, edited_files: list[str], index, lang) -> list:
+def _changed_line_ranges(repo_root: Path, edited_files: list[str]):
+    """Map repo-rel path -> the set of new-side line numbers changed vs HEAD.
+
+    Used to scope the turn-end duplication review to functions the author
+    actually touched. A path absent at HEAD (a file new this session) maps to
+    None, meaning "every line is new" -- all its functions are in scope. Returns
+    None entirely when git is unavailable or the diff cannot be read, so the
+    caller falls back to whole-file scanning (a non-git repo keeps prior
+    behavior). Fails open to None.
+    """
+    try:
+        import re as _re
+
+        from chameleon_mcp import judge
+
+        root = Path(repo_root)
+        if not edited_files or not judge._git_available(root):
+            return None
+        rels: list[str] = []
+        for f in edited_files:
+            try:
+                rels.append(Path(f).resolve().relative_to(root.resolve()).as_posix())
+            except (ValueError, OSError):
+                continue
+        if not rels:
+            return None
+        out: dict = {}
+        for rel in rels:
+            res = judge._run_git(["cat-file", "-e", f"HEAD:{rel}"], cwd=root)
+            if res is None:
+                return None
+            if res.returncode != 0:
+                out[rel] = None  # new file -> every function is this session's
+        tracked = [r for r in rels if r not in out]
+        if tracked:
+            res = judge._run_git(["diff", "--unified=0", "HEAD", "--", *tracked], cwd=root)
+            if res is None or res.returncode != 0:
+                return None
+            cur = None
+            hunk = _re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+            for line in (res.stdout or "").splitlines():
+                if line.startswith("+++ b/"):
+                    cur = line[6:]
+                    out.setdefault(cur, set())
+                elif line.startswith("@@") and cur is not None:
+                    m = hunk.match(line)
+                    if not m:
+                        continue
+                    start = int(m.group(1))
+                    count = int(m.group(2)) if m.group(2) is not None else 1
+                    s = out.get(cur)
+                    if isinstance(s, set):
+                        for ln in range(start, start + max(count, 1)):
+                            s.add(ln)
+            for r in tracked:
+                out.setdefault(r, set())
+        return out
+    except Exception:
+        return None
+
+
+def _span_changed(pf, rel: str, changed) -> bool:
+    """True if ``pf`` is in scope for the duplication review: its span overlaps a
+    line changed this session, or scoping is unavailable. Conservative -- a
+    missing diff map, an unlisted file, a new file, or a function with no recorded
+    span all keep the function, so a real new duplicate is never hidden."""
+    if changed is None or rel not in changed:
+        return True
+    lines = changed[rel]
+    if lines is None:
+        return True  # new file -> all functions are this session's
+    if not isinstance(pf.start_line, int) or not isinstance(pf.end_line, int):
+        return True
+    return any(pf.start_line <= ln <= pf.end_line for ln in lines)
+
+
+def _finding_key(f) -> str:
+    """Session-stable identity for a duplication pair, line-independent so a later
+    edit that shifts the function does not look like a new finding."""
+    return f"{f.new_name}\x00{f.existing_file}\x00{f.existing_name}"
+
+
+def finding_already_surfaced(repo_data: Path, session_id: str, f) -> bool:
+    """True if this exact duplication pair was already surfaced this session."""
+    return already_judged(
+        repo_data, session_id, f.new_file, _finding_key(f), prefix=".dup_surfaced."
+    )
+
+
+def mark_finding_surfaced(repo_data: Path, session_id: str, f) -> None:
+    """Record a duplication pair as surfaced so a later turn does not re-flag it."""
+    mark_judged(repo_data, session_id, f.new_file, _finding_key(f), prefix=".dup_surfaced.")
+
+
+def gather_body_match_findings(
+    repo_root: Path, edited_files: list[str], index, lang, changed_ranges=None
+) -> list:
     try:
         from chameleon_mcp._thresholds import threshold_int
 
@@ -208,6 +304,8 @@ def gather_body_match_findings(repo_root: Path, edited_files: list[str], index, 
             except Exception:
                 continue
             for pf in parsed:
+                if not _span_changed(pf, rel, changed_ranges):
+                    continue
                 hit, match_type = index.lookup(pf, exclude_file=rel)
                 if hit is None:
                     continue
@@ -239,7 +337,9 @@ def gather_body_match_findings(repo_root: Path, edited_files: list[str], index, 
         return []
 
 
-def gather_semantic_findings(repo_root: Path, edited_files: list[str], catalog, lang) -> list:
+def gather_semantic_findings(
+    repo_root: Path, edited_files: list[str], catalog, lang, changed_ranges=None
+) -> list:
     """Name/shape-prefiltered duplication candidates from the committed catalog.
 
     The body-hash gate only sees byte-identical (or param-renamed) clones. This
@@ -278,6 +378,8 @@ def gather_semantic_findings(repo_root: Path, edited_files: list[str], catalog, 
             by_name: dict = {}
             seen: set = set()
             for pf in parsed:
+                if not _span_changed(pf, rel, changed_ranges):
+                    continue
                 by_name.setdefault(pf.name, pf)
                 key = (pf.name, pf.arity, pf.required)
                 if key in seen:
@@ -347,8 +449,14 @@ def gather_findings(repo_root: Path, edited_files: list[str], *, index, catalog,
     try:
         from chameleon_mcp._thresholds import threshold_int
 
-        body = gather_body_match_findings(repo_root, edited_files, index, lang)
-        semantic = gather_semantic_findings(repo_root, edited_files, catalog, lang)
+        # Scope to functions the author actually touched this session (overlap a
+        # line changed vs HEAD): a committed, pre-existing duplicate the turn did
+        # not touch is out of scope and must not be re-flagged just because the
+        # file was edited elsewhere. None (no git / unreadable diff) falls back to
+        # whole-file scanning so a non-git repo keeps the prior behavior.
+        changed = _changed_line_ranges(repo_root, edited_files)
+        body = gather_body_match_findings(repo_root, edited_files, index, lang, changed)
+        semantic = gather_semantic_findings(repo_root, edited_files, catalog, lang, changed)
         merged: list = []
         seen: set = set()
         for f in [*body, *semantic]:

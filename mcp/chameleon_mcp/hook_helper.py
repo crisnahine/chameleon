@@ -5208,6 +5208,7 @@ SESSION_REAP_PREFIXES: tuple[str, ...] = (
     ".judge_request.",
     ".corr_judged.",
     ".dup_judged.",
+    ".dup_surfaced.",
     ".intent.",
     ".correctness_judged.",
 )
@@ -6775,13 +6776,22 @@ def _duplication_advisory_lines(
 
         _emit_check_event(repo_id, session_id, "duplication_review", "ran")
         confirmed = dr.judge_body_matches(repo_root, findings, semantic=True)
+        # Surface each duplication PAIR at most once per session. Re-editing a file
+        # changes its digest and re-runs this gate; without this a pre-existing
+        # duplication the author already saw (and chose to keep) is re-flagged on
+        # every later turn that touches the file.
+        unsurfaced = [
+            c for c in confirmed if not dr.finding_already_surfaced(repo_data, session_id or "", c)
+        ]
+        for c in unsurfaced:
+            dr.mark_finding_surfaced(repo_data, session_id or "", c)
         # Mark every fresh file judged at its current digest so the next turn over
         # the same content is suppressed regardless of whether it was confirmed.
         for p in fresh:
             dr.mark_judged(
                 repo_data, session_id or "", dr._repo_rel(repo_root, p), digests.get(p, "")
             )
-        return dr.format_duplication_advisory(confirmed)
+        return dr.format_duplication_advisory(unsurfaced)
     except Exception:
         return []
 
@@ -6950,7 +6960,18 @@ def _multi_lens_review_lines(
             findings = dr.gather_findings(repo_root, fresh, index=index, catalog=catalog, lang=lang)
             if not findings:
                 return []
-            return dr.judge_body_matches(repo_root, findings, semantic=True)
+            confirmed = dr.judge_body_matches(repo_root, findings, semantic=True)
+            # Surface each duplication pair at most once per session (see the
+            # standalone duplication gate): a later edit re-runs this lens, and a
+            # pre-existing duplication already shown must not be re-flagged.
+            unsurfaced = [
+                c
+                for c in confirmed
+                if not dr.finding_already_surfaced(repo_data, session_id or "", c)
+            ]
+            for c in unsurfaced:
+                dr.mark_finding_surfaced(repo_data, session_id or "", c)
+            return unsurfaced
 
         # When the async/detach route is selected (operator opt-in, or
         # automatically on a known bare-auth failure) the correctness lens cannot

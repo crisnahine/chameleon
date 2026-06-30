@@ -4,6 +4,27 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.11] - 2026-06-30
+
+### Fixed
+
+- **The turn-end duplication review re-flagged pre-existing duplications on every
+  turn.** It scanned every function in a session-edited file and deduped only on
+  `(file, content-digest)`, so any edit anywhere in a file busted the digest and
+  re-surfaced every duplication in it, including methods the author never touched
+  and had already chosen to keep. Two changes fix it, both at the shared gather
+  layer so the standalone gate and the multi-lens lens both benefit:
+  - **Diff-scoping:** a function is only considered when its line span overlaps
+    what the session actually changed (vs HEAD). A committed, pre-existing
+    duplicate the turn did not touch is no longer flagged just because the file
+    was edited elsewhere. A brand-new file counts as fully changed; a non-git
+    repo (or unreadable diff) falls back to whole-file scanning, so nothing
+    regresses.
+  - **Per-finding session dedup:** a specific duplication pair surfaces at most
+    once per session. Re-editing the file (a new digest) can no longer re-flag a
+    duplication the author already saw. The marker is line-independent and aged
+    out at SessionStart with the other per-session markers.
+
 ## [2.38.10] - 2026-06-30
 
 MCP-tool correctness pass. An exhaustive real-call audit of all 46 model-callable

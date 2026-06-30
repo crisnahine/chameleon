@@ -63,3 +63,89 @@ def test_gather_parse_exception_fails_open(monkeypatch, tmp_path):
     # Should not raise
     result = gather_body_match_findings(tmp_path, ["services/renamed.rb"], idx, lang="ruby")
     assert result == []
+
+
+def _scoping_fixture(monkeypatch, tmp_path):
+    # A real file under tmp_path so _repo_rel resolves to "services/x.rb" (the
+    # changed_ranges key); one parsed function "dup" spanning lines 5..9 whose
+    # body_hash matches an indexed original.
+    svc = tmp_path / "services"
+    svc.mkdir()
+    xrb = svc / "x.rb"
+    xrb.touch()
+    idx = CandidateIndex()
+    idx.add_function("services/orig.rb", "original", body_hash="H", body_hash_pnorm="P")
+    pf = ParsedFn("dup", "method", 0, 0, 5, "H", "P2", "body\n", end_line=9)
+    monkeypatch.setattr(dr, "_parse", lambda root, path: [pf])
+    return idx, str(xrb)
+
+
+def test_gather_diff_scoping_suppresses_untouched_function(monkeypatch, tmp_path):
+    # A pre-existing duplicate the turn did NOT touch must not be flagged just
+    # because the file was edited elsewhere (the recurring-noise complaint):
+    # changed line 20 does not overlap the function span 5..9.
+    idx, xrb = _scoping_fixture(monkeypatch, tmp_path)
+    assert (
+        gather_body_match_findings(
+            tmp_path, [xrb], idx, lang="ruby", changed_ranges={"services/x.rb": {20}}
+        )
+        == []
+    )
+
+
+def test_gather_diff_scoping_surfaces_changed_function(monkeypatch, tmp_path):
+    # A duplicate the author actually edited (span overlaps a changed line), a new
+    # file (None marker), and a non-git repo (no changed_ranges) all stay in scope.
+    idx, xrb = _scoping_fixture(monkeypatch, tmp_path)
+    assert (
+        len(
+            gather_body_match_findings(
+                tmp_path, [xrb], idx, lang="ruby", changed_ranges={"services/x.rb": {7}}
+            )
+        )
+        == 1
+    )
+    assert (
+        len(
+            gather_body_match_findings(
+                tmp_path, [xrb], idx, lang="ruby", changed_ranges={"services/x.rb": None}
+            )
+        )
+        == 1
+    )
+    assert len(gather_body_match_findings(tmp_path, [xrb], idx, lang="ruby")) == 1
+
+
+def test_finding_surfaced_dedup_is_session_scoped(tmp_path):
+    # A duplication pair is surfaced at most once per session; a different session
+    # sees it fresh. Line-independent so a later edit that shifts the function does
+    # not look like a new finding.
+    from chameleon_mcp.duplication_review import (
+        Finding,
+        finding_already_surfaced,
+        mark_finding_surfaced,
+    )
+
+    f = Finding(
+        new_name="dup",
+        new_file="services/x.rb",
+        line=5,
+        excerpt="",
+        existing_name="original",
+        existing_file="services/orig.rb",
+    )
+    assert finding_already_surfaced(tmp_path, "s1", f) is False
+    mark_finding_surfaced(tmp_path, "s1", f)
+    assert finding_already_surfaced(tmp_path, "s1", f) is True
+    # a line shift on the same pair is still "already surfaced"
+    f2 = Finding(
+        new_name="dup",
+        new_file="services/x.rb",
+        line=42,
+        excerpt="",
+        existing_name="original",
+        existing_file="services/orig.rb",
+    )
+    assert finding_already_surfaced(tmp_path, "s1", f2) is True
+    # a different session does not inherit the marker
+    assert finding_already_surfaced(tmp_path, "s2", f) is False
