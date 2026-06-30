@@ -16,13 +16,32 @@ def test_kill_switch_disables(monkeypatch):
     assert out["data"]["verdicts"] == []
 
 
-def test_unavailable_fails_open(monkeypatch):
+def test_unavailable_fails_open(monkeypatch, tmp_path):
+    # Reach the refuter_unavailable_reason() gate -- refute_finding now
+    # consults that, not refuter_available(). A real trusted tmp repo gets
+    # past the earlier repo-unresolved / untrusted returns so the unavailable
+    # path has genuine coverage (and never spawns a real `claude -p`).
     monkeypatch.delenv("CHAMELEON_REVIEW_REFUTER", raising=False)
-    monkeypatch.setattr("chameleon_mcp.refuter.refuter_available", lambda: False)
-    out = tools.refute_finding("0" * 64, [{"id": "f1", "kind": "x", "claim": "c", "evidence": "e"}])
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    repo = tmp_path / "repo"
+    cham = repo / ".chameleon"
+    cham.mkdir(parents=True)
+    (cham / "profile.json").write_text('{"generation": 1, "language": "typescript"}')
+    from chameleon_mcp.profile.trust import grant_trust
+
+    grant_trust(tools._compute_repo_id(repo), cham)
+    monkeypatch.setattr(
+        "chameleon_mcp.refuter.refuter_unavailable_reason", lambda: "test: cli unavailable"
+    )
+    out = tools.refute_finding(
+        str(repo), [{"id": "f1", "kind": "x", "claim": "c", "evidence": "e"}]
+    )
     assert out["data"]["refuter"] == "unavailable"
-    # one entry per finding, all unverified (never silently dropped)
+    # one entry per finding, all unverified (never silently dropped), carrying
+    # the precise reason from refuter_unavailable_reason().
     assert [v["verdict"] for v in out["data"]["verdicts"]] == ["unverified"]
+    assert out["data"]["verdicts"][0]["reason"] == "test: cli unavailable"
 
 
 def test_empty_findings_returns_empty():

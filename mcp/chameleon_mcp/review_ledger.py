@@ -403,7 +403,7 @@ def read_review_history(
 
     path = _ledger_path(repo_id)
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", errors="replace") as f:
             raw_lines = f.readlines()
     except OSError:
         return empty

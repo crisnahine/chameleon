@@ -887,6 +887,12 @@ def _judge_spawn_health_banner(repo_root: Path, session_id: str | None = None) -
                 and entry.get("status") == "degraded_spawn"
             ):
                 raw = entry.get("reason")
+                # A grounding event (judge_defs_*/judge_transitive_*/judge_facts_*)
+                # rides the degraded_spawn channel in pre-2.38.9 attestations but
+                # is NOT a spawn failure; skip it so a healthy reviewer never
+                # raises the failed-to-spawn banner.
+                if isinstance(raw, str) and _judge_grounding_family(raw) is not None:
+                    continue
                 reason = raw if raw in _JUDGE_DEGRADED_REASONS else "unknown"
                 break
         if reason is None:
@@ -5213,6 +5219,7 @@ _JUDGE_FAILURE_KINDS = frozenset(
     {"spawn_timeout", "spawn_exec_error", "spawn_nonzero_exit", "pipeline_error"}
 )
 
+
 # Informational grounding-event families the judge emits ONCE PER SPAWN to report
 # what context was available (caller facts / imported defs / transitive chains).
 # These are NOT degradations: a spawn that ran fine but had no calls index still
@@ -5222,12 +5229,19 @@ _JUDGE_FAILURE_KINDS = frozenset(
 # `spawn_failed` True so the duplication gate stopped deferring, firing a second
 # reviewer model in the same Stop. The earlier code special-cased only
 # `judge_facts_`, so `judge_defs_`/`judge_transitive_` leaked into degraded.
-_JUDGE_GROUNDING_FAMILIES = ("judge_facts_", "judge_defs_", "judge_transitive_")
-
-
 def _judge_grounding_family(kind: str) -> str | None:
-    """The grounding-event family prefix ``kind`` belongs to, or None."""
-    for fam in _JUDGE_GROUNDING_FAMILIES:
+    """The grounding-event family prefix ``kind`` belongs to, or None.
+
+    Single source of truth for the family tuple is
+    ``judge.JUDGE_GROUNDING_FAMILIES`` (where the events originate), imported
+    lazily so hook_helper's module load -- on every hook, including the per-edit
+    hot path -- never pulls in judge. This function is reached only on the Stop /
+    SessionStart paths, where judge is already loaded, so the two consumers
+    (doctor via judge.is_grounding_event, the banner via this) can never drift.
+    """
+    from chameleon_mcp.judge import JUDGE_GROUNDING_FAMILIES
+
+    for fam in JUDGE_GROUNDING_FAMILIES:
         if kind.startswith(fam):
             return fam
     return None

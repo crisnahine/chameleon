@@ -914,6 +914,20 @@ def _bare_auth_marker_path() -> Path:
     return plugin_data_dir() / _BARE_AUTH_MARKER
 
 
+# Grounding-event families the reviewer emits ONCE PER SPAWN to report what
+# context was available (caller facts / imported defs / transitive chains). They
+# ride the event sink the way a failure would, but they are NOT degradations: a
+# spawn that ran fine but had no calls index still emits judge_defs_skipped_no_index.
+# A consumer that treats them as "reviewer failed to spawn" (the doctor health
+# check, the SessionStart banner) reports a phantom failure for a healthy reviewer.
+JUDGE_GROUNDING_FAMILIES = ("judge_facts_", "judge_defs_", "judge_transitive_")
+
+
+def is_grounding_event(reason: object) -> bool:
+    """True when ``reason`` is a per-spawn grounding event, not a real failure."""
+    return isinstance(reason, str) and reason.startswith(JUDGE_GROUNDING_FAMILIES)
+
+
 def _bare_auth_known_failed() -> bool:
     """True when a prior spawn proved --bare loses credentials on this install.
 

@@ -4,6 +4,65 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.10] - 2026-06-30
+
+MCP-tool correctness pass. An exhaustive real-call audit of all 46 model-callable
+tools (every edge case, with adversarial verification) surfaced one security leak,
+a data-loss path, a trust-gate bypass, and the "stale index" complaint reproduced
+across four comprehension tools. Every fix was verified by calling the real tool.
+
+### Security
+
+- **`get_pattern_context` leaked a poisoned canonical witness into model context.**
+  Trust is one-time, so a secret or natural-language injection added to a committed
+  witness file AFTER the trust grant was read straight into the per-edit hot path
+  (`sanitize_for_chameleon_context` keeps secrets and does not neutralize injection
+  prose). The witness is now re-scanned with `is_safe_canonical` on read and dropped
+  on a hit, exactly as the sibling `get_canonical_excerpt` already did. Closes the
+  leak in both the tool and the `preflight-and-advise` hook that reads through it.
+- **`get_autopass_verdict` leaked calls-index caller paths/names under an untrusted
+  profile.** Its contract-break signal called the calls index directly with no
+  trust gate, while every sibling cross-file tool degrades to an untrusted status.
+  The gate now lives in `_compute_contract_breaks`, covering both callers.
+
+### Fixed
+
+- **The "stale index" false positives in the comprehension tools.** A
+  move-and-reimport refactor (a symbol moved to a new module, call sites repointed)
+  no longer produces phantom findings: `get_crossfile_context` and
+  `query_symbol_importers` now resolve each importer's CURRENT import source (not
+  just a bareword presence check) and suppress a repointed import;
+  `query_symbol_importers` gained the live re-reference check its sibling already
+  had. The shared resolver is rebuilt per call, so a `/chameleon-refresh` of the
+  path-alias config is never served a stale snapshot. `get_duplication_candidates`
+  drops a candidate whose recorded source file no longer exists on disk, before
+  the result cap so the truncation flag stays accurate. Genuine breaks still fire
+  in every case.
+- **`teach_competing_import` silently wiped all derived conventions** when
+  `conventions.json` was present but corrupt: it caught the parse error, overwrote
+  the file with an empty skeleton plus the new pair, reported success, and re-granted
+  trust. It now fails closed (matching `unteach_competing_import`) so the recoverable
+  corruption stays loud.
+- **A single undecodable byte in a `metrics.jsonl` segment aborted the whole
+  shadow-metrics read,** silently zeroing would-block history and producing a false
+  `high_override_rate` flag in `get_override_audit` / `get_shadow_report` /
+  `get_longitudinal_signals`. The read now skips the bad line and survives.
+- **`doctor` and the SessionStart health banner falsely reported "turn-end reviewer
+  failing to spawn"** for a healthy reviewer, by counting per-spawn grounding events
+  (`judge_defs_*` / `judge_transitive_*`) lingering as `degraded_spawn` rows in
+  pre-2.38.9 attestations. Both now filter grounding-reason rows via a shared
+  `judge.is_grounding_event` (the consumer-side complement to the 2.38.9 producer fix).
+- **`refute_finding` reported "claude CLI unavailable" when the CLI was present and
+  logged in.** The real cause is that `claude --bare` (the refuter's hook-free spawn)
+  drops OAuth on current CLIs; the reason now says so and points to the inline
+  fallback, instead of implying claude is not installed.
+- **Robustness / never-raise contract:** `get_callers` and `get_blast_radius` no
+  longer raise a `TypeError` on a non-string `function_name` (they fail open like
+  `get_callees`); `get_rules` returns a clean envelope for a non-string `source`;
+  `get_review_history` survives a non-UTF8 ledger; and `pause_session`,
+  `list_profiles`, and `propose_archetype_renames` reject a `bool` where an `int` is
+  required (`isinstance(True, int)` had slipped a `minutes=true` / 1-minute pause).
+
 ## [2.38.9] - 2026-06-30
 
 Stop-hook correctness pass: kill a recurring "stale index" false positive across

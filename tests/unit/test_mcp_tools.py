@@ -225,7 +225,7 @@ def test_lint_file_tags_secret_hardness():
     res = tools.lint_file(
         "/nonexistent/repo/aaa",
         "util",
-        'const k = "AKIAIOSFODNN7EXAMPLE";\n',
+        'const k = "AKIAIOSFODNN7EXAMPLE";\n',  # chameleon-ignore secret-detected-in-content
         file_path="x.ts",
     )
     secrets = [
@@ -617,6 +617,11 @@ def test_query_symbol_importers_reports_importers_and_break(trusted_repo):
     cham = trusted_repo / ".chameleon"
     # pricing.ts exports editPrice (clean) but NOT oldName (a break).
     (trusted_repo / "pricing.ts").write_text("export function editPrice() {}\n", encoding="utf-8")
+    # legacy.ts is a real importer that still references oldName from pricing, so
+    # the existence break survives the live re-reference check.
+    (trusted_repo / "legacy.ts").write_text(
+        "import { oldName } from './pricing';\noldName();\n", encoding="utf-8"
+    )
     _write_reverse_index(
         cham,
         {
@@ -644,6 +649,10 @@ def test_query_symbol_importers_python_uses_python_export_reader(trusted_repo):
     # The TS export regex finds zero Python exports, so without the Python reader
     # both names would wrongly land in `broken` with no importers reported.
     (trusted_repo / "models.py").write_text("class User:\n    pass\n", encoding="utf-8")
+    # legacy.py is a real importer that still references OldName from models.
+    (trusted_repo / "legacy.py").write_text(
+        "from models import OldName\n\nOldName()\n", encoding="utf-8"
+    )
     _write_reverse_index(
         cham,
         {
@@ -948,6 +957,11 @@ def test_get_duplication_candidates_caps_match_count(trusted_repo, monkeypatch):
     cham = trusted_repo / ".chameleon"
     _write_function_catalog(
         cham, {"fmt.ts": [{"name": "f", "kind": "function", "arity": 1, "required": 1}]}
+    )
+    # fmt.ts must exist on disk: candidates whose source file is gone are dropped
+    # as stale-catalog phantoms before the cap is applied.
+    (trusted_repo / "fmt.ts").write_text(
+        "export function f(a) {\n  return a;\n}\n", encoding="utf-8"
     )
     new_file = trusted_repo / "x.ts"
     new_file.write_text("export function g(a) {\n  return a;\n}\n", encoding="utf-8")

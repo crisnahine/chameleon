@@ -334,6 +334,16 @@ def test_get_autopass_verdict_routes_contract_break(tmp_path, monkeypatch):
     fake = _FakeIndex({("a.ts", "foo"): {"callers": [{"path": "b.ts", "line": 4}], "total": 1}})
     monkeypatch.setattr(_ci, "load_calls_index", lambda root: fake)
 
+    # The calls-index-derived contract-break signal is trust-gated (it must not
+    # leak committed index contents from an untrusted profile), so grant trust.
+    # Isolate the trust write to tmp so the suite never touches the real
+    # ~/.local/share/chameleon (the documented test-isolation guarantee).
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    (repo / ".chameleon").mkdir(exist_ok=True)
+    from chameleon_mcp.profile.trust import grant_trust as _grant
+    from chameleon_mcp.tools import _compute_repo_id as _crid
+
+    _grant(_crid(repo), repo / ".chameleon")
     result = tools.get_autopass_verdict(str(repo), base_ref="main")
     data = result["data"]
     assert data["facts"]["caller_contract_breaks"] == 1
@@ -460,6 +470,16 @@ def test_contract_diff_uses_merge_base_not_base_tip(tmp_path, monkeypatch):
     fake = _FakeIndex({("a.ts", "foo"): {"callers": [{"path": "b.ts", "line": 4}], "total": 1}})
     monkeypatch.setattr(_ci, "load_calls_index", lambda root: fake)
 
+    # The calls-index-derived contract-break signal is trust-gated (it must not
+    # leak committed index contents from an untrusted profile), so grant trust.
+    # Isolate the trust write to tmp so the suite never touches the real
+    # ~/.local/share/chameleon (the documented test-isolation guarantee).
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    (repo / ".chameleon").mkdir(exist_ok=True)
+    from chameleon_mcp.profile.trust import grant_trust as _grant
+    from chameleon_mcp.tools import _compute_repo_id as _crid
+
+    _grant(_crid(repo), repo / ".chameleon")
     result = tools.get_autopass_verdict(str(repo), base_ref="main")
     data = result["data"]
     # vs merge-base foo(a)=1: feature foo(a,b)=2 -> narrowing detected (1->2).

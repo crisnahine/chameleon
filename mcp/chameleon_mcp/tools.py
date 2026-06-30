@@ -1806,6 +1806,25 @@ def get_pattern_context(file_path: str) -> dict:
                             or st2.st_ctime_ns != st.st_ctime_ns
                         ):
                             raise OSError("witness changed mid-read; failing open")
+                        # The witness passed the secret/injection scan at bootstrap,
+                        # but the working-tree file may have been edited since (trust
+                        # is one-time, so a post-grant edit never re-prompts). Re-scan
+                        # the freshly-read content and drop it on a hit, exactly as
+                        # get_canonical_excerpt does -- otherwise a secret or natural-
+                        # language injection added to a committed witness after the
+                        # grant reaches model context on the per-edit hot path
+                        # (sanitize_for_chameleon_context keeps secrets and does not
+                        # neutralize injection prose). Fail-open if the scanner can't
+                        # be imported, matching the get_canonical_excerpt path.
+                        try:
+                            from chameleon_mcp.bootstrap.canonical_scanner import (
+                                is_safe_canonical,
+                            )
+
+                            if not is_safe_canonical(raw):
+                                return "", False
+                        except Exception:
+                            pass
                         return sanitize_for_chameleon_context(raw), False
 
                     try:
@@ -2269,6 +2288,11 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         envelope explaining rules are source-scoped.
     """
     from chameleon_mcp.profile.loader import load_profile_dir
+
+    # A non-string source would crash the `source in str(k)` substring filter
+    # below; the never-raise contract requires a clean envelope instead.
+    if source is not None and not isinstance(source, str):
+        return _envelope({"status": "failed", "error": "source must be a string or null"})
 
     deprecation_note = None
     legacy_archetype = kwargs.pop("archetype", None)
@@ -3069,12 +3093,29 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
 
     importers_out: list[dict] = []
     broken_out: list[dict] = []
+    _qsi_lang = detect_language(str(p))
+    _qsi_resolver = _crossfile_module_resolver(repo_root, _qsi_lang)
     for name, importers in sorted(indexed.items()):
-        sites = [{"path": imp.path, "line": imp.line} for imp in importers]
         if name in current:
+            sites = [{"path": imp.path, "line": imp.line} for imp in importers]
             importers_out.append({"name": name, "count": len(importers), "sites": sites})
         elif not open_set:
-            broken_out.append({"name": name, "count": len(importers), "sites": sites})
+            # Re-verify each recorded importer still references `name` FROM this
+            # module on disk before calling it broken: the index is a snapshot, so
+            # a fully-migrated importer (reference dropped, or import repointed to a
+            # new module) is NOT a broken site. Without this the documented
+            # high-confidence `broken` channel emits phantom breaks during the
+            # normal index-stale-vs-working-tree state of active editing.
+            live = [
+                imp
+                for imp in importers
+                if _live_importer_break(
+                    repo_root, imp.path, name, imp.line, target_key, _qsi_lang, _qsi_resolver
+                )
+            ]
+            if live:
+                sites = [{"path": imp.path, "line": imp.line} for imp in live]
+                broken_out.append({"name": name, "count": len(live), "sites": sites})
 
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
 
@@ -3137,6 +3178,8 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     }
 
     if not _validate_file_path_arg(file_path):
+        return _envelope(dict(empty))
+    if not isinstance(function_name, str):
         return _envelope(dict(empty))
 
     p = Path(file_path).expanduser()
@@ -3273,6 +3316,8 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     }
 
     if not _validate_file_path_arg(file_path):
+        return _envelope(dict(empty))
+    if not isinstance(function_name, str):
         return _envelope(dict(empty))
 
     p = Path(file_path).expanduser()
@@ -3624,18 +3669,42 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     )
 
 
-def _name_still_referenced(repo_root: Path, importer_rel: str, name: str, line: int | None) -> bool:
-    """Cheap regex presence check: does ``importer_rel`` still name ``name``?
+def _crossfile_module_resolver(repo_root: Path, language: str):
+    """The specifier resolver the reverse index built with, for ``language``.
 
-    The reverse index is a bootstrap snapshot; an importer may have dropped the
-    reference since (the rename was completed there too). Confirm the importer
-    file still references ``name`` as a whole word so a finding is not raised for
-    a call site that no longer exists. Prefers the recorded import ``line`` when
-    present (the index placed the import there), and falls back to a whole-file
-    scan when the line drifted or was never placed. No parser -- a word-boundary
-    regex over the file bytes, matching the rest of the cross-file path's
-    in-process, never-execute-repo-code stance. Returns False on any read error
-    so an unreadable importer cannot prop up a finding.
+    Built FRESH per tool call (no process-lifetime cache): the resolver captures
+    a tsconfig/src-root snapshot, and a long-lived MCP/daemon session that ran
+    /chameleon-refresh after editing path aliases must not be served a stale alias
+    map while the reverse index it filters was reloaded. Callers build it once per
+    invocation and reuse it across that call's importer sites.
+    """
+    from chameleon_mcp.symbol_index import make_module_resolver
+
+    return make_module_resolver(Path(repo_root).resolve(), language)
+
+
+def _live_importer_break(
+    repo_root: Path,
+    importer_rel: str,
+    name: str,
+    line: int | None,
+    target_key: str,
+    language: str,
+    resolver,
+) -> bool:
+    """One read of the importer decides whether its call site to ``name`` from the
+    edited module is genuinely broken: it still references ``name`` (word-boundary)
+    AND has not repointed its import of ``name`` to a different module.
+
+    The reverse index is a bootstrap snapshot. An importer may have dropped the
+    reference (a rename reached it) -- not broken -- or kept the bareword while
+    repointing the import to a new module (move-and-reimport) -- also not broken,
+    the index just still attributes the import here. Resolving the importer's
+    CURRENT import sources with ``resolver`` (the per-call resolver the reverse
+    index built with) distinguishes a real dangling import from a repoint. Reads
+    the file ONCE for both checks. Returns False on any read error (an unreadable
+    importer cannot prop up a finding); the repoint leg fails open to "not
+    repointed" so a parse miss never hides a real break.
     """
     from chameleon_mcp.safe_open import safe_read_text
 
@@ -3645,10 +3714,23 @@ def _name_still_referenced(repo_root: Path, importer_rel: str, name: str, line: 
         return False
     needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
     lines = content.splitlines()
-    if line is not None and 1 <= line <= len(lines):
-        if needle.search(lines[line - 1]):
-            return True
-    return bool(needle.search(content))
+    present = bool(
+        (line is not None and 1 <= line <= len(lines) and needle.search(lines[line - 1]))
+        or needle.search(content)
+    )
+    if not present:
+        return False
+    try:
+        from chameleon_mcp.hook_helper import _imported_source_keys
+
+        keys = _imported_source_keys(
+            content, name, (repo_root / importer_rel).parent, language, resolver
+        )
+        if keys and target_key not in keys:
+            return False  # repointed to a different module -> not broken
+    except Exception:
+        pass
+    return True
 
 
 def _ruby_constant_existence_breaks(repo_root: Path) -> dict:
@@ -3824,6 +3906,19 @@ def get_crossfile_context(repo: str) -> dict:
     low_cap = threshold_int("CROSSFILE_MAX_LOW_CONFIDENCE")
     low_dropped = 0
     truncated = False
+    # Per-call resolver cache (NOT process-lifetime): one resolver per language,
+    # rebuilt each invocation so a /chameleon-refresh of the alias config is never
+    # served a stale snapshot, while still amortizing the build across this call's
+    # importer sites.
+    _xf_resolvers: dict = {}
+
+    def _xf_resolver_for(lang: str):
+        r = _xf_resolvers.get(lang)
+        if r is None:
+            r = _crossfile_module_resolver(repo_root, lang)
+            _xf_resolvers[lang] = r
+        return r
+
     for target_key in target_keys[:max_modules]:
         if len(high) >= max_findings:
             truncated = True
@@ -3853,10 +3948,19 @@ def get_crossfile_context(repo: str) -> dict:
             # High confidence requires the closed export set (a star re-export
             # could still expose the name) AND at least one importer that still
             # references the binding by the cheap presence check.
+            _xf_lang = detect_language(target_key)
             live_sites = [
                 imp
                 for imp in importers
-                if _name_still_referenced(repo_root, imp.path, name, imp.line)
+                if _live_importer_break(
+                    repo_root,
+                    imp.path,
+                    name,
+                    imp.line,
+                    target_key,
+                    _xf_lang,
+                    _xf_resolver_for(_xf_lang),
+                )
             ]
             high_confidence = (not open_set) and bool(live_sites)
             # When the export set is closed, the still-referencing sites are the
@@ -3929,10 +4033,9 @@ def refute_finding(repo: str, findings: list, base_ref: str = "main") -> dict:
     if gate is None or not gate.grants_root(repo_root):
         return _envelope({"refuter": "untrusted", "verdicts": _all_unverified("profile untrusted")})
 
-    if not _refuter.refuter_available():
-        return _envelope(
-            {"refuter": "unavailable", "verdicts": _all_unverified("claude CLI unavailable")}
-        )
+    _unavailable = _refuter.refuter_unavailable_reason()
+    if _unavailable is not None:
+        return _envelope({"refuter": "unavailable", "verdicts": _all_unverified(_unavailable)})
 
     model = os.environ.get("CHAMELEON_REFUTER_MODEL", "sonnet")
     timeout = threshold_int("REFUTER_TIMEOUT_SECONDS")
@@ -4245,6 +4348,31 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
         return _envelope(out)
 
     matches = select_candidates(catalog, new_functions, exclude_file=file_rel)
+
+    # Drop stale-catalog candidates whose source file is gone on disk
+    # (deleted/moved since bootstrap) -- a "reuse this" pointer to a function that
+    # no longer exists is a phantom, mirroring how get_crossfile_context drops
+    # importers it cannot read. Gate on FILE existence, not an empty body_excerpt
+    # (a present file's method can also yield an empty excerpt). This runs BEFORE
+    # the cap so the truncation flag reflects the matches actually returned, not
+    # phantoms hidden by the cap; file existence is a cheap stat, while the
+    # excerpt read below (the expensive part) stays bounded to the capped set.
+    _resolved_root = Path(repo_root).resolve()
+
+    def _cand_file_live(cfile) -> bool:
+        try:
+            cabs = (_resolved_root / cfile).resolve()
+            return cabs.is_file() and cabs.is_relative_to(_resolved_root)
+        except OSError:
+            return False
+
+    live_matches = []
+    for match in matches:
+        live_cands = [c for c in match["candidates"] if _cand_file_live(c.get("file"))]
+        if live_cands:
+            match["candidates"] = live_cands
+            live_matches.append(match)
+    matches = live_matches
 
     # Bound the response: a large file (hundreds of functions, each with up to
     # DUPLICATION_MAX_CANDIDATES_PER_FN excerpts) would otherwise exceed the MCP
@@ -7172,6 +7300,16 @@ def _compute_contract_breaks(
         from chameleon_mcp.calls_index import load_calls_index
         from chameleon_mcp.judge import _run_git as _sig_run_git
         from chameleon_mcp.profile.config import load_config
+        from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+
+        # Trust-gate: the calls index this joins to is a committed,
+        # attacker-controllable artifact whose caller paths/names must not reach
+        # the model surface from an untrusted profile. get_contract_breaks gates
+        # before calling, but get_autopass_verdict reaches this directly, so gate
+        # here too (mirrors get_callers / query_symbol_importers).
+        _gate = _trust_state_for(_compute_repo_id(repo_root))
+        if _gate is None or not _gate.grants_root(repo_root):
+            return 0, []
 
         try:
             enabled = load_config(repo_root / ".chameleon").enforcement.signature_contract_diff
@@ -7853,7 +7991,7 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
     from chameleon_mcp import index_db
     from chameleon_mcp.profile.trust import plugin_data_dir, trust_state_for
 
-    if not isinstance(limit, int) or limit <= 0 or limit > 1000:
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0 or limit > 1000:
         return _envelope(
             {
                 "status": "failed",
@@ -8794,7 +8932,7 @@ def pause_session(repo: str, minutes: int = 15) -> dict:
     from chameleon_mcp.optouts import write_pause
     from chameleon_mcp.profile.trust import trust_state_for
 
-    if not isinstance(minutes, int) or minutes <= 0 or minutes > 240:
+    if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes <= 0 or minutes > 240:
         return _envelope({"status": "failed", "error": "minutes must be 1..240"})
 
     _repo_path, repo_id = _resolve_repo_arg(repo)
@@ -9161,7 +9299,7 @@ def propose_archetype_renames(repo: str, top_n: int = 8) -> dict:
     """
     from chameleon_mcp.profile.loader import load_profile_dir
 
-    if not isinstance(top_n, int) or top_n <= 0 or top_n > 64:
+    if not isinstance(top_n, int) or isinstance(top_n, bool) or top_n <= 0 or top_n > 64:
         return _envelope({"status": "failed", "error": "top_n must be an int in 1..64"})
 
     resolved_path, _resolved_id = _resolve_repo_arg(repo)
@@ -9916,15 +10054,37 @@ def teach_competing_import(
     lock_path = _rdd(_compute_repo_id(repo_path)) / ".conventions.lock"
     try:
         with acquire_advisory_lock(lock_path, blocking_timeout=10.0):
-            try:
-                conv = (
-                    json.loads(safe_read_profile_artifact(conv_path))
-                    if conv_path.is_file()
-                    else empty_conventions(generation=0)
-                )
-            except Exception:
-                conv = empty_conventions(generation=0)
-            if not isinstance(conv, dict):
+            if conv_path.is_file():
+                # A present-but-corrupt conventions.json still holds recoverable
+                # derived data (naming, inheritance, layering). Overwriting it with
+                # an empty skeleton would silently destroy that data, report
+                # success, and re-grant trust over the gutted profile. Fail closed
+                # instead -- matching the sibling unteach_competing_import -- so the
+                # corruption stays loud and a /chameleon-refresh can recover it.
+                try:
+                    raw_conv = safe_read_profile_artifact(conv_path)
+                except Exception:
+                    return _envelope(
+                        {"status": "failed", "error": "conventions.json unreadable or invalid"}
+                    )
+                if not (raw_conv or "").strip():
+                    # A 0-byte / whitespace-only torn write holds nothing to lose,
+                    # so recover to a fresh skeleton and proceed rather than block
+                    # the teach -- the fail-closed guard above only matters when
+                    # the file carries real derived conventions.
+                    conv = empty_conventions(generation=0)
+                else:
+                    try:
+                        conv = json.loads(raw_conv)
+                    except Exception:
+                        return _envelope(
+                            {"status": "failed", "error": "conventions.json unreadable or invalid"}
+                        )
+                    if not isinstance(conv, dict):
+                        return _envelope(
+                            {"status": "failed", "error": "conventions.json unreadable or invalid"}
+                        )
+            else:
                 conv = empty_conventions(generation=0)
 
             block = conv.setdefault("conventions", {})
@@ -11711,7 +11871,17 @@ def doctor() -> dict:
                 for e in (rec.get("checks") or [])
                 if isinstance(e, dict) and e.get("check") == "correctness_judge"
             ]
-            degraded = [e for e in judge_events if e.get("status") == "degraded_spawn"]
+            # A grounding event (judge_defs_*/judge_transitive_*/judge_facts_*)
+            # rides the degraded_spawn channel in pre-2.38.9 attestations but is
+            # NOT a spawn failure; counting it warned "reviewer failing to spawn"
+            # for a healthy reviewer. Drop those so only genuine failures warn.
+            from chameleon_mcp.judge import is_grounding_event as _is_grounding
+
+            degraded = [
+                e
+                for e in judge_events
+                if e.get("status") == "degraded_spawn" and not _is_grounding(e.get("reason"))
+            ]
             # Every spawn attempt logs "spawned/started"; only "spawned/completed"
             # marks a reviewer that actually ran. Degradations with no completion
             # anywhere in the window mean the turn-end review layer is dead.

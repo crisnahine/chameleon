@@ -107,7 +107,11 @@ def _iter_rows(base: Path):
     """
     for segment in _segments(base):
         try:
-            with open(segment, encoding="utf-8") as f:
+            # errors='replace' so an undecodable byte (a hook SIGKILLed mid-write
+            # of a non-ASCII path) corrupts only its own line -- json.loads then
+            # drops it -- instead of UnicodeDecodeError aborting the whole read and
+            # silently zeroing would-block history (a false high_override_rate flag).
+            with open(segment, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     line = line.strip()
                     if not line:

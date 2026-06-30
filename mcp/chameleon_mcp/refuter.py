@@ -37,6 +37,31 @@ def refuter_available() -> bool:
         return False
 
 
+def refuter_unavailable_reason() -> str | None:
+    """Precise reason the refuter cannot spawn, or None when it can.
+
+    Distinguishes a genuinely-absent CLI from the common case where the CLI is
+    present and logged in but ``--bare`` mode drops OAuth/keychain credentials on
+    this CLI version (the bare-auth probe failed and cached a marker). The second
+    case is NOT "claude CLI unavailable" -- a normal ``claude -p`` still works and
+    the review skills fall back to inline verification -- so reporting it as a
+    missing CLI misleads the user into thinking claude is not installed. Fails
+    open to a generic reason on any probe error.
+    """
+    try:
+        if not _bare_flag_supported():
+            return "claude CLI not found on PATH or too old to support --bare"
+        if _bare_auth_known_failed():
+            return (
+                "the refuter's --bare spawn loses credentials on this claude CLI "
+                "(you are logged in, but --bare drops OAuth); falling back to "
+                "inline verification"
+            )
+        return None
+    except Exception:  # noqa: BLE001
+        return "refuter CLI probe failed"
+
+
 def build_refuter_prompt(finding: dict, excerpt: str) -> str:
     """Adversarial prompt: confirm the finding only if the excerpt supports it.
 
