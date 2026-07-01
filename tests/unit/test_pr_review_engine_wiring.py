@@ -407,23 +407,28 @@ def test_contract_break_is_grounding_loop_exempt_and_in_summaries():
 
 def test_2_6d_routes_lint_sinks_with_correct_caps():
     """lint_file already returns deterministic sinks + test-quality rules; Step
-    2.6d routes them with the approved severity: eval-call/command-injection BLOCK,
-    the other sinks FIX, test-quality NIT, refuter-exempt, line parsed from actual.
+    2.6d routes them with the approved severity: ONLY error-severity eval-call
+    BLOCKs, the other sinks (command-injection included) FIX, test-quality NIT,
+    refuter-exempt, line parsed from actual. The BLOCK set must track the engine's
+    BLOCK_ELIGIBLE_RULES, not a hand-list that drifts.
     """
+    from chameleon_mcp.violation_class import BLOCK_ELIGIBLE_RULES
+
     text = _skill_text()
     assert "2.6d" in text and "Deterministic lint-sink" in text
     block = text.split("#### 2.6d.")[1].split("### Step 2.7")[0]
-    # RCE sinks BLOCK — but eval-call BLOCKs only at error severity (the engine
-    # deliberately emits the Ruby class_eval/instance_eval string idiom at warning,
-    # which must cap at FIX, not escalate by rule name).
-    assert (
-        "`eval-call` (only the `severity: error` forms) and `command-injection` → **BLOCK**"
-        in block
-    )
+    # Only error-severity eval-call BLOCKs. command-injection is emitted at
+    # `warning` and is NOT block-eligible in the engine, so the skill must cap it
+    # at FIX (matching the receiving skill), never escalate by rule name.
+    assert "eval-call" in BLOCK_ELIGIBLE_RULES
+    assert "command-injection" not in BLOCK_ELIGIBLE_RULES
+    assert "`eval-call` (only the `severity: error` forms) → **BLOCK**" in block
+    assert "`command-injection` is NOT block-eligible" in block
     assert "class_eval" in block and "warning" in block
     assert "RESPECT the returned `severity`" in block
-    # The witnessed FIX sinks.
+    # The witnessed FIX sinks (command-injection routes here, at warning severity).
     for rule in (
+        "command-injection",
         "sql-string-interpolation",
         "insecure-deserialization",
         "weak-hash",
@@ -444,12 +449,12 @@ def test_2_6d_routes_lint_sinks_with_correct_caps():
 
 def test_2_6d_block_drives_verdict_and_is_in_severity_table():
     text = _skill_text()
-    # The verdict rule escalates an error-severity eval-call / command-injection to
-    # a BLOCK verdict (the warning eval-call form caps at FIX).
-    assert (
-        "error-severity `eval-call` or `command-injection` sink on an added/changed line (Step 2.6d"
-        in text
-    )
+    # The verdict rule escalates an error-severity eval-call to a BLOCK verdict;
+    # command-injection (warning, not block-eligible) caps at FIX, matching the
+    # engine's BLOCK_ELIGIBLE_RULES and the receiving skill.
+    assert "error-severity `eval-call` sink on an added/changed line (Step 2.6d" in text
+    # command-injection must NOT be co-listed as a BLOCK-verdict driver.
+    assert "`eval-call` or `command-injection` sink on an added/changed line" not in text
     # Severity table security cells carry the 2.6d rules.
     assert "Step 2.6d)" in text
 

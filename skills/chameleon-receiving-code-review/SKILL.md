@@ -154,9 +154,11 @@ Each finding MUST carry a unique `id` (verdicts map back by `id`) and `file`/`li
 whole branch diff). TOOL-GROUNDED verdicts are EXEMPT — never send a pushback
 backed by `get_callers` / `get_crossfile_context` / `get_duplication_candidates` /
 a `lint_file` sink-or-secret hit to the refuter; verify those inline. Read the
-envelope `refuter` field, not only the per-finding verdicts: when `refuter` is
-`disabled` the call returns an EMPTY `verdicts` list (no per-finding entries at
-all); `unavailable` / `untrusted` return one `unverified` per finding. Apply:
+envelope `refuter` field, not only the per-finding verdicts: `enabled` is the
+success state (per-finding `refuted`/`confirmed`/`unverified` mapped by `id`, the
+engine returns `enabled` and never `ok`); when `refuter` is `disabled` the call
+returns an EMPTY `verdicts` list (no per-finding entries at all); `unavailable` /
+`untrusted` return one `unverified` per finding. Apply:
 `refuted` → drop; `confirmed` → keep (never authorizes a post/edit); `unverified`
 OR `refuter ∈ {disabled, unavailable, untrusted}` OR any finding with no matching
 verdict `id` → for a code-changing verdict (a PUSH BACK, or an AGREE you'd

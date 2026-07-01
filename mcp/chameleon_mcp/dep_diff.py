@@ -345,6 +345,21 @@ def _looks_like_dep_value(source: str) -> bool:
     return _is_nonregistry_source(s)
 
 
+def _install_script_value_is_command(value: str) -> bool:
+    """True when a value on an ``install``/``preinstall``/``postinstall`` KEY is a
+    lifecycle command (2.5c), not a dependency version (2.5a).
+
+    Those key names are also real npm package names, so only the value
+    discriminates: a version range that is NOT a shell command is a dependency
+    entry; anything else -- including a command that merely STARTS like a version
+    (``7z x payload``, ``0;curl``, ``2to3 -w``) -- is a script. Mirrors the guard
+    in ``_scan_install_scripts`` so the install-script, new-dependency, and
+    removed-dependency scanners classify the same line identically and never both
+    fire on it.
+    """
+    return not (_looks_like_dep_value(value) and not _SCRIPT_COMMAND_HINT_RE.search(value))
+
+
 _REMOVED_JSON_KEY_RE = re.compile(r'^-\s*"([^"]+)"\s*:\s*(.*)$')
 
 
@@ -368,8 +383,11 @@ def _removed_npm_dep_names(diff_text: str) -> set[str]:
         if key in _METADATA_URL_KEYS:
             continue
         value = _json_string_value(val)
-        if value is not None and _looks_like_dep_value(value):
-            names.add(key)
+        if value is None or not _looks_like_dep_value(value):
+            continue
+        if key in _INSTALL_SCRIPT_KEYS and _install_script_value_is_command(value):
+            continue
+        names.add(key)
     return names
 
 
@@ -391,6 +409,13 @@ def _scan_new_dependencies_npm(path: str, diff_text: str) -> list[DepFinding]:
             continue
         value = _json_string_value(val)
         if value is None or not _looks_like_dep_value(value):
+            continue
+        # An install-script key name is also a real package name; only a version
+        # value that is NOT a shell command is a dependency (2.5a). A command value
+        # is a lifecycle script (2.5c) handled by _scan_install_scripts and must
+        # not also surface here, or a single added line double-reports (install
+        # command that merely starts like a version -> phantom new-dependency NIT).
+        if key in _INSTALL_SCRIPT_KEYS and _install_script_value_is_command(value):
             continue
         seen.add(key)
         out.append(

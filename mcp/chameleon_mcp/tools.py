@@ -7284,7 +7284,7 @@ _CONTRACT_DIFF_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".rb", ".py
 def get_contract_breaks(repo: str, base_ref: str = "main") -> dict:
     """ADVISORY: deterministic caller-contract breaks for a branch diff vs ``base_ref``.
 
-    For each changed TypeScript/Ruby source file, compares its callables'
+    For each changed TypeScript/Ruby/Python source file, compares its callables'
     POSITIONAL parameter contract at the merge-base of ``base_ref`` and HEAD vs
     HEAD and flags a NARROWING
     (a new required positional arg, or an optional positional flipped required)
@@ -7403,9 +7403,16 @@ def _compute_contract_breaks(
 
         rows = parse_numstat(numstat_text)
         if len(rows) > max_files:
-            # A change this large already routes to a human on size; the contract
-            # diff would not change the verdict and is not worth the re-parse cost.
-            return 0, [], None
+            # Over the file cap. For get_autopass_verdict a change this large
+            # already routes to a human on size, so skipping the re-parse and
+            # reporting count 0 is harmless (that consumer ignores the reason).
+            # But get_contract_breaks (pr-review Step 2.9e) has NO size backstop:
+            # a silent (0, [], None) would read as a verified clean and MASK a
+            # real narrowing on exactly the large / fan-out diff that surface
+            # targets. Return a reason so get_contract_breaks degrades ("could not
+            # check, diff too large") instead of falsely reporting clean; the LLM
+            # contract check then covers the narrowing.
+            return 0, [], "diff_too_large"
         changed_src = [
             r["path"] for r in rows if str(r["path"]).lower().endswith(_CONTRACT_DIFF_EXTS)
         ]
