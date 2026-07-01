@@ -108,6 +108,38 @@ def test_importer_that_dropped_the_name_is_not_flagged(tmp_path):
     assert lines == []
 
 
+def test_renamed_importer_whose_path_contains_the_name_is_not_flagged(tmp_path):
+    # Regression: the removed export's name (`api`) is a bounded substring of its
+    # own module path (`./api-client`). The importer fully renamed its reference
+    # (import + usage), so it no longer uses `api` as code -- only inside the
+    # import path string. The presence check must blank string literals, or a
+    # clean rename refactor produces a phantom "you broke this call site".
+    src = _touch(tmp_path, "src/api-client.ts", "export const apiClient = {};\n")
+    _touch(tmp_path, "src/cart.ts", "import { apiClient } from './api-client';\napiClient.get();\n")
+    _write_reverse_index(
+        tmp_path, {"src/api-client.ts": {"api": [{"path": "src/cart.ts", "line": 1}]}}
+    )
+    lines = _crossfile_existence_advisory_lines(
+        repo_root=tmp_path, state=_state_for([src]), cfg=_cfg()
+    )
+    assert lines == []
+
+
+def test_genuine_break_from_module_whose_path_contains_the_name_still_flagged(tmp_path):
+    # Complement: the importer STILL imports `api` from the module whose path
+    # contains `api`. Blanking string literals must not suppress the real `{ api }`
+    # binding -- it is code, not inside the path string -- so the break still fires.
+    src = _touch(tmp_path, "src/api-client.ts", "export const other = 1;\n")
+    _touch(tmp_path, "src/cart.ts", "import { api } from './api-client';\napi.get();\n")
+    _write_reverse_index(
+        tmp_path, {"src/api-client.ts": {"api": [{"path": "src/cart.ts", "line": 1}]}}
+    )
+    text = "\n".join(
+        _crossfile_existence_advisory_lines(repo_root=tmp_path, state=_state_for([src]), cfg=_cfg())
+    )
+    assert "api" in text and "src/cart.ts:1" in text
+
+
 def test_open_export_set_is_skipped(tmp_path):
     # `export * from` makes the set unenumerable; a missing name may be re-exported.
     src = _touch(tmp_path, "barrel.ts", "export * from './other';\n")

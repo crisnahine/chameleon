@@ -4,6 +4,71 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.14] - 2026-07-01
+
+Real-world QA pass across the sibling-context, cross-file existence, and
+conformance + comprehension surfaces. Every fix was reproduced and verified
+against real bootstrapped repos through the real hooks, tools, and MCP stdio
+transport, and re-checked after the fix.
+
+### Fixed
+
+- **A control byte in a sibling filename could split the single-line "Nearby:"
+  listing.** A source filename never legitimately contains a newline / CR / tab
+  (POSIX allows any byte but `/` and NUL), but a hostile or corrupt name that did
+  flowed unscrubbed into the per-edit sibling listing, breaking it into multiple
+  lines with attacker-controlled text on its own line. The listing and the nearby
+  collaborator-signatures path now strip control bytes from display names.
+- **The live cross-file reference check flagged a clean rename refactor as a
+  broken call site.** The "you removed export X, still imported by Y" advisory
+  (and the `get_crossfile_context` / `query_symbol_importers` tools) matched the
+  removed name as a bounded substring of the importer's module path (`api` inside
+  `'@/lib/api-client'`), so an importer that fully renamed its reference was still
+  reported as referencing the old name. The presence check now blanks string
+  literals before the scan; a genuine named-import reference is anchored by the
+  import binding, so this only drops the false match. Left the Ruby constant path
+  string-inclusive (its interpolating strings carry real references, and it has no
+  import binding to anchor a code-only scan).
+- **Degraded-state honesty across the comprehension + read tools.** A damaged,
+  corrupt, or untrusted profile must degrade honestly, never crash, lie, or assert
+  a false affirmative from an unknown:
+  - `get_canonical_excerpt` and `get_rules` raised on a structurally-malformed
+    (but generation-valid) `canonicals.json` / `rules.json`; the crash sat before
+    the trust gate, so an untrusted profile could trigger it. Both now guard the
+    inner structure and degrade.
+  - `describe_codebase` reported a generation-mismatched profile as an empty
+    codebase (contradicting `search_codebase` over the same profile) because a
+    profile-bundle validation failure discarded the independent symbol index. It
+    now reports the real file/symbol totals with a `degraded` flag.
+  - `get_drift_status` fabricated "production branch moved" when the derivation
+    SHA was merely unreadable, and reported "profile is fresh" for a corrupt
+    `profile.json`. It now omits the claim on an unknown SHA and surfaces
+    `derivation_unknown`.
+  - A corrupt `conventions.json` silently dropped the healthy `principles.md`
+    PRINCIPLES + ANTI-HALLUCINATION PROTOCOL for the whole session at
+    SessionStart. `principles.md` is now read independently of the conventions
+    parse.
+  - `get_callees` returned `found: true` echoing a non-string `function_name`;
+    it now guards the argument like its sibling call-graph tools.
+- **A multi-witness archetype lost all witness guidance when the selected witness
+  was deleted.** The per-edit block flagged the whole archetype's witness as
+  missing even though live sibling witnesses of the same archetype remained on
+  disk. It now falls through to the nearest live witness, and the "mirror the
+  canonical witness" lead is suppressed when no witness excerpt is present.
+- **A poisoned committed profile could inject a forged spotlight marker into a
+  trusted directive.** A `class_contract` / `key_exports` value rendered as a
+  chameleon directive (outside the untrusted spotlight) could carry a forged
+  `[chameleon-untrusted-data:...]` boundary marker plus a newline into trusted
+  text. The boundary sanitizer now breaks the marker for every render path, and
+  archetype-facts values are stripped of control bytes.
+- **Python `key_exports` listed imports as things to "reuse before creating a new
+  one".** The Python path reused the importable-name set (built for the
+  phantom-symbol existence check), which folds in every module-level import, so
+  the anti-duplication directive advertised `os`, `json`, `models`, `User`, ...
+  as archetype exports and crowded real classes past the display cap. It now
+  subtracts import locals, matching the TypeScript (export-only) and Ruby
+  (class/module) sets. Takes effect on the next `/chameleon-refresh`.
+
 ## [2.38.13] - 2026-07-01
 
 Counterexample correctness pass: kill a Python-only false positive in the

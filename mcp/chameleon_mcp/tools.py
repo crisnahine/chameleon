@@ -826,13 +826,17 @@ def _recorded_derivation_sha(profile_dir: Path) -> str | None:
     working-tree profiles)."""
     try:
         data = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    # A valid-JSON but non-dict profile.json (e.g. a top-level array) would raise
+    # AttributeError on .get; guard it so the caller reads "unknown SHA" (None)
+    # rather than having the exception swallowed into a false "profile is fresh".
+    if isinstance(data, dict):
         src = data.get("derivation_source")
         if isinstance(src, dict):
             sha = src.get("sha")
             if isinstance(sha, str) and sha:
                 return sha
-    except (OSError, json.JSONDecodeError, ValueError):
-        pass
     return None
 
 
@@ -1745,7 +1749,26 @@ def get_pattern_context(file_path: str) -> dict:
             # choose between (cost-bounded to the multi-sub-bucket case); a single
             # witness needs no shape comparison.
             snapshot = _file_shape_snapshot(p, loaded) if len(canonicals) > 1 else None
-            first = _nearest_canonical_entry(rel_str, canonicals, snapshot=snapshot)
+            # When an archetype has several witnesses, prefer one that still exists
+            # on disk: the nearest-by-shape entry may have been deleted/renamed in
+            # the working tree, and selecting it would flag the whole archetype's
+            # witness as missing while live sibling witnesses of the SAME archetype
+            # go unused. Fall through to the nearest LIVE witness; keep the full
+            # list only if none are live, so the missing-witness flag still fires.
+            selection_pool = canonicals
+            if len(canonicals) > 1:
+
+                def _witness_live(c: object) -> bool:
+                    try:
+                        wp = (c.get("witness") or {}).get("path") if isinstance(c, dict) else None
+                        return bool(wp) and (repo_root / wp).is_file()
+                    except OSError:
+                        return False
+
+                _live = [c for c in canonicals if _witness_live(c)]
+                if _live:
+                    selection_pool = _live
+            first = _nearest_canonical_entry(rel_str, selection_pool, snapshot=snapshot)
             witness_rel = first.get("witness", {}).get("path")
             if witness_rel and trust_state_str == "untrusted":
                 # Untrusted: the witness content is redacted below anyway, so
@@ -2097,7 +2120,13 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             )
 
     canonicals = loaded.canonicals.get("canonicals", {}).get(archetype, [])
-    if not canonicals:
+    # A structurally-malformed value (a non-list, or a list whose first entry is
+    # not a dict, or a non-dict `witness`) can pass _loads_hardened, which only
+    # validates the top-level object shape. Guard every access so a corrupt or
+    # hand-/merge-mangled canonicals.json DEGRADES rather than raising: the tool
+    # contract is never-raise / fail-open, and this crash sits BEFORE the trust
+    # gate below, so an untrusted attacker-controllable profile must not crash it.
+    if not isinstance(canonicals, list) or not canonicals:
         return _envelope(
             {
                 "status": "no_witness",
@@ -2115,7 +2144,9 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
         )
 
     first = canonicals[0]
-    witness = first.get("witness", {}) or {}
+    witness = first.get("witness", {}) if isinstance(first, dict) else {}
+    if not isinstance(witness, dict):
+        witness = {}
     witness_rel = witness.get("path")
     if not witness_rel:
         return _envelope(
@@ -2353,6 +2384,12 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
         return _envelope(env)
 
     rules_dict = loaded.rules.get("rules", {}) or {}
+    # _loads_hardened validates only the top-level object shape, so a corrupt
+    # rules.json whose `rules` value is a truthy non-dict (a JSON list/string/int)
+    # survives the load. Coerce it to an empty dict so the parse-warning loop and
+    # source iteration below cannot raise -- get_rules must degrade, not crash.
+    if not isinstance(rules_dict, dict):
+        rules_dict = {}
 
     # A source whose config could not be (fully) parsed carries a per-source
     # ``parse_warning``. Aggregate them at the top level too: on a Rails repo
@@ -3582,17 +3619,21 @@ def describe_codebase(repo: str) -> dict:
         {"name": _ss(g.get("name")), "file": _ss(g.get("file")), "callers": g.get("callers")}
         for g in d.get("god_symbols", [])
     ]
-    return _envelope(
-        {
-            "found": True,
-            "language": _ss(d.get("language")),
-            "framework": _ss(d.get("framework")),
-            "file_count": d.get("file_count"),
-            "symbol_count": d.get("symbol_count"),
-            "archetypes": archetypes,
-            "god_symbols": god,
-        }
-    )
+    out = {
+        "found": True,
+        "language": _ss(d.get("language")),
+        "framework": _ss(d.get("framework")),
+        "file_count": d.get("file_count"),
+        "symbol_count": d.get("symbol_count"),
+        "archetypes": archetypes,
+        "god_symbols": god,
+    }
+    # The profile bundle failed cross-artifact validation but the independent
+    # symbol index was still read; flag it so a consumer knows the archetype /
+    # language fields may be partial and can suggest /chameleon-refresh.
+    if d.get("degraded"):
+        out["degraded"] = True
+    return _envelope(out)
 
 
 def get_callees(repo: str, file_path: str, function_name: str) -> dict:
@@ -3614,6 +3655,11 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     empty = {"found": False, "module": None, "function": None, "callees": []}
 
     if not _validate_file_path_arg(file_path):
+        return _envelope(dict(empty))
+    # Mirror get_callers / get_blast_radius: a non-string function_name is
+    # out-of-contract input; return found=False rather than echoing the raw
+    # value back into the `function` field with a misleading found=True.
+    if not isinstance(function_name, str):
         return _envelope(dict(empty))
 
     p = Path(file_path).expanduser()
@@ -3712,13 +3758,13 @@ def _live_importer_break(
         content = safe_read_text(repo_root, importer_rel, max_size_bytes=1_000_000)
     except Exception:
         return False
-    needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
-    lines = content.splitlines()
-    present = bool(
-        (line is not None and 1 <= line <= len(lines) and needle.search(lines[line - 1]))
-        or needle.search(content)
-    )
-    if not present:
+    # "Still references ``name`` as CODE" -- string literals (the import specifier
+    # path) are blanked by _reference_present so a removed export whose name is a
+    # substring of its own module path (`api` in `'@/lib/api-client'`) does not
+    # prop up a phantom break on an importer that fully renamed its reference.
+    from chameleon_mcp.hook_helper import _reference_present
+
+    if not _reference_present(content, name, line):
         return False
     try:
         from chameleon_mcp.hook_helper import _imported_source_keys
@@ -3779,6 +3825,12 @@ def _ruby_constant_existence_breaks(repo_root: Path) -> dict:
         if _re.search(r"(?m)^(?:class|module)\s+" + _re.escape(name) + r"\b", content):
             continue
         # Removed/renamed -- keep only referencers that still name the constant.
+        # Deliberately a string-inclusive bareword scan (unlike the TS import
+        # path, string literals are NOT blanked here): a Ruby constant has no
+        # import binding to anchor a code-only check, and blanking `"..."` would
+        # also blank interpolations `"#{Foo.bar}"` -- real code whose loss would
+        # drop a genuine referencer (a false negative, worse than the rare
+        # after-rename string-mention over-inclusion). Keep-biased by design.
         live = []
         for ref in referenced_by:
             try:
@@ -4541,7 +4593,19 @@ def get_drift_status(repo: str) -> dict:
                     "derived_sha": _recorded,
                     "resolvable": _prod_resolved is not None,
                 }
-                if _prod_resolved is not None and _recorded != _prod_resolved.sha:
+                if _prod_resolved is not None and _recorded is None:
+                    # The profile's derivation SHA is unknown (profile.json
+                    # unreadable/truncated, or missing derivation_source). We
+                    # cannot know whether production moved, so do NOT assert
+                    # tip_moved -- an affirmative "production moved" built from an
+                    # unknown is a misreport (the OMIT-on-unknown discipline).
+                    # Surface the unknown honestly instead.
+                    production_block["derivation_unknown"] = True
+                if (
+                    _prod_resolved is not None
+                    and _recorded is not None
+                    and _recorded != _prod_resolved.sha
+                ):
                     production_tip_moved = True
                     production_block["tip_moved"] = True
                     # Always present when tip_moved — null when the old commit
@@ -4593,6 +4657,11 @@ def get_drift_status(repo: str) -> dict:
         recommended = (
             f"production branch {(production_block or {}).get('ref')} moved past the "
             f"profile's derivation commit{_ahead_txt}; run /chameleon-refresh"
+        )
+    elif production_block is not None and production_block.get("derivation_unknown"):
+        recommended = (
+            "the profile's derivation commit is unrecorded or unreadable "
+            "(profile.json missing or damaged); run /chameleon-refresh to re-derive"
         )
     elif drift_score is not None and drift_score > 0.5:
         recommended = f"observed drift is high ({drift_score:.2f}); run /chameleon-refresh"

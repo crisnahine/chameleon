@@ -812,6 +812,21 @@ class TestDirectoryListing:
         assert "target.ts" not in result
         assert "useDebounce.ts" in result
 
+    def test_scrubs_control_chars_from_sibling_names(self, tmp_path):
+        # A source filename never legitimately holds a control byte. A hostile
+        # sibling whose name carries a newline / CR / tab must not split the
+        # single-line "Nearby:" listing; the bytes are scrubbed for display while
+        # the file itself is still listed (name minus the control bytes).
+        from chameleon_mcp.conventions import format_directory_listing
+
+        (tmp_path / "normal.ts").write_text("x")
+        (tmp_path / "with\nnewline.ts").write_text("x")
+        (tmp_path / "with\ttab.ts").write_text("x")
+        result = format_directory_listing(str(tmp_path / "target.ts"))
+        assert "\n" not in result and "\t" not in result  # listing stays one line
+        assert "normal.ts" in result
+        assert "withnewline.ts" in result and "withtab.ts" in result
+
     def test_empty_for_nonexistent_dir(self):
         from chameleon_mcp.conventions import format_directory_listing
 

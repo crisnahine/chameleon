@@ -95,6 +95,15 @@ def sanitize_for_chameleon_context(content: str) -> str:
     #    (chameleon:, archetype:, variation-selector, homoglyph keyword).
     cleaned = _SPOOFED_HEADER_RE.sub("[chameleon-sanitized: marker]", cleaned)
 
+    # 8. Break a forged spotlight-boundary marker prefix (`[chameleon-untrusted-data:`
+    #    or its closing form). spotlight_untrusted breaks this for the content it
+    #    wraps, but repo-derived values rendered as chameleon DIRECTIVES sit OUTSIDE
+    #    the spotlight (archetype-facts, counterexample guidance) and never pass
+    #    through it, so a poisoned committed value could otherwise plant a boundary
+    #    marker into trusted directive text. A real repo value never contains it, so
+    #    breaking it here is harmless and closes the gap for every render path.
+    cleaned = _MARKER_FORGE_RE.sub("[chameleon-data-ref ", cleaned)
+
     return cleaned
 
 

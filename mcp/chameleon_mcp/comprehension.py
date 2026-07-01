@@ -173,36 +173,45 @@ def describe_codebase(repo_root) -> dict:
         "symbol_count": 0,
         "god_symbols": [],
     }
+    lp = None
     try:
         lp = load_profile_dir(Path(profile_root) / ".chameleon")
     except Exception:
-        return out
-    prof = lp.profile if isinstance(lp.profile, dict) else {}
-    out["language"] = prof.get("language")
-    out["framework"] = prof.get("framework")
-    arch = lp.archetypes.get("archetypes", {}) if isinstance(lp.archetypes, dict) else {}
-    canon = lp.canonicals.get("canonicals", {}) if isinstance(lp.canonicals, dict) else {}
-    archetypes: list[dict] = []
-    for name, body in arch.items():
-        if not isinstance(body, dict):
-            continue
-        witness = None
-        rows = canon.get(name)
-        if isinstance(rows, list) and rows and isinstance(rows[0], dict):
-            w = rows[0].get("witness")
-            if isinstance(w, dict):
-                witness = w.get("path")
-        archetypes.append(
-            {
-                "name": name,
-                "summary": body.get("summary"),
-                "size": body.get("cluster_size"),
-                "paths": body.get("paths_pattern_display") or body.get("paths_pattern"),
-                "witness": witness,
-            }
-        )
-    archetypes.sort(key=lambda a: (-(a["size"] or 0), a["name"]))
-    out["archetypes"] = archetypes
+        # The profile bundle failed cross-artifact validation (a generation
+        # mismatch, a corrupt/merge-mangled sibling). Do NOT return an empty
+        # overview: symbol_signatures / calls_index are INDEPENDENT artifacts that
+        # search_codebase reads directly, so a bundle failure would otherwise make
+        # describe report a populated repo as an empty codebase, contradicting
+        # search over the same profile. Fall through, mark the overview degraded,
+        # and still report the real file/symbol totals + god symbols below.
+        out["degraded"] = True
+    if lp is not None:
+        prof = lp.profile if isinstance(lp.profile, dict) else {}
+        out["language"] = prof.get("language")
+        out["framework"] = prof.get("framework")
+        arch = lp.archetypes.get("archetypes", {}) if isinstance(lp.archetypes, dict) else {}
+        canon = lp.canonicals.get("canonicals", {}) if isinstance(lp.canonicals, dict) else {}
+        archetypes: list[dict] = []
+        for name, body in arch.items():
+            if not isinstance(body, dict):
+                continue
+            witness = None
+            rows = canon.get(name)
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                w = rows[0].get("witness")
+                if isinstance(w, dict):
+                    witness = w.get("path")
+            archetypes.append(
+                {
+                    "name": name,
+                    "summary": body.get("summary"),
+                    "size": body.get("cluster_size"),
+                    "paths": body.get("paths_pattern_display") or body.get("paths_pattern"),
+                    "witness": witness,
+                }
+            )
+        archetypes.sort(key=lambda a: (-(a["size"] or 0), a["name"]))
+        out["archetypes"] = archetypes
     sigs = load_symbol_signatures(profile_root)
     if sigs is not None:
         out["file_count"] = len(sigs)

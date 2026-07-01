@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from chameleon_mcp.profile.trust import grant_trust
-from chameleon_mcp.tools import _compute_repo_id, get_canonical_excerpt
+from chameleon_mcp.tools import _compute_repo_id, get_canonical_excerpt, get_rules
 
 ARCH = "service"
 WITNESS = "service.ts"
@@ -63,6 +63,90 @@ def test_deleted_witness_yields_missing_flag(tmp_path, monkeypatch):
     assert res.get("missing") is True, f"missing flag must be True, got {res.get('missing')!r}"
     # witness_path is preserved so callers know which file to recover.
     assert res.get("witness_path") == WITNESS
+
+
+def test_multi_witness_falls_through_to_live_sibling(tmp_path, monkeypatch):
+    """When an archetype has several witnesses and the selected one is deleted, the
+    per-edit path (get_pattern_context) must fall through to a still-live sibling
+    witness of the same archetype, not flag the whole archetype's witness as
+    missing while live siblings go unused."""
+    from chameleon_mcp.tools import get_pattern_context
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+    repo = tmp_path / "repo"
+    cham = repo / ".chameleon"
+    cham.mkdir(parents=True)
+    (cham / "profile.json").write_text(json.dumps({"generation": 1, "language": "typescript"}))
+    (cham / "archetypes.json").write_text(
+        json.dumps({"generation": 1, "archetypes": {ARCH: {"summary": "svc"}}})
+    )
+    (cham / "rules.json").write_text(json.dumps({"generation": 1, "rules": {}}))
+    (cham / "canonicals.json").write_text(
+        json.dumps(
+            {
+                "generation": 1,
+                "canonicals": {
+                    ARCH: [
+                        {"witness": {"path": "a_service.ts", "sha_hint": "x"}},
+                        {"witness": {"path": "b_service.ts", "sha_hint": "y"}},
+                    ]
+                },
+            }
+        )
+    )
+    (cham / "COMMITTED").touch()
+    (repo / "a_service.ts").write_text(SAFE_LINE * 3)
+    (repo / "b_service.ts").write_text(SAFE_LINE * 4)
+    grant_trust(_compute_repo_id(repo), cham)
+
+    _arch_result = {
+        "data": {
+            "archetype": ARCH,
+            "confidence_band": "high",
+            "match_quality": "exact",
+            "match_basis": "path_only",
+            "file_exists": True,
+            "alternatives": [],
+            "content_signal_match": "none",
+            "sub_buckets_count": 1,
+        }
+    }
+    file_path = str(repo / "a_service.ts")
+    with patch("chameleon_mcp.tools._get_archetype_with_loaded", return_value=_arch_result):
+        selected = get_pattern_context(file_path)["data"]["canonical_excerpt"].get("witness_path")
+    # Delete whichever witness was selected; the live sibling must still be served.
+    (repo / selected).unlink()
+    with patch("chameleon_mcp.tools._get_archetype_with_loaded", return_value=_arch_result):
+        res = get_pattern_context(file_path)["data"]["canonical_excerpt"]
+    assert res.get("content"), "expected fallthrough content from the live sibling witness"
+    assert not res.get("missing"), "must not flag missing while a live sibling witness exists"
+    assert res.get("witness_path") != selected
+
+
+def test_malformed_canonicals_entry_degrades_not_raises(tmp_path, monkeypatch):
+    """A structurally-malformed canonicals entry (a non-list, or a list whose first
+    item is not a dict) must degrade to a clean envelope, never raise -- the crash
+    otherwise sits before the trust gate, so an untrusted profile could trigger it."""
+    repo = _repo_with_witness(tmp_path, monkeypatch)
+    cham = repo / ".chameleon"
+    for mal in (["x"], "str", {"k": 1}, 7, [{"witness": "not-a-dict"}], [None]):
+        cham.joinpath("canonicals.json").write_text(
+            json.dumps({"generation": 1, "canonicals": {ARCH: mal}})
+        )
+        res = get_canonical_excerpt(str(repo), ARCH)["data"]  # must not raise
+        assert res.get("status") in ("no_witness", "degraded"), (mal, res.get("status"))
+
+
+def test_malformed_rules_value_degrades_not_raises(tmp_path, monkeypatch):
+    """A corrupt rules.json whose `rules` value is a non-dict (list/string/int)
+    must degrade to an empty rules list, never raise on .items()."""
+    repo = _repo_with_witness(tmp_path, monkeypatch)
+    cham = repo / ".chameleon"
+    for mal in ([1, 2, 3], "corrupt", 42):
+        cham.joinpath("rules.json").write_text(json.dumps({"generation": 1, "rules": mal}))
+        res = get_rules(str(repo))["data"]  # must not raise
+        assert res.get("rules") == []
 
 
 def test_get_pattern_context_missing_witness_flag(tmp_path, monkeypatch):

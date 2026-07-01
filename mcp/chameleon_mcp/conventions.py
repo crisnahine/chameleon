@@ -1699,10 +1699,23 @@ def extract_key_exports(files: list[ParsedFile], *, language: str) -> list[str]:
     for f in files:
         seen: set[str] = set()
         if language == "python":
-            # Top-level public names the libcst dump already enumerated; the
-            # reuse signal is the public surface (drop underscore-prefixed).
+            # named_export_names is the IMPORTABLE-name set (it exists for the
+            # phantom-symbol existence check), so by construction it folds in every
+            # module-level import local. key_exports drives the "reuse this before
+            # creating a new one" directive, so an import (json, os, models, User,
+            # reverse, ...) must NOT appear -- it is not defined in the archetype
+            # and cannot be reused instead of created. Subtract the import locals so
+            # only names DEFINED here (classes, functions, module-level assigns)
+            # remain, matching the TS export-only and Ruby class/module sets.
+            import_locals: set[str] = set()
+            for row in f.extras.get("import_symbols") or []:
+                if isinstance(row, dict) and isinstance(row.get("local"), str):
+                    import_locals.add(row["local"])
+            for row in f.extras.get("namespace_imports") or []:
+                if isinstance(row, dict) and isinstance(row.get("alias"), str):
+                    import_locals.add(row["alias"])
             for name in f.extras.get("named_export_names") or []:
-                if name.startswith("_") or name in seen or len(name) <= 1:
+                if name.startswith("_") or name in seen or len(name) <= 1 or name in import_locals:
                     continue
                 name_counts[name] += 1
                 seen.add(name)
@@ -2620,6 +2633,22 @@ _SOURCE_EXTENSIONS = frozenset(
     }
 )
 
+# A source filename never legitimately contains a control byte. A hostile or
+# corrupt sibling name that does -- a newline that would split the single-line
+# "Nearby:" listing, a CR/tab, or any other C0/DEL byte -- is stripped for
+# display so the listing stays one clean line and attacker-controlled bytes
+# cannot ride a planted filename into the model context. The downstream
+# `sanitize_for_chameleon_context` deliberately preserves LF/CR/tab (they are
+# meaningful in the canonical code excerpt it also wraps), so a filename that
+# carries them must be scrubbed here, at the point a NAME (never code) is
+# rendered. The file is still listed, name minus the control bytes, so a real
+# "check before creating" candidate is never hidden.
+_FILENAME_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def _safe_display_name(name: str) -> str:
+    return _FILENAME_CONTROL_RE.sub("", name)
+
 
 def format_directory_listing(
     file_path: str | None, *, max_files: int = _int_env("CHAMELEON_MAX_SIBLINGS", 60)
@@ -2656,7 +2685,10 @@ def format_directory_listing(
     # set and wrongly conclude a "reuse before creating" check came up empty.
     more = len(names) - len(display)
     tail = f" (+{more} more)" if more > 0 else ""
-    return f"Nearby: {', '.join(display)}{tail} -- check before creating a new file."
+    # Sort/dedup on the raw name (deterministic), scrub control bytes only for
+    # display so a planted newline/CR cannot break out of the one-line listing.
+    safe = [_safe_display_name(n) for n in display]
+    return f"Nearby: {', '.join(safe)}{tail} -- check before creating a new file."
 
 
 def _contract_summary(cc: dict) -> str:

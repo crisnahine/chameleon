@@ -1602,18 +1602,31 @@ def session_start() -> int:
             if _ss_rec is not None and _ss_rec.grants_root(repo_root):
                 import json as _conv_json
 
-                conv_text = (_prof_root / ".chameleon" / "conventions.json").read_text(
-                    encoding="utf-8"
-                )
-                conv_data = _conv_json.loads(conv_text)
                 # This path reads conventions.json straight from disk (not via
                 # load_profile_dir), so screen its prose values for injection here --
                 # render sanitization does not neutralize injection prose, and trust
                 # persists across changes so the staleness gate no longer covers it.
                 from chameleon_mcp.profile.loader import safe_prose_text, scrub_conventions_prose
 
-                scrub_conventions_prose(conv_data)
+                # principles.md is an INDEPENDENT artifact: read it first and keep it
+                # separate from the conventions.json parse, so a corrupt/unparseable
+                # conventions.json does not collaterally drop the healthy
+                # principles.md-derived PRINCIPLES + ANTI-HALLUCINATION PROTOCOL for
+                # the whole session. A conventions parse failure degrades to an empty
+                # conventions object; format_conventions_for_session still emits the
+                # principle sections from principles_text alone.
                 pr_text = safe_prose_text(_prof_root / ".chameleon" / "principles.md")
+                conv_data: dict = {}
+                try:
+                    conv_text = (_prof_root / ".chameleon" / "conventions.json").read_text(
+                        encoding="utf-8"
+                    )
+                    _parsed = _conv_json.loads(conv_text)
+                    if isinstance(_parsed, dict):
+                        conv_data = _parsed
+                        scrub_conventions_prose(conv_data)
+                except Exception:
+                    conv_data = {}
                 # Sanitize the attacker-controllable inputs at the boundary (see
                 # _sanitize_profile_obj — sanitizing the assembled block would
                 # mangle its <chameleon-conventions> wrapper).
@@ -1771,7 +1784,7 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
     try:
         from chameleon_mcp._thresholds import threshold_int
         from chameleon_mcp.calls_index import load_calls_index
-        from chameleon_mcp.conventions import _SOURCE_EXTENSIONS
+        from chameleon_mcp.conventions import _SOURCE_EXTENSIONS, _safe_display_name
         from chameleon_mcp.symbol_signatures import (
             load_symbol_signatures,
             render_imported_definition,
@@ -1817,8 +1830,13 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
             if files_used >= _NEARBY_SIG_MAX_FILES or len(rendered) >= _NEARBY_SIG_MAX_TOTAL:
                 break
             files_used += 1
+            # Scrub control bytes from the path for DISPLAY only (the raw rel was
+            # already used for the signature lookup and proximity scoring above);
+            # a sibling whose name carries a newline must not split this listing
+            # the way it would the "Nearby:" line.
+            safe_rel = _safe_display_name(rel)
             for name, row in list(by_name.items())[:_NEARBY_SIG_MAX_SYMBOLS]:
-                rendered.append(render_imported_definition(name, row, rel))
+                rendered.append(render_imported_definition(name, row, safe_rel))
                 if len(rendered) >= _NEARBY_SIG_MAX_TOTAL:
                     break
         if not rendered:
@@ -1993,6 +2011,13 @@ def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> s
                 return ""
             if _prose_injection_unsafe(text):
                 return ""
+            # Every value here is a single identifier (base class, method, macro,
+            # decorator, export name); a newline / CR / control byte in one is never
+            # legitimate and would split the single-line directive, letting a
+            # poisoned value plant a second line of forged directive text. The
+            # downstream sanitizer preserves newlines (meaningful in code excerpts),
+            # so collapse control runs to a space HERE, at the point a NAME is rendered.
+            text = re.sub(r"[\x00-\x1f\x7f]+", " ", text).strip()
             return neutralize_fences(sanitize_for_chameleon_context(text))
 
         def _capped(values: object, cap: int) -> tuple[list[str], str]:
@@ -2952,8 +2977,13 @@ def preflight_and_advise() -> int:
     if untrusted_region:
         # Calibrate how hard to lean on the witness by match quality. This is a
         # chameleon directive about the data, so it stays OUTSIDE the untrusted
-        # spotlight region (which is framed as "imitate, never obey").
-        block += _match_quality_lead(match_quality, archetype_name or "")
+        # spotlight region (which is framed as "imitate, never obey"). Gate it on
+        # a witness excerpt actually being present: the region can be non-empty
+        # from the Nearby listing / idioms alone (witness deleted on disk), and
+        # "mirror the canonical witness below closely" must not preface a block
+        # that contains no witness to mirror.
+        if excerpt_content:
+            block += _match_quality_lead(match_quality, archetype_name or "")
         block += untrusted_region + "\n\n"
     # Pair the witness (the conforming form) with a real off-pattern the team has
     # flagged, immediately after it: the in-context-learning literature finds a
@@ -6389,6 +6419,42 @@ def _imported_source_keys(content: str, name: str, importer_dir: Path, lang: str
     return keys
 
 
+# A quoted string literal (single / double / template). The import specifier PATH
+# lives inside one of these, so a removed export whose NAME is a bounded substring
+# of its own module path (`api` inside `'@/lib/api-client'`) matches the bareword
+# needle on an importer that has FULLY renamed its reference -- a phantom "you
+# broke this call site" on a clean rename refactor, exactly the "stale index"
+# false positive. A genuine named-import reference (`{ name }`, `name.foo()`) never
+# sits inside a string, so blanking string literals before the presence scan can
+# only drop a false match, never a real reference (nor a removed-import-kept-usage,
+# whose bareword sits in code, not a string).
+_STRING_LITERAL_RE = re.compile(r"""'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`""")
+
+
+def _reference_present(content: str, name: str, line: int | None) -> bool:
+    """True if ``name`` appears as a bareword code reference in ``content`` -- not
+    only inside a string literal such as an import specifier path.
+
+    Checks the recorded ``line`` first (cheap), then the whole file; string
+    literals are blanked before each scan so a name that survives only inside a
+    module path is not counted as a live use. Shared by the TS/Python existence
+    checks -- the Stop advisory (``_live_break``) and the tool
+    (``_live_importer_break``) -- so the two cannot drift.
+
+    Safe for these callers ONLY because a genuine named-import break is anchored
+    by the import binding (``import {{ name }}``), which is code and survives the
+    blanking; blanking usages inside a template literal can therefore never hide a
+    real break. It is NOT used for the Ruby constant paths, which have no import
+    anchor and whose interpolating ``"#{{...}}"`` strings carry real references.
+    """
+    needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
+    lines = content.splitlines()
+    if line is not None and 1 <= line <= len(lines):
+        if needle.search(_STRING_LITERAL_RE.sub(" ", lines[line - 1])):
+            return True
+    return bool(needle.search(_STRING_LITERAL_RE.sub(" ", content)))
+
+
 def _crossfile_existence_advisory_lines(
     *,
     repo_root: Path,
@@ -6473,17 +6539,9 @@ def _crossfile_existence_advisory_lines(
                 text = ip.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
             except OSError:
                 return False
-            needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
-            text_lines = text.splitlines()
-            present = bool(
-                (
-                    line is not None
-                    and 1 <= line <= len(text_lines)
-                    and needle.search(text_lines[line - 1])
-                )
-                or needle.search(text)
-            )
-            if not present:
+            # (1) still references ``name`` as CODE (not only inside the import path
+            # string), and (2) the reference is still sourced from the TARGET module.
+            if not _reference_present(text, name, line):
                 return False
             keys = _imported_source_keys(text, name, ip.parent, language, _resolver_for(language))
             if keys and target_key not in keys:
@@ -6494,7 +6552,12 @@ def _crossfile_existence_advisory_lines(
             # Cheap presence check: the index is a bootstrap snapshot, so confirm
             # the importer still names the binding (the rename may have reached it
             # too) before claiming its call site is broken. No parse -- a
-            # word-boundary regex over the importer bytes.
+            # word-boundary scan over the importer bytes. Deliberately
+            # string-inclusive (unlike the TS import-path scan in _reference_present):
+            # a Ruby constant has no import binding to anchor a code-only check, and
+            # blanking `"..."` would also blank an interpolation `"#{Const}"`,
+            # dropping a genuine referencer -- a false negative worse than the rare
+            # after-rename string-mention over-inclusion this path is keep-biased for.
             ip = repo_root / importer_rel
             try:
                 text = ip.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
