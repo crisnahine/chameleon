@@ -89,6 +89,12 @@ _BARE_GIT_SHORTHAND_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[^/\s]+$"
 # entry from other added JSON keys without tracking section context.
 _VERSION_VALUE_RE = re.compile(r"^(?:[\^~><=*]|v?\d|x\b|npm:|jsr:|workspace:|catalog:)")
 _DIST_TAGS = frozenset({"latest", "next", "canary", "beta", "alpha", "rc", "stable"})
+# A value that is really a shell COMMAND (a lifecycle script), not a dependency
+# version, betrays itself by a space, a shell metacharacter, or a
+# digit-immediately-followed-by-a-letter (`7z`, `2to3`, `v8flags`) -- none of which
+# appear in a version spec. Used to keep the install-script discriminator from
+# downgrading a command that merely starts like a version to a dependency NIT.
+_SCRIPT_COMMAND_HINT_RE = re.compile(r"[\s;&|`$()]|\d[A-Za-z]")
 
 # package.json keys that legitimately hold a git/URL value and are NOT
 # dependency entries, so a source-looking value under them is not 2.5d. (http/
@@ -163,8 +169,23 @@ def _scan_install_scripts(path: str, diff_text: str) -> list[DepFinding]:
             # "install"/"preinstall"/"postinstall" are also real npm package
             # NAMES. A version-range value means this is a dependency entry, not
             # a lifecycle-script command, so it is not 2.5c (it is 2.5a instead).
+            #
+            # But _looks_like_dep_value only checks the value's PREFIX, so a shell
+            # command that merely STARTS like a version -- `7z x payload`, `0;curl`,
+            # `2to3 -w`, `v8flags` -- would be misread as a dependency and the
+            # install-script FIX silently downgraded to a dependency NIT (an
+            # attacker dodge). A real command reveals itself by a space, a shell
+            # metacharacter, or a digit-immediately-followed-by-a-letter, none of
+            # which occur in a version spec; treat any such value as a script
+            # regardless of the version-prefix match. Over-flagging a truly exotic
+            # version as an install-script is a harmless advisory; missing a real
+            # install script is a supply-chain false negative.
             value = _json_string_value(m.group(2))
-            if value is not None and _looks_like_dep_value(value):
+            if (
+                value is not None
+                and _looks_like_dep_value(value)
+                and not _SCRIPT_COMMAND_HINT_RE.search(value)
+            ):
                 continue
             out.append(
                 DepFinding(

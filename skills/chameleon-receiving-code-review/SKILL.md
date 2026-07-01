@@ -82,9 +82,19 @@ do not call it a second time. Then:
   Check for a sink (`eval-call`, `command-injection`, `sql-string-interpolation`,
   `insecure-deserialization`, `weak-hash`, `insecure-random`) or
   `secret-detected-in-content` on that line (the line is the ` at line N` token in
-  the violation's `actual`); a witnessed hit means the reviewer is wrong — the
-  verdict is APPLY (implement it under Step 8 after approval, not during
-  verification), citing the violation.
+  the violation's `actual`). Apply the SAME precision gates pr-review makes
+  mandatory before letting a lint hit flip the reviewer's "this is fine" to APPLY —
+  a low-precision heuristic must not overrule a correct human on a false positive:
+  - `secret-detected-in-content`: only a hit whose `secret_hard` flag is true is a
+    witnessed secret. A soft/entropy/broad-fallback hit (`secret_hard` false) is
+    advisory — surface it and ASK, do not assert APPLY.
+  - `eval-call` is `error` severity and block-eligible; the other sinks are
+    advisory `warning`. A witnessed high-severity sink (`eval-call`) or a
+    `secret_hard` secret means the reviewer is wrong — the verdict is APPLY
+    (implement it under Step 8 after approval, not during verification), citing the
+    violation. For an advisory-only sink (`weak-hash`, `insecure-random`, etc.),
+    surface it as evidence and let your read of the code decide APPLY vs ASK; do
+    not auto-flip on the advisory alone.
 - Reviewer says "this duplicates X" → `get_duplication_candidates(repo=<repo.id>,
   file_path=<abs>)` to confirm or deny with the returned candidate.
 

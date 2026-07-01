@@ -472,3 +472,69 @@ def test_distinct_rule_names_avoid_secret_filter_collision():
 def test_ruby_query_methods_covered(method):
     src = f'Model.{method}("col = #{{val}}")'
     assert "sql-string-interpolation" in _rules(scan_dangerous_sinks(src, language="ruby"))
+
+
+# --- crypto-context gate: compound identifiers + Node crypto API (regression) ---
+
+
+@pytest.mark.parametrize(
+    "code,lang,rule",
+    [
+        ("password_salt = random.random()\n", "python", "insecure-random"),
+        ("password_hash = hashlib.md5(pw)\n", "python", "weak-hash"),
+        ("session_token = random.random()\n", "python", "insecure-random"),
+        ("const sessionToken = md5(x);\n", "typescript", "weak-hash"),
+        ("const passwordHash = md5(pw);\n", "typescript", "weak-hash"),
+        ("password_salt = Digest::MD5.hexdigest(x)\n", "ruby", "weak-hash"),
+    ],
+)
+def test_crypto_context_gate_matches_compound_identifiers(code, lang, rule):
+    # A crypto keyword that is a snake_case / camelCase COMPONENT (password_salt,
+    # sessionToken) must gate the advisory sink; a \b-only boundary silently
+    # dropped every weak-hash / insecure-random on the dominant naming style.
+    assert rule in _rules(scan_dangerous_sinks(code, language=lang))
+
+
+@pytest.mark.parametrize(
+    "code,lang",
+    [
+        ("const design = md5(logo);\n", "typescript"),
+        ("tokenizer = hashlib.md5(x)\n", "python"),
+        ("assigned = random.random()\n", "python"),
+    ],
+)
+def test_crypto_context_gate_rejects_keyword_buried_in_unrelated_word(code, lang):
+    # design/tokenizer/assigned contain sign/token but are not crypto material;
+    # the segment boundary must not gate on them (no false advisory).
+    assert _rules(scan_dangerous_sinks(code, language=lang)) == []
+
+
+def test_node_crypto_api_weak_hash_flagged():
+    # crypto.createHash("md5") is the dominant TS weak-hash form; the algo lives in
+    # a string literal the stripper blanks, so it needs a raw-content match.
+    assert "weak-hash" in _rules(
+        scan_dangerous_sinks(
+            'const password = crypto.createHash("md5").update(secret).digest();\n',
+            language="typescript",
+        )
+    )
+    assert "weak-hash" in _rules(
+        scan_dangerous_sinks('const sig = crypto.createHmac("sha1", key);\n', language="typescript")
+    )
+    # A strong algo, or the same call with no crypto context, stays quiet.
+    assert (
+        _rules(
+            scan_dangerous_sinks(
+                'const h = crypto.createHash("sha256").update(x);\n', language="typescript"
+            )
+        )
+        == []
+    )
+    assert (
+        _rules(
+            scan_dangerous_sinks(
+                'const x = createHash("md5").update(url);\n', language="typescript"
+            )
+        )
+        == []
+    )

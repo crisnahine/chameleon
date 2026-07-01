@@ -7346,15 +7346,29 @@ def get_contract_breaks(repo: str, base_ref: str = "main") -> dict:
                 "advisory": True,
             }
         )
-    _count, details = _compute_contract_breaks(
+    _count, details, _reason = _compute_contract_breaks(
         repo_root, res.stdout or "", base_ref, threshold_int("AUTOPASS_MAX_FILES")
     )
+    if _reason:
+        # The contract-break check could not run (the calls index its grounding
+        # depends on is missing/corrupt). Surface it as degraded rather than an
+        # empty "clean" -- an absent index is "we could not check", not "no breaks"
+        # (mirrors get_callers, which does not present a missing index as no callers).
+        return _envelope(
+            {
+                "status": "degraded",
+                "reason": _reason,
+                "base_ref": base_ref,
+                "findings": details,
+                "advisory": True,
+            }
+        )
     return _envelope({"status": "ok", "base_ref": base_ref, "findings": details, "advisory": True})
 
 
 def _compute_contract_breaks(
     repo_root: Path, numstat_text: str, base_ref: str, max_files: int
-) -> tuple[int, list]:
+) -> tuple[int, list, str | None]:
     """Deterministic caller-contract breaks for the auto-pass router, fail-open.
 
     Compares each changed source file's positional contract at ``base_ref`` vs
@@ -7378,28 +7392,31 @@ def _compute_contract_breaks(
         # here too (mirrors get_callers / query_symbol_importers).
         _gate = _trust_state_for(_compute_repo_id(repo_root))
         if _gate is None or not _gate.grants_root(repo_root):
-            return 0, []
+            return 0, [], None
 
         try:
             enabled = load_config(repo_root / ".chameleon").enforcement.signature_contract_diff
         except Exception:
             enabled = True  # fail-open to on, mirroring judge_crossfile_facts
         if not enabled:
-            return 0, []
+            return 0, [], None
 
         rows = parse_numstat(numstat_text)
         if len(rows) > max_files:
             # A change this large already routes to a human on size; the contract
             # diff would not change the verdict and is not worth the re-parse cost.
-            return 0, []
+            return 0, [], None
         changed_src = [
             r["path"] for r in rows if str(r["path"]).lower().endswith(_CONTRACT_DIFF_EXTS)
         ]
         if not changed_src:
-            return 0, []
+            return 0, [], None
         index = load_calls_index(repo_root)
         if index is None:
-            return 0, []
+            # There ARE changed source files but the calls index is missing/corrupt,
+            # so the contract-break check cannot run. Signal "degraded" (no grounding)
+            # rather than a false "clean".
+            return 0, [], "no-calls-index"
         # Use the merge-base as the OLD ref so the contract diff matches the
         # `base_ref...HEAD` (three-dot) semantics the rest of the router uses: a
         # divergent base that independently changed a signature must not read as
@@ -7441,9 +7458,9 @@ def _compute_contract_breaks(
             }
             for f in findings
         ]
-        return len(findings), details
+        return len(findings), details, None
     except Exception:
-        return 0, []
+        return 0, [], None
 
 
 def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
@@ -7654,7 +7671,7 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     # already over the file cap (it routes to a human regardless), and silently
     # off when the calls index is absent or the config flag is false.
     max_files_cap = threshold_int("AUTOPASS_MAX_FILES")
-    contract_break_count, contract_break_details = _compute_contract_breaks(
+    contract_break_count, contract_break_details, _cb_reason = _compute_contract_breaks(
         repo_root, numstat_text, base_ref, max_files_cap
     )
 

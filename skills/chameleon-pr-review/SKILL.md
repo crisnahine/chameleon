@@ -99,7 +99,7 @@ This is the core chameleon review. For EACH changed file:
 - Config/data files: `.yml`, `.json`, `.toml`, `*.lock` unless the archetype specifically covers them
 - Binary files, images, fonts
 
-**Do NOT skip the package manifests and lockfiles.** `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `Gemfile`, and `Gemfile.lock` are exempt from the skip rules above even though they match `.json`/`*.lock`/`.yml`. They get no archetype/lint/canonical review (Steps 2a-2f are for source files), but their diffs go through Step 2.5 below. A dependency change is the one place a config-file diff carries supply-chain risk, so it is reviewed, not skipped.
+**Do NOT skip the package manifests and lockfiles.** `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `Gemfile`, and `Gemfile.lock` are exempt from the skip rules above even though they match `.json`/`*.lock`/`.yml`. They get no archetype/canonical/structural review (Steps 2a, 2c-2f are for source files), but they are NOT exempt from the Step 2b `lint_file` call: its secret scan runs pre-archetype, so a hard credential committed into a manifest or lockfile (an `_authToken`, an embedded registry password) must still surface as `secret-detected-in-content` and reach the 2.6a BLOCK gate. Run `lint_file` on them (pass a placeholder `"none"` archetype and read only the secret violations; ignore the structural ones), and their diffs also go through Step 2.5 below. A dependency change is the one place a config-file diff carries supply-chain risk, so it is reviewed, not skipped.
 
 **Rails migrations (`db/migrate/*.rb`) get one extra pass.** A migration file is still an ordinary Ruby source file for the convention review (Steps 2a-2f run on it like any other), but its archetype is matched on top-level shape, so a risky migration looks structurally identical to its safe siblings and passes clean. After the convention review, run the migration-safety pass (Step 2.7) on every changed file whose path is under `db/migrate/`. Only `schema.rb` stays fully skipped; it is generated.
 
@@ -181,9 +181,13 @@ Run this whenever the diff touches a package manifest or lockfile: `package.json
 scan_dependency_changes(repo=<repo_id>, base_ref=<the PR base branch, or the branch's merge base; use the locked production_ref from .chameleon/config.json when no PR base is known; default "main">)
 ```
 
-It parses the manifest/lockfile diff (no network) and returns structured `findings`, each citing the exact added line it parsed: `install-script`, `non-registry-host`, and `non-registry-source` are **FIX**; `new-dependency` is the 2.5a listing you carry into the human-judgment gate below. Use these findings as the deterministic source for 2.5b/2.5c/2.5d and the 2.5a listing instead of hand-parsing the JSON/YAML — each is groundable by the round-3 refuter against the tool result (this is the Step 2.5 exception to the chameleon-data rule). The tool does NOT score typosquats; that judgment stays yours under 2.5a. If `scan_dependency_changes` is unavailable in this session, fall back to the manual parse described below and note it in one line. It is no-network and never replaces the opt-in `dep_audit` CVE scan.
+It parses the manifest/lockfile diff (no network) and returns structured `findings`, each citing the exact added line it parsed: `install-script`, `non-registry-host`, `non-registry-source`, and `minified-manifest` are **FIX**; `new-dependency` is the 2.5a listing you carry into the human-judgment gate below. Use these findings as the deterministic source for 2.5b/2.5c/2.5d/2.5e and the 2.5a listing instead of hand-parsing the JSON/YAML — each is groundable by the round-3 refuter against the tool result (this is the Step 2.5 exception to the chameleon-data rule). The tool does NOT score typosquats; that judgment stays yours under 2.5a. If `scan_dependency_changes` is unavailable in this session, fall back to the manual parse described below and note it in one line. It is no-network and never replaces the opt-in `dep_audit` CVE scan.
 
-Each finding cites the exact lockfile line or manifest key. The four checks are independent; run every one that applies even if an earlier check fired.
+Each finding cites the exact lockfile line or manifest key. The five checks are independent; run every one that applies even if an earlier check fired.
+
+#### 2.5e. Minified manifest (FIX)
+
+`scan_dependency_changes` returns a `minified-manifest` FIX finding when a `package.json` diff is collapsed onto a single JSON line. A minified manifest is a supply-chain evasion: the per-key scanners (install-script, non-registry-host/-source, new-dependency) cannot parse it, so every other 2.5 check was silently defeated. Surface it as a **FIX** citing the finding, and re-review the manifest by hand (expand it) before trusting any of the 2.5a-2.5d results for that file. A source file (not a manifest) is never subject to this check.
 
 #### 2.5a. New direct dependency → acknowledge provenance (ACK, does NOT drive the verdict)
 
@@ -306,10 +310,10 @@ Never let 2.7b or 2.7c reach BLOCK. They are table-size reminders the author res
 
 Run this once over the whole changed-file set, not per file. A new file of a kind that structurally cannot stand alone (a Rails model needs a migration, a new controller needs a route wired up, a Prisma schema change needs a migration, a Redux slice needs to be registered in the store) is a missing-companion gap a human reviewer catches by reading the whole change at once. The convention review above checks each file in isolation and cannot see it.
 
-This pass uses chameleon's curated co-change pairs, not a learned statistic. The pairs are a small directional table in the engine (`cochange.py`): each rule has a `trigger` (the new file that demands a companion), a `companion` (the file that satisfies it), and a `rule_id`. The shipped rules are `cochange-model-migration`, `cochange-controller-route`, `cochange-prisma-migration`, and `cochange-slice-store`. Co-presence is never derived from this repo; only these curated rules apply, and each is silenced for a repo whose own committed files break the pairing too often to trust it.
+This pass uses chameleon's curated co-change pairs, not a learned statistic. The pairs are a small directional table in the engine (`cochange.py`): each rule has a `trigger` (the new file that demands a companion), a `companion` (the file that satisfies it), and a `rule_id`. The shipped rules are `cochange-model-migration` (a Rails model needs a migration), `cochange-controller-route` (a Rails controller needs a route), `cochange-prisma-migration` (a Prisma schema change needs a migration), `cochange-slice-store` (a Redux slice needs to be registered in the store), `cochange-django-model-migration` (a new Django `models.py` needs a `migrations/*.py`), and `cochange-nestjs-controller-module` (a new NestJS `*.controller.ts` needs a `*.module.ts` that wires it up). Co-presence is never derived from this repo; only these curated rules apply, and each is silenced for a repo whose own committed files break the pairing too often to trust it.
 
 Restrict this to files the diff ADDS (status `A` in the diff, a brand-new path). A modified existing file does NOT trigger: editing a method on an existing model must not demand a fresh migration. For each added file:
-- Match its repo-relative path against each rule's trigger (a Rails model is `app/models/*.rb` excluding `concerns/` and `application_record.rb`; a controller is `app/controllers/*_controller.rb` excluding `concerns/` and `application_controller.rb`; a Prisma schema is `*.prisma`; a slice is a `*slice.ts`/`*slice.tsx` file).
+- Match its repo-relative path against each rule's trigger (a Rails model is `app/models/*.rb` excluding `concerns/` and `application_record.rb`; a controller is `app/controllers/*_controller.rb` excluding `concerns/` and `application_controller.rb`; a Prisma schema is `*.prisma`; a slice is a `*slice.ts`/`*slice.tsx` file; a Django model is a `models.py` (or `models/*.py`); a NestJS controller is a `*.controller.ts`).
 - If a rule's trigger matches, check whether ANY file in the whole change-set (added or modified) satisfies that rule's companion. The companion may be an edit to an existing file (a route added to an existing `config/routes.rb`), so check the full set, not just the new files.
 - If no file satisfies the companion, raise a **FIX** advisory naming the new file and the rule's expectation (e.g. "new model added without a db/migrate migration in the same change"). Cite the `rule_id` so the author can suppress a deliberate split with `chameleon-ignore <rule_id>`.
 
@@ -513,34 +517,53 @@ It ALSO applies to any line-anchored convention/style finding from `lint_file` (
 #### 4b. Round 3 — independent refutation (model-judgment findings only)
 
 After rounds 1-2 (Step 4a + the verification bullet), collect every surviving
-BLOCK and FIX that is a MODEL-JUDGMENT finding — change-delta logic (removed
-guard, dropped await, inverted condition), canonical-divergence, taint/SSRF/
-path-traversal, callable-signature drift, spec-compliance / missing-requirement,
-placeholder-name, stale-comment. Send them in ONE call:
+BLOCK and FIX whose evidence is MODEL JUDGMENT — your reading of the code, not a
+tool flag. Defined by principle, not a hand-list (which drifts as the finding
+taxonomy grows): a finding is model-judgment when it is NOT in the tool-grounded
+exempt set below. Typical members: change-delta logic (removed guard, dropped
+await, inverted condition), canonical divergence, taint/SSRF/path-traversal,
+callable-signature drift, spec-compliance / missing-requirement. Send them in ONE
+call:
 
 `refute_finding(repo=<repo_id>, findings=[{id, kind, severity, file, line, claim, evidence}, ...], base_ref=<base>)`
 
-TOOL-GROUNDED findings are EXEMPT — never send them to the refuter; verify them
-inline by re-confirming the tool flag still holds (existence-break with
-`high_confidence`, contract-break with a returned caller list (Step 2.9e),
-duplication with a returned candidate, co-change `rule_id`, layering, a secret
-`lint_file` hit (Step 2.6a), a deterministic lint-sink hit (Step 2.6d), a
-lint/naming/inheritance violation with a parsed line). The refuter sees one
-excerpt and cannot re-derive cross-file evidence, so sending these would wrongly
-drop the strongest findings. Send to the refuter ONLY the model-judgment findings
-listed above (change-delta logic, canonical divergence, taint/SSRF/traversal,
-callable-signature drift, spec/requirement, placeholder, stale-comment).
+Two exclusions from the send set:
+- **TOOL-GROUNDED findings are EXEMPT** — never send them; verify inline by
+  re-confirming the tool flag still holds (existence-break with `high_confidence`,
+  contract-break with a returned caller list (Step 2.9e), duplication with a
+  returned candidate, co-change `rule_id`, layering, a secret `lint_file` hit
+  (Step 2.6a), a deterministic lint-sink hit (Step 2.6d), a lint/naming/inheritance
+  violation with a parsed line). The refuter sees one excerpt and cannot re-derive
+  cross-file evidence, so sending these would wrongly drop the strongest findings.
+- **NITs are never sent** — they are verified inline only. The always-NIT
+  model-judgment findings (placeholder-name in 3f, stale-comment in 3f-ii) are
+  therefore NOT sent even though they are model-judgment; only a surviving BLOCK or
+  FIX goes to the refuter.
 
-Apply each returned verdict:
+Each finding MUST carry a unique `id` (verdicts map back by `id`) and `file`/`line`
+(the refuter prefetches that excerpt; omit them and it silently degrades to the
+whole-branch diff).
+
+Read the envelope `refuter` field FIRST, not only the per-finding verdicts — the
+two disagree by design:
+- `refuter == "disabled"` (CHAMELEON_REVIEW_REFUTER=0): the call returns an EMPTY
+  `verdicts` list — no per-finding entries at all. Do NOT expect one `unverified`
+  per finding here.
+- `refuter ∈ {"unavailable", "untrusted"}` (the refuter model could not spawn, or
+  the profile is untrusted): one `unverified` verdict per finding.
+- `refuter == "ok"`: per-finding `refuted` / `confirmed` / `unverified` mapped by
+  `id`.
+
+Then apply:
 - `refuted` → DROP the finding (the refuter rebutted the cited evidence).
 - `confirmed` → KEEP it (this never authorizes an edit or a post).
-- `unverified` (refuter disabled / unavailable / timed out / cap reached) → KEEP
-  it on rounds 1-2, labeled "self-verified, round 3 unavailable", with downgraded
-  confidence. Never drop and never silently confirm.
+- `unverified`, OR `refuter ∈ {disabled, unavailable, untrusted}`, OR any finding
+  with no matching verdict `id` → KEEP it on rounds 1-2, labeled "self-verified,
+  round 3 unavailable", with downgraded confidence. Never drop and never silently
+  confirm.
 
 Banner: report `<b>` refuted-dropped, `<c>` inline-exempt, `<d>` self-verified.
 NEVER print "3/3" when round 3 did not adjudicate (disabled/unavailable/capped).
-NITs are verified inline only — they are not sent to the refuter.
 
 Format the review as follows:
 
@@ -681,7 +704,7 @@ Auto-pass: NEEDS HUMAN (risk: high) — test weakening (deleted tests / skip mar
 Typecheck: 2 changed file(s) with type errors
 ```
 
-Render the `complexity_tier` field as `Tier: <easy|medium|hard|complex>` with a short reason drawn from the facts, then `auto_pass_eligible` as ELIGIBLE / NEEDS HUMAN, the `risk`, and the `reasons` list verbatim; render the `typecheck` field as `Typecheck: unavailable (<reason>)` / `Typecheck: clean` / `Typecheck: N changed file(s) with type errors`. If the tool was unavailable, write one line saying the auto-pass routing was skipped. Omit nothing: an ELIGIBLE verdict is only a skip candidate when the findings verdict is APPROVE — state that pairing explicitly. The tier is the change's inherent complexity (structural), independent of whether it is clean: an `easy`/`medium` change that is APPROVE + ELIGIBLE is the review-clean routine slice; `hard`/`complex` changes carry an irreducible human-judgment residual even when the findings verdict is clean.
+First check `status`: a `status == "degraded"` envelope (e.g. an unresolvable `base_ref`) carries only `{auto_pass_eligible, risk, complexity_tier, reasons, reason, fan_out, status}` — it OMITS `typecheck`, `facts`, and `changed_files`. On degraded, render `Auto-pass routing: degraded (<reason>)` plus the fields that ARE present (`Tier`, NEEDS HUMAN, `risk`, `reasons`) and do NOT reference the absent `typecheck`/`facts`/`changed_files`. Otherwise (a full `status == "ok"` envelope): render the `complexity_tier` field as `Tier: <easy|medium|hard|complex>` with a short reason drawn from the facts, then `auto_pass_eligible` as ELIGIBLE / NEEDS HUMAN, the `risk`, and the `reasons` list verbatim; render the `typecheck` field as `Typecheck: unavailable (<reason>)` / `Typecheck: clean` / `Typecheck: N changed file(s) with type errors`. If the tool was entirely unavailable (no envelope), write one line saying the auto-pass routing was skipped. Omit nothing: an ELIGIBLE verdict is only a skip candidate when the findings verdict is APPROVE — state that pairing explicitly. The tier is the change's inherent complexity (structural), independent of whether it is clean: an `easy`/`medium` change that is APPROVE + ELIGIBLE is the review-clean routine slice; `hard`/`complex` changes carry an irreducible human-judgment residual even when the findings verdict is clean.
 
 ### Recommendations (advisory)
 

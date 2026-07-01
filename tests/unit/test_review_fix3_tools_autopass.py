@@ -234,7 +234,7 @@ def test_autopass_verdict_sanitizes_changed_files(tmp_path, monkeypatch):
 
     monkeypatch.setattr("chameleon_mcp.judge._run_git", fake_run_git)
     # Contract-break compute would re-shell git; short-circuit it to no signal.
-    monkeypatch.setattr(tools, "_compute_contract_breaks", lambda *a, **k: (0, []))
+    monkeypatch.setattr(tools, "_compute_contract_breaks", lambda *a, **k: (0, [], None))
 
     res = tools.get_autopass_verdict(str(repo))
     data = _data(res)
@@ -345,7 +345,7 @@ def test_reverse_index_exts_includes_python(tmp_path, monkeypatch):
         return mock.Mock(returncode=0, stdout=out)
 
     monkeypatch.setattr("chameleon_mcp.judge._run_git", fake_run_git)
-    monkeypatch.setattr(tools, "_compute_contract_breaks", lambda *a, **k: (0, []))
+    monkeypatch.setattr(tools, "_compute_contract_breaks", lambda *a, **k: (0, [], None))
 
     def fake_qsi(repo_arg, path):
         seen["queried"] = path

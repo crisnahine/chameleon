@@ -4,6 +4,59 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.15] - 2026-07-01
+
+Review-skills QA pass: verify every MCP tool the `chameleon-pr-review` and
+`chameleon-receiving-code-review` skills orchestrate against real repos, and
+reconcile the skill instructions with the real tool behavior. Four tool bugs and
+eight skill-logic drifts fixed.
+
+### Fixed
+
+- **The crypto-context gate silently dropped weak-hash / insecure-random on
+  compound identifiers.** The ±200-char gate that decides whether an advisory
+  weak MD5/SHA1 or a non-cryptographic random is worth surfacing matched its
+  keywords with word boundaries (`\b(password|token|salt|...)\b`), so a keyword
+  that is a snake_case / camelCase component (`password_salt`, `sessionToken`,
+  `passwordHash`) never matched and the advisory was lost across all three
+  languages — the dominant crypto-material naming style. The gate now matches
+  identifier segments (accepting `_` separators and camelCase transitions) while
+  still rejecting a keyword buried in an unrelated word (`design`, `tokenizer`).
+- **TypeScript weak-hash was dead on the Node crypto API.**
+  `crypto.createHash("md5")` / `createHmac("sha1")` is the standard way to request
+  a weak digest in Node, but the algorithm name lives in a string literal that the
+  string-stripper blanks before the weak-hash regex runs, so the dominant TS/JS
+  form never fired. A dedicated pass now reads the algorithm from the raw content,
+  under the same crypto-context gate.
+- **A malicious install script that starts like a version escaped classification.**
+  `scan_dependency_changes` discriminates a lifecycle script (`postinstall`) from a
+  package literally named `postinstall` by whether the value looks like a version.
+  The check only looked at the value's prefix, so a command starting with a digit
+  or `v`+digit (`7z x payload && node run.js`, `0;curl … | sh`, `2to3 -w`,
+  `v8flags`) was misread as a dependency and the install-script **FIX** downgraded
+  to a dependency NIT. A command now reveals itself by a space, a shell
+  metacharacter, or a digit-immediately-followed-by-a-letter, regardless of prefix.
+- **`get_contract_breaks` reported "clean" when its calls index was missing.** An
+  absent/corrupt calls index made the tool return no findings with `status: ok`,
+  indistinguishable from "no contract breaks". It now returns `status: degraded`
+  with a reason (mirroring `get_callers`, which does not present a missing index as
+  "no callers").
+- **Skill-logic drift reconciled with the real tools** (both review skills): the
+  `pr-review` skill now routes `scan_dependency_changes`'s `minified-manifest`
+  FIX (a supply-chain evasion where every other check was defeated); reads the
+  `refute_finding` envelope `refuter` field (a `disabled` refuter returns an EMPTY
+  verdict list, not a per-finding `unverified`); handles a `get_autopass_verdict`
+  `status: degraded` envelope (which omits `typecheck`/`facts`/`changed_files`);
+  lists all six shipped co-change rules (adding the Django model→migration and
+  NestJS controller→module pairs); confirms package manifests/lockfiles still get
+  the pre-archetype secret scan (a hard credential in `package.json` must reach the
+  BLOCK gate); and defines the round-3 refuter send set by principle
+  (model-judgment BLOCK/FIX, never an always-NIT finding) instead of a hand-list
+  that had drifted. The `receiving-code-review` skill now applies the same
+  `secret_hard` and `eval-call` severity gates before letting a lint hit overrule a
+  reviewer's "this is fine", so a low-precision secret false positive cannot flip a
+  correct human judgment.
+
 ## [2.38.14] - 2026-07-01
 
 Real-world QA pass across the sibling-context, cross-file existence, and

@@ -1493,6 +1493,16 @@ _RUBY_PARENLESS_EVAL_ARG_RE = re.compile(r"\A[ \t]*(?:[\"'`]|%[qQ]?[({\[<|/!]|[A
 # crypto keyword sits nearby (a stable cache key or an ETag built from MD5 is
 # legitimate), so this stays advisory and is gated on `_has_security_context`.
 _WEAK_HASH_RE = re.compile(r"\b(?:MD5|SHA1|SHA-1)\b", re.IGNORECASE)
+# Node's crypto API takes the digest algorithm as a STRING argument
+# (``crypto.createHash("md5")`` / ``createHmac("sha1")``) -- the dominant TS/JS
+# weak-hash shape. That algo name lives in a string literal, which the TS stripper
+# blanks before ``_WEAK_HASH_RE`` runs, so the bareword pass never sees it. Match
+# it on RAW content instead; the ±200 crypto-context gate still keeps a benign
+# cache-key digest quiet.
+_TS_WEAK_CRYPTO_API_RE = re.compile(
+    r"""create(?:Hash|Hmac)\s*\(\s*['"`]\s*(?P<algo>md5|sha-?1)\s*['"`]""",
+    re.IGNORECASE,
+)
 # Python-specific dangerous sinks (advisory warnings, like weak-hash). Matched on
 # the strings/comments-stripped scan so a mention in a docstring is inert.
 _PY_INSECURE_RANDOM_RE = re.compile(
@@ -1547,10 +1557,26 @@ _MATH_RANDOM_RE = re.compile(r"\bMath\.random\s*\(")
 # "digest"/"cipher": those words are part of the construct itself (Ruby's
 # `Digest::MD5`, Node's `createCipher`), so including them would defeat the
 # context gate and flag every benign MD5 cache key.
+# A crypto keyword must match as a whole identifier OR as a snake_case /
+# camelCase COMPONENT of one (`password_salt`, `sessionToken`, `passwordHash`) --
+# those compound names are the DOMINANT crypto-material naming style, and a plain
+# ``\b(...)\b`` boundary silently dropped every weak-hash / insecure-random
+# advisory on them (``_`` and adjacent letters are word chars, so ``\bsalt\b``
+# never matches inside ``password_salt``). These identifier-segment boundaries
+# accept a ``_`` separator and a lowercase->uppercase camel transition on either
+# side, while still rejecting a keyword buried inside an unrelated word (``design``
+# for ``sign``, ``tokenizer`` for ``token``, ``authority`` mid-word for ``auth``).
+# NB: the camel-transition boundaries below are case-SENSITIVE ([a-z] vs [A-Z]),
+# so the keyword alternation carries a scoped (?i:...) flag rather than compiling
+# the whole pattern IGNORECASE -- a global IGNORECASE would make [a-z] and [A-Z]
+# each match any letter and collapse the camel boundary to "between any two
+# letters", which would re-admit the very false matches (tokenizer, design) this
+# segment boundary exists to reject.
+_ID_SEG_START = r"(?:(?<![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z]))"
+_ID_SEG_END = r"(?:(?![A-Za-z0-9])|(?<=[a-z0-9])(?=[A-Z]))"
 _SINK_SECURITY_KEYWORDS = re.compile(
-    r"\b(password|passwd|pwd|secret|token|signature|auth|hmac|csrf|session|"
-    r"api[_-]?key|access[_-]?token|nonce|salt|crypto|encrypt|decrypt|sign)\b",
-    re.IGNORECASE,
+    _ID_SEG_START + r"(?i:password|passwd|pwd|secret|token|signature|auth|hmac|csrf|session|"
+    r"api[_-]?key|access[_-]?token|nonce|salt|crypto|encrypt|decrypt|sign)" + _ID_SEG_END,
 )
 
 # Active Record query builders whose first string argument is emitted verbatim
@@ -1893,6 +1919,27 @@ def scan_dangerous_sinks(content: str, *, language: str | None) -> list[Violatio
                         f"Math.random() at line {line} is not cryptographically "
                         "secure. For tokens, salts, or nonces use crypto."
                         "randomBytes / crypto.getRandomValues instead."
+                    ),
+                )
+            )
+
+        # Node crypto API weak digest: the algo name is a string arg, so match RAW
+        # content (the stripper blanked it out of `scan`). Same ±200 crypto gate.
+        for m in _TS_WEAK_CRYPTO_API_RE.finditer(content):
+            if not _sink_security_context(content, m.start(), m.end()):
+                continue
+            line = _position_to_line(content, m.start())
+            algo = m.group("algo").upper()
+            violations.append(
+                Violation(
+                    rule="weak-hash",
+                    expected="<strong hash>",
+                    actual=f"{algo} at line {line}",
+                    severity="warning",
+                    message=(
+                        f"{algo} at line {line} is a weak digest for a security "
+                        "use. Prefer SHA-256 or stronger, and a password KDF "
+                        "(bcrypt/argon2/scrypt) for credentials."
                     ),
                 )
             )
