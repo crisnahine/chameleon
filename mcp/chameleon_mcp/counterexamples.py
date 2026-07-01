@@ -166,21 +166,34 @@ def _import_of(over: str, language: str | None = None) -> re.Pattern[str]:
     line anchor keeps ``from . import requests`` (a name import, not a module
     import) from matching the bare ``import`` form.
 
-    The unquoted Python form is included only when scanning a Python file
-    (``language == "python"``) or when the language is unspecified. A TypeScript
-    default import that aliases the preferred module to the discouraged module's
-    name (``import moment from "dayjs"`` after teaching "prefer dayjs over
-    moment") would otherwise match the bare binding name and capture a line that
-    imports the RIGHT module, so the unquoted form must not run against
-    TS/Ruby sources.
+    The forms are gated by language so neither fires where it does not belong:
+
+    - ``python`` -> the unquoted form ONLY. A Python module is never imported
+      with a quoted specifier, so the quoted form can only false-match a
+      non-import call whose keyword happens to be a Python builtin name
+      (``load("requests")``, ``require("axios")``, ``yield from "csv"``); running
+      it against Python turns those into phantom off-patterns. This mirrors the
+      reason the unquoted form is kept off TS/Ruby below -- each language gets
+      only the import shape it actually uses.
+    - known non-Python (TS/Ruby/JS, or any recognized non-Python extension) ->
+      the quoted form ONLY. A TypeScript default import that aliases the preferred
+      module to the discouraged module's name (``import moment from "dayjs"``
+      after teaching "prefer dayjs over moment") would otherwise match the bare
+      binding name and capture a line that imports the RIGHT module.
+    - unspecified (``language is None``) -> both forms. This is the
+      language-agnostic path used by the render-time witness-suppression check
+      when the edited file's language is unknown; suppression only REMOVES a
+      counterexample, so over-matching there is fail-safe.
     """
     esc = re.escape(over)
     quoted = (
         r"""\b(?:from|import|require|require_relative|load)\b\s*\(?\s*['"]""" + esc + r"""['"]"""
     )
-    if language is not None and language != "python":
-        return re.compile(quoted)
     py_unquoted = r"""^(?:from|import)\s+""" + esc + r"""(?=[\s.,]|$)"""
+    if language == "python":
+        return re.compile(py_unquoted)
+    if language is not None:
+        return re.compile(quoted)
     return re.compile(quoted + "|" + py_unquoted)
 
 

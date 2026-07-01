@@ -4,6 +4,36 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.13] - 2026-07-01
+
+Counterexample correctness pass: kill a Python-only false positive in the
+off-pattern capture parser. Verified end to end against real profiled repos
+(bulletproof-react, forem, py-django-readthedocs, py-flask-flaskbb) through the
+real PreToolUse hook, the real teach/unteach/refresh/rename tools, and the real
+MCP stdio transport.
+
+### Fixed
+
+- **The counterexample capture parser flagged non-import Python calls as
+  off-patterns.** `_import_of` builds the regex that detects a real import of a
+  taught discouraged (`over`) module. It has two forms: a QUOTED form for TS/Ruby
+  (`from|import|require|require_relative|load` immediately before a quoted
+  specifier) and an UNQUOTED form for Python (`from x` / `import x`). The unquoted
+  form was correctly gated to Python, but the quoted form was never gated *away*
+  from Python, so it also ran against `.py` files — where `load` and `require` are
+  ordinary function names, not import keywords. A plain call like
+  `data = load("requests")`, `require("axios")`, or `yield from "csv"` therefore
+  matched and was captured as a phantom "do NOT write it this way" off-pattern,
+  and (since capture keeps the first match in repo scan order) could even shadow a
+  genuine `import requests` elsewhere. The forms are now gated by language so
+  neither fires where it does not belong: `python` uses the unquoted form only,
+  known non-Python (TS/Ruby/JS, or any recognized non-Python extension) uses the
+  quoted form only, and the unspecified (`None`) path — the render-time
+  witness-suppression check for an unknown language — keeps both, which is
+  fail-safe because suppression only ever removes a counterexample. The real
+  Python import shapes (`import x`, `from x import y`, submodule and boundary
+  cases) still capture, and the TS default-import alias guard is unchanged.
+
 ## [2.38.12] - 2026-06-30
 
 Multi-lens review and idiom-judge correctness pass (exhaustive audit of both

@@ -127,6 +127,29 @@ def test_find_import_line_returns_none_when_absent():
     assert ce._find_import_line(content, "lodash") is None
 
 
+def test_python_does_not_match_quoted_non_import_calls():
+    # In a Python file the quoted form must NOT fire: `load("x")` / `require("x")`
+    # are plain calls (load is a Python builtin name), not imports. Running the
+    # TS/Ruby quoted form against Python would turn them into phantom off-patterns.
+    assert ce._find_import_line('data = load("requests")\n', "requests", "python") is None
+    assert ce._find_import_line('require("axios")\n', "axios", "python") is None
+    assert ce._find_import_line('yield from "csv"\n', "csv", "python") is None
+    # The real Python import shape still captures.
+    assert ce._find_import_line("import requests\n", "requests", "python") == "import requests"
+    assert (
+        ce._find_import_line("from requests import get\n", "requests", "python")
+        == "from requests import get"
+    )
+
+
+def test_non_python_quoted_form_still_captures_require_and_load():
+    # The same call shapes ARE real imports in Ruby/JS, so the quoted form still
+    # fires for a known non-Python language and for the agnostic (None) path.
+    assert ce._find_import_line('require("axios")\n', "axios", "javascript") == 'require("axios")'
+    assert ce._find_import_line('load "thing"\n', "thing", "ruby") == 'load "thing"'
+    assert ce._find_import_line('require("axios")\n', "axios", None) == 'require("axios")'
+
+
 # --- comment / string false-match guards (regression round MED) ---------------
 
 
