@@ -13,6 +13,14 @@ a real reason to push back, not something to apply blindly.
 
 ## Core discipline (superpowers `receiving-code-review`)
 
+When invoked explicitly (`/chameleon-receiving-code-review`), THIS skill takes
+precedence over the situation-triggered superpowers `receiving-code-review`: it
+inlines that skill's discipline below, then tightens two rules deliberately — fixes
+are applied one at a time only after per-item user approval, never "just fix it"
+mid-review, and replies are DRAFTED, never auto-posted. If both skills load for the
+same task, follow these tightened rules; they are a superset, not a contradiction
+to resolve.
+
 - Verify before implementing; ask before assuming; technical correctness over
   social comfort.
 - Forbidden responses: "You're absolutely right!", "Great point!", performative
@@ -88,13 +96,21 @@ do not call it a second time. Then:
   - `secret-detected-in-content`: only a hit whose `secret_hard` flag is true is a
     witnessed secret. A soft/entropy/broad-fallback hit (`secret_hard` false) is
     advisory — surface it and ASK, do not assert APPLY.
-  - `eval-call` is `error` severity and block-eligible; the other sinks are
-    advisory `warning`. A witnessed high-severity sink (`eval-call`) or a
-    `secret_hard` secret means the reviewer is wrong — the verdict is APPLY
-    (implement it under Step 8 after approval, not during verification), citing the
-    violation. For an advisory-only sink (`weak-hash`, `insecure-random`, etc.),
-    surface it as evidence and let your read of the code decide APPLY vs ASK; do
-    not auto-flip on the advisory alone.
+  - `eval-call` blocks ONLY at `severity: error` (TS/Python `eval(`, Python
+    `exec(`, Ruby paren-less `eval`/`send(:eval)`). The engine DELIBERATELY emits
+    `eval-call` at `severity: warning` for the Ruby string-argument
+    `class_eval`/`instance_eval`/`module_eval` metaprogramming idiom, which is NOT
+    block-eligible; `command-injection` is likewise `warning`-only and not
+    block-eligible. Route by the RETURNED `severity`, never the rule name (mirror
+    pr-review Step 2.6d) — a reviewer defending the established `class_eval`
+    predicate-method idiom is NOT overruled by a warning-severity hit. A witnessed
+    `error`-severity `eval-call` or a `secret_hard` secret means the reviewer is
+    wrong — the verdict is APPLY (implement it under Step 8 after approval, not
+    during verification), citing the violation. A `warning`-severity `eval-call`,
+    `command-injection`, or any advisory sink (`weak-hash`, `insecure-random`,
+    `sql-string-interpolation`, `insecure-deserialization`) does NOT overrule the
+    reviewer: surface it as evidence and let your read of the code decide APPLY vs
+    ASK; do not auto-flip on an advisory alone.
 - Reviewer says "this duplicates X" → `get_duplication_candidates(repo=<repo.id>,
   file_path=<abs>)` to confirm or deny with the returned candidate.
 

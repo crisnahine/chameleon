@@ -361,6 +361,13 @@ def _install_script_value_is_command(value: str) -> bool:
 
 
 _REMOVED_JSON_KEY_RE = re.compile(r'^-\s*"([^"]+)"\s*:\s*(.*)$')
+# Every ``"key": "value"`` string pair on one line. A compact/inline dependency
+# object keeps several deps on a SINGLE line (``"dependencies": { "next": "^1",
+# "react": "^2" }``); a per-line-single-key match would read only the first key
+# (whose value is the ``{`` object, not a version) and miss the inline deps
+# entirely, so a compact-to-expanded reformat would flag every pre-existing dep
+# as new. Harvesting all inline pairs makes the removed-baseline see them.
+_INLINE_JSON_PAIR_RE = re.compile(r'"([^"]+)"\s*:\s*"([^"]*)"')
 
 
 def _removed_npm_dep_names(diff_text: str) -> set[str]:
@@ -368,26 +375,29 @@ def _removed_npm_dep_names(diff_text: str) -> set[str]:
 
     A bump shows the name on both a `-` and a `+` line, so the name appearing
     here means an added line with the same name is a bump, not a new dependency.
+    This baseline only ever SUPPRESSES a new-dependency finding, so widening it to
+    inline pairs can never invent a finding: a genuinely-new dependency name does
+    not appear on any removed line, so it is never harvested here.
     """
     names: set[str] = set()
     for raw in diff_text.splitlines():
         if not raw.startswith("-") or raw.startswith("---"):
             continue
-        m = _REMOVED_JSON_KEY_RE.match(raw)
-        if m is None:
-            continue
-        key, val = m.group(1), m.group(2)
-        # Only the URL-bearing metadata keys are excluded; an install-script key
-        # name ("install") IS a real package, so it is discriminated by VALUE
-        # (a version range means a dependency, a command means a script) below.
-        if key in _METADATA_URL_KEYS:
-            continue
-        value = _json_string_value(val)
-        if value is None or not _looks_like_dep_value(value):
-            continue
-        if key in _INSTALL_SCRIPT_KEYS and _install_script_value_is_command(value):
-            continue
-        names.add(key)
+        # Scan every inline string pair on the line, not just the first key, so a
+        # compact ``{ "a": "1", "b": "2" }`` dependency object on one removed line
+        # contributes all of a, b (not only the leading `dependencies` key, whose
+        # value is the object literal and is skipped by the dep-value gate below).
+        for key, value in _INLINE_JSON_PAIR_RE.findall(raw):
+            # Only the URL-bearing metadata keys are excluded; an install-script
+            # key name ("install") IS a real package, so it is discriminated by
+            # VALUE (a version range means a dependency, a command means a script).
+            if key in _METADATA_URL_KEYS:
+                continue
+            if not _looks_like_dep_value(value):
+                continue
+            if key in _INSTALL_SCRIPT_KEYS and _install_script_value_is_command(value):
+                continue
+            names.add(key)
     return names
 
 

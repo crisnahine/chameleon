@@ -4,6 +4,79 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.17] - 2026-07-02
+
+Live end-to-end QA of the `chameleon-pr-review` and `chameleon-receiving-code-review`
+skills: real slash-command invocations across every supported language and framework
+(TypeScript/JavaScript, Ruby, Python; Rails, Django, Flask, FastAPI, NestJS, Next.js),
+plus cold-start, untrusted, large-diff, monorepo, noise, hostile-input, and
+wrong-context scenarios. Three defects fixed and re-verified live.
+
+### Fixed
+
+- **`scan_dependency_changes` flagged every pre-existing dependency as new when a
+  compact manifest was reformatted.** A base `package.json` that keeps its
+  dependencies inline on one line (`"dependencies": { "a": "1", "b": "2" }`)
+  reformatted to multi-line made the removed-baseline parser read only the first
+  `"key": value` on each removed line, so the inline dependencies never entered the
+  "previously present" set and every one read as new. The baseline now harvests all
+  inline `"name": "value"` pairs on a removed line. It only ever suppresses a
+  new-dependency finding, so a genuinely new dependency (which appears on no removed
+  line) is never hidden.
+- **The cross-file existence-break pass could poison an unrelated PR's verdict.**
+  `get_crossfile_context` scans the whole repo, so a repo carrying a pre-existing
+  broken import returned high-confidence breaks on modules the diff never touched;
+  relayed as FIXes, they pushed every unrelated PR to NEEDS CHANGES. The pr-review
+  skill (Step 2.9c) now gates a break on a second condition alongside
+  `high_confidence`: the module that lost the export must be in the diff's changed
+  set. An out-of-diff break is pre-existing and goes to the repo-hygiene note, never
+  the verdict.
+- **The receiving skill could overrule a correct reviewer on the Rails `class_eval`
+  idiom.** Step 3 called `eval-call` error-severity and block-eligible without
+  qualification, so a reviewer defending the string-argument
+  `class_eval`/`instance_eval`/`module_eval` predicate-method idiom, which the engine
+  deliberately emits at `warning` severity and keeps out of the block-eligible set,
+  would be flipped to APPLY. The skill now routes by the returned severity, mirroring
+  pr-review Step 2.6d: an error-severity `eval-call` means the reviewer is wrong, a
+  warning-severity one is advisory and does not overrule them.
+
+### Changed
+
+- The pr-review reviewer-discipline note no longer claims the output ends with the
+  verdict while the format leads with it; it states the verdict-first order plainly.
+- The receiving skill states that an explicit `/chameleon-receiving-code-review`
+  invocation takes precedence over the situation-triggered superpowers
+  `receiving-code-review`, and that its per-item-approval and drafts-only rules are a
+  deliberate tightening, not a conflict to resolve.
+
+## [2.38.16] - 2026-07-02
+
+Review-skills QA on the engine surface the two review skills orchestrate. One P1
+engine fix plus skill-logic drifts reconciled with the real tool behavior.
+
+### Fixed
+
+- **`get_contract_breaks` reported a silent clean on a diff larger than its file
+  cap.** The deterministic pass is capped at `AUTOPASS_MAX_FILES` changed files; a
+  larger diff bailed and returned no findings with no reason, indistinguishable from
+  "no contract breaks". It now returns `status: degraded` with `reason:
+  diff_too_large`, so the skill falls back to the LLM contract review instead of
+  reading the empty result as verified-clean.
+- **`command-injection` was routed as block-eligible in the pr-review skill.** The
+  engine emits `command-injection` at `warning` severity only and keeps it out of
+  `BLOCK_ELIGIBLE_RULES` (it is a `#{...}`-in-a-shell-string heuristic, not taint
+  analysis), so a constant interpolation would false-BLOCK. Both skills now cap it at
+  FIX, matching the engine, which also resolved a contradiction between them.
+- **`scan_dependency_changes` emitted a phantom new-dependency on an install-script
+  key whose command starts like a version.** Reconciled with the engine's
+  install-script-vs-dependency discrimination.
+- Further skill-logic drifts reconciled: the `refute_finding` success envelope is
+  `enabled` (not `ok`), `get_autopass_verdict`'s success path sets no `status`
+  field, the hard-secret kind set is the ten deterministic kinds the engine
+  recognizes, the co-change globs match all six shipped rules, and the
+  required-guards phrasing cites the fixed derivation floor and sample size rather
+  than an invented per-archetype frequency.
+
 ## [2.38.15] - 2026-07-01
 
 Review-skills QA pass: verify every MCP tool the `chameleon-pr-review` and
