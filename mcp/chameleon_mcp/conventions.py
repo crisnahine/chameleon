@@ -595,6 +595,22 @@ def _candidate_test_paths(rel_path: str, *, language: str) -> list[tuple[str, st
             else:
                 mirror = [root] + dir_parts
             candidates.append((f"mirrored {root}/.../test_", _join(mirror + [f"test_{stem}{ext}"])))
+        # Mid-path source-root swap: the source root (`app`/`src`/`lib`) can sit
+        # UNDER a project/monorepo prefix rather than lead the path -- the tiangolo
+        # full-stack-fastapi layout roots code at `backend/app/` and its tests at
+        # `backend/tests/` (backend/app/api/routes/items.py ->
+        # backend/tests/api/routes/test_items.py). Swap the FIRST app/src/lib
+        # component (at any depth) for the test root, keeping the prefix before it
+        # and the package path after it. Only when it is not already the leading
+        # component (that case is the leading-swap mirror above).
+        for i, seg in enumerate(dir_parts):
+            if i > 0 and seg in ("src", "app", "lib"):
+                for root in ("tests", "test"):
+                    swapped = dir_parts[:i] + [root] + dir_parts[i + 1 :]
+                    candidates.append(
+                        (f"mid-path {seg}->{root}", _join(swapped + [f"test_{stem}{ext}"]))
+                    )
+                break
         # Django per-app single test module: a whole app's tests live in one
         # tests.py beside the source (myapp/models.py -> myapp/tests.py). The
         # classic (pre-pytest) Django layout the mirror above never reaches.

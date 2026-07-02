@@ -23,10 +23,19 @@ else
     LOG_FILE="${LOG_DIR}/.hook_errors.log"
 fi
 mkdir -p "${LOG_DIR}" 2>/dev/null || true
-# A non-regular LOG_FILE (a FIFO with no reader, a socket, a device) would block
-# the 2>>"${LOG_FILE}" redirects below indefinitely, before the timeout wrapper
-# can engage, breaking the fail-open contract. Fall back to /dev/null.
-if [ -e "${LOG_FILE}" ] && [ ! -f "${LOG_FILE}" ]; then LOG_FILE="/dev/null"; fi
+# Guard the LOG_FILE the 2>>"${LOG_FILE}" redirects below open. Any of these
+# would break the fail-open contract: an existing non-regular file (a FIFO with
+# no reader BLOCKS the open indefinitely; a socket/device errors) -- never open
+# it, just test its type; a broken symlink (-e is false, so the type test above
+# misses it) or a path whose parent dir is absent -- the redirect then fails to
+# open and the whole command is skipped, so the python never runs and the hook
+# silently no-ops (disabling the backstop / injection). Fall back to /dev/null
+# in every such case so the real hook logic still runs.
+if { [ -e "${LOG_FILE}" ] && [ ! -f "${LOG_FILE}" ]; } \
+   || { [ -L "${LOG_FILE}" ] && [ ! -e "${LOG_FILE}" ]; } \
+   || [ ! -d "$(dirname "${LOG_FILE}")" ]; then
+    LOG_FILE="/dev/null"
+fi
 
 # Resolve a dep-capable Python >=3.11 via the shared ladder (never a blind
 # `python3`, which on macOS is 3.9.x and fail-opens every hook). CHAMELEON_PY

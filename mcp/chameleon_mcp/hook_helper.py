@@ -1433,6 +1433,12 @@ def session_start() -> int:
     skill_content = skill_path.read_text(encoding="utf-8", errors="replace")
 
     session_id: str | None = None
+    # Resolve the repo from the payload's authoritative `cwd`, like every other
+    # hook_helper command -- not the hook PROCESS cwd. They coincide in normal
+    # Claude Code operation, but an agent/harness whose process cwd diverges from
+    # the session cwd would otherwise inject the WRONG repo's conventions and
+    # reuse list at session start.
+    session_cwd = Path.cwd()
     try:
         if not sys.stdin.isatty():
             raw = sys.stdin.read()
@@ -1441,9 +1447,15 @@ def session_start() -> int:
                 sid = payload.get("session_id")
                 if isinstance(sid, str):
                     session_id = sid
+                cwd_raw = payload.get("cwd")
+                if isinstance(cwd_raw, str) and cwd_raw:
+                    try:
+                        session_cwd = Path(cwd_raw).expanduser()
+                    except (OSError, ValueError):
+                        session_cwd = Path.cwd()
     except Exception:
         session_id = None
-    drift_banner = _drift_banner_for_repo(Path.cwd(), session_id=session_id)
+    drift_banner = _drift_banner_for_repo(session_cwd, session_id=session_id)
 
     repo_root = None
     try:
@@ -1451,7 +1463,7 @@ def session_start() -> int:
         from chameleon_mcp.profile.loader import find_repo_root
         from chameleon_mcp.tools import _compute_repo_id
 
-        repo_root = find_repo_root(Path.cwd())
+        repo_root = find_repo_root(session_cwd)
         if repo_root:
             repo_id = _compute_repo_id(repo_root)
             repo_data = plugin_data_dir() / repo_id
@@ -1543,7 +1555,7 @@ def session_start() -> int:
         # Place the statusline cache under the repo root, not the launch cwd. The
         # statusline script reads it at the repo root, so a subdir-launched session
         # (e.g. claude started from repo/tests) must still write there.
-        sl_base = repo_root if repo_root else Path.cwd()
+        sl_base = repo_root if repo_root else session_cwd
         cache_dir = sl_base / ".claude"
         sl_cache = cache_dir / ".chameleon-statusline-cache"
         profiles: list[dict] = []
@@ -1569,7 +1581,7 @@ def session_start() -> int:
         else:
             # Scan from the repo root, not the launch cwd, so sibling-workspace
             # profiles are discovered when Claude is launched from a subdirectory.
-            scan_dir = repo_root if repo_root else Path.cwd()
+            scan_dir = repo_root if repo_root else session_cwd
             try:
                 children = sorted(scan_dir.iterdir())
             except OSError:
@@ -6520,36 +6532,366 @@ def _imported_source_keys(content: str, name: str, importer_dir: Path, lang: str
     return keys
 
 
-# A quoted string literal (single / double / template). The import specifier PATH
-# lives inside one of these, so a removed export whose NAME is a bounded substring
-# of its own module path (`api` inside `'@/lib/api-client'`) matches the bareword
-# needle on an importer that has FULLY renamed its reference -- a phantom "you
-# broke this call site" on a clean rename refactor, exactly the "stale index"
-# false positive. A genuine named-import reference (`{ name }`, `name.foo()`) never
-# sits inside a string, so blanking string literals before the presence scan can
-# only drop a false match, never a real reference (nor a removed-import-kept-usage,
-# whose bareword sits in code, not a string).
-_STRING_LITERAL_RE = re.compile(r"""'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`""")
-
-# Per-language line/block comment forms, blanked before the bareword scan so an
-# old export name kept only in a comment after a completed rename ("// PrimaryFoo
-# replaces the old Foo") is not miscounted as a live reference -- the
-# comment-analog of the string blanking. TS/JS: `//`, one-line `/* */`, and a
-# `*`-led JSDoc continuation line; NOT `#`, which is a private-field sigil
-# (`this.#x`) in TS, so blanking it would hide a real reference after it. Python:
-# `#` only. None (unknown language): the safe superset of both, biased to
-# over-suppress (an advisory false-negative) rather than over-fire.
-_TS_COMMENT_RE = re.compile(r"//.*$|/\*.*?\*/|^\s*\*.*$", re.MULTILINE)
-_PY_COMMENT_RE = re.compile(r"#.*$", re.MULTILINE)
-_ANY_COMMENT_RE = re.compile(r"//.*$|#.*$|/\*.*?\*/|^\s*\*.*$", re.MULTILINE)
+# Any quoted string literal (both kinds), used only for offset-preserving
+# DETECTION passes where every string must disappear regardless of interpolation.
+_QUOTED_ANY_RE = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+# Ruby %-literals with a bracket delimiter. The captured letter selects the
+# interpolation rule: lowercase w/i/q/s never interpolate; W/I/Q/r/x and the
+# bare `%(` do. Non-nesting single-delimiter match -- the common Rails style.
+_RUBY_PERCENT_RE = re.compile(
+    r"%([wWiIqQrsx]?)\[[^\]]*\]"
+    r"|%([wWiIqQrsx]?)\([^)]*\)"
+    r"|%([wWiIqQrsx]?)\{[^}]*\}"
+    r"|%([wWiIqQrsx]?)<[^>]*>"
+)
+_RUBY_PERCENT_NONINTERP = frozenset({"w", "i", "q", "s"})
+# A heredoc: `<<`, optional `-`/`~`, an optionally-quoted tag, arbitrary opener
+# tail, then the body up to a line that is only the tag. Single-quoted tag =
+# non-interpolating.
+_RUBY_HEREDOC_RE = re.compile(
+    r"<<[-~]?(['\"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^[ \t]*\2\b",
+    re.DOTALL | re.MULTILINE,
+)
 
 
-def _comment_re_for(language: str | None) -> re.Pattern[str]:
-    if language == "typescript":
-        return _TS_COMMENT_RE
-    if language == "python":
-        return _PY_COMMENT_RE
-    return _ANY_COMMENT_RE
+def _blank_keep_newlines(s: str) -> str:
+    """Replace every non-newline char with a space (equal length, newlines kept)
+    so downstream offset/line math over the blanked copy stays aligned."""
+    return re.sub(r"[^\n]", " ", s)
+
+
+def _blank_ruby_noncode(text: str) -> str:
+    """Blank Ruby comments, %-literals, and heredocs that carry a constant name
+    only as inert text after a rename, WHILE preserving `#{Const}` interpolation
+    (a real reference). Keep-biased: an unparseable form stays counted (a
+    false-positive over-fire) rather than dropped (a false-negative that hides a
+    real break). Offset/length-preserving throughout.
+    """
+    try:
+        # Heredocs first: a heredoc body can hold `#` chars that would otherwise
+        # look like comment starts. Blank a non-interpolating heredoc (single-quoted
+        # tag), or an interpolating one with no `#{` in its body.
+        def _heredoc_sub(m: re.Match) -> str:
+            body = m.group(0)
+            quoted = m.group(1) == "'"
+            if quoted or "#{" not in body:
+                return _blank_keep_newlines(body)
+            return body
+
+        s = _RUBY_HEREDOC_RE.sub(_heredoc_sub, text)
+
+        # %-literals: non-interpolating letters always blank; interpolating ones
+        # only when they carry no `#{`.
+        def _percent_sub(m: re.Match) -> str:
+            lit = m.group(0)
+            letter = next((g for g in m.groups() if g is not None), "")
+            if letter in _RUBY_PERCENT_NONINTERP or "#{" not in lit:
+                return _blank_keep_newlines(lit)
+            return lit
+
+        s = _RUBY_PERCENT_RE.sub(_percent_sub, s)
+
+        # Comments: detect on a copy with ALL quoted strings blanked, so a `#`
+        # inside a string (including a literal `#` before a `#{Const}` in an
+        # interpolating string) is never mistaken for a comment start. `#{` is
+        # excluded so interpolation openers are never treated as comments. Blank
+        # the detected [start, EOL) ranges in `s` (offsets align: string blanking
+        # is equal-length).
+        detect = _QUOTED_ANY_RE.sub(lambda mm: _blank_keep_newlines(mm.group(0)), s)
+        chars = list(s)
+        for cm in re.finditer(r"#(?!\{)", detect):
+            start = cm.start()
+            eol = detect.find("\n", start)
+            if eol == -1:
+                eol = len(chars)
+            for j in range(start, eol):
+                chars[j] = " "
+        s = "".join(chars)
+
+        # Finally the non-interpolating quoted strings (the round-1 behaviour):
+        # a plain "..." / '...' with no `#{` is inert text.
+        def _quoted_sub(m: re.Match) -> str:
+            lit = m.group(0)
+            return _blank_keep_newlines(lit) if "#{" not in lit else lit
+
+        return _QUOTED_ANY_RE.sub(_quoted_sub, s)
+    except Exception:
+        # Any regex failure falls back to the plain-string-only blanking so the
+        # check never crashes; keep-biased means it just over-fires at worst.
+        return _QUOTED_ANY_RE.sub(
+            lambda m: _blank_keep_newlines(m.group(0)) if "#{" not in m.group(0) else m.group(0),
+            text,
+        )
+
+
+# Keywords after which a `/` begins a regex literal, not division (the char-level
+# regex-position heuristic misses these because the keyword ends in a letter).
+_REGEX_KEYWORDS = frozenset(
+    {
+        "return",
+        "typeof",
+        "instanceof",
+        "in",
+        "of",
+        "new",
+        "delete",
+        "void",
+        "throw",
+        "case",
+        "do",
+        "else",
+        "yield",
+        "await",
+    }
+)
+
+
+def _blank_strings_comments(text: str, language: str | None) -> str:
+    """Blank string-literal and comment CONTENT to spaces (newlines preserved),
+    leaving code intact, via a single left-to-right character scan.
+
+    A scan -- not regex ordering -- is the only sound way to blank both without
+    one hiding a real reference: comments are recognized BEFORE strings, so an
+    apostrophe inside a comment (`// don't`) never opens a string, and a `//`
+    inside a string (`"http://x"`) is inside string state so it never starts a
+    comment. TS/JS: `//` line, `/* */` block, and `'`/`"`/`` ` `` strings (a
+    template's `${}` interpolation is blanked too -- a real named-import break is
+    anchored by the import binding, which is code). Python: `#` line, `'`/`"` and
+    triple-quoted strings; `#` is NOT a comment in TS (it is a private-field
+    sigil). None (unknown): superset (both comment forms). Offset/length
+    preserving; a single/double quote left open at end-of-line is treated as
+    unterminated (not a real string) so the rest of the line stays code.
+    """
+    is_py = language == "python"
+    ts_comments = language != "python"  # TS/JS and unknown honor // and /* */
+    out = list(text)
+    i, n = 0, len(text)
+    # Last significant (non-space) CODE char, for TS regex-vs-division disambiguation.
+    prev_sig = ""
+
+    while i < n:
+        c = text[i]
+        # line comment
+        if is_py and c == "#":
+            while i < n and text[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        if ts_comments and c == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                out[i] = " "
+                i += 1
+            continue
+        # block comment (TS/JS)
+        if ts_comments and c == "/" and i + 1 < n and text[i + 1] == "*":
+            out[i] = out[i + 1] = " "
+            i += 2
+            while i < n:
+                if text[i] == "*" and i + 1 < n and text[i + 1] == "/":
+                    out[i] = out[i + 1] = " "
+                    i += 2
+                    break
+                if text[i] != "\n":
+                    out[i] = " "
+                i += 1
+            continue
+        # regex literal (TS/JS): a `/` in expression position, but NEVER when it is
+        # immediately preceded by `<` -- that is a JSX closing tag `</Tag>` or a
+        # `< /re/` comparison, and treating `</` as a regex would blank the closing
+        # tag and could hide a real reference between two closing tags (a false
+        # negative). Conservative: only blank when the regex closes on the same line
+        # (`_scan_regex_literal` non-None); otherwise the `/` is division -> code.
+        if ts_comments and c == "/" and prev_sig != "<":
+            from chameleon_mcp.phantom_imports import _regex_allowed_at, _scan_regex_literal
+
+            allowed = _regex_allowed_at(prev_sig)
+            if not allowed and (prev_sig.isalnum() or prev_sig in "_$"):
+                # A `/` right after `return`/`typeof`/etc. is a regex, not division
+                # (you cannot divide immediately after these keywords); the char
+                # heuristic misses it because the keyword ends in a letter. Grab the
+                # trailing identifier and allow the regex when it is such a keyword.
+                k = i - 1
+                while k >= 0 and text[k].isspace():
+                    k -= 1
+                end_w = k + 1
+                while k >= 0 and (text[k].isalnum() or text[k] in "_$"):
+                    k -= 1
+                if text[k + 1 : end_w] in _REGEX_KEYWORDS:
+                    allowed = True
+            if allowed:
+                end = _scan_regex_literal(text, i)
+                if end is not None:
+                    for j in range(i, end):
+                        if text[j] != "\n":
+                            out[j] = " "
+                    i = end
+                    prev_sig = "/"  # a regex is a value; a following `/` is division
+                    continue
+        # triple-quoted string (Python docstring)
+        if is_py and c in ("'", '"') and i + 2 < n and text[i + 1] == c and text[i + 2] == c:
+            q = c
+            out[i] = out[i + 1] = out[i + 2] = " "
+            i += 3
+            while i < n:
+                if (
+                    text[i] == q
+                    and i + 1 < n
+                    and text[i + 1] == q
+                    and i + 2 < n
+                    and text[i + 2] == q
+                ):
+                    out[i] = out[i + 1] = out[i + 2] = " "
+                    i += 3
+                    break
+                if text[i] != "\n":
+                    out[i] = " "
+                i += 1
+            continue
+        # string literal
+        if c in ("'", '"') or (ts_comments and c == "`"):
+            q = c
+            out[i] = " "
+            i += 1
+            while i < n:
+                ch = text[i]
+                if ch == "\\" and i + 1 < n:
+                    out[i] = " "
+                    if text[i + 1] != "\n":
+                        out[i + 1] = " "
+                    i += 2
+                    continue
+                if ch == q:
+                    out[i] = " "
+                    i += 1
+                    break
+                if ch == "\n" and q != "`":
+                    # single/double quotes do not span a raw newline; an unclosed
+                    # one was not a real string literal -- stop, leave rest as code.
+                    break
+                if ch != "\n":
+                    out[i] = " "
+                i += 1
+            # A string is a VALUE, so a following `/` is division, not a regex.
+            prev_sig = q
+            continue
+        if not c.isspace():
+            prev_sig = c
+        i += 1
+    return "".join(out)
+
+
+# `export * from '<spec>'` -- captures the re-export source spec so a barrel's
+# star sources can be expanded (the plain `export * from` regex in
+# phantom_imports only detects presence, not the spec).
+_TS_EXPORT_STAR_FROM_RE = re.compile(r"\bexport\s*\*\s*from\s*['\"]([^'\"]+)['\"]")
+
+
+def _barrel_reexports_stem(barrel_content: str, stem: str) -> bool:
+    """True if ``barrel_content`` re-exports the sibling module ``stem`` -- either
+    ``export * from './stem'`` or ``export { ... } from './stem'`` (with or without
+    an extension). Used to decide whether an edited origin file's removed export
+    flows through this barrel."""
+    esc = re.escape(stem)
+    pat = re.compile(
+        r"\bexport\s*(?:\*|\{[^}]*\})\s*from\s*['\"]\.[^'\"]*/?" + esc + r"(?:\.[cm]?[jt]sx?)?['\"]"
+    )
+    return bool(pat.search(barrel_content))
+
+
+def _barrel_effective_exports(barrel_path: Path, ws_root: Path, resolver):
+    """Compute the set of names a TS barrel currently exports, expanding its
+    ``export * from`` sources ONE level, or signal it cannot be trusted.
+
+    Returns ``(names, resolvable)``. ``resolvable`` is False -- and the caller
+    must then NOT report a break -- when any star source cannot be read or is
+    itself a star barrel (a deeper chain we do not expand): the removed name might
+    still be provided there, so firing would be a false positive. Fail-safe by
+    construction: uncertainty suppresses the finding.
+    """
+    from chameleon_mcp.phantom_imports import _current_export_names
+
+    try:
+        content = barrel_path.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+    except OSError:
+        return frozenset(), False
+    names: set[str] = set()
+    # The barrel's own direct exports: strip the `export * from` lines first so
+    # _current_export_names sees a closed set (those stars are expanded below).
+    without_stars = _TS_EXPORT_STAR_FROM_RE.sub(" ", content)
+    direct, direct_open = _current_export_names(without_stars)
+    if direct_open:
+        return frozenset(), False  # a non-star open shape we can't enumerate
+    names |= set(direct)
+    for m in _TS_EXPORT_STAR_FROM_RE.finditer(content):
+        spec = m.group(1)
+        src_key = resolver(spec, barrel_path.parent)
+        if not src_key:
+            return frozenset(), False  # unresolvable source -> can't confirm
+        src_path = ws_root / src_key
+        try:
+            src_content = src_path.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+        except OSError:
+            return frozenset(), False
+        src_names, src_open = _current_export_names(src_content)
+        if src_open:
+            return frozenset(), False  # nested star barrel -> not expanded, bail
+        names |= set(src_names)
+    return frozenset(names), True
+
+
+# JSX children are LITERAL text interleaved with `{expr}` code and nested
+# elements: `<div>Foo {bar}<span>x</span></div>` renders text "Foo", evaluates
+# `bar`, and nests `<span>`. The literal text is NOT a reference to a variable
+# (that would be `{Foo}`); the expressions ARE code. Run ONLY on `_strip_ts_noise`
+# output, where strings/comments/regex are already blanked -- so a closing
+# `</[A-Za-z>]` is UNFORGEABLE by real code (`</` is not a JS operator and a regex
+# `/` is already gone). A COMPLETE element `<tag ...>...</tag>` / `<tag .../>` /
+# `<>...</>` therefore only exists in genuine JSX, never in code like `a>Foo<b`
+# (which has no `</`). We iteratively collapse INNERMOST complete elements
+# (blanking their tags + text, keeping `{expr}` spans), which exposes the parent's
+# text for the next pass, then blank the top-level children text. This blanks all
+# JSX text -- including text before a nested tag -- while never touching a
+# comparison/division/generic (none forms a complete element). `{expr}` contents
+# are always preserved, even inside nested elements, so a real reference in an
+# expression still fires. Zero false-negative risk.
+_JSX_EXPR_RE = re.compile(r"\{[^{}]*\}")
+# An innermost complete element: an opening tag, then content with NO nested
+# `<`/`>`, then a matching-shaped close; or a self-closing tag; or a fragment.
+_JSX_ELEMENT_RE = re.compile(
+    r"<[A-Za-z][^<>]*/>"  # self-closing <br/>, <Foo attr={x} />
+    r"|<[A-Za-z][^<>]*>[^<>]*</[A-Za-z][^<>]*>"  # <tag ...>text</tag>
+    r"|<>[^<>]*</>"  # fragment <>text</>
+)
+_JSX_CHILDREN_RE = re.compile(r"(?<=>)([^<>]*?)(?=</[A-Za-z>])")
+
+
+def _blank_jsx_text_run(s: str) -> str:
+    """Blank the literal-text runs of ``s`` to spaces, keeping ``{expr}`` spans
+    (real code) intact. Length/newline preserving."""
+    out: list[str] = []
+    pos = 0
+    for em in _JSX_EXPR_RE.finditer(s):
+        out.append(re.sub(r"[^\n]", " ", s[pos : em.start()]))
+        out.append(em.group(0))
+        pos = em.end()
+    out.append(re.sub(r"[^\n]", " ", s[pos:]))
+    return "".join(out)
+
+
+def _blank_jsx_text(stripped: str) -> str:
+    from chameleon_mcp._thresholds import threshold_int
+
+    cur = stripped
+    # Collapse innermost complete elements to (blanked tags/text, kept exprs),
+    # exposing each parent's text for the next pass. Bounded to the max nesting
+    # depth we handle; beyond it the remaining outer text stays a safe over-fire.
+    for _ in range(threshold_int("JSX_MAX_NEST_DEPTH")):
+        nxt = _JSX_ELEMENT_RE.sub(lambda m: _blank_jsx_text_run(m.group(0)), cur)
+        if nxt == cur:
+            break
+        cur = nxt
+    # Any remaining top-level children text (between a `>` and a `</`).
+    return _JSX_CHILDREN_RE.sub(lambda m: _blank_jsx_text_run(m.group(0)), cur)
 
 
 def _reference_present(
@@ -6574,19 +6916,127 @@ def _reference_present(
     strings carry real references.
     """
     needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
-    comment_re = _comment_re_for(language)
 
     def _blank(text: str) -> str:
-        # Comments first (a `// path` trailing comment must lose only the comment,
-        # not the code before it), then strings, so an import specifier path is
-        # not counted as a live use either.
-        return _STRING_LITERAL_RE.sub(" ", comment_re.sub(" ", text))
+        # Blank strings, comments and templates so a name that survives only inside
+        # one is not counted as a live reference, via the char-scan tokenizer.
+        # NOTE: we deliberately do NOT reuse `_strip_ts_noise` here even though it
+        # also handles regex literals -- its regex detector reads the `/` in a JSX
+        # closing tag `</span>` as a regex start and pairs it with the next `</`,
+        # blanking the region between them. In a JSX file that HIDES a real
+        # reference sitting between two closing tags (`<A><B>x</B>{Foo}</A>`) -- a
+        # false negative, the worst class. `_blank_strings_comments` leaves `<`,
+        # `>`, `/` as code (only `//` and `/* */` are comments), so JSX tags
+        # survive; the only cost is that a name lingering ONLY inside a regex
+        # literal (`/Foo/`) over-fires -- a rare, safe-direction over-fire, far
+        # better than hiding a real break. Python has its own comment/string forms.
+        blanked = _blank_strings_comments(text, language)
+        if language == "python":
+            return blanked
+        # Blank literal JSX text children (safe: a complete element ends in the
+        # unforgeable `</`, which real code cannot produce), keeping `{expr}` spans,
+        # so `<Tag>Name</Tag>` text is not a live reference while `{Name}` is.
+        return _blank_jsx_text(blanked)
 
     lines = content.splitlines()
     if line is not None and 1 <= line <= len(lines):
+        # The per-line scan can misread a token that opens on an earlier line (a
+        # multi-line block comment or template literal); only USE the line result
+        # to short-circuit a positive, and fall back to the whole-file scan
+        # otherwise (which sees the real string/comment state).
         if needle.search(_blank(lines[line - 1])):
             return True
     return bool(needle.search(_blank(content)))
+
+
+def _pending_deletions_path(repo_data: Path, session_id) -> Path:
+    from chameleon_mcp.optouts import _safe_session_marker
+
+    return Path(repo_data) / f".crossfile_deleted.{_safe_session_marker(session_id)}.json"
+
+
+def _load_pending_deletions(repo_data: Path, session_id) -> dict:
+    """Session map of {absolute deleted-module path -> already-surfaced bool}.
+
+    A module deleted on a turn whose Stop short-circuits before the advisory
+    pipeline (the once-per-session idiom-review block) is pruned from enforcement
+    state on that Stop, so the next Stop's crossfile advisory would never see it.
+    Persisting the deletion here lets the advisory surface it on a later Stop,
+    exactly once. Fails open to {}.
+    """
+    try:
+        raw = _pending_deletions_path(repo_data, session_id).read_text(encoding="utf-8")
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_pending_deletions(repo_data: Path, session_id, d: dict) -> None:
+    try:
+        p = _pending_deletions_path(repo_data, session_id)
+        p.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        p.write_text(json.dumps(d), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _record_pending_deletions(repo_data: Path, session_id, paths: list[str]) -> None:
+    """Add newly-deleted module paths (surfaced=False) at prune time."""
+    if not paths:
+        return
+    try:
+        d = _load_pending_deletions(repo_data, session_id)
+        changed = False
+        for p in paths:
+            if p not in d:
+                d[p] = False
+                changed = True
+        if changed:
+            _write_pending_deletions(repo_data, session_id, d)
+    except Exception:
+        pass
+
+
+def _consume_pending_deletions(repo_data: Path, session_id) -> list[str]:
+    """Return not-yet-surfaced deleted paths still absent on disk; drop entries
+    whose file came back (resurrected). Does NOT mark them surfaced -- that
+    happens only after the advisory actually renders them, so a render failure
+    can't silently swallow the one surfacing."""
+    try:
+        d = _load_pending_deletions(repo_data, session_id)
+        if not d:
+            return []
+        out: list[str] = []
+        changed = False
+        for p in list(d.keys()):
+            if Path(p).is_file():
+                del d[p]
+                changed = True
+                continue
+            if d[p] is not True:
+                out.append(p)
+        if changed:
+            _write_pending_deletions(repo_data, session_id, d)
+        return out
+    except Exception:
+        return []
+
+
+def _mark_pending_deletions_surfaced(repo_data: Path, session_id, paths: list[str]) -> None:
+    if not paths:
+        return
+    try:
+        d = _load_pending_deletions(repo_data, session_id)
+        changed = False
+        for p in paths:
+            if p in d and d[p] is not True:
+                d[p] = True
+                changed = True
+        if changed:
+            _write_pending_deletions(repo_data, session_id, d)
+    except Exception:
+        pass
 
 
 def _crossfile_existence_advisory_lines(
@@ -6619,6 +7069,7 @@ def _crossfile_existence_advisory_lines(
             _current_export_names,
             _python_current_export_names,
         )
+        from chameleon_mcp.profile.loader import find_repo_root
         from chameleon_mcp.symbol_index import (
             load_reverse_index,
             make_module_resolver,
@@ -6626,10 +7077,62 @@ def _crossfile_existence_advisory_lines(
         )
         from chameleon_mcp.violation_class import ignored_rules
 
-        index = load_reverse_index(repo_root)
-        # Ruby carries no reverse index but a constant index (the Ruby branch in
-        # the loop reads it); proceed when either exists.
-        if index is None and load_constant_index(repo_root) is None:
+        # Per-edited-file WORKSPACE resolution. In a monorepo the cwd's repo_root
+        # is the git top-level, whose reverse/constant index covers only the root
+        # workspace; each edited file's OWN workspace (nearest ancestor `.chameleon`)
+        # owns the index that records its importers -- the same per-file resolution
+        # posttool-verify uses (find_repo_root(file)). Resolving one index for
+        # repo_root left every non-root workspace's breaks silent at Stop. Cache the
+        # workspace root + its indexes so repeated files in one workspace load once.
+        _ws_root_cache: dict[str, Path] = {}
+        _ws_index_cache: dict[str, object] = {}
+        _ws_cidx_cache: dict[str, object] = {}
+
+        def _ws_root_for(abs_path: Path) -> Path:
+            key = str(abs_path)
+            r = _ws_root_cache.get(key)
+            if r is None:
+                try:
+                    r = find_repo_root(Path(abs_path)) or repo_root
+                except Exception:
+                    r = repo_root
+                _ws_root_cache[key] = r
+            return r
+
+        def _ws_index_for(ws_root: Path):
+            key = str(ws_root)
+            if key not in _ws_index_cache:
+                try:
+                    _ws_index_cache[key] = load_reverse_index(ws_root)
+                except Exception:
+                    _ws_index_cache[key] = None
+            return _ws_index_cache[key]
+
+        def _ws_cidx_for(ws_root: Path):
+            key = str(ws_root)
+            if key not in _ws_cidx_cache:
+                try:
+                    _ws_cidx_cache[key] = load_constant_index(ws_root)
+                except Exception:
+                    _ws_cidx_cache[key] = None
+            return _ws_cidx_cache[key]
+
+        # Cheap early-out: if the cwd workspace AND no child workspace can hold an
+        # index (neither reverse nor constant at repo_root, and repo_root has no
+        # nested .chameleon), there is nothing to check. A monorepo root with child
+        # workspaces still proceeds -- the per-file resolution finds their indexes.
+        _has_child_ws = False
+        try:
+            from chameleon_mcp.tools import _iter_workspace_chameleon_dirs
+
+            _has_child_ws = next(_iter_workspace_chameleon_dirs(Path(repo_root)), None) is not None
+        except Exception:
+            _has_child_ws = False
+        if (
+            load_reverse_index(repo_root) is None
+            and load_constant_index(repo_root) is None
+            and not _has_child_ws
+        ):
             return []
 
         from chameleon_mcp._thresholds import threshold_int
@@ -6637,26 +7140,32 @@ def _crossfile_existence_advisory_lines(
         max_files = threshold_int("CROSSFILE_STOP_ADVISORY_MAX_FILES")
         max_sites = threshold_int("CROSSFILE_MAX_SITES_PER_FINDING")
 
-        try:
-            resolved_root = Path(repo_root).resolve()
-        except OSError:
-            resolved_root = Path(repo_root)
-        # One specifier resolver per language, built lazily and reused across
-        # importers: it joins a relative/aliased import onto the importer's dir
-        # exactly the way the reverse index did at build, so a key it returns is
-        # comparable to a reverse-index target key. Used to drop a REPOINTED
+        # One specifier resolver per (language, workspace root), built lazily: it
+        # joins a relative/aliased import onto the importer's dir exactly the way
+        # that workspace's reverse index did at build, so a key it returns is
+        # comparable to that workspace's target keys. Used to drop a REPOINTED
         # import (the name now sourced from a different module) from the finding.
         _resolver_cache: dict[str, object] = {}
 
-        def _resolver_for(language: str):
-            r = _resolver_cache.get(language)
+        def _resolver_for(language: str, ws_root: Path):
+            key = f"{language}\x00{ws_root}"
+            r = _resolver_cache.get(key)
             if r is None:
-                r = make_module_resolver(resolved_root, language)
-                _resolver_cache[language] = r
+                try:
+                    resolved = Path(ws_root).resolve()
+                except OSError:
+                    resolved = Path(ws_root)
+                r = make_module_resolver(resolved, language)
+                _resolver_cache[key] = r
             return r
 
         def _live_break(
-            importer_rel: str, name: str, line: int | None, target_key: str, language: str
+            importer_rel: str,
+            name: str,
+            line: int | None,
+            target_key: str,
+            language: str,
+            ws_root: Path,
         ) -> bool:
             # One read of the importer answers both questions a real break needs:
             # (1) does it still reference ``name`` (word-boundary bareword), and
@@ -6668,8 +7177,10 @@ def _crossfile_existence_advisory_lines(
             # turn until the next refresh -- the recurring "stale index" complaint.
             # Suppress only when ``name`` IS imported but NONE of those imports
             # resolve to the target; an unresolved/absent binding falls back to the
-            # bareword result so a parse miss never hides a genuine break.
-            ip = repo_root / importer_rel
+            # bareword result so a parse miss never hides a genuine break. The
+            # importer path is relative to the file's OWN workspace root, so join
+            # to ws_root (the monorepo root would miss a nested-workspace importer).
+            ip = ws_root / importer_rel
             try:
                 text = ip.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
             except OSError:
@@ -6679,47 +7190,39 @@ def _crossfile_existence_advisory_lines(
             # from the TARGET module.
             if not _reference_present(text, name, line, language):
                 return False
-            keys = _imported_source_keys(text, name, ip.parent, language, _resolver_for(language))
+            keys = _imported_source_keys(
+                text, name, ip.parent, language, _resolver_for(language, ws_root)
+            )
             if keys and target_key not in keys:
                 return False  # repointed to a different module -> not broken
             return True
 
-        def _name_present(importer_rel: str, name: str, line: int | None) -> bool:
+        def _name_present(importer_rel: str, name: str, line: int | None, ws_root: Path) -> bool:
             # Cheap presence check: the index is a bootstrap snapshot, so confirm
             # the importer still names the binding (the rename may have reached it
             # too) before claiming its call site is broken. No parse -- a
             # word-boundary scan over the importer bytes. A Ruby constant has no
-            # import binding to anchor a code-only check, so this cannot blank
-            # strings wholesale the way _reference_present does: an interpolation
-            # `"#{Const}"` carries a REAL reference. But a plain string with no
-            # `#{` interpolation ("Address updated.") is inert text -- an old
-            # constant lingering there after a completed rename is NOT a live
-            # reference. Blank only non-interpolating string literals, keeping the
-            # interpolation carve-out. Keeps the false-negative bias (an
-            # unparseable string stays counted) while dropping the "stale mention
-            # in a UI string" false positive the agent reproduced.
-            ip = repo_root / importer_rel
+            # import binding to anchor a code-only check, so a bareword surviving
+            # only as INERT TEXT (a `# comment`, a plain "..."/'...' string, a
+            # %w/%i/%q/%Q/%() literal, or a heredoc body) after a completed rename
+            # is NOT a live reference and must not fire the advisory. `_blank_ruby_
+            # noncode` neutralizes all of those while KEEPING `#{Const}`
+            # interpolation (a real reference). Keep-biased: an unparseable form
+            # stays counted (a harmless over-fire) rather than dropped. The
+            # importer path is relative to the file's own workspace root.
+            ip = ws_root / importer_rel
             try:
                 text = ip.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
             except OSError:
                 return False
             needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
 
-            def _blank_plain_strings(s: str) -> str:
-                # A single/double-quoted literal that contains no `#{` -- blanked so
-                # a bareword surviving only inside it is not miscounted. An
-                # interpolating literal is left intact (its `#{Const}` is a real ref).
-                def _sub(m: re.Match) -> str:
-                    lit = m.group(0)
-                    return " " * len(lit) if "#{" not in lit else lit
-
-                return re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", _sub, s)
-
-            text_lines = text.splitlines()
+            blanked = _blank_ruby_noncode(text)
+            text_lines = blanked.splitlines()
             if line is not None and 1 <= line <= len(text_lines):
-                if needle.search(_blank_plain_strings(text_lines[line - 1])):
+                if needle.search(text_lines[line - 1]):
                     return True
-            return bool(needle.search(_blank_plain_strings(text)))
+            return bool(needle.search(blanked))
 
         # Ruby move-in-one-turn suppression: the class/module names each edited
         # Ruby file currently defines, computed once and memoized. A class moved to
@@ -6759,6 +7262,16 @@ def _crossfile_existence_advisory_lines(
 
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
+        def _safe_ref_field(s: str) -> str:
+            # A symbol/module/site field rendered on a SINGLE advisory line. Strip
+            # line-splitting and other control bytes FIRST (a crafted filename with
+            # a newline would otherwise break the one-line format or forge a marker
+            # on its own line), THEN run the standard context sanitizer (neutralize
+            # forged [chameleon-untrusted-data:]/[chameleon:] markers and residual
+            # escapes). sanitize_for_chameleon_context alone preserves newlines (it
+            # is built for multi-line prose), so a path-typed field needs both.
+            return sanitize_for_chameleon_context(re.sub(r"[\x00-\x1f\x7f]", "", s))
+
         # (symbol, module, sites, kind) where kind is "export" (TS/Python named
         # export) or "constant" (Ruby class/module), in touch order so the
         # advisory lists the breaks this turn introduced.
@@ -6775,25 +7288,26 @@ def _crossfile_existence_advisory_lines(
             except OSError:
                 continue
             lang = detect_language(str(p))
+            # This file's own workspace root (nearest .chameleon), so the indexes,
+            # module keys, and importer paths below are workspace-correct in a
+            # monorepo instead of all keyed on the cwd's git-top-level root.
+            ws_root = _ws_root_for(p)
             if lang == "ruby":
                 # Ruby uses the constant graph, not a named-export reverse index:
                 # a class/module the index records as defined here that the file
                 # no longer defines, while referencers still name it, is the Ruby
                 # existence break. High-confidence only: one defining file, bare
                 # top-level name.
-                from chameleon_mcp.constant_index import (
-                    load_constant_index,
-                    referencing_files,
-                )
+                from chameleon_mcp.constant_index import referencing_files
 
-                cidx = load_constant_index(repo_root)
+                cidx = _ws_cidx_for(ws_root)
                 if cidx is None:
                     continue
                 ign = ignored_rules(content, file_path=path) or set()
                 if "" in ign or "removed-export-breaks-importers" in ign:
                     continue
                 try:
-                    rrel = p.resolve().relative_to(Path(repo_root).resolve()).as_posix()
+                    rrel = p.resolve().relative_to(Path(ws_root).resolve()).as_posix()
                 except (ValueError, OSError):
                     continue
                 seen_files += 1
@@ -6809,22 +7323,27 @@ def _crossfile_existence_advisory_lines(
                     if _const_redefined_elsewhere(const, rrel):
                         continue
                     rlive = [
-                        r for r in referencing_files(cidx, const) if _name_present(r, const, None)
+                        r
+                        for r in referencing_files(cidx, const)
+                        if _name_present(r, const, None, ws_root)
                     ]
                     if not rlive:
                         continue
-                    rsites = [sanitize_for_chameleon_context(r) for r in sorted(rlive)[:max_sites]]
-                    breaks.append((sanitize_for_chameleon_context(const), rrel, rsites, "constant"))
+                    rsites = [_safe_ref_field(r) for r in sorted(rlive)[:max_sites]]
+                    breaks.append(
+                        (_safe_ref_field(const), _safe_ref_field(rrel), rsites, "constant")
+                    )
                 continue
             # The reverse index spans the TS and Python module graphs, so both
             # languages are checked here; anything else is skipped. A Ruby-only
-            # repo has no reverse index, so a stray TS/Python file is skipped too.
-            if lang not in ("typescript", "python") or index is None:
+            # workspace has no reverse index, so a stray TS/Python file is skipped.
+            ws_index = _ws_index_for(ws_root)
+            if lang not in ("typescript", "python") or ws_index is None:
                 continue
             ign = ignored_rules(content, file_path=path) or set()
             if "" in ign or "removed-export-breaks-importers" in ign:
                 continue
-            target_key = module_key_for_path(p, repo_root)
+            target_key = module_key_for_path(p, ws_root)
             if target_key is None:
                 continue
             # Read each module's live export set with its own language reader: the
@@ -6841,7 +7360,7 @@ def _crossfile_existence_advisory_lines(
                 # edit-time and tool stance.
                 continue
             seen_files += 1
-            broken = index.broken_importers(target_key, current)
+            broken = ws_index.broken_importers(target_key, current)
             if not broken:
                 continue
             for name in sorted(broken):
@@ -6849,7 +7368,7 @@ def _crossfile_existence_advisory_lines(
                 live = [
                     imp
                     for imp in importers
-                    if _live_break(imp.path, name, imp.line, target_key, lang)
+                    if _live_break(imp.path, name, imp.line, target_key, lang, ws_root)
                 ]
                 if not live:
                     continue
@@ -6857,12 +7376,10 @@ def _crossfile_existence_advisory_lines(
                     live, key=lambda imp: (imp.path, imp.line if imp.line is not None else -1)
                 )
                 sites = [
-                    sanitize_for_chameleon_context(
-                        f"{imp.path}:{imp.line}" if imp.line is not None else imp.path
-                    )
+                    _safe_ref_field(f"{imp.path}:{imp.line}" if imp.line is not None else imp.path)
                     for imp in live_sorted[:max_sites]
                 ]
-                breaks.append((sanitize_for_chameleon_context(name), target_key, sites, "export"))
+                breaks.append((_safe_ref_field(name), _safe_ref_field(target_key), sites, "export"))
 
         # Deleted TS/Python modules: a file the turn edited then removed exports
         # nothing now, so every importer the reverse index still attributes to it
@@ -6874,48 +7391,134 @@ def _crossfile_existence_advisory_lines(
         # same-turn move that redefined the module elsewhere and repointed the
         # importer drops out). No inline-ignore is possible (the source is gone), so
         # this is advisory-only, like the tool-level path (_module_file_missing).
-        if index is not None:
-            for path in deleted_paths or []:
+        for path in deleted_paths or []:
+            if seen_files >= max_files:
+                break
+            if detect_language(str(Path(path))) not in ("typescript", "python"):
+                continue
+            # A deleted file still resolves its workspace: find_repo_root walks up
+            # from the (still-present) parent dir to the nearest .chameleon.
+            del_ws_root = _ws_root_for(Path(path))
+            del_index = _ws_index_for(del_ws_root)
+            if del_index is None:
+                continue
+            target_key = module_key_for_path(Path(path), del_ws_root)
+            if target_key is None:
+                continue
+            # Only a genuinely-gone file counts; a path that merely failed a
+            # read for another reason must not fabricate a deleted-module break.
+            try:
+                if (del_ws_root / target_key).exists():
+                    continue
+            except OSError:
+                continue
+            seen_files += 1
+            broken = del_index.broken_importers(target_key, frozenset())
+            if not broken:
+                continue
+            for name in sorted(broken):
+                importers = broken[name]
+                lang = detect_language(str(Path(path)))
+                live = [
+                    imp
+                    for imp in importers
+                    if _live_break(imp.path, name, imp.line, target_key, lang, del_ws_root)
+                ]
+                if not live:
+                    continue
+                live_sorted = sorted(
+                    live, key=lambda imp: (imp.path, imp.line if imp.line is not None else -1)
+                )
+                sites = [
+                    _safe_ref_field(f"{imp.path}:{imp.line}" if imp.line is not None else imp.path)
+                    for imp in live_sorted[:max_sites]
+                ]
+                # target_key (the deleted module PATH) is the ONLY break field
+                # rendered from the module itself -- and it is attacker-influenced
+                # (a crafted deleted filename). Sanitize it like name/sites so a
+                # forged marker / ANSI / newline in the path cannot reach the
+                # advisory verb below.
+                breaks.append(
+                    (_safe_ref_field(name), _safe_ref_field(target_key), sites, "deleted")
+                )
+
+        # Barrel (star re-export) breaks: an edited TS ORIGIN file whose exports
+        # flow to importers through a sibling `index.*` barrel (`export * from
+        # './origin'`). A name removed from the origin leaves the barrel's
+        # importers broken, but the origin's OWN module key has no reverse-index
+        # entry (importers import from the barrel, not the origin), so the loop
+        # above never sees it. For each edited origin, find sibling barrels that
+        # re-export it, recompute the barrel's effective export set (expanding its
+        # stars ONE level), and report the barrel's broken importers. Fail-safe:
+        # `_barrel_effective_exports` returns resolvable=False on any unreadable /
+        # nested-star source, and we then skip -- an uncertain barrel never fires,
+        # so this can only ADD a genuine finding, never a false positive from a
+        # name still provided by another star.
+        try:
+            barrel_seen: set = set()
+            already = {(b[0], b[1]) for b in breaks}  # (name, module) dedup vs direct path
+            for path in list(state.files):
                 if seen_files >= max_files:
                     break
-                if detect_language(str(Path(path))) not in ("typescript", "python"):
+                p = Path(path)
+                if not p.is_file() or detect_language(str(p)) != "typescript":
                     continue
-                target_key = module_key_for_path(Path(path), repo_root)
-                if target_key is None:
+                ws_root = _ws_root_for(p)
+                ws_index = _ws_index_for(ws_root)
+                if ws_index is None:
                     continue
-                # Only a genuinely-gone file counts; a path that merely failed a
-                # read for another reason must not fabricate a deleted-module break.
-                try:
-                    if (repo_root / target_key).exists():
+                stem = p.stem
+                for bx in ("index.ts", "index.tsx", "index.js", "index.jsx", "index.mjs"):
+                    barrel = p.parent / bx
+                    if barrel == p or not barrel.is_file():
                         continue
-                except OSError:
-                    continue
-                seen_files += 1
-                broken = index.broken_importers(target_key, frozenset())
-                if not broken:
-                    continue
-                for name in sorted(broken):
-                    importers = broken[name]
-                    lang = detect_language(str(Path(path)))
-                    live = [
-                        imp
-                        for imp in importers
-                        if _live_break(imp.path, name, imp.line, target_key, lang)
-                    ]
-                    if not live:
+                    bkey = module_key_for_path(barrel, ws_root)
+                    if bkey is None or bkey in barrel_seen:
                         continue
-                    live_sorted = sorted(
-                        live, key=lambda imp: (imp.path, imp.line if imp.line is not None else -1)
+                    try:
+                        bcontent = barrel.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    if not _barrel_reexports_stem(bcontent, stem):
+                        continue
+                    ign = ignored_rules(bcontent, file_path=str(barrel)) or set()
+                    if "" in ign or "removed-export-breaks-importers" in ign:
+                        continue
+                    eff, resolvable = _barrel_effective_exports(
+                        barrel, ws_root, _resolver_for("typescript", ws_root)
                     )
-                    sites = [
-                        sanitize_for_chameleon_context(
-                            f"{imp.path}:{imp.line}" if imp.line is not None else imp.path
+                    if not resolvable:
+                        continue
+                    broken = ws_index.broken_importers(bkey, eff)
+                    if not broken:
+                        continue
+                    barrel_seen.add(bkey)
+                    seen_files += 1
+                    for name in sorted(broken):
+                        if (name, bkey) in already:
+                            continue
+                        live = [
+                            imp
+                            for imp in broken[name]
+                            if _live_break(imp.path, name, imp.line, bkey, "typescript", ws_root)
+                        ]
+                        if not live:
+                            continue
+                        live_sorted = sorted(
+                            live,
+                            key=lambda imp: (imp.path, imp.line if imp.line is not None else -1),
                         )
-                        for imp in live_sorted[:max_sites]
-                    ]
-                    breaks.append(
-                        (sanitize_for_chameleon_context(name), target_key, sites, "deleted")
-                    )
+                        bsites = [
+                            _safe_ref_field(
+                                f"{imp.path}:{imp.line}" if imp.line is not None else imp.path
+                            )
+                            for imp in live_sorted[:max_sites]
+                        ]
+                        breaks.append(
+                            (_safe_ref_field(name), _safe_ref_field(bkey), bsites, "barrel")
+                        )
+        except Exception:
+            pass
 
         if not breaks:
             return []
@@ -6935,12 +7538,21 @@ def _crossfile_existence_advisory_lines(
                 verb = "defined; still referenced by"
             elif kind == "deleted":
                 verb = f"exported ({module} was deleted); still imported by"
+            elif kind == "barrel":
+                verb = f"re-exported (via {module}); still imported by"
             else:
                 verb = "exported; still imported by"
             lines.append(f"- '{name}' no longer {verb} {shown}{more}")
+        # Infer the ignore-comment token from the turn's touched files. Include
+        # deleted_paths: on a pure-deletion turn the deleted .py/.rb was pruned
+        # from state.files, leaving an EMPTY set that falls through to the `//`
+        # default -- a syntax error a Python/Ruby author would paste. The deleted
+        # path's extension still tells us the language for the surviving-importer
+        # source the author edits.
+        hint_paths = [path for path in state.files] + list(deleted_paths or [])
         lines.append(
             "To silence this for a file, add "
-            + _ignore_hint([path for path in state.files], "removed-export-breaks-importers")
+            + _ignore_hint(hint_paths, "removed-export-breaks-importers")
             + " in the source you touched."
         )
         return lines
@@ -7548,6 +8160,11 @@ def _stop_gates(
                 deleted_paths.append(path)
                 del state.files[path]
                 cleared_any = True
+                # Persist it: if THIS Stop short-circuits before the advisory
+                # pipeline (the once-per-session idiom block), the prune above
+                # would otherwise lose the deletion before its crossfile advisory
+                # ever runs. Surfaced exactly once from the persisted set.
+                _record_pending_deletions(repo_data, session_id, [path])
                 continue
             # Any file the per-edit verifier armed (cached blockable flag) is a
             # re-check candidate, regardless of escalation level. The level gate
@@ -7709,12 +8326,18 @@ def _stop_gates(
             # other files still import by name left their call sites broken. Reuse
             # the persisted reverse index + a regex presence check (no parse at
             # Stop). Advisory only, folded into the same Stop context.
+            # deleted_paths carries THIS turn's deletions plus any persisted from a
+            # prior Stop that short-circuited (idiom block) before this pipeline ran;
+            # dedup and mark surfaced afterwards so a deleted module is reported once.
+            pending_del = _consume_pending_deletions(repo_data, session_id)
+            all_deleted = list(dict.fromkeys(list(deleted_paths) + pending_del))
             crossfile_lines = _crossfile_existence_advisory_lines(
                 repo_root=repo_root,
                 state=state,
                 cfg=cfg,
-                deleted_paths=deleted_paths,
+                deleted_paths=all_deleted,
             )
+            _mark_pending_deletions_surfaced(repo_data, session_id, all_deleted)
 
             # Turn-end duplication: a function this turn introduced whose body
             # matches an existing one (catalog or earlier this session) gets named

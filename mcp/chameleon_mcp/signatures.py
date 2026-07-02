@@ -205,9 +205,18 @@ def python_role_for_path(file_path: str) -> str | None:
     role = _PY_ROLE_NAMES.get(stem)
     if role is not None:
         return role
-    for d in reversed(parts[:-1]):
+    dirs = parts[:-1]
+    for d in reversed(dirs):
         if d in _PY_ROLE_DIRS:
             return _PY_ROLE_NAMES[d]
+    # Alembic revision files live in a `versions/` dir under `alembic/` (or a
+    # `migrations/` root). Their auto-generated `revision`/`upgrade`/`downgrade`
+    # globals are migration internals, not app symbols -- role them as migrations
+    # so they cluster apart instead of polluting the generic app archetype (whose
+    # "reuse these" list would otherwise hand a model edit `op`/`revision`). Gated
+    # on the alembic/migrations ancestor so a plain `versions/` dir is untouched.
+    if "versions" in dirs and ("alembic" in dirs or "migrations" in dirs):
+        return "migration"
     return None
 
 

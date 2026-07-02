@@ -287,6 +287,16 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # is advisory, so a long list is noise; the highest-confidence findings are
     # kept and the remainder dropped.
     "CORRECTNESS_JUDGE_MAX_FINDINGS": 5,
+    # Cap on how many top-level '[' positions _extract_json_array probes when a
+    # reviewer reply embeds junk arrays before the real findings array. Bounds the
+    # decode attempts so a pathological reply full of '[' cannot cost more than a
+    # fixed number of raw_decode calls.
+    "JSON_SCAN_MAX_BRACKETS": 64,
+    # Max JSX nesting depth the cross-file reference check collapses when blanking
+    # JSX text children. Each pass collapses one level of innermost elements;
+    # beyond this depth the remaining outer text stays a harmless over-fire (never
+    # a false negative). A safety bound on the fixpoint loop, not a tuning knob.
+    "JSX_MAX_NEST_DEPTH": 32,
     # Cap on the source files the turn-end stale-test advisory names. When a turn
     # edits many paired sources without their tests, the list is truncated so the
     # advisory stays a short nudge rather than a wall of paths.
@@ -318,7 +328,10 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "SECRET_SCAN_MAX_LINE_LEN": 2_000,
     # Upper bound on committed files scanned when measuring a co-change rule's repo
     # violation rate, so the disable check on a huge repo stays a bounded glob walk.
-    "COCHANGE_MAX_FILES_SCANNED": 8000,
+    # Raised from 8000: on a large monolith (gitlabhq) the rule-relevant app/ and
+    # db/ trees together exceed 8000, so even with rank-prioritized traversal the
+    # trigger AND companion sides both need headroom to be sampled in one walk.
+    "COCHANGE_MAX_FILES_SCANNED": 20000,
     # Cap on the change-set-completeness items surfaced at turn end. When a turn
     # creates many trigger files with no companion, the list is truncated so the
     # advisory stays a short nudge rather than a wall of paths.

@@ -823,9 +823,17 @@ _TS_EXPORT_DECL_RE = re.compile(
     r"(?:const|let|var|function\s*\*?|class|interface|type|enum|namespace)\s+"
     r"([A-Za-z_$][\w$]*)"
 )
-# `export { a, b as c }` / `export { x } from './m'`: each element's EXPORTED
-# name is the one to the right of any `as`, which is what an importer references.
-_TS_EXPORT_CLAUSE_RE = re.compile(r"\bexport\s*\{([^}]*)\}")
+# `export { a, b as c }` / `export { x } from './m'` / `export type { T } from './m'`:
+# each element's EXPORTED name is the one to the right of any `as`, which is what
+# an importer references. The optional `type` modifier (`export type { ... }`, a
+# type-only re-export) must be matched -- missing it dropped those names, so an
+# importer of a re-exported type read as a broken existence-break on a clean file.
+_TS_EXPORT_CLAUSE_RE = re.compile(r"\bexport\s*(?:type\s+)?\{([^}]*)\}")
+# A leading inline `type ` modifier on a single specifier (`export { type Foo }` /
+# `export { type Foo as Bar }`), stripped so the real name is read (not the `type`
+# keyword). A bare `type` specifier (a value literally named `type`) has no
+# following identifier, so the lookahead leaves it intact.
+_TS_INLINE_TYPE_MODIFIER_RE = re.compile(r"^type\s+(?=[A-Za-z_$])")
 # `export * from './m'` (no `as`): pulls in an unenumerable set, so the current
 # export set can't be trusted -- skip both cross-file checks for the file.
 _TS_EXPORT_STAR_RE = re.compile(r"\bexport\s*\*\s*from\b")
@@ -934,6 +942,9 @@ def _current_export_names(content: str) -> tuple[frozenset[str], bool]:
             part = part.strip()
             if not part:
                 continue
+            # Drop a leading inline `type ` modifier so `export { type Foo }` reads
+            # `Foo`, not the `type` keyword (and does not drop `Foo`).
+            part = _TS_INLINE_TYPE_MODIFIER_RE.sub("", part)
             mm = _CLAUSE_NAME_RE.match(part)
             if not mm:
                 continue

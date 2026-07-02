@@ -4,6 +4,125 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.21] - 2026-07-02
+
+Round-2 real-hook QA of the Stop backstop and injection paths, orchestrated as a
+six-agent probe workflow over exclusive real repos with each finding
+adversarially verified through the real hook binaries. It targeted round 1's
+deferred cross-file gaps, the second-order effects of the `_stop_gates`
+restructure (which came back clean), and framework/edge-case depth round 1 did
+not reach. Fifteen fixes; several close gaps in round-1 code.
+
+### Fixed
+
+- **The cross-file existence advisory was blind to non-root workspaces in a
+  monorepo.** At the repo-root cwd it loaded one reverse/constant index for the
+  git top-level, so removing an exported symbol in a sub-workspace (e.g. a
+  monorepo's web app) that other files in that workspace still import was silent
+  at turn end, even though the edit-time check fired. Each edited file's break is
+  now resolved against its OWN workspace index (the same per-file resolution the
+  edit-time check uses), keyed and cached per workspace root.
+- **The deleted-module advisory (crossfile PATH) rendered the module path
+  unsanitized**, so a crafted deleted filename carrying ANSI escapes, a newline,
+  or a forged `[chameleon-untrusted-data:]` / `[🦎 chameleon:]` marker reached the
+  Stop context verbatim. The module path is now stripped of control bytes and run
+  through the context sanitizer like the symbol and site fields already are; every
+  single-line path field in the advisory gets the same treatment so a newline can
+  no longer split the line.
+- **A deleted module's break was lost whenever the turn's first Stop
+  short-circuited** (the once-per-session idiom-review block prunes the deleted
+  file from state before the advisory pipeline runs), which silenced the
+  deleted-module advisory on any repo with taught idioms. Deletions are now
+  persisted for the session and surfaced exactly once on the Stop that reaches the
+  advisory pipeline.
+- **The reviewer-reply parser let a throwaway array shadow the real findings.** A
+  `[1, 2, 3]` or an empty `[]` appearing in reviewer prose before the findings
+  array was returned instead of it — the empty case silently reporting "reviewed,
+  no bugs." The parser now prefers the first array that contains objects, falling
+  back to a lone object reply, then to any array (a genuine empty `[]` clean pass),
+  so junk before the real payload no longer wins.
+- **A completed rename that left the old name only in inert Ruby text false-fired
+  the cross-file advisory.** The presence check blanked quoted strings but not `#`
+  comments, `%w`/`%i`/`%q`/`%Q`/`%()` literals, or heredoc bodies, so a stale
+  mention in any of those read as a live reference. All are now blanked, keeping
+  the `#{Const}` interpolation carve-out (a real reference).
+- **The cross-file reference check now blanks strings and comments with a proper
+  character scan, closing a class of comment/string edge cases the regex approach
+  could not.** A comment marker inside a string (a URL's `//`) must not make the
+  comment pass swallow real code, and a quote inside a comment (an apostrophe in
+  `// don't remove`) must not open a string that spans the comment and eats real
+  code — no regex ordering handles both, and paired apostrophe-comments could even
+  over-report a comment-only mention. A single left-to-right scan that recognizes
+  comments before strings (so an in-comment quote never opens a string, and an
+  in-string marker never starts a comment), handles TS `//`/`/* */`/template and
+  Python `#`/triple-quote/f-string, preserves the TS `#` private-field sigil, and
+  respects escapes. This subsumes the round-1 comment-blanking and the multi-line
+  block-comment fix.
+- **The Stop block for a Python-only deletion handed a `//` ignore hint** (a
+  syntax error in Python): on a pure-deletion turn the surviving-files list was
+  empty, so the hint fell through to the C-style default. The deleted path's
+  extension now informs the hint token.
+- **FastAPI stale-test pairing never fired for the standard tiangolo layout**
+  (`backend/app/…` ↔ `backend/tests/…`): the source-root mirror only swapped a
+  LEADING `app`/`src`/`lib`. It now also swaps a mid-path source root, so the
+  `backend/app/api/routes/x.py` → `backend/tests/api/routes/test_x.py` mapping is
+  recognized.
+- **The Rails co-change applicability check was silently disabled on large
+  monorepos**: its bounded file walk visited alphabetically-last trees first and
+  spent its budget before reaching `app/`/`db/`/`config/`. The walk now visits the
+  co-change-relevant trees first (ranked, `app` ahead of `db`) and the budget was
+  raised so both the trigger and companion sides are sampled.
+- The prose read-path injection denylist now also catches `email`/`mail` (and
+  `forward`/`share`) exfiltration verbs and "disregard the conventions" phrasing,
+  closing adjacent bypasses of the round-1 broadening.
+- SessionStart now resolves the repo from the payload's `cwd` rather than the hook
+  process cwd, so a harness whose process cwd diverges from the session cwd no
+  longer risks injecting the wrong repo's conventions.
+- Alembic `versions/` migration files (under `alembic/` or `migrations/`) are now
+  roled as migrations at bootstrap, so their auto-generated globals no longer
+  pollute the generic app archetype's reuse list. (Takes effect on re-bootstrap.)
+- An unopenable `CHAMELEON_HOOK_ERROR_LOG` (a broken symlink, or a path under a
+  missing parent dir) made every hook silently skip its Python and no-op — the
+  round-1 FIFO guard only caught an existing non-regular file. The guard now also
+  falls back to `/dev/null` for a broken symlink or a missing parent dir.
+- **A rename inside a file re-exported through a barrel (`export * from './x'`)
+  was silent at turn end.** The reverse index attributes a star-re-exported name
+  to the barrel module, not the origin, so removing it from the origin left the
+  barrel's importers broken while the origin's own key had no reverse entry. The
+  advisory now finds sibling `index.*` barrels that re-export an edited origin,
+  recomputes the barrel's effective export set (expanding its stars one level),
+  and reports the broken importers. It fails safe: any unreadable or nested-star
+  source suppresses the finding, so a name still provided by another star of the
+  same barrel never false-fires, and an importer updated in the same turn is
+  dropped by the live re-check.
+- **The TS export-name reader missed `export type { X } from` re-exports and
+  mis-read an inline `export { type Foo, Bar }` clause** (dropping `Foo`, adding a
+  spurious `type`), so a re-exported type read as a broken existence-break on a
+  clean file — a cross-file false positive, most visible through the barrel path
+  above. The export-clause parser now matches the `type` modifier and strips the
+  inline `type ` specifier prefix, so type-only exports are counted like any other
+  export.
+- **The cross-file reference check now reuses the proven TS lexer, adding
+  JSX-text handling.** The cross-file reference check blanks literal JSX text
+  children so a removed export lingering only as `<Tag>Name</Tag>` text (which
+  renders text, not the variable — unlike `{Name}`) no longer false-fires. It
+  works by iteratively collapsing complete JSX elements, which only exist in
+  genuine JSX because a closing `</` is unforgeable by real code once strings,
+  comments, and templates are blanked; `{expr}` spans are always kept, so a real
+  reference in an expression — even nested between closing tags
+  (`<A><B>x</B>{Foo}</A>`) — still fires, and a comparison `x > Foo`, division
+  `a / Foo / b`, or generic `Array<Foo>` (none of which forms a complete element)
+  is never mistaken for JSX and never hidden. The check uses the char-scan
+  tokenizer, not the export reader's lexer, deliberately: that lexer's regex
+  detector misreads the `/` of a `</span>` closing tag as a regex and would blank
+  a real reference between two closing tags. Instead, regex-literal handling lives
+  in the char-scan tokenizer with a JSX-safe guard — a `/` in expression position
+  (including right after `return`/`typeof`/etc.) opens a regex and is blanked,
+  EXCEPT when it immediately follows `<` (a `</Tag>` close or `< /re/` comparison).
+  So `const r = /Foo/` stops false-firing while `a / Foo / b`, `x > Foo`, a
+  variable named `myreturn / Foo`, and a real `{Foo}` between closing tags are
+  never touched.
+
 ## [2.38.20] - 2026-07-02
 
 Deep real-hook QA of the Stop backstop (`stop-backstop`) and every turn-end

@@ -440,6 +440,28 @@ class ChangeSetItem:
         self.message = message
 
 
+# Directory names the co-change rules care about (a model's migration, a
+# controller's route, a source-and-migration pairing) across Rails/Django/Next,
+# with a visit-order RANK. The bounded walk visits higher-rank dirs first so a
+# giant monorepo does not spend its file budget on unrelated trees before
+# reaching the rule-relevant ones. `app` outranks `db` so the trigger side
+# (models/controllers under app/) is reached even when db/ alone is large; both
+# still fit under the (raised) budget. `lib` is deliberately absent -- it is
+# large on a monolith and holds no cochange trigger/companion.
+_COCHANGE_DIR_RANK: dict[str, int] = {
+    "app": 5,
+    "models": 5,
+    "controllers": 5,
+    "config": 4,
+    "routes": 4,
+    "db": 3,
+    "migrations": 3,
+    "migrate": 3,
+    "src": 2,
+    "api": 2,
+}
+
+
 def _iter_repo_files(repo_root: Path, max_files: int):
     """Yield repo-relative POSIX paths of tracked-looking source files, bounded.
 
@@ -489,6 +511,16 @@ def _iter_repo_files(repo_root: Path, max_files: int):
             entries = sorted(current.iterdir())
         except OSError:
             continue
+        # Visit the co-change-relevant trees FIRST so the bounded budget reaches
+        # them before it is spent. The stack is LIFO (pop takes the last-pushed),
+        # so pushing entries in ascending sort order makes the walk explore the
+        # LAST-sorted dir first -- default alphabetical order visits
+        # `workhorse`/`qa`/`gems`/`ee` first on a large monolith (gitlabhq) and
+        # the budget is gone before `app`/`db`/`config` are reached, silently
+        # disabling every Rails cochange rule. Sort by RANK ascending (higher rank
+        # last -> popped first): app/models/controllers win, then config/routes,
+        # then db/migrate. Pure traversal-order change.
+        entries.sort(key=lambda e: (_COCHANGE_DIR_RANK.get(e.name, 0), e.name))
         for entry in entries:
             try:
                 if entry.is_dir():

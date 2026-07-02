@@ -9333,15 +9333,18 @@ _SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # that position word is present, so "ignore all instructions" / "disregard the
     # directives" / "ignore the instructions above" slipped through (the position
     # word can also trail the noun). Kept to the strongly-meta nouns
-    # (instructions/directives/prompts/guidelines/system prompt) so lint-rule
-    # convention prose ("ignore the rule for X") is NOT flagged.
+    # (instructions/directives/prompts/guidelines/system prompt/conventions) so
+    # lint-rule convention prose ("ignore the rule for X") is NOT flagged. Note
+    # "conventions" is meta HERE only behind an override verb ("disregard the
+    # conventions above"); benign profile prose uses "match/follow the
+    # conventions", never "ignore/disregard the conventions", so it is high-signal.
     (
         "override instructions",
         re.compile(
             r"\b(?:ignore|disregard|forget|override|bypass|skip)\s+"
             r"(?:all\s+|any\s+|the\s+|these\s+|those\s+|my\s+|your\s+|its\s+|"
             r"(?:all\s+)?(?:previous|prior|above|earlier|preceding|foregoing|following|other)\s+)*"
-            r"(?:instructions?|directives?|system\s+prompts?|guidelines?)\b",
+            r"(?:instructions?|directives?|system\s+prompts?|guidelines?|conventions?)\b",
             re.IGNORECASE,
         ),
     ),
@@ -9387,7 +9390,8 @@ _SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "credential exfiltration",
         re.compile(
-            r"\b(?:append|send|post|upload|exfiltrate|leak|steal|dump|transmit|copy)\b"
+            r"\b(?:append|send|post|upload|exfiltrate|leak|steal|dump|transmit|copy"
+            r"|e-?mail|mail|forward|share|ship|push|curl|wget|fetch)\b"
             r"[^.\n]{0,48}"
             r"(?:\.env\b|\.ssh\b|id_rsa|/etc/passwd|/etc/shadow|~/\.aws|\.pem\b|\.npmrc\b)",
             re.IGNORECASE,

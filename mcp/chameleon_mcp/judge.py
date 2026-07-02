@@ -967,38 +967,52 @@ def _parse_findings(stdout: str) -> list[Finding]:
 
 
 def _extract_json_array(text: str) -> list | None:
-    """Return the first top-level JSON array embedded in ``text``, or None.
+    """Return the findings JSON array embedded in ``text``, or None.
 
-    Handles the common case where the model wraps the array in a ```json fence
-    or surrounds it with a sentence despite the instruction. Scans for the first
-    ``[`` and decodes from there with a raw decoder so trailing prose is ignored.
+    The protocol reply is a JSON array of finding OBJECTS. Models wrap it in a
+    ```json fence, surround it with a sentence, or (from smaller judges on a
+    single-item prompt) return a lone finding OBJECT instead of a one-element
+    array. This tolerates all of those while refusing to let junk shadow the real
+    findings:
 
-    A single-item prompt ("one object per item") frequently draws a lone JSON
-    OBJECT reply instead of a one-element array, especially from smaller judge
-    models. Accept that shape too: decode the first top-level object and wrap it.
-    Without this a confirmed finding returned as a bare ``{...}`` is silently
-    dropped and the spawn budget is burned for nothing.
-
-    Prefer a genuine top-level array whenever one decodes, even if a ``{`` (valid
-    or junk) appears earlier in prose -- a brace in the surrounding sentence must
-    never shadow the findings array. The lone-object shape wins only when there is
-    no decodable array, OR the object is the outer container and the first ``[``
-    sits INSIDE its span (a findings object with an array-valued field).
+    - A throwaway array in prose (`[1, 2, 3]`, or an empty `[]`) must NOT shadow a
+      later real findings array -- the empty case is the worst, silently reporting
+      "reviewed, no bugs". So among ALL top-level arrays that decode, prefer the
+      first one whose elements include an object; only if none contains an object
+      does the first decoded array win (a genuine empty `[]` = a real clean pass).
+    - A prose brace before the array must not win either (round-1 fix): the lone
+      OBJECT shape is chosen only when there is no object-containing array, and an
+      object is preferred over a bare non-object array so `{...}` is not lost to a
+      `[1,2,3]`. An object whose own span contains the chosen array is the outer
+      container of a nested findings field and does not override it.
     """
     decoder = json.JSONDecoder()
-    start = text.find("[")
-    obj_start = text.find("{")
 
-    arr: list | None = None
-    if start != -1:
+    # Scan every top-level '[' and record the arrays that decode, cheapest-first.
+    # Bounded so a pathological reply full of '[' cannot cost more than a fixed
+    # number of decode attempts.
+    dict_array: list | None = None
+    dict_array_pos = -1
+    first_array: list | None = None
+    scanned = 0
+    max_brackets = threshold_int("JSON_SCAN_MAX_BRACKETS")
+    i = text.find("[")
+    while i != -1 and scanned < max_brackets:
+        scanned += 1
         try:
-            value, _ = decoder.raw_decode(text[start:])
-            if isinstance(value, list):
-                arr = value
+            value, _ = decoder.raw_decode(text[i:])
         except json.JSONDecodeError:
-            pass
+            value = None
+        if isinstance(value, list):
+            if first_array is None:
+                first_array = value
+            if any(isinstance(el, dict) for el in value):
+                dict_array, dict_array_pos = value, i
+                break
+        i = text.find("[", i + 1)
 
     obj: dict | None = None
+    obj_start = text.find("{")
     obj_end = -1
     if obj_start != -1:
         try:
@@ -1008,15 +1022,32 @@ def _extract_json_array(text: str) -> list | None:
         except json.JSONDecodeError:
             pass
 
-    # The object is the top-level container (wrap it) only when no array decoded,
-    # or when the object starts before the array AND its decoded span contains the
-    # array (the `[` is a nested field, not the findings list).
-    if obj is not None and (
-        arr is None or (start != -1 and obj_start < start and obj_start + obj_end > start)
-    ):
+    # A findings array (contains objects) wins, unless it is nested inside an
+    # earlier-starting object (that object is the real container -> wrap it).
+    if dict_array is not None:
+        if obj is not None and obj_start < dict_array_pos and obj_start + obj_end > dict_array_pos:
+            return [obj]
+        return dict_array
+    # No object-containing array was found within the bracket-scan budget. Before
+    # wrapping a lone object, guard the one case where that object is actually the
+    # FIRST ELEMENT of the real findings array sitting past the budget (a reply
+    # with many junk `[` before the array): if the object's `{` is immediately
+    # preceded (ignoring whitespace) by a `[`, decode the WHOLE array from that
+    # bracket so findings 2..N are not truncated to the first.
+    if obj is not None:
+        pre = text.rfind("[", 0, obj_start)
+        if pre != -1 and text[pre + 1 : obj_start].strip() == "":
+            try:
+                value, _ = decoder.raw_decode(text[pre:])
+                if isinstance(value, list) and any(isinstance(el, dict) for el in value):
+                    return value
+            except json.JSONDecodeError:
+                pass
+        # A lone object reply beats a bare non-object array so `{...}` is not lost
+        # to a prose `[1,2,3]`.
         return [obj]
-    if arr is not None:
-        return arr
+    if first_array is not None:
+        return first_array
     return None
 
 
