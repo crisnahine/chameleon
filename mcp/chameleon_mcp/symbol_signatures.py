@@ -273,7 +273,11 @@ def render_imported_definition(name: str, entry: dict, target_rel: str) -> str:
         if kind == "rest":
             # A variadic/splat param, not an optional one: `*args` (Ruby/Python) or
             # `...args` (TS), never `args?`. Also satisfies Python's `*` separator.
-            s = f"{splat}{pn}"
+            # An anonymous rest is stored as the bare splat token ("*" in Ruby,
+            # "..." in TS); concatenating the name onto it would double the token
+            # ("**", "......"), which in Ruby reads as a keyword-rest and misstates
+            # the contract. Mirror the keyword_rest branch's literal-token guard.
+            s = splat if pn == splat else f"{splat}{pn}"
             star_sep_emitted = True
         elif kind == "keyword_rest":
             # Ruby stores the literal "**"; Python stores the bare kwargs name.

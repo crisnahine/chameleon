@@ -595,6 +595,38 @@ def _candidate_test_paths(rel_path: str, *, language: str) -> list[tuple[str, st
             else:
                 mirror = [root] + dir_parts
             candidates.append((f"mirrored {root}/.../test_", _join(mirror + [f"test_{stem}{ext}"])))
+        # Django per-app single test module: a whole app's tests live in one
+        # tests.py beside the source (myapp/models.py -> myapp/tests.py). The
+        # classic (pre-pytest) Django layout the mirror above never reaches.
+        if stem != "tests":
+            candidates.append(("django app tests.py", _join(dir_parts + ["tests.py"])))
+        # Top-level-package layout: a project whose code lives under a package dir
+        # named after the project (flaskbb/utils/helpers.py) roots its tests at
+        # tests/ mirroring the package's INTERNAL structure, dropping the package
+        # dir itself and often grouping by test type. Strip the first component and
+        # try the direct mirror plus the dominant pytest group intermediates, so
+        # this layout is not measured as testless (the `src|app|lib` swap above
+        # only fires when the root is one of those literal names). Existence-gated
+        # like every candidate, so a non-matching guess costs nothing.
+        #
+        # Require a subpackage (dir_parts >= 2): stripping the first component of a
+        # bare top-level module (appA/models.py, appB/models.py) collapses BOTH to
+        # `tests/test_models.py`, so a shared test would false-pair to both apps.
+        # A subpackage keeps the discriminating inner path, and the flaskbb case
+        # this exists for (flaskbb/utils/helpers.py) always has one.
+        if len(dir_parts) >= 2:
+            inner = dir_parts[1:]
+            for root in ("tests", "test"):
+                candidates.append(
+                    (f"pkg-stripped {root}/", _join([root] + inner + [f"test_{stem}{ext}"]))
+                )
+                for group in ("unit", "functional", "integration"):
+                    candidates.append(
+                        (
+                            f"pkg-stripped {root}/{group}/",
+                            _join([root, group] + inner + [f"test_{stem}{ext}"]),
+                        )
+                    )
         return candidates
 
     if language == "ruby":

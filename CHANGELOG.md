@@ -4,6 +4,91 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.20] - 2026-07-02
+
+Deep real-hook QA of the Stop backstop (`stop-backstop`) and every turn-end
+advisory and injection surface it drives, across TypeScript/JavaScript, Ruby,
+and Python and their frameworks. Six parallel probe agents drove the real hook
+binaries against the bootstrapped test repos with live payloads (no mocks), then
+an adversarial regression pass attacked each fix with adjacent inputs. The core
+blocking guarantees (block/heal/inline-override/cap/`stop_hook_active`) verified
+correct; the fixes below close two turn-end coverage silences, restore turn-end
+advisories that a would-block file or a spent cap used to suppress, and correct
+several advisory and injection false-fires and false-silences.
+
+### Fixed
+
+- **A would-block file silenced every turn-end advisory in shadow mode, and the
+  block cap silenced them in enforce.** The Stop backstop returned early with `{}`
+  whenever an unresolved violation remained under a non-enforce mode, and again
+  once the per-session block cap was spent — skipping the duplication, cross-file,
+  stale-test, co-change, test-integrity, scope-drift, and correctness-judge
+  advisories entirely. The gate now decides the block first and always runs the
+  advisory pipeline in every non-blocking case (clean, shadow, off-block, or
+  capped enforce); `off` stays fully silent, shadow and capped enforce still
+  record the would-block telemetry.
+- **A phantom import in a file that resolved to no archetype was invisible and
+  never blocked**, despite three code comments promising it. The no-archetype
+  content scan ran only the secret and dangerous-sink lints; it now runs the
+  phantom-import scan too, so a hallucinated import in a brand-new file at the
+  repo root or an unclustered directory surfaces at edit time, arms the backstop,
+  and blocks at turn end like a leaked credential does.
+- **A transiently unreadable armed file permanently disarmed the backstop.** The
+  live re-lint returned "clean" when it could not read the file (a permissions
+  flip, an editor lock), so the caller cleared the armed flag and never re-checked
+  a violation still on disk. The re-lint now returns a distinct "could not
+  determine" result; the file stays armed and is re-checked next turn without
+  blocking the unverifiable one.
+- **A whole-file deletion produced no turn-end signal.** A module the turn edited
+  then deleted exports nothing, so its importers' call sites are broken — the
+  strongest existence break there is — but the Stop advisory only looked at
+  surviving files. It now also checks the modules the turn deleted (the same
+  closed-empty-export-set logic the `get_crossfile_context` tool uses) and names
+  the broken importers.
+- **The cross-file advisory false-fired on a clean rename when the old name
+  survived only in a comment.** The presence check blanked string literals but not
+  comments, so `// PrimaryFoo replaces the old Foo` after a completed rename read
+  as a live reference. Comments are now blanked too, language-aware (TS `//`,
+  `/* */`, JSDoc `*` continuation; Python `#`), preserving the TS private-field
+  sigil `this.#x`. The Ruby constant path likewise blanks only non-interpolating
+  string literals, keeping the `"#{Const}"` interpolation carve-out.
+- **A judge reply as a bare JSON object was silently dropped.** The findings
+  parser accepted only a JSON array, so a reviewer that answered a single-item
+  prompt with a lone `{...}` (common from smaller judge models) produced zero
+  findings while the spawn budget was burned — killing turn-end duplication and
+  correctness findings. The parser now also accepts a top-level object and wraps
+  it.
+- **Duplication review starved for the rest of a session under the default
+  multi-lens config.** Once a low-risk turn skipped the reviewer spawn, the
+  multi-lens pass bailed and the standalone duplication gate was gated off, so no
+  duplicate surfaced again that session. The standalone gate now runs whenever the
+  multi-lens pass did not own duplication this turn.
+- **The detached correctness judge misfiled its grounding events.** The async
+  child logged `judge_defs`/`judge_transitive` "grounded vs blind" outcomes as
+  spawn degradations, writing phantom degradation rows into the session
+  attestation. Both the sync gate and the detached child now translate all three
+  grounding families through one shared helper.
+- **Anonymous Ruby splat parameters rendered as `**` in the nearby-signature
+  injection**, misstating a positional-rest method as a keyword-rest. `def f(*)`
+  now renders `f(*)`, not `f(**)`.
+- **A commented-out assertion did not register as test weakening.** The added
+  `# assert x` line still matched the assertion pattern, cancelling the removed
+  real `assert x` in the delta, so the test-integrity advisory stayed silent for
+  the exact shape it exists to name. Commented lines are now excluded from the
+  assertion tally (both sides), and the advisory names the weakened test file.
+- **The Stop block reason showed a literal `<rule>` placeholder** instead of the
+  failing rule name, and the idiom-review and cross-file skip hints hardcoded the
+  TypeScript/Ruby comment tokens. The reason now lists the real rules with a
+  language-correct ignore hint, and a `(+N more)` tail is shown past five files.
+- **Python stale-test pairing missed the dominant pytest layouts.** The candidate
+  set now covers the Django per-app `tests.py`, the package-root-stripped mirror,
+  and the `unit`/`functional`/`integration` test-group intermediates, so a
+  top-level-package project is no longer measured as testless.
+- A non-regular `CHAMELEON_HOOK_ERROR_LOG` (a FIFO with no reader, a socket, a
+  device) hung the hook on its stderr redirect before the timeout wrapper could
+  engage; all six wrappers now fall back to `/dev/null` for a non-regular log
+  path.
+
 ## [2.38.19] - 2026-07-02
 
 Deep real-hook QA of the PreToolUse hook (`preflight-and-advise`) and every

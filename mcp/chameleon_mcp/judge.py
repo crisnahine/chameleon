@@ -972,16 +972,52 @@ def _extract_json_array(text: str) -> list | None:
     Handles the common case where the model wraps the array in a ```json fence
     or surrounds it with a sentence despite the instruction. Scans for the first
     ``[`` and decodes from there with a raw decoder so trailing prose is ignored.
+
+    A single-item prompt ("one object per item") frequently draws a lone JSON
+    OBJECT reply instead of a one-element array, especially from smaller judge
+    models. Accept that shape too: decode the first top-level object and wrap it.
+    Without this a confirmed finding returned as a bare ``{...}`` is silently
+    dropped and the spawn budget is burned for nothing.
+
+    Prefer a genuine top-level array whenever one decodes, even if a ``{`` (valid
+    or junk) appears earlier in prose -- a brace in the surrounding sentence must
+    never shadow the findings array. The lone-object shape wins only when there is
+    no decodable array, OR the object is the outer container and the first ``[``
+    sits INSIDE its span (a findings object with an array-valued field).
     """
-    start = text.find("[")
-    if start == -1:
-        return None
     decoder = json.JSONDecoder()
-    try:
-        value, _ = decoder.raw_decode(text[start:])
-    except json.JSONDecodeError:
-        return None
-    return value if isinstance(value, list) else None
+    start = text.find("[")
+    obj_start = text.find("{")
+
+    arr: list | None = None
+    if start != -1:
+        try:
+            value, _ = decoder.raw_decode(text[start:])
+            if isinstance(value, list):
+                arr = value
+        except json.JSONDecodeError:
+            pass
+
+    obj: dict | None = None
+    obj_end = -1
+    if obj_start != -1:
+        try:
+            value, obj_end = decoder.raw_decode(text[obj_start:])
+            if isinstance(value, dict):
+                obj = value
+        except json.JSONDecodeError:
+            pass
+
+    # The object is the top-level container (wrap it) only when no array decoded,
+    # or when the object starts before the array AND its decoded span contains the
+    # array (the `[` is a nested field, not the findings list).
+    if obj is not None and (
+        arr is None or (start != -1 and obj_start < start and obj_start + obj_end > start)
+    ):
+        return [obj]
+    if arr is not None:
+        return arr
+    return None
 
 
 def _coerce_findings(arr: list) -> list[Finding]:
@@ -1096,6 +1132,21 @@ JUDGE_GROUNDING_FAMILIES = ("judge_facts_", "judge_defs_", "judge_transitive_")
 def is_grounding_event(reason: object) -> bool:
     """True when ``reason`` is a per-spawn grounding event, not a real failure."""
     return isinstance(reason, str) and reason.startswith(JUDGE_GROUNDING_FAMILIES)
+
+
+def grounding_family(kind: object) -> str | None:
+    """Return the ``JUDGE_GROUNDING_FAMILIES`` prefix ``kind`` starts with, else
+    None. The canonical home for the families lives here, so both the sync gate
+    and the detached-child sink translate a grounding event to its own check
+    (``judge_facts`` / ``judge_defs`` / ``judge_transitive``) the same way,
+    instead of one path misfiling defs/transitive events as a spawn degradation.
+    """
+    if not isinstance(kind, str):
+        return None
+    for fam in JUDGE_GROUNDING_FAMILIES:
+        if kind.startswith(fam):
+            return fam
+    return None
 
 
 def _bare_auth_known_failed() -> bool:

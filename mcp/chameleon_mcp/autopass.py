@@ -173,6 +173,22 @@ _ASSERTION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bmust_\w+"),
 )
 
+# A line whose first non-whitespace run is a comment token (Python/Ruby `#`,
+# TS/JS `//` `/*` `*` `*/`). Commenting out an assertion is the canonical
+# test-weakening move, but the added `# assert x` line still matches
+# _ASSERTION_PATTERNS, so it would cancel the removed real `assert x` in the
+# delta and hide the weakening. Assertion tokens inside a comment are not live
+# assertions; skip commented lines from BOTH the added and removed tallies so
+# the count reflects executable assertions only (commenting one out reads as a
+# drop; uncommenting reads as a restore).
+_COMMENT_LINE_RE = re.compile(r"^\s*(?://|/\*|\*/|\*|#)")
+
+
+def _assertion_hits(line: str) -> int:
+    if _COMMENT_LINE_RE.match(line):
+        return 0
+    return sum(len(rx.findall(line)) for rx in _ASSERTION_PATTERNS)
+
 
 def _is_test_file(path: str) -> bool:
     """True when the path is a test/spec/story file under any supported
@@ -284,9 +300,9 @@ def scan_diff_signals(
         for line in added:
             if any(rx.search(line) for rx in _SKIP_MARKER_PATTERNS):
                 skip_markers += 1
-            assertions_added += sum(len(rx.findall(line)) for rx in _ASSERTION_PATTERNS)
+            assertions_added += _assertion_hits(line)
         for line in removed:
-            assertions_removed += sum(len(rx.findall(line)) for rx in _ASSERTION_PATTERNS)
+            assertions_removed += _assertion_hits(line)
 
     assertion_delta = assertions_added - assertions_removed
     weakening_markers = bool(

@@ -258,13 +258,20 @@ def main(argv: list[str] | None = None) -> int:
         failures: list[str] = []
 
         def _sink(kind: str, detail: str | None = None) -> None:
-            # Caller-facts outcome: its own check event (mirroring the sync
-            # gate's translation), never a degradation of the spawn itself.
-            if kind.startswith("judge_facts_"):
+            # A grounding-context outcome is its own check event, not a spawn
+            # degradation -- mirroring the sync gate's translation. All THREE
+            # grounding families (facts / imported defs / transitive chains) must
+            # route here; handling only judge_facts_ misfiled judge_defs_ and
+            # judge_transitive_ as degraded_spawn, so a healthy detached reviewer
+            # on a repo without those indexes wrote phantom degradation rows into
+            # the attestation and lost the "grounded vs blind" defs/transitive
+            # rows the raise-only replay depends on.
+            fam = judge.grounding_family(kind)
+            if fam is not None:
                 _event(
-                    kind[len("judge_facts_") :],
+                    kind[len(fam) :],
                     detail={"turn_key": turn_key},
-                    check="judge_facts",
+                    check=fam.rstrip("_"),
                 )
                 return
             if kind in _FAILURE_KINDS:

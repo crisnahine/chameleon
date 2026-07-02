@@ -71,7 +71,13 @@ def assess_test_weakening(diff_text: str, edited_files: list[str]) -> dict | Non
         # deletion did.
         if not reasons:
             reasons.append("net test lines removed")
-        return {"signals": signals, "reasons": reasons}
+        # Name the test files the turn touched so the advisory points at WHERE to
+        # restore coverage instead of only WHAT was weakened. The diff was scoped
+        # to the turn's edited files, so the test files among them are the ones
+        # carrying the weakening signal. Bounded so a large diff cannot bloat the
+        # line; the caller sanitizes each name at render.
+        weakened = [f for f in edited_files if _is_test_file(f)][:5]
+        return {"signals": signals, "reasons": reasons, "test_files": weakened}
     except Exception:
         return None
 
@@ -82,10 +88,15 @@ def format_test_integrity_advisory(assessment: dict | None) -> list[str]:
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
     reasons = "; ".join(assessment.get("reasons") or [])
+    test_files = assessment.get("test_files") or []
+    where = ""
+    if test_files:
+        names = ", ".join(sanitize_for_chameleon_context(Path(f).name) for f in test_files)
+        where = f" in {names}"
     return [
         "[\U0001f98e chameleon: test integrity]",
         sanitize_for_chameleon_context(
-            f"this turn changed source and weakened tests ({reasons}) — "
+            f"this turn changed source and weakened tests{where} ({reasons}) — "
             "restore the coverage or justify why it is safe."
         ),
     ]

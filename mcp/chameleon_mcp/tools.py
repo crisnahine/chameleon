@@ -3783,12 +3783,13 @@ def _live_importer_break(
     except Exception:
         return False
     # "Still references ``name`` as CODE" -- string literals (the import specifier
-    # path) are blanked by _reference_present so a removed export whose name is a
-    # substring of its own module path (`api` in `'@/lib/api-client'`) does not
+    # path) AND comments (a stale mention left after a rename) are blanked by
+    # _reference_present so a removed export whose name is a substring of its own
+    # module path (`api` in `'@/lib/api-client'`) or lingers in a comment does not
     # prop up a phantom break on an importer that fully renamed its reference.
     from chameleon_mcp.hook_helper import _reference_present
 
-    if not _reference_present(content, name, line):
+    if not _reference_present(content, name, line, language):
         return False
     try:
         from chameleon_mcp.hook_helper import _imported_source_keys

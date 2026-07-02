@@ -888,9 +888,13 @@ def _judge_spawn_health_banner(repo_root: Path, session_id: str | None = None) -
             ):
                 raw = entry.get("reason")
                 # A grounding event (judge_defs_*/judge_transitive_*/judge_facts_*)
-                # rides the degraded_spawn channel in pre-2.38.9 attestations but
                 # is NOT a spawn failure; skip it so a healthy reviewer never
-                # raises the failed-to-spawn banner.
+                # raises the failed-to-spawn banner. Both the sync gate and the
+                # detached child now file these under their own check via
+                # judge.grounding_family, but this defensive skip stays: a
+                # degraded_spawn row carrying a grounding reason (older
+                # attestation, or any future mis-file) must never raise the
+                # banner.
                 if isinstance(raw, str) and _judge_grounding_family(raw) is not None:
                     continue
                 reason = raw if raw in _JUDGE_DEGRADED_REASONS else "unknown"
@@ -3763,6 +3767,31 @@ def _scan_archetype_independent(
             out.extend(v.to_dict() for v in scan_dangerous_sinks(content, language=language))
         except Exception:
             pass
+        # A phantom import (a relative/aliased specifier resolving to no file) is a
+        # content fact independent of the archetype, exactly like the secret and
+        # eval scans above -- the docstrings on this path and on the Stop relint
+        # both promise it blocks on an unarchetyped file. It was never scanned
+        # here, so a hallucinated import in a brand-new file at the repo root or in
+        # an unclustered directory shipped with no edit-time advisory and no
+        # turn-end refusal. Resolve needs the repo root + a rules map for tsconfig
+        # aliases; ``rules`` may be None (callers without the profile loaded), in
+        # which case alias resolution degrades to the on-disk check.
+        if repo_root is not None:
+            try:
+                from chameleon_mcp.phantom_imports import lint_phantom_imports
+
+                out.extend(
+                    v.to_dict()
+                    for v in lint_phantom_imports(
+                        content,
+                        file_path=file_path,
+                        repo_root=repo_root,
+                        language=language,
+                        rules=rules,
+                    )
+                )
+            except Exception:
+                pass
     if rules is not None:
         try:
             from chameleon_mcp.lint_engine import scan_style_rules
@@ -5135,7 +5164,7 @@ def _stop_file_still_blockable(
     daemon_state=None,
     out_rules=None,
     level: int = 2,  # LEVEL_L2; a module-level literal so the default binds at import time
-) -> bool:
+) -> bool | None:
     """Re-lint a candidate file live and report whether an enforceable hard-class
     violation still stands.
 
@@ -5177,7 +5206,16 @@ def _stop_file_still_blockable(
         p = Path(file_path)
         if not p.is_file():
             return False
-        content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+        try:
+            content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+        except OSError:
+            # The file exists but could not be read this turn (a permissions flip,
+            # a network-FS hiccup, an editor lock). "Couldn't check" is NOT
+            # "resolved": returning False here would let the caller clear the
+            # armed flag and permanently disarm the backstop for a violation still
+            # on disk. Signal unknown so the caller keeps the file armed and
+            # re-checks it next Stop, without blocking this (unverifiable) turn.
+            return None
 
         archetype_name: str | None = None
         confidence_band: str | None = None
@@ -5226,7 +5264,9 @@ def _stop_file_still_blockable(
             # because it stays gated on an archetype match. posttool_verify
             # recorded this file under the synthetic no-archetype label
             # precisely so the credential blocks the turn here.
-            indep = _scan_archetype_independent(content, file_path)
+            indep = _scan_archetype_independent(
+                content, file_path, _load_rules_for_style(repo_root), repo_root=repo_root
+            )
             if not indep:
                 return False
             if active is None:
@@ -5608,8 +5648,7 @@ def _idiom_review_gate(
         parts.append("")
         parts.append(
             "Ending again confirms the review is done. To skip this check, add "
-            "`// chameleon-ignore idioms` (`# chameleon-ignore idioms` in Ruby) in "
-            "a file you touched."
+            f"{_ignore_hint(edited[:5], 'idioms')} in a file you touched."
         )
 
         state.stop_hook_blocks += 1
@@ -6492,29 +6531,62 @@ def _imported_source_keys(content: str, name: str, importer_dir: Path, lang: str
 # whose bareword sits in code, not a string).
 _STRING_LITERAL_RE = re.compile(r"""'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`""")
 
+# Per-language line/block comment forms, blanked before the bareword scan so an
+# old export name kept only in a comment after a completed rename ("// PrimaryFoo
+# replaces the old Foo") is not miscounted as a live reference -- the
+# comment-analog of the string blanking. TS/JS: `//`, one-line `/* */`, and a
+# `*`-led JSDoc continuation line; NOT `#`, which is a private-field sigil
+# (`this.#x`) in TS, so blanking it would hide a real reference after it. Python:
+# `#` only. None (unknown language): the safe superset of both, biased to
+# over-suppress (an advisory false-negative) rather than over-fire.
+_TS_COMMENT_RE = re.compile(r"//.*$|/\*.*?\*/|^\s*\*.*$", re.MULTILINE)
+_PY_COMMENT_RE = re.compile(r"#.*$", re.MULTILINE)
+_ANY_COMMENT_RE = re.compile(r"//.*$|#.*$|/\*.*?\*/|^\s*\*.*$", re.MULTILINE)
 
-def _reference_present(content: str, name: str, line: int | None) -> bool:
+
+def _comment_re_for(language: str | None) -> re.Pattern[str]:
+    if language == "typescript":
+        return _TS_COMMENT_RE
+    if language == "python":
+        return _PY_COMMENT_RE
+    return _ANY_COMMENT_RE
+
+
+def _reference_present(
+    content: str, name: str, line: int | None, language: str | None = None
+) -> bool:
     """True if ``name`` appears as a bareword code reference in ``content`` -- not
-    only inside a string literal such as an import specifier path.
+    only inside a string literal (an import specifier path) or a comment (a stale
+    mention left after a rename).
 
-    Checks the recorded ``line`` first (cheap), then the whole file; string
-    literals are blanked before each scan so a name that survives only inside a
-    module path is not counted as a live use. Shared by the TS/Python existence
-    checks -- the Stop advisory (``_live_break``) and the tool
-    (``_live_importer_break``) -- so the two cannot drift.
+    Checks the recorded ``line`` first (cheap), then the whole file; comments AND
+    string literals are blanked before each scan so a name that survives only in
+    a module path or a comment is not counted as a live use. ``language`` selects
+    the comment token set (TS `//` vs Python `#`); None uses the superset. Shared
+    by the TS/Python existence checks -- the Stop advisory (``_live_break``) and
+    the tool (``_live_importer_break``) -- so the two cannot drift.
 
     Safe for these callers ONLY because a genuine named-import break is anchored
     by the import binding (``import {{ name }}``), which is code and survives the
-    blanking; blanking usages inside a template literal can therefore never hide a
-    real break. It is NOT used for the Ruby constant paths, which have no import
-    anchor and whose interpolating ``"#{{...}}"`` strings carry real references.
+    blanking; a usage that survives only inside a comment or a template literal
+    can therefore never hide a real break. It is NOT used for the Ruby constant
+    paths, which have no import anchor and whose interpolating ``"#{{...}}"``
+    strings carry real references.
     """
     needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
+    comment_re = _comment_re_for(language)
+
+    def _blank(text: str) -> str:
+        # Comments first (a `// path` trailing comment must lose only the comment,
+        # not the code before it), then strings, so an import specifier path is
+        # not counted as a live use either.
+        return _STRING_LITERAL_RE.sub(" ", comment_re.sub(" ", text))
+
     lines = content.splitlines()
     if line is not None and 1 <= line <= len(lines):
-        if needle.search(_STRING_LITERAL_RE.sub(" ", lines[line - 1])):
+        if needle.search(_blank(lines[line - 1])):
             return True
-    return bool(needle.search(_STRING_LITERAL_RE.sub(" ", content)))
+    return bool(needle.search(_blank(content)))
 
 
 def _crossfile_existence_advisory_lines(
@@ -6522,6 +6594,7 @@ def _crossfile_existence_advisory_lines(
     repo_root: Path,
     state,
     cfg,
+    deleted_paths: list[str] | None = None,
 ) -> list[str]:
     """Build the turn-end cross-file existence-break advisory lines, or [].
 
@@ -6602,8 +6675,9 @@ def _crossfile_existence_advisory_lines(
             except OSError:
                 return False
             # (1) still references ``name`` as CODE (not only inside the import path
-            # string), and (2) the reference is still sourced from the TARGET module.
-            if not _reference_present(text, name, line):
+            # string OR a stale comment), and (2) the reference is still sourced
+            # from the TARGET module.
+            if not _reference_present(text, name, line, language):
                 return False
             keys = _imported_source_keys(text, name, ip.parent, language, _resolver_for(language))
             if keys and target_key not in keys:
@@ -6614,23 +6688,38 @@ def _crossfile_existence_advisory_lines(
             # Cheap presence check: the index is a bootstrap snapshot, so confirm
             # the importer still names the binding (the rename may have reached it
             # too) before claiming its call site is broken. No parse -- a
-            # word-boundary scan over the importer bytes. Deliberately
-            # string-inclusive (unlike the TS import-path scan in _reference_present):
-            # a Ruby constant has no import binding to anchor a code-only check, and
-            # blanking `"..."` would also blank an interpolation `"#{Const}"`,
-            # dropping a genuine referencer -- a false negative worse than the rare
-            # after-rename string-mention over-inclusion this path is keep-biased for.
+            # word-boundary scan over the importer bytes. A Ruby constant has no
+            # import binding to anchor a code-only check, so this cannot blank
+            # strings wholesale the way _reference_present does: an interpolation
+            # `"#{Const}"` carries a REAL reference. But a plain string with no
+            # `#{` interpolation ("Address updated.") is inert text -- an old
+            # constant lingering there after a completed rename is NOT a live
+            # reference. Blank only non-interpolating string literals, keeping the
+            # interpolation carve-out. Keeps the false-negative bias (an
+            # unparseable string stays counted) while dropping the "stale mention
+            # in a UI string" false positive the agent reproduced.
             ip = repo_root / importer_rel
             try:
                 text = ip.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
             except OSError:
                 return False
             needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
+
+            def _blank_plain_strings(s: str) -> str:
+                # A single/double-quoted literal that contains no `#{` -- blanked so
+                # a bareword surviving only inside it is not miscounted. An
+                # interpolating literal is left intact (its `#{Const}` is a real ref).
+                def _sub(m: re.Match) -> str:
+                    lit = m.group(0)
+                    return " " * len(lit) if "#{" not in lit else lit
+
+                return re.sub(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", _sub, s)
+
             text_lines = text.splitlines()
             if line is not None and 1 <= line <= len(text_lines):
-                if needle.search(text_lines[line - 1]):
+                if needle.search(_blank_plain_strings(text_lines[line - 1])):
                     return True
-            return bool(needle.search(text))
+            return bool(needle.search(_blank_plain_strings(text)))
 
         # Ruby move-in-one-turn suppression: the class/module names each edited
         # Ruby file currently defines, computed once and memoized. A class moved to
@@ -6775,6 +6864,59 @@ def _crossfile_existence_advisory_lines(
                 ]
                 breaks.append((sanitize_for_chameleon_context(name), target_key, sites, "export"))
 
+        # Deleted TS/Python modules: a file the turn edited then removed exports
+        # nothing now, so every importer the reverse index still attributes to it
+        # is a genuine break -- the strongest existence break there is, and the one
+        # shape the loop above never sees (the file is gone from state.files). A
+        # deleted module has a CLOSED empty export set, so broken_importers(key,
+        # {}) returns every still-referencing importer, and the per-site _live_break
+        # re-check keeps only importers that still name it and still resolve here (a
+        # same-turn move that redefined the module elsewhere and repointed the
+        # importer drops out). No inline-ignore is possible (the source is gone), so
+        # this is advisory-only, like the tool-level path (_module_file_missing).
+        if index is not None:
+            for path in deleted_paths or []:
+                if seen_files >= max_files:
+                    break
+                if detect_language(str(Path(path))) not in ("typescript", "python"):
+                    continue
+                target_key = module_key_for_path(Path(path), repo_root)
+                if target_key is None:
+                    continue
+                # Only a genuinely-gone file counts; a path that merely failed a
+                # read for another reason must not fabricate a deleted-module break.
+                try:
+                    if (repo_root / target_key).exists():
+                        continue
+                except OSError:
+                    continue
+                seen_files += 1
+                broken = index.broken_importers(target_key, frozenset())
+                if not broken:
+                    continue
+                for name in sorted(broken):
+                    importers = broken[name]
+                    lang = detect_language(str(Path(path)))
+                    live = [
+                        imp
+                        for imp in importers
+                        if _live_break(imp.path, name, imp.line, target_key, lang)
+                    ]
+                    if not live:
+                        continue
+                    live_sorted = sorted(
+                        live, key=lambda imp: (imp.path, imp.line if imp.line is not None else -1)
+                    )
+                    sites = [
+                        sanitize_for_chameleon_context(
+                            f"{imp.path}:{imp.line}" if imp.line is not None else imp.path
+                        )
+                        for imp in live_sorted[:max_sites]
+                    ]
+                    breaks.append(
+                        (sanitize_for_chameleon_context(name), target_key, sites, "deleted")
+                    )
+
         if not breaks:
             return []
 
@@ -6786,20 +6928,20 @@ def _crossfile_existence_advisory_lines(
             "reference them; their call sites are now broken. Restore the "
             "definition or update the references. This is advisory, not a block.",
         ]
-        for name, _module, sites, kind in breaks:
+        for name, module, sites, kind in breaks:
             shown = ", ".join(sites)
             more = " ..." if len(sites) >= max_sites else ""
-            verb = (
-                "defined; still referenced by"
-                if kind == "constant"
-                else "exported; still imported by"
-            )
+            if kind == "constant":
+                verb = "defined; still referenced by"
+            elif kind == "deleted":
+                verb = f"exported ({module} was deleted); still imported by"
+            else:
+                verb = "exported; still imported by"
             lines.append(f"- '{name}' no longer {verb} {shown}{more}")
         lines.append(
             "To silence this for a file, add "
-            "`# chameleon-ignore removed-export-breaks-importers` (Ruby) / "
-            "`// chameleon-ignore removed-export-breaks-importers` (TS) in the "
-            "source you touched."
+            + _ignore_hint([path for path in state.files], "removed-export-breaks-importers")
+            + " in the source you touched."
         )
         return lines
     except Exception:
@@ -7339,11 +7481,14 @@ def _stop_gates(
 
         state = load_state(repo_data, session_id or "")
 
-        # Cap reached: stay advisory and never block again this session, so a
-        # violation the model can't resolve cannot trap the turn in a loop.
-        if state.stop_hook_blocks >= cfg.stop_block_cap:
+        # Cap reached: the backstop must never BLOCK again this session (so an
+        # unresolvable violation cannot trap the turn in a loop), but the turn-end
+        # advisories still run below -- silencing them once the block budget was
+        # spent was a coverage gap. cap_reached suppresses only the block, not the
+        # advisory pipeline.
+        cap_reached = state.stop_hook_blocks >= cfg.stop_block_cap
+        if cap_reached:
             _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "cap_reached")
-            return {}
 
         # A candidate (L2 with the cached flag set) is only blocked after a LIVE
         # re-lint confirms an enforceable hard violation still stands; the cached
@@ -7387,12 +7532,20 @@ def _stop_gates(
         # path -> enforceable hard rules still standing, so the shadow would_block
         # row can attribute the backstop block to the specific rules per file.
         unresolved_rules: dict[str, list[str]] = {}
+        # Files this turn recorded as edited that no longer exist: a module the
+        # turn DELETED. It exports nothing now, so its importers' call sites are
+        # broken -- the strongest existence break there is. The prune below drops
+        # them from state (so it does not accumulate phantom paths), so capture
+        # them here first and hand them to the crossfile advisory, which the loop
+        # otherwise never sees (it iterates the surviving state.files).
+        deleted_paths: list[str] = []
         cleared_any = False
         for path, fs in list(state.files.items()):
             p = Path(path)
             if not p.is_file():
                 # The file was deleted since it was recorded; drop its entry so
                 # state does not accumulate phantom paths across the session.
+                deleted_paths.append(path)
                 del state.files[path]
                 cleared_any = True
                 continue
@@ -7406,7 +7559,7 @@ def _stop_gates(
             if not fs.blockable_unresolved:
                 continue
             file_rules: list[str] = []
-            if _stop_file_still_blockable(
+            verdict = _stop_file_still_blockable(
                 repo_root,
                 path,
                 loaded=preloaded,
@@ -7414,7 +7567,14 @@ def _stop_gates(
                 daemon_state=daemon_state,
                 out_rules=file_rules,
                 level=fs.level,
-            ):
+            )
+            if verdict is None:
+                # Re-verify could not run this turn (the file was unreadable);
+                # keep the file armed and re-check next Stop rather than clearing
+                # the flag on a violation that may still stand. Do not add it to
+                # ``unresolved`` -- an unverifiable file must not block THIS turn.
+                continue
+            if verdict:
                 unresolved.append(path)
                 unresolved_rules[path] = file_rules
             else:
@@ -7431,10 +7591,15 @@ def _stop_gates(
         # record it so the attestation can attest the relint ran this Stop.
         _emit_check_event(repo_id, session_id, "stop_relint", "ran")
 
-        if not unresolved:
-            # No lint block this stop: run the reflexive idiom/principle review
-            # gate. It blocks once per session (enforce) to force a self-review of
-            # the turn's edits, else allows the stop. Top-level Stop ONLY -- a
+        def _run_advisories() -> dict:
+            # Turn-end advisory pipeline, extracted so it runs in EVERY
+            # non-blocking case -- a clean turn, a shadow turn, an off turn, and a
+            # capped/shadow turn that had an unresolved violation the backstop did
+            # not block. Silencing these advisories whenever a would-block file was
+            # present (or the cap was spent) was a coverage gap. It leads with the
+            # reflexive idiom/principle review gate, which blocks once per session
+            # in enforce to force a self-review of the turn's edits, else allows
+            # the stop. Top-level Stop ONLY -- a
             # SubagentStop must not run this whole-turn self-review: it would both
             # false-block a subagent on its narrow task AND burn the once-per-
             # session marker, so the real parent Stop then short-circuits and the
@@ -7482,10 +7647,17 @@ def _stop_gates(
             # per-turn routed). It never blocks; its findings ride out as
             # additionalContext the model reads after the turn.
             #
-            # When the opt-in multi-lens review is on (default off), ONE
-            # coordinated pass runs the correctness + duplication lenses together
-            # (no mutual defer) and REPLACES both the correctness gate here and
-            # the duplication gate below. Subagents keep the standard gate.
+            # When the multi-lens review is on (default on), ONE coordinated pass
+            # runs the correctness + duplication lenses together (no mutual defer)
+            # and REPLACES both the correctness gate here and the duplication gate
+            # below -- but ONLY on a turn the route actually spawns. On a low-risk
+            # turn the route skips (no reviewer spend), the lens pass bails, and
+            # then the standalone duplication gate below must still run so
+            # duplication is not silently starved for the rest of the session.
+            # Subagents keep the standard gate.
+            multilens_owns_dup = bool(
+                cfg.multi_lens_review and not is_subagent and route.get("spawn")
+            )
             multilens_lines: list[str] = []
             judged = None
             if cfg.multi_lens_review and not is_subagent:
@@ -7541,6 +7713,7 @@ def _stop_gates(
                 repo_root=repo_root,
                 state=state,
                 cfg=cfg,
+                deleted_paths=deleted_paths,
             )
 
             # Turn-end duplication: a function this turn introduced whose body
@@ -7556,10 +7729,14 @@ def _stop_gates(
             # ["spawn_timed_out"]); a second sequential spawn would blow the 55s
             # wall-clock cap and SIGKILL the process mid-review. Advisory only,
             # folded into the same Stop context.
-            # Skipped when multi_lens_review owns duplication this turn (the lens
-            # pass above already ran it).
+            # Skipped only when the multi-lens pass OWNED duplication this turn
+            # (multi-lens on AND the route spawned). When multi-lens is on but the
+            # route skipped a low-risk turn, the lens pass bailed without running
+            # duplication, so the standalone gate must run here -- otherwise the
+            # default config silently starves duplication after the session's first
+            # spawn.
             dup_lines: list[str] = []
-            if not is_subagent and not cfg.multi_lens_review:
+            if not is_subagent and not multilens_owns_dup:
                 _corr_active = bool(
                     corr_spawning
                     and (not route.get("spawn_failed") or route.get("spawn_timed_out"))
@@ -7647,20 +7824,27 @@ def _stop_gates(
                 }
             return {}
 
-        # Shadow mode records the would-have-blocked signal and allows the stop;
-        # off mode is advisory-only and stays fully silent (no shadow telemetry),
-        # mirroring the idiom gate's off-handling -- a would_block row on an
-        # enforcement-off repo is itself misleading. Both allow the stop.
-        if cfg.mode != "enforce":
-            if cfg.mode == "shadow":
+        # Block decision first, THEN the advisory pipeline. An unresolved
+        # violation only ever suppresses the Stop under enforce with cap budget
+        # left; shadow, off, and a capped enforce turn never block. In every
+        # non-blocking case the turn-end advisories still run below -- the
+        # previous early returns silenced them whenever a would-block file was
+        # present, which starved duplication / crossfile / scope-drift review.
+        if unresolved:
+            hard_block = cfg.mode == "enforce" and not cap_reached
+            # Record the would-have-blocked signal for shadow (feeds the
+            # promotion report) AND for a capped enforce turn (the block the cap
+            # swallowed is still real signal). off stays fully silent: a
+            # would_block row on an enforcement-off repo is itself misleading.
+            if cfg.mode == "shadow" or (cap_reached and cfg.mode == "enforce"):
                 try:
                     from chameleon_mcp.metrics import emit_hook_metric
 
-                    # One would_block row per rule per unresolved file, so the shadow
-                    # report attributes the backstop block to the specific rule and
-                    # can sample the file for spot-check. A file that re-lints
-                    # blockable but yielded no rule name still gets one row with a
-                    # null rule so the file:line sample is not lost.
+                    # One would_block row per rule per unresolved file, so the
+                    # shadow report attributes the backstop block to the specific
+                    # rule and can sample the file for spot-check. A file that
+                    # re-lints blockable but yielded no rule name still gets one
+                    # row with a null rule so the file:line sample is not lost.
                     emitted_any = False
                     for path in unresolved:
                         file_rel = _repo_rel(repo_root, path)
@@ -7686,24 +7870,50 @@ def _stop_gates(
                         )
                 except Exception:
                     pass
-            return {}
 
-        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+            if hard_block:
+                from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-        names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in unresolved[:5])
-        state.stop_hook_blocks += 1
-        try:
-            save_state(state, repo_data, session_id or "")
-        except Exception:
-            pass
-        return {
-            "decision": "block",
-            "reason": (
-                f"chameleon: unresolved convention violations remain in {names}. "
-                f"Fix them before ending, or add {_ignore_hint(unresolved[:5])} "
-                f"on the offending line."
-            ),
-        }
+                names = ", ".join(
+                    sanitize_for_chameleon_context(Path(p).name) for p in unresolved[:5]
+                )
+                more = f" (+{len(unresolved) - 5} more)" if len(unresolved) > 5 else ""
+                # Name the actual failing rules in the reason and the ignore hint,
+                # so the model can construct a working escape instead of typing the
+                # literal placeholder `<rule>`. Distinct across the named files, in
+                # first-seen order.
+                distinct_rules = list(
+                    dict.fromkeys(
+                        r for p in unresolved[:5] for r in (unresolved_rules.get(p) or []) if r
+                    )
+                )
+                hint_rule = distinct_rules[0] if distinct_rules else "<rule>"
+                rules_clause = (
+                    f" (rule{'s' if len(distinct_rules) > 1 else ''}: {', '.join(distinct_rules)})"
+                    if distinct_rules
+                    else ""
+                )
+                state.stop_hook_blocks += 1
+                try:
+                    save_state(state, repo_data, session_id or "")
+                except Exception:
+                    pass
+                return {
+                    "decision": "block",
+                    "reason": (
+                        f"chameleon: unresolved convention violations remain in "
+                        f"{names}{more}{rules_clause}. Fix them before ending, or add "
+                        f"{_ignore_hint(unresolved[:5], hint_rule)} on the offending line."
+                    ),
+                }
+
+            if cfg.mode == "off":
+                # off is advisory-only and stays fully silent, even on an
+                # unresolved violation.
+                return {}
+            # shadow / capped enforce: fall through to the advisories below.
+
+        return _run_advisories()
     except Exception as exc:
         _note_if_config_malformed(exc, repo_id, session_id, "stop_relint")
         return {}
