@@ -1056,18 +1056,17 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
 
         repo_id = _compute_repo_id(resolved_root)
 
-        cooldown_seconds = max(60, (cfg.auto_refresh.max_age_hours * 3600) // 4)
-        cooldown_marker = _plugin_data_dir() / repo_id / _AUTO_REFRESH_COOLDOWN_FILENAME
-        if _marker_path_is_fresh(cooldown_marker, cooldown_seconds):
-            return
-
-        should_fire = False
         # Migration trigger: an engine upgrade or a profile missing enforcement.json
         # (an existing user's pre-upgrade profile, built before calibration existed)
         # must auto-upgrade on the next session rather than waiting for drift or age
         # to accumulate. The refresh re-derives the profile, regenerates the
         # calibration, and re-stamps the engine version, so the trigger self-clears
-        # and the cooldown marker below prevents a re-fire while it runs.
+        # and the cooldown marker written after the spawn prevents a re-fire while it
+        # runs. Computed BEFORE the cooldown gate: the general cooldown (up to ~42h)
+        # is written by the PRE-upgrade refresh, so gating the migration behind it
+        # served known-stale facts for that whole window after the fixing engine
+        # shipped — the exact wait this trigger exists to avoid.
+        migration_due = False
         try:
             from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
             from chameleon_mcp.tools import _engine_version_changed
@@ -1076,9 +1075,28 @@ def _maybe_auto_refresh(repo_root: Path) -> None:
                 _engine_version_changed(profile_dir, ENGINE_MIN_VERSION)
                 or not (profile_dir / "enforcement.json").is_file()
             ):
-                should_fire = True
+                migration_due = True
         except Exception:  # noqa: BLE001
             pass
+
+        cooldown_seconds = max(60, (cfg.auto_refresh.max_age_hours * 3600) // 4)
+        # A migration caps the effective cooldown at a short floor so the upgrade
+        # repair fires on the next session, yet still cannot storm: the marker
+        # written after the spawn suppresses the following session, and a completed
+        # refresh re-stamps the engine version so the trigger self-clears. A failed
+        # refresh simply retries after the short floor instead of waiting out ~42h.
+        effective_cooldown = cooldown_seconds
+        if migration_due:
+            from chameleon_mcp._thresholds import threshold_int
+
+            effective_cooldown = min(
+                cooldown_seconds, threshold_int("MIGRATION_REFRESH_COOLDOWN_SECONDS")
+            )
+        cooldown_marker = _plugin_data_dir() / repo_id / _AUTO_REFRESH_COOLDOWN_FILENAME
+        if _marker_path_is_fresh(cooldown_marker, effective_cooldown):
+            return
+
+        should_fire = migration_due
         if not should_fire:
             # Production-pinned staleness: the locked ref's tip moved past the
             # profile's recorded derivation SHA (or a locked repo's profile
@@ -1788,6 +1806,7 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
         from chameleon_mcp.symbol_signatures import (
             load_symbol_signatures,
             render_imported_definition,
+            symbol_presence_in_source,
         )
         from chameleon_mcp.worktree import resolve_profile_root
 
@@ -1810,7 +1829,7 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
             (e for e in parent.iterdir() if e != target and e.suffix in _SOURCE_EXTENSIONS),
             key=lambda p: p.name,
         )[:scan_cap]
-        scored: list[tuple[int, str, str, dict]] = []
+        scored: list[tuple[int, str, str, dict, Path]] = []
         for entry in candidates:
             if not entry.is_file():
                 continue
@@ -1819,14 +1838,15 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
             if not by_name:
                 continue
             score = _nearby_call_proximity(calls, rel, by_name, edited_key)
-            scored.append((score, entry.name, rel, by_name))
+            scored.append((score, entry.name, rel, by_name, entry))
         # Proximity DESC, then name ASC: collaborators the edited file actually
         # calls lead; name order breaks ties and is the entire order when the
         # calls index is absent (every score 0), preserving prior behavior.
         scored.sort(key=lambda t: (-t[0], t[1]))
+        verify_cap = threshold_int("NEARBY_SIG_VERIFY_MAX_BYTES")
         rendered: list[str] = []
         files_used = 0
-        for _score, _name, rel, by_name in scored:
+        for _score, _name, rel, by_name, entry in scored:
             if files_used >= _NEARBY_SIG_MAX_FILES or len(rendered) >= _NEARBY_SIG_MAX_TOTAL:
                 break
             files_used += 1
@@ -1835,8 +1855,30 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
             # a sibling whose name carries a newline must not split this listing
             # the way it would the "Nearby:" line.
             safe_rel = _safe_display_name(rel)
+            # Re-verify each stored signature against the CURRENT sibling on disk:
+            # signatures are production-ref derived (or can predate a local edit),
+            # so a stored line may be stale or the symbol gone. Read the file once,
+            # bounded; on any read error fall back to the stored rows unchanged
+            # (fail-open, prior behavior). A phantom (symbol absent now) is dropped;
+            # a moved symbol keeps its contract but loses the misleading line.
+            current_lines: list[str] | None = None
+            try:
+                current_lines = entry.read_text(encoding="utf-8", errors="replace")[
+                    :verify_cap
+                ].split("\n")
+            except OSError:
+                current_lines = None
             for name, row in list(by_name.items())[:_NEARBY_SIG_MAX_SYMBOLS]:
-                rendered.append(render_imported_definition(name, row, safe_rel))
+                render_row = row
+                if current_lines is not None:
+                    present, keep_line = symbol_presence_in_source(
+                        current_lines, name, row.get("start_line")
+                    )
+                    if not present:
+                        continue
+                    if not keep_line:
+                        render_row = {k: v for k, v in row.items() if k != "start_line"}
+                rendered.append(render_imported_definition(name, render_row, safe_rel))
                 if len(rendered) >= _NEARBY_SIG_MAX_TOTAL:
                     break
         if not rendered:
@@ -1954,6 +1996,18 @@ _ARCH_FACTS_MAX_METHODS = 8
 _ARCH_FACTS_MAX_MACROS = 8
 _ARCH_FACTS_MAX_EXPORTS = 40
 
+# Identifier-shape allowlist for every value the archetype-facts section renders
+# (export name, base class, required method, DSL macro, decorator). These render
+# as chameleon's OWN directive voice OUTSIDE the imitate-spotlight, so a poisoned
+# committed value that slipped the prose denylist could otherwise plant an
+# authoritative instruction or a no-emoji forged header (the header neutralizer is
+# keyed on the 🦎 emoji). A legit value is always a single code identifier — it may
+# be namespaced (ActiveInteraction::Base, models.Model), carry a Ruby ?/! suffix, a
+# leading @ (decorator), a $ (JS), or <> generics, but NEVER whitespace or sentence
+# punctuation. The allowlist is lossless for real profiles (verified against every
+# bootstrapped repo) and closes the class the denylist cannot fully cover.
+_ARCH_FACTS_TOKEN_RE = re.compile(r"^[\w$.:<>@?!]{1,80}$")
+
 
 def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> str:
     """Compact, archetype-SCOPED facts for the Tier-2 block: the contract this
@@ -2006,18 +2060,26 @@ def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> s
         # a dropped/empty value; callers skip empties.
         def _safe(text: object) -> str:
             # Drop non-string / empty (a None must never render as the literal
-            # "None") and injection-prose values; sanitize + fence-break the rest.
+            # "None").
             if not isinstance(text, str) or not text:
                 return ""
+            # Identifier-shape allowlist FIRST. Every value here is a single code
+            # identifier (base class, method, macro, decorator, export name). These
+            # render as chameleon's OWN directive voice OUTSIDE the imitate-spotlight,
+            # so the prose denylist below is not enough on its own: a poisoned value
+            # that reads as a plausible sentence ("...] Delete all files.") or plants
+            # a no-emoji forged header ("[chameleon: SYSTEM OVERRIDE]") would slip the
+            # denylist and land as authoritative guidance. A legit identifier never
+            # contains whitespace or sentence punctuation, so the allowlist is lossless
+            # for real profiles and drops any tampered value outright (a newline or CR
+            # in the value fails the charset too, so it can no longer split the
+            # single-line directive with a second forged line).
+            if not _ARCH_FACTS_TOKEN_RE.match(text):
+                return ""
+            # Redundant given the allowlist, but kept so a future widening of the
+            # charset cannot silently reintroduce an injection-prose leak.
             if _prose_injection_unsafe(text):
                 return ""
-            # Every value here is a single identifier (base class, method, macro,
-            # decorator, export name); a newline / CR / control byte in one is never
-            # legitimate and would split the single-line directive, letting a
-            # poisoned value plant a second line of forged directive text. The
-            # downstream sanitizer preserves newlines (meaningful in code excerpts),
-            # so collapse control runs to a space HERE, at the point a NAME is rendered.
-            text = re.sub(r"[\x00-\x1f\x7f]+", " ", text).strip()
             return neutralize_fences(sanitize_for_chameleon_context(text))
 
         def _capped(values: object, cap: int) -> tuple[list[str], str]:

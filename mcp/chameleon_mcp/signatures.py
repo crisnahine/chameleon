@@ -289,6 +289,46 @@ def nextjs_role_for_path(file_path: str) -> str | None:
     return role
 
 
+# NestJS / Angular co-locate by feature (users/users.controller.ts), so the role
+# lives in the filename SUFFIX, not a directory. These are the framework-distinctive
+# suffixes; the mapped name mirrors bootstrap.naming's role priors so the role
+# cluster gets a proper archetype name. .controller/.resolver/.gateway are
+# NestJS-specific; .service/.module/.guard are shared with Angular (role grouping is
+# correct for both).
+_NESTJS_ROLE_SUFFIXES: tuple[tuple[str, str], ...] = (
+    (".controller.ts", "controller"),
+    (".resolver.ts", "resolver"),
+    (".gateway.ts", "gateway"),
+    (".service.ts", "service"),
+    (".module.ts", "module"),
+    (".guard.ts", "guard"),
+)
+
+
+def nestjs_role_for_path(file_path: str) -> str | None:
+    """Return the NestJS/Angular filename-role archetype for a TS path, or None.
+
+    NestJS and Angular co-locate by feature (``users/users.controller.ts``), so the
+    role lives in the filename suffix. A file whose name ends in a framework
+    suffix (``.controller.ts`` / ``.service.ts`` / ``.module.ts`` / ...) buckets by
+    ROLE across feature directories -- the same cross-dir merge Django and Next.js
+    already get. Without it each feature directory forms its own mixed cluster
+    (controller + service + module) that never reaches a per-role sample size, so
+    the role's class contract and reusable exports never derive and the per-edit
+    block degrades to a mixed ``cluster-*`` witness. A plain component or a
+    non-suffixed ``.ts`` returns None and is directory-bucketed unchanged, so this
+    never reshapes a file that isn't a recognized framework role.
+    """
+    parts = [p for p in file_path.split("/") if p and p not in (".", "..")]
+    if len(parts) < 2:
+        return None
+    last = parts[-1].lower()
+    for suffix, role in _NESTJS_ROLE_SUFFIXES:
+        if last.endswith(suffix):
+            return role
+    return None
+
+
 def path_pattern_bucket_for(
     file_path: str,
     archetype_paths: dict[str, list[str]] | None = None,
@@ -374,6 +414,22 @@ def path_pattern_bucket_for(
             bucket = f"{parts[0]}/{parts[1]}/{next_role}"
         else:
             bucket = next_role
+        if include_extension:
+            ext = _extension_of(parts[-1])
+            if ext:
+                bucket = f"{bucket}:{ext}"
+        return (bucket, "")
+
+    # NestJS / Angular filename-role bucketing (below Next.js so app/pages routing
+    # wins first). Same shape as the Next.js branch: role bucket, empty sub_bucket
+    # so the cross-feature-dir merge survives _split_by_sub_bucket, monorepo
+    # workspace prefix preserved so two apps' controllers don't collide.
+    nest_role = nestjs_role_for_path(file_path)
+    if nest_role is not None:
+        if len(parts) >= 4 and parts[0] in _MONOREPO_WORKSPACE_ROOTS:
+            bucket = f"{parts[0]}/{parts[1]}/{nest_role}"
+        else:
+            bucket = nest_role
         if include_extension:
             ext = _extension_of(parts[-1])
             if ext:

@@ -44,6 +44,19 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "DRIFT_BANNER_THRESHOLD": 0.4,
     "DRIFT_BANNER_MIN_OBSERVATIONS": 10,
     "DRIFT_BANNER_TTL_SECONDS": 7 * 24 * 3600,
+    # Max bytes read from each nearby sibling when re-verifying a stored signature
+    # line against the CURRENT checkout (the profile's line can be production-ref
+    # derived or predate a local edit). Bounded so the per-edit verify stays cheap.
+    "NEARBY_SIG_VERIFY_MAX_BYTES": 200_000,
+    # Cooldown FLOOR for a migration-triggered auto-refresh (engine upgrade or a
+    # profile missing calibration). The general auto-refresh cooldown is
+    # max_age_hours*3600//4 (up to ~42h), which a pre-upgrade refresh's marker
+    # would otherwise use to suppress the very upgrade-repair that must run on the
+    # next session — serving known-stale facts for up to that window. A migration
+    # caps the effective cooldown at this short floor so the repair fires promptly
+    # yet still cannot storm (the marker written after the spawn suppresses the
+    # next session; a successful refresh re-stamps the engine and self-clears).
+    "MIGRATION_REFRESH_COOLDOWN_SECONDS": 3600,
     # Calibration corpus bounds. The file cap and epsilon move together: keeping
     # the cap below 1/epsilon means a single flagged file already exceeds the
     # tolerance, so the gate stays "zero false positives" in practice. 1200/20

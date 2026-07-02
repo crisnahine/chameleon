@@ -268,3 +268,57 @@ def test_teach_competing_no_catalog_no_warning(tmp_path, monkeypatch):
     )
     assert res["status"] == "success"
     assert "warning" not in res
+
+
+def _setup_repo_with_package_json(tmp_path, monkeypatch, deps):
+    repo = _setup_repo_with_archetypes(tmp_path, monkeypatch, ["httpclient"])
+    (repo / "package.json").write_text(
+        json.dumps({"dependencies": {d: "1.0.0" for d in deps}}), encoding="utf-8"
+    )
+    return repo
+
+
+def test_teach_competing_warns_when_preferred_package_absent(tmp_path, monkeypatch):
+    # A bare npm package `preferred` not in package.json is a likely typo that would
+    # silently steer the model at a nonexistent module; flag it (non-fatal).
+    from chameleon_mcp import tools
+
+    repo = _setup_repo_with_package_json(tmp_path, monkeypatch, ["styled-components"])
+    res = _data(
+        tools.teach_competing_import(
+            str(repo), archetype="httpclient", preferred="styled-componentz", over="emotion"
+        )
+    )
+    assert res["status"] == "success"
+    assert "warning" in res
+    assert "styled-componentz" in res["warning"]
+
+
+def test_teach_competing_no_warning_when_preferred_package_present(tmp_path, monkeypatch):
+    from chameleon_mcp import tools
+
+    repo = _setup_repo_with_package_json(tmp_path, monkeypatch, ["styled-components"])
+    res = _data(
+        tools.teach_competing_import(
+            str(repo), archetype="httpclient", preferred="styled-components", over="emotion"
+        )
+    )
+    assert res["status"] == "success"
+    assert "warning" not in res
+
+
+def test_teach_competing_alias_preferred_never_warns_as_package(tmp_path, monkeypatch):
+    # A path-alias / relative preferred is resolved by tsconfig, not package.json,
+    # and may be created later — never flag it as a missing package (avoid punishing
+    # a valid forward-looking teaching).
+    from chameleon_mcp import tools
+
+    repo = _setup_repo_with_package_json(tmp_path, monkeypatch, ["react"])
+    for pref in ("@/lib/cn", "./utils/cn", "@/utils/http"):
+        res = _data(
+            tools.teach_competing_import(
+                str(repo), archetype="httpclient", preferred=pref, over=f"x-{pref}"
+            )
+        )
+        assert res["status"] == "success"
+        assert "package.json" not in (res.get("warning") or "")

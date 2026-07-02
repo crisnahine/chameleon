@@ -395,7 +395,12 @@ class TestFormatConventionsEcho:
         text = format_conventions_echo(conventions, archetype="hook")
         assert text == "Verify symbols/imports/paths exist before using them; don't invent"
 
-    def test_archetype_not_in_conventions_falls_back(self):
+    def test_archetype_absent_does_not_leak_other_archetype_import(self):
+        # A dimension keyed only under a DIFFERENT archetype must NOT bleed into
+        # the echo for the edited archetype: the Tier-1 pointer is archetype-scoped
+        # (parity with the Tier-2 _archetype_facts_section, which never falls back).
+        # An arbitrary `next(iter(...values()))` fallback injected another
+        # archetype's competing-import preference as if it were this file's.
         from chameleon_mcp.conventions import format_conventions_echo
 
         conventions = empty_conventions(generation=1)
@@ -404,7 +409,9 @@ class TestFormatConventionsEcho:
             "competing": [{"preferred": "X", "over": "Y", "preferred_count": 10, "over_count": 0}],
         }
         text = format_conventions_echo(conventions, archetype="hook")
-        assert "X" in text
+        assert "Imports: X" not in text
+        # Still non-empty: the fixed anti-hallucination reminder always trails.
+        assert "Verify symbols/imports/paths exist" in text
 
 
 def _make_ts_file(tmp_path, name: str, content: str) -> ParsedFile:
@@ -478,6 +485,38 @@ class TestKeyExportsExtractor:
         result = extract_key_exports(files, language="ruby")
         assert "Api" not in result  # outer namespace must not be the recorded name
         assert any(n.startswith("Widget") for n in result)
+
+    def test_ruby_exports_ignore_heredoc_and_nonconstant_names(self, tmp_path):
+        # A `class`/`module` keyword inside a heredoc/string is fixture text, not a
+        # definition: a Go go.mod heredoc (`module javascript:alert()`,
+        # `module example.com/...`) was captured as an "export". The stripper blanks
+        # heredoc bodies, and the constant-shape filter drops the single-colon
+        # `javascript:alert` and any empty split remnant.
+        files = []
+        files.append(
+            _make_ruby_file(
+                tmp_path,
+                "go_mod_spec.rb",
+                "RSpec.describe GoModViewer do\n"
+                "  let(:data) { <<~GOMOD }\n"
+                "    module javascript:alert()\n"
+                "    module example.com/foo/bar\n"
+                "  GOMOD\n"
+                "end\n",
+            )
+        )
+        for i in range(12):
+            files.append(
+                _make_ruby_file(
+                    tmp_path, f"m{i}.rb", f"class RealModel{i} < ApplicationRecord\nend\n"
+                )
+            )
+        result = extract_key_exports(files, language="ruby")
+        assert not any("javascript" in n for n in result)
+        assert "example" not in result
+        assert "" not in result
+        assert all(n[:1].isupper() for n in result)  # every export is a real constant
+        assert any(n.startswith("RealModel") for n in result)
 
     def test_skips_below_sample_size(self, tmp_path):
         files = [_make_ts_file(tmp_path, "one.ts", "export const foo = 1;\n")]
@@ -776,7 +815,12 @@ class TestFormatEchoInheritance:
         text = format_conventions_echo(conventions, archetype="model")
         assert "Base:" not in text
 
-    def test_echo_wrong_archetype_falls_back_to_base(self):
+    def test_echo_wrong_archetype_does_not_leak_base(self):
+        # `Base:` is derived STRICTLY from the edited archetype's own inheritance
+        # entry. A `next(iter(...values()))` fallback used to print the model's
+        # base on a controller edit — a self-contradictory injected falsehood (the
+        # same block would also carry the controller's own base once present). No
+        # inheritance entry for the edited archetype => no `Base:` line.
         from chameleon_mcp.conventions import format_conventions_echo
 
         conventions = empty_conventions(generation=1)
@@ -786,7 +830,17 @@ class TestFormatEchoInheritance:
             "sample_size": 117,
         }
         text = format_conventions_echo(conventions, archetype="controller")
-        assert "Base: ApplicationRecord" in text
+        assert "ApplicationRecord" not in text
+        assert "Base:" not in text
+        # The edited archetype IS honored when it has its own entry.
+        conventions["conventions"]["inheritance"]["controller"] = {
+            "dominant_base": "ApplicationController",
+            "frequency": 0.9,
+            "sample_size": 40,
+        }
+        text2 = format_conventions_echo(conventions, archetype="controller")
+        assert "Base: ApplicationController" in text2
+        assert "ApplicationRecord" not in text2
 
 
 class TestDirectoryListing:

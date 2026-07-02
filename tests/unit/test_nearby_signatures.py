@@ -27,6 +27,24 @@ def _write_profile(
         (cham / "calls_index.json").write_text(
             json.dumps({"schema_version": 1, "callees": calls}), encoding="utf-8"
         )
+    # Write each sibling with a real def per symbol at its stored line: the
+    # signature index is DERIVED from the file, and the per-edit re-verify drops a
+    # symbol absent from the current source (a phantom). Fixtures must reflect that.
+    for rel, by_name in signatures.items():
+        fpath = repo / rel
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        placed: dict[int, str] = {}
+        overflow: list[str] = []
+        for name, row in by_name.items():
+            ln = row.get("start_line")
+            defline = f"def {name}(): pass"
+            if isinstance(ln, int) and ln >= 1 and ln not in placed:
+                placed[ln] = defline
+            else:
+                overflow.append(defline)
+        max_ln = max(placed) if placed else 0
+        body = [placed.get(i + 1, "") for i in range(max_ln)] + overflow
+        fpath.write_text("\n".join(body) + "\n", encoding="utf-8")
 
 
 def _make_sources(repo: Path, names: list[str]) -> None:
@@ -117,3 +135,46 @@ def test_falls_back_to_name_order_without_calls_index(tmp_path, monkeypatch):
     section = _nearby_signatures_section(str(tmp_path / "target.py"), tmp_path)
 
     assert section.index("aaa.py") < section.index("zzz.py")
+
+
+def test_phantom_symbol_dropped_when_absent_from_checkout(tmp_path, monkeypatch):
+    """A stored signature whose symbol is gone from the current file is NOT injected
+    — the profile can be production-ref derived or predate a local delete, and the
+    model must never be told to call a symbol the checkout no longer has."""
+    monkeypatch.delenv("CHAMELEON_NEARBY_SIGNATURES", raising=False)
+    (tmp_path / "target.py").write_text("# t\n", encoding="utf-8")
+    _write_profile(tmp_path, signatures={"sibling.py": {"gone": _sig_row()}})
+    # The checkout no longer defines `gone`.
+    (tmp_path / "sibling.py").write_text("def other():\n    pass\n", encoding="utf-8")
+
+    section = _nearby_signatures_section(str(tmp_path / "target.py"), tmp_path)
+
+    assert "gone" not in section
+    assert section == ""  # nothing verifiable to render
+
+
+def test_drifted_line_dropped_but_contract_kept(tmp_path, monkeypatch):
+    """Symbol still present but moved off its stored line: keep the contract, drop
+    the now-misleading :line."""
+    monkeypatch.delenv("CHAMELEON_NEARBY_SIGNATURES", raising=False)
+    (tmp_path / "target.py").write_text("# t\n", encoding="utf-8")
+    _write_profile(tmp_path, signatures={"sibling.py": {"helper": {"params": [], "start_line": 1}}})
+    # helper now lives at line 3, not the stored line 1.
+    (tmp_path / "sibling.py").write_text("\n\ndef helper():\n    pass\n", encoding="utf-8")
+
+    section = _nearby_signatures_section(str(tmp_path / "target.py"), tmp_path)
+
+    assert "helper()" in section  # contract retained
+    assert "sibling.py" in section
+    assert "sibling.py:" not in section  # the stale line is dropped, not shown wrong
+
+
+def test_fresh_line_retained_when_symbol_on_stored_line(tmp_path, monkeypatch):
+    monkeypatch.delenv("CHAMELEON_NEARBY_SIGNATURES", raising=False)
+    (tmp_path / "target.py").write_text("# t\n", encoding="utf-8")
+    # _write_profile writes `def helper(): pass` at line 1, matching the stored line.
+    _write_profile(tmp_path, signatures={"sibling.py": {"helper": {"params": [], "start_line": 1}}})
+
+    section = _nearby_signatures_section(str(tmp_path / "target.py"), tmp_path)
+
+    assert "sibling.py:1" in section  # verified line is retained

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_int
@@ -249,16 +250,45 @@ def render_imported_definition(name: str, entry: dict, target_rel: str) -> str:
     present, the bare name otherwise. The body is intentionally NOT sliced: the
     stored span can drift from the current file, and the signature alone carries
     the contract the caller must satisfy.
+
+    Param syntax is caller-correct per language, because the whole point of this
+    section is the contract a call must satisfy: a Ruby keyword argument is
+    ``name:`` (calling it positionally raises ArgumentError), a Python
+    keyword-only argument sits behind a ``*`` separator (calling it positionally
+    raises TypeError), a keyword-rest is ``**`` / ``**kwargs``, and a splat is
+    ``*args`` in Ruby/Python but ``...args`` in TS/JS. The language is inferred
+    from the definition file's suffix.
     """
+    suffix = target_rel.rsplit(".", 1)[-1].lower() if "." in target_rel else ""
+    is_ruby = suffix == "rb"
+    is_python = suffix in ("py", "pyi")
+    splat = "*" if (is_ruby or is_python) else "..."
     parts: list[str] = []
+    star_sep_emitted = False
     for p in entry.get("params") or []:
         if not isinstance(p, dict):
             continue
         kind = p.get("kind")
         pn = p.get("name") if isinstance(p.get("name"), str) else "_"
         if kind == "rest":
-            # A variadic/splat param, not an optional one: `...args`, never `args?`.
-            s = f"...{pn}"
+            # A variadic/splat param, not an optional one: `*args` (Ruby/Python) or
+            # `...args` (TS), never `args?`. Also satisfies Python's `*` separator.
+            s = f"{splat}{pn}"
+            star_sep_emitted = True
+        elif kind == "keyword_rest":
+            # Ruby stores the literal "**"; Python stores the bare kwargs name.
+            s = "**" if pn == "**" else f"**{pn}"
+        elif kind == "keyword":
+            if is_ruby:
+                # Ruby keyword argument: the call site must pass `name:`.
+                s = f"{pn}:"
+            else:
+                # Python keyword-only argument: emit the `*` separator once so the
+                # model passes it by keyword, not positionally.
+                if not star_sep_emitted:
+                    parts.append("*")
+                    star_sep_emitted = True
+                s = pn + ("?" if p.get("optional") else "")
         elif kind == "destructured":
             # No single binding name; show the destructure shape, the type carries
             # the expected object/array.
@@ -278,6 +308,36 @@ def render_imported_definition(name: str, entry: dict, target_rel: str) -> str:
     start = entry.get("start_line")
     loc = f"{target_rel}:{start}" if isinstance(start, int) else target_rel
     return f"{sig} — {loc}"
+
+
+def symbol_presence_in_source(lines: list[str], name: str, stored_line) -> tuple[bool, bool]:
+    """`(present, keep_stored_line)` — verify a stored signature against current source.
+
+    The stored ``start_line`` can be stale: signatures derive from the pinned
+    production ref (or predate a local edit), so the checkout being edited may have
+    moved or removed the symbol. This is a bounded, pure re-verify that never
+    fabricates a line:
+
+    - `present=False` when the symbol name appears nowhere in the file — a phantom
+      the caller drops (never inject a call to a symbol the checkout no longer has).
+    - `keep_stored_line=True` only when the name is still on the stored line, so the
+      location is trustworthy. Otherwise the caller keeps the signature (the
+      contract is still useful) but drops the misleading `:line`.
+
+    Word-boundary match (``$`` is a JS identifier char) so a substring of a longer
+    name never counts. Pure and bounded; caller reads the file once, capped.
+    """
+    if not name:
+        return False, False
+    pat = re.compile(r"(?<![\w$])" + re.escape(name) + r"(?![\w$])")
+    on_stored = (
+        isinstance(stored_line, int)
+        and 1 <= stored_line <= len(lines)
+        and bool(pat.search(lines[stored_line - 1]))
+    )
+    if on_stored:
+        return True, True
+    return any(pat.search(ln) for ln in lines), False
 
 
 def _parse_import_symbols(repo_root, abs_path) -> list[tuple[str, str]]:

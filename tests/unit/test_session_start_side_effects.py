@@ -486,6 +486,73 @@ def test_auto_refresh_migration_fires_on_missing_enforcement(tmp_path, monkeypat
     _reset_drift_conn_cache()
 
 
+def _prewrite_cooldown(tmp_path, repo_id, age_seconds):
+    """Pre-write the auto-refresh cooldown marker for repo_id at a controlled age."""
+    d = tmp_path / "data" / repo_id
+    d.mkdir(parents=True, exist_ok=True)
+    marker = d / hh._AUTO_REFRESH_COOLDOWN_FILENAME
+    marker.write_text("", encoding="utf-8")
+    when = time.time() - age_seconds
+    os.utime(marker, (when, when))
+    return marker
+
+
+def test_auto_refresh_migration_bypasses_stale_general_cooldown(tmp_path, monkeypatch):
+    # A pre-upgrade refresh's cooldown marker (up to ~42h) must NOT suppress the
+    # engine-upgrade/missing-calibration migration: it caps the effective cooldown
+    # at the short floor. Marker aged 2h (> 1h floor, < 42h general) -> fires.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    _reset_drift_conn_cache()
+    _prewrite_cooldown(tmp_path, "rid_mig_bypass", age_seconds=2 * 3600)
+    popen, _ = _run_auto_refresh(
+        tmp_path,
+        config=_make_config(drift_threshold=0.9, max_age_hours=168),
+        stats={"score": 0.0, "count": 0},
+        repo_id="rid_mig_bypass",
+        profile_age_hours=1,
+        with_enforcement=False,  # migration due (no calibration)
+    )
+    assert popen.called
+    _reset_drift_conn_cache()
+
+
+def test_auto_refresh_migration_still_respects_short_floor(tmp_path, monkeypatch):
+    # Storm guard: a very fresh marker (< 1h floor) suppresses even a migration, so
+    # the async refresh is not re-spawned every session before it completes.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    _reset_drift_conn_cache()
+    _prewrite_cooldown(tmp_path, "rid_mig_floor", age_seconds=10 * 60)  # 10 min < 1h
+    popen, _ = _run_auto_refresh(
+        tmp_path,
+        config=_make_config(drift_threshold=0.9, max_age_hours=168),
+        stats={"score": 0.0, "count": 0},
+        repo_id="rid_mig_floor",
+        profile_age_hours=1,
+        with_enforcement=False,
+    )
+    assert not popen.called
+    _reset_drift_conn_cache()
+
+
+def test_auto_refresh_general_cooldown_unchanged_for_nonmigration(tmp_path, monkeypatch):
+    # A non-migration (drift/age) refresh is still gated by the FULL general
+    # cooldown: a 2h-old marker suppresses a drift-triggered refresh (~42h window),
+    # so the migration bypass did not widen the general firing.
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+    _reset_drift_conn_cache()
+    _prewrite_cooldown(tmp_path, "rid_gen_cd", age_seconds=2 * 3600)
+    popen, _ = _run_auto_refresh(
+        tmp_path,
+        config=_make_config(drift_threshold=0.2, max_age_hours=168),
+        stats={"score": 0.9, "count": 20},  # drift present, but cooldown still fresh
+        repo_id="rid_gen_cd",
+        profile_age_hours=1,
+        with_enforcement=True,  # not a migration
+    )
+    assert not popen.called
+    _reset_drift_conn_cache()
+
+
 def _run_auto_refresh_prodtip(tmp_path, *, repo_id, resolved_sha, recorded_sha):
     """Drive _maybe_auto_refresh for a production-pinned repo with no drift and a
     young profile, so the locked-tip comparison is the ONLY live trigger. Returns

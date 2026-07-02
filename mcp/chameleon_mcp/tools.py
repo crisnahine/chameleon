@@ -6507,8 +6507,30 @@ def _maybe_preserve_trust_across_refresh(
             # Keep the old-id grant too so a tool still holding the pre-refresh id
             # resolves consistently during the same session.
             grant_trust(pre_state["repo_id"], profile_dir)
+        # Extend the preserved root trust to every workspace-internal profile,
+        # mirroring trust_profile's enumeration. A refresh of a trusted monorepo
+        # root can CREATE a workspace profile that did not exist at the original
+        # grant (a Python/Django app under a JS monorepo discovered on
+        # re-derivation, say). Without this it lands UNTRUSTED, silently disabling
+        # injection AND the enforcement deny gates for that entire workspace and
+        # its framework — the user trusted the repo but a whole language's
+        # enforcement is off. grant_trust still injection-scans each workspace's
+        # prose, so a poisoned workspace profile is still refused per-workspace.
+        workspaces_preserved = 0
+        for child_chameleon in _iter_workspace_chameleon_dirs(repo_path):
+            if child_chameleon == profile_dir:
+                continue
+            if not (child_chameleon / "profile.json").is_file():
+                continue
+            try:
+                grant_trust(current_repo_id, child_chameleon)
+                workspaces_preserved += 1
+            except Exception:
+                pass
         data["trust_preserved"] = True
         data["trust_preserve_reason"] = preserve_reason
+        if workspaces_preserved:
+            data["workspace_trust_preserved"] = workspaces_preserved
     except Exception:
         pass
 
@@ -9305,6 +9327,84 @@ _SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
+    # Instruction-override WITHOUT the literal "previous"/"above" qualifier. The
+    # canonical "ignore all previous instructions" pattern above only fires when
+    # that position word is present, so "ignore all instructions" / "disregard the
+    # directives" / "ignore the instructions above" slipped through (the position
+    # word can also trail the noun). Kept to the strongly-meta nouns
+    # (instructions/directives/prompts/guidelines/system prompt) so lint-rule
+    # convention prose ("ignore the rule for X") is NOT flagged.
+    (
+        "override instructions",
+        re.compile(
+            r"\b(?:ignore|disregard|forget|override|bypass|skip)\s+"
+            r"(?:all\s+|any\s+|the\s+|these\s+|those\s+|my\s+|your\s+|its\s+|"
+            r"(?:all\s+)?(?:previous|prior|above|earlier|preceding|foregoing|following|other)\s+)*"
+            r"(?:instructions?|directives?|system\s+prompts?|guidelines?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    # "From now on ..." behaviour-reassignment lead-in. "you are" alone is common
+    # prose, so this fires only on the injection-shaped continuation (you are/will,
+    # ignore, act as, respond/answer only, always/never), never on a bare "you are
+    # responsible for ...".
+    (
+        "behaviour override lead-in",
+        re.compile(
+            r"\bfrom\s+now\s+on[\s,]+(?:you\s+(?:are|will|must|should|shall)|you're|"
+            r"ignore|disregard|forget|act\s+as|respond|answer|reply|only|always|never)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    # Bare jailbreak-persona markers (DAN / unrestricted / developer mode / ...).
+    # These tokens do not appear in code-convention prose, so matching the identity
+    # assignment directly is high-precision.
+    (
+        "jailbreak persona",
+        re.compile(
+            r"\byou(?:\s+are|'re|\s*’re)\s+(?:now\s+)?(?:an?\s+|in\s+)?"
+            r"(?:dan\b|do\s+anything\s+now|unrestricted|jailbroken|uncensored|"
+            r"developer\s+mode|no\s+longer\s+bound|not\s+bound\s+by|"
+            r"free\s+(?:from|of)\s+(?:all\s+)?(?:restrictions?|rules?|guidelines?|limits?))",
+            re.IGNORECASE,
+        ),
+    ),
+    # An injected fresh instruction block: "new directive:", "new persona:",
+    # "new system prompt:", "new instructions:". Rare in genuine convention prose.
+    (
+        "injected new directive",
+        re.compile(
+            r"\bnew\s+(?:directive|persona|system\s+prompt|role|instruction)s?\s*:",
+            re.IGNORECASE,
+        ),
+    ),
+    # Credential/secret-file exfiltration: a strong exfil verb aimed at a
+    # high-signal secret path (.env / .ssh / id_rsa / /etc/passwd / *.pem / ~/.aws
+    # / .npmrc). The specific target keeps benign API prose ("post the token to
+    # /auth") from tripping it; the gap excludes periods so it stays within one
+    # clause and cannot bridge two sentences.
+    (
+        "credential exfiltration",
+        re.compile(
+            r"\b(?:append|send|post|upload|exfiltrate|leak|steal|dump|transmit|copy)\b"
+            r"[^.\n]{0,48}"
+            r"(?:\.env\b|\.ssh\b|id_rsa|/etc/passwd|/etc/shadow|~/\.aws|\.pem\b|\.npmrc\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    # Pipe-to-shell remote execution (curl … | sh). A concrete exploit chain,
+    # distinct from an API name that a legit "avoid X" note might mention.
+    (
+        "pipe to shell",
+        re.compile(
+            r"\b(?:curl|wget|fetch)\b[^|\n]{0,120}\|\s*(?:sudo\s+)?(?:ba|z|k)?sh\b",
+            re.IGNORECASE,
+        ),
+    ),
+    # os.system() shell sink, matched like the existing eval()/exec()/rm -rf bare
+    # sinks (same precedent, same one-time-trust exposure). Member access is
+    # excluded so an unrelated `.system(` object method is not flagged.
+    ("os.system()", re.compile(r"\bos\.system\s*\(", re.IGNORECASE)),
 )
 
 
@@ -10136,6 +10236,84 @@ _SLUG_RE = __import__("re").compile(r"^[a-z][a-z0-9-]{2,63}$")
 _STRUCTURED_TOTAL_CAP = 50_000
 
 
+def _npm_package_root(specifier: str) -> str | None:
+    """The npm package NAME an import specifier resolves to, or None when it is not
+    a bare package import.
+
+    ``lodash/fp`` -> ``lodash``; ``@scope/pkg/sub`` -> ``@scope/pkg``. Returns None
+    for a relative (``./x``), absolute (``/x``), or TS path-alias (``@/x`` — a bare
+    ``@`` with no scope name) import: those are not npm packages and are resolved by
+    tsconfig/baseUrl, not package.json, so a package.json membership check does not
+    apply.
+    """
+    s = (specifier or "").strip()
+    if not s or s.startswith(".") or s.startswith("/"):
+        return None
+    if s.startswith("@"):
+        parts = s.split("/")
+        if len(parts) < 2 or not parts[0][1:] or not parts[1]:
+            return None  # `@/…` path alias (empty scope) is not a package
+        return f"{parts[0]}/{parts[1]}"
+    return s.split("/", 1)[0] or None
+
+
+def _package_json_dependency_names(repo_path: Path) -> set[str] | None:
+    """Every declared dependency name across EVERY package.json in the repo, or None
+    when there is no readable root package.json.
+
+    A monorepo declares deps in per-workspace ``package.json`` files, not the root,
+    so a root-only read would falsely report a real workspace dependency as
+    "missing" — the exact false positive that makes an existence check untrustworthy.
+    The scan is a bounded, node_modules-pruned walk (same shape as the workspace
+    ``.chameleon`` walk) and unions deps across all manifests. Returns None only when
+    there is no root package.json at all (not a JS repo → skip the check)."""
+    root_pkg = repo_path / "package.json"
+    if not root_pkg.is_file():
+        return None
+
+    def _names_from(pkg: Path, into: set[str]) -> None:
+        try:
+            data = json.loads(pkg.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+        for section in (
+            "dependencies",
+            "devDependencies",
+            "peerDependencies",
+            "optionalDependencies",
+        ):
+            block = data.get(section)
+            if isinstance(block, dict):
+                into.update(k for k in block if isinstance(k, str))
+
+    names: set[str] = set()
+    _names_from(root_pkg, names)
+    # Bounded walk for workspace manifests (prune node_modules / .git / dotdirs).
+    stack: list[tuple[Path, int]] = [(repo_path, 0)]
+    while stack:
+        current, depth = stack.pop()
+        try:
+            children = list(current.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            try:
+                if child.is_file() and child.name == "package.json" and child != root_pkg:
+                    _names_from(child, names)
+                    continue
+                if not child.is_dir():
+                    continue
+            except OSError:
+                continue
+            if child.name in _WS_PRUNE_DIRS or child.name.startswith("."):
+                continue
+            if depth + 1 <= _WS_MAX_DEPTH:
+                stack.append((child, depth + 1))
+    return names
+
+
 def teach_competing_import(
     repo: str,
     *,
@@ -10348,18 +10526,41 @@ def teach_competing_import(
     # a non-fatal warning when the archetype is absent from the current profile so
     # a typo is visible; the write still succeeds. Best-effort: skip the warning if
     # the catalog is unreadable.
-    warning = None
+    warnings: list[str] = []
     try:
         _arch = json.loads(safe_read_profile_artifact(profile_dir / "archetypes.json"))
         _known = _arch.get("archetypes") if isinstance(_arch, dict) else None
         if isinstance(_known, dict) and archetype not in _known:
-            warning = (
+            warnings.append(
                 f"archetype {archetype!r} is not in the current profile; the rule was "
                 "recorded but will not match any file until an archetype by that name "
                 "exists. Check for a typo, or /chameleon-refresh if it was renamed."
             )
     except Exception:
-        warning = None
+        pass
+
+    # Soft, NON-FATAL check that the PREFERRED module resolves — the rule steers the
+    # model toward it, so a typo (`@/lib/cn` for `@/utils/cn`) silently points at a
+    # module that does not exist. Only the high-confidence, low-false-positive case
+    # is flagged: `preferred` is a bare/scoped npm PACKAGE specifier (no `.`/`/`
+    # prefix, not a deep import) yet absent from package.json deps. Alias (`@/…`)
+    # and relative (`./…`) forms are NOT checked — resolving them needs tsconfig
+    # path maps, and the target may legitimately be created later; a noisy warning
+    # there would punish valid forward-looking teachings.
+    if not already:
+        try:
+            pkg_name = _npm_package_root(preferred)
+            if pkg_name is not None:
+                deps = _package_json_dependency_names(repo_path)
+                if deps is not None and pkg_name not in deps:
+                    warnings.append(
+                        f"preferred package {pkg_name!r} is not in package.json; the rule "
+                        "was recorded but points at a package the repo does not depend on. "
+                        "Check for a typo, or add the dependency."
+                    )
+        except Exception:
+            pass
+    warning = " ".join(warnings) if warnings else None
 
     result = {
         "status": "success",

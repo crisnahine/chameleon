@@ -337,6 +337,54 @@ def test_render_includes_definition_line():
     assert "src/u.ts:42" in line
 
 
+def test_render_ruby_keyword_args_use_colon():
+    # A Ruby keyword arg must render `name:`; rendering it positionally (`name`)
+    # tells the model to call it positionally, which raises ArgumentError.
+    entry = {
+        "params": [
+            {"name": "record", "optional": False, "kind": "keyword"},
+            {"name": "query", "optional": False, "kind": "keyword"},
+        ],
+        "start_line": 115,
+    }
+    line = render_imported_definition("base_dom_class_for", entry, "app/policies/x.rb")
+    assert "base_dom_class_for(record:, query:)" in line
+    # Not the positional form that would break the call.
+    assert "record:," in line
+
+
+def test_render_ruby_keyword_rest_and_splat():
+    entry = {
+        "params": [
+            {"name": "user", "optional": False, "kind": "positional"},
+            {"name": "opts", "optional": False, "kind": "rest"},
+            {"name": "**", "optional": True, "kind": "keyword_rest"},
+        ],
+        "start_line": 3,
+    }
+    line = render_imported_definition("allowed?", entry, "app/policies/y.rb")
+    # Ruby splat is *opts (not ...opts); keyword-rest is ** (not **?).
+    assert "*opts" in line and "...opts" not in line
+    assert "**)" in line and "**?" not in line
+
+
+def test_render_python_keyword_only_gets_star_separator():
+    # A Python keyword-only arg sits behind a `*` so the model passes it by
+    # keyword; rendering it as bare-positional invites a TypeError.
+    entry = {
+        "params": [
+            {"name": "session", "optional": False, "kind": "positional", "type": "SessionDep"},
+            {"name": "limit", "optional": True, "kind": "keyword", "type": "int"},
+            {"name": "kwargs", "optional": True, "kind": "keyword_rest"},
+        ],
+        "return_type": "Any",
+        "start_line": 62,
+    }
+    line = render_imported_definition("create_item", entry, "app/api/routes/items.py")
+    assert "*, limit?: int" in line
+    assert "**kwargs" in line
+
+
 def test_build_truncates_oversized_type_text(tmp_path):
     huge = "{ " + ", ".join(f"f{i}: string" for i in range(200)) + " }"
     f = _file(

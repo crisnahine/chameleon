@@ -442,6 +442,46 @@ def test_maybe_preserve_trust_honors_always(tmp_path, monkeypatch):
     assert trust_state_for(rid) is not None
 
 
+def test_maybe_preserve_trust_extends_to_refresh_created_workspace(tmp_path, monkeypatch):
+    """A refresh of a trusted monorepo root that CREATES a new workspace profile
+    (e.g. a Python app discovered on re-derivation) must extend the preserved root
+    trust to that workspace — otherwise injection AND the deny gates are silently
+    off for the whole workspace/framework until the user re-runs /chameleon-trust."""
+    from chameleon_mcp import index_db
+    from chameleon_mcp.profile.trust import grant_trust, trust_state_for
+
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "_data"))
+    monkeypatch.setattr(index_db, "_INDEX_CONN", None)
+    repo = tmp_path / "repo"
+    pd = repo / ".chameleon"
+    pd.mkdir(parents=True)
+    pd.joinpath("config.json").write_text(
+        '{"$schema":"chameleon-config-0.6.0","trust":{"auto_preserve_when":"always"}}',
+        encoding="utf-8",
+    )
+    pd.joinpath("profile.json").write_text("{}", encoding="utf-8")
+    rid = t._compute_repo_id(repo.resolve())
+    grant_trust(rid, pd)  # original grant: root only (workspace does not exist yet)
+
+    # A later refresh materializes a workspace profile that did not exist at grant.
+    ws = repo / "apps" / "api" / ".chameleon"
+    ws.mkdir(parents=True)
+    ws.joinpath("profile.json").write_text("{}", encoding="utf-8")
+
+    record_before = trust_state_for(rid)
+    assert record_before is not None
+    assert not record_before.grants_root(ws.parent.resolve())  # workspace untrusted
+
+    pre = {"trust_record_existed": True, "repo_id": rid, "structural_hashes": {}}
+    envelope = {"data": {"archetype_diff": {"added": ["x"]}}}  # not structurally identical
+    t._maybe_preserve_trust_across_refresh(repo.resolve(), pre, envelope)
+
+    assert envelope["data"].get("trust_preserved") is True
+    assert envelope["data"].get("workspace_trust_preserved") == 1
+    record_after = trust_state_for(rid)
+    assert record_after.grants_root(ws.parent.resolve())  # workspace now trusted
+
+
 # --------------------------------------------------------------------------
 # _persisted_paths_glob — the docstring promises any error returns None, so a
 # profile.json holding non-UTF8 bytes must not leak UnicodeDecodeError into

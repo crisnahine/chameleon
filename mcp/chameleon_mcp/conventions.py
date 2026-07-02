@@ -1658,6 +1658,12 @@ _TS_EXPORT_NAME_RE = re.compile(
 # the last "::" segment as the meaningful export name.
 _RUBY_CLASS_NAME_RE = re.compile(r"^\s*class\s+([\w:]+)", re.MULTILINE)
 _RUBY_MODULE_NAME_RE = re.compile(r"^\s*module\s+([\w:]+)", re.MULTILINE)
+# A valid Ruby constant name (class/module segment): starts uppercase, word-only.
+# The class/module captures accept `[\w:]+`, which admits a single-colon
+# non-constant (`javascript:alert`) and, after the `::` split, an empty remnant;
+# both leaked into key_exports as junk "reuse these" names. A real Ruby constant
+# always matches this, so it is a lossless filter.
+_RUBY_CONST_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
 
 
 def _int_env(name: str, default: int) -> int:
@@ -1731,16 +1737,24 @@ def extract_key_exports(files: list[ParsedFile], *, language: str) -> list[str]:
                     name_counts[name] += 1
                     seen.add(name)
         elif language == "ruby":
-            for m in _RUBY_CLASS_NAME_RE.finditer(content):
-                name = m.group(1).split("::")[-1]  # Api::V1::Foo -> Foo
-                if name not in seen:
-                    name_counts[name] += 1
-                    seen.add(name)
-            for m in _RUBY_MODULE_NAME_RE.finditer(content):
-                name = m.group(1).split("::")[-1]
-                if name not in seen:
-                    name_counts[name] += 1
-                    seen.add(name)
+            # Scan string/comment-stripped content: a `class`/`module` keyword inside
+            # a heredoc or string literal is fixture text, not a definition — a Go
+            # go.mod heredoc (`module javascript:alert()`, `module example.com/...`)
+            # in a spec fixture was captured as an "export". The stripper blanks those
+            # bodies length-preservingly. The constant-shape filter is a second gate:
+            # it drops the single-colon `javascript:alert` and any empty split remnant
+            # the `[\w:]+` capture would otherwise admit.
+            from chameleon_mcp.lint_engine import _strip_ruby_strings_and_comments
+
+            ruby_scan = _strip_ruby_strings_and_comments(content)
+            for _rx in (_RUBY_CLASS_NAME_RE, _RUBY_MODULE_NAME_RE):
+                for m in _rx.finditer(ruby_scan):
+                    name = m.group(1).split("::")[-1]  # Api::V1::Foo -> Foo
+                    if not _RUBY_CONST_RE.match(name):
+                        continue
+                    if name not in seen:
+                        name_counts[name] += 1
+                        seen.add(name)
 
     skip = {"default", "module", "class", "React", "Component", "ApplicationRecord", "Base"}
     result = []
@@ -2718,17 +2732,23 @@ def _contract_summary(cc: dict) -> str:
 def format_conventions_echo(conventions: dict, *, archetype: str, principles_text: str = "") -> str:
     """Compact one-line convention echo for Tier 1 PreToolUse pointer. ~30 tokens max.
 
-    Tries the specific archetype first. Falls back to the most common
-    convention across ALL archetypes so the echo is never empty when
-    the repo has conventions (archetype naming can differ between
-    clustering and file matching).
+    Every dimension is scoped STRICTLY to the edited archetype, matching the
+    Tier-2 ``_archetype_facts_section``. An earlier build fell back to the first
+    archetype in each dimension's dict (``next(iter(...values()))``) "so the echo
+    is never empty" -- but that leaked a DIFFERENT archetype's data into the
+    pointer: a model edit whose archetype had no ``class_contract`` entry printed
+    the first contract in the file (e.g. ``extends LiquidTagBase, define render``
+    from a liquid-tag archetype, or ``ActiveRecord::Migration`` as ``Base:`` from
+    a migration), directly contradicting the model's own ``Base: ApplicationRecord``
+    line. A base class and a required-methods contract are archetype-SPECIFIC
+    facts; showing the wrong one is worse than showing none. The fixed
+    anti-hallucination reminder appended below guarantees the echo is never empty
+    regardless, so the fallback bought nothing.
     """
     parts: list[str] = []
     conv = conventions.get("conventions", {})
 
     arch_imports = conv.get("imports", {}).get(archetype, {})
-    if not arch_imports and conv.get("imports"):
-        arch_imports = next(iter(conv["imports"].values()), {})
     if not isinstance(arch_imports, dict):
         arch_imports = {}
     for c in arch_imports.get("competing", [])[:2]:
@@ -2745,8 +2765,6 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
                 break
 
     arch_naming = conv.get("naming", {}).get(archetype, {})
-    if not arch_naming and conv.get("naming"):
-        arch_naming = next(iter(conv["naming"].values()), {})
     if not isinstance(arch_naming, dict):
         arch_naming = {}
     for key in ("interface_prefix", "type_prefix"):
@@ -2756,8 +2774,6 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
             break
 
     arch_inheritance = conv.get("inheritance", {}).get(archetype, {})
-    if not arch_inheritance and conv.get("inheritance"):
-        arch_inheritance = next(iter(conv["inheritance"].values()), {})
     if not isinstance(arch_inheritance, dict):
         arch_inheritance = {}
     base = arch_inheritance.get("dominant_base")
@@ -2768,8 +2784,6 @@ def format_conventions_echo(conventions: dict, *, archetype: str, principles_tex
     if not isinstance(class_contract, dict):
         class_contract = {}
     arch_contract = class_contract.get(archetype, {})
-    if not arch_contract and class_contract:
-        arch_contract = next(iter(class_contract.values()), {})
     summary = _contract_summary(arch_contract)
     if summary:
         parts.append(f"Contract: {summary}")
