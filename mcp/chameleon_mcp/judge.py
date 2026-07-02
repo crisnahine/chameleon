@@ -904,17 +904,17 @@ def build_prompt(
     return "\n".join(sections)
 
 
-def _parse_findings_status(stdout: str) -> tuple[list[Finding], bool]:
-    """Parse the reviewer's stream-json output into ``(findings, parsed_ok)``.
+def _stream_json_texts(stdout: str) -> list[str]:
+    """The assistant ``result``/``text`` strings a ``claude -p --output-format
+    stream-json`` run emitted, in emission order.
 
-    The reviewer is asked for a bare JSON array, but it speaks through
-    ``claude -p --output-format stream-json``, so the array lands inside an
-    assistant ``result``/``text`` block. This extracts the last JSON array found
-    in any text the model emitted and coerces each element into a Finding.
-    ``parsed_ok`` is True when a JSON array was extracted (including an explicit
-    ``[]`` meaning "reviewed, no bugs") and False when no text block yielded an
-    array -- the caller records that as a degraded review rather than treating
-    garbage output as a clean verdict.
+    The reviewer answers in JSON, but stream-json wraps that answer inside
+    assistant ``result``/``text`` blocks, and the raw stdout ALSO carries
+    structural arrays (the system-init ``tools`` list, message ``content``
+    arrays). A JSON scan of the raw stdout therefore locks onto the wrong ``[``
+    and never sees the model's answer. Harvest the model's own text blocks first,
+    then scan those. Shared by ``_parse_findings_status`` and the round-3 refuter
+    so both parse the answer, not the envelope.
     """
     texts: list[str] = []
     for line in stdout.splitlines():
@@ -936,8 +936,22 @@ def _parse_findings_status(stdout: str) -> tuple[list[Finding], bool]:
                         t = block.get("text")
                         if isinstance(t, str):
                             texts.append(t)
+    return texts
 
-    for text in reversed(texts):
+
+def _parse_findings_status(stdout: str) -> tuple[list[Finding], bool]:
+    """Parse the reviewer's stream-json output into ``(findings, parsed_ok)``.
+
+    The reviewer is asked for a bare JSON array, but it speaks through
+    ``claude -p --output-format stream-json``, so the array lands inside an
+    assistant ``result``/``text`` block. This extracts the last JSON array found
+    in any text the model emitted and coerces each element into a Finding.
+    ``parsed_ok`` is True when a JSON array was extracted (including an explicit
+    ``[]`` meaning "reviewed, no bugs") and False when no text block yielded an
+    array -- the caller records that as a degraded review rather than treating
+    garbage output as a clean verdict.
+    """
+    for text in reversed(_stream_json_texts(stdout)):
         arr = _extract_json_array(text)
         if arr is None:
             continue

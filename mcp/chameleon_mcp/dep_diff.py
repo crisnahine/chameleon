@@ -23,12 +23,14 @@ never a crash and never a fabricated finding.
 Coverage boundary (deliberate): the parsed ecosystems are npm (``package.json``,
 ``package-lock.json``, ``npm-shrinkwrap.json``), yarn (``yarn.lock`` classic and
 berry ``resolution:`` lines), pnpm (``pnpm-lock.yaml``), and Bundler
-(``Gemfile``, ``Gemfile.lock``). Other-ecosystem lockfiles (``poetry.lock``,
-``go.sum``, ``Cargo.lock``, ``composer.lock``) are out of scope and are not
-fetched or parsed -- a change to one produces no findings, which reads as "not
-covered", not "reviewed clean". The diff-fetch caller surfaces a truncation
-signal when a manifest diff exceeds its byte cap so a partial parse is never
-mistaken for full coverage.
+(``Gemfile``, ``Gemfile.lock``). Dependency manifests of other ecosystems --
+Python (``requirements*.txt``, ``pyproject.toml``, ``Pipfile``, ``setup.py``),
+Go, Rust, PHP -- are NOT parsed. Rather than let a change to one read as
+"reviewed clean" (empty findings), ``is_uncovered_manifest`` names them and
+``scan_dependency_changes`` returns them as ``uncovered_manifests`` so the
+consumer hand-reviews them: an explicit "not covered", not a silent clean. The
+diff-fetch caller surfaces a truncation signal when a manifest diff exceeds its
+byte cap so a partial parse is never mistaken for full coverage either.
 """
 
 from __future__ import annotations
@@ -52,6 +54,56 @@ MANIFEST_LOCKFILE_BASENAMES = frozenset(
         "Gemfile.lock",
     }
 )
+
+# Dependency manifests of ecosystems this module does NOT parse. A change to one
+# is not reviewed by the supply-chain checks above, so scan_dependency_changes
+# surfaces it as `uncovered_manifests` -- an honest "not covered" the consumer
+# can hand-review, never a silent "reviewed clean". Python is a first-class
+# chameleon language whose manifests land here; the rest match the deliberate
+# out-of-scope boundary named in the module docstring.
+UNCOVERED_MANIFEST_BASENAMES = frozenset(
+    {
+        # Python
+        "pyproject.toml",
+        "poetry.lock",
+        "Pipfile",
+        "Pipfile.lock",
+        "setup.py",
+        "setup.cfg",
+        # Go
+        "go.mod",
+        "go.sum",
+        # Rust
+        "Cargo.toml",
+        "Cargo.lock",
+        # PHP
+        "composer.json",
+        "composer.lock",
+    }
+)
+
+
+def is_uncovered_manifest(path: str) -> bool:
+    """True iff ``path`` is a dependency manifest of an ecosystem this module
+    does not parse (Python / Go / Rust / PHP).
+
+    Covered npm/Bundler manifests are never uncovered (they are parsed), so a
+    caller checking both sets sees no overlap. A pip ``requirements*.txt`` is
+    matched by pattern because the name varies (``requirements.txt``,
+    ``requirements-dev.txt``, a ``requirements/base.txt`` under a requirements
+    package).
+    """
+    base = path.rsplit("/", 1)[-1]
+    if base in MANIFEST_LOCKFILE_BASENAMES:
+        return False
+    if base in UNCOVERED_MANIFEST_BASENAMES:
+        return True
+    if base.endswith(".txt") and (
+        base.startswith("requirements") or "/requirements/" in f"/{path}"
+    ):
+        return True
+    return False
+
 
 # Lifecycle scripts that run automatically on `npm install` with no further
 # prompt -- the classic vector for code that executes the moment a dependency

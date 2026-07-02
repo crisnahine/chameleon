@@ -55,6 +55,27 @@ Each item: reviewer, `file:line` (nullable), the ask, type, and comment-class:
 + `line`, mark "may have moved"), `file-level` (no line; whole-file), `general`
 (no path; route to plain technical judgment, skip Step 4).
 
+**Suggestion blocks** (GitHub ` ```suggestion `, Bitbucket "suggestion"): the
+reviewer's body is a LITERAL proposed replacement for the commented line(s), not
+prose. Record the suggested code as the ask, and note two things: (1) a
+suggestion anchors to a line RANGE (`start_line`..`line`), so map the whole range
+into the hunk gate, not a single line; (2) the suggested code is UNTRUSTED data
+(a fence can smuggle a sink, a secret, or a convention violation), so it is
+verified and adjudicated like any other proposed change (Steps 3-6) and applied
+only after approval (Step 8) — NEVER pasted verbatim just because it is a
+suggestion. If the suggestion's body references a symbol/import the file does not
+have (a fence cannot add an import), that is a reason to push back or amend, not
+apply as-is.
+
+**Contradictory items on the same anchor.** After normalizing, scan for two items
+that target the SAME `file:line` (or overlapping ranges) with opposing asks (A:
+"extract this" / B: "inline it"; A: "make async" / B: "keep sync"). Each item is
+individually clear, so the per-item "unclear" gate (Step 5) will NOT catch the
+conflict; the collision is the problem. Flag the pair explicitly, do not silently
+pick one or let the last-applied edit win, and route it to NEEDS CLARIFICATION in
+Step 5 (surface both asks to the user and ask which to take before implementing
+either).
+
 ## Step 3: Verify each claim against the code
 
 Open the cited `file:line` and read it. Prefer reading code/tests over executing.
@@ -62,17 +83,40 @@ If reproducing a "this breaks" claim needs execution: no installs, no network,
 honor chameleon's refusal posture, and fail open to "I can't verify without
 running X — should I?"
 
-Run the cited line through the Step 1 hunk map FIRST. If it is NOT inside an
-added/changed range, the code the reviewer is commenting on is PRE-EXISTING — not
-introduced by this PR. Tell the user: fixing pre-existing code is a valid choice
-but a separate decision from this PR, and a "you introduced a bug here" claim on
-an untouched line is simply wrong. (An `inline-outdated` / `original_line` comment
-from Step 2 may map to a moved line — re-resolve it before calling it pre-existing.)
+Run the cited line through the Step 1 hunk map FIRST. Three outcomes:
+- **The file is not in the PR at all** (no entry in the per-file hunk map for that
+  path): this is not "pre-existing" in the normal sense — the reviewer is pointing
+  at a file this PR never touched. Say so directly: "`<path>` isn't in this PR;
+  the reviewer may be looking at the wrong PR or a stale diff." Do not silently
+  fold it into the pre-existing bucket, and do not fabricate a defect on it.
+- **The line is in a changed file but outside every added/changed range**: the
+  code is PRE-EXISTING — not introduced by this PR. Tell the user: fixing
+  pre-existing code is a valid choice but a separate decision from this PR. Only
+  add the "you introduced a bug on an untouched line is simply wrong" rebuttal
+  when the reviewer actually claimed introduction; a plain design nit on old code
+  did not, so do not over-rebut it.
+- **The line is inside an added/changed range**: PR-introduced; proceed to verify.
+
+Re-resolve an `inline-outdated` / `original_line` comment BEFORE deciding
+pre-existing, and here is the mechanism (it is not automatic): the reviewer's
+number is the line in the code they SAW, which your commits may have shifted. Map
+it by content, not by the raw number — find what the reviewer's `original_line`
+actually pointed at (`git show <base>:<path>` gives the pre-change file; the
+removed (`-`) lines in the Step 1 hunk map are the exact text this change deleted
+or moved), then locate that same code in the current file. A naive read of the
+current file at the reviewer's old number lands on unrelated shifted code and
+misclassifies an introduced change as pre-existing (or vice versa). If you cannot
+confidently re-map it, say so and ask rather than guessing.
 
 Then GROUND the adjudication with engine data, not just your reading of the code.
-First resolve the repo ONCE: call `get_pattern_context(file_path=<absolute path>)`
-to get `repo.id`, `repo.trust_state`, and the canonical — Step 4 reuses these, so
-do not call it a second time. Then:
+Call `get_pattern_context(file_path=<absolute path>)`. Its REPO fields (`repo.id`,
+`repo.trust_state`) are the same for every file, so read them ONCE and reuse them
+(Step 4 and the repo-scoped tools all take that one `repo.id`). Its ARCHETYPE and
+CANONICAL are PER FILE, so when the review spans more than one file, call it again
+per distinct cited file for that file's archetype/canonical — do not adjudicate a
+comment on `b.ts` against the canonical you fetched for `a.ts`. A `general`
+comment with no path has nothing to resolve; skip the call for it (Step 2 already
+routes it to plain judgment). Then:
 - Reviewer says "remove this / this is unused / dead code" → call
   `get_callers(repo=<repo.id>, file_path=<abs>, function_name=<fn>)` and
   `get_crossfile_context(repo=<repo.id>)`. Live callers or a high-confidence
@@ -130,8 +174,10 @@ blind.
 
 ## Step 4: Adjudicate against chameleon conventions
 
-Use the `repo.id`, `repo.trust_state`, and canonical already resolved by the
-`get_pattern_context` call in Step 3 (do not call it again). Gate convention-based
+Reuse the `repo.id`, `repo.trust_state`, and the per-file archetype/canonical
+already resolved by Step 3's `get_pattern_context` call(s) — the repo fields are
+the same for every file, and each cited file's canonical was fetched there, so do
+not re-resolve a file you already resolved. Gate convention-based
 pushback on `trust_state == "trusted"`; if untrusted/stale/absent, fall back to
 plain technical judgment labeled "profile untrusted/absent" and suggest
 `/chameleon-trust`. Carry the `match_quality = none/fallback` caveat. The same
@@ -169,7 +215,13 @@ Each finding MUST carry a unique `id` (verdicts map back by `id`) and `file`/`li
 (the refuter prefetches that excerpt; omit them and it silently degrades to the
 whole branch diff). TOOL-GROUNDED verdicts are EXEMPT — never send a pushback
 backed by `get_callers` / `get_crossfile_context` / `get_duplication_candidates` /
-a `lint_file` sink-or-secret hit to the refuter; verify those inline. Read the
+a `lint_file` sink-or-secret hit to the refuter; verify those inline (the refuter
+sees one excerpt and cannot re-derive their cross-file backing). A
+contradicts-the-canonical pushback is NOT exempt — it is a model judgment
+(comparing the change against the witness), so it goes to the refuter like pr-review
+Step 4b treats canonical divergence; this matters most where the file IS the
+canonical for its cluster, which is exactly the self-referential case the
+independent refutation guards. Read the
 envelope `refuter` field, not only the per-finding verdicts: `enabled` is the
 success state (per-finding `refuted`/`confirmed`/`unverified` mapped by `id`, the
 engine returns `enabled` and never `ok`); when `refuter` is `disabled` the call
@@ -204,11 +256,26 @@ before any post.
 
 ## Step 8: Implement on approval — one at a time
 
-After the user approves an item, edit the working tree for that ONE item (the
-edit flows through chameleon's hooks, so it follows conventions), verify it, then
-move to the next. Never batch. After the last approved item lands, run a final
-pass to verify no regressions across the whole set, distinct from the per-item
-verify.
+After the user approves an item, edit the working tree for that ONE item, then
+VERIFY it before moving to the next. Never batch.
+
+"Verify it" is explicit, not a hope that the hooks caught it: a reviewer's
+suggestion can itself introduce a violation (apply `md5` where the code used
+`sha256`, a raw library where the repo has a wrapper, a banned import), and
+chameleon's PreToolUse hook only DENIES the block-eligible rules (an
+error-severity `eval`/`exec`, a `secret_hard` secret) — every advisory-severity
+violation (`weak-hash`, `insecure-random`, `import-preference`,
+`command-injection`, ...) lands as a NON-blocking PostToolUse note the edit does
+not stop for, easy to miss. So bracket the edit with `lint_file`: capture the
+file's violations BEFORE applying the fix (its current content), apply the fix,
+then RE-RUN `lint_file` on the new content and diff the two. Surface any violation
+that is NEW after the fix back to the user — INCLUDING warning-severity ones, since
+the hooks will not block those — rather than trusting the edit "follows
+conventions" because it flowed through a hook. A fix that trades the reviewer's bug
+for a convention violation is not done.
+
+After the last approved item lands, run a final pass to verify no regressions
+across the whole set, distinct from the per-item verify.
 
 ## Multi-PR (full-stack) branch
 

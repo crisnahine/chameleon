@@ -17,10 +17,12 @@ def test_kill_switch_disables(monkeypatch):
 
 
 def test_unavailable_fails_open(monkeypatch, tmp_path):
-    # Reach the refuter_unavailable_reason() gate -- refute_finding now
-    # consults that, not refuter_available(). A real trusted tmp repo gets
-    # past the earlier repo-unresolved / untrusted returns so the unavailable
-    # path has genuine coverage (and never spawns a real `claude -p`).
+    # Reach the CLI-absent gate -- refute_finding bails to "unavailable" only
+    # when the claude CLI genuinely cannot spawn (refuter_cli_absent), NOT on a
+    # bare-auth failure (the spawn falls back to a plain claude -p there, so
+    # gating on it would leave round 3 dead on every current CLI). A real trusted
+    # tmp repo gets past the earlier repo-unresolved / untrusted returns so the
+    # unavailable path has genuine coverage (and never spawns a real `claude -p`).
     monkeypatch.delenv("CHAMELEON_REVIEW_REFUTER", raising=False)
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
@@ -31,17 +33,15 @@ def test_unavailable_fails_open(monkeypatch, tmp_path):
     from chameleon_mcp.profile.trust import grant_trust
 
     grant_trust(tools._compute_repo_id(repo), cham)
-    monkeypatch.setattr(
-        "chameleon_mcp.refuter.refuter_unavailable_reason", lambda: "test: cli unavailable"
-    )
+    monkeypatch.setattr("chameleon_mcp.refuter.refuter_cli_absent", lambda: "test: cli absent")
     out = tools.refute_finding(
         str(repo), [{"id": "f1", "kind": "x", "claim": "c", "evidence": "e"}]
     )
     assert out["data"]["refuter"] == "unavailable"
     # one entry per finding, all unverified (never silently dropped), carrying
-    # the precise reason from refuter_unavailable_reason().
+    # the precise reason from refuter_cli_absent().
     assert [v["verdict"] for v in out["data"]["verdicts"]] == ["unverified"]
-    assert out["data"]["verdicts"][0]["reason"] == "test: cli unavailable"
+    assert out["data"]["verdicts"][0]["reason"] == "test: cli absent"
 
 
 def test_empty_findings_returns_empty():

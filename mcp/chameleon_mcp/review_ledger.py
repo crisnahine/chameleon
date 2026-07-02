@@ -195,9 +195,10 @@ def _would_block_counts(repo_id: str, window_days: int) -> dict[str, int]:
 
 _LEDGER_FILENAME = "review_ledger.ndjson"
 
-# Verdict vocabulary the skill writes. APPROVE / FIX / BLOCK mirror the review
-# severities; anything else a caller passes is stored verbatim but never reads
-# as a shipped-over-BLOCK case in the panel.
+# Verdict vocabulary the skill writes: APPROVE / APPROVE WITH NITS / NEEDS
+# CHANGES / BLOCK. Only BLOCK is special-cased (the shipped-over-BLOCK panel);
+# anything else a caller passes is stored verbatim and never reads as a
+# shipped-over-BLOCK case.
 _BLOCK_VERDICT = "BLOCK"
 
 

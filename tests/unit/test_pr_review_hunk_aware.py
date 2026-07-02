@@ -25,14 +25,16 @@ def _skill_text() -> str:
 def test_branch_case_captures_full_unified_diff():
     """The no-args branch path must capture the full diff, not only file names."""
     text = _skill_text()
-    # The full-diff command for the branch case (same base as --name-only).
-    # The base is production_ref-aware, so the command is written with a
-    # <base> placeholder — both invocations must share it.
-    assert "git diff <base>...HEAD --name-only" in text
+    # The name-listing command for the branch case (same base as the full diff).
+    # It uses --name-status -M (not bare --name-only) so a Deleted/Renamed file is
+    # distinguishable -- the per-file loop must not treat a deletion as a normal
+    # source file. The base is production_ref-aware, so the command is written with
+    # a <base> placeholder — both invocations must share it.
+    assert "git diff <base>...HEAD --name-status -M" in text
     assert "git diff <base>...HEAD` (same base)" in text
     # The locked production branch is the preferred base.
     assert "production_ref" in text
-    # The bare name-only must no longer be the only diff the branch path runs:
+    # The bare name listing must no longer be the only diff the branch path runs:
     # there is an explicit instruction to also get the unified diff.
     assert "full unified diff" in text
 

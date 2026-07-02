@@ -4,6 +4,78 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.18] - 2026-07-02
+
+Deep QA of the `chameleon-pr-review` and `chameleon-receiving-code-review` skills
+across every supported language and framework, driving each engine surface the
+skills call with real tools against real repos. The headline is the round-3
+refuter, which was silently inert; several coverage gaps and skill-prose
+ambiguities were fixed alongside.
+
+### Fixed
+
+- **The round-3 refuter never produced a verdict — round 3 was dead on both review
+  skills.** Three independent defects stacked: (1) `run_one` scanned the raw
+  `claude -p --output-format stream-json` stdout with `_extract_json_array`, which
+  locked onto the system-init `tools` array instead of the model's answer (which
+  lives inside an assistant `result`/`text` block), so every finding came back
+  `unverified: "unparseable refuter output"`. It now harvests the assistant text
+  blocks first (the same two-step the turn-end judge uses, factored into
+  `_stream_json_texts`) and accepts either the prompted array or a bare object.
+  (2) `refute_finding` pre-gated to `unavailable` on any `--bare` auth failure —
+  true on every current CLI — even though the spawn falls back to a plain
+  `claude -p` (the exact fallback the judge takes every turn); it now bails only
+  when the CLI is genuinely absent (`refuter_cli_absent`). (3) The plain-fallback
+  spawn starts a fresh full session and can transiently return nothing, so
+  `run_one` now retries once on a non-timeout failure. Together these make round 3
+  produce real `confirmed`/`refuted` verdicts for the first time.
+- **A deleted file's broken importers were invisible to the cross-file pass.**
+  `get_crossfile_context` skipped a module it could not read, conflating a DELETED
+  module (which exports nothing, so every importer still referencing it is a
+  genuine break — the strongest existence break there is) with a merely-unreadable
+  one. A deleted module is now read as a closed empty export set; the per-site
+  `_live_importer_break` re-check keeps only importers that still reference it and
+  still resolve there, so a stale index never fabricates a break. The pr-review
+  skill (Step 1/1a) now captures file status with `--name-status -M` so a deletion
+  is handled as a sanctioned skip (not a normal source review) and a rename's old
+  path enters the Step 2.9c diff-scope set.
+- **A Python (or Go/Rust/PHP) dependency-manifest change read as reviewed-clean.**
+  `scan_dependency_changes` parses only npm and Bundler, and a change to
+  `requirements*.txt` / `pyproject.toml` / `Pipfile` / `setup.py` (Python is a
+  first-class language) produced an empty result indistinguishable from a no-op
+  diff. It now returns those in a new `uncovered_manifests` field, and the
+  pr-review skill (Step 2.5) hand-reviews the added lines with the same
+  severity split the npm path uses: an ACK for the coverage-gap disclosure and a
+  routine name-only dependency add, a FIX for a visible red flag the reviewer can
+  read directly (a non-registry/git source, an `--index-url` redirection, an
+  install hook). A clean Python dependency add stays APPROVE, a Python manifest
+  carrying an off-PyPI source is NEEDS CHANGES — symmetric with the identical
+  npm content, instead of a silent clean.
+- **`load_calls_index` did not follow a linked worktree to the main profile.**
+  While `get_pattern_context`/`lint_file` resolve a worktree's profile via
+  `resolve_profile_root`, the calls index read the raw worktree root, so a review
+  run from a worktree (the pr-review skill's own recommended way to inspect another
+  revision) silently degraded every blast-radius / contract-break / caller fact to
+  unknown. It now applies the same resolution (identity off a worktree).
+- **Migration-safety parse ambiguities (pr-review Step 2.7a) could flip a verdict
+  tier between two faithful reviewers.** `change_column_null` was wrongly listed as
+  irreversible (Rails inverts it) and double-routed to both the 2.7a BLOCK and the
+  2.7b table-size FIX; it now lives only in 2.7b. The `reversible do |dir|` carve-out
+  no longer clears the BLOCK for a one-directional block (`dir.up` with no
+  `dir.down`).
+
+### Changed
+
+- **receiving-code-review** gained handling the skill was silent on: GitHub/Bitbucket
+  suggestion blocks (verify and adjudicate, never paste verbatim), same-anchor
+  contradictory comments (surface the conflict, route to NEEDS CLARIFICATION), a
+  distinct "this file isn't in your PR" outcome, an explicit inline-outdated
+  re-resolution mechanism, per-file archetype/canonical resolution on multi-file
+  reviews, a wider round-3 refuter-exemption set (canonical-grounded and
+  deterministic file-witnessed verdicts verify inline), and an explicit post-apply
+  re-lint in Step 8 so a fix that introduces a convention violation is caught
+  rather than trusted to a non-blocking hook.
+
 ## [2.38.17] - 2026-07-02
 
 Live end-to-end QA of the `chameleon-pr-review` and `chameleon-receiving-code-review`

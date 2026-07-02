@@ -38,7 +38,7 @@ Follow these steps in order. Do not skip steps.
 ### Step 1: Parse input
 
 Determine what to review:
-- **No args**: review current branch. The diff base is the locked production branch when one exists — read `production_ref` from `.chameleon/config.json`; otherwise use `main` (or `production` if main doesn't exist). Run `git diff <base>...HEAD --name-only` to get changed files, then `git diff <base>...HEAD` (same base) to get the full unified diff.
+- **No args**: review current branch. The diff base is the locked production branch when one exists — read `production_ref` from `.chameleon/config.json`; otherwise use `main` (or `production` if main doesn't exist). Run `git diff <base>...HEAD --name-status -M` to get changed files WITH their status (`A`dded / `M`odified / `D`eleted / `R`enamed — `--name-status` names the status `--name-only` hides, and `-M` surfaces a rename as `R<score>  old_path  new_path` instead of an unrelated delete+add), then `git diff <base>...HEAD` (same base) to get the full unified diff.
 - **Jira key** (matches `[A-Z]+-\d+`): note it for Step 3.
 - **PR URL** (contains `pullrequests` or `pull`): fetch the PR diff. For Bitbucket, use `bbcurl`. For GitHub, use `gh`. This already returns the full unified diff.
 - **Both**: use the PR diff and the Jira key.
@@ -54,6 +54,11 @@ You now hold the full unified diff (not just file names). For each changed file,
 Keep this per-file hunk map. Two later steps depend on it:
 - The **change-delta logic pass** (Step 3e) reads the removed lines to see what behavior the change took out.
 - The **hunk gate** (Step 4, applied to every logic finding) drops any BLOCK/FIX whose anchor line is not inside an added/changed range.
+
+**Record each file's status** (from the `--name-status -M` output) alongside its hunk map, because three shapes have no on-disk content or no hunks and the per-file loop (Step 2) must not treat them as ordinary source files:
+- **Deleted (`D`)**: the file is gone. There is no content to `get_pattern_context` / `lint_file` (Step 2a/2b), so do NOT call them on it — its `get_pattern_context` returns `file_exists: false` (Step 2a reads that flag). A deletion has one real risk: importers of its removed exports now break. That is covered by the cross-file existence pass (Step 2.9c), which the engine reports for a deleted module. In the Step 2 coverage ledger, account for a deleted file as an explicit sanctioned skip (`lint_file skipped: file deleted`), never a gap to close.
+- **Renamed (`R`)**: the diff lists the NEW path (the old path is invisible to `--name-only`, and a 100%-similarity rename has NO hunks). Add the OLD path to the changed-file set the Step 2.9c diff-scope gate reads, so a rename that removes an export the old path used to provide can reach the verdict (its `module` is the old path, which is otherwise absent from the diff). Review the NEW path as an ordinary modified file.
+- **Binary**: `git` shows `Binary files differ` with no hunk. It is skipped per the Step 2 binary skip rule; account for it in the ledger as a named skip (`skipped: binary`).
 
 For very large diffs, cap the removed-line text you feed forward per file (keep the hunk ranges in full; truncate only the removed-line bodies) so the review stays within context. Note in the output when a file's delta was truncated.
 
@@ -123,6 +128,7 @@ Every chameleon MCP tool returns a `{"api_version": "1", "data": {...}}` envelop
 
 If `trust_state` is not "trusted", warn and suggest `/chameleon-trust`.
 If `match_quality` is "none" or "fallback", note it — the file may be in an uncovered area.
+If `file_exists` is `false`, the path was deleted in this diff (a `D` file that slipped past the Step 1a status check): do NOT review it as a normal source file or call `lint_file` on it — route it to the deleted-file handling (Step 1a), whose only real risk is the cross-file existence break (Step 2.9c).
 
 #### 2b. Run lint
 
@@ -177,7 +183,7 @@ For new files (not modifications), list sibling files in the same directory. Che
 
 ### Step 2.5: Dependency-change review (always, for manifest/lockfile diffs)
 
-Run this whenever the diff touches a package manifest or lockfile: `package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `Gemfile`, or `Gemfile.lock`. These are the supply-chain entry points a human reviewer reads line by line and the convention review above does not cover. This pass is a pure parse of the diff text and the manifest/lockfile JSON or YAML. It makes NO network calls and does not install or run anything: only the added (`+`) lines matter, and the existing repo content gives the "previously present" baseline.
+Run this whenever the diff touches a dependency manifest or lockfile of ANY ecosystem — the npm/Bundler set the tool parses (`package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `Gemfile`, `Gemfile.lock`) AND the ones it does not (Python `requirements*.txt` / `pyproject.toml` / `Pipfile` / `setup.py`, Go, Rust, PHP). Always call `scan_dependency_changes` (below) — it parses the npm/Bundler files and reports the rest in `uncovered_manifests` for the hand-review disclosure. These are the supply-chain entry points a human reviewer reads line by line and the convention review above does not cover. This pass is a pure parse of the diff text and the manifest/lockfile JSON or YAML. It makes NO network calls and does not install or run anything: only the added (`+`) lines matter, and the existing repo content gives the "previously present" baseline.
 
 **Tool-backed (deterministic):** Call the `scan_dependency_changes` MCP tool once for the whole diff:
 
@@ -186,6 +192,13 @@ scan_dependency_changes(repo=<repo_id>, base_ref=<the PR base branch, or the bra
 ```
 
 It parses the manifest/lockfile diff (no network) and returns structured `findings`, each citing the exact added line it parsed: `install-script`, `non-registry-host`, `non-registry-source`, and `minified-manifest` are **FIX**; `new-dependency` is the 2.5a listing you carry into the human-judgment gate below. Use these findings as the deterministic source for 2.5b/2.5c/2.5d/2.5e and the 2.5a listing instead of hand-parsing the JSON/YAML — each is groundable by the round-3 refuter against the tool result (this is the Step 2.5 exception to the chameleon-data rule). The tool does NOT score typosquats; that judgment stays yours under 2.5a. If `scan_dependency_changes` is unavailable in this session, fall back to the manual parse described below and note it in one line. It is no-network and never replaces the opt-in `dep_audit` CVE scan.
+
+**Uncovered ecosystems (Python and others) — disclose AND hand-review, split by severity exactly as the npm path does.** The scanner parses only npm and Bundler. A changed dependency manifest of an ecosystem it does not parse — Python (`requirements*.txt`, `pyproject.toml`, `Pipfile`, `setup.py`), Go, Rust, PHP — comes back in the envelope's `uncovered_manifests` list (with `findings` empty and `manifests_changed` empty, which for those files means "not parsed", NOT "reviewed clean"). When `uncovered_manifests` is non-empty, the tool could not scan it, but YOU can still read the added (`+`) lines — so hand-review them and route each signal to the SAME severity the npm/Bundler checks give the identical content. Do not lump everything into an ACK: a blatant supply-chain red flag that is plainly visible in the diff is a witnessed finding, and suppressing it because the parser was silent inverts the very asymmetry the ACK rule exists to prevent.
+
+- **ACK (does NOT drive the verdict):** the "not covered by the automated scan" disclosure for each file (its own ACK line), AND a new direct dependency whose only signal is its NAME — a routine add, treated exactly like the npm 2.5a new-dependency ACK (confirm it is not a typosquat, e.g. `left-pad-py`). A routine Python dep add therefore stays APPROVE + ACK, symmetric with the identical npm add.
+- **FIX (drives NEEDS CHANGES, like npm 2.5b/2.5d):** an added line carrying a red flag you can read directly — a non-registry or git/URL/path source (`pkg @ git+https://…`, a `-e <url>`, a `file:`/`path:` dep, a `[[tool.poetry.source]]` pointing off-PyPI), a registry redirection (a `--index-url`/`--extra-index-url` to a non-PyPI host in requirements), or an install hook (a `setup.py` that runs code, a Pipfile script). Cite the exact added line — this is the Step 2.5 diff-parse exception to the chameleon-data rule (the manifest diff is the backing fact), the same as the npm findings, and it is refuter-groundable against that line.
+
+So a clean Python dependency add is APPROVE + ACK (no pollution), and a Python manifest carrying an index redirection or a git source is NEEDS CHANGES with a FIX — identical to how the same content reads in a `package.json`. The one thing never acceptable is a Python PR that added a non-registry source rendering a silent clean APPROVE.
 
 Each finding cites the exact lockfile line or manifest key. The five checks are independent; run every one that applies even if an earlier check fired.
 
@@ -292,7 +305,7 @@ This pass has exactly one BLOCK-eligible check and two advisory reminders. Keep 
 
 A `def change` method lets Rails auto-generate the rollback. That only works when every operation in the block is reversible. An irreversible operation inside `change` with no `up`/`down` pair gives a migration that cannot be rolled back: `rails db:rollback` raises `ActiveRecord::IrreversibleMigration` at the worst possible time.
 
-Raise a **BLOCK** when a `change` method contains an operation Rails cannot auto-reverse and the migration does NOT instead define a `def up` / `def down` pair (which makes the rollback explicit and is the correct fix). The irreversible operations are: a bare `remove_column` without the column type and options Rails needs to recreate it, `change_column`, `execute` with raw SQL, `remove_index` without the full index definition, `drop_table` without a block describing the table, and `change_column_default`/`change_column_null` given only the new value with no `from:`/`to:`. A `reversible do |dir| ... end` block or a `change` that calls only auto-reversible operations (`create_table`, `add_column`, `add_index`, `add_reference`) is correct; do not flag it.
+Raise a **BLOCK** when a `change` method contains an operation Rails cannot auto-reverse and the migration does NOT instead define a `def up` / `def down` pair (which makes the rollback explicit and is the correct fix). The irreversible operations are: a bare `remove_column` without the column type and options Rails needs to recreate it, `change_column` (a column TYPE change — always irreversible, Rails cannot know the prior type), `execute` with raw SQL, `remove_index` without the full index definition, `drop_table` without a block describing the table, and `change_column_default` given only the new value with no `from:`/`to:` pair. Note `change_column_null` is NOT in this list: Rails inverts it (it flips the null flag back), so it is auto-reversible and belongs only to the 2.7b table-size check, not here — do not BLOCK on it. A `change` that calls only auto-reversible operations (`create_table`, `add_column`, `add_index`, `add_reference`, `change_column_null`) is correct; do not flag it. A `reversible do |dir| ... end` block clears the BLOCK ONLY when it defines BOTH directions for the irreversible op (`dir.up` AND `dir.down`); a one-directional `reversible` block (`dir.up { execute … }` with no matching `dir.down`) still cannot roll back and does NOT clear the BLOCK — treat the wrapped irreversible op as unhandled.
 
 This is the one clean static win in this pass: an irreversible op inside `change` is a witnessed structural fact in the diff, not a guess about table size, so it earns a BLOCK. Cite the file, the line of the irreversible call, and name the operation. The fix to state: move the body into `def up` / `def down`, or wrap the irreversible part in `reversible do |dir|`.
 
@@ -627,12 +640,16 @@ Only present when the diff touched a manifest or lockfile (Step 2.5). Omit the s
 - `package-lock.json:204` — Resolved host `evil.example.com` is not `registry.npmjs.org`
 - `package.json:12` — New `scripts.postinstall`: `node ./setup.js` runs automatically on install
 - `package.json:9` — Dependency `acme-utils` pulled from `git+ssh://git@github.com/acme/utils.git`, not the registry
+- `requirements.txt:1` — `--index-url https://pypi.attacker.example/simple` redirects installs off PyPI (uncovered-manifest hand-parse, Step 2.5; same tier as an npm non-registry host)
+- `requirements.txt:47` — Dependency `flask-hardening @ git+https://github.com/evil/…` pulled from a git source, not PyPI (uncovered-manifest hand-parse)
 
 ### Acknowledge before merge (ACK — does not affect the verdict)
 
-Only present when the diff adds a new direct dependency (Step 2.5a). Each line is a human provenance gate, not a finding: it never changes the verdict and is never recorded as a BLOCK in the ledger.
+Only present when the diff adds a new direct dependency (Step 2.5a) or touches a dependency manifest the scanner cannot parse (Step 2.5 `uncovered_manifests`). Each line is a human provenance gate, not a finding: it never changes the verdict and is never recorded as a BLOCK in the ledger.
 
 - ACK `package.json:31` — New direct dependency `left-pad@^1.3.0`. Confirm it is the intended package (not a typosquat) and that adding it is wanted.
+- ACK `requirements.txt` — Dependency manifest not covered by the automated scan (Python). Coverage-gap disclosure; the added lines were hand-reviewed (any red flags are raised as FIX in the Dependency section).
+- ACK `requirements.txt:46` — New direct dependency `left-pad-py==1.0.0` (routine add, name-only). Confirm it is the intended package (not a typosquat).
 
 ### Security findings (W issues)
 

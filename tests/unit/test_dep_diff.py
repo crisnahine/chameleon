@@ -17,6 +17,7 @@ import pytest
 from chameleon_mcp.dep_diff import (
     MANIFEST_LOCKFILE_BASENAMES,
     collect_dependency_findings,
+    is_uncovered_manifest,
     render_findings,
     scan_dependency_diff,
 )
@@ -24,6 +25,55 @@ from chameleon_mcp.dep_diff import (
 
 def _findings_by_check(findings, check):
     return [f for f in findings if f.check == check]
+
+
+# ---------------------------------------------------------------------------
+# uncovered-manifest detection: a changed dependency manifest of an ecosystem
+# the scanner does not parse must read as "not covered", never a silent clean.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "requirements.txt",
+        "requirements-dev.txt",
+        "requirements/base.txt",
+        "pyproject.toml",
+        "Pipfile",
+        "setup.py",
+        "setup.cfg",
+        "go.mod",
+        "go.sum",
+        "Cargo.toml",
+        "composer.json",
+        "backend/requirements.txt",
+    ],
+)
+def test_python_and_other_ecosystem_manifests_are_uncovered(path):
+    assert is_uncovered_manifest(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "package.json",
+        "package-lock.json",
+        "Gemfile",
+        "Gemfile.lock",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+    ],
+)
+def test_parsed_npm_bundler_manifests_are_not_uncovered(path):
+    # A covered manifest is parsed, not surfaced as uncovered -- no double-count.
+    assert is_uncovered_manifest(path) is False
+
+
+@pytest.mark.parametrize("path", ["src/app.py", "README.txt", "notes.txt", "config.yml"])
+def test_ordinary_files_are_not_uncovered_manifests(path):
+    # A stray .txt or a source file must not be mistaken for a dependency manifest.
+    assert is_uncovered_manifest(path) is False
 
 
 # ---------------------------------------------------------------------------

@@ -3729,6 +3729,30 @@ def _crossfile_module_resolver(repo_root: Path, language: str):
     return make_module_resolver(Path(repo_root).resolve(), language)
 
 
+def _module_file_missing(repo_root: Path, rel: str) -> bool:
+    """True iff ``rel`` names a path inside ``repo_root`` that no longer exists.
+
+    A deleted module (gone from disk) exports nothing, so every importer still
+    referencing it is a genuine existence break -- distinct from an unreadable
+    module (oversized / unsafe path), whose export set is unknown. Does NO read,
+    only an existence check within the repo, so it is safe for a path that failed
+    the safe_open validation for a reason OTHER than deletion: an escaped or
+    traversal path resolves outside the root and reads as not-missing (skip),
+    never as deleted. Fails closed to False (treat as unreadable, skip) on error.
+    """
+    try:
+        candidate = (repo_root / rel).resolve()
+        root = repo_root.resolve()
+        if candidate != root and root not in candidate.parents:
+            return False
+        return not candidate.exists()
+    except (OSError, ValueError):
+        # ValueError covers a null-byte in ``rel`` (a poisoned artifact path);
+        # both fail closed to "not missing" so a bad path is skipped, never a
+        # crash that aborts the whole cross-file scan.
+        return False
+
+
 def _live_importer_break(
     repo_root: Path,
     importer_rel: str,
@@ -3817,12 +3841,25 @@ def _ruby_constant_existence_breaks(repo_root: Path) -> dict:
         if len(defined_in) != 1 or "::" in name or not referenced_by:
             continue
         def_file = defined_in[0]
+        deleted_def = False
         try:
             content = safe_read_text(repo_root, def_file, max_size_bytes=1_000_000)
         except Exception:
-            continue
-        # Still defined on disk? A top-level `class Foo` / `module Foo`.
-        if _re.search(r"(?m)^(?:class|module)\s+" + _re.escape(name) + r"\b", content):
+            # A DELETED defining file means the constant is definitively gone --
+            # the strongest existence break, exactly what a PR that removes the
+            # file must surface. An unreadable file (oversized / unsafe path)
+            # leaves the definition unknown, so only the deletion proceeds.
+            if _module_file_missing(repo_root, def_file):
+                deleted_def = True
+                content = ""
+            else:
+                continue
+        # Still defined on disk? A top-level `class Foo` / `module Foo`. A deleted
+        # file defines nothing, so skip this check and fall through to the
+        # still-referencing scan below.
+        if not deleted_def and _re.search(
+            r"(?m)^(?:class|module)\s+" + _re.escape(name) + r"\b", content
+        ):
             continue
         # Removed/renamed -- keep only referencers that still name the constant.
         # Deliberately a string-inclusive bareword scan (unlike the TS import
@@ -3975,17 +4012,32 @@ def get_crossfile_context(repo: str) -> dict:
         if len(high) >= max_findings:
             truncated = True
             break
+        deleted_module = False
         try:
             content = safe_read_text(repo_root, target_key, max_size_bytes=1_000_000)
         except Exception:
-            # The module can't be read (deleted, oversized, unsafe path). Without
-            # its current export set the existence check can't run for it -- skip
-            # rather than guess a break.
-            continue
+            # Distinguish a DELETED module from a merely-unreadable one. A deleted
+            # module exports NOTHING, so every importer still referencing it is a
+            # genuine break -- the strongest existence break there is, and exactly
+            # what a PR that removes a file must surface. An unreadable module
+            # (oversized / unsafe path) has an UNKNOWN export set, so skipping is
+            # still correct there -- guessing a break would be wrong.
+            if _module_file_missing(repo_root, target_key):
+                deleted_module = True
+                content = ""
+            else:
+                continue
         # The index spans the TS and Python module graphs; read each module's
         # live export set with its own language reader so a Python module's real
-        # exports are not all reported broken by the TS regex.
-        if detect_language(target_key) == "python":
+        # exports are not all reported broken by the TS regex. A deleted module
+        # has a CLOSED empty export set: no star re-export can resurrect a name,
+        # so broken_importers(target, {}) returns every still-referencing importer
+        # and the per-site _live_importer_break re-check keeps only the ones that
+        # still name it and still resolve here (a rename that reached the importer
+        # drops out), so a stale index never fabricates a break.
+        if deleted_module:
+            current, open_set = frozenset(), False
+        elif detect_language(target_key) == "python":
             current, open_set = _python_current_export_names(content, repo_root / target_key)
         else:
             current, open_set = _current_export_names(content)
@@ -4085,9 +4137,14 @@ def refute_finding(repo: str, findings: list, base_ref: str = "main") -> dict:
     if gate is None or not gate.grants_root(repo_root):
         return _envelope({"refuter": "untrusted", "verdicts": _all_unverified("profile untrusted")})
 
-    _unavailable = _refuter.refuter_unavailable_reason()
-    if _unavailable is not None:
-        return _envelope({"refuter": "unavailable", "verdicts": _all_unverified(_unavailable)})
+    # Gate off only when the CLI genuinely cannot spawn (absent/too old). A
+    # --bare auth failure is NOT a blocker: _spawn_reviewer falls back to a plain
+    # `claude -p` (the same fallback the turn-end judge takes every turn), so
+    # gating on it here left round 3 dead on every current CLI while the judge
+    # kept running. The spawn's own plain fallback handles bare-auth failure.
+    _absent = _refuter.refuter_cli_absent()
+    if _absent is not None:
+        return _envelope({"refuter": "unavailable", "verdicts": _all_unverified(_absent)})
 
     model = os.environ.get("CHAMELEON_REFUTER_MODEL", "sonnet")
     timeout = threshold_int("REFUTER_TIMEOUT_SECONDS")
@@ -11344,6 +11401,14 @@ def scan_dependency_changes(repo: str, base_ref: str = "main") -> dict:
         "summary": summary,
         "advisory": True,
     }
+    # A changed dependency manifest of an ecosystem this scanner does not parse
+    # (Python requirements/pyproject/Pipfile, go.mod, Cargo, composer) is NOT
+    # reviewed by the checks above. Surface it so the consumer reads "not
+    # covered, hand-review" instead of an empty findings list that looks clean --
+    # the honesty contract this scanner's own docstring promises.
+    uncovered = [p for p in changed if dep_diff.is_uncovered_manifest(p)]
+    if uncovered:
+        data["uncovered_manifests"] = uncovered
     if truncated_files:
         # Surfaced inside `data` (not just the envelope flag) so the consuming
         # skill sees the coverage gap and can say so rather than claim clean.

@@ -441,6 +441,15 @@ def load_calls_index(repo_root: Path | str | None) -> CallsIndex | None:
         root = Path(repo_root).resolve()
     except OSError:
         return None
+    # Follow a linked git worktree to the main worktree's profile, the same way
+    # get_pattern_context / lint_file resolve theirs. Without this, a review run
+    # from a worktree (the pr-review skill's own recommended way to inspect
+    # another revision) reads the worktree's absent .chameleon and every
+    # blast-radius / contract-break / caller fact silently degrades to unknown --
+    # a false "clean/complex" instead of the real signal. Identity off a worktree.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    root = resolve_profile_root(root)
     artifact = root / ".chameleon" / CALLS_INDEX_FILENAME
     try:
         st = os.stat(artifact)
