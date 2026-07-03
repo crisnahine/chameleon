@@ -2766,6 +2766,12 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
                 "content_size": len(content),
             },
         )
+    if file_path is not None and not isinstance(file_path, str):
+        # Optional arg: a non-string file_path (a list/dict from a malformed call)
+        # would crash the language/sink detection below (`.lower()` on a list).
+        # Drop it -- the secret and structural scans still run; only the
+        # path-derived sink/language scan is skipped.
+        file_path = None
 
     content_size = len(content)
     truncated = content_size > 100_000
@@ -8911,6 +8917,20 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
         # of the file's own metadata; never drop the payload key.
         ours_payload = ours_data.get(data_key) or {}
         theirs_payload = theirs_data.get(data_key) or {}
+        # never-raise / fail-open contract: a hand-/merge-mangled payload that is
+        # a list or scalar (not a dict) would raise AttributeError/TypeError in
+        # the union below. Decline cleanly, like the archetypes branch does.
+        if not isinstance(ours_payload, dict) or not isinstance(theirs_payload, dict):
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        f"{data_key} payload is not an object (corrupt/mangled "
+                        "artifact); leaving the conflict for manual resolution"
+                    ),
+                    "merged_profile_path": None,
+                }
+            )
         if data_key == "conventions":
             # conventions.json's top-level keys are the FIXED dimension names
             # (imports/naming/inheritance/...), identical on BOTH sides, so a

@@ -4,6 +4,26 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.26] - 2026-07-03
+
+Round 4 of the all-14-skills QA — the convergence round. It regression-hunted the
+round-3 fixes and systematically swept every content-returning tool for the
+untrusted-leak / non-string-arg-crash / corrupt-artifact class round 3 surfaced.
+Three of four units came up completely clean (the exhaustive comprehension sweep
+and a full from-zero re-drive of every skill in all three languages); 2 confirmed
+findings fixed, both the same fail-open type-guard gap. Confirmation battery 79/79.
+
+### Fixed
+
+- **`lint_file` crashed on a non-string `file_path`** (`AttributeError` on a
+  list/dict/int) — round 3 guarded `content` and `archetype` but not the optional
+  `file_path`. It now drops a non-string path (the secret + structural scans still
+  run; only the path-derived sink scan is skipped).
+- **`merge_profiles` raised on a non-dict conventions/canonicals/rules payload** —
+  a fail-open gap in the round-3 conventions deep-merge (the archetypes branch
+  already guarded this). It now declines cleanly with a typed `failed` envelope,
+  like its sibling.
+
 ## [2.38.25] - 2026-07-03
 
 Round 3 of the all-14-skills QA: a convergence pass that adversarially
