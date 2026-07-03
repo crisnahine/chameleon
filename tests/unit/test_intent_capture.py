@@ -30,7 +30,7 @@ SID = "s-intent"
 
 # Same synthetic fixture test_scan_hard_secrets.py pins as a deterministic
 # hard kind; not a real credential.
-AWS_KEY = "AKIAIOSFODNN7EXAMPLE"
+AWS_KEY = "AKIAIOSFODNN7EXAMPLE"  # chameleon-ignore secret-detected-in-content
 
 
 def _intent_path(repo_data: Path) -> Path:
@@ -342,9 +342,15 @@ def test_looks_credential_shaped_classification():
     assert _looks_credential_shaped("ghp_" + "a1" * 20)
     assert _looks_credential_shaped("github_pat_" + "B3c4" * 21)
     assert _looks_credential_shaped("glpat-Ab12Cd34Ef56Gh78")
-    assert _looks_credential_shaped("xoxb-2912345678-abcdEFGH1234")
-    assert _looks_credential_shaped("AKIAIOSFODNN7EXAMPLE")
-    assert _looks_credential_shaped("sk_live_" + "4eC39HqLyjWDarjtT1zdp7dc")
+    assert _looks_credential_shaped(
+        "xoxb-2912345678-abcdEFGH1234"
+    )  # chameleon-ignore secret-detected-in-content
+    assert _looks_credential_shaped(
+        "AKIAIOSFODNN7EXAMPLE"
+    )  # chameleon-ignore secret-detected-in-content
+    assert _looks_credential_shaped(
+        "sk_live_" + "4eC39HqLyjWDarjtT1zdp7dc"
+    )  # chameleon-ignore secret-detected-in-content
     # Ordinary code identifiers stay persistable.
     assert not _looks_credential_shaped("retryLimit")
     assert not _looks_credential_shaped("MAX_RETRIES")
