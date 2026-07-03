@@ -179,9 +179,12 @@ def capture_intent(repo_data: Path, session_id: str | None, prompt_text: str) ->
     zero tokens (the suppression itself is signal for the judge routing's
     honesty, and the digest still allows dedupe). Otherwise each extracted
     token is individually re-scanned and dropped if it alone trips the
-    scanner; a prompt whose surviving token lists are all empty appends
-    nothing unless the security lens fired (the boolean flag leaks no
-    content and the routing needs it).
+    scanner. A prompt whose surviving token lists are all empty STILL appends
+    an empty-token entry: it marks the turn's request as having named nothing
+    checkable, which the scope-drift advisory relies on (a stale earlier
+    prompt's identifiers must not govern a later bare "commit this" turn),
+    and it is a no-op for every token reader. Only the digest and flags
+    persist -- never prompt prose.
     """
     try:
         if not isinstance(prompt_text, str) or not prompt_text:
@@ -202,8 +205,6 @@ def capture_intent(repo_data: Path, session_id: str | None, prompt_text: str) ->
                 k: [t for t in v if not _has_hard_secret(t) and not _looks_credential_shaped(t)]
                 for k, v in tokens.items()
             }
-            if not any(tokens.values()) and not security:
-                return
             entry = {
                 "ts": time.time(),
                 "prompt_digest": digest,
@@ -331,6 +332,30 @@ def identifier_tokens(entries: list[dict], since_ts: float | None = None) -> lis
                 seen.add(value)
                 out.append(value)
     return out
+
+
+def latest_request_identifiers(entries: list[dict]) -> list[str]:
+    """Identifier tokens of the LATEST captured prompt -- the turn's governing request.
+
+    The scope-drift advisory compares changed files against what "the request"
+    named, and that request is the most recent prompt, not the whole session:
+    stale identifiers from an earlier prompt must not govern a later turn (a
+    bare "commit this" turn scored against the first prompt's file names flags
+    everything else the session touched, repeatedly). The newest entry alone
+    decides. Token-less (captured with empty buckets), secret-suppressed, or
+    malformed newest entry -> [] -> the advisory stays silent; it never falls
+    back to an older prompt's tokens.
+    """
+    for entry in reversed(entries or []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("secret_suppressed"):
+            return []
+        tokens = entry.get("tokens")
+        if not isinstance(tokens, dict):
+            return []
+        return [v for v in (tokens.get("identifiers") or []) if isinstance(v, str)]
+    return []
 
 
 # Path noise that must not count as scope overlap between a request identifier and

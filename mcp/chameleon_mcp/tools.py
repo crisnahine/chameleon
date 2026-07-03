@@ -1623,30 +1623,27 @@ def _reorder_idioms_by_archetypes(idioms_text: str, archetypes) -> str:
     matching ANY given archetype, then untagged/general blocks, then
     other-archetype blocks. Empty archetype set, no ``### `` blocks, or nothing
     matching -> returned unchanged.
+
+    Shares :func:`_parse_idiom_blocks` so the header split is fence-aware here too:
+    a ``### `` line inside an idiom's fenced example is example code, not a block
+    boundary, and never becomes a spurious reorder unit.
     """
     wanted = {a.strip().lower() for a in archetypes if a and a.strip()}
-    if not wanted or "### " not in idioms_text:
+    if not wanted:
         return idioms_text
-    lines = idioms_text.splitlines(keepends=True)
-    starts = [i for i, ln in enumerate(lines) if ln.startswith("### ")]
-    if not starts:
+    preamble, blocks = _parse_idiom_blocks(idioms_text)
+    if not blocks:
         return idioms_text
-    preamble = "".join(lines[: starts[0]])
-    blocks = [
-        "".join(lines[s : (starts[j + 1] if j + 1 < len(starts) else len(lines))])
-        for j, s in enumerate(starts)
-    ]
     matching: list[str] = []
     general: list[str] = []
     other: list[str] = []
-    for b in blocks:
-        m = _IDIOM_ARCHETYPE_LINE_RE.search(b)
-        if m is None:
-            general.append(b)
-        elif m.group(1).strip().lower() in wanted:
-            matching.append(b)
+    for _name, arch, text in blocks:
+        if arch is None:
+            general.append(text)
+        elif arch in wanted:
+            matching.append(text)
         else:
-            other.append(b)
+            other.append(text)
     if not matching:
         return idioms_text
     return preamble + "".join(matching + general + other)
@@ -1656,6 +1653,215 @@ def _reorder_idioms_by_archetype(idioms_text: str, archetype: str | None) -> str
     """Single-archetype wrapper over :func:`_reorder_idioms_by_archetypes` for the
     per-edit path, which resolves exactly one archetype for the edited file."""
     return _reorder_idioms_by_archetypes(idioms_text, [archetype] if archetype else [])
+
+
+# Metadata lines inside a `### <name>` idiom block: skipped when extracting the
+# one-line summary, since they carry no descriptive prose.
+_IDIOM_META_LINE_RE = re.compile(r"(?i)^[ \t]*(Language|Status|Archetype):")
+
+
+def _parse_idiom_blocks(idioms_text: str):
+    """Split idioms.md into ``(preamble, blocks)``.
+
+    Each block is ``(name, archetype, text)`` where ``name`` is the ``### <name>``
+    header text, ``archetype`` is the lowercased ``Archetype:`` value or ``None``
+    (untagged/general), and ``text`` is the full block verbatim (header through the
+    line before the next header). ``preamble`` is everything before the first
+    header. No ``### `` headers -> ``(idioms_text, [])`` so the caller can fall back
+    to a raw dump rather than silently dropping non-standard content.
+
+    A ``### `` line INSIDE a fenced code block (an idiom's ``Example:`` /
+    ``Counterexample:`` snippet -- e.g. a Ruby/shell ``### comment`` or a markdown
+    heading) is NOT a header: it is example code. Tracking ```` ``` ```` fences
+    prevents a snippet line from splitting into a spurious block whose "gist" would
+    then be rendered as a real idiom -- the exact confusion the terse rendering
+    must avoid. Fences are assumed balanced (idioms.md is chameleon-generated); an
+    unbalanced fence at worst merges a later real block into the prior one (grouped,
+    never leaked as its own idiom).
+    """
+    lines = idioms_text.splitlines(keepends=True)
+    starts = []
+    in_fence = False
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence and ln.startswith("### "):
+            starts.append(i)
+    if not starts:
+        return idioms_text, []
+    preamble = "".join(lines[: starts[0]])
+    blocks = []
+    for j, s in enumerate(starts):
+        end = starts[j + 1] if j + 1 < len(starts) else len(lines)
+        text = "".join(lines[s:end])
+        name = lines[s][4:].strip()
+        m = _IDIOM_ARCHETYPE_LINE_RE.search(text)
+        arch = m.group(1).strip().lower() if m else None
+        blocks.append((name, arch, text))
+    return preamble, blocks
+
+
+def _idiom_block_names(idioms_text: str) -> set[str]:
+    """The ``### <name>`` header names whose idiom body actually appeared in
+    ``idioms_text`` (fence-aware).
+
+    Fed the shaped+char-capped text a Tier-2 block actually rendered, this is the
+    set of idioms the model saw, which the enforcement state records as
+    ``idioms_shown_names``. An idiom truncated out of the capped block has no header
+    here, so it is absent. The one subtlety is the block the char cap landed IN: the
+    hard cut can leave its header (and metadata) with its description sliced away, or
+    even a partial ``### header``. Such a tail block is NOT counted -- only if its
+    description actually began to appear -- so a never-read idiom is never recorded
+    as shown (and so never reduced to a name at turn end), and a truncated partial
+    header never seeds a bogus name.
+    """
+    truncated = False
+    text = idioms_text
+    marker = text.rfind("\n... (idioms truncated")
+    if marker != -1:
+        truncated = True
+        text = text[:marker]
+    _pre, blocks = _parse_idiom_blocks(text)
+    names: set[str] = set()
+    for i, (name, _arch, block_text) in enumerate(blocks):
+        nm = name.strip()
+        if not nm:
+            continue
+        # The last block when the text was truncated is the one the cut landed in:
+        # count it only if its description (first sentence) actually rendered.
+        if (
+            truncated
+            and i == len(blocks) - 1
+            and not _summarize_idiom_block(block_text, max_chars=40)
+        ):
+            continue
+        names.add(nm)
+    return names
+
+
+def _summarize_idiom_block(block_text: str, *, max_chars: int) -> str:
+    """First prose sentence of an idiom block, for the terse turn-end rendering.
+
+    Skips the ``### name`` header and the ``Language/Status/Archetype`` metadata
+    lines, then takes the first description paragraph and returns its first sentence
+    (hard-capped to ``max_chars``). Stops at the ``Example:`` / ``Counterexample:``
+    label or a code fence so no example code bleeds into the summary. ``""`` when the
+    block carries no description (the caller then renders the name alone).
+    """
+    lines = block_text.splitlines()
+    desc: list[str] = []
+    for ln in lines[1:]:  # skip the '### name' header
+        s = ln.strip()
+        if not s:
+            if desc:
+                break  # blank line ends the description paragraph
+            continue
+        if _IDIOM_META_LINE_RE.match(ln):
+            continue
+        low = s.lower()
+        if low.startswith("example:") or low.startswith("counterexample:") or s.startswith("```"):
+            break
+        desc.append(s)
+    if not desc:
+        return ""
+    text = " ".join(desc)
+    # First sentence: sentence-ending punctuation FOLLOWED BY whitespace or end, so
+    # an intra-token dot ("errors.count", "spec_helper.rb") never cuts it short.
+    m = re.search(r"^(.*?[.!?])(?:\s|$)", text)
+    summary = m.group(1) if m else text
+    if len(summary) > max_chars:
+        summary = summary[:max_chars].rstrip() + "..."
+    return summary
+
+
+def _render_stop_idioms(
+    idioms_text: str,
+    edited_archetypes,
+    seen_idiom_names,
+    *,
+    char_cap: int,
+    max_terse: int,
+    summary_max_chars: int,
+) -> str:
+    """Render idioms.md for the turn-end self-review: filter, summarize, escalate.
+
+    Three composed transforms over the parsed ``### `` blocks:
+
+    - Filter (B): keep only blocks whose ``Archetype`` is one of ``edited_archetypes``
+      plus untagged/general blocks; drop other-archetype blocks (they do not govern
+      what was edited this turn). No archetype resolved -> keep all (cannot scope).
+    - Summarize (C): a block whose NAME is in ``seen_idiom_names`` -- i.e. this exact
+      idiom was actually rendered in a Tier-2 block this session -- renders as one
+      ``- name: summary`` line.
+    - Escalate (E): a block whose name is NOT in ``seen_idiom_names`` renders as its
+      FULL text, so an idiom the model has not seen is never reduced to a name. The
+      seen set is per-idiom-name, computed from the char-capped text a Tier-2 block
+      actually showed, so an idiom truncated out of that block is correctly treated
+      as unseen (full) even when other idioms of the same archetype were shown.
+
+    All output is sanitized at the boundary. ``""`` when nothing is in scope (the
+    edited archetypes are simply not governed by any idiom), which the caller reads
+    as "no idiom section" rather than an empty heading.
+    """
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    wanted = {a.strip().lower() for a in (edited_archetypes or []) if a and a.strip()}
+    seen = {n.strip() for n in (seen_idiom_names or []) if n and n.strip()}
+    preamble, blocks = _parse_idiom_blocks(idioms_text)
+    if not blocks:
+        # Non-standard idioms.md (no '### ' headers): fall back to a whole-text cap
+        # so nothing is silently dropped.
+        s = sanitize_for_chameleon_context(idioms_text.strip())
+        if len(s) > char_cap:
+            s = s[:char_cap].rstrip() + "\n... (idioms truncated; see idioms.md)"
+        return s
+
+    if wanted:
+        kept = [b for b in blocks if b[1] is None or b[1] in wanted]
+    else:
+        kept = list(blocks)
+    if not kept:
+        return ""
+
+    terse: list[tuple[str, str]] = []
+    full: list[str] = []
+    for name, _arch, text in kept:
+        if name.strip() in seen:
+            terse.append((name, _summarize_idiom_block(text, max_chars=summary_max_chars)))
+        else:
+            full.append(text)
+
+    out: list[str] = []
+    if terse:
+        shown = terse[:max_terse]
+        for name, summary in shown:
+            out.append(f"- {name}: {summary}" if summary else f"- {name}")
+        overflow = len(terse) - len(shown)
+        if overflow > 0:
+            out.append(f"- (+{overflow} more; see idioms.md)")
+    if full:
+        rendered: list[str] = []
+        total = 0
+        dropped = 0
+        for i, text in enumerate(full):
+            t = text.rstrip("\n")
+            # Always keep the first block whole (even if it alone exceeds the
+            # budget) so the model always gets at least one unseen idiom in full,
+            # never a mid-block cut that could read a counterexample as canonical.
+            if rendered and total + len(t) > char_cap:
+                dropped = len(full) - i
+                break
+            rendered.append(t)
+            total += len(t)
+        if terse:
+            out.append("")
+            out.append("Full text (idioms not yet surfaced this session):")
+        out.append("\n\n".join(rendered))
+        if dropped > 0:
+            out.append(f"\n(+{dropped} more; see idioms.md)")
+
+    return sanitize_for_chameleon_context("\n".join(out).strip())
 
 
 def get_pattern_context(file_path: str) -> dict:

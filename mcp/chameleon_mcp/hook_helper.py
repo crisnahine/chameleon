@@ -1739,6 +1739,11 @@ def _shape_idioms_for_block(idioms_text: str, witness: str) -> str:
             kept.append(line)
         text = "\n".join(kept)
     if len(text) > _IDIOM_CONTEXT_CHAR_CAP:
+        # Hard char cut so the model sees as much of the last idiom as fits -- most
+        # idiom bodies are a single unwrapped paragraph line, so a line-boundary cut
+        # would drop the whole description. A partial `### header` this can leave at
+        # the tail is handled downstream: _idiom_block_names never records a
+        # truncated tail block whose description did not actually appear.
         text = text[:_IDIOM_CONTEXT_CHAR_CAP].rstrip() + "\n... (idioms truncated; see idioms.md)"
     return text
 
@@ -2936,18 +2941,34 @@ def preflight_and_advise() -> int:
     except Exception:
         pass
 
+    summary = archetype_obj.get("summary", "")
     first_in_archetype = True
     has_violations = False
     if enforcement_state is not None:
         first_in_archetype = archetype_name not in enforcement_state.archetypes_seen
         has_violations = archetype_name in enforcement_state.archetypes_with_violations
         enforcement_state.archetypes_seen.add(archetype_name)
+        # Record the idiom NAMES this Tier-2 block actually renders, so the turn-end
+        # self-review can summarize exactly those (name + gist) and still show full
+        # text for any idiom truncated out of the block. Shape the idioms the SAME
+        # way the block below does (`_shape_idioms_for_block`, which dedups vs the
+        # witness and char-caps), then take the surviving `### ` names -- so a
+        # per-archetype "seen" is never over-claimed past the cap. Gated on the same
+        # predicate the Tier-2 branch below uses; the deny path (which seeds
+        # archetypes_seen without showing anything) never reaches this.
+        if (first_in_archetype or has_violations or not summary) and has_idioms:
+            try:
+                from chameleon_mcp.tools import _idiom_block_names
+
+                shaped = _shape_idioms_for_block(idioms_text, excerpt_content)
+                enforcement_state.idioms_shown_names |= _idiom_block_names(shaped)
+            except Exception:
+                pass
         try:
             enforcement.save_state(enforcement_state, repo_data, session_id)
         except Exception:
             pass
 
-    summary = archetype_obj.get("summary", "")
     use_tier2 = first_in_archetype or has_violations or not summary
 
     if not use_tier2:
@@ -5339,6 +5360,22 @@ def _stop_file_still_blockable(
 _IDIOM_REVIEWED_FILENAME = ".idiom_reviewed.{session}"
 _IDIOM_CONTEXT_CHAR_CAP = 1500
 
+# Turn-end idiom self-review (terse rendering) display bounds. Inline module
+# constants matching the sibling caps above (_IDIOM_CONTEXT_CHAR_CAP) and the
+# nearby-signature / counterexample bounds; they shape one advisory block, not an
+# operator-tunable threshold. Terse (already-shown) idioms render as one line
+# each, capped by count; the full-text section (idioms not yet shown this
+# session) is budgeted by _STOP_IDIOM_FULLTEXT_CHAR_CAP below.
+_STOP_IDIOM_MAX_TERSE = 25
+_STOP_IDIOM_SUMMARY_MAX_CHARS = 160
+# Whole-block char budget for the full-text (not-yet-shown) idiom section. Larger
+# than _IDIOM_CONTEXT_CHAR_CAP because it bounds only the EXCEPTIONAL case where an
+# in-scope idiom was never surfaced this session (E escalation) -- the common
+# already-shown path renders one terse line per idiom and never touches this. Not
+# a hot path, so it can afford to show a few whole unseen idioms before pointing to
+# idioms.md.
+_STOP_IDIOM_FULLTEXT_CHAR_CAP = 3000
+
 # Judged-digest marker namespace for the correctness gate, kept disjoint from
 # the duplication gate's default ".dup_judged." namespace.
 _CORR_JUDGED_PREFIX = ".corr_judged."
@@ -5523,45 +5560,29 @@ def _idiom_review_gate(
             _emit_check_event(repo_id, session_id, "idiom_review", "skipped", "marker_exists")
             return None
 
-        # Respect the shared stop cap so an idiom block cannot exceed the budget.
-        if state.stop_hook_blocks >= cfg.stop_block_cap:
-            return None
-
-        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
-            os.chmod(marker.parent, 0o700)
-        except OSError:
-            pass
-        marker.touch(exist_ok=True)
-        try:
-            os.chmod(marker, 0o600)
-        except OSError:
-            pass
-
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-        # Surface idioms for this turn's edited archetypes first, so the char-cap
-        # below keeps the relevant ones instead of truncating them away behind an
-        # unrelated archetype's block at the top of idioms.md. This is the turn-end
-        # Stop path (not the <100ms hot path), so resolving a few archetypes is
-        # fine; cap to edited[:5] and fail open to the unchanged text.
+        # Resolve the edited files' archetypes: the terse rendering scopes idioms to
+        # them (filter), and the legacy full-dump reorders by them. Turn-end Stop
+        # path (not the <100ms hot path), so resolving a few is fine; cap edited[:5]
+        # and fail open to no archetypes (the renderer then keeps all -- cannot
+        # scope -- rather than hiding everything).
+        edited_archetypes: list[str] = []
         try:
-            from chameleon_mcp.tools import (
-                _reorder_idioms_by_archetypes,
-                get_pattern_context,
-            )
+            from chameleon_mcp.tools import get_pattern_context
 
-            edited_archetypes: list[str] = []
             for f in edited[:5]:
                 arch = get_pattern_context(file_path=f)["data"]["archetype"]["archetype"]
                 if arch:
                     edited_archetypes.append(arch)
-            if edited_archetypes:
-                idioms_text = _reorder_idioms_by_archetypes(idioms_text, edited_archetypes)
         except Exception:
-            pass
+            edited_archetypes = []
 
         names = ", ".join(sanitize_for_chameleon_context(Path(p).name) for p in edited[:5])
+
+        # Terse rendering is default-ON (kill switch CHAMELEON_STOP_IDIOM_TERSE=0
+        # restores the legacy full dump of idioms + principles).
+        terse = os.environ.get("CHAMELEON_STOP_IDIOM_TERSE", "1") != "0"
 
         def _capped_block(text: str, source: str) -> str:
             # Hard-slicing at the cap can cut an idiom mid-block -- e.g. inside a
@@ -5577,24 +5598,93 @@ def _idiom_review_gate(
                 )
             return s
 
-        idioms_block = _capped_block(idioms_text, "idioms")
-        principles_block = _capped_block(principles_text, "principles")
-
         body: list[str] = []
+        surfaced_review = False
         if no_test_for_source_edit:
             body.append(
                 "No passing test run was recorded this turn while you changed source "
                 "files. Run the suite to confirm your changes pass before ending "
                 "(skip only if a watch process or CI is already running them)."
             )
-        if idioms_block:
-            body.append("")
-            body.append("Team idioms:")
-            body.append(idioms_block)
-        if principles_block:
-            body.append("")
-            body.append("Principles:")
-            body.append(principles_block)
+
+        if terse:
+            # A + B + C + E. Scope idioms to the edited archetypes (B), summarize the
+            # ones the model already saw this session (C), and show full text only
+            # for unseen ones (E). Principles were injected at SessionStart (when
+            # trusted) and live in the repo, so a one-line pointer replaces the full
+            # re-dump (A) -- keyed on the honest per-idiom idioms_shown_names signal
+            # (the actual `### ` names a Tier-2 block rendered), not archetypes_seen.
+            from chameleon_mcp.tools import _render_stop_idioms
+
+            idioms_rendered = _render_stop_idioms(
+                idioms_text,
+                edited_archetypes,
+                state.idioms_shown_names,
+                char_cap=_STOP_IDIOM_FULLTEXT_CHAR_CAP,
+                max_terse=_STOP_IDIOM_MAX_TERSE,
+                summary_max_chars=_STOP_IDIOM_SUMMARY_MAX_CHARS,
+            )
+            if idioms_rendered:
+                body.append("")
+                body.append("Team idioms in scope for what you edited - re-check each:")
+                body.append(idioms_rendered)
+                surfaced_review = True
+            # Principles ride on an idiom review, they do not trigger one on their
+            # own: they were injected at SessionStart and are generic, so a turn
+            # that touched no idiom-governed file needs no turn-end principle stop
+            # (and must not burn the once-per-session marker, so a later governed
+            # edit still gets its idiom review). The kill-switch/legacy path below
+            # keeps the old idioms-OR-principles trigger.
+            if surfaced_review and principles_text.strip():
+                body.append("")
+                body.append(
+                    "Also re-check your edits against the team principles in "
+                    "`.chameleon/principles.md`."
+                )
+        else:
+            legacy_idioms = idioms_text
+            if edited_archetypes:
+                from chameleon_mcp.tools import _reorder_idioms_by_archetypes
+
+                legacy_idioms = _reorder_idioms_by_archetypes(idioms_text, edited_archetypes)
+            idioms_block = _capped_block(legacy_idioms, "idioms")
+            principles_block = _capped_block(principles_text, "principles")
+            if idioms_block:
+                body.append("")
+                body.append("Team idioms:")
+                body.append(idioms_block)
+                surfaced_review = True
+            if principles_block:
+                body.append("")
+                body.append("Principles:")
+                body.append(principles_block)
+                surfaced_review = True
+
+        # Nothing to review: the edited archetypes are not governed by any idiom and
+        # there are no principles. Do NOT fire an empty gate, and do NOT burn the
+        # once-per-session marker -- a later turn editing a governed file must still
+        # get its review. (The test-run nudge alone never fires this idiom gate; it
+        # is a strengthener on a real review, not a standalone trigger.)
+        if not surfaced_review:
+            _emit_check_event(repo_id, session_id, "idiom_review", "skipped", "nothing_in_scope")
+            return None
+
+        # Respect the shared stop cap so an idiom block cannot exceed the budget.
+        if state.stop_hook_blocks >= cfg.stop_block_cap:
+            return None
+
+        # Marker is written only now that a review will actually be surfaced, so a
+        # nothing-in-scope turn above does not consume the once-per-session budget.
+        marker.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            os.chmod(marker.parent, 0o700)
+        except OSError:
+            pass
+        marker.touch(exist_ok=True)
+        try:
+            os.chmod(marker, 0o600)
+        except OSError:
+            pass
 
         if cfg.mode != "enforce":
             # Shadow: record the would-have-blocked signal and allow the stop.
@@ -8014,13 +8104,16 @@ def _scope_drift_advisory_lines(
 ) -> list[str]:
     """Turn-end advisory naming changed files that look unrequested, or [].
 
-    The session's captured request named specific identifiers (symbol / file /
-    module names). A changed file whose path shares no word with any of them is a
-    candidate unrequested change. Stays silent unless the request named enough
-    identifiers AND at least one changed file matched, so a turn whose captured
-    intent belonged to an earlier prompt does not flag everything. Advisory only,
-    never a block. Privacy-preserving: reads only the stored identifier tokens,
-    never prompt prose. Fails open to [].
+    The turn's captured request -- the LATEST prompt, not the whole session --
+    named specific identifiers (symbol / file / module names). A changed file
+    whose path shares no word with any of them is a candidate unrequested
+    change. Scoping to the latest prompt is what keeps a bare "commit this"
+    turn silent: whole-session aggregation let a stale first prompt's
+    identifiers govern every later turn, flagging the same files on every
+    Stop. Stays silent unless that request named enough identifiers AND at
+    least one changed file matched. Advisory only, never a block.
+    Privacy-preserving: reads only the stored identifier tokens, never prompt
+    prose. Fails open to [].
     """
     try:
         if cfg.mode == "off" or not getattr(cfg, "intent_scope_advisory", True):
@@ -8028,7 +8121,7 @@ def _scope_drift_advisory_lines(
         from chameleon_mcp import intent_capture
 
         entries = intent_capture.read_intent(repo_data, session_id)
-        idents = intent_capture.identifier_tokens(entries)
+        idents = intent_capture.latest_request_identifiers(entries)
         if not idents:
             return []
         root = repo_root.resolve()

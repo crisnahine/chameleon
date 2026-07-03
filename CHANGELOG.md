@@ -4,6 +4,67 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.22] - 2026-07-03
+
+The turn-end idiom self-review was noisy: every session it re-dumped the full
+`idioms.md` (all archetypes, only reordered) plus the full `principles.md`, most
+of it irrelevant to what was actually edited. This release makes that block terse
+without losing coverage, default-ON behind `CHAMELEON_STOP_IDIOM_TERSE` (set `=0`
+for the old full dump). Verified end-to-end by driving the real hooks against
+bootstrapped Ruby (Rails), TypeScript (React), and Python profiles, plus the
+Django, Flask, FastAPI, NestJS, and Next.js framework repos.
+
+### Changed
+
+- **Turn-end idiom review is now scoped, summarized, and de-duplicated against
+  what the model already saw.** The Stop block (`_idiom_review_gate`) now: filters
+  idioms to the edited files' archetypes plus general/untagged ones, dropping
+  other-archetype idioms (B); renders an idiom the model already saw this session
+  as a one-line `name: summary` (C); shows full text only for in-scope idioms not
+  yet surfaced this session, so a never-seen idiom is never reduced to a name (E);
+  and replaces the full `principles.md` dump with a one-line pointer, since
+  principles are already injected at SessionStart (A). Boilerplate tightened (D).
+  New `_render_stop_idioms` in `tools.py`.
+
+### Fixed
+
+- **`idioms_shown_names` is the honest, per-idiom "the model saw this" signal.**
+  A new enforcement-state field recording the exact `### ` idiom names a Tier-2
+  block rendered — computed from the char-capped, witness-deduped text the block
+  actually showed (`_shape_idioms_for_block`), not merely "the archetype was seen."
+  So an idiom truncated out of the capped block, or one from the deny path (which
+  seeds `archetypes_seen` without emitting idioms), correctly renders full at turn
+  end rather than being reduced to a bare name.
+- **The turn-end idiom parser is now fenced-code aware.** A `### ` line inside an
+  idiom's `Example:` / `Counterexample:` snippet (a Ruby/shell `### comment`, a
+  markdown heading) no longer mis-splits into a spurious "idiom" whose gist would
+  render the counterexample code as canonical. `_reorder_idioms_by_archetypes`
+  (used on the per-edit hot path and the legacy dump) now shares the same
+  fence-aware parser, so the fix covers every idioms.md split site.
+- **A char-cap truncation never seeds a header-only idiom as "shown."** When the
+  1500-char Tier-2 cap slices an idiom so only its header (not its description)
+  rendered, `_idiom_block_names` no longer records that tail idiom, so the turn-end
+  review shows it in full instead of a gist the model never read. This also drops
+  any partial `### header` the cut left, closing a rare truncated-name mismatch.
+- **`_merge_states` dropped the new field.** It rebuilds `EnforcementState` from
+  explicit fields, so the added set was wiped on every `save_state`, defeating the
+  terse path (every idiom rendered full). Now unioned like the other archetype
+  sets. Caught by the real-hook driver, not a mock.
+- **The scope-drift advisory is turn-scoped.** It compared the session's
+  cumulative changed files against identifiers aggregated from EVERY prompt of
+  the session, so one stale early-prompt overlap re-flagged the same files at
+  every later Stop — a bare "commit this" turn was scored against the first
+  prompt's file names (observed three times in one real session). Intent capture
+  now appends an entry for every prompt (empty token lists included, marking a
+  request that named nothing), and the advisory reads only the LATEST entry via
+  `latest_request_identifiers` — the turn's governing request. A token-less or
+  secret-suppressed newest prompt silences the advisory rather than falling back
+  to an older prompt's tokens.
+- **A principles-only turn no longer burns the once-per-session marker.** In terse
+  mode the review fires on team idioms, not on the always-present principles, so a
+  turn touching no idiom-governed file returns without spending the session's
+  review budget — a later governed edit still gets its turn-end idiom review.
+
 ## [2.38.21] - 2026-07-02
 
 Round-2 real-hook QA of the Stop backstop and injection paths, orchestrated as a

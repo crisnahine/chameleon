@@ -167,7 +167,13 @@ def test_idiom_block_reason_mentions_edited_file(make_trusted_repo):
     assert Path(file_path).name in out.get("reason", "")
 
 
-def test_principles_only_also_blocks(make_trusted_repo):
+def test_principles_only_no_block_in_terse_but_blocks_in_legacy(make_trusted_repo):
+    # Terse mode (default) scopes the turn-end review to the team IDIOMS relevant to
+    # what was edited. Principles are injected at SessionStart and are generic, so a
+    # turn that touched no idiom-governed file does not fire and, critically, does
+    # NOT burn the once-per-session marker -- a later governed edit still gets its
+    # review. The legacy full-dump path (kill switch) keeps the old
+    # idioms-OR-principles trigger, so principles-only still blocks there.
     repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
     _touch_edited_file(file_path, data_dir, sid)
     _write_principles(profile_dir)
@@ -176,7 +182,15 @@ def test_principles_only_also_blocks(make_trusted_repo):
         {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
         env={"CHAMELEON_ENFORCE": "1"},
     )
-    assert out.get("decision") == "block"
+    assert out.get("decision") != "block"
+
+    # Same session: because the terse call above did not burn the marker, the legacy
+    # kill switch still finds the review unspent and blocks on the principles.
+    out_legacy = _run_stop(
+        {"session_id": sid, "cwd": str(repo), "stop_hook_active": False},
+        env={"CHAMELEON_ENFORCE": "1", "CHAMELEON_STOP_IDIOM_TERSE": "0"},
+    )
+    assert out_legacy.get("decision") == "block"
 
 
 def test_sparse_config_blocks_via_default_enforce(make_trusted_repo):

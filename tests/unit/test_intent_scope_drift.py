@@ -187,3 +187,53 @@ def test_advisory_ignores_non_string_path_entries(tmp_path, monkeypatch):
         repo_root=repo_root, repo_data=repo_data, session_id="s1", state=state, cfg=cfg
     )
     assert lines and "logger.ts" in lines[0]
+
+
+def test_latest_request_identifiers_uses_only_newest_entry():
+    from chameleon_mcp.intent_capture import latest_request_identifiers
+
+    entries = [
+        {"ts": 50, "tokens": {"identifiers": ["AuthService", "login"]}},
+        {"ts": 150, "tokens": {"identifiers": ["InvoiceExport"]}},
+    ]
+    assert latest_request_identifiers(entries) == ["InvoiceExport"]
+
+
+def test_latest_request_identifiers_tokenless_newest_never_falls_back():
+    from chameleon_mcp.intent_capture import latest_request_identifiers
+
+    entries = [
+        {"ts": 50, "tokens": {"identifiers": ["AuthService", "login"]}},
+        {"ts": 150, "tokens": {"numerals": [], "identifiers": [], "quoted": []}},
+    ]
+    assert latest_request_identifiers(entries) == []
+
+
+def test_latest_request_identifiers_suppressed_newest_is_empty():
+    from chameleon_mcp.intent_capture import latest_request_identifiers
+
+    entries = [
+        {"ts": 50, "tokens": {"identifiers": ["AuthService"]}},
+        {"ts": 150, "secret_suppressed": True, "tokens": {}},
+    ]
+    assert latest_request_identifiers(entries) == []
+
+
+def test_advisory_silent_after_bare_followup_prompt(tmp_path, monkeypatch):
+    # The observed repeat false positive: a first prompt names files, later turns
+    # are bare ("commit this"). The bare prompt's empty-token entry must scope the
+    # advisory to THIS turn's request and silence it -- the first prompt's
+    # identifiers no longer govern.
+    from chameleon_mcp import hook_helper, intent_capture
+
+    repo_root, repo_data, state, NS = _drift_setup(
+        tmp_path, monkeypatch, prompt="update authService and validateLogin"
+    )
+    intent_capture.capture_intent(repo_data, "s1", "commit this")
+    cfg = NS(mode="shadow", intent_scope_advisory=True)
+    assert (
+        hook_helper._scope_drift_advisory_lines(
+            repo_root=repo_root, repo_data=repo_data, session_id="s1", state=state, cfg=cfg
+        )
+        == []
+    )

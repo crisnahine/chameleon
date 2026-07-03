@@ -154,10 +154,16 @@ def test_prompt_borne_chameleon_ignore_does_not_defeat_redaction(tmp_path):
 # --- capture_intent: lifecycle -------------------------------------------------
 
 
-def test_empty_token_prompt_appends_nothing(tmp_path):
+def test_empty_token_prompt_appends_empty_entry(tmp_path):
+    # An empty-token entry marks the turn's request as having named nothing
+    # checkable: the scope-drift advisory keys off the LATEST entry, so without
+    # it a stale earlier prompt's identifiers would govern a bare "commit this"
+    # turn and flag every file it touched. No-op for every token reader.
     capture_intent(tmp_path, SID, "please tidy the docs")
-    assert not _intent_path(tmp_path).exists()
-    assert read_intent(tmp_path, SID) == []
+    entries = read_intent(tmp_path, SID)
+    assert len(entries) == 1
+    assert entries[0]["tokens"] == {"numerals": [], "identifiers": [], "quoted": []}
+    assert entries[0]["secret_suppressed"] is False
 
 
 def test_prompt_digest_and_shape(tmp_path):

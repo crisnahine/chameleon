@@ -62,3 +62,4 @@ tests/effectiveness/results/
 tests/journey/harness/tests/__pycache__/
 tests/journey/harness/tests/.pytest_cache/
 docs/superpowers/
+.in_use/
