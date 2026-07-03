@@ -1063,8 +1063,11 @@ def lint(
                     actual=str(actual_bucket),
                     severity="info",
                     message=(
-                        f"archetype expects named-export-count bucket "
-                        f"'{expected_bucket}'; file has '{actual_bucket}'"
+                        f"archetype's files typically export a '{expected_bucket}' "
+                        f"count of names; this file has '{actual_bucket}'. This is a "
+                        "rough size signal, not a defect — a small, focused new file "
+                        "(one route, one form) legitimately exports fewer. Do not add "
+                        "exports just to satisfy this."
                     ),
                 )
             )

@@ -20,6 +20,7 @@ The recency window + multiplier are calibration targets.
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,46 @@ from chameleon_mcp.bootstrap.canonical_scanner import scan_for_injection_signals
 from chameleon_mcp.bootstrap.clustering import Cluster
 from chameleon_mcp.bootstrap.discovery import is_eligible_as_canonical
 from chameleon_mcp.profile.poisoning_scanner import scan_for_dangerous_patterns
+
+# A Rails abstract base (`application_job.rb`, `application_controller.rb`,
+# `application_record.rb`, `application_mailer.rb`, ...) is the parent every
+# concrete sibling extends; it defines no `perform`/action and makes a hollow
+# "mirror this" witness. Demoted below its concrete siblings.
+_RAILS_ABSTRACT_BASE_RE = re.compile(r"(?:^|/)application_[a-z0-9_]+\.rb$", re.IGNORECASE)
+# A NestJS module file. An imports-only `@Module({ imports: [...] })` root
+# aggregator (AppModule) registers no controllers/providers and is a poor
+# feature-module witness; demoted below a real feature module.
+_NEST_MODULE_FILE_RE = re.compile(r"\.module\.(?:ts|tsx|js|jsx|mts|cts)$", re.IGNORECASE)
+_MODULE_DECORATOR_RE = re.compile(r"@Module\s*\(\s*\{")
+# `class Foo < ActiveRecord::Migration[7.0]` -> (7, 0); used to prefer a
+# current-schema-version migration witness over an obsolete one in the cluster.
+_MIGRATION_VERSION_RE = re.compile(r"ActiveRecord::Migration\[(\d+)\.(\d+)\]")
+
+
+def _is_rails_abstract_base(path: Path) -> bool:
+    return bool(_RAILS_ABSTRACT_BASE_RE.search(path.as_posix()))
+
+
+def _is_imports_only_nest_module(path: Path, content: str) -> bool:
+    """A NestJS `.module.ts` whose `@Module({...})` registers imports but no
+    controllers/providers -- the root aggregator, not a representative feature
+    module. Crude by design: a substring scan of the decorator head is enough to
+    separate `imports:[...]`-only from a body that also lists controllers/providers."""
+    if not _NEST_MODULE_FILE_RE.search(path.name):
+        return False
+    m = _MODULE_DECORATOR_RE.search(content)
+    if not m:
+        return False
+    body = content[m.end() : m.end() + 4000]
+    has_registration = "controllers" in body or "providers" in body
+    return "imports" in body and not has_registration
+
+
+def _migration_version(content: str) -> tuple[int, int] | None:
+    m = _MIGRATION_VERSION_RE.search(content)
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 from chameleon_mcp.profile.secret_scanner import scan_for_secrets
 from chameleon_mcp.signatures import ClusterKey
 
@@ -207,9 +248,21 @@ def select_canonicals(
 
         signatures: dict[int, tuple[str, ...]] = {}
         trivial: dict[int, bool] = {}
+        # Non-representativeness signals: an abstract base / imports-only aggregator
+        # makes a hollow "mirror this" witness even when it shares its siblings'
+        # typicality, and mtime recency is uniform on a fresh clone so it can't
+        # separate them -- without this the str(path) tiebreak picks them (Rails
+        # application_*.rb, NestJS AppModule). Migration versions are collected so a
+        # cluster prefers a current-schema-version witness over an obsolete one.
+        abstract_base: dict[int, bool] = {}
+        mig_version: dict[int, tuple[int, int] | None] = {}
         for i, pf in enumerate(eligible):
             try:
                 content = pf.path.read_bytes()[:50_000].decode("utf-8", errors="replace")
+                abstract_base[i] = _is_rails_abstract_base(pf.path) or _is_imports_only_nest_module(
+                    pf.path, content
+                )
+                mig_version[i] = _migration_version(content)
                 # An empty / whitespace-only file makes a useless canonical example
                 # (no code to mirror), so rank it last. A non-trivial sibling then
                 # wins, while the trivial file stays eligible as a last resort for a
@@ -232,10 +285,29 @@ def select_canonicals(
             except Exception:
                 sig = ()
                 trivial[i] = True
+                abstract_base.setdefault(i, False)
+                mig_version.setdefault(i, None)
             signatures[i] = sig
 
         sig_counts = Counter(signatures.values())
         typicality = {i: sig_counts[sig] for i, sig in signatures.items()}
+
+        # A migration whose ActiveRecord::Migration[x.y] version is behind the
+        # newest in the cluster is an obsolete-shape witness ("mirror this" would
+        # copy the stale version); demote it below current-version siblings.
+        _versions = [v for v in mig_version.values() if v is not None]
+        _max_ver = max(_versions) if _versions else None
+        demote = {
+            i: (
+                abstract_base.get(i, False)
+                or (
+                    _max_ver is not None
+                    and mig_version.get(i) is not None
+                    and mig_version[i] < _max_ver
+                )
+            )
+            for i in range(len(eligible))
+        }
 
         # Exclude empty / whitespace-only files from the canonical pool entirely: a
         # blank witness teaches nothing, and an all-empty cluster (e.g. a package of
@@ -245,20 +317,25 @@ def select_canonicals(
         # all-generated cluster. Files with real content (incl. thin barrel
         # re-exports) are unaffected.
         scored = [
-            (pf, _file_recency_weight(pf.path, now=now), typicality.get(i, 0))
+            (pf, _file_recency_weight(pf.path, now=now), typicality.get(i, 0), demote.get(i, False))
             for i, pf in enumerate(eligible)
             if not trivial.get(i, False)
         ]
+        # demote (abstract base / imports-only aggregator / obsolete-version
+        # migration) is the tiebreak BELOW recency+typicality but ABOVE the path
+        # string, so a representative concrete sibling wins when the primary
+        # signals tie -- which they do on a fresh clone with uniform mtimes.
         scored.sort(
             key=lambda item: (
                 -item[1],
                 -item[2],
+                item[3],
                 str(item[0].path),
             )
         )
 
         chosen: CanonicalSelection | None = None
-        for candidate, weight, _typ in scored:
+        for candidate, weight, _typ, _dem in scored:
             try:
                 content = candidate.path.read_text(errors="replace")
             except OSError:

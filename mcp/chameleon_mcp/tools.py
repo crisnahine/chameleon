@@ -3369,7 +3369,8 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
         # empty lists so a caller can tell "no importers" from "couldn't look".
         out = dict(empty)
         out["found"] = True
-        out["module"] = target_key
+        _arg_root_ni, _ = _resolve_repo_arg(repo)
+        out["module"] = _reroot_rel(target_key, repo_root, _arg_root_ni)
         return _envelope(out)
 
     try:
@@ -3417,23 +3418,55 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
 
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
 
+    # Emit paths in the repo-ARG root space (like search/describe) so they
+    # round-trip in a nested-workspace monorepo (see _reroot_rel).
+    _arg_root, _ = _resolve_repo_arg(repo)
+
     def _clean(rows: list[dict]) -> list[dict]:
         for row in rows:
             row["name"] = _sanitize(row["name"])
             for s in row["sites"]:
                 if isinstance(s.get("path"), str):
-                    s["path"] = _sanitize(s["path"])
+                    s["path"] = _sanitize(_reroot_rel(s["path"], repo_root, _arg_root))
         return rows
 
     return _envelope(
         {
             "found": True,
-            "module": _sanitize(target_key),
+            "module": _sanitize(_reroot_rel(target_key, repo_root, _arg_root)),
             "importers": _clean(importers_out),
             "broken": _clean(broken_out),
             "export_set_open": open_set,
         }
     )
+
+
+def _reroot_rel(rel_path, answering_root: Path, arg_root) -> object:
+    """Translate a path relative to the ANSWERING profile root into one relative to
+    the repo-ARG root.
+
+    In a nested-workspace monorepo the call-graph tools answer from the file's own
+    workspace profile (find_repo_root(p)), emitting workspace-relative paths, while
+    search_codebase / describe_codebase answer from the top-level profile arg and
+    emit repo-root-relative paths. Chaining a workspace-relative caller path back
+    into get_callers re-resolved against the top-level index (key absent) and
+    returned a false total=0. Emitting call-graph paths in the SAME (repo-arg-root)
+    space as search/describe makes them round-trip: an emitted path fed back in
+    resolves to the right workspace again. Identity when the two roots match
+    (non-monorepo) or arg_root is absent / not an ancestor, so single-profile repos
+    are byte-for-byte unchanged."""
+    if not isinstance(rel_path, str) or not rel_path:
+        return rel_path
+    if arg_root is None:
+        return rel_path
+    try:
+        answering = Path(answering_root).resolve()
+        arg = Path(arg_root).resolve()
+        if answering == arg:
+            return rel_path
+        return (answering / rel_path).resolve().relative_to(arg).as_posix()
+    except (ValueError, OSError):
+        return rel_path
 
 
 def get_callers(repo: str, file_path: str, function_name: str) -> dict:
@@ -3524,6 +3557,13 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
         out["reason"] = "file-outside-repo"
         return _envelope(out)
 
+    # Emit paths in the repo-ARG root space (like search/describe) so they
+    # round-trip in a nested-workspace monorepo (see _reroot_rel).
+    _arg_root, _ = _resolve_repo_arg(repo)
+
+    def _rr(v):
+        return _reroot_rel(v, repo_root, _arg_root)
+
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
 
     entry = index.callers_of(rel, function_name)
@@ -3535,7 +3575,7 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
         return _envelope(
             {
                 "found": True,
-                "module": _sanitize(rel),
+                "module": _sanitize(_rr(rel)),
                 "function": _sanitize(function_name),
                 "callers": [],
                 "total": 0,
@@ -3547,7 +3587,7 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     for row in entry["callers"]:
         clean_callers.append(
             {
-                "path": _sanitize(row["path"])
+                "path": _sanitize(_rr(row["path"]))
                 if isinstance(row.get("path"), str)
                 else row.get("path"),
                 "caller": _sanitize(row["caller"])
@@ -3561,7 +3601,7 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     return _envelope(
         {
             "found": True,
-            "module": _sanitize(rel),
+            "module": _sanitize(_rr(rel)),
             "function": _sanitize(function_name),
             "callers": clean_callers,
             "total": entry["total"],
@@ -3672,13 +3712,17 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
 
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
 
+    # Emit paths in the repo-ARG root space (like search/describe) so they
+    # round-trip in a nested-workspace monorepo (see _reroot_rel).
+    _arg_root, _ = _resolve_repo_arg(repo)
+
     radius = compute_blast_radius(index, rel, function_name, depth=resolved_depth)
     clean_chains = []
     for chain in radius["chains"]:
         clean_chains.append(
             [
                 {
-                    "path": _sanitize(hop["path"])
+                    "path": _sanitize(_reroot_rel(hop["path"], repo_root, _arg_root))
                     if isinstance(hop.get("path"), str)
                     else hop.get("path"),
                     "name": _sanitize(hop["name"])
@@ -3693,7 +3737,7 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     return _envelope(
         {
             "found": True,
-            "module": _sanitize(rel),
+            "module": _sanitize(_reroot_rel(rel, repo_root, _arg_root)),
             "function": _sanitize(function_name),
             "depth": resolved_depth,
             "chains": clean_chains,
@@ -3830,21 +3874,32 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
         for r in search_symbols(repo_root, query, limit=n)
     ]
     out = {"found": True, "query": _ss(query), "results": results}
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    _pr = resolve_profile_root(repo_root)
+    _reasons: list[str] = []
     if not results:
         # search_symbols returns [] for BOTH "no symbol matched" and "symbol index
         # unreadable", so an empty result on a corrupt symbol_signatures.json would
         # read as an authoritative "not found". Distinguish them: flag degraded
         # when the index artifact is present-but-unloadable.
         from chameleon_mcp.symbol_signatures import load_symbol_signatures
-        from chameleon_mcp.worktree import resolve_profile_root
 
-        _pr = resolve_profile_root(repo_root)
         if (
             load_symbol_signatures(_pr) is None
             and (_pr / ".chameleon" / "symbol_signatures.json").is_file()
         ):
-            out["degraded"] = True
-            out["reason"] = "symbol index unavailable (corrupt); results may be incomplete"
+            _reasons.append("symbol index unavailable (corrupt)")
+    # A present-but-corrupt calls_index zeroes every `callers` count and re-ranks
+    # NON-empty results, so check it regardless of whether results is empty --
+    # otherwise a successful-looking search silently reports callers=0 everywhere.
+    from chameleon_mcp.calls_index import load_calls_index
+
+    if load_calls_index(_pr) is None and (_pr / ".chameleon" / "calls_index.json").is_file():
+        _reasons.append("call index unavailable (corrupt); caller counts may be zero")
+    if _reasons:
+        out["degraded"] = True
+        out["reason"] = "; ".join(_reasons) + "; results may be incomplete"
     return _envelope(out)
 
 
@@ -3983,12 +4038,25 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     def _ss(v):
         return _s(v) if isinstance(v, str) else v
 
+    # Emit paths in the repo-ARG root space (like search/describe) so they
+    # round-trip in a nested-workspace monorepo (see _reroot_rel).
+    _arg_root, _ = _resolve_repo_arg(repo)
+
     clean = [
-        {"callee": _ss(r.get("callee")), "file": _ss(r.get("file")), "grade": r.get("grade")}
+        {
+            "callee": _ss(r.get("callee")),
+            "file": _ss(_reroot_rel(r.get("file"), repo_root, _arg_root)),
+            "grade": r.get("grade"),
+        }
         for r in callees_of(repo_root, rel, function_name)
     ]
     return _envelope(
-        {"found": True, "module": _ss(rel), "function": _ss(function_name), "callees": clean}
+        {
+            "found": True,
+            "module": _ss(_reroot_rel(rel, repo_root, _arg_root)),
+            "function": _ss(function_name),
+            "callees": clean,
+        }
     )
 
 

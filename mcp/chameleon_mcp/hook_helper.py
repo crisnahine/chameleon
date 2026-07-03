@@ -1798,6 +1798,19 @@ _CONFIG_MALFORMED_BANNER = (
     "Fix the JSON and run /chameleon-doctor to confirm enforcement is restored.\n\n"
 )
 
+# Sibling of the config banner for a present-but-unreadable enforcement.json. A
+# torn enforcement.json makes active_block_rules() return an empty set, so the
+# calibrated secret / eval / import deny gates silently no-op -- the same
+# fail-open the config banner covers, but from the calibration artifact instead
+# of config.json. Surfaced at the edit so the silent drop is visible, not just in
+# get_status / doctor.
+_ENFORCEMENT_MALFORMED_BANNER = (
+    "**Enforcement degraded**: chameleon could not parse "
+    "`.chameleon/enforcement.json` (malformed or torn JSON), so the calibrated "
+    "block rules (credential / eval / import blocking) are OFF for this edit. "
+    "Fix the JSON and run /chameleon-doctor to confirm enforcement is restored.\n\n"
+)
+
 # The once-per-session "profile present, untrusted" prompt. Emitted from both the
 # archetype-resolved path and the no-archetype early exit (a config/data/new file
 # in an untrusted repo), because the prompt gates on trust state, not on a shape
@@ -2058,6 +2071,10 @@ def _counterexample_section(
 _ARCH_FACTS_MAX_METHODS = 8
 _ARCH_FACTS_MAX_MACROS = 8
 _ARCH_FACTS_MAX_EXPORTS = 40
+# Minimum inheritance frequency to surface a base-only "extends X" contract line
+# when class_contract has no base. Matches format_conventions_echo's gate
+# (conventions._STRONG_THRESHOLD) so the Tier-2 facts and the Tier-1 echo agree.
+_ARCH_FACTS_STRONG_BASE_FREQ = 0.60
 
 # Identifier-shape allowlist for every value the archetype-facts section renders
 # (export name, base class, required method, DSL macro, decorator). These render
@@ -2159,13 +2176,26 @@ def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> s
         lines: list[str] = []
         cc_map = conv.get("class_contract")
         cc = cc_map.get(archetype) if isinstance(cc_map, dict) else None
+        parts: list[str] = []
+        base = cc.get("base") if isinstance(cc, dict) else None
+        if not (isinstance(base, str) and base):
+            # A base-only contract (DRF serializer -> BaseSerializer, Django model
+            # -> models.Model, AppConfig) is dropped from class_contract upstream
+            # when the cohort has no macros/decorators/required_methods, leaving cc
+            # None or base-less. Fall back to the derived dominant base so the first
+            # (Tier-2) edit still surfaces "extends X" -- the docstring promises the
+            # base it extends, and the lighter Tier-1 echo already shows it (parity).
+            inh_map = conv.get("inheritance")
+            inh = inh_map.get(archetype) if isinstance(inh_map, dict) else None
+            if isinstance(inh, dict) and inh.get("frequency", 0) >= _ARCH_FACTS_STRONG_BASE_FREQ:
+                db = inh.get("dominant_base")
+                if isinstance(db, str) and db:
+                    base = db
+        if isinstance(base, str) and base:
+            safe_base = _safe(base)
+            if safe_base:
+                parts.append(f"extends {safe_base}")
         if isinstance(cc, dict):
-            parts: list[str] = []
-            base = cc.get("base")
-            if isinstance(base, str) and base:
-                safe_base = _safe(base)
-                if safe_base:
-                    parts.append(f"extends {safe_base}")
             # Decorator-anchored archetypes (NestJS @Controller/@Injectable, DRF /
             # FastAPI) carry their contract in `decorators` with no base/methods, so
             # omitting it left those exact framework archetypes with no contract line.
@@ -2179,8 +2209,8 @@ def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> s
             macros, mac_tail = _capped(cc.get("dsl_macros"), _ARCH_FACTS_MAX_MACROS)
             if macros:
                 parts.append(f"use macros {', '.join(macros)}{mac_tail}")
-            if parts:
-                lines.append("Class contract for this archetype: " + "; ".join(parts) + ".")
+        if parts:
+            lines.append("Class contract for this archetype: " + "; ".join(parts) + ".")
 
         exports, e_tail = _capped(
             conv.get("key_exports", {}).get(archetype), _ARCH_FACTS_MAX_EXPORTS
@@ -3030,10 +3060,24 @@ def preflight_and_advise() -> int:
 
     use_tier2 = first_in_archetype or has_violations or not summary
 
+    # A present-but-unreadable enforcement.json silently empties the calibrated
+    # block-rule set, so the secret/eval/import deny gates no-op with no signal.
+    # Surface it at the edit like the config banner (detection is fail-open).
+    _enf_malformed = False
+    try:
+        if repo_root_path is not None:
+            from chameleon_mcp.tools import _enforcement_artifact_unreadable
+
+            _enf_malformed = _enforcement_artifact_unreadable(_enf_profile_dir(repo_root_path))
+    except Exception:
+        _enf_malformed = False
+
     if not use_tier2:
         block = f"<chameleon-context>\n[🦎 chameleon: {safe_name} ({safe_band})]\n"
         if _cfg_malformed:
             block += _CONFIG_MALFORMED_BANNER
+        if _enf_malformed:
+            block += _ENFORCEMENT_MALFORMED_BANNER
         if summary:
             block += f"{sanitize_for_chameleon_context(summary)}\n"
         conv_echo = ""
@@ -3096,6 +3140,8 @@ def preflight_and_advise() -> int:
     )
     if _cfg_malformed:
         block += _CONFIG_MALFORMED_BANNER
+    if _enf_malformed:
+        block += _ENFORCEMENT_MALFORMED_BANNER
     if trust_state == "stale":
         block += (
             "**Trust is stale**: a recent /chameleon-refresh, /chameleon-teach, "
@@ -4920,6 +4966,15 @@ def posttool_verify() -> int:
                         # additionalContext channel.
                         safe_rules = sanitize_for_chameleon_context(rules)
                         safe_msgs = sanitize_for_chameleon_context(msgs)
+                        # Name the actual failing rule in the override hint, not the
+                        # literal "<rule>" placeholder. For a blanket-immune rule
+                        # (eval-call, secret-detected-in-content) a bare-token ignore
+                        # does NOT clear the block, so the model must be told the real
+                        # rule to type. Mirrors the Stop backstop (hint_rule below).
+                        _distinct_block_rules = sorted(
+                            r for r in {v.get("rule") for v in blockable_now} if r
+                        )
+                        _hint_rule = _distinct_block_rules[0] if _distinct_block_rules else "<rule>"
                         _record_edit_decision(
                             repo_id,
                             repo_root,
@@ -4936,7 +4991,7 @@ def posttool_verify() -> int:
                         _emit_posttool_block(
                             f"chameleon blocks this edit: {safe_rules}. "
                             f"Fix before continuing: {safe_msgs}. "
-                            f"Override with {_ignore_hint(file_path)} "
+                            f"Override with {_ignore_hint(file_path, _hint_rule)} "
                             f"on the offending line if this is intentional.",
                             "<chameleon-context>\n"
                             f"[🦎 chameleon: BLOCKED — {safe_rules}]\n"
@@ -6626,10 +6681,21 @@ def _changeset_completeness_lines(
             lines.append(f"- {src}: {msg}")
         if extra > 0:
             lines.append(f"- ...and {extra} more.")
-        lines.append(
-            "To silence this for a file, add `// chameleon-ignore cochange` "
-            "(`# chameleon-ignore cochange` in Ruby) in the file you touched."
-        )
+        # The comment token depends on the flagged file's language: `#` for
+        # Ruby/Python, `//` for TS/JS. The Django model->migration rule fires
+        # EXCLUSIVELY on Python, where `//` is a syntax error, so a blind `//`
+        # hint was actively wrong. Scope the token to the languages actually shown.
+        _langs = {detect_language(it.source_rel) for it in shown}
+        if _langs and _langs <= {"ruby", "python"}:
+            _ign = "`# chameleon-ignore cochange`"
+        elif _langs and _langs <= {"typescript", "javascript"}:
+            _ign = "`// chameleon-ignore cochange`"
+        else:
+            _ign = (
+                "`# chameleon-ignore cochange` (Ruby/Python) or "
+                "`// chameleon-ignore cochange` (TS/JS)"
+            )
+        lines.append(f"To silence this for a file, add {_ign} in the file you touched.")
         return lines
     except Exception:
         return []
@@ -7098,7 +7164,15 @@ def _reference_present(
     paths, which have no import anchor and whose interpolating ``"#{{...}}"``
     strings carry real references.
     """
-    needle = re.compile(r"(?<![A-Za-z0-9_$])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
+    # Exclude a preceding `.` so a member access (`self.name`, `props.name`,
+    # `obj.name`) is NOT counted as a use of the imported bareword `name`. Once an
+    # importer drops the `import { name }` binding but keeps an unrelated
+    # `self.name()` member call, the old needle matched that member access and
+    # fired a phantom "no longer exported; still imported by ..." break. A genuine
+    # named-import use is always bareword (`name(...)` / `name.foo`), never
+    # `.name`, so this only removes false positives; the lookahead is unchanged so
+    # `name.foo` (name used, then a member off it) still counts.
+    needle = re.compile(r"(?<![A-Za-z0-9_$.])" + re.escape(name) + r"(?![A-Za-z0-9_$])")
 
     def _blank(text: str) -> str:
         # Blank strings, comments and templates so a name that survives only inside

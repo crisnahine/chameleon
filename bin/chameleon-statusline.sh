@@ -76,7 +76,7 @@ if [[ -f "$cache_file" ]]; then
       exit 0
     fi
   else
-    result=$(CACHE_PATH="$cache_file" python3 -c "
+    result=$(CACHE_PATH="$cache_file" PLUGIN_ROOT_FALLBACK="${0%/*}/.." python3 -c "
 import json, os, re
 d=json.load(open(os.environ['CACHE_PATH']))
 ps=d.get('profiles',[])
@@ -97,7 +97,7 @@ if ps:
     upd=_s(d.get('update',''))
     if upd:
         import re as _re
-        _pr=os.environ.get('CLAUDE_PLUGIN_ROOT','')
+        _pr=os.environ.get('CLAUDE_PLUGIN_ROOT') or os.environ.get('PLUGIN_ROOT_FALLBACK','')
         _pi=os.path.join(_pr,'mcp','chameleon_mcp','__init__.py') if _pr else ''
         _cv=''
         if _pi:

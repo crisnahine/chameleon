@@ -744,6 +744,11 @@ class BootstrapReport:
     "distributions": {dim: {value_str: count}}}. The future interview UI uses
     these to offer a manual split.
     """
+    taught_import_warnings: list[str] = field(default_factory=list)
+    """A refresh could not carry user-taught banned imports across the re-derive
+    (the prior conventions.json was corrupt/unparseable), so /chameleon-teach
+    competing imports were dropped. Surfaced so the loss is visible, not silent."""
+
     idiom_warnings: list[str] = field(default_factory=list)
     """Carried-forward idioms.md looked damaged (unreadable, non-UTF8, or no
     parseable idiom blocks despite non-template content). Taught idioms are
@@ -878,6 +883,7 @@ class BootstrapReport:
             "error": self.error,
             "sparse_cluster_warnings": list(self.sparse_cluster_warnings),
             "bimodal_cluster_warnings": list(self.bimodal_cluster_warnings),
+            "taught_import_warnings": list(self.taught_import_warnings),
             "idiom_warnings": list(self.idiom_warnings),
             "nested_profile_warnings": list(self.nested_profile_warnings),
             "workspaces": list(self.workspace_reports),
@@ -2223,13 +2229,28 @@ def _bootstrap_single(
     # the re-derive. extract_all_conventions only produces the derived `preferred`
     # lists, so without this a refresh drops every /chameleon-teach banned import and
     # silently disables banned-import enforcement.
+    taught_import_warnings: list[str] = []
     try:
         prior_conv_path = profile_dir / "conventions.json"
         if prior_conv_path.is_file():
             from chameleon_mcp.conventions import merge_taught_competing
 
-            prior_conv = json.loads(prior_conv_path.read_text(encoding="utf-8"))
-            merge_taught_competing(prior_conv, conventions_data)
+            try:
+                prior_conv = json.loads(prior_conv_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, ValueError):
+                # The prior conventions.json is corrupt (this refresh is often the
+                # REPAIR that re-derives BECAUSE it was unparseable). Preservation is
+                # impossible, so taught banned imports are dropped -- warn instead of
+                # swallowing, so the refresh envelope shows the loss rather than
+                # reporting a clean success that silently disabled enforcement.
+                taught_import_warnings.append(
+                    "The prior conventions.json was unreadable (corrupt/torn JSON), so "
+                    "user-taught banned imports (/chameleon-teach-competing-import) could "
+                    "not be carried across this refresh. Re-teach them if you relied on "
+                    "import-preference enforcement."
+                )
+            else:
+                merge_taught_competing(prior_conv, conventions_data)
     except Exception:
         pass
 
@@ -2667,6 +2688,7 @@ def _bootstrap_single(
         profile_path=profile_dir,
         sparse_cluster_warnings=sparse_warnings,
         bimodal_cluster_warnings=bimodal_warnings,
+        taught_import_warnings=taught_import_warnings,
         idiom_warnings=idiom_warnings,
         nested_profile_warnings=nested_warnings,
         language_hint=language_hint,

@@ -187,6 +187,7 @@ def describe_codebase(repo_root) -> dict:
     archetypes (kinds of files + their canonical witness + size), totals, and the
     god symbols. The "what is this codebase" comprehension answer. Returns the
     empty-shaped dict (never raises) when no profile is present."""
+    from chameleon_mcp.calls_index import load_calls_index
     from chameleon_mcp.profile.loader import load_profile_dir
     from chameleon_mcp.symbol_signatures import load_symbol_signatures
     from chameleon_mcp.worktree import resolve_profile_root
@@ -251,6 +252,16 @@ def describe_codebase(repo_root) -> dict:
         # "unknown, artifact damaged", not a verified empty repo.
         out["degraded"] = True
     out["god_symbols"] = god_symbols(repo_root, limit=threshold_int("COMPREHEND_GOD_SYMBOLS"))
+    if (
+        load_calls_index(profile_root) is None
+        and (Path(profile_root) / ".chameleon" / "calls_index.json").is_file()
+    ):
+        # Same honesty posture as the symbol_signatures branch above: a
+        # present-but-corrupt calls_index makes god_symbols silently return []
+        # (and zeroes every caller count that search_codebase surfaces), so mark
+        # the overview degraded rather than reporting a verified call-graph-free
+        # repo.
+        out["degraded"] = True
     return out
 
 

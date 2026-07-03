@@ -1098,9 +1098,40 @@ def _python_inheritance_conventions(files: list[ParsedFile], total: int) -> dict
     return result
 
 
+def _archetype_class_count(files: list[ParsedFile], language: str) -> int:
+    """Number of class definitions across an archetype's files.
+
+    DRF/Django (and some Rails) pack many classes into few role files (one
+    serializers.py / models.py per app), so a file-count sample gate starves a
+    5-file / 70-class archetype of every derived class convention. Counting
+    classes lets such an archetype clear the same floor. TS returns 0 here (no
+    comparable many-classes-per-file layout), so it keeps the file-count gate."""
+    if language == "python":
+        return sum(len((getattr(f, "extras", None) or {}).get("class_shapes") or []) for f in files)
+    if language == "ruby":
+        n = 0
+        for f in files:
+            try:
+                content = f.path.read_bytes()[:50_000].decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            n += len(_RUBY_CLASS_NAME_RE.findall(content))
+        return n
+    return 0
+
+
+def _meets_class_sample_gate(files: list[ParsedFile], language: str) -> bool:
+    """True when the archetype has enough FILES or enough CLASSES for a class-level
+    convention. Relaxes the pure file-count floor for class-heavy, few-file
+    archetypes (DRF serializers, Django models) without lowering it for thin ones."""
+    if len(files) >= MIN_SAMPLE_SIZE:
+        return True
+    return _archetype_class_count(files, language) >= MIN_SAMPLE_SIZE
+
+
 def extract_inheritance_conventions(files: list[ParsedFile], *, language: str = "ruby") -> dict:
     """Detect dominant base class and include mixins by reading file content."""
-    if len(files) < MIN_SAMPLE_SIZE:
+    if not _meets_class_sample_gate(files, language):
         return {}
 
     total = len(files)
@@ -1348,7 +1379,7 @@ def extract_class_contract_conventions(files: list[ParsedFile], *, language: str
     of classes carrying that anchor, so a co-located helper class never dilutes or
     pollutes it.
     """
-    if len(files) < MIN_SAMPLE_SIZE:
+    if not _meets_class_sample_gate(files, language):
         return {}
 
     classes = _collect_contract_classes(files, language=language)
@@ -1746,7 +1777,7 @@ _MAX_CONVENTION_ITEMS = _int_env("CHAMELEON_MAX_CONVENTION_ITEMS", 60)
 
 def extract_key_exports(files: list[ParsedFile], *, language: str) -> list[str]:
     """Extract the most common exported names across files in an archetype."""
-    if len(files) < MIN_SAMPLE_SIZE:
+    if not _meets_class_sample_gate(files, language):
         return []
 
     name_counts: Counter[str] = Counter()
@@ -1808,6 +1839,17 @@ def extract_key_exports(files: list[ParsedFile], *, language: str) -> list[str]:
     result = []
     for name, _count in name_counts.most_common(_MAX_KEY_EXPORTS + len(skip)):
         if name in skip:
+            continue
+        # Ruby: a bare leaf defined in 2+ files is an AMBIGUOUS reuse hint. The
+        # block-nested Rails form (`module PushNotifications; class Send`) loses its
+        # namespace in the regex scan, so several distinct classes (Notifications::
+        # Send, PushNotifications::Send, ...) collapse to one bare `Send`. `seen` is
+        # per-file, so name_counts is the number of files defining the leaf: a
+        # genuinely unique class is 1, a multi-namespace collision is >1. Offering
+        # bare `Send`/`Add`/`Remove` as "reuse this before creating a new one" is
+        # not actionable, so drop the ambiguous ones (TS/Python export names are
+        # already namespace-unique, so this is scoped to Ruby).
+        if language == "ruby" and _count >= 2:
             continue
         result.append(name)
         if len(result) >= _MAX_KEY_EXPORTS:

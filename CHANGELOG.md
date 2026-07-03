@@ -4,6 +4,77 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.30] - 2026-07-04
+
+Round 2 (full) of whole-plugin depth QA: an adversarial sweep across all seven
+frameworks and three languages, driving real hooks and tools against real
+profiled repos, with every finding independently verified before it counted.
+Fifteen confirmed defects, all advisory-quality (no crash, leak, or deny bypass),
+each fixed and re-verified on the repo that surfaced it.
+
+### Fixed
+
+Guidance quality (framework archetypes were under-served):
+
+- **DRF serializers / Django models got no base-class contract on the first edit.**
+  A base-only class contract (extends BaseSerializer, models.Model, AppConfig) was
+  dropped upstream when the cohort had no macros/methods, so the Tier-2 facts block
+  showed nothing. It now falls back to the derived dominant base, matching the
+  Tier-1 echo.
+- **Class-heavy archetypes in few files derived zero conventions.** DRF/Django pack
+  many classes into one serializers.py / models.py per app, and the sample gate
+  counted files, not classes, so a 5-file / 67-class serializer archetype was
+  suppressed entirely. The inheritance / class-contract / key-export gates now
+  count classes too.
+- **NestJS feature-module edits mirrored the root AppModule.** The imports-only
+  aggregator won the canonical-witness tiebreak. Imports-only `@Module` files are
+  now demoted so a real feature module (controllers + providers) is the witness.
+- **Rails job witness was the abstract ApplicationJob base (no `perform`).** Abstract
+  `application_*.rb` bases are now demoted below their concrete siblings.
+- **Rails migration witness carried an obsolete `Migration[4.2]` version.** A
+  migration behind the cluster's newest schema version is now demoted, so a
+  current-version migration is the witness.
+- **Ruby reuse hints listed ambiguous bare `Send` / `Add` / `Remove`.** Block-nested
+  Rails service classes collapse to their leaf name; a leaf defined in 2+ files is
+  ambiguous and is now dropped from the "reuse these" list.
+
+Correctness (hints and advisories were wrong or noisy):
+
+- **PostToolUse block override hint printed a literal `<rule>`.** For blanket-immune
+  rules (eval-call, secret) a bare-token ignore does not clear the block, so the
+  hint now names the actual failing rule.
+- **Django model->migration nudge told Python users to type `//`** (a syntax error).
+  The silence hint now uses `#` for Ruby/Python and `//` for TS/JS.
+- **Cross-file break advisory false-fired on member access.** Dropping an
+  `import { foo }` binding while keeping an unrelated `self.foo()` member call
+  reported a phantom broken import; a preceding `.` is no longer counted as a
+  bareword reference.
+- **Named-export-count-bucket mismatch read as "Fix these" on small new files.** A
+  new single-route or single-form file has fewer exports than the archetype's
+  typical count; the info-severity signal now carries the same "not a defect, do
+  not restructure" hedge its shape-mismatch sibling has.
+- **Monorepo call-graph tools emitted non-round-trippable paths.** get_callers /
+  get_callees / get_blast_radius / query_symbol_importers answered from the file's
+  nested workspace profile with workspace-relative paths, while search / describe
+  emitted repo-root-relative ones; chaining an emitted caller path back silently
+  returned total=0. All four now emit paths in the repo-arg root space, so they
+  round-trip.
+
+Degraded-state honesty (silent failures now surface):
+
+- **Corrupt calls_index.json silently zeroed god-symbols and caller counts.**
+  describe_codebase and search_codebase now set `degraded` when the call index is
+  present but unreadable, like they already do for a corrupt symbol index.
+- **Corrupt enforcement.json silently disabled all edit-time deny/block.** The
+  per-edit advisory now shows an "Enforcement degraded" banner when
+  enforcement.json is present but unparseable, matching the config.json banner.
+- **Refresh that repaired a corrupt conventions.json silently dropped taught banned
+  imports.** The refresh envelope now carries a `taught_import_warnings` warning
+  when preservation was impossible, instead of reporting a clean success.
+- **Statusline upgrade banner was missing in the no-jq path** when CLAUDE_PLUGIN_ROOT
+  was unset. The python fallback now derives the plugin root from the script
+  location, like the jq path.
+
 ## [2.38.29] - 2026-07-03
 
 Round 2 of whole-plugin depth QA on real profiled repos. One performance
