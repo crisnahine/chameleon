@@ -4,6 +4,47 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.28] - 2026-07-03
+
+Whole-plugin QA across every supported framework (Rails, Django, DRF, Flask,
+FastAPI, Next.js, NestJS) and the standalone components (daemon, MCP stdio,
+statusline, merge driver). Framework detection, framework-aware guidance,
+bootstrap, and the enforcement/hook stack all verified correct on the released
+build; the co-change advisory rules had three framework gaps, now fixed.
+
+### Fixed
+
+- **Alembic migrations weren't recognized by the model-migration co-change rule.**
+  `_is_django_migration` matched only `/migrations/`, so on any FastAPI/SQLAlchemy
+  repo (Alembic's standard `alembic/versions/` layout) the rule silently
+  auto-disabled and a new model without a migration was never nudged — despite the
+  message advertising "SQLAlchemy: add the Alembic revision". Now mirrors the
+  archetype layer's alembic-aware classifier.
+- **`cochange-prisma-migration` could never fire.** A `.prisma` file resolves to
+  language `None` and was skipped before rule matching; the 8-file trigger floor
+  also disabled it (Prisma repos have one `schema.prisma`); and the schema change
+  is an edit, not a new file. Now recognizes `.prisma` as a TS-ecosystem artifact,
+  supports a per-rule trigger floor (1 for Prisma), and fires opt-in rules on an
+  edit — so editing `schema.prisma` without a migration is nudged.
+- **`_is_redux_slice` over-matched.** `'slice' in name` false-fired
+  `cochange-slice-store` on `imageSlicer.ts` / `pizzaSlices.ts` / `backslice.ts`;
+  tightened to the Redux Toolkit `fooSlice.ts` convention (capital-S suffix token).
+- **Coordinator-monorepo onboarding.** A pnpm/turbo/nx root with no first-class
+  source bootstraps its workspaces but writes no root profile
+  (`status: "success_workspaces_only"`), so `/chameleon-trust` at the root failed
+  with a contradictory "run /chameleon-init first". `trust_profile` now detects a
+  coordinator root and points the user at the bootstrapped workspaces, and the
+  init skill documents the per-workspace trust flow and the coordinator-root
+  turn-end limitation.
+
+### Known limitations (scoped follow-ups)
+
+- The turn-end Stop safety net does not run for a pure-coordinator monorepo root
+  (Claude Code's cwd is the profile-less root); per-edit guidance still works.
+- A cross-workspace existence break (a removed export imported only across a
+  workspace boundary) is not flagged, because per-workspace reverse indexes don't
+  record sibling-workspace importers.
+
 ## [2.38.27] - 2026-07-03
 
 Round 5 closed the malformed-argument crash class deterministically rather than by

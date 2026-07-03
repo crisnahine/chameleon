@@ -152,6 +152,30 @@ If the repo has > 200,000 source files, the tool refuses by default
 | `canonicals_skipped_failed_scans > 0` | Some clusters had every candidate fail secret/injection/poisoning scans. Tell the user to investigate via `/chameleon-status`. |
 | `apply_archetype_renames` returns `failed` | Surface the error verbatim and ask the user to retry with a corrected mapping. Do NOT re-bootstrap. |
 
+## Coordinator monorepo (`status: "success_workspaces_only"`)
+
+A monorepo whose ROOT carries no first-class source (a pnpm-workspaces /
+Turborepo / Nx coordinator: only a root `package.json` + `pnpm-workspace.yaml`,
+all code under `apps/*` / `packages/*`) bootstraps its WORKSPACES but writes NO
+root `.chameleon/` profile. The envelope's `status` is `"success_workspaces_only"`
+and its `workspaces` array lists each bootstrapped workspace
+(`{workspace_path, repo_root, status, archetypes_detected, ...}`).
+
+Handle this distinctly from plain `success`:
+- Do NOT tell the user to run `/chameleon-trust` at the repo ROOT — there is no
+  root profile, so it fails with "no .chameleon/ directory (run /chameleon-init
+  first)", which reads as a contradiction right after init succeeded. Instead,
+  tell them to run `/chameleon-trust` once **per workspace** (cd into each
+  `workspace_path`, or trust each), listing the workspaces from the envelope.
+- Per-edit guidance (PreToolUse/PostToolUse) resolves per FILE to its workspace,
+  so editing a workspace file gets that workspace's conventions once its profile
+  is trusted — that part works normally.
+- Caveat to state plainly: Claude Code launches at the repo ROOT, so the
+  turn-end Stop safety net (cross-file break detection, the once-per-session
+  idiom review, duplication/stale-test advisories, the session attestation)
+  resolves against the profile-less root and does not run for a pure-coordinator
+  root. The per-edit layer still applies; the turn-end aggregate does not.
+
 ## After success
 
 ```
@@ -181,9 +205,12 @@ append-only — it never touches idioms the team later adds.
 
 - Languages other than TypeScript/JavaScript, Ruby, and Python — `failed_unsupported_language`.
   Future releases may add Go, etc.
-- Per-workspace bootstrapping in monorepos — current implementation
-  bootstraps at repo root regardless. Future versions will add per-workspace
-  `.chameleon/` directories.
+- Turn-end Stop coverage for a pure-coordinator monorepo root
+  (`success_workspaces_only`, see above): the per-workspace profiles ARE written
+  and per-edit guidance works, but the turn-end aggregate net resolves against the
+  profile-less root. Trusting each workspace does not restore it (Claude Code's
+  cwd is the root); this is a known limitation, not per-workspace bootstrapping
+  being unimplemented — that already happens.
 - Renaming archetypes outside the top-N by cluster size — the interview
   only surfaces the largest ones because the long tail is rarely worth
   retitling. Users can re-run /chameleon-init or edit `.chameleon/archetypes.json`

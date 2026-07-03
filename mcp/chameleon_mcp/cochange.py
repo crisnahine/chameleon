@@ -257,15 +257,42 @@ class CoChangeRule:
     suffix.
     """
 
-    __slots__ = ("rule_id", "language", "trigger", "companion", "message", "framework")
+    __slots__ = (
+        "rule_id",
+        "language",
+        "trigger",
+        "companion",
+        "message",
+        "framework",
+        "min_trigger",
+        "fires_on_edit",
+    )
 
-    def __init__(self, rule_id, language, trigger, companion, message, framework=None) -> None:
+    def __init__(
+        self,
+        rule_id,
+        language,
+        trigger,
+        companion,
+        message,
+        framework=None,
+        min_trigger=None,
+        fires_on_edit=False,
+    ) -> None:
         self.rule_id = rule_id
         self.language = language
         self.trigger = trigger
         self.companion = companion
         self.message = message
         self.framework = framework
+        # Per-rule committed-trigger floor override (default: the global
+        # COCHANGE_MIN_TRIGGER_FILES). A single-file-convention artifact like a
+        # Prisma schema (repos carry exactly one) needs a floor of 1, not 8.
+        self.min_trigger = min_trigger
+        # When True, an EDIT to an existing trigger file (not just a new file)
+        # fires the rule. A Prisma schema change is almost always an edit to the
+        # single existing schema.prisma, so a new-files-only rule never sees it.
+        self.fires_on_edit = fires_on_edit
 
 
 def _is_rails_model(rel: str) -> bool:
@@ -316,7 +343,17 @@ def _is_django_model(rel: str) -> bool:
 
 def _is_django_migration(rel: str) -> bool:
     name = rel.rsplit("/", 1)[-1]
-    return "/migrations/" in rel and rel.endswith(".py") and name != "__init__.py"
+    if not rel.endswith(".py") or name == "__init__.py":
+        return False
+    if "/migrations/" in rel:
+        return True
+    # Alembic (the standard SQLAlchemy/FastAPI layout) keeps revisions in a
+    # `versions/` dir under `alembic/` (or `migrations/`), which has no
+    # `/migrations/` path segment. Mirror python_role_for_path's migration-role
+    # classifier so the model-migration coupling rule the message advertises for
+    # SQLAlchemy actually recognizes the companion.
+    dirs = rel.split("/")[:-1]
+    return "versions" in dirs and ("alembic" in dirs or "migrations" in dirs)
 
 
 def _is_ts_migration_dir(rel: str) -> bool:
@@ -332,8 +369,13 @@ def _is_prisma_schema(rel: str) -> bool:
 
 
 def _is_redux_slice(rel: str) -> bool:
-    name = rel.rsplit("/", 1)[-1].lower()
-    return rel.endswith((".ts", ".tsx")) and (name.endswith("slice.ts") or "slice" in name)
+    # The Redux Toolkit convention is a file named `fooSlice.ts` / `fooSlice.tsx`
+    # with a CAPITAL S (createSlice's convention). Match that exact suffix token
+    # (a name char + `Slice` + ext) so `userSlice.ts` matches but the over-broad
+    # substring cases -- `imageSlicer.ts`, `pizzaSlices.ts`, `backslice.ts`
+    # (lowercase), `sliceUtils.ts` -- do not.
+    name = rel.rsplit("/", 1)[-1]
+    return bool(re.search(r"[A-Za-z0-9]Slice\.tsx?$", name))
 
 
 def _is_store_registration(rel: str) -> bool:
@@ -409,6 +451,10 @@ _COCHANGE_RULES: tuple[CoChangeRule, ...] = (
         _is_prisma_schema,
         _is_ts_migration_dir,
         "prisma schema changed without a migration in the same change",
+        # A repo carries exactly one schema.prisma (floor of 1, not 8), and the
+        # change is an EDIT to that existing schema, not a new file.
+        min_trigger=1,
+        fires_on_edit=True,
     ),
     CoChangeRule(
         "cochange-slice-store",
@@ -559,7 +605,11 @@ def cochange_rule_disabled(rule: CoChangeRule, repo_root: Path) -> bool:
     """
     try:
         max_files = threshold_int("COCHANGE_MAX_FILES_SCANNED")
-        min_trigger = threshold_int("COCHANGE_MIN_TRIGGER_FILES")
+        # A single-file-convention rule (Prisma: exactly one schema.prisma) sets
+        # its own floor; the global 8-file floor is right for Rails/Django where
+        # repos carry dozens of models but would permanently disable a one-schema
+        # rule.
+        min_trigger = rule.min_trigger or threshold_int("COCHANGE_MIN_TRIGGER_FILES")
         max_rate = threshold_float("COCHANGE_MAX_VIOLATION_RATE")
 
         triggers = 0
@@ -622,7 +672,10 @@ def changeset_completeness_items(
     whole set, not just the new files. Returns [] when nothing applies; never
     raises for a single bad file.
     """
-    if not new_files_abs:
+    # Files edited but not newly created; only rules that opt into `fires_on_edit`
+    # (Prisma) evaluate these, so every other rule stays strictly new-files-only.
+    edit_only_abs = set(edited_abs) - set(new_files_abs)
+    if not new_files_abs and not edit_only_abs:
         return []
 
     def _rel_set(abs_paths) -> set[str]:
@@ -638,10 +691,23 @@ def changeset_completeness_items(
     if rule_enabled is None:
         rule_enabled = lambda _rule: True  # noqa: E731
 
+    def _cochange_lang(ap: str):
+        lang = _normalize_language(language_of(ap))
+        if lang is None and ap.endswith(".prisma"):
+            # A `.prisma` schema is a TypeScript/JS-ecosystem artifact language_of
+            # does not recognize; the prisma rule (keyed typescript) triggers on
+            # it, so treat it as typescript here rather than skipping it entirely.
+            return "typescript"
+        return lang
+
     items: list[ChangeSetItem] = []
-    for ap in sorted(new_files_abs):
+    seen: set[tuple[str, str]] = set()
+    # (abs_path, is_new); new files evaluate every rule, edited-only files only
+    # the fires_on_edit rules.
+    candidates = [(ap, True) for ap in new_files_abs] + [(ap, False) for ap in edit_only_abs]
+    for ap, is_new in sorted(candidates):
         try:
-            lang = _normalize_language(language_of(ap))
+            lang = _cochange_lang(ap)
             if lang is None:
                 continue
             try:
@@ -651,6 +717,8 @@ def changeset_completeness_items(
             for rule in _COCHANGE_RULES:
                 if rule.language != lang:
                     continue
+                if not is_new and not rule.fires_on_edit:
+                    continue
                 if not rule.trigger(rel):
                     continue
                 # Some file in the change-set already satisfies the companion: the
@@ -659,6 +727,10 @@ def changeset_completeness_items(
                     continue
                 if not rule_enabled(rule):
                     continue
+                key = (rel, rule.rule_id)
+                if key in seen:
+                    continue
+                seen.add(key)
                 items.append(ChangeSetItem(rel, rule.rule_id, rule.message))
         except Exception:
             continue

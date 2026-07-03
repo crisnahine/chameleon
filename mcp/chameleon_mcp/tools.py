@@ -9590,6 +9590,32 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
 
     profile_dir = repo_path / ".chameleon"
     if not profile_dir.is_dir():
+        # A pure-coordinator monorepo root (pnpm/turbo/nx) has no root profile
+        # even after a successful init -- its WORKSPACES were bootstrapped
+        # (status success_workspaces_only). Detect that and point the user at the
+        # workspaces instead of the contradictory "run /chameleon-init first"
+        # (init already ran; there is just nothing to trust at the bare root).
+        try:
+            _ws = sorted(
+                str(p.parent.relative_to(repo_path))
+                for parent in ("apps", "packages", "services", "workspaces")
+                for p in (repo_path / parent).glob("*/.chameleon")
+                if (p / "profile.json").is_file()
+            )
+        except Exception:
+            _ws = []
+        if _ws:
+            return _envelope(
+                {
+                    "status": "failed",
+                    "error": (
+                        "no root .chameleon/ profile: this is a coordinator monorepo "
+                        "whose workspaces were bootstrapped. Trust each workspace "
+                        "instead of the root: " + ", ".join(_ws)
+                    ),
+                    "workspaces": _ws,
+                }
+            )
         return _envelope(
             {"status": "failed", "error": "no .chameleon/ directory (run /chameleon-init first)"}
         )
