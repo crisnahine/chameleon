@@ -4,6 +4,43 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.29] - 2026-07-03
+
+Round 2 of whole-plugin depth QA on real profiled repos. One performance
+regression on large repos and five convention-quality fixes; verified against
+gitlabhq (901 KB conventions.json), a real Django repo, and a no-remote monorepo.
+
+### Fixed
+
+- **Per-edit Tier-1 echo re-sanitized the entire conventions.json on every edit.**
+  The PreToolUse convention pointer scrubbed and sanitized the whole artifact just
+  to render one archetype's four echo dimensions (imports, naming, inheritance,
+  class_contract). On gitlabhq that cost ~640 ms per edit, and past a few MB it
+  could exhaust the advisory wall-clock budget so the whole Tier-1 layer went
+  silent. Now the edited archetype's subset is sliced out first and only that is
+  scrubbed/sanitized — byte-identical output, ~70x cheaper (640 ms → 9 ms/edit on
+  gitlabhq).
+- **Deprecated idioms leaked into per-edit context and the turn-end review.**
+  Idioms under `## deprecated` in idioms.md were injected as if active. They are
+  now stripped at the source (`get_pattern_context` and the idiom-block parser),
+  so only `## active` idioms reach the model.
+- **Migration classes were offered as reusable building blocks.** The "reuse these
+  before creating a new one" key-export union included the migration archetype,
+  whose classes are one-shot. The migration archetype is now excluded from that
+  union.
+- **Competing-import guidance wasn't scoped.** "Use X, not Y" advice rendered
+  without saying where it applies. It is now grouped by the archetypes that
+  actually carry the competing pair and rendered "Use X, not Y (<scope> files)".
+- **The witness imperative over-committed on loose archetypes.** A grab-bag
+  archetype (many distinct sub-buckets) still told the model to "mirror the
+  canonical witness below closely". Above a sub-bucket threshold the wording now
+  softens to loose-reference guidance so the model isn't pushed to copy a witness
+  that is only broadly representative.
+- **No-remote monorepo trust didn't stick per workspace.** `/chameleon-trust` at a
+  coordinator root granted trust under the wrong repo id, so per-workspace edits
+  stayed untrusted. Trust is now granted under each workspace's own computed repo
+  id.
+
 ## [2.38.28] - 2026-07-03
 
 Whole-plugin QA across every supported framework (Rails, Django, DRF, Flask,

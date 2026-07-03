@@ -442,6 +442,10 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # shares. A secret placed past the cap escapes the pre-write deny but
     # still meets the PostToolUse and Stop scans.
     "PREWRITE_SECRET_SCAN_MAX_CHARS": 100_000,
+    # Above this many sub-clusters, a named archetype's single canonical witness
+    # is one sub-role's exemplar, not the archetype template, so the Tier-2 lead
+    # downgrades "mirror closely" to "loose reference" even on a structural match.
+    "TIER2_LOOSE_WITNESS_SUB_BUCKETS": 5,
     # The DETERMINISTIC hard-secret / hard-eval PreToolUse DENY paths scan a much
     # larger window than the advisory 100KB cap above: the deny is the only gate
     # that stops the write from landing on disk (PostToolUse/Stop fire after the

@@ -1660,6 +1660,23 @@ def _reorder_idioms_by_archetype(idioms_text: str, archetype: str | None) -> str
 _IDIOM_META_LINE_RE = re.compile(r"(?i)^[ \t]*(Language|Status|Archetype):")
 
 
+def _active_idioms_only(idioms_text: str) -> str:
+    """idioms.md with the ``## deprecated`` section removed.
+
+    Deprecated idioms are RETIRED guidance -- a team deprecates an idiom exactly
+    when it no longer applies. They must not be injected into the per-edit
+    spotlight or re-checked at the Stop idiom self-review as if active. Cuts
+    everything from the first ``## deprecated`` heading onward (fence-agnostic:
+    a real ``## deprecated`` heading is a top-level section marker, not code).
+    """
+    if not idioms_text:
+        return idioms_text
+    m = re.search(r"(?mi)^\s*##\s+deprecated\b", idioms_text)
+    if m is None:
+        return idioms_text
+    return idioms_text[: m.start()].rstrip() + "\n"
+
+
 def _parse_idiom_blocks(idioms_text: str):
     """Split idioms.md into ``(preamble, blocks)``.
 
@@ -1679,6 +1696,9 @@ def _parse_idiom_blocks(idioms_text: str):
     unbalanced fence at worst merges a later real block into the prior one (grouped,
     never leaked as its own idiom).
     """
+    # Defense in depth for callers that pass a raw idioms.md: never collect blocks
+    # from the ## deprecated section (retired guidance must not be re-imposed).
+    idioms_text = _active_idioms_only(idioms_text)
     lines = idioms_text.splitlines(keepends=True)
     starts = []
     in_fence = False
@@ -2108,7 +2128,9 @@ def get_pattern_context(file_path: str) -> dict:
                     # Read error (e.g. mid-read change detection): leave empty.
                     pass
 
-    idioms_text = loaded.idioms_text or ""
+    # Deprecated idioms are retired guidance: strip the ## deprecated section
+    # before any injection / idiom-review so a retired rule is never re-imposed.
+    idioms_text = _active_idioms_only(loaded.idioms_text or "")
     if idioms_text:
         # A scaffold-only idioms.md ("## active" + "_(no idioms yet …)_") is the
         # common case (most repos never run /chameleon-teach). Treat it as empty:
@@ -9680,7 +9702,19 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
         if not (child_chameleon / "profile.json").is_file():
             continue
         try:
-            grant_trust(repo_id, child_chameleon)
+            # Grant under the WORKSPACE's own repo_id, not the root's. On a
+            # remote-backed repo every workspace shares the remote-derived id, so
+            # this equals repo_id (no change). On a NO-REMOTE monorepo each
+            # workspace derives a distinct id from its config repo_uuid, and
+            # granting under the root id left detect-time lookups (which compute
+            # the workspace's own id) untrusted -- a silent false-clean where the
+            # tool reported the workspace trusted but guidance/enforcement/Stop
+            # were all dead.
+            try:
+                _ws_repo_id = _compute_repo_id(child_chameleon.parent)
+            except Exception:
+                _ws_repo_id = repo_id
+            grant_trust(_ws_repo_id, child_chameleon)
             workspace_trust_count += 1
         except Exception:
             pass

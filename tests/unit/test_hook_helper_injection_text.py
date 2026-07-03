@@ -201,8 +201,8 @@ def test_preflight_emits_match_quality_lead_before_the_spotlight_region():
     # The imperative is a chameleon directive, so it must be added OUTSIDE (before)
     # the untrusted spotlight region, not inside it.
     src = _preflight_source()
-    assert "_match_quality_lead(match_quality, archetype_name" in src
-    lead_at = src.index("_match_quality_lead(match_quality, archetype_name")
+    assert "_match_quality_lead(" in src
+    lead_at = src.index("_match_quality_lead(")
     region_at = src.index("block += untrusted_region")
     assert lead_at < region_at
 

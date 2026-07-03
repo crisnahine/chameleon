@@ -2412,7 +2412,11 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     conv = conventions.get("conventions", {})
 
     import_lines: list[str] = []
-    seen_competing: set[str] = set()
+    # A taught competing import is stored and ENFORCED per archetype, so render
+    # its archetype scope (like NAMING lines do) rather than presenting it as a
+    # repo-wide rule -- otherwise the model avoids a legitimate stdlib import
+    # everywhere, not just in the governed archetype.
+    competing_scopes: dict[tuple[str, str], list[str]] = {}
     for _arch, data in conv.get("imports", {}).items():
         if not isinstance(data, dict):
             continue
@@ -2425,10 +2429,13 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
             pref, over = c.get("preferred"), c.get("over")
             if not pref or not over:
                 continue
-            key = f"{pref}>{over}"
-            if key not in seen_competing:
-                seen_competing.add(key)
-                import_lines.append(f"- Use {pref}, not {over}")
+            archs = competing_scopes.setdefault((pref, over), [])
+            if isinstance(_arch, str) and _arch not in archs:
+                archs.append(_arch)
+    for (pref, over), archs in sorted(competing_scopes.items()):
+        scope = ", ".join(sorted(a for a in archs if a))
+        suffix = f" ({scope} files)" if scope else ""
+        import_lines.append(f"- Use {pref}, not {over}{suffix}")
 
     seen_preferred: set[str] = set()
     all_preferred: list[tuple[int, str]] = []
@@ -2552,6 +2559,12 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
     export_lines: list[str] = []
     all_exports: set[str] = set()
     for _arch, names in conv.get("key_exports", {}).items():
+        # Migration classes (Rails AddXToY, Django Migration, Alembic revisions)
+        # are never reused, yet an alphabetical union across all archetypes lets
+        # them dominate the capped "check before creating" reuse list on any
+        # mature repo, hiding the real reusable exports. Exclude that archetype.
+        if isinstance(_arch, str) and (_arch == "migration" or _arch.startswith("migration")):
+            continue
         if not isinstance(names, (list, tuple, set)):
             continue
         for n in names:

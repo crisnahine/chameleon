@@ -166,6 +166,30 @@ def _enf_profile_dir(repo_root: Path) -> Path:
     return resolve_profile_root(repo_root) / ".chameleon"
 
 
+def _conventions_echo_subset(conv_data: dict, archetype: str) -> dict:
+    """Slice conventions.json down to just what the Tier-1 echo actually renders.
+
+    ``format_conventions_echo`` reads EXACTLY four dimensions, each scoped to the
+    single edited archetype: ``imports`` / ``naming`` / ``inheritance`` /
+    ``class_contract``. Everything else in the artifact never reaches the echo. On
+    a large repo (gitlabhq: multi-MB conventions.json) scrubbing + sanitizing the
+    WHOLE artifact on every edit costs ~10x the rest of the hot path, and past a
+    few MB it can exhaust the advisory wall-clock budget so the whole Tier-1 layer
+    dies silently. Extract the archetype's subset FIRST, then scrub/sanitize only
+    that -- O(one archetype) instead of O(whole file). Falls back to the full
+    object when the shape is unexpected or the archetype is unknown (small repos
+    are unaffected either way)."""
+    inner = conv_data.get("conventions") if isinstance(conv_data, dict) else None
+    if not isinstance(inner, dict) or not archetype:
+        return conv_data
+    slim_inner: dict = {}
+    for dim in ("imports", "naming", "inheritance", "class_contract"):
+        dim_val = inner.get(dim)
+        if isinstance(dim_val, dict) and archetype in dim_val:
+            slim_inner[dim] = {archetype: dim_val[archetype]}
+    return {"conventions": slim_inner}
+
+
 def _note_if_config_malformed(
     exc: BaseException,
     repo_id: str | None,
@@ -2171,7 +2195,7 @@ def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> s
         return ""
 
 
-def _match_quality_lead(match_quality: str, archetype_name: str = "") -> str:
+def _match_quality_lead(match_quality: str, archetype_name: str = "", sub_buckets: int = 0) -> str:
     """Match-quality-calibrated directive that leads the witness region.
 
     A chameleon directive (not untrusted data), emitted OUTSIDE the spotlight. A
@@ -2191,6 +2215,22 @@ def _match_quality_lead(match_quality: str, archetype_name: str = "") -> str:
         return (
             "Mixed-cluster archetype: treat the witness below as a loose reference, "
             "not a template; its role may differ from this file. The team idioms are "
+            "repo truth regardless of file shape.\n\n"
+        )
+    # A many-sub-bucket archetype groups varied concerns, so its single witness is
+    # one sub-cluster's exemplar, not the archetype's template -- "mirror closely"
+    # would tell the model to copy an unrelated sub-role. Downgrade to loose even on
+    # a structural match, matching the using-chameleon skill's "sub_buckets 2+ = read
+    # more carefully" guidance (the threshold keeps a tight 1-few-bucket match strong).
+    from chameleon_mcp._thresholds import threshold_int
+
+    if match_quality in ("exact", "ast") and sub_buckets > threshold_int(
+        "TIER2_LOOSE_WITNESS_SUB_BUCKETS"
+    ):
+        return (
+            f"Structural match, but this archetype spans {int(sub_buckets)} sub-clusters "
+            "of varied concerns: treat the witness below as a loose reference, not a "
+            "template -- prefer a same-directory sibling's shape. The team idioms are "
             "repo truth regardless of file shape.\n\n"
         )
     if match_quality in ("exact", "ast"):
@@ -3011,13 +3051,18 @@ def preflight_and_advise() -> int:
                 # across changes so the staleness gate no longer covers this echo path.
                 from chameleon_mcp.profile.loader import safe_prose_text, scrub_conventions_prose
 
-                scrub_conventions_prose(conv_data)
+                # The echo renders only the edited archetype's four dimensions;
+                # slice to that subset BEFORE the O(size) scrub/sanitize so a
+                # multi-MB conventions.json doesn't cost the whole hot-path budget
+                # per edit (see _conventions_echo_subset).
+                conv_subset = _conventions_echo_subset(conv_data, archetype_name)
+                scrub_conventions_prose(conv_subset)
                 pr_text = safe_prose_text(_enf_profile_dir(repo_root_path) / "principles.md")
                 # Sanitize attacker-controllable inputs at the boundary, for
                 # parity with the SessionStart path (the assembled echo carries a
                 # <chameleon-conventions> wrapper the output-sanitizer would mangle).
                 conv_echo = format_conventions_echo(
-                    _sanitize_profile_obj(conv_data),
+                    _sanitize_profile_obj(conv_subset),
                     archetype=archetype_name,
                     principles_text=sanitize_for_chameleon_context(pr_text),
                 )
@@ -3101,7 +3146,9 @@ def preflight_and_advise() -> int:
         # "mirror the canonical witness below closely" must not preface a block
         # that contains no witness to mirror.
         if excerpt_content:
-            block += _match_quality_lead(match_quality, archetype_name or "")
+            block += _match_quality_lead(
+                match_quality, archetype_name or "", int(sub_buckets_count or 0)
+            )
         block += untrusted_region + "\n\n"
     # Pair the witness (the conforming form) with a real off-pattern the team has
     # flagged, immediately after it: the in-context-learning literature finds a
