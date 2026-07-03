@@ -4521,6 +4521,10 @@ def parse_edited_functions(repo_root, file_path: str) -> list[ParsedFn]:
     start/end lines and None hashes so get_duplication_candidates can still build
     NewFunction rows for name-token matching.
     """
+    if not isinstance(file_path, str):
+        # "[] on any parse error" contract: a non-string path (from a malformed
+        # caller) would crash the language/path detection below.
+        return []
     from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.bootstrap.orchestrator import resolve_extractor
     from chameleon_mcp.function_catalog import (
@@ -8757,6 +8761,17 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
     user can trigger with /chameleon-refresh after accepting the merge.
     """
 
+    # never-raise / fail-open contract: base/ours/theirs are file-path strings a
+    # malformed call could send as a list/dict, which Path() rejects with a
+    # TypeError. Decline cleanly instead of leaking a traceback to the driver.
+    if not all(isinstance(x, str) for x in (base, ours, theirs)):
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "base/ours/theirs must be file path strings",
+                "merged_profile_path": None,
+            }
+        )
     ours_path = Path(ours)
     theirs_path = Path(theirs)
     if not ours_path.is_file() or not theirs_path.is_file():
@@ -9107,6 +9122,16 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
     chameleon skill can surface a UI warning.
     """
     from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+
+    # never-raise / fail-open contract: a malformed call could send feedback as a
+    # list/dict, which the sanitize/regex path below would crash on.
+    if not isinstance(feedback, str):
+        return _envelope(
+            {
+                "status": "failed",
+                "error": f"feedback must be a string; got {type(feedback).__name__}",
+            }
+        )
 
     repo_path, _repo_id = _resolve_repo_arg(repo)
     if repo_path is None:

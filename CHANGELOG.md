@@ -4,6 +4,27 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.27] - 2026-07-03
+
+Round 5 closed the malformed-argument crash class deterministically rather than by
+sampling. Round 4 kept surfacing individual tools that raised on a non-string
+argument (a fail-open contract violation), so instead of another agent hunt, every
+model-callable tool was fuzzed exhaustively: each string parameter of all 45 tool
+functions set to a list/dict/int/bool/bytes against a real repo. The sweep now
+reports zero crashes.
+
+### Fixed
+
+- **`merge_profiles` raised on a non-string `base`/`ours`/`theirs`** (Path() on a
+  list) — guarded to a clean `failed` envelope.
+- **`teach_profile` raised on a non-string `feedback`** — guarded.
+- **`parse_edited_functions` raised on a non-string `file_path`** — guarded to its
+  documented `[]`-on-error contract.
+
+With these, all 45 model-callable tool functions fail open (a typed envelope, never
+a traceback) on any malformed string argument, verified by an exhaustive fuzz that
+is now part of the confirmation battery.
+
 ## [2.38.26] - 2026-07-03
 
 Round 4 of the all-14-skills QA — the convergence round. It regression-hunted the
