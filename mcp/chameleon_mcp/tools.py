@@ -2234,6 +2234,22 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     from chameleon_mcp.profile.loader import load_profile_dir
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
+    # never-raise / fail-open contract: a non-string archetype (a JSON array or
+    # object from a malformed MCP call) would raise `TypeError: unhashable type`
+    # at the `archetype not in known_archetypes` dict membership test BEFORE the
+    # trust gate. Reject it with a typed envelope instead, like get_rules does.
+    if not isinstance(archetype, str):
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "archetype must be a string",
+                "content": None,
+                "witness_path": None,
+                "truncated": False,
+                "sha_hint": None,
+            }
+        )
+
     resolved_path, repo_id = _resolve_repo_arg(repo)
     if repo_id is None and resolved_path is None:
         return _envelope(
@@ -2354,6 +2370,13 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     if not isinstance(witness, dict):
         witness = {}
     witness_rel = witness.get("path")
+    # sha_hint comes from the committed (attacker-controllable) canonicals.json
+    # and is emitted from the pre-trust-gate no_witness branch below, so sanitize
+    # it before it reaches the model surface. (The untrusted branch nulls both
+    # path and hint; the post-gate branches are behind the trust gate and re-scan
+    # the witness content separately.)
+    _raw_sha = witness.get("sha_hint")
+    _safe_sha = sanitize_for_chameleon_context(str(_raw_sha)) if _raw_sha is not None else None
     if not witness_rel:
         return _envelope(
             {
@@ -2367,7 +2390,7 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
                 "content": None,
                 "witness_path": None,
                 "truncated": False,
-                "sha_hint": witness.get("sha_hint"),
+                "sha_hint": _safe_sha,
             }
         )
 
@@ -2382,6 +2405,10 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
     gate_repo_id = _compute_repo_id(repo_root)
     _gate_rec = _trust_state_for(gate_repo_id)
     if _gate_rec is None or not _gate_rec.grants_root(repo_root):
+        # An untrusted profile is attacker-controllable, so emit NO profile-derived
+        # string from it: witness_rel / sha_hint come straight from canonicals.json
+        # and could carry ANSI / newline / injection prose to the model surface.
+        # Withhold them (null), matching the sibling read tools' untrusted contract.
         return _envelope(
             {
                 "status": "untrusted",
@@ -2389,9 +2416,9 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
                 "archetype_name": archetype,
                 "repo_id": gate_repo_id,
                 "content": None,
-                "witness_path": witness_rel,
+                "witness_path": None,
                 "truncated": False,
-                "sha_hint": witness.get("sha_hint"),
+                "sha_hint": None,
             }
         )
 
@@ -3774,7 +3801,23 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
         }
         for r in search_symbols(repo_root, query, limit=n)
     ]
-    return _envelope({"found": True, "query": _ss(query), "results": results})
+    out = {"found": True, "query": _ss(query), "results": results}
+    if not results:
+        # search_symbols returns [] for BOTH "no symbol matched" and "symbol index
+        # unreadable", so an empty result on a corrupt symbol_signatures.json would
+        # read as an authoritative "not found". Distinguish them: flag degraded
+        # when the index artifact is present-but-unloadable.
+        from chameleon_mcp.symbol_signatures import load_symbol_signatures
+        from chameleon_mcp.worktree import resolve_profile_root
+
+        _pr = resolve_profile_root(repo_root)
+        if (
+            load_symbol_signatures(_pr) is None
+            and (_pr / ".chameleon" / "symbol_signatures.json").is_file()
+        ):
+            out["degraded"] = True
+            out["reason"] = "symbol index unavailable (corrupt); results may be incomplete"
+    return _envelope(out)
 
 
 def describe_codebase(repo: str) -> dict:
@@ -8868,7 +8911,28 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
         # of the file's own metadata; never drop the payload key.
         ours_payload = ours_data.get(data_key) or {}
         theirs_payload = theirs_data.get(data_key) or {}
-        merged_payload = {**theirs_payload, **ours_payload}
+        if data_key == "conventions":
+            # conventions.json's top-level keys are the FIXED dimension names
+            # (imports/naming/inheritance/...), identical on BOTH sides, so a
+            # shallow {**theirs, **ours} degenerates to "ours wins wholesale" and
+            # silently drops theirs' per-archetype convention additions. Union one
+            # level deeper: within each dimension, merge the archetype-keyed
+            # entries (ours wins on a per-archetype conflict).
+            merged_payload = {}
+            for dim in {*ours_payload, *theirs_payload}:
+                od = ours_payload.get(dim)
+                td = theirs_payload.get(dim)
+                if isinstance(od, dict) and isinstance(td, dict):
+                    merged_payload[dim] = {**td, **od}
+                elif dim in ours_payload:
+                    merged_payload[dim] = od
+                else:
+                    merged_payload[dim] = td
+        else:
+            # canonicals / rules key their payload by ARCHETYPE (names that
+            # legitimately differ between branches), so the shallow union is the
+            # right granularity there.
+            merged_payload = {**theirs_payload, **ours_payload}
         # Carry forward the metadata of whichever side is newer (higher
         # generation) so counts/timestamps stay self-consistent.
         if theirs_data.get("generation", 0) > ours_data.get("generation", 0):
@@ -12087,7 +12151,17 @@ def doctor(repo: str | None = None) -> dict:
     from pathlib import Path
 
     checks: list[dict] = []
-    _target_root = Path(repo) if repo else None
+    # A malformed repo arg (embedded null byte, un-stattable path) must not crash
+    # the tool -- doctor's contract is a clean envelope. A null byte propagates as
+    # ValueError out of find_repo_root's realpath/lstat (Path.exists() does NOT
+    # raise on it under 3.13), so reject it here and fall back to the cwd-scoped
+    # behavior (the no-arg default) rather than crashing.
+    _target_root: Path | None = None
+    if repo and isinstance(repo, str) and "\x00" not in repo:
+        try:
+            _target_root = Path(repo)
+        except (OSError, ValueError):
+            _target_root = None
 
     py = sys.version_info
     if py >= (3, 11):
@@ -12395,7 +12469,12 @@ def doctor(repo: str | None = None) -> dict:
     from chameleon_mcp.profile.loader import find_repo_root
 
     _doctor_base = _target_root or Path.cwd()
-    _doctor_root = find_repo_root(_doctor_base) or _doctor_base
+    try:
+        _doctor_root = find_repo_root(_doctor_base) or _doctor_base
+    except (OSError, ValueError):
+        # A pathological base (unresolvable / too-long path) must not crash the
+        # per-repo checks: fall back to cwd so the plumbing checks still report.
+        _doctor_root = Path.cwd()
     cwd_config = _doctor_root / ".chameleon" / "config.json"
     if cwd_config.is_file():
         try:

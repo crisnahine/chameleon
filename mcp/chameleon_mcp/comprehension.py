@@ -32,6 +32,22 @@ def _signature_string(name: str, row: dict, rel: str) -> str:
         return name
 
 
+def _match_tier(q: str, qtokens: list[str], nl: str, pl: str, path_hit: bool) -> int | None:
+    """Rank how well a symbol name ``nl`` (in file ``pl``) matches query ``q``:
+    exact > prefix > substring > all-tokens-present > file-path, else None."""
+    if nl == q:
+        return 5
+    if nl.startswith(q):
+        return 4
+    if q in nl:
+        return 3
+    if len(qtokens) > 1 and all(t in nl or t in pl for t in qtokens):
+        return 2
+    if path_hit:
+        return 1
+    return None
+
+
 def search_symbols(repo_root, query: str, *, limit: int) -> list[dict]:
     """Rank symbols whose name or file matches ``query``, most-central first.
 
@@ -62,18 +78,8 @@ def search_symbols(repo_root, query: str, *, limit: int) -> list[dict]:
         pl = rel.lower()
         path_hit = q in pl
         for name, row in names.items():
-            nl = name.lower()
-            if nl == q:
-                tier = 5
-            elif nl.startswith(q):
-                tier = 4
-            elif q in nl:
-                tier = 3
-            elif len(qtokens) > 1 and all(t in nl or t in pl for t in qtokens):
-                tier = 2
-            elif path_hit:
-                tier = 1
-            else:
+            tier = _match_tier(q, qtokens, name.lower(), pl, path_hit)
+            if tier is None:
                 continue
             callers = 0
             if calls is not None:
@@ -81,6 +87,27 @@ def search_symbols(repo_root, query: str, *, limit: int) -> list[dict]:
                 if entry:
                     callers = entry.get("total", 0)
             candidates.append((tier, callers, rel, name, row))
+
+    # symbol_signatures indexes CALLABLES only, but calls_index (which
+    # describe_codebase's god_symbols draws from) also records CLASSES as callees.
+    # Without this fallback a class surfaced in the overview (e.g. a god-symbol)
+    # is unfindable here, so the two comprehension tools disagree on the symbol
+    # universe. Add matching calls_index callee names not already covered by a
+    # signature row (minimal row: no def line/signature, but a real callers count).
+    if calls is not None:
+        seen = {(rel, name) for _t, _c, rel, name, _r in candidates}
+        for rel, names in calls.items():
+            pl = rel.lower()
+            path_hit = q in pl
+            for name, entry in names.items():
+                if (rel, name) in seen:
+                    continue
+                tier = _match_tier(q, qtokens, name.lower(), pl, path_hit)
+                if tier is None:
+                    continue
+                callers = entry.get("total", 0) if isinstance(entry, dict) else 0
+                candidates.append((tier, callers, rel, name, {}))
+                seen.add((rel, name))
 
     candidates.sort(key=lambda c: (-c[0], -c[1], c[2], c[3]))
     out: list[dict] = []
@@ -216,6 +243,13 @@ def describe_codebase(repo_root) -> dict:
     if sigs is not None:
         out["file_count"] = len(sigs)
         out["symbol_count"] = sum(len(v) for _, v in sigs.items())
+    elif (Path(profile_root) / ".chameleon" / "symbol_signatures.json").is_file():
+        # The artifact is present but unreadable (corrupt / merge-mangled):
+        # load_symbol_signatures returns None for both absent AND corrupt, so
+        # without this the overview reports file_count=0/symbol_count=0 as if the
+        # codebase were empty. Mark it degraded so the zero totals read as
+        # "unknown, artifact damaged", not a verified empty repo.
+        out["degraded"] = True
     out["god_symbols"] = god_symbols(repo_root, limit=threshold_int("COMPREHEND_GOD_SYMBOLS"))
     return out
 

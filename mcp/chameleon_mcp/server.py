@@ -7,6 +7,12 @@ See docs/architecture.md sections:
 - "MCP server (`chameleon-mcp`)" — full tool surface
 - "Performance characteristics" — daemon model
 - "Cluster signature function" — what tools rely on
+
+Known limitation (upstream): a ``tools/call`` whose arguments are nested past
+pydantic-core's recursion cap (~200 levels) gets no JSON-RPC response — the
+underlying mcp SDK drops it in its stream exception handler, so a client blocks
+until its own timeout. No real client produces such input; documented rather
+than patched here because the guard belongs in the SDK, not chameleon.
 """
 
 from mcp.server.fastmcp import FastMCP

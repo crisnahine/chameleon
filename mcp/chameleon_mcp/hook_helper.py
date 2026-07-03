@@ -4019,6 +4019,13 @@ def _deny_scan_content(proposed: str) -> str:
     proposed write up to ``PREWRITE_DENY_SCAN_MAX_CHARS`` is scanned in full; a
     pathologically larger write is scanned head+tail (each half of the ceiling),
     which still defeats front- or back-padding while bounding worst-case work.
+
+    The dropped middle is replaced by the SAME NUMBER of newlines it contained,
+    so a hit in the tail window is still reported at its TRUE line number (a
+    plain ``\\n`` join would report a tail secret short by the dropped middle's
+    line count and misdirect the ``chameleon-ignore`` hint). Counting newlines is
+    far cheaper than the regex scan the cap bounds, and the padding is blank lines
+    the scanners skip.
     """
     from chameleon_mcp._thresholds import threshold_int
 
@@ -4028,7 +4035,8 @@ def _deny_scan_content(proposed: str) -> str:
     if len(proposed) <= cap:
         return proposed
     half = cap // 2
-    return proposed[:half] + "\n" + proposed[-half:]
+    mid_newlines = proposed[half:-half].count("\n")
+    return proposed[:half] + ("\n" * mid_newlines) + proposed[-half:]
 
 
 def _proposed_hard_secret_violations(

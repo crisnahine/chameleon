@@ -4,6 +4,47 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.25] - 2026-07-03
+
+Round 3 of the all-14-skills QA: a convergence pass that adversarially
+regression-hunted the round-1/2 fixes and covered the surfaces the earlier rounds
+skipped (daemon, MCP stdio, statusline, comprehension tools, concurrency, the full
+hook chain). Most units came up clean; 8 confirmed findings fixed, each re-verified
+on the real engine. Confirmation battery now 77/77.
+
+### Security
+
+- **`get_canonical_excerpt` leaked unsanitized witness data from an UNTRUSTED
+  profile.** The untrusted branch returned the raw `witness_path` and `sha_hint`
+  straight from the attacker-controllable `canonicals.json`, so ANSI / injection
+  prose could reach the model surface. Untrusted now emits neither (nulled), and
+  the pre-gate `sha_hint` is sanitized.
+
+### Fixed
+
+- **`get_canonical_excerpt` crashed on a non-string `archetype`** (`TypeError:
+  unhashable type`) before the trust gate; added a type guard.
+- **`doctor(repo=...)` crashed on a null-byte path** — a regression from the
+  round-1 optional `repo` arg (`Path.exists()` doesn't raise on a null byte under
+  3.13, so the bad path reached `find_repo_root`). Guarded at the source and
+  around the resolution.
+- **`describe_codebase` / `search_codebase` reported an empty result as
+  authoritative on a corrupt `symbol_signatures.json`** (an "empty codebase"
+  false-clean). Both now flag `degraded` when the artifact is present-but-unreadable.
+- **The >8MB deny scan reported a wrong line number** for a secret in the tail
+  window (line counted on the clipped content), misdirecting the
+  `chameleon-ignore` hint. The dropped middle's newline count is now preserved, so
+  the reported line is exact.
+- **`merge_profiles` discarded the other branch's `conventions.json` changes** —
+  the shallow union degenerated to ours-wins-wholesale on the fixed dimension keys.
+  Conventions now merge one level deeper (per-dimension, per-archetype), keeping
+  both branches' additions.
+- **`search_codebase` could not find class god-symbols** that `describe_codebase`
+  surfaces (the two tools drew from different artifacts); search now falls back to
+  the calls index so the tools agree on the symbol universe.
+- Documented a known upstream mcp-SDK limitation (a `tools/call` nested past
+  pydantic-core's ~200-level cap gets no response).
+
 ## [2.38.24] - 2026-07-03
 
 Round 2 of the all-14-skills QA: a depth pass targeting degraded/corrupt/stale
