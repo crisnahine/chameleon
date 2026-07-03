@@ -52,6 +52,7 @@ To measure before enforcing, a cautious team can set `enforcement.mode: "shadow"
 | `confirmation_token` mismatch | User typed something else (a common miss: the parent directory's name instead of the repo root's basename). Show the expected token (the repo root's basename or `yes-trust-<prefix>`) and ask again. |
 | No profile to trust | `.chameleon/profile.json` doesn't exist. Suggest `/chameleon-init`. |
 | Profile not loadable | `profile.json` is corrupted or uses an unsupported schema version. Suggest `/chameleon-refresh`. |
+| Profile failed the injection/secret scan (`status: failed`) | `idioms.md` or `principles.md` carries a prompt-injection / secret / dangerous-code pattern, so `grant_trust` REFUSED — the profile was NOT trusted. This is the "Why trust matters" gate firing: do not retry blindly. Tell the user to open `.chameleon/idioms.md` and `principles.md`, find and remove the poisoned prose (the error names what tripped), then re-run `/chameleon-trust`. |
 
 ## When to suggest revoking trust
 

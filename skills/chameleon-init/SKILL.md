@@ -25,7 +25,11 @@ running init twice would overwrite the existing profile.
 
 1. Confirm the repo's language: TypeScript/JavaScript (`tsconfig.json` or TS in `package.json` deps),
    Ruby (`Gemfile`, or `config/application.rb` for Rails), or Python
-   (`pyproject.toml` / `setup.py` / `requirements.txt` / `manage.py`, or any `.py` files).
+   (any `.py` source files — `setup.py` counts). `pyproject.toml` / `requirements.txt` /
+   `manage.py` / `Pipfile` mark a Python framework, but the repo needs actual `.py`
+   source to profile: a manifest-only repo with no `.py` files has nothing to cluster
+   and bootstrap returns `failed_unsupported_language`, so don't announce it as
+   ready-to-bootstrap on a manifest alone.
 2. **Determine the production branch** (the branch the profile derives
    from, regardless of what is checked out). Call
    `chameleon-mcp::detect_repo(file_path=<repo_root>)` and read its
@@ -86,6 +90,13 @@ asking.
      in that case).
 3. Validate every chosen new name against `\A[a-z][a-z0-9-]{0,63}\Z`.
    Discard any invalid pick silently.
+3b. **Dedup the chosen targets against EACH OTHER**, not only against existing
+   names. `apply_archetype_renames` is all-or-nothing: if two archetypes both pick
+   the same new name (e.g. two test clusters both proposing `tests-py`), the whole
+   batch hard-fails on the collision and NOTHING is renamed. After step 3, walk the
+   picks in order and drop any whose target duplicates an already-chosen target (or
+   an existing archetype name); the first claimant keeps the name, the later
+   collider keeps its original. Only then build the `{old: new}` map.
 4. Apply the resulting `{old: new}` map via
    `apply_archetype_renames(repo=<abs-repo-path>, renames=...)`.
 5. Report what got renamed in the BootstrapReport summary (e.g.
@@ -127,8 +138,9 @@ Invalid names get one re-ask with the regex hint
 > 200,000 files. No LLM cost, no network (the production tree comes from
 > your local git objects, current as of your last fetch).
 
-If the repo has > 50,000 source files, the tool refuses by default. Ask
-the user for an explicit `paths_glob` (e.g., `src/**/*.ts` or `app/**/*.rb`).
+If the repo has > 200,000 source files, the tool refuses by default
+(`failed_too_many_files`). Ask the user for an explicit `paths_glob` (e.g.,
+`src/**/*.ts` or `app/**/*.rb`).
 
 ## Common failure modes
 

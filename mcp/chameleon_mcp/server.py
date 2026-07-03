@@ -702,7 +702,7 @@ def daemon_status() -> dict:
 
 
 @mcp.tool()
-def doctor() -> dict:
+def doctor(repo: str | None = None) -> dict:
     """Triage report for chameleon installation health.
 
     Returns a structured envelope with subsystem checks. Each check has a
@@ -712,10 +712,15 @@ def doctor() -> dict:
     daemon liveness, last 5 hook error log lines, per-known-repo
     profile/trust state.
 
+    Pass `repo` (an absolute repo root) to target the per-repo checks
+    (config_json, production_ref, and the profile_artifacts /
+    judge_spawn_health / advisory_emission dead-install detectors) at that
+    repo instead of the process cwd; omit it for the cwd-scoped default.
+
     Use /chameleon-doctor or inspect `data.overall` to get the overall
     health status.
     """
-    return tools.doctor()
+    return tools.doctor(repo=repo)
 
 
 @mcp.tool()

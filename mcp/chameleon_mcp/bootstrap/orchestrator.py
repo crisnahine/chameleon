@@ -1773,8 +1773,10 @@ def _bootstrap_single(
             duration_ms=int((time.time() - started_at) * 1000),
             profile_path=None,
             error=(
-                "No TypeScript signals (tsconfig.json / package.json TS deps) "
-                "and no Ruby signals (Gemfile / *.gemspec) detected"
+                "No TypeScript signals (tsconfig.json / package.json TS deps), "
+                "no Ruby signals (Gemfile / *.gemspec), and no Python signals "
+                "(*.py / pyproject.toml / setup.py / requirements.txt / manage.py) "
+                "detected"
             ),
             fanout_capped=fanout_capped,
             discovery_hints=hints,

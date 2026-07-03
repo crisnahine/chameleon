@@ -56,7 +56,7 @@ Keep this per-file hunk map. Two later steps depend on it:
 - The **hunk gate** (Step 4, applied to every logic finding) drops any BLOCK/FIX whose anchor line is not inside an added/changed range.
 
 **Record each file's status** (from the `--name-status -M` output) alongside its hunk map, because three shapes have no on-disk content or no hunks and the per-file loop (Step 2) must not treat them as ordinary source files:
-- **Deleted (`D`)**: the file is gone. There is no content to `get_pattern_context` / `lint_file` (Step 2a/2b), so do NOT call them on it — its `get_pattern_context` returns `file_exists: false` (Step 2a reads that flag). A deletion has one real risk: importers of its removed exports now break. That is covered by the cross-file existence pass (Step 2.9c), which the engine reports for a deleted module. In the Step 2 coverage ledger, account for a deleted file as an explicit sanctioned skip (`lint_file skipped: file deleted`), never a gap to close.
+- **Deleted (`D`)**: the file is gone. There is no content to `get_pattern_context` / `lint_file` (Step 2a/2b), so do NOT call them on it — its `get_pattern_context` returns `archetype.file_exists: false` (there is NO top-level `data.file_exists` key; the flag is nested under `archetype`, and Step 2a reads it there). A deletion has one real risk: importers of its removed exports now break. That is covered by the cross-file existence pass (Step 2.9c), which the engine reports for a deleted module. In the Step 2 coverage ledger, account for a deleted file as an explicit sanctioned skip (`lint_file skipped: file deleted`), never a gap to close.
 - **Renamed (`R`)**: the diff lists the NEW path (the old path is invisible to `--name-only`, and a 100%-similarity rename has NO hunks). Add the OLD path to the changed-file set the Step 2.9c diff-scope gate reads, so a rename that removes an export the old path used to provide can reach the verdict (its `module` is the old path, which is otherwise absent from the diff). Review the NEW path as an ordinary modified file.
 - **Binary**: `git` shows `Binary files differ` with no hunk. It is skipped per the Step 2 binary skip rule; account for it in the ledger as a named skip (`skipped: binary`).
 
@@ -123,12 +123,13 @@ Every chameleon MCP tool returns a `{"api_version": "1", "data": {...}}` envelop
 - `archetype.archetype` — which archetype this file matches
 - `archetype.confidence_band` — how confident the match is
 - `archetype.match_quality` — exact, ast, fallback, or none
+- `archetype.file_exists` — `false` for a path deleted in this diff (there is NO top-level `data.file_exists`; read it under `archetype`)
 - `canonical_excerpt.content` — the canonical witness code
 - `repo.trust_state` — must be "trusted" for conventions to apply
 
 If `trust_state` is not "trusted", warn and suggest `/chameleon-trust`.
 If `match_quality` is "none" or "fallback", note it — the file may be in an uncovered area.
-If `file_exists` is `false`, the path was deleted in this diff (a `D` file that slipped past the Step 1a status check): do NOT review it as a normal source file or call `lint_file` on it — route it to the deleted-file handling (Step 1a), whose only real risk is the cross-file existence break (Step 2.9c).
+If `archetype.file_exists` is `false` (the nested flag — there is no top-level `data.file_exists`), the path was deleted in this diff (a `D` file that slipped past the Step 1a status check): do NOT review it as a normal source file or call `lint_file` on it — route it to the deleted-file handling (Step 1a), whose only real risk is the cross-file existence break (Step 2.9c).
 
 #### 2b. Run lint
 

@@ -696,8 +696,10 @@ class TestBootstrapNoSourceFiles:
         report = o.bootstrap_repo(repo)
         assert report.status == "failed_unsupported_language"
         assert report.error == (
-            "No TypeScript signals (tsconfig.json / package.json TS deps) "
-            "and no Ruby signals (Gemfile / *.gemspec) detected"
+            "No TypeScript signals (tsconfig.json / package.json TS deps), "
+            "no Ruby signals (Gemfile / *.gemspec), and no Python signals "
+            "(*.py / pyproject.toml / setup.py / requirements.txt / manage.py) "
+            "detected"
         )
         assert report.profile_path is None
         assert report.discovery_hints == []

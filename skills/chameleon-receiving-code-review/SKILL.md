@@ -126,15 +126,22 @@ routes it to plain judgment). Then:
 - Reviewer says "this is fine / no security issue" on a line → call
   `lint_file(repo=<repo.id>, archetype=<the archetype from get_pattern_context>, content=<the file content>, file_path=<abs>)`.
   When `get_pattern_context` returned a null/none archetype (no match), pass a
-  non-null placeholder STRING — the fallback it suggests, or the literal `"none"` —
-  never `null` and never omit the argument: `lint_file` returns early BEFORE the
+  non-null placeholder STRING — the literal `"none"` (the null-match envelope
+  surfaces NO fallback field or suggested archetype, so there is nothing to read;
+  any non-null placeholder works) — never `null` and never omit the argument:
+  `lint_file` returns early BEFORE the
   secret and sink scans on a non-string archetype, silently defeating this
   grounding. With a non-null string the secret + dangerous-sink scans run
   regardless of the archetype (the structural part simply stubs for an unknown one).
   Check for a sink (`eval-call`, `command-injection`, `sql-string-interpolation`,
   `insecure-deserialization`, `weak-hash`, `insecure-random`) or
   `secret-detected-in-content` on that line (the line is the ` at line N` token in
-  the violation's `actual`). Apply the SAME precision gates pr-review makes
+  the violation's `actual`). The sink set is LANGUAGE-SCOPED, so the ABSENCE of a
+  hit is not proof a line is clean: `command-injection` fires for Ruby and Python
+  only (never TS — there is no TS command-injection rule, so a `child_process.exec`
+  line returns nothing), and `sql-string-interpolation` fires for Ruby only. On a
+  TS/Python line where the reviewer flagged a shell/SQL sink and `lint_file` is
+  silent, fall back to reading the code — do not report "engine says it's clean". Apply the SAME precision gates pr-review makes
   mandatory before letting a lint hit flip the reviewer's "this is fine" to APPLY —
   a low-precision heuristic must not overrule a correct human on a false positive:
   - `secret-detected-in-content`: only a hit whose `secret_hard` flag is true is a

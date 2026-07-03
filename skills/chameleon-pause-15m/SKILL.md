@@ -5,7 +5,9 @@ description: Use when the user explicitly invokes /chameleon-pause-15m to tempor
 
 # /chameleon-pause-15m
 
-Pause chameleon's advisory injections for 15 minutes by default. Auto-resumes after the timer expires. Use when latency is unwelcome for a short focused window (e.g. live coding, code review walkthrough, demo).
+Pause chameleon's per-edit layer for 15 minutes by default. Auto-resumes after the timer expires. Use when latency is unwelcome for a short focused window (e.g. live coding, code review walkthrough, demo).
+
+Like `/chameleon-disable`, a pause is a FULL per-edit opt-out for its window: while paused the PreToolUse hook early-returns, so no `<chameleon-context>` is injected AND the PreToolUse enforcement denies (`secret-detected-in-content`, `eval-call`, `import-preference-violation`) do NOT fire. If the goal is to keep advisory guidance but stop only the blocking, use `CHAMELEON_ENFORCE=0` instead — pause turns everything off, `CHAMELEON_ENFORCE=0` keeps advisory ON and blocking OFF.
 
 The underlying `pause_session` MCP tool accepts any integer in `[1, 240]` minutes; the `-15m` slash command alias is the default convenience. If a different duration is needed, call `pause_session(repo, minutes=N)` directly.
 

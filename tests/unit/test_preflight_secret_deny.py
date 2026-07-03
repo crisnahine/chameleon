@@ -512,8 +512,9 @@ def test_truncation_boundary_on_huge_payloads(tmp_path: Path):
     )
     assert _decision(out) == "deny"
 
-    # Secret past PREWRITE_SECRET_SCAN_MAX_CHARS: the documented blind spot —
-    # left to the PostToolUse/Stop scans of the on-disk file.
+    # Secret past the advisory 100KB cap but within the deny ceiling
+    # (PREWRITE_DENY_SCAN_MAX_CHARS): the deny scans the full content, so padding
+    # a credential past the small prefix cap no longer evades the pre-write gate.
     late = "x" * 200_000 + "\n" + SECRET_CONTENT
     out = _run_preflight(
         repo=repo,
@@ -524,7 +525,7 @@ def test_truncation_boundary_on_huge_payloads(tmp_path: Path):
         session_id="s-huge-late",
         env={"CHAMELEON_ENFORCE": "1"},
     )
-    assert _decision(out) != "deny"
+    assert _decision(out) == "deny"
 
 
 def test_clean_content_falls_through_to_advisory(tmp_path: Path):

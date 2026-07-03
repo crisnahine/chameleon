@@ -104,7 +104,7 @@ Each field is one line (or a fenced code block for example/counterexample).
    - Validates `slug` against `^[a-z][a-z0-9-]{2,63}$`
    - Validates `archetype` (if present) against the archetype name regex
    - Validates `status ∈ {active, deprecated}`
-   - Enforces a 50KB cap on `rationale + example + counterexample`
+   - Enforces a 50KB cap on `rationale + example + counterexample + source`
    - Renders to `.chameleon/idioms.md` in the canonical idiom layout
    - Inherits the sanitization, advisory lock, placeholder-strip path
      from `teach_profile`
@@ -116,9 +116,11 @@ Each field is one line (or a fenced code block for example/counterexample).
 
 | Error contains | Action |
 |---|---|
-| `slug must match` | Tell user: slug must be 3-64 chars, lowercase letters/digits/hyphens, start with a letter |
+| `must match` (on the slug) | The engine interpolates the offending value: `slug 'ab' must match '^[a-z]...'`, so the literal `slug must match` is NOT a contiguous substring — match on `must match`. Tell user: slug must be 3-64 chars, lowercase letters/digits/hyphens, start with a letter |
+| `already exists in '## active'` | The slug is already an ACTIVE idiom. Teaching is append-only, so this is a rejection, not an overwrite: pick a new slug, or (if the user wants to replace it) deprecate the old one first (see Deprecation) then teach the new one |
+| `already exists in '## deprecated'` | The slug was deliberately deprecated. Pick a new slug rather than reviving the deprecated name silently |
 | `rationale is required` | Ask user for a one-sentence reason |
-| `50KB cap` | Tell user: rationale + example + counterexample together must be < 50KB; trim the longest field |
+| `50KB cap` | Tell user: rationale + example + counterexample + source together must be < 50KB; trim the longest field |
 | `status must be` | Tell user: status must be `active` or `deprecated` (default: active) |
 | `archetype` regex error | Tell user: archetype names must be 1-64 chars, lowercase letters/digits/hyphens, start with a letter (min length differs from slugs) |
 | `no profile in this repo` | Tell user to run `/chameleon-init` first |
@@ -238,5 +240,5 @@ rationale), rather than passing only a short "replaced by X" line.
 
 - Capture only a real rule: one observed in the repo or stated by the user. Never invent an archetype name, a wrapper, or a banned import that does not exist; grep or read before naming it.
 - Record the rationale truthfully and the `source` provenance where the rule came from; don't dress up a guess as a derived convention.
-- Teaching is append-only: it never edits or deletes an existing idiom. Run `check_idiom_candidates` to avoid duplicating or contradicting one already captured.
+- Teaching a NEW idiom is append-only, and it never SILENTLY edits an existing one: re-teaching a live slug is rejected (`already exists in '## active'`), not an overwrite. The one path that rewrites an existing block is an explicit `status="deprecated"` on an active slug, which moves it to `## deprecated` AND replaces its body with whatever you pass (see Deprecation) — a deliberate, user-driven action, never an accident. Run `check_idiom_candidates` to avoid duplicating or contradicting one already captured.
 - Don't claim a taught rule is enforced: a captured idiom shapes guidance and review; only calibrated block rules deny an edit.

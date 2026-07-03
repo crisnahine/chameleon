@@ -5,7 +5,7 @@ description: Use when the user explicitly invokes /chameleon-disable to suppress
 
 # /chameleon-disable
 
-Disable chameleon's advisory injections for the current session. Hook stack still fires but no `<chameleon-context>` content is injected.
+Disable chameleon's per-edit layer for the current session. The hook stack still executes (and fails open), but once the session is disabled the PreToolUse hook early-returns before doing any work: no `<chameleon-context>` is injected AND the PreToolUse enforcement denies (`secret-detected-in-content`, `eval-call`, `import-preference-violation`) do NOT fire. Disable is a FULL per-edit opt-out, not an advisory-only mute. If you want to keep advisory guidance but stop only the blocking, use `CHAMELEON_ENFORCE=0` instead (advisory ON, blocking OFF) — that is the opposite trade-off from disable/pause (everything OFF).
 
 ## When to use
 

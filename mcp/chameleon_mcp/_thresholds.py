@@ -442,6 +442,15 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # shares. A secret placed past the cap escapes the pre-write deny but
     # still meets the PostToolUse and Stop scans.
     "PREWRITE_SECRET_SCAN_MAX_CHARS": 100_000,
+    # The DETERMINISTIC hard-secret / hard-eval PreToolUse DENY paths scan a much
+    # larger window than the advisory 100KB cap above: the deny is the only gate
+    # that stops the write from landing on disk (PostToolUse/Stop fire after the
+    # bytes are already written), so a token padded past a small prefix cap must
+    # not evade it. Any single proposed write up to this ceiling is scanned in
+    # full; a pathologically larger write is scanned head+tail (each half of this
+    # value), which still defeats front- or back-padding. 8MB in full is ~0.4s of
+    # regex on this Edit/Write-only path, an acceptable one-shot cost.
+    "PREWRITE_DENY_SCAN_MAX_CHARS": 8_000_000,
     # Hard per-session budget for the per-turn-routed correctness judge (the
     # old behavior was exactly one spawn per session). Bounds cost and the
     # worst-case cumulative Stop latency; once spent, further routed turns

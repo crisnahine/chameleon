@@ -71,12 +71,12 @@ Only under `CHAMELEON_TRUST_REVALIDATE=1` does a material refresh transition tru
 
 | Failure | Action |
 |---|---|
-| `lock_held` | Another `/chameleon-refresh` is in progress (PID + timestamp shown). Wait or kill that PID. |
+| `status: "failed"` with an error naming "another /chameleon-refresh is in progress" | A concurrent `/chameleon-refresh` holds the lock (the error carries the PID + timestamp). There is no `lock_held` status — key on `data.status == "failed"` and match the error text. Wait or kill that PID. |
 | `failed_too_many_files` | Repo grew past 200k file ceiling since init. Ask user for `paths_glob`. |
 | `noop` | No files changed since the last refresh (unpinned), or the locked production tip is unchanged (pinned). Nothing to do. |
 | `production_ref` unresolvable (note in the envelope's `production_ref` block) | The locked branch no longer resolves (deleted branch, renamed remote, shallow clone). Derivation fell back to the working tree. Suggest `git fetch origin <branch>`, fixing the name in `.chameleon/config.json`, or removing the key; `/chameleon-doctor` has a dedicated check. |
 | `partial_refresh` | <= 10% of files changed; partial refresh was used (faster). |
-| `archetypes_changed` is large (>50%) | Surface as warning: "X archetypes added, Y removed; review profile.summary.md before /chameleon-trust." This is unusual — probably a major refactor or the previous profile was wrong. |
+| large archetype churn (>50%) | The refresh envelope carries the diff under `data.archetype_diff` = `{added, removed, renamed, unchanged_count}` (there is no `archetypes_changed` field). When `len(added) + len(removed)` is large relative to `unchanged_count`, surface as warning: "X archetypes added, Y removed; review profile.summary.md before /chameleon-trust." This is unusual — probably a major refactor or the previous profile was wrong. |
 
 ## Incremental refresh
 

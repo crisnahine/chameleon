@@ -1774,6 +1774,24 @@ _CONFIG_MALFORMED_BANNER = (
     "Fix the JSON and run /chameleon-doctor to confirm enforcement is restored.\n\n"
 )
 
+# The once-per-session "profile present, untrusted" prompt. Emitted from both the
+# archetype-resolved path and the no-archetype early exit (a config/data/new file
+# in an untrusted repo), because the prompt gates on trust state, not on a shape
+# match — an edit that resolves no archetype must still tell the user to trust.
+_UNTRUSTED_PROFILE_PROMPT = (
+    "<chameleon-context>\n"
+    "[🦎 chameleon: profile present, untrusted]\n\n"
+    "A `.chameleon/` profile exists in this repo but the user "
+    "has not granted trust for it yet. Surface this to your "
+    "human partner once and suggest:\n\n"
+    "    /chameleon-trust\n\n"
+    "Chameleon will not inject canonical excerpts or team "
+    "idioms into your context until trust is granted. The "
+    "edit may still proceed; this is an advisory gate, not a "
+    "hard deny.\n"
+    "</chameleon-context>"
+)
+
 
 def _nearby_call_proximity(calls, rel: str | None, by_name: dict, edited_key: str | None) -> int:
     """How many of ``rel``'s recorded symbols the edited file is shown calling.
@@ -2684,18 +2702,31 @@ def preflight_and_advise() -> int:
 
     if not archetype_name:
         repo_id = repo_info.get("id") or repo_id_hint
-        _metric(advisory_emitted=False, repo_id=repo_id, trust_state=trust_state)
         # A no-archetype file (e.g. a new .env) is the most common credential-leak
         # target, and the deny gate above runs on it. If a torn config silently
         # skipped that deny, surface the degraded banner here too -- this early
         # exit would otherwise emit {} and lose the only edit-surface warning.
         if _cfg_malformed:
+            _metric(advisory_emitted=False, repo_id=repo_id, trust_state=trust_state)
             _emit_chameleon_context(
                 "<chameleon-context>\n[🦎 chameleon]\n\n"
                 + _CONFIG_MALFORMED_BANNER.rstrip()
                 + "\n</chameleon-context>"
             )
             return 0
+        # The once-per-session untrusted trust prompt gates on trust state, not on
+        # a shape match: a session that edits only no-archetype files (config, data,
+        # a brand-new file) in an untrusted repo must still be told the profile is
+        # untrusted, which the old `_emit({})` early exit silently swallowed.
+        if (
+            trust_state == "untrusted"
+            and repo_id
+            and _should_emit_untrusted_prompt(repo_id, payload.get("session_id"))
+        ):
+            _metric(advisory_emitted=True, repo_id=repo_id, trust_state="untrusted")
+            _emit_chameleon_context(_UNTRUSTED_PROFILE_PROMPT)
+            return 0
+        _metric(advisory_emitted=False, repo_id=repo_id, trust_state=trust_state)
         _emit({})
         return 0
 
@@ -2745,19 +2776,7 @@ def preflight_and_advise() -> int:
             )
             return 0
         if _should_emit_untrusted_prompt(repo_id, session_id):
-            block = (
-                "<chameleon-context>\n"
-                "[🦎 chameleon: profile present, untrusted]\n\n"
-                "A `.chameleon/` profile exists in this repo but the user "
-                "has not granted trust for it yet. Surface this to your "
-                "human partner once and suggest:\n\n"
-                "    /chameleon-trust\n\n"
-                "Chameleon will not inject canonical excerpts or team "
-                "idioms into your context until trust is granted. The "
-                "edit may still proceed; this is an advisory gate, not a "
-                "hard deny.\n"
-                "</chameleon-context>"
-            )
+            block = _UNTRUSTED_PROFILE_PROMPT
             _metric(
                 advisory_emitted=True,
                 repo_id=repo_id,
@@ -3991,6 +4010,27 @@ def _content_has_hard_secret(content: str, file_path: str | None = None) -> bool
     return bool(hard)
 
 
+def _deny_scan_content(proposed: str) -> str:
+    """Content window for the deterministic hard-secret / hard-eval DENY scans.
+
+    The deny is the ONLY gate that stops the write from landing on disk, so it
+    must not be evadable by padding the offending token past a fixed prefix cap
+    (the advisory 100KB ``PREWRITE_SECRET_SCAN_MAX_CHARS`` window). Any single
+    proposed write up to ``PREWRITE_DENY_SCAN_MAX_CHARS`` is scanned in full; a
+    pathologically larger write is scanned head+tail (each half of the ceiling),
+    which still defeats front- or back-padding while bounding worst-case work.
+    """
+    from chameleon_mcp._thresholds import threshold_int
+
+    if not proposed:
+        return proposed
+    cap = threshold_int("PREWRITE_DENY_SCAN_MAX_CHARS")
+    if len(proposed) <= cap:
+        return proposed
+    half = cap // 2
+    return proposed[:half] + "\n" + proposed[-half:]
+
+
 def _proposed_hard_secret_violations(
     proposed: str, file_path: str, *, tool_name: str
 ) -> tuple[list[dict], bool]:
@@ -4034,7 +4074,6 @@ def _proposed_hard_secret_violations(
     ``.md``/``.txt`` exclusion above stays file-extension-based (immutable,
     unambiguously a docs file), which a notebook cell is not.
     """
-    from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.lint_engine import scan_hard_secrets
     from chameleon_mcp.violation_class import (
         IgnoreIndex,
@@ -4052,7 +4091,7 @@ def _proposed_hard_secret_violations(
     _prose = (".md", ".markdown", ".mdx", ".rst", ".txt", ".text", ".adoc")
     if file_path and str(file_path).lower().endswith(_prose):
         return [], False
-    clipped = proposed[: threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS")]
+    clipped = _deny_scan_content(proposed)
     violations = [v.to_dict() for v in scan_hard_secrets(clipped)]
     if not violations:
         return [], False
@@ -4195,7 +4234,6 @@ def _proposed_hard_eval_violations(
     recovered and scanned as Python so an ``eval()`` there is denied exactly like
     one in a ``.py``; markdown/prose cells are never scanned.
     """
-    from chameleon_mcp._thresholds import threshold_int
     from chameleon_mcp.lint_engine import detect_language, scan_dangerous_sinks
     from chameleon_mcp.violation_class import (
         IgnoreIndex,
@@ -4205,12 +4243,12 @@ def _proposed_hard_eval_violations(
     )
 
     language = detect_language(file_path)
-    clipped = proposed[: threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS")]
+    clipped = _deny_scan_content(proposed)
     if language is None:
         notebook_src = _notebook_python_to_scan(clipped, file_path, tool_name, cell_type)
         if notebook_src is None:
             return [], False
-        clipped = notebook_src[: threshold_int("PREWRITE_SECRET_SCAN_MAX_CHARS")]
+        clipped = _deny_scan_content(notebook_src)
         language = "python"
     violations = [v.to_dict() for v in scan_dangerous_sinks(clipped, language=language)]
     hard = [v for v in violations if v.get("rule") == "eval-call" and is_hard_class(v)]

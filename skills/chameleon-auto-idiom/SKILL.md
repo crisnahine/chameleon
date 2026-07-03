@@ -109,7 +109,12 @@ by `check_idiom_candidates`.
    `chameleon-mcp::get_drift_antipatterns(repo=<abs-repo-path>)`. For each
    archetype it returns, the listed rules are conventions edits there repeatedly
    bumped against (`count` is how often), and `violation_edits` is how often edits
-   drifted off-pattern. These point at where a counterexample earns its place:
+   drifted off-pattern. **Skip the security / enforcement rules in this list**
+   (`eval-call`, `secret-detected-in-content`, and any other hard-block rule): they
+   are already deterministically enforced at the deny path, and a "don't eval" /
+   "don't hardcode secrets" idiom is a generic best practice the quality bar below
+   rejects, not a team idiom. Mine counterexamples only from CONVENTION rules
+   (`import-preference-violation`, naming, inheritance, and similar). These point at where a counterexample earns its place:
    open a flagged file for that archetype, read the actual off-pattern form the
    rule names, and let it shape that candidate's `counterexample` — the tool
    stores no wrong-way code, so you write the form from the file, never invent it.

@@ -4,6 +4,58 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.23] - 2026-07-03
+
+All 14 skills were driven end-to-end against real profiled repos across every
+supported language and framework (TS/JS, Ruby/Rails, Python/Django/DRF/Flask/
+FastAPI, Next.js, NestJS), with each finding independently re-verified on the real
+engine. 25 confirmed gaps fixed: 7 engine, 18 skill-vs-engine drift.
+
+### Security
+
+- **PreToolUse deny padding bypass (`secret-detected-in-content`, `eval-call`).**
+  The deterministic hard-secret / hard-eval deny scanned only the first 100KB of
+  proposed content, so a credential or `eval()` padded past that offset in one
+  Write landed on disk un-denied. The deny is the only gate that stops the write
+  before it lands, so it now scans the full content up to a large ceiling
+  (`PREWRITE_DENY_SCAN_MAX_CHARS`, head+tail beyond it), closing the bypass while
+  a benign large file still passes.
+- **Read-path prose injection scan broadened.** The `idioms.md` / `principles.md`
+  drop scan missed several clear injection instructions ("reveal your system
+  prompt", "disregard the canonical", `cat ~/.ssh/id_rsa`). Added high-precision
+  patterns (system-prompt extraction, chameleon-guidance subversion, private-key
+  file reads) verified to catch them with zero false positives across 267 real
+  idiom/principle files.
+
+### Fixed
+
+- **Untrusted trust prompt on no-archetype edits.** A session editing only
+  non-archetype files (config/data/new) in an untrusted repo was never told the
+  profile was untrusted, because the no-archetype early return preceded the trust
+  prompt. The once-per-session prompt now fires on any Edit/Write in an untrusted
+  repo, dedup preserved.
+- **`disable_session` false `session_unknown_to_chameleon`.** The seen-check only
+  scanned the 5 newest exec-log files by mtime, so a genuinely-seen session was
+  reported unknown once 5+ newer sessions had logged. Replaced with an O(1) check
+  of the session's own marker file.
+- **`doctor` false-clean on corrupt core artifacts.** `profile_artifacts` only
+  validated `calls_index` / `function_catalog`; a corrupt `conventions.json` /
+  `archetypes.json` / `rules.json` / `enforcement.json` / `profile.json` read as
+  healthy. It now validates the core generated set every profile writes.
+- **`doctor` config scoped to cwd, not the target repo.** Added an optional
+  `repo` argument so `/chameleon-status` reads config / production_ref for the
+  repo it is statusing, not whatever the process cwd resolves to.
+- **`failed_unsupported_language` error omitted Python.** The message named only
+  TypeScript and Ruby signals despite Python being first-class; it now lists the
+  Python signals too.
+- **18 skill-vs-engine documentation drifts** across init, refresh, status,
+  teach, auto-idiom, trust, explain, pr-review, and receiving-code-review: field
+  names (`archetype.file_exists`, `archetype_diff`, `proposed_demotions`
+  presence), status semantics (`lock_held` is `status: "failed"`, the `--shadow`
+  report is populated under enforce), validation-error tokens, the 200k file
+  ceiling, within-batch rename-collision dedup, language-scoped lint sinks, and
+  omitted failure modes.
+
 ## [2.38.22] - 2026-07-03
 
 The turn-end idiom self-review was noisy: every session it re-dumped the full

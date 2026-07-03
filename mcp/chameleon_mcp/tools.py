@@ -9267,13 +9267,28 @@ def _session_unseen_for_repo(repo_id: str, session_id: str) -> bool:
         return True
     import json as _json
 
+    # A session writes its OWN exec-log files, named by its session marker, so a
+    # direct existence check is authoritative and O(1) -- independent of how many
+    # other sessions share this repo_id's (TMPDIR-shared) exec-log dir. The old
+    # "5 newest by mtime" window falsely reported an unseen session once >5 newer
+    # sessions had logged since, so /chameleon-disable wrongly demanded force=True.
+    try:
+        from chameleon_mcp.optouts import _safe_session_marker
+
+        marker = _safe_session_marker(session_id)
+        for suffix in (".jsonl", ".checks.jsonl"):
+            if (exec_dir / f"{marker}{suffix}").is_file():
+                return False
+    except Exception:
+        pass
+
     needle = f'"session_id":"{session_id}"'
     try:
         log_files = sorted(
             (p for p in exec_dir.glob("*.jsonl") if p.is_file()),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
-        )[:5]
+        )
     except OSError:
         return False
     for log_file in log_files:
@@ -9504,6 +9519,50 @@ _SUSPICIOUS_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "reveal secrets/prompt",
         re.compile(
             r"reveal\s+(the\s+)?(secret|api\s*key|prompt|system\s+prompt)",
+            re.IGNORECASE,
+        ),
+    ),
+    # System-prompt extraction with a broader verb + possessive set than the
+    # narrow "reveal ..." above ("reveal YOUR system prompt", "print the full
+    # system instructions"). Scoped to the "system prompt / instructions /
+    # message" objects, which are prompt-injection vocabulary that never appears
+    # in healthy convention prose (even negated: no principle says "never expose
+    # the system prompt"), so it stays high-precision for the shared trust scan.
+    (
+        "extract system prompt",
+        re.compile(
+            r"\b(?:reveal|expose|print|show|output|repeat|dump|leak|disclose|"
+            r"divulge|echo|display)\s+(?:me\s+)?"
+            r"(?:the\s+|your\s+|our\s+|its\s+|my\s+|this\s+|that\s+)?"
+            r"(?:full\s+|entire\s+|complete\s+|initial\s+|original\s+|hidden\s+|"
+            r"verbatim\s+|exact\s+|underlying\s+)?"
+            r"(?:system\s+prompt|system\s+instructions?|system\s+message)",
+            re.IGNORECASE,
+        ),
+    ),
+    # Subverting chameleon's OWN guidance mechanism ("disregard the canonical and
+    # instead ...", "ignore the witness"). Healthy convention prose FOLLOWS the
+    # canonical/witness; only an injection tells the model to ignore/bypass it, so
+    # pairing an override verb with these chameleon-specific objects is high-signal.
+    (
+        "subvert chameleon guidance",
+        re.compile(
+            r"\b(?:ignore|disregard|forget|bypass|override)\s+"
+            r"(?:the\s+|this\s+|any\s+|all\s+|its\s+|these\s+|those\s+)?"
+            r"(?:canonical(?:\s+witness)?|witness|chameleon(?:\s+context|\s+guidance)?)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    # Reading/exfiltrating a private-key or credential FILE. Anchored to the exact
+    # sensitive paths (id_rsa / ~/.ssh / ~/.aws/credentials / /etc/shadow) that
+    # never appear in healthy idiom prose even negated, so a verb aimed at one is
+    # an exfil instruction, not a "never commit your key" security note.
+    (
+        "private-key file read",
+        re.compile(
+            r"\b(?:cat|read|print|output|include|send|upload|exfiltrate|leak|dump|"
+            r"base64|encode|copy|show)\b[^.\n]{0,40}"
+            r"(?:id_rsa\b|~/\.ssh/|~/\.aws/credentials|/etc/shadow\b)",
             re.IGNORECASE,
         ),
     ),
@@ -11924,11 +11983,19 @@ def _conflict_marked_artifacts(profile_dir: Path) -> list[str]:
     return found
 
 
-def doctor() -> dict:
+def doctor(repo: str | None = None) -> dict:
     """Triage report for chameleon installation health.
 
     Returns a structured envelope with subsystem checks. Each check
     has a status (ok | warn | error) and a brief message.
+
+    ``repo`` optionally targets the PER-REPO checks (``config_json``,
+    ``production_ref``, and the ``profile_artifacts`` / ``judge_spawn_health`` /
+    ``advisory_emission`` dead-install detectors) at a specific repo root, so a
+    caller like ``/chameleon-status`` gets config for the repo it is statusing
+    rather than whatever the process cwd resolves to. When omitted they resolve
+    from cwd (the original behavior). The global plumbing checks (python, hooks,
+    HMAC key, daemon) ignore it.
     """
     import os
     import platform
@@ -11937,6 +12004,7 @@ def doctor() -> dict:
     from pathlib import Path
 
     checks: list[dict] = []
+    _target_root = Path(repo) if repo else None
 
     py = sys.version_info
     if py >= (3, 11):
@@ -12243,7 +12311,8 @@ def doctor() -> dict:
     # (which resolves the repo via a file path that walks to root).
     from chameleon_mcp.profile.loader import find_repo_root
 
-    _doctor_root = find_repo_root(Path.cwd()) or Path.cwd()
+    _doctor_base = _target_root or Path.cwd()
+    _doctor_root = find_repo_root(_doctor_base) or _doctor_base
     cwd_config = _doctor_root / ".chameleon" / "config.json"
     if cwd_config.is_file():
         try:
@@ -12353,7 +12422,7 @@ def doctor() -> dict:
     # is degenerate, every turn-end reviewer spawn failing, or a trusted repo
     # whose edits never resolve an archetype. Each detector fails open: absence
     # of a profile / attestations / metrics is healthy-unknown, never a warn.
-    cwd_root = Path.cwd()
+    cwd_root = _target_root or Path.cwd()
     cwd_profile_dir = cwd_root / ".chameleon"
     try:
         cwd_repo_id: str | None = _compute_repo_id(cwd_root)
@@ -12364,16 +12433,33 @@ def doctor() -> dict:
         if (cwd_profile_dir / "profile.json").is_file():
             import json as _json
 
+            artifact_problems: list[str] = []
+            _lang = None
             try:
                 _lang = _json.loads(
                     (cwd_profile_dir / "profile.json").read_text(encoding="utf-8")
                 ).get("language")
             except Exception:
-                _lang = None
-            expected_artifacts = ["calls_index.json", "function_catalog.json"]
+                # A corrupt profile.json is itself a dead-install signal, not a
+                # reason to silently narrow the checked set to the base pair.
+                artifact_problems.append("profile.json corrupt")
+            # The core generated artifacts every profile writes, for all three
+            # languages: a corrupt or missing one silently degrades archetype
+            # resolution, conventions, and enforcement while every plumbing check
+            # above stays green -- the exact false-clean this detector exists to
+            # catch. (calls_index / function_catalog back the cross-file facts;
+            # the rest back per-edit resolution.)
+            expected_artifacts = [
+                "archetypes.json",
+                "canonicals.json",
+                "conventions.json",
+                "rules.json",
+                "enforcement.json",
+                "calls_index.json",
+                "function_catalog.json",
+            ]
             if _lang == "typescript":
                 expected_artifacts += ["exports_index.json", "reverse_index.json"]
-            artifact_problems: list[str] = []
             for art in expected_artifacts:
                 apath = cwd_profile_dir / art
                 if not apath.is_file():

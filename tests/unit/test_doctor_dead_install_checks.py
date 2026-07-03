@@ -51,6 +51,17 @@ _ALL_TS_ARTIFACTS = (
     "reverse_index.json",
 )
 
+# The core generated artifacts every real profile writes for every language (an
+# empty archetypes==0 bootstrap still writes all of these); doctor requires them,
+# so a healthy fixture must carry them or it reads as a dead install.
+_CORE_ARTIFACTS = (
+    "archetypes.json",
+    "canonicals.json",
+    "conventions.json",
+    "rules.json",
+    "enforcement.json",
+)
+
 
 def _make_profile(repo: Path, *, language: str = "typescript", artifacts=_ALL_TS_ARTIFACTS):
     cham = repo / ".chameleon"
@@ -60,7 +71,7 @@ def _make_profile(repo: Path, *, language: str = "typescript", artifacts=_ALL_TS
         json.dumps({"schema_version": 8, "generation": 1, "language": language}),
         encoding="utf-8",
     )
-    for name in artifacts:
+    for name in (*_CORE_ARTIFACTS, *artifacts):
         (cham / name).write_text("{}", encoding="utf-8")
     return cham
 
