@@ -1327,6 +1327,15 @@ def merge_idioms_markdown(base_text: str, ours_text: str, theirs_text: str) -> s
     ours_loose = _parse_loose_for_merge(ours_text)
     theirs_loose = _parse_loose_for_merge(theirs_text)
 
+    # Deprecation is a monotonic tombstone: a slug deprecated on ANY side (or in
+    # base) must not resurface as active just because another side still lists it
+    # active. Without this, a 3-way merge unions the two sections independently
+    # and the same slug lands in BOTH, where the reader treats the active copy as
+    # live -- silently resurrecting a deliberately-deprecated idiom.
+    deprecated_slugs: set[str] = set()
+    for _dep_source in (base["deprecated"], ours["deprecated"], theirs["deprecated"]):
+        deprecated_slugs.update(_dep_source)
+
     out_parts: list[str] = ["# idioms", ""]
     for section in ("active", "deprecated"):
         out_parts.append(f"## {section}")
@@ -1347,9 +1356,13 @@ def merge_idioms_markdown(base_text: str, ours_text: str, theirs_text: str) -> s
         seen: set[str] = set()
         for source in (base[section], ours[section], theirs[section]):
             for slug in source:
-                if slug not in seen:
-                    seen.add(slug)
-                    merged_order.append(slug)
+                if slug in seen:
+                    continue
+                # A deprecated tombstone on any side evicts the slug from active.
+                if section == "active" and slug in deprecated_slugs:
+                    continue
+                seen.add(slug)
+                merged_order.append(slug)
         if not merged_order:
             if not loose_merged:
                 out_parts.append("_(none)_" if section == "deprecated" else "_(no idioms yet)_")

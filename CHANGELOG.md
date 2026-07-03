@@ -4,6 +4,45 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.24] - 2026-07-03
+
+Round 2 of the all-14-skills QA: a depth pass targeting degraded/corrupt/stale
+artifacts, boundary inputs, lifecycle chains, and the non-tool surfaces (statusline,
+MCP stdio, daemon, merge driver, schema migration). 8 confirmed findings fixed
+(6 engine false-cleans/crash, 2 skill/engine), each re-verified on the real engine.
+
+### Fixed
+
+- **`get_status` false-clean on a corrupt `enforcement.json`.** A torn/empty/missing
+  block-rules artifact made `load_block_rules` return `{}`, so status showed
+  `mode=enforce, active=[]` — indistinguishable from a repo with zero calibrated
+  rules while blocking was silently neutered. Added an `enforcement_artifact_unreadable`
+  flag to the enforcement block.
+- **`get_status` rendered a schema-unloadable profile as enforcing.** A profile whose
+  `schema_version` exceeds the engine max (or is non-integer) is refused by the load
+  path (hooks fail open), yet status showed an enforcement panel. It now returns
+  `profile_unsupported_schema_version` / `profile_corrupted`, mirroring `get_pattern_context`.
+- **`get_autopass_verdict` / `get_contract_breaks` crashed on a null byte in `base_ref`**
+  (`ValueError: embedded null byte`) instead of the documented degraded envelope;
+  `_run_git` now degrades on `ValueError` like every other bad ref.
+- **`doctor` profile_artifacts gaps:** it missed Python's `exports_index`/`reverse_index`
+  (was TS-gated), Ruby's `constant_index`, and the advisory `symbol_signatures`/
+  `counterexamples` for all languages; it also read `cwd/.chameleon` so it was
+  false-clean from a subdir; and it read a schema-unloadable profile as healthy.
+  Now uses a per-language artifact table, the walked-up repo root, and a schema check.
+- **Merge driver resurrected a deprecated idiom.** `merge_idioms_markdown` unioned the
+  active and deprecated sections independently, so a slug deprecated on one side but
+  active on another landed in both and read as active. Deprecation is now a monotonic
+  tombstone that evicts the slug from active.
+- **`get_crossfile_context` gave no degraded signal** (unlike `get_contract_breaks`),
+  so pr-review Step 2.9c could read a corrupt/missing reverse-index as a verified
+  "no existence breaks". It now returns `status: degraded` and the skill treats it as
+  "could not check".
+- **Review-ledger `shipped_over_block` missed case/format-variant BLOCK verdicts.**
+  Verdicts are normalized at record time and matched case-insensitively (and
+  prefix-aware for `"BLOCK (2 findings)"`), so a merged-despite-block case is not
+  silently dropped from the audit.
+
 ## [2.38.23] - 2026-07-03
 
 All 14 skills were driven end-to-end against real profiled repos across every

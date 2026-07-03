@@ -196,10 +196,37 @@ def _would_block_counts(repo_id: str, window_days: int) -> dict[str, int]:
 _LEDGER_FILENAME = "review_ledger.ndjson"
 
 # Verdict vocabulary the skill writes: APPROVE / APPROVE WITH NITS / NEEDS
-# CHANGES / BLOCK. Only BLOCK is special-cased (the shipped-over-BLOCK panel);
-# anything else a caller passes is stored verbatim and never reads as a
-# shipped-over-BLOCK case.
+# CHANGES / BLOCK. Only BLOCK is special-cased (the shipped-over-BLOCK panel).
 _BLOCK_VERDICT = "BLOCK"
+_KNOWN_VERDICTS = ("APPROVE WITH NITS", "NEEDS CHANGES", "APPROVE", "BLOCK")
+
+
+def _normalize_verdict(verdict) -> str:
+    """Canonicalize a known verdict's case/whitespace at record time.
+
+    The shipped-over-BLOCK audit is the ledger's whole reason to exist, and it
+    matched ``verdict == "BLOCK"`` exactly, so a case-variant (``"Block"``) or a
+    typo silently dropped a merged-despite-block case from the signal. A verdict
+    that matches one of the four known values case-insensitively is stored in its
+    canonical form; anything else (including an annotated ``"BLOCK (2 findings)"``)
+    is stored verbatim and still caught by the prefix-aware match below.
+    """
+    s = str(verdict).strip()
+    up = s.upper()
+    for known in _KNOWN_VERDICTS:
+        if up == known:
+            return known
+    return s
+
+
+def _is_block_verdict(verdict) -> bool:
+    """True when a stored verdict is (or begins with) BLOCK, case-insensitively.
+
+    Catches the canonical ``"BLOCK"`` plus an annotated ``"BLOCK (2 findings)"``,
+    so a merged-despite-block case is not missed on a formatting drift.
+    """
+    up = str(verdict).strip().upper()
+    return up == _BLOCK_VERDICT or up.startswith(_BLOCK_VERDICT + " ")
 
 
 def _ledger_path(repo_id: str) -> Path:
@@ -291,7 +318,7 @@ def record_review(
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "commit_sha": str(commit_sha) if commit_sha else None,
         "pr_id": str(pr_id) if pr_id else None,
-        "verdict": str(verdict),
+        "verdict": _normalize_verdict(verdict),
         "findings": _normalize_findings(findings),
         "profile_sha256": str(profile_sha256) if profile_sha256 else None,
         "generation": generation if isinstance(generation, int) else None,
@@ -473,13 +500,13 @@ def build_review_ledger_panel(repo_id: str | None) -> dict | None:
     block_shas = [
         r.get("commit_sha")
         for r in records
-        if r.get("verdict") == _BLOCK_VERDICT and r.get("commit_sha")
+        if _is_block_verdict(r.get("verdict")) and r.get("commit_sha")
     ]
     shipped = _shas_merged_into_head(repo_id, block_shas)
     shipped_over_block = [
         {"commit_sha": r.get("commit_sha"), "ts": r.get("ts")}
         for r in records
-        if r.get("verdict") == _BLOCK_VERDICT and r.get("commit_sha") in shipped
+        if _is_block_verdict(r.get("verdict")) and r.get("commit_sha") in shipped
     ]
 
     return {

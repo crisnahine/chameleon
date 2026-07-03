@@ -119,8 +119,13 @@ class TestProfileArtifacts:
 
     def test_ruby_profile_does_not_require_ts_indexes(self, tmp_path, monkeypatch):
         repo = tmp_path / "repo"
+        # A real Ruby profile carries a constant_index (its cross-file backbone)
+        # but NOT the TS export/reverse indexes; doctor requires the former and
+        # must not require the latter.
         _make_profile(
-            repo, language="ruby", artifacts=("calls_index.json", "function_catalog.json")
+            repo,
+            language="ruby",
+            artifacts=("calls_index.json", "function_catalog.json", "constant_index.json"),
         )
         monkeypatch.chdir(repo)
         assert _check("profile_artifacts")["status"] == "ok"

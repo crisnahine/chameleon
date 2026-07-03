@@ -4185,6 +4185,11 @@ def get_crossfile_context(repo: str) -> dict:
             )
         out = dict(empty)
         out["reason"] = _crossfile_unavailable_reason(repo_root)
+        # The existence-break scan could not run (no reverse index and no Ruby
+        # constant index -- corrupt/missing artifact, or an unsupported layout).
+        # Mark it degraded, mirroring get_contract_breaks, so a reader (pr-review
+        # Step 2.9c) does not read the empty findings as a verified "no breaks".
+        out["status"] = "degraded"
         return _envelope(out)
 
     max_modules = threshold_int("CROSSFILE_MAX_MODULES_SCANNED")
@@ -4987,6 +4992,60 @@ def _profile_requires_newer_engine(profile_dir: Path) -> str | None:
     return None
 
 
+def _profile_unrenderable_status(profile_dir: Path) -> str | None:
+    """Status string when a PRESENT profile must not be rendered as healthy.
+
+    Mirrors the ``detect_repo`` / ``get_pattern_context`` guard so a display path
+    (``get_status``) does not describe an enforcement panel for a profile the
+    load-bearing read path (``load_profile_dir``) refuses -- the hooks fail open
+    and enforce nothing on such a profile, so reporting ``mode=enforce`` with
+    active rules would be a false-clean. Returns ``None`` when the profile is
+    absent (a different, caller-handled case) or readable by this engine.
+    """
+    from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
+
+    pf = profile_dir / "profile.json"
+    if not pf.exists():
+        return None
+    try:
+        from chameleon_mcp.bootstrap.transaction import is_committed
+
+        if not is_committed(profile_dir):
+            return "profile_corrupted"
+        peek = json.loads(pf.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "profile_corrupted"
+    sv = peek.get("schema_version") if isinstance(peek, dict) else None
+    if sv is not None and (isinstance(sv, bool) or not isinstance(sv, int)):
+        return "profile_corrupted"
+    if isinstance(sv, int) and sv > MAX_SUPPORTED_SCHEMA_VERSION:
+        return "profile_unsupported_schema_version"
+    return None
+
+
+def _enforcement_artifact_unreadable(profile_dir: Path) -> bool:
+    """True when a PROFILED repo's ``enforcement.json`` is present-but-unparseable
+    or absent.
+
+    ``load_block_rules`` swallows a torn/truncated/non-dict artifact to ``{}``,
+    which is indistinguishable from a repo with zero calibrated block rules, so
+    the enforcement panel would read ``mode=enforce, active=[]`` as if healthy
+    while blocking is silently neutered. Every real profile writes this artifact,
+    so absent is also damage. Gated on ``profile.json`` presence: an unprofiled
+    repo is not an enforcement-artifact problem.
+    """
+    if not (profile_dir / "profile.json").exists():
+        return False
+    p = profile_dir / "enforcement.json"
+    if not p.exists():
+        return True
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return True
+    return not isinstance(raw, dict)
+
+
 def _partition_block_rules(
     rules: dict, *, lang_inert, signal_inert
 ) -> tuple[list[str], list[dict]]:
@@ -5139,6 +5198,24 @@ def get_status(repo: str) -> dict:
             }
         )
 
+    # A present profile the load path refuses (torn sentinel, non-int or
+    # unsupported schema_version) makes the hooks fail open and enforce nothing;
+    # rendering an enforcement panel for it would be a false-clean. Refuse it
+    # the way detect_repo / get_pattern_context do instead of showing
+    # mode=enforce with active rules beside a profile nothing can load.
+    _unrenderable = _profile_unrenderable_status(profile_dir)
+    if _unrenderable is not None:
+        return _envelope(
+            {
+                "status": _unrenderable,
+                "error": (
+                    "profile.json is unreadable by this engine "
+                    f"({_unrenderable}); enforcement is OFF (hooks fail open). "
+                    "Run /chameleon-refresh to regenerate it."
+                ),
+            }
+        )
+
     mode = "off"
     idiom_review = True
     idiom_judge = False
@@ -5215,6 +5292,12 @@ def get_status(repo: str) -> dict:
         # True when config.json is present but its enforcement section could not
         # be parsed: enforcement is off (gates fail open) until it is fixed.
         "config_malformed": config_malformed,
+        # True when the block-rules artifact (enforcement.json) is present-but-
+        # unparseable or absent on a profiled repo: load_block_rules swallows that
+        # to {} so `active` is [] and blocking is silently neutered. This
+        # distinguishes "artifact damaged, regenerate it" from "repo legitimately
+        # has zero calibrated block rules" -- the two are otherwise identical.
+        "enforcement_artifact_unreadable": _enforcement_artifact_unreadable(profile_dir),
         # Headline calibration-precision: the measured false-positive ceiling the
         # active block rules clear against this repo's own committed files.
         "precision": _block_precision_summary(block_rules, active),
@@ -12422,7 +12505,10 @@ def doctor(repo: str | None = None) -> dict:
     # is degenerate, every turn-end reviewer spawn failing, or a trusted repo
     # whose edits never resolve an archetype. Each detector fails open: absence
     # of a profile / attestations / metrics is healthy-unknown, never a warn.
-    cwd_root = _target_root or Path.cwd()
+    # Resolve to the REPO ROOT (the walk-up _doctor_root already used by
+    # config_json/production_ref), not the raw cwd: reading `cwd/.chameleon`
+    # from a subdir reported a corrupt-artifact repo as clean (false-clean).
+    cwd_root = _doctor_root
     cwd_profile_dir = cwd_root / ".chameleon"
     try:
         cwd_repo_id: str | None = _compute_repo_id(cwd_root)
@@ -12436,9 +12522,21 @@ def doctor(repo: str | None = None) -> dict:
             artifact_problems: list[str] = []
             _lang = None
             try:
-                _lang = _json.loads(
-                    (cwd_profile_dir / "profile.json").read_text(encoding="utf-8")
-                ).get("language")
+                from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
+
+                _pj = _json.loads((cwd_profile_dir / "profile.json").read_text(encoding="utf-8"))
+                _lang = _pj.get("language")
+                _sv = _pj.get("schema_version")
+                # A schema_version this engine cannot load (non-int or > max)
+                # PARSES as valid JSON, so a plain parse check reads it as healthy
+                # while the load path refuses it and the hooks fail open. Flag it.
+                if _sv is not None and (isinstance(_sv, bool) or not isinstance(_sv, int)):
+                    artifact_problems.append("profile.json schema_version is not an integer")
+                elif isinstance(_sv, int) and _sv > MAX_SUPPORTED_SCHEMA_VERSION:
+                    artifact_problems.append(
+                        f"profile.json schema_version {_sv} exceeds engine max "
+                        f"{MAX_SUPPORTED_SCHEMA_VERSION} (upgrade chameleon)"
+                    )
             except Exception:
                 # A corrupt profile.json is itself a dead-install signal, not a
                 # reason to silently narrow the checked set to the base pair.
@@ -12458,8 +12556,14 @@ def doctor(repo: str | None = None) -> dict:
                 "calls_index.json",
                 "function_catalog.json",
             ]
-            if _lang == "typescript":
+            # Language-specific cross-file indexes: TS and Python both emit the
+            # export/reverse import graph; Ruby emits a constant index instead.
+            # (The old code only added these for TypeScript, so a corrupt Python
+            # exports_index or a corrupt Ruby constant_index was silent-clean.)
+            if _lang in ("typescript", "python"):
                 expected_artifacts += ["exports_index.json", "reverse_index.json"]
+            elif _lang == "ruby":
+                expected_artifacts += ["constant_index.json"]
             for art in expected_artifacts:
                 apath = cwd_profile_dir / art
                 if not apath.is_file():
@@ -12469,6 +12573,16 @@ def doctor(repo: str | None = None) -> dict:
                     _json.loads(apath.read_text(encoding="utf-8"))
                 except Exception:
                     artifact_problems.append(f"{art} corrupt")
+            # Advisory artifacts (nearby-signatures, counterexamples): validate
+            # IF PRESENT (a present-but-corrupt one degrades those features), but
+            # do not require presence -- an older profile may predate them.
+            for art in ("symbol_signatures.json", "counterexamples.json"):
+                apath = cwd_profile_dir / art
+                if apath.is_file():
+                    try:
+                        _json.loads(apath.read_text(encoding="utf-8"))
+                    except Exception:
+                        artifact_problems.append(f"{art} corrupt")
             if artifact_problems:
                 checks.append(
                     {

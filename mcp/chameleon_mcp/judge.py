@@ -129,7 +129,11 @@ def _run_git(args: list[str], *, cwd: Path):
             timeout=_GIT_TIMEOUT_SECONDS,
             check=False,
         )
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        # ValueError covers an embedded null byte (or otherwise unencodable arg)
+        # in a caller-supplied ref: subprocess raises it BEFORE spawning git, and
+        # it must degrade to the same "git unavailable" None the other failures
+        # take, not crash the auto-pass / contract-break tools that pass base_ref.
         return None
 
 
