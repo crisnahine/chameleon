@@ -8,7 +8,7 @@ description: Use when the user explicitly invokes /chameleon-doctor to get a tri
 Run the chameleon-mcp `doctor` MCP tool. It returns a structured envelope:
 
 - `overall`: ok | warn | error
-- `checks`: a list of subsystem checks (python version, `hook_interpreter_deps` (a dep-capable Python >= 3.11 resolves for the hooks — when this errors, hook enforcement and guidance are OFF), bash on PATH, timeout(1) on PATH, plugin data writable, hook scripts present and executable, HMAC key sane, daemon liveness, recent hook errors, per-repo profile/trust state, config_json validation, production_ref resolvability when a lock is set, plus three dead-install detectors for the current repo: `profile_artifacts` (generated artifacts exist and parse), `judge_spawn_health` (turn-end reviewer spawns are not all failing), `advisory_emission` (trusted edits actually resolve archetypes))
+- `checks`: a list of subsystem checks (python version, `hook_interpreter_deps` (a dep-capable Python >= 3.11 resolves for the hooks — when this errors, hook enforcement and guidance are OFF), `mcp_server_launcher` (`uvx` resolves so the bundled MCP server can launch — when this errors, the MCP tools like `/chameleon-init`/`refresh`/`status` are unavailable), bash on PATH, timeout(1) on PATH, plugin data writable, hook scripts present and executable, HMAC key sane, daemon liveness, recent hook errors, per-repo profile/trust state, config_json validation, production_ref resolvability when a lock is set, plus three dead-install detectors for the current repo: `profile_artifacts` (generated artifacts exist and parse), `judge_spawn_health` (turn-end reviewer spawns are not all failing), `advisory_emission` (trusted edits actually resolve archetypes))
 - `summary`: counts
 
 ## The flow
@@ -25,6 +25,7 @@ Run the chameleon-mcp `doctor` MCP tool. It returns a structured envelope:
    - If `overall` is `error`: call out each error-status check as a blocker and suggest the relevant fix:
      - `python_version` error: upgrade Python to >= 3.11.
      - `hook_interpreter_deps` error: no dep-capable Python >= 3.11 resolves for the hooks, so hook enforcement and guidance are OFF — the single most consequential failure. Install/point to a Python >= 3.11 (or `uv`); the `detail` names what was found.
+     - `mcp_server_launcher` error: neither `uvx` nor `uv` is on PATH, so the bundled MCP server cannot launch and every MCP tool (`/chameleon-init`, `refresh`, `status`, and the codebase queries) is dead even if the hooks resolve a Python. Install `uv` (which provides `uvx`): https://docs.astral.sh/uv/getting-started/installation/.
      - `bash_on_path` error: install bash or ensure it is on `$PATH` for the hooks to work.
      - `plugin_data_writable` error: check directory permissions for the chameleon data dir shown in `detail`.
      - `hook_*` error: re-install the plugin or run `chmod +x` on the listed hook script.

@@ -12386,6 +12386,43 @@ def doctor(repo: str | None = None) -> dict:
             }
         )
 
+    # The bundled MCP server launches via `uvx` (.mcp.json runs
+    # `uvx --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp`), so every MCP tool --
+    # /chameleon-init, refresh, status, and the codebase-comprehension queries --
+    # is gated on `uvx` resolving. This is distinct from hook_interpreter_deps:
+    # the hook ladder can win on the bundled venv or a version-named python3.x
+    # with no uv present, so a machine can pass that check while the MCP server
+    # cannot start at all. Probe `uvx` explicitly so a green report never hides a
+    # dead MCP surface.
+    uvx_path = shutil.which("uvx")
+    if uvx_path:
+        checks.append({"name": "mcp_server_launcher", "status": "ok", "detail": uvx_path})
+    elif shutil.which("uv"):
+        checks.append(
+            {
+                "name": "mcp_server_launcher",
+                "status": "warn",
+                "detail": (
+                    f"`uv` is on PATH ({shutil.which('uv')}) but `uvx` is not; the MCP "
+                    "server is launched as `uvx`, so put uv's tool shim on PATH or the "
+                    "MCP tools will not load"
+                ),
+            }
+        )
+    else:
+        checks.append(
+            {
+                "name": "mcp_server_launcher",
+                "status": "error",
+                "detail": (
+                    "neither `uvx` nor `uv` on PATH; the bundled MCP server cannot launch, "
+                    "so chameleon's MCP tools (/chameleon-init, refresh, status, and "
+                    "codebase queries) are unavailable. Install uv: "
+                    "https://docs.astral.sh/uv/getting-started/installation/"
+                ),
+            }
+        )
+
     try:
         from chameleon_mcp.profile.trust import plugin_data_dir
 

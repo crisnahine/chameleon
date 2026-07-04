@@ -4,6 +4,35 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.31] - 2026-07-04
+
+Plugin-conformance audit against the official Claude Code plugin spec. The
+manifest, layout, skills, hooks, and MCP config are all spec-clean; two hardening
+changes came out of it.
+
+### Added
+
+- **`doctor` now checks `mcp_server_launcher`.** The bundled MCP server launches
+  via `uvx` (`.mcp.json`), a hard dependency separate from the hook interpreter
+  ladder: the hooks can resolve a Python through the bundled venv or a
+  version-named `python3.x` with no `uv` present, so `hook_interpreter_deps` could
+  report green while every MCP tool (`/chameleon-init`, `refresh`, `status`, the
+  codebase queries) was dead. The new check probes `uvx` explicitly: `ok` when it
+  resolves, `warn` when only `uv` is on PATH, `error` when neither is, so a green
+  report can no longer hide a dead MCP surface.
+
+### Changed
+
+- **Hot-path hooks declare an explicit 45s timeout.** `session-start`,
+  `preflight-and-advise`, `posttool-recorder`, `posttool-verify`, and
+  `callout-detector` now carry a `timeout` in `hooks.json`. The internal
+  `timeout(1)` cap silently no-ops on stock macOS (no `timeout` binary), leaving
+  only Claude Code's 60s default; the explicit value is coreutils-independent and
+  sits above the resolver's cold-`uv` path (a probe capped at 30s plus the 3s
+  Python step), so it never clips legitimate first-run resolution. `stop-backstop`
+  is unchanged: its 55s internal cap is deliberately tuned to sit under the 60s
+  ceiling for the 45s correctness-judge budget.
+
 ## [2.38.30] - 2026-07-04
 
 Round 2 (full) of whole-plugin depth QA: an adversarial sweep across all seven

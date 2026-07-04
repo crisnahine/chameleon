@@ -713,8 +713,9 @@ def doctor(repo: str | None = None) -> dict:
 
     Returns a structured envelope with subsystem checks. Each check has a
     status (ok | warn | error) and a brief detail string. Subsystems checked:
-    python version, bash on PATH, timeout(1) on PATH, plugin data dir
-    writable, all 5 hook scripts present and executable, HMAC key sane,
+    python version, bash on PATH, timeout(1) on PATH, the MCP server launcher
+    (uvx), plugin data dir writable, all 5 hook scripts present and
+    executable, HMAC key sane,
     daemon liveness, last 5 hook error log lines, per-known-repo
     profile/trust state.
 
