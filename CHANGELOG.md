@@ -4,6 +4,30 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.44.0] - 2026-07-05
+
+Attestation-gated auto-pass (roadmap #7). The session attestation exists so
+downstream gates can raise scrutiny, but the auto-pass router ignored it — a diff
+produced with verification off, a degraded correctness judge, and inline
+overrides auto-passed on identical terms to a fully-governed one. This closes
+that asymmetry. Advisory (the router never blocks; it recommends auto-pass vs
+human review).
+
+### Added
+
+- **Session-governance signals in the auto-pass router** (default on; kill with
+  `CHAMELEON_AUTOPASS_ATTESTATION=0`). `get_autopass_verdict` now loads the recent
+  session attestations, attributes them to the branch diff by FILE OVERLAP
+  (repo_id is already the ledger scope), and folds three governance signals in
+  RAISE-ONLY: post-edit verification suppressed while the diff was written, the
+  correctness judge spawn degraded (a real failure, NOT the routine low-risk skip
+  or cooldown re-verify — those would route nearly everything to a human and
+  defeat auto-pass), or a chameleon-ignore override fired on one of the diff's own
+  files. Each adds a soft (→ elevated) needs-human reason. Strictly raise-only: no
+  attestation match leaves the verdict exactly as before, so a forged clean record
+  buys nothing and an un-attested change is classified identically to today.
+  Tool-time only, fail-open (any read error leaves the coverage all-clear).
+
 ## [2.43.0] - 2026-07-05
 
 Reviewer model ladder (roadmap #6). The main loop may run a stronger model than

@@ -390,6 +390,75 @@ def count_deleted_test_files(name_status_text: str) -> int:
     return count
 
 
+def session_coverage_from_attestations(records, changed_files) -> dict:
+    """Governance-degradation flags for the session(s) that produced a diff.
+
+    Matches each attestation to the diff by FILE OVERLAP -- its governed +
+    ungoverned file lists sharing a path with ``changed_files`` (repo_id is
+    already the ledger scope, so overlap is the confident attribution the
+    proposal calls for). Returns RAISE-ONLY flags: each can only ADD a
+    needs-human reason downstream, and an empty history or a no-overlap match
+    returns all-clear -- identical to no attestation, so a forged clean record
+    buys nothing. Never raises; a malformed record contributes nothing.
+
+    Signals are the ones the current-state facts do NOT already capture: whether
+    post-edit verification was suppressed while the diff was written, whether the
+    correctness judge spawn DEGRADED (a real failure, not the normal low-risk
+    skip -- counting the routine skip would route nearly everything to a human
+    and defeat auto-pass), and whether a chameleon-ignore override fired on one of
+    the diff's own files. Ungoverned diff files are deliberately NOT re-flagged
+    here: the ``unarchetyped_files`` fact already routes them.
+    """
+    changed = {c for c in (changed_files or ()) if isinstance(c, str)}
+    flags = {
+        "verify_suppressed": False,
+        "judge_degraded": False,
+        "overrides_on_diff": False,
+        "matched": False,
+    }
+    if not changed:
+        return flags
+    for rec in records or ():
+        if not isinstance(rec, dict):
+            continue
+        gov = {e.get("file") for e in (rec.get("governed_files") or []) if isinstance(e, dict)}
+        ungov = {e.get("file") for e in (rec.get("ungoverned_files") or []) if isinstance(e, dict)}
+        if not ((gov | ungov) & changed):
+            continue  # this session did not touch the diff -> no attribution
+        flags["matched"] = True
+        env = rec.get("env") if isinstance(rec.get("env"), dict) else {}
+        if env.get("verify_off"):
+            flags["verify_suppressed"] = True
+        for chk in rec.get("checks") or []:
+            if not isinstance(chk, dict):
+                continue
+            check, status, reason = chk.get("check"), chk.get("status"), chk.get("reason")
+            # ONLY the env-off suppression, never the routine cooldown skip (a
+            # file re-verified under cooldown WAS verified earlier; flagging it
+            # would route nearly every diff to a human -- the same over-fire trap
+            # the judge signal guards against).
+            if check == "posttool_verify" and status == "skipped" and reason == "verify_env_off":
+                flags["verify_suppressed"] = True
+            # A real spawn DEGRADATION only -- never the deliberate low-risk skip,
+            # and never a grounding-context reason. Pre-2.38.9 attestations
+            # misfiled grounding events (judge_facts_/defs_/transitive_) onto the
+            # degraded_spawn channel; a `judge_defs_skipped_no_index` row means the
+            # judge ran HEALTHILY on a repo with no calls index, not a failure. The
+            # same guard the doctor consumer applies (is_grounding_event).
+            if check == "correctness_judge" and status == "degraded_spawn":
+                from chameleon_mcp.judge import is_grounding_event
+
+                if not is_grounding_event(reason):
+                    flags["judge_degraded"] = True
+        for ov in rec.get("overrides") or []:
+            if not isinstance(ov, dict):
+                continue
+            ovf = ov.get("rel_path") or ov.get("file")
+            if isinstance(ovf, str) and ovf in changed:
+                flags["overrides_on_diff"] = True
+    return flags
+
+
 def build_autopass_verdict(
     numstat_text: str,
     name_status_text: str,
@@ -407,6 +476,7 @@ def build_autopass_verdict(
     assertion_delta_floor: int = -3,
     tests_failed: bool = False,
     caller_contract_breaks: int = 0,
+    session_coverage: dict | None = None,
 ) -> dict:
     """End-to-end auto-pass verdict from a branch's raw git diff output.
 
@@ -456,6 +526,14 @@ def build_autopass_verdict(
     # per-symbol contract signal, so a narrowing in a low-importer file would
     # otherwise pass on blast radius alone.
     facts["caller_contract_breaks"] = int(caller_contract_breaks or 0)
+    # Attestation-gated governance signals for the session(s) that produced the
+    # diff (raise-only: each only adds a needs-human reason). Absent / no-match
+    # leaves them 0, so a change from a fully-governed or un-attested session is
+    # classified exactly as before.
+    sc = session_coverage if isinstance(session_coverage, dict) else {}
+    facts["session_verify_suppressed"] = 1 if sc.get("verify_suppressed") else 0
+    facts["session_judge_degraded"] = 1 if sc.get("judge_degraded") else 0
+    facts["session_overrides_on_diff"] = 1 if sc.get("overrides_on_diff") else 0
     verdict = classify_change(
         facts,
         max_files=max_files,
@@ -671,6 +749,20 @@ def classify_change(
     unarchetyped = _int("unarchetyped_files")
     if unarchetyped > 0:
         reasons.append(f"{unarchetyped} file(s) outside profiled archetypes")
+
+    # Attestation-derived session-governance signals (raise-only, soft -> elevated):
+    # a diff produced with verification off, a degraded correctness judge, or an
+    # inline override on its own files was NOT vetted to the routine standard.
+    if _int("session_verify_suppressed") > 0:
+        reasons.append(
+            "post-edit verification was suppressed on the session that produced this diff"
+        )
+    if _int("session_judge_degraded") > 0:
+        reasons.append(
+            "the correctness judge spawn degraded on the session that produced this diff"
+        )
+    if _int("session_overrides_on_diff") > 0:
+        reasons.append("a chameleon-ignore override fired on this diff's own files in-session")
 
     # Test weakening defeats eligibility only in COMBINATION with a live-source
     # change: gutting a spec while touching source is the dangerous shape, while

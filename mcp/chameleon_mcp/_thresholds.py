@@ -563,6 +563,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # Cap on rules surfaced per archetype in the anti-pattern read, kept
     # most-frequent-first so a noisy archetype stays a short list.
     "DRIFT_ANTIPATTERN_MAX_RULES": 5,
+    # How many recent session attestations the auto-pass router scans to attribute
+    # a branch diff to its producing session(s) by file overlap (roadmap #7). The
+    # ledger is per-repo and newest-first, so a small window covers the sessions
+    # that plausibly produced the branch; a match is by file overlap, not count,
+    # so this only bounds the scan, not the attribution. Tool-time only.
+    "ATTESTATION_MATCH_LIMIT": 25,
     # Max hops the build-time barrel-chase follows a named re-export chain
     # (`export { x } from './a'` -> a re-exports from './b' -> ...) before it
     # stops and attributes the edge to the last file reached. Cycle-safe and

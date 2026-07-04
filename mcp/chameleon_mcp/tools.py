@@ -8305,6 +8305,26 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         repo_root, numstat_text, base_ref, max_files_cap
     )
 
+    # Attestation-gated governance (roadmap #7, default on, kill
+    # CHAMELEON_AUTOPASS_ATTESTATION=0). The session attestations record whether
+    # the diff was produced with verification off, a degraded correctness judge,
+    # or inline overrides; fold that in RAISE-ONLY so an under-governed diff
+    # routes to a human on terms a fully-governed one does not. Tool-time,
+    # fail-open: any read error leaves the coverage all-clear (no change).
+    session_coverage = None
+    if os.environ.get("CHAMELEON_AUTOPASS_ATTESTATION") != "0":
+        try:
+            from chameleon_mcp.autopass import parse_numstat, session_coverage_from_attestations
+            from chameleon_mcp.review_ledger import read_session_attestations
+
+            changed_files = [r["path"] for r in parse_numstat(numstat_text)]
+            records = read_session_attestations(
+                repo_id, limit=threshold_int("ATTESTATION_MATCH_LIMIT")
+            )["records"]
+            session_coverage = session_coverage_from_attestations(records, changed_files)
+        except Exception:
+            session_coverage = None
+
     verdict = build_autopass_verdict(
         numstat_text,
         name_status_text,
@@ -8321,6 +8341,7 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         assertion_delta_floor=threshold_int("AUTOPASS_ASSERTION_DELTA_FLOOR"),
         tests_failed=tests_failed,
         caller_contract_breaks=contract_break_count,
+        session_coverage=session_coverage,
     )
     verdict["advisory"] = True
     verdict["base_ref"] = base_ref
