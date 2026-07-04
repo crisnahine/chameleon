@@ -42,13 +42,16 @@ Known limitations (accepted imprecision, by design):
 - Binding shadowing: a parameter or local variable that shadows an
   imported binding can yield a false ``import`` edge. Call-site
   identifiers are matched against the import map with no scope analysis.
-- Barrel re-export attribution: a named re-export barrel
-  (``export { x } from './impl'``) has a closed export set, so edges
-  attribute to the barrel module, not the file that defines the
-  implementation. Only wildcard barrels (``export * from``) are open sets
-  that yield no edge.
 - Metaprogrammed calls (Ruby ``send``/``define_method``, Rails dynamic
   finders) are invisible to the dumpers and simply record no edge.
+
+Named re-export barrels ARE resolved: a call through a named re-export
+(``export { x } from './impl'``) is attributed additively to BOTH the
+barrel and the file that defines the implementation, with the barrel chain
+recorded in the caller row's ``via``, so a query on the implementation sees
+its through-barrel callers. Ambiguous (same name from two sources) and
+out-of-repo re-exports stay unchased; wildcard barrels (``export * from``)
+remain open sets that yield no edge.
 
 Two halves live here so the build (bootstrap-time, populates the artifact)
 and the read (query-time, consumes it) share one key scheme and can't drift:
@@ -67,10 +70,15 @@ import os
 from pathlib import Path
 
 from chameleon_mcp._thresholds import threshold_int
-from chameleon_mcp.symbol_index import make_module_resolver
+from chameleon_mcp.symbol_index import build_reexport_map, chase_reexport, make_module_resolver
 
 CALLS_INDEX_FILENAME = "calls_index.json"
-SCHEMA_VERSION = 1
+# v2: import-grade caller rows may carry an optional ``via`` barrel chain (the
+# re-export files a through-barrel call edge was chased across at build time). A
+# v1 artifact fails the load gate and refreshes on the next engine-upgrade
+# session; the read is fail-open, so a caller query simply omits the chased edge
+# until then. Never a crash, never a false claim.
+SCHEMA_VERSION = 2
 
 # The closed grade set build_calls_index emits. A row carrying any other
 # grade is malformed (hand-edited or future-schema) and is skipped on load
@@ -100,6 +108,9 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
         root = Path(repo_root)
 
     resolve_module = make_module_resolver(root, language)
+    # Named re-export barrels, so an import-grade edge whose named module merely
+    # re-exports the callee is ALSO attributed to the file that defines it.
+    reexport_map = build_reexport_map(files, root, resolve_module)
 
     # Pass 1: per-file fact tables. A rel appearing twice merges, mirroring
     # the reverse index's dedupe stance.
@@ -223,11 +234,13 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
         return target_rel
 
     # Pass 2: grade each call site. accum maps
-    # callee_rel -> callee_name -> {(caller_path, caller_fn, line, grade)};
+    # callee_rel -> callee_name -> {(caller_path, caller_fn, line, grade, via)};
     # the tuple set dedupes a site the dump happened to emit twice.
-    accum: dict[str, dict[str, set[tuple[str, str, int | None, str]]]] = {}
+    accum: dict[str, dict[str, set[tuple[str, str, int | None, str, tuple[str, ...]]]]] = {}
 
-    def _add(callee_rel: str, callee_name: str, caller_rel: str, caller_fn, line, grade) -> None:
+    def _add(
+        callee_rel: str, callee_name: str, caller_rel: str, caller_fn, line, grade, via=()
+    ) -> None:
         # The loader enforces the same closed set; an unknown grade must never
         # be emitted from the builder so the two halves can't drift.
         if grade not in VALID_GRADES:
@@ -235,8 +248,19 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
         fn = caller_fn if isinstance(caller_fn, str) and caller_fn else "<module>"
         ln = line if isinstance(line, int) else None
         accum.setdefault(callee_rel, {}).setdefault(callee_name, set()).add(
-            (caller_rel, fn, ln, grade)
+            (caller_rel, fn, ln, grade, tuple(via))
         )
+
+    def _add_import_edge(target_rel: str, exported: str, caller_rel: str, caller_fn, line) -> None:
+        """Record an import-grade edge, plus a barrel-chased edge on the file that
+        DEFINES the callee when ``target_rel`` merely re-exports it. Additive: the
+        direct edge on the named module is kept, mirroring the reverse index, so a
+        query on the barrel and a query on the implementation both see the caller.
+        """
+        _add(target_rel, exported, caller_rel, caller_fn, line, "import")
+        final_rel, final_name, via = chase_reexport(target_rel, exported, reexport_map)
+        if final_rel != target_rel:
+            _add(final_rel, final_name, caller_rel, caller_fn, line, "import", tuple(via))
 
     for rel, sites in sites_by_rel.items():
         own_callables = callables.get(rel) or set()
@@ -279,7 +303,7 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                     # to the exported name, checked against the target's closed set.
                     t, exported = import_targets[name]
                     if t is not None and _closed_target(t, exported) is not None:
-                        _add(t, exported, rel, caller_fn, line, "import")
+                        _add_import_edge(t, exported, rel, caller_fn, line)
             elif kind in ("this", "self"):
                 if name in own_members:
                     _add(rel, name, rel, caller_fn, line, "same_file")
@@ -301,7 +325,7 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                     if name in import_targets:
                         t, exported = import_targets[name]
                         if t is not None and _closed_target(t, exported) is not None:
-                            _add(t, exported, rel, caller_fn, line, "import")
+                            _add_import_edge(t, exported, rel, caller_fn, line)
                     continue
                 # `obj.member()` or `new ns.Foo()`: resolvable only when the
                 # receiver names a runtime namespace import, against the alias
@@ -309,7 +333,7 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                 if isinstance(receiver, str) and receiver in alias_targets:
                     t = alias_targets[receiver]
                     if t is not None and _closed_target(t, name) is not None:
-                        _add(t, name, rel, caller_fn, line, "import")
+                        _add_import_edge(t, name, rel, caller_fn, line)
             elif kind == "constant":
                 if language != "ruby":
                     continue
@@ -357,9 +381,17 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
         for callee_name in sorted(accum[callee_rel]):
             rows = sorted(
                 accum[callee_rel][callee_name],
-                # (path, line None-last, caller, grade): a placed call sorts
-                # before an unplaced one from the same file.
-                key=lambda r: (r[0], r[2] is None, r[2] if r[2] is not None else 0, r[1], r[3]),
+                # (path, line None-last, caller, grade, via): a placed call sorts
+                # before an unplaced one from the same file; via is the final
+                # tiebreak so a direct edge sorts before its chased twin.
+                key=lambda r: (
+                    r[0],
+                    r[2] is None,
+                    r[2] if r[2] is not None else 0,
+                    r[1],
+                    r[3],
+                    r[4],
+                ),
             )
             total = len(rows)
             keep = rows[:per_callee_cap]
@@ -373,10 +405,14 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             # consumers know the total may undercount.
             if not truncated and any(p in dump_capped_rels for p, *_ in keep):
                 truncated = True
+            callers_out: list[dict] = []
+            for p, fn, ln, g, via in keep:
+                row: dict = {"path": p, "caller": fn, "line": ln, "grade": g}
+                if via:
+                    row["via"] = list(via)
+                callers_out.append(row)
             names_out[callee_name] = {
-                "callers": [
-                    {"path": p, "caller": fn, "line": ln, "grade": g} for p, fn, ln, g in keep
-                ],
+                "callers": callers_out,
                 "total": total,
                 "truncated": truncated,
             }
@@ -504,14 +540,18 @@ def load_calls_index(repo_root: Path | str | None) -> CallsIndex | None:
                     continue
                 fn = r.get("caller")
                 ln = r.get("line")
-                rows.append(
-                    {
-                        "path": p,
-                        "caller": fn if isinstance(fn, str) else "<module>",
-                        "line": ln if isinstance(ln, int) else None,
-                        "grade": g,
-                    }
-                )
+                raw_via = r.get("via")
+                row: dict = {
+                    "path": p,
+                    "caller": fn if isinstance(fn, str) else "<module>",
+                    "line": ln if isinstance(ln, int) else None,
+                    "grade": g,
+                }
+                if isinstance(raw_via, list):
+                    via = [v for v in raw_via if isinstance(v, str)]
+                    if via:
+                        row["via"] = via
+                rows.append(row)
             total = body.get("total")
             if not isinstance(total, int) or isinstance(total, bool):
                 total = len(rows)

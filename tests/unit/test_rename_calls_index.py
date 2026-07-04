@@ -30,6 +30,7 @@ import pytest
 
 from chameleon_mcp import tools
 from chameleon_mcp.profile.trust import grant_trust, hash_profile
+from chameleon_mcp.symbol_index import SCHEMA_VERSION as _SYMBOL_SCHEMA
 
 
 @pytest.fixture(autouse=True)
@@ -237,9 +238,12 @@ def test_rename_carries_exports_reverse_function_indexes_verbatim(tmp_path):
     # verbatim or it dark-fires phantom-symbol / cross-file existence / dedup.
     repo, cham = _make_profile_repo(tmp_path)
     payloads = {
-        "exports_index.json": {"schema_version": 1, "files": {"src/a.ts": {"names": ["foo"]}}},
+        "exports_index.json": {
+            "schema_version": _SYMBOL_SCHEMA,
+            "files": {"src/a.ts": {"names": ["foo"]}},
+        },
         "reverse_index.json": {
-            "schema_version": 1,
+            "schema_version": _SYMBOL_SCHEMA,
             "targets": {"src/a.ts": {"foo": [{"path": "src/b.ts"}]}},
         },
         "function_catalog.json": {"schema_version": 1, "files": {"src/a.ts": {}}},

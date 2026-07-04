@@ -148,6 +148,50 @@ function collectExportNames(node, names, state) {
   }
 }
 
+// Pull the named re-export edges off a single `export { a, b as c } from './m'`
+// statement and push `{ exported, origin, module, line }` rows into `out`. These
+// drive build-time barrel-chase attribution: a consumer that imports the
+// EXPORTED name (`c`, or `a` without an alias) from this file actually depends
+// on the ORIGIN name (`b`, resp. `a`) in `./m`, so the caller edge should land
+// on the file that DEFINES the symbol, not this re-export barrel. Only the
+// `from`-bearing named form carries a chain: a bare `export { x }` re-exports a
+// LOCAL binding (nothing to chase), `export * from` re-exports an open set
+// (handled by export_set_open), and `export * as ns from` binds one opaque
+// namespace. Type-only re-exports (`export type { X } from`, inline `export {
+// type X } from`) reference a type position and carry no runtime edge, and a
+// default re-export (`export { default as Foo } from`) resolves to the source's
+// default export which the named-symbol index does not key by name -- both are
+// skipped, mirroring collectImportSymbols' isTypeOnly / default skips.
+function collectReExports(node, out, sourceFile) {
+  if (node.kind !== ts.SyntaxKind.ExportDeclaration) return;
+  if (node.isTypeOnly) return;
+  const moduleName =
+    node.moduleSpecifier && typeof node.moduleSpecifier.text === "string"
+      ? node.moduleSpecifier.text
+      : null;
+  if (!moduleName) return;
+  const clause = node.exportClause;
+  if (!clause || clause.kind !== ts.SyntaxKind.NamedExports) return;
+  let line = null;
+  try {
+    line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+  } catch (e) {
+    line = null;
+  }
+  for (const el of clause.elements) {
+    if (el.isTypeOnly) continue;
+    // `name` is the EXPORTED identifier a consumer imports (the alias when `as`
+    // is present); `propertyName` is the name the SOURCE module exports.
+    const exported = el.name && typeof el.name.text === "string" ? el.name.text : null;
+    const origin =
+      el.propertyName && typeof el.propertyName.text === "string"
+        ? el.propertyName.text
+        : exported;
+    if (!exported || !origin || origin === "default") continue;
+    out.push({ exported, origin, module: moduleName, line });
+  }
+}
+
 function importKindFor(importClause) {
   if (!importClause) return "namespace";
   if (importClause.name) return "default";
@@ -437,6 +481,7 @@ function extractFile(filePath) {
     export_set_open: false,
     import_specifiers: [],
     import_symbols: [],
+    re_exports: [],
     namespace_imports: [],
     has_jsx: false,
     parse_diagnostics_count: diagnostics.length,
@@ -476,6 +521,7 @@ function extractFile(filePath) {
     }
 
     collectExportNames(stmt, exportNameSet, exportState);
+    collectReExports(stmt, result.re_exports, sourceFile);
 
     if (stmt.kind === ts.SyntaxKind.ImportDeclaration) {
       const moduleName =

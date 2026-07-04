@@ -14,6 +14,7 @@ import pytest
 
 from chameleon_mcp import comprehension as C
 from chameleon_mcp import server, tools
+from chameleon_mcp.calls_index import SCHEMA_VERSION as _CALLS_SCHEMA
 from chameleon_mcp.profile.trust import grant_trust, repo_data_dir
 
 ARCH = "service"
@@ -69,7 +70,7 @@ def profiled_repo(tmp_path, monkeypatch):
     (cham / "calls_index.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": _CALLS_SCHEMA,
                 "callees": {
                     "svc.py": {
                         "make_service": {

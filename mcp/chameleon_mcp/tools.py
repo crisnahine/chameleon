@@ -3442,9 +3442,19 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
     broken_out: list[dict] = []
     _qsi_lang = detect_language(str(p))
     _qsi_resolver = _crossfile_module_resolver(repo_root, _qsi_lang)
+
+    def _qsi_site(imp) -> dict:
+        # A through-barrel importer carries the re-export chain it was chased
+        # across; surface it so a rename blast radius shows WHY a file that never
+        # names this module still depends on it. Rerooted / sanitized in _clean.
+        site = {"path": imp.path, "line": imp.line}
+        if imp.via:
+            site["via"] = list(imp.via)
+        return site
+
     for name, importers in sorted(indexed.items()):
         if name in current:
-            sites = [{"path": imp.path, "line": imp.line} for imp in importers]
+            sites = [_qsi_site(imp) for imp in importers]
             importers_out.append({"name": name, "count": len(importers), "sites": sites})
         elif not open_set:
             # Re-verify each recorded importer still references `name` FROM this
@@ -3461,7 +3471,7 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
                 )
             ]
             if live:
-                sites = [{"path": imp.path, "line": imp.line} for imp in live]
+                sites = [_qsi_site(imp) for imp in live]
                 broken_out.append({"name": name, "count": len(live), "sites": sites})
 
     from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _sanitize
@@ -3476,6 +3486,12 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
             for s in row["sites"]:
                 if isinstance(s.get("path"), str):
                     s["path"] = _sanitize(_reroot_rel(s["path"], repo_root, _arg_root))
+                if isinstance(s.get("via"), list):
+                    s["via"] = [
+                        _sanitize(_reroot_rel(v, repo_root, _arg_root))
+                        for v in s["via"]
+                        if isinstance(v, str)
+                    ]
         return rows
 
     return _envelope(
@@ -3633,18 +3649,24 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
 
     clean_callers = []
     for row in entry["callers"]:
-        clean_callers.append(
-            {
-                "path": _sanitize(_rr(row["path"]))
-                if isinstance(row.get("path"), str)
-                else row.get("path"),
-                "caller": _sanitize(row["caller"])
-                if isinstance(row.get("caller"), str)
-                else row.get("caller"),
-                "line": row.get("line"),
-                "grade": row.get("grade"),
-            }
-        )
+        clean_row = {
+            "path": _sanitize(_rr(row["path"]))
+            if isinstance(row.get("path"), str)
+            else row.get("path"),
+            "caller": _sanitize(row["caller"])
+            if isinstance(row.get("caller"), str)
+            else row.get("caller"),
+            "line": row.get("line"),
+            "grade": row.get("grade"),
+        }
+        # A through-barrel edge carries the re-export chain it was chased across:
+        # this caller reaches the function via these barrel files, not by naming
+        # the module directly. Surface it (rerooted + sanitized) so the path is
+        # visible rather than the edge looking like a direct import that isn't.
+        raw_via = row.get("via")
+        if isinstance(raw_via, list) and raw_via:
+            clean_row["via"] = [_sanitize(_rr(v)) for v in raw_via if isinstance(v, str)]
+        clean_callers.append(clean_row)
 
     return _envelope(
         {
@@ -8046,6 +8068,13 @@ def _compute_contract_breaks(
             out = dict(c)
             if isinstance(out.get("path"), str):
                 out["path"] = sanitize_for_chameleon_context(out["path"])
+            # A barrel-chased caller row carries a `via` list of repo-derived
+            # barrel paths; dict(c) copies it verbatim, so sanitize each element
+            # too (same committed-artifact-is-untrusted invariant as path).
+            if isinstance(out.get("via"), list):
+                out["via"] = [
+                    sanitize_for_chameleon_context(v) for v in out["via"] if isinstance(v, str)
+                ]
             return out
 
         details = [

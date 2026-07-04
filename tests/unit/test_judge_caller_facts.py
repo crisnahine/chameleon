@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from chameleon_mcp import judge
+from chameleon_mcp.calls_index import SCHEMA_VERSION as _CALLS_SCHEMA
 from chameleon_mcp.function_catalog import ParsedFn
 from chameleon_mcp.judge import FileDiff
 
@@ -37,7 +38,7 @@ def _write_calls_index(repo: Path, callees: dict) -> None:
     d = repo / ".chameleon"
     d.mkdir(parents=True, exist_ok=True)
     (d / "calls_index.json").write_text(
-        json.dumps({"schema_version": 1, "callees": callees}), encoding="utf-8"
+        json.dumps({"schema_version": _CALLS_SCHEMA, "callees": callees}), encoding="utf-8"
     )
     # The caller-facts/transitive blocks now re-verify each cited caller against
     # the working tree (a deleted/no-longer-calling caller is dropped), so the
@@ -814,7 +815,7 @@ def _raw_calls_index(repo: Path, callees: dict) -> None:
     d = repo / ".chameleon"
     d.mkdir(parents=True, exist_ok=True)
     (d / "calls_index.json").write_text(
-        json.dumps({"schema_version": 1, "callees": callees}), encoding="utf-8"
+        json.dumps({"schema_version": _CALLS_SCHEMA, "callees": callees}), encoding="utf-8"
     )
 
 

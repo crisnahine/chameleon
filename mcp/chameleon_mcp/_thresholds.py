@@ -563,6 +563,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # Cap on rules surfaced per archetype in the anti-pattern read, kept
     # most-frequent-first so a noisy archetype stays a short list.
     "DRIFT_ANTIPATTERN_MAX_RULES": 5,
+    # Max hops the build-time barrel-chase follows a named re-export chain
+    # (`export { x } from './a'` -> a re-exports from './b' -> ...) before it
+    # stops and attributes the edge to the last file reached. Cycle-safe and
+    # bounded so a pathological re-export graph cannot blow up the build; three
+    # hops covers realistic barrel nesting (feature index -> package index ->
+    # impl) with margin. Build-time only, never a hook hot path.
+    "REEXPORT_CHASE_MAX_HOPS": 3,
 }
 
 

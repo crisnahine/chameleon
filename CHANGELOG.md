@@ -4,6 +4,42 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.41.0] - 2026-07-04
+
+Build-time barrel-chase resolution from the verified roadmap: named TypeScript
+re-export barrels no longer hide a symbol's real consumers from the caller graph.
+
+### Added
+
+- **Barrel-chase resolution** (default on; disable with
+  `CHAMELEON_REEXPORT_CHASE_MAX_HOPS=0`). At bootstrap/refresh, a named
+  re-export barrel (`export { Impl as Public } from './impl'`) is followed
+  through the re-export chain so an import or call of the symbol through the
+  barrel is attributed ADDITIVELY to the file that DEFINES it, not just the
+  barrel. The chase is deterministic, cycle-safe, and bounded (default 3 hops,
+  `CHAMELEON_REEXPORT_CHASE_MAX_HOPS`); it maps the name per hop (an `as` alias
+  re-export changes the exported name), drops ambiguous chains (same name from
+  two sources) and out-of-repo targets rather than guessing, and keeps the
+  original edge on the barrel intact. The barrel files traversed are recorded in
+  a new `via` breadcrumb, surfaced (sanitized) by `get_callers` and
+  `query_symbol_importers`, so a caller that never names the module is shown as
+  reaching it `via` the barrel. This one build-time change raises caller-count
+  accuracy for `get_blast_radius`, the Stop crossfile gate, the correctness
+  judge's caller facts, and the inbound-caller injection simultaneously.
+  TypeScript/JavaScript only (the extractor emits the re-export rows); Ruby and
+  Python get an empty chase (clean no-op). Build-time only — no hook hot-path
+  cost, no repo-code execution, no network.
+
+### Changed
+
+- `reverse_index.json` and `calls_index.json` bump to schema v2 (importer/caller
+  rows may carry an optional `via` chain). The load path is fail-open on a v1
+  artifact, and every release stamps a fresh `engine_min_version`, so an existing
+  repo's next session auto-refreshes and rebuilds the indexes at v2 — no manual
+  action, no crash, no false clean in the migration window.
+- The calls-index "barrel re-export attribution" accepted-limitation is resolved
+  for named re-exports (only wildcard `export *` barrels remain open-set no-edge).
+
 ## [2.40.0] - 2026-07-04
 
 Per-edit surface batch from the verified roadmap: turn cross-file staleness from

@@ -52,9 +52,16 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from chameleon_mcp._thresholds import threshold_int
+
 EXPORTS_INDEX_FILENAME = "exports_index.json"
 REVERSE_INDEX_FILENAME = "reverse_index.json"
-SCHEMA_VERSION = 1
+# v2: reverse-index importer rows may carry an optional ``via`` chain (the barrel
+# files a through-barrel edge was chased across at build time). Both index halves
+# share this constant, so a v1 artifact fails the load gate and refreshes on the
+# next engine-upgrade session; the read is fail-open, so the advisory simply does
+# not fire until then. Never a crash, never a false claim.
+SCHEMA_VERSION = 2
 # Profile languages whose extractors carry the named-export/import extras these
 # builders read, so bootstrap writes both index artifacts for them. Ruby has no
 # static export surface (its cross-file view is the constant index). Shared by
@@ -69,6 +76,10 @@ REVERSE_INDEXED_LANGUAGES: frozenset[str] = frozenset({"typescript", "python"})
 # total -- acceptable since the advisory's "N files import X" is a blast-radius
 # hint and the cap is far above any realistic per-symbol fan-in.
 _MAX_IMPORTERS_PER_SYMBOL = 500
+
+# Max hops the build-time barrel-chase follows a named re-export chain before it
+# stops and attributes the edge to the last file reached. Read at import time.
+_MAX_REEXPORT_HOPS = threshold_int("REEXPORT_CHASE_MAX_HOPS")
 
 # Candidate suffixes a bare (extensionless) module base may resolve to, plus the
 # index-file forms for a directory import. Kept in sync with the resolution the
@@ -246,10 +257,18 @@ def resolve_index_key(base: Path, repo_root: Path) -> str | None:
 class Importer:
     """One call site that imports a name from a module: the importer's
     repo-relative path and the 1-based import line (``None`` when the dump could
-    not place it)."""
+    not place it).
+
+    ``via`` is the barrel chain a through-barrel edge was chased across at build
+    time (the re-export files between the importer's named module and this
+    defining file), outermost first; empty for a direct import. It lets a query
+    show ``importer -> barrel -> this file`` so a caller understands why an edge
+    that never names this file lands on it.
+    """
 
     path: str
     line: int | None
+    via: tuple[str, ...] = ()
 
 
 _PY_INDEX_SUFFIXES = (".py", ".pyi")
@@ -436,6 +455,94 @@ def make_module_resolver(
     return _resolve_module
 
 
+def build_reexport_map(
+    files, root: Path, resolve_module: Callable[[str, Path], str | None]
+) -> dict[str, dict[str, tuple[str, str]]]:
+    """Map each named re-export barrel to the targets its re-exports resolve to.
+
+    ``barrel_rel -> exported_name -> (origin_name, target_rel)``: file ``barrel``
+    does ``export { <origin> as <exported> } from '<module>'`` and ``module``
+    resolves in-repo to ``target_rel`` (``exported`` == ``origin`` when there is
+    no ``as`` alias). Only unambiguous, in-repo edges are kept: an exported name
+    re-exported from two distinct resolved sources (a duplicate-export shape) is
+    DROPPED rather than guessed, and a name whose module resolves out-of-repo (a
+    bare package, an unresolved alias) is omitted so the chase stops at the
+    barrel. ``resolve_module`` must be the same resolver the reverse / calls
+    index uses so a target one build can see, the other can too. Build-time only.
+    """
+    # barrel_rel -> exported_name -> set of (origin_name, target_rel | None)
+    raw: dict[str, dict[str, set[tuple[str, str | None]]]] = {}
+    for pf in files or ():
+        extras = getattr(pf, "extras", None) or {}
+        rows = extras.get("re_exports")
+        if not isinstance(rows, list) or not rows:
+            continue
+        try:
+            barrel_rel = Path(pf.path).resolve().relative_to(root).as_posix()
+            barrel_dir = Path(pf.path).resolve().parent
+        except (ValueError, OSError):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            exported = row.get("exported")
+            origin = row.get("origin")
+            module = row.get("module")
+            if not (
+                isinstance(exported, str) and isinstance(origin, str) and isinstance(module, str)
+            ):
+                continue
+            target = resolve_module(module, barrel_dir)
+            raw.setdefault(barrel_rel, {}).setdefault(exported, set()).add((origin, target))
+
+    out: dict[str, dict[str, tuple[str, str]]] = {}
+    for barrel_rel, by_name in raw.items():
+        resolved: dict[str, tuple[str, str]] = {}
+        for exported, entries in by_name.items():
+            in_repo = {(o, t) for (o, t) in entries if t is not None}
+            # Exactly one distinct in-repo source keeps the chain deterministic;
+            # zero (all out-of-repo) or many (ambiguous) leaves it unchased.
+            if len(in_repo) == 1:
+                origin, target = next(iter(in_repo))
+                resolved[exported] = (origin, target)
+        if resolved:
+            out[barrel_rel] = resolved
+    return out
+
+
+def chase_reexport(
+    target_rel: str,
+    name: str,
+    reexport_map: dict[str, dict[str, tuple[str, str]]],
+    max_hops: int = _MAX_REEXPORT_HOPS,
+) -> tuple[str, str, list[str]]:
+    """Follow ``name`` from ``target_rel`` through named re-export barrels.
+
+    Returns ``(final_rel, final_name, via)`` where ``final_rel`` is the file that
+    DEFINES the symbol -- the first file in the chain that does not re-export the
+    current name onward -- and ``via`` is the barrel files traversed to reach it,
+    outermost first. When ``target_rel`` does not re-export ``name`` (the common
+    case) the input is returned unchanged with an empty ``via``. Bounded by
+    ``max_hops`` and cycle-safe: a re-export cycle or an over-deep chain stops at
+    the last file reached rather than looping or over-attributing. ``name`` maps
+    per hop (an ``as`` alias re-export changes the name the next file exports).
+    """
+    via: list[str] = []
+    seen: set[tuple[str, str]] = {(target_rel, name)}
+    cur_rel, cur_name = target_rel, name
+    for _ in range(max_hops):
+        entry = (reexport_map.get(cur_rel) or {}).get(cur_name)
+        if entry is None:
+            break
+        origin, next_rel = entry
+        if (next_rel, origin) in seen:
+            break
+        via.append(cur_rel)
+        seen.add((next_rel, origin))
+        cur_rel, cur_name = next_rel, origin
+    return cur_rel, cur_name, via
+
+
 def build_reverse_index(files, repo_root: Path | str, language: str = "typescript") -> dict:
     """Build the ``reverse_index.json`` payload from parsed TypeScript/JS files.
 
@@ -443,7 +550,7 @@ def build_reverse_index(files, repo_root: Path | str, language: str = "typescrip
     (each ``extras['import_symbols']`` row is ``{name, module, line}``), resolve
     ``module`` against the importer's directory to the same repo-relative target
     key the exports index uses, then record the importer under
-    ``target -> name -> [(importer, line)]``.
+    ``target -> name -> [(importer, line[, via])]``.
 
     Keys are repo-relative POSIX paths so the artifact is portable across
     checkouts and reproducible byte-for-byte (it is hashed into the trust SHA).
@@ -454,6 +561,14 @@ def build_reverse_index(files, repo_root: Path | str, language: str = "typescrip
     machinery the phantom-import path check uses, so an alias-dominant repo (where
     most named imports go through ``~/*``) is not blind to its own existence
     breaks. Importer rows are sorted and de-duplicated for a stable record.
+
+    Barrel-chase (additive): when the resolved module RE-EXPORTS the imported
+    name from another in-repo file (``export { x } from './impl'``), the same
+    importer is ALSO recorded against the file that DEFINES the symbol, carrying
+    the barrel chain in ``via``. The direct edge on the named module is kept
+    unchanged, so an existence break is caught whether the barrel drops the
+    re-export or the implementation drops the definition, and a query on the
+    implementation file finally sees its through-barrel consumers.
     """
     try:
         root = Path(repo_root).resolve()
@@ -461,9 +576,10 @@ def build_reverse_index(files, repo_root: Path | str, language: str = "typescrip
         root = Path(repo_root)
 
     _resolve_module = make_module_resolver(root, language)
+    reexport_map = build_reexport_map(files, root, _resolve_module)
 
-    # target_rel -> name -> set of (importer_rel, line)
-    accum: dict[str, dict[str, set[tuple[str, int | None]]]] = {}
+    # target_rel -> name -> set of (importer_rel, line, via_tuple)
+    accum: dict[str, dict[str, set[tuple[str, int | None, tuple[str, ...]]]]] = {}
     for pf in files or ():
         extras = getattr(pf, "extras", None) or {}
         rows = extras.get("import_symbols")
@@ -486,20 +602,33 @@ def build_reverse_index(files, repo_root: Path | str, language: str = "typescrip
                 continue
             line = row.get("line")
             line_val = int(line) if isinstance(line, int) else None
-            accum.setdefault(target_key, {}).setdefault(name, set()).add((importer_rel, line_val))
+            accum.setdefault(target_key, {}).setdefault(name, set()).add(
+                (importer_rel, line_val, ())
+            )
+            final_key, final_name, via = chase_reexport(target_key, name, reexport_map)
+            if final_key != target_key:
+                accum.setdefault(final_key, {}).setdefault(final_name, set()).add(
+                    (importer_rel, line_val, tuple(via))
+                )
 
     out: dict[str, dict[str, list[dict]]] = {}
     for target_key, by_name in accum.items():
         names_out: dict[str, list[dict]] = {}
         for name, importer_set in by_name.items():
-            # Sort by (path, line) for a deterministic record; line None sorts
-            # last via the -1 sentinel so a placed import precedes an unplaced
-            # one from the same file.
+            # Sort by (path, line, via) for a deterministic record; line None
+            # sorts last via the -1 sentinel so a placed import precedes an
+            # unplaced one from the same file.
             rows_sorted = sorted(
-                importer_set, key=lambda r: (r[0], r[1] if r[1] is not None else -1)
+                importer_set, key=lambda r: (r[0], r[1] if r[1] is not None else -1, r[2])
             )
             capped = rows_sorted[:_MAX_IMPORTERS_PER_SYMBOL]
-            names_out[name] = [{"path": p, "line": ln} for p, ln in capped]
+            rows_list: list[dict] = []
+            for p, ln, via in capped:
+                entry: dict = {"path": p, "line": ln}
+                if via:
+                    entry["via"] = list(via)
+                rows_list.append(entry)
+            names_out[name] = rows_list
         if names_out:
             out[target_key] = names_out
 
@@ -617,7 +746,15 @@ def load_reverse_index(repo_root: Path | str | None) -> ReverseIndex | None:
                 if not isinstance(p, str):
                     continue
                 ln = r.get("line")
-                importers.append(Importer(path=p, line=ln if isinstance(ln, int) else None))
+                raw_via = r.get("via")
+                via = (
+                    tuple(v for v in raw_via if isinstance(v, str))
+                    if isinstance(raw_via, list)
+                    else ()
+                )
+                importers.append(
+                    Importer(path=p, line=ln if isinstance(ln, int) else None, via=via)
+                )
             if importers:
                 names[name] = importers
         if names:

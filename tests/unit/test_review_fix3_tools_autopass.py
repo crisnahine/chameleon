@@ -108,6 +108,47 @@ def test_get_contract_breaks_trusted_profile_passes_gate(tmp_path, monkeypatch):
     assert data["status"] != "untrusted"
 
 
+def test_compute_contract_breaks_sanitizes_via_in_callers(tmp_path, monkeypatch):
+    # A barrel-chased caller row carries a `via` list of repo-derived barrel
+    # paths. _compute_contract_breaks feeds get_contract_breaks and
+    # get_autopass_verdict, so an injection payload smuggled through `via` must be
+    # neutralized like `path`, not shallow-copied verbatim to the model surface.
+    import types
+
+    repo = _setup_profile(tmp_path, monkeypatch, trust=True)
+    from chameleon_mcp import calls_index, judge, signature_diff
+
+    monkeypatch.setattr(
+        calls_index,
+        "load_calls_index",
+        lambda root: types.SimpleNamespace(callers_of=lambda r, n: None),
+    )
+    monkeypatch.setattr(judge, "_run_git", lambda *a, **k: None)
+    finding = types.SimpleNamespace(
+        rel="src/impl.ts",
+        name="handler",
+        old_required_positional=1,
+        new_required_positional=2,
+        caller_total=1,
+        callers=[
+            {
+                "path": "src/consumer.ts",
+                "caller": "use",
+                "line": 3,
+                "grade": "import",
+                "via": [DANGER + "barrel.ts"],
+            }
+        ],
+    )
+    monkeypatch.setattr(signature_diff, "contract_breaks", lambda *a, **k: [finding])
+
+    count, details, reason = tools._compute_contract_breaks(repo, "2\t1\tsrc/impl.ts\n", "main", 10)
+    assert count == 1
+    via = details[0]["callers"][0]["via"]
+    assert DANGER not in via[0]
+    assert "chameleon-sanitized" in via[0]
+
+
 # --------------------------------------------------------------------------
 # (2) get_rules sanitizes rule keys + values
 # --------------------------------------------------------------------------

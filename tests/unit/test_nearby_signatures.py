@@ -9,6 +9,7 @@ when no call facts are available. Advisory, offline, bounded, fail-open.
 import json
 from pathlib import Path
 
+from chameleon_mcp.calls_index import SCHEMA_VERSION as _CALLS_SCHEMA
 from chameleon_mcp.hook_helper import _nearby_signatures_section
 
 
@@ -25,7 +26,7 @@ def _write_profile(
     )
     if calls is not None:
         (cham / "calls_index.json").write_text(
-            json.dumps({"schema_version": 1, "callees": calls}), encoding="utf-8"
+            json.dumps({"schema_version": _CALLS_SCHEMA, "callees": calls}), encoding="utf-8"
         )
     # Write each sibling with a real def per symbol at its stored line: the
     # signature index is DERIVED from the file, and the per-edit re-verify drops a

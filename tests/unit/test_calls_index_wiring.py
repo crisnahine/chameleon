@@ -16,6 +16,7 @@ import pytest
 
 from chameleon_mcp import tools
 from chameleon_mcp.bootstrap.transaction import _PROTOCOL_FILES
+from chameleon_mcp.calls_index import SCHEMA_VERSION as _CALLS_SCHEMA
 from chameleon_mcp.profile.trust import _HASHED_ARTIFACTS
 
 # ---------------------------------------------------------------------------
@@ -118,7 +119,7 @@ def test_bootstrap_writes_calls_index(tmp_path):
     assert artifact.is_file(), "bootstrap did not write calls_index.json"
 
     payload = json.loads(artifact.read_text(encoding="utf-8"))
-    assert payload.get("schema_version") == 1
+    assert payload.get("schema_version") == _CALLS_SCHEMA
     entry = payload["callees"]["src/services/alphaService.ts"]["helper"]
     rows = entry["callers"]
     assert {
@@ -327,7 +328,7 @@ def test_bootstrap_writes_calls_index_ruby(tmp_path):
     assert artifact.is_file(), "bootstrap did not write calls_index.json"
 
     payload = json.loads(artifact.read_text(encoding="utf-8"))
-    assert payload.get("schema_version") == 1
+    assert payload.get("schema_version") == _CALLS_SCHEMA
     entry = payload["callees"]["app/services/alpha_service.rb"]["helper"]
     rows = entry["callers"]
     assert {

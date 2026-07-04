@@ -522,6 +522,34 @@ def _extras_from_record(record: dict) -> dict:
             )
         if rows:
             extras["import_symbols"] = rows
+    # Named re-export edges (`export { origin as exported } from 'module'`) feed
+    # the build-time barrel-chase: an import/call of `exported` through this file
+    # is attributed to the file that DEFINES `origin`, not this re-export barrel.
+    # Same drop-malformed-row stance as import_symbols.
+    re_exports = record.get("re_exports")
+    if isinstance(re_exports, list) and re_exports:
+        re_rows: list[dict] = []
+        for rex in re_exports:
+            if not isinstance(rex, dict):
+                continue
+            exported = rex.get("exported")
+            origin = rex.get("origin")
+            module = rex.get("module")
+            if not (
+                isinstance(exported, str) and isinstance(origin, str) and isinstance(module, str)
+            ):
+                continue
+            line = rex.get("line")
+            re_rows.append(
+                {
+                    "exported": exported,
+                    "origin": origin,
+                    "module": module,
+                    "line": int(line) if isinstance(line, int) else None,
+                }
+            )
+        if re_rows:
+            extras["re_exports"] = re_rows
     # Call sites + runtime namespace imports feed the calls-index builder
     # (caller -> callee edges). Row-level validation lives in the builder,
     # which skips anything malformed, so the lists are carried as-is.
