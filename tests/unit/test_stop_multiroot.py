@@ -362,6 +362,67 @@ def test_per_root_block_counter_survives_state_roundtrip():
     assert legacy.stop_hook_blocks == 3
 
 
+def test_effective_stop_blocks_reconciles_scalar_and_per_root():
+    # The block budget is the MAX of the legacy scalar and the per-workspace map,
+    # so a workspace capped under either representation stays capped and a
+    # single<->multi mode flip cannot re-arm a spent cap.
+    from chameleon_mcp.enforcement import EnforcementState
+    from chameleon_mcp.hook_helper import _effective_stop_blocks
+
+    st = EnforcementState()
+    st.stop_hook_blocks = 3  # legacy / prior single-root session
+    st.stop_hook_blocks_by_root = {"wsA": 1}
+    assert _effective_stop_blocks(st, "wsA") == 3  # scalar dominates
+    st.stop_hook_blocks = 0
+    st.stop_hook_blocks_by_root = {"wsA": 2}
+    assert _effective_stop_blocks(st, "wsA") == 2  # per-root dominates
+    assert _effective_stop_blocks(st, "unknown") == 0
+    # Corrupt values coerce to 0 rather than raising.
+    st.stop_hook_blocks_by_root = {"wsA": "x"}
+    assert _effective_stop_blocks(st, "wsA") == 0
+
+
+def test_legacy_scalar_cap_survives_multiroot_read(coord):
+    # A workspace that spent its cap under the legacy scalar (a prior single-root
+    # phase / an old state file) must stay capped when a later multi-root Stop
+    # reads the per-workspace counter -- the reconciliation prevents a mode flip
+    # from re-arming the spent cap.
+    from chameleon_mcp.enforcement import EnforcementState, save_state
+
+    st = EnforcementState()
+    st.stop_hook_blocks = 3  # cap spent under the scalar
+    st.files[coord.web_file] = FileState(level=2, blockable_unresolved=True)
+    save_state(st, coord.data["web"], coord.session_id)
+    out = _run_stop(coord)  # multi-root discovery (cwd = coordinator)
+    assert out.get("decision") != "block"  # cap_reached via the reconciled read
+
+
+def test_corrupt_block_counter_fails_open_not_crash(tmp_path):
+    # A committed/tampered state file with a non-numeric or negative per-workspace
+    # count must fail open (drop the entry) rather than raise -- load_state is
+    # contractually fail-open, and a bare int("x") would crash the Stop hook.
+    import json as _json
+
+    from chameleon_mcp.enforcement import EnforcementState, _state_path, load_state
+
+    # from_dict drops the bad entries, keeps the good ones.
+    st = EnforcementState.from_dict(
+        {"stop_hook_blocks_by_root": {"good": 2, "bad": "notanumber", "neg": -1, "coerce": "3"}}
+    )
+    assert st.stop_hook_blocks_by_root == {"good": 2, "coerce": 3}
+    # A non-dict value for the field also fails open.
+    assert (
+        EnforcementState.from_dict({"stop_hook_blocks_by_root": "garbage"}).stop_hook_blocks_by_root
+        == {}
+    )
+
+    # load_state on a torn file with a bad value returns a fresh state, no raise.
+    p = _state_path(tmp_path, "sid")
+    p.write_text(_json.dumps({"stop_hook_blocks_by_root": {"w": "notanumber"}}), encoding="utf-8")
+    st2 = load_state(tmp_path, "sid")
+    assert st2.stop_hook_blocks_by_root == {}
+
+
 def test_discovery_keys_by_repo_data_and_ws_root(coord):
     # A repo_id shift writes the SAME ws_root's armed state under TWO repo_data
     # dirs. Discovery must produce TWO groups (one per repo_data) so BOTH state

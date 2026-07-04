@@ -5341,6 +5341,41 @@ def callout_detector() -> int:
     return 0
 
 
+def _stop_block_scope(repo_root: Path) -> str:
+    """Stable per-workspace key for the anti-loop block budget.
+
+    Both the lint backstop and the idiom-review gate charge and read the block
+    count under this key, in BOTH single- and multi-root mode, so a workspace
+    stays capped across a mid-session single<->multi cardinality change (the
+    scalar and the per-workspace map are otherwise disjoint counters, letting a
+    persistent violation exceed the cap after a mode flip).
+    """
+    try:
+        return hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()[:12]
+    except OSError:
+        return hashlib.sha256(str(repo_root).encode("utf-8")).hexdigest()[:12]
+
+
+def _effective_stop_blocks(state, scope: str) -> int:
+    """The workspace's block count so far, reconciling the legacy scalar with the
+    per-workspace map.
+
+    New blocks always charge the per-workspace map, but a pre-fix single-root
+    session (or an old committed state file) recorded them on the scalar. Taking
+    the max means a workspace capped under either representation stays capped,
+    with no migration step and no way for a mode flip to re-arm a spent cap.
+    """
+    try:
+        scalar = int(state.stop_hook_blocks or 0)
+    except (TypeError, ValueError):
+        scalar = 0
+    try:
+        per_root = int(state.stop_hook_blocks_by_root.get(scope, 0) or 0)
+    except (TypeError, ValueError, AttributeError):
+        per_root = 0
+    return max(scalar, per_root)
+
+
 def _stop_file_still_blockable(
     repo_root: Path,
     file_path: str,
@@ -5827,8 +5862,12 @@ def _idiom_review_gate(
             _emit_check_event(repo_id, session_id, "idiom_review", "skipped", "nothing_in_scope")
             return None
 
-        # Respect the shared stop cap so an idiom block cannot exceed the budget.
-        if state.stop_hook_blocks >= cfg.stop_block_cap:
+        # Respect the stop cap so an idiom block cannot exceed the budget, reading
+        # the SAME reconciled per-workspace counter the lint backstop charges (in
+        # both modes) -- otherwise an idiom block could exceed the per-workspace
+        # cap the lint path already spent.
+        _block_scope = _stop_block_scope(repo_root)
+        if _effective_stop_blocks(state, _block_scope) >= cfg.stop_block_cap:
             return None
 
         # Marker is written only now that a review will actually be surfaced, so a
@@ -5911,7 +5950,11 @@ def _idiom_review_gate(
             f"{_ignore_hint(edited[:5], 'idioms')} in a file you touched."
         )
 
-        state.stop_hook_blocks += 1
+        # Charge the same reconciled per-workspace counter the cap check read, so
+        # an idiom block counts toward the workspace's shared budget in both modes.
+        state.stop_hook_blocks_by_root[_block_scope] = (
+            _effective_stop_blocks(state, _block_scope) + 1
+        )
         try:
             from chameleon_mcp.enforcement import save_state
 
@@ -8392,32 +8435,21 @@ def _stop_gates(
         if only_files is not None:
             state.files = {k: v for k, v in state.files.items() if k in only_files}
         _prune_on_save = only_files is None
-        # Per-workspace discriminator in multi-root mode: a shared-repo_id monorepo
-        # keeps one repo_data for many workspaces. Both the once-per-session idiom
-        # marker AND the anti-loop block budget must be scoped by workspace, or one
-        # workspace collapses the other's idiom review / exhausts the other's cap.
-        # None (single-root) keeps the legacy scalar/marker so old state and tests
-        # are unchanged.
-        _ws_scope: str | None = None
-        if only_files is not None:
-            try:
-                _ws_scope = hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()[
-                    :12
-                ]
-            except OSError:
-                _ws_scope = hashlib.sha256(str(repo_root).encode("utf-8")).hexdigest()[:12]
+        # Per-workspace block scope: computed in BOTH modes so the anti-loop cap
+        # stays consistent across a mid-session single<->multi cardinality change.
+        # ``_ws_scope`` (the once-per-session idiom marker discriminator) stays
+        # None in single-root to keep the legacy marker filename + tests unchanged;
+        # the block budget always keys by ``_block_scope``.
+        _block_scope = _stop_block_scope(repo_root)
+        _ws_scope: str | None = _block_scope if only_files is not None else None
 
         # Cap reached: the backstop must never BLOCK again this session (so an
         # unresolvable violation cannot trap the turn in a loop), but the turn-end
         # advisories still run below -- silencing them once the block budget was
         # spent was a coverage gap. cap_reached suppresses only the block, not the
-        # advisory pipeline. Multi-root reads the per-workspace budget so one dirty
-        # workspace's blocks never downgrade a sibling's hard block to advisory.
-        _block_count = (
-            state.stop_hook_blocks_by_root.get(_ws_scope, 0)
-            if _ws_scope
-            else state.stop_hook_blocks
-        )
+        # advisory pipeline. The per-workspace budget means one dirty workspace's
+        # blocks never downgrade a sibling's hard block to advisory.
+        _block_count = _effective_stop_blocks(state, _block_scope)
         cap_reached = _block_count >= cfg.stop_block_cap
         if cap_reached:
             _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "cap_reached")
@@ -8874,12 +8906,11 @@ def _stop_gates(
                 # (armed roots rank first), so exactly one root reaches this
                 # increment per Stop even when several workspaces share one
                 # repo_data -- the anti-loop cap cannot be double-spent in a
-                # single Stop. Multi-root charges the per-workspace budget so one
-                # workspace's blocks never exhaust a sibling's cap.
-                if _ws_scope:
-                    state.stop_hook_blocks_by_root[_ws_scope] = _block_count + 1
-                else:
-                    state.stop_hook_blocks += 1
+                # single Stop. Always charge the per-workspace budget (both modes),
+                # off the reconciled effective count, so one workspace never
+                # exhausts a sibling's cap and a single<->multi flip cannot re-arm
+                # a spent one.
+                state.stop_hook_blocks_by_root[_block_scope] = _block_count + 1
                 try:
                     save_state(state, repo_data, session_id or "")
                 except Exception:
@@ -9038,7 +9069,12 @@ def _build_session_attestation(
         from chameleon_mcp.enforcement import load_state
 
         state = load_state(repo_data, session_id or "")
-        stop_hook_blocks = int(state.stop_hook_blocks or 0)
+        # Count both counters: multi-root charges the per-workspace map, so the
+        # scalar alone would under-report blocks in a coordinator monorepo. The
+        # attestation is raise-only, so it must never under-count activity.
+        stop_hook_blocks = int(state.stop_hook_blocks or 0) + sum(
+            int(v or 0) for v in state.stop_hook_blocks_by_root.values()
+        )
         duplication_spawns = int(state.duplication_spawns or 0)
 
         entries = sorted(
@@ -9303,6 +9339,24 @@ def _discover_stop_roots(cwd: Path, session_id) -> list[dict]:
         cap = threshold_int("STOP_MAX_ROOTS")
     except Exception:
         cap = 16
+    if len(ordered) > cap:
+        # No silent truncation of ENFORCEMENT: armed roots rank first, so the cap
+        # normally drops only advisory-only roots. But a session touching more
+        # than `cap` ARMED workspaces would leave the overflow ungated -- record a
+        # check event so a green Stop never reads as "every workspace was checked"
+        # when it was not. Best-effort; a telemetry failure must not break the Stop.
+        dropped = [g for g in ordered[cap:] if g["has_armed"]]
+        if dropped:
+            try:
+                _emit_check_event(
+                    dropped[0]["repo_id"],
+                    session_id,
+                    "stop_relint",
+                    "skipped",
+                    f"multiroot_cap_dropped_{len(dropped)}_armed",
+                )
+            except Exception:
+                pass
     return ordered[:cap]
 
 

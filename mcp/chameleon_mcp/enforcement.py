@@ -65,6 +65,29 @@ class FileState:
         )
 
 
+def _coerce_block_map(raw) -> dict[str, int]:
+    """Load the per-workspace block counts, dropping any entry that is not a
+    non-negative int.
+
+    The state file is committed/attacker-controllable, so a non-numeric or
+    negative value must fail open (drop the entry) rather than raise. A bare
+    ``int(v)`` would throw ``ValueError`` on ``"notanumber"``, which escapes
+    ``load_state``'s except clause and crashes the Stop hook -- the exact
+    fail-open contract this state machine documents.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            continue
+        if n >= 0:
+            out[str(k)] = n
+    return out
+
+
 @dataclass
 class EnforcementState:
     archetypes_seen: set[str] = field(default_factory=set)
@@ -117,12 +140,12 @@ class EnforcementState:
             files={k: FileState.from_dict(v) for k, v in d.get("files", {}).items()},
             stop_hook_blocks=d.get("stop_hook_blocks", 0),
             # Absent in pre-upgrade files: empty map -> the multi-root gate starts
-            # every workspace's budget at zero, exactly like a fresh session.
-            stop_hook_blocks_by_root=(
-                {str(k): int(v) for k, v in raw_by_root.items()}
-                if isinstance(raw_by_root, dict)
-                else {}
-            ),
+            # every workspace's budget at zero, exactly like a fresh session. A
+            # committed/tampered file is attacker-controlled, so a non-numeric or
+            # negative value must fail open (drop the entry) rather than raise: a
+            # bare int(v) would throw ValueError, which load_state's except does
+            # not catch, breaking its documented fail-open contract.
+            stop_hook_blocks_by_root=_coerce_block_map(raw_by_root),
             duplication_spawns=d.get("duplication_spawns", 0),
             correctness_spawns=d.get("correctness_spawns", 0),
         )
@@ -147,7 +170,11 @@ def load_state(repo_dir: Path, session_id: str) -> EnforcementState:
     try:
         raw = path.read_text(encoding="utf-8")
         return EnforcementState.from_dict(json.loads(raw))
-    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError, OSError):
+        # A corrupt/torn/tampered state file fails open to a fresh state -- the
+        # documented contract. ValueError covers a bad numeric coercion in a
+        # committed file; OSError covers a read that dies mid-way (a permission
+        # flip, a vanished dir) rather than crashing the hook.
         return EnforcementState()
 
 

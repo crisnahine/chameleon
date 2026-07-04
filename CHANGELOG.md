@@ -4,6 +4,36 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.39.1] - 2026-07-04
+
+Post-ship hardening of the v2.39.0 multi-root Stop backstop: a turn-end review
+plus an adversarial bug hunt surfaced four issues in the per-workspace block
+budget, all low-severity but fixed for correctness.
+
+### Fixed
+
+- **Corrupt per-workspace block count no longer crashes the Stop hook.**
+  `EnforcementState.from_dict` cast `stop_hook_blocks_by_root` values with a bare
+  `int(v)`, which raises `ValueError` on a non-numeric value that a committed or
+  tampered state file could carry — and `load_state`'s except clause did not
+  catch `ValueError`, so the Stop hook crashed instead of failing open as its
+  contract requires. Values now coerce defensively (bad or negative entries drop),
+  and `load_state` also catches `ValueError`/`OSError`.
+- **The block budget is unified across the lint and idiom gates and across
+  single/multi-root mode.** v2.39.0 keyed only the lint backstop's anti-loop cap
+  per workspace; the idiom-review gate and the attestation still read the legacy
+  scalar (always 0 in multi-root), and the scalar and per-workspace map were
+  disjoint counters — so a workspace could exceed its `stop_block_cap` by one via
+  the idiom gate, and a mid-session single↔multi cardinality change could re-arm a
+  spent cap (up to 2×). All block reads/writes now route through one reconciled
+  per-workspace counter (`_effective_stop_blocks` takes the max of the scalar and
+  the map, so old state and a mode flip both stay capped), and the attestation
+  counts both counters.
+- **The multi-root root cap no longer drops armed workspaces silently.** When a
+  session touches more than `CHAMELEON_STOP_MAX_ROOTS` (16) armed workspaces, the
+  overflow now records a `stop_relint` check event so a green Stop cannot read as
+  "every workspace was checked" when the cap left some ungated.
+
 ## [2.39.0] - 2026-07-04
 
 Closes the tracked v2.38.28 coordinator-root dead spot: the turn-end Stop safety
