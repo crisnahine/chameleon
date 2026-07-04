@@ -77,7 +77,9 @@ def test_cooldown_verify_skip_does_NOT_flag():
 def test_judge_degraded_spawn_flags():
     rec = _att(
         governed=["a.ts"],
-        checks=[{"check": "correctness_judge", "status": "degraded_spawn", "reason": "spawn_timeout"}],
+        checks=[
+            {"check": "correctness_judge", "status": "degraded_spawn", "reason": "spawn_timeout"}
+        ],
     )
     sc = session_coverage_from_attestations([rec], ["a.ts"])
     assert sc["judge_degraded"] is True
