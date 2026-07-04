@@ -1267,6 +1267,70 @@ def _reviewer_timeout_seconds() -> int:
     return threshold_int("CORRECTNESS_JUDGE_TIMEOUT_SECONDS")
 
 
+# Reviewer model ladder (#6). The main loop may run a stronger model than the
+# flat-sonnet reviewer, so a high-risk / intent-forced / security-surface turn
+# escalates the correctness judge to a stronger model; low-risk routes keep the
+# base model. Route reasons that escalate (security and blast-unknown both fold
+# into risk_high upstream, so this set covers the security-surface trigger too).
+_JUDGE_HIGH_ROUTES: frozenset[str] = frozenset({"risk_high", "intent_forced"})
+# Recognized tier tokens (substring match) + the full `claude-...` id form. An
+# unrecognized model string is treated as invalid and falls back to the tier
+# default rather than being spawned: a garbage --model makes `claude -p` exit
+# nonzero, which fail-opens the judge to zero findings, silently DISABLING the
+# review. Bucketing keeps the check robust to model-id namespace churn.
+_KNOWN_MODEL_TOKENS: frozenset[str] = frozenset({"opus", "sonnet", "haiku", "fable"})
+
+
+def _valid_model(m: str | None) -> bool:
+    # An EXACT bare tier alias (`opus`) or a full `claude-...` id. A substring
+    # match ("opus" in "opus-latest") was too loose: a plausible typo of a real
+    # id (opus-latest, sonnet-preview-bogus) passed and then `claude -p --model`
+    # exited nonzero, fail-opening the reviewer to zero findings -- the exact
+    # raise-only breach the guard exists to prevent. A `claude-<...>` id still
+    # can't be fully validated without a live model list (a claude- typo slips),
+    # but that is a much narrower, deliberately-typed class than a bare alias.
+    if not isinstance(m, str) or not m.strip():
+        return False
+    ml = m.strip().lower()
+    return ml in _KNOWN_MODEL_TOKENS or ml.startswith("claude-")
+
+
+def judge_model_for_route(reason: str | None) -> str:
+    """The correctness-judge worker model for a route reason.
+
+    High-risk routes (``risk_high`` / ``intent_forced``) escalate to
+    ``CHAMELEON_JUDGE_MODEL_HIGH`` (default ``opus``); every other route uses
+    ``CHAMELEON_JUDGE_MODEL`` (default ``sonnet``). ``CHAMELEON_JUDGE_TIERING=0``
+    flattens to the base model for every route (today's behavior).
+
+    Raise-only and never garbage: an unrecognized base falls back to sonnet, and
+    an unrecognized HIGH model falls back to the (valid) base rather than
+    spawning a model id that would fail-open the judge to zero findings. So the
+    ladder can only ever strengthen the reviewer or leave it unchanged, never
+    silently disable it.
+    """
+    base = os.environ.get("CHAMELEON_JUDGE_MODEL", "sonnet")
+    if not _valid_model(base):
+        base = "sonnet"
+    if os.environ.get("CHAMELEON_JUDGE_TIERING") == "0":
+        return base
+    if reason not in _JUDGE_HIGH_ROUTES:
+        return base
+    # Escalate ONLY where the budget supports the slower model: the detached
+    # async child runs under the generous fallback budget, but the synchronous
+    # Stop path is capped by the 55s hook wrapper (45s judge budget, shared with
+    # the duplication lens), where a slower model would time out and fail-open to
+    # ZERO findings on exactly the high-risk turns escalation is meant to
+    # strengthen -- a coverage regression, not a win. So the sync path keeps the
+    # base model; the escalation rides the detached path (CHAMELEON_JUDGE_ASYNC=1,
+    # or the auto-detach on a known bare-auth failure). This also keeps the
+    # ladder measured-not-guessed: the default sync turn is unchanged.
+    if not _RUNNING_DETACHED:
+        return base
+    high = os.environ.get("CHAMELEON_JUDGE_MODEL_HIGH", "opus")
+    return high if _valid_model(high) else base
+
+
 def _spawn_reviewer_status(
     prompt: str, cwd: Path, *, model: str | None = None, timeout_s: int | None = None
 ) -> tuple[str | None, str | None]:
@@ -1440,6 +1504,7 @@ def run_correctness_judge(
     *,
     intent_tokens: list[str] | None = None,
     event_sink=None,
+    model: str | None = None,
 ) -> list[Finding]:
     """Run the full judge pipeline for one turn, returning advisory findings.
 
@@ -1543,7 +1608,7 @@ def run_correctness_judge(
             transitive_facts=transitive_facts,
             imported_defs=imported_defs,
         )
-        stdout, fail_reason = _spawn_reviewer_status(prompt, repo_root)
+        stdout, fail_reason = _spawn_reviewer_status(prompt, repo_root, model=model)
         if stdout is None:
             _sink(fail_reason or "spawn_exec_error")
             return []

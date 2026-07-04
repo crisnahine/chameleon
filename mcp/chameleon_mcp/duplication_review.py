@@ -8,6 +8,7 @@ and returns sanitized advisory lines. Never blocks; fails open everywhere.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -598,6 +599,22 @@ def _stream_texts(stdout: str):
     return list(reversed(texts))
 
 
+def _dup_model() -> str:
+    """Model for the duplication confirm spawn, tunable independently of the
+    correctness-judge ladder.
+
+    An UNSET ``CHAMELEON_DUP_MODEL`` preserves the prior behavior exactly: the
+    spawn previously passed no model and rode ``CHAMELEON_JUDGE_MODEL``'s default,
+    so falling back to that (not a bare ``"sonnet"``) keeps a user's
+    ``CHAMELEON_JUDGE_MODEL=opus`` applying here. A garbage value falls back to
+    ``sonnet`` rather than fail-opening the spawn.
+    """
+    from chameleon_mcp import judge
+
+    m = os.environ.get("CHAMELEON_DUP_MODEL") or os.environ.get("CHAMELEON_JUDGE_MODEL", "sonnet")
+    return m if judge._valid_model(m) else "sonnet"
+
+
 def judge_body_matches(repo_root: Path, findings: list, semantic: bool = False) -> list:
     if not findings:
         return []
@@ -605,7 +622,9 @@ def judge_body_matches(repo_root: Path, findings: list, semantic: bool = False) 
         from chameleon_mcp import judge
 
         stdout = judge._spawn_reviewer(
-            build_duplication_prompt(findings, semantic=semantic), Path(repo_root)
+            build_duplication_prompt(findings, semantic=semantic),
+            Path(repo_root),
+            model=_dup_model(),
         )
         if not stdout:
             return []

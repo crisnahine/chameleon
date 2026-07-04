@@ -6522,6 +6522,7 @@ def _correctness_judge_gate(
                     digests=digests,
                     turn_key=turn_key,
                     intent_tokens=intent_tokens,
+                    route_reason=route.get("reason"),
                 )
             except Exception:
                 launched = False
@@ -6600,6 +6601,9 @@ def _correctness_judge_gate(
             resolver,
             intent_tokens=intent_tokens,
             event_sink=_sink,
+            # Reviewer model ladder: a high-risk / intent-forced route escalates
+            # the judge to a stronger model; low-risk routes keep the base.
+            model=judge.judge_model_for_route(route.get("reason")),
         )
         route["spawn_failed"] = bool(degraded)
 
@@ -8326,6 +8330,9 @@ def _multi_lens_review_lines(
                 resolver,
                 intent_tokens=intent_tokens,
                 event_sink=_sink,
+                # Same reviewer model ladder as the single-lens gate: escalate a
+                # high-risk / intent-forced route's judge to the stronger model.
+                model=judge.judge_model_for_route(route.get("reason")),
             )
 
         # Duplication pairs to mark surfaced only AFTER they are actually rendered
@@ -8384,6 +8391,7 @@ def _multi_lens_review_lines(
                     digests=digests,
                     turn_key=route.get("turn_key"),
                     intent_tokens=intent_tokens,
+                    route_reason=route.get("reason"),
                 )
             except Exception:
                 corr_detached = False

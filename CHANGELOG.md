@@ -4,6 +4,47 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.43.0] - 2026-07-05
+
+Reviewer model ladder (roadmap #6). The main loop may run a stronger model than
+the flat-sonnet correctness reviewer, so the reviewer is structurally weaker than
+the author it checks. This escalates the reviewer on exactly the turns that
+matter most. All advisory — no deny path, no hook hot-path cost.
+
+### Added
+
+- **Route-keyed correctness-judge model** (default on; kill with
+  `CHAMELEON_JUDGE_TIERING=0`). A high-risk route (`risk_high` / intent-forced /
+  security-surface — security and blast-unknown both fold into `risk_high`)
+  escalates the turn-end judge to `CHAMELEON_JUDGE_MODEL_HIGH` (default `opus`);
+  low-risk routes (`risk_elevated` / `first_low_risk`) keep
+  `CHAMELEON_JUDGE_MODEL` (`sonnet`). The escalation runs ONLY on the detached
+  async path (`CHAMELEON_JUDGE_ASYNC=1` or the auto-detach on a known bare-auth
+  failure), whose generous fallback budget the slower model needs; the sync Stop
+  path (capped by the 55s hook wrapper) keeps the base model, because a slower
+  model there would time out and fail-open to zero findings on exactly the
+  high-risk turns — a coverage regression, not a win. So a default sync turn is
+  unchanged. Raise-only and never garbage: an unrecognized model (not an exact
+  tier token or a `claude-…` id) falls back to the valid base rather than being
+  spawned, because a bad `--model` would fail-open the judge to zero findings —
+  the ladder can only strengthen the reviewer or leave it unchanged, never
+  silently disable it.
+- **Severity-keyed refuter model**: a BLOCK / high / critical finding is refuted
+  with `CHAMELEON_REFUTER_MODEL_HIGH` (default `opus`), nits keep
+  `CHAMELEON_REFUTER_MODEL`. Same raise-only guard and `CHAMELEON_JUDGE_TIERING=0`
+  kill switch.
+- **`CHAMELEON_DUP_MODEL`** knob for the duplication confirm spawn (default
+  `sonnet`, unchanged from riding the judge default), now independently tunable.
+
+### Notes
+
+- Escalation lift (opus-beats-sonnet as a reviewer) is unmeasured; A/B it via the
+  effectiveness harness's model-tier arms (shipped in 2.42.0) before locking the
+  default. Because the escalation is gated to the detached path, a default (sync)
+  session is behaviorally unchanged — enable `CHAMELEON_JUDGE_ASYNC=1` to activate
+  it under the generous budget. Deferred to a follow-up: per-repo committable
+  model fields and statusline session-model capture (the hot-path piece).
+
 ## [2.42.0] - 2026-07-05
 
 Model-tier arms in the effectiveness eval (roadmap #5). All existing lift /

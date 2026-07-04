@@ -11,6 +11,7 @@ finding (the caller keeps unverified findings, labeled, per the degraded ladder)
 from __future__ import annotations
 
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -19,10 +20,40 @@ from chameleon_mcp.judge import (  # noqa: F401
     _bare_flag_supported,
     _extract_json_array,
     _stream_json_texts,
+    _valid_model,
 )
 from chameleon_mcp.judge import (
     _spawn_reviewer_status as _spawn_status,
 )
+
+# A high-stakes finding (one that would BLOCK or is high/critical severity) gets
+# a stronger refuter when CHAMELEON_REFUTER_MODEL_HIGH is set; nits keep the base
+# model. Severity strings come from the review skills (BLOCK / FIX / NIT).
+_REFUTER_HIGH_SEVERITIES: frozenset[str] = frozenset({"block", "high", "critical"})
+
+
+def _refuter_model_for(finding: dict, base_model: str) -> str:
+    """Per-finding refuter model: escalate a BLOCK/high finding to
+    ``CHAMELEON_REFUTER_MODEL_HIGH`` (default ``opus``), nits keep ``base_model``.
+
+    Flattened by ``CHAMELEON_JUDGE_TIERING=0`` (the shared reviewer-ladder kill
+    switch). Raise-only: an unset or unrecognized HIGH model falls back to the
+    base rather than spawning a garbage id that would fail-open the refuter to
+    ``unverified``.
+    """
+    # Runs at future-submit time OUTSIDE run_one's per-finding try/except, so a
+    # non-dict finding must NOT raise here: an AttributeError would propagate out
+    # of run_batch and collapse the WHOLE batch to unverified. run_one fails open
+    # per-finding, so a malformed element should just take the base model.
+    if not isinstance(finding, dict):
+        return base_model
+    if os.environ.get("CHAMELEON_JUDGE_TIERING") == "0":
+        return base_model
+    sev = str(finding.get("severity") or "").strip().lower()
+    if sev not in _REFUTER_HIGH_SEVERITIES:
+        return base_model
+    high = os.environ.get("CHAMELEON_REFUTER_MODEL_HIGH", "opus")
+    return high if _valid_model(high) else base_model
 
 
 def refuter_available() -> bool:
@@ -219,7 +250,10 @@ def run_batch(
     if head:
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
             futures = [
-                ex.submit(run_one, repo_root, f, x, model=model, timeout=timeout) for (f, x) in head
+                ex.submit(
+                    run_one, repo_root, f, x, model=_refuter_model_for(f, model), timeout=timeout
+                )
+                for (f, x) in head
             ]
             results = [fut.result() for fut in futures]
     for f in tail:

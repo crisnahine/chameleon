@@ -88,6 +88,7 @@ def launch_async_judge(
     digests: dict[str, str],
     turn_key: str | None,
     intent_tokens: list[str] | None,
+    route_reason: str | None = None,
 ) -> bool:
     """Detach a judge child for this turn. False means "fall back to sync".
 
@@ -114,6 +115,7 @@ def launch_async_judge(
                 "digests": dict(digests or {}),
                 "turn_key": turn_key,
                 "intent_tokens": list(intent_tokens or []),
+                "route_reason": route_reason,
                 "started_ts": started_ts,
             },
         )
@@ -219,6 +221,13 @@ def main(argv: list[str] | None = None) -> int:
     digests = raw.get("digests") if isinstance(raw.get("digests"), dict) else {}
     abs_paths = [str(p) for p in raw.get("abs_paths") or []]
     intent_tokens = [str(t) for t in raw.get("intent_tokens") or []]
+    # The reviewer model ladder route reason, carried from the launching gate so
+    # the detached child escalates the same way the sync path would. The child
+    # inherits the caller's env, so it resolves the model itself. The detached
+    # budget is generous (fallback timeout), so this is the IDEAL place to run
+    # the escalated model without the sync path's timeout risk.
+    route_reason = raw.get("route_reason")
+    route_reason = route_reason if isinstance(route_reason, str) else None
 
     def _event(
         status: str,
@@ -285,6 +294,7 @@ def main(argv: list[str] | None = None) -> int:
             _resolver,
             intent_tokens=intent_tokens,
             event_sink=_sink,
+            model=judge.judge_model_for_route(route_reason),
         )
 
         if not failures:
