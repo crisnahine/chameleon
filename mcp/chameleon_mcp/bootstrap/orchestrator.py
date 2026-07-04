@@ -2464,7 +2464,9 @@ def _bootstrap_single(
         # + Python. Both are hashed into the trust SHA, so they are written inside
         # this same atomic transaction. Best-effort: a build failure must not
         # abort the whole profile commit.
-        if extractor.language in ("typescript", "python"):
+        from chameleon_mcp.symbol_index import REVERSE_INDEXED_LANGUAGES
+
+        if extractor.language in REVERSE_INDEXED_LANGUAGES:
             try:
                 from chameleon_mcp.symbol_index import (
                     build_exports_index,

@@ -125,7 +125,8 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
 
 @mcp.tool()
 def query_symbol_importers(repo: str, file_path: str) -> dict:
-    """Cross-file importers of a TypeScript module + which imports it now breaks.
+    """Cross-file importers of a module (TS/JS + Python; Ruby via the constant
+    graph) + which imports it now breaks.
 
     Reads the prebuilt reverse index (symbol -> importers) plus the module's
     current on-disk export set. Returns:
@@ -259,7 +260,8 @@ def get_contract_breaks(repo: str, base_ref: str = "main") -> dict:
 
 @mcp.tool()
 def get_crossfile_context(repo: str) -> dict:
-    """Cross-file existence breaks across a TypeScript repo, for PR review.
+    """Cross-file existence breaks across a repo (TS/JS + Python via the
+    reverse index; Ruby via the constant graph), for PR review.
 
     Scans the prebuilt reverse index and returns one finding per removed/renamed
     export an indexed importer still references -- the deterministic cross-file
@@ -271,7 +273,7 @@ def get_crossfile_context(repo: str) -> dict:
 
     Returns {found, findings: [{symbol, module, count, high_confidence, sites}]}.
     Fails open with found=False on any ambiguity (unresolvable/untrusted repo,
-    missing index). TS-only; never fabricates an importer edge.
+    missing index); never fabricates an importer edge.
     """
     return tools.get_crossfile_context(repo)
 

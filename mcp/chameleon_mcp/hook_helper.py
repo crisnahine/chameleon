@@ -1799,15 +1799,18 @@ _CONFIG_MALFORMED_BANNER = (
 )
 
 # Sibling of the config banner for a present-but-unreadable enforcement.json. A
-# torn enforcement.json makes active_block_rules() return an empty set, so the
-# calibrated secret / eval / import deny gates silently no-op -- the same
-# fail-open the config banner covers, but from the calibration artifact instead
-# of config.json. Surfaced at the edit so the silent drop is visible, not just in
+# torn enforcement.json empties the MEASURED half of active_block_rules(), so
+# the calibrated deny gates (import / naming / phantom and the other measured
+# rules) silently no-op -- the same fail-open the config banner covers, but from
+# the calibration artifact instead of config.json. The credential / eval deny is
+# NOT lost: those rules are calibration-exempt and stay active regardless of the
+# artifact. Surfaced at the edit so the silent drop is visible, not just in
 # get_status / doctor.
 _ENFORCEMENT_MALFORMED_BANNER = (
     "**Enforcement degraded**: chameleon could not parse "
     "`.chameleon/enforcement.json` (malformed or torn JSON), so the calibrated "
-    "block rules (credential / eval / import blocking) are OFF for this edit. "
+    "block rules (import / naming / phantom-import blocking) are OFF for this "
+    "edit. The credential / eval deny stays active (calibration-exempt). "
     "Fix the JSON and run /chameleon-doctor to confirm enforcement is restored.\n\n"
 )
 
@@ -3060,9 +3063,10 @@ def preflight_and_advise() -> int:
 
     use_tier2 = first_in_archetype or has_violations or not summary
 
-    # A present-but-unreadable enforcement.json silently empties the calibrated
-    # block-rule set, so the secret/eval/import deny gates no-op with no signal.
-    # Surface it at the edit like the config banner (detection is fail-open).
+    # A present-but-unreadable enforcement.json silently empties the MEASURED
+    # block-rule set, so the calibrated deny gates (import/naming/phantom)
+    # no-op with no signal; the calibration-exempt secret/eval deny stays
+    # armed. Surface it at the edit like the config banner (fail-open).
     _enf_malformed = False
     try:
         if repo_root_path is not None:

@@ -9,7 +9,7 @@ If you were dispatched as a subagent to execute a specific task, skip this skill
 
 # How chameleon works
 
-Chameleon enforces codebase conventions through hooks. You don't call MCP tools - the hooks inject context automatically as `<chameleon-context>` blocks. Read and follow those blocks.
+Chameleon enforces codebase conventions through hooks. The conformance side needs no tool calls - the hooks inject context automatically as `<chameleon-context>` blocks. Read and follow those blocks. The comprehension side IS tool-callable: see "Comprehension tools" below for when to reach for it.
 
 ## Hook lifecycle
 
@@ -70,6 +70,17 @@ All hooks fail open. If chameleon can't reach the advisor, you'll see:
     [🦎 chameleon: degraded - advisor_unavailable]
 
 When you see this: make the edit using your best inference from what you know about the codebase, and tell your human partner the advisory was unavailable and suggest `/chameleon-doctor`.
+
+## Comprehension tools
+
+The `chameleon-mcp` server also answers codebase questions from prebuilt, trust-gated indexes - often cheaper and more precise than grep. Reach for these at the right moment:
+
+- **Before renaming, deleting, or changing an exported signature**: `get_blast_radius` (who breaks, transitively) or `query_symbol_importers` (which files import this name, with lines).
+- **"Where is X / who calls X?"**: `search_codebase` for symbol lookup, `get_callers` for recorded call sites - prefer them over grep when a profile exists; fall back to grep when they report no index.
+- **Before assuming a helper is side-effect-free or unused**: `get_callees` / `get_callers` on it.
+- **Orienting on an unfamiliar repo**: `describe_codebase` for the archetype map before reading files one by one.
+
+Honesty: these read committed indexes, not live parses. When a tool reports it could not look (`reason` of `index-unavailable` or `no-calls-index` - the backing index is damaged or missing), suggest `/chameleon-refresh` and do NOT treat the empty result as "no callers". `unsupported-language` means the language has no such index by design (e.g. no reverse import index for Ruby) - use grep instead. Only a `found: true` result is a real answer.
 
 ## Coordination with other skills
 

@@ -100,7 +100,7 @@ def test_aggregate_component_breakout():
             scores={
                 "convention": {"violations": 0},
                 "crossfile": {
-                    "broken_exports_unscored": "typescript-only",
+                    "broken_exports_unscored": "unsupported-language",
                     "callers_total": 7,
                     "callers_updated": 7,
                     "callers_stale": 0,

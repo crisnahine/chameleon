@@ -335,7 +335,11 @@ def test_mode_off_does_not_deny_and_writes_no_row(tmp_path: Path):
     assert _would_block_rows(tmp_path) == []
 
 
-def test_inactive_rule_does_not_deny(tmp_path: Path):
+def test_artifact_inactive_security_rule_still_denies(tmp_path: Path):
+    # The secret rule is calibration-exempt: an artifact entry marking it
+    # inactive (a legacy zero-witness verdict, or a planted profile) must not
+    # disarm the credential deny. Only trust, mode, CHAMELEON_ENFORCE=0, or a
+    # rule-named ignore directive may let the content through.
     repo, repo_id = _build_repo(tmp_path, mode="enforce")
     write_block_rules(
         repo / ".chameleon",
@@ -350,7 +354,7 @@ def test_inactive_rule_does_not_deny(tmp_path: Path):
         session_id="s-inactive",
         env={"CHAMELEON_ENFORCE": "1"},
     )
-    assert _decision(out) != "deny"
+    assert _decision(out) == "deny"
 
 
 def test_untrusted_and_stale_do_not_deny(tmp_path: Path):

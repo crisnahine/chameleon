@@ -3,7 +3,10 @@
 A block rule is only allowed to block in a repo if it produces (near) zero
 violations against that repo's own committed files. This module persists and
 reads that decision; the measurement lives in ``calibrate_block_rules``.
-Fail-open: a missing/corrupt artifact means no rule is active (advisory only).
+Fail-open: a missing/corrupt artifact means no measured rule is active
+(advisory only). The one exception is ``SECURITY_BLOCK_RULES``: calibration
+runs no content scans, so those two rules have no measurement to fail open
+FROM — they stay active regardless of the artifact (see active_block_rules).
 """
 
 from __future__ import annotations
@@ -33,7 +36,8 @@ SECURITY_BLOCK_RULES: frozenset[str] = BLANKET_IMMUNE_RULES
 # Upper bound on the on-disk artifact we will read. enforcement.json is a tiny
 # per-rule verdict (a handful of small entries) in normal operation. A committed
 # profile is attacker-controlled, so a planted multi-megabyte file must not be
-# slurped into memory; over the cap we fail open (no rule active = advisory only).
+# slurped into memory; over the cap we fail open (no measured rule active; the
+# calibration-exempt security rules stay armed).
 _MAX_ENFORCEMENT_BYTES = 256 * 1024
 
 # Process-level cache of the parsed block_rules, keyed by resolved profile_dir and
@@ -257,7 +261,19 @@ def rule_inert_missing_signal(rule: str, profile_dir: Path) -> bool:
 
 
 def active_block_rules(profile_dir: Path) -> set[str]:
-    out = set()
+    # The deterministic security rules (hard-kind credentials, error-severity
+    # eval/exec) are active unconditionally, not by persisted verdict.
+    # Calibration never measures them — the committed-corpus pass runs no
+    # content scans — so their stored "active" flag carried only the witness
+    # floor (n > 0), which disarmed the credential/eval deny exactly where
+    # exposure is highest (fresh, small, or sparse profiles) and let a planted
+    # zero-witness or torn enforcement.json switch the deny off. Trust, the
+    # enforcement mode (config.json's enforcement.mode stays the deliberate,
+    # status-surfaced operator control — off/shadow still disables blocking),
+    # and the rule-named chameleon-ignore override all gate the actual block
+    # downstream; this only fixes which rules are considered calibrated to
+    # speak.
+    out = set(SECURITY_BLOCK_RULES)
     for rule, meta in load_block_rules(profile_dir).items():
         # Only block-eligible rules can ever block; a committed profile that marks
         # some other rule "active" (tampering or schema drift) must not promote it.
@@ -504,6 +520,23 @@ def calibrate_block_rules(repo_root: Path, loaded) -> dict:
         # is absent measures a vacuous 0.0 fp_rate (it cannot flag anything),
         # which must not certify it active.
         signal_ok = rule != "naming-convention-violation" or naming_has_signal
+        if rule in SECURITY_BLOCK_RULES:
+            # The security rules are exempt from the witness floor and the
+            # fp gate: this pass runs no content scans, so n and fp_rate say
+            # nothing about them, and "fail-closed on no evidence" would read
+            # a fresh or sparse profile (zero witnesses) as a reason to disarm
+            # the credential/eval deny. active_block_rules applies the same
+            # exemption at read time; the entry here keeps the artifact's
+            # provenance honest for /chameleon-status and /chameleon-explain.
+            entry = {
+                "active": lang_ok,
+                "fp_rate": round(fp_rate, 4),
+                "sampled": n,
+                "flagged": hits,
+                "exempt_reason": "security-rule",
+            }
+            result[rule] = entry
+            continue
         entry: dict = {
             "active": lang_ok and signal_ok and n > 0 and fp_rate <= fp_epsilon,
             "fp_rate": round(fp_rate, 4),

@@ -39,6 +39,14 @@ def make_trusted_repo(tmp_path):
             json.dumps({"enforcement": {"mode": mode, "stop_block_cap": stop_block_cap}}),
             encoding="utf-8",
         )
+        # A minimal COMMITTED profile: the enforcement panel's security-rule
+        # union (and _profile_unrenderable_status) key on profile.json presence
+        # plus the transaction sentinel.
+        profile_dir.joinpath("profile.json").write_text(
+            json.dumps({"schema_version": 1, "language": "typescript"}),
+            encoding="utf-8",
+        )
+        profile_dir.joinpath("COMMITTED").write_text("committed-at=1\npid=1\n", encoding="utf-8")
 
         data_dir = tmp_path / repo_id
         data_dir.mkdir(parents=True, exist_ok=True)
@@ -219,9 +227,58 @@ def test_status_surfaces_precision_summary(make_trusted_repo):
     out = get_status(str(repo))
     precision = out["data"]["enforcement"].get("precision")
     assert precision is not None
-    assert precision["active_block_rules"] == 1
+    # phantom-import from the artifact plus the two read-time-exempt security
+    # rules (always listed active; absent artifact entries contribute no sample).
+    assert precision["active_block_rules"] == 3
     assert precision["sampled_files"] == 9
     assert precision["max_fp_rate"] == 0.0
+
+
+def test_status_lists_security_rules_active_without_artifact(make_trusted_repo):
+    # No enforcement.json at all: the gates still deny hard secrets/evals (the
+    # read-time exemption), so status must list those two rules active rather
+    # than reporting a firing gate as off — and never list them as demoted,
+    # even when a legacy artifact carries a stale inactive entry for them.
+    from chameleon_mcp.enforcement_calibration import write_block_rules
+    from chameleon_mcp.tools import get_status
+
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    out = get_status(str(repo))
+    enf = out["data"]["enforcement"]
+    assert "secret-detected-in-content" in enf["active"]
+    assert "eval-call" in enf["active"]
+
+    # Legacy zero-witness entry marked inactive: still active, never demoted.
+    write_block_rules(
+        profile_dir,
+        {
+            "secret-detected-in-content": {"active": False, "fp_rate": 0.0, "sampled": 0},
+            "eval-call": {"active": False, "fp_rate": 0.0, "sampled": 0},
+        },
+    )
+    out = get_status(str(repo))
+    enf = out["data"]["enforcement"]
+    assert "secret-detected-in-content" in enf["active"]
+    assert "eval-call" in enf["active"]
+    assert all(d["rule"] not in ("secret-detected-in-content", "eval-call") for d in enf["demoted"])
+
+
+def test_status_unprofiled_repo_lists_no_security_rules(make_trusted_repo):
+    # No profile.json means no hook gate can ever fire (trust requires a
+    # committed profile), so the security-rule union must not run: listing the
+    # pair active on an unprofiled repo would be a false assurance. The
+    # artifact-unreadable flag shares the same gate -- a repo that was never
+    # profiled is not an enforcement-artifact problem.
+    from chameleon_mcp.tools import get_status
+
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo(mode="enforce")
+    (profile_dir / "profile.json").unlink()
+    (profile_dir / "COMMITTED").unlink()
+
+    enf = get_status(str(repo))["data"]["enforcement"]
+    assert "secret-detected-in-content" not in enf["active"]
+    assert "eval-call" not in enf["active"]
+    assert enf["enforcement_artifact_unreadable"] is False
 
 
 # --------------------------------------------------------------------------- #

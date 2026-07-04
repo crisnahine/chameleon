@@ -55,6 +55,13 @@ from pathlib import Path
 EXPORTS_INDEX_FILENAME = "exports_index.json"
 REVERSE_INDEX_FILENAME = "reverse_index.json"
 SCHEMA_VERSION = 1
+# Profile languages whose extractors carry the named-export/import extras these
+# builders read, so bootstrap writes both index artifacts for them. Ruby has no
+# static export surface (its cross-file view is the constant index). Shared by
+# the bootstrap build gate and the read tools' unavailable-reason so "this
+# language never gets an index" and "this language's index is missing/damaged"
+# cannot drift apart.
+REVERSE_INDEXED_LANGUAGES: frozenset[str] = frozenset({"typescript", "python"})
 # A reverse index over a giant monorepo can grow large; cap recorded importer
 # rows per (target, name) so one heavily-imported util cannot bloat the artifact
 # or the per-edit advisory count. Only the retained rows are persisted, so a

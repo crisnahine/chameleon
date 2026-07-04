@@ -61,7 +61,17 @@ def _make_enforce_main(root: Path, *, mode: str = "enforce") -> Path:
     # enforce mode (default) + the language-independent secret rule active
     (cham / "config.json").write_text(json.dumps({"enforcement": {"mode": mode}}), encoding="utf-8")
     (cham / "enforcement.json").write_text(
-        json.dumps({"block_rules": {"secret-detected-in-content": {"active": True}}}),
+        json.dumps(
+            {
+                "block_rules": {
+                    "secret-detected-in-content": {"active": True},
+                    # A MEASURED rule too: the security rules are read-time
+                    # exempt (active on any path), so only a measured rule can
+                    # prove a read resolved to the main's real artifact.
+                    "phantom-import": {"active": True},
+                }
+            }
+        ),
         encoding="utf-8",
     )
     return root
@@ -79,15 +89,20 @@ class TestWorktreeEnforcementReadsResolveToMain:
         assert hook_helper._enf_profile_dir(main) == main / ".chameleon"
 
     def test_active_block_rules_nonempty_via_resolved_dir_in_worktree(self, tmp_path):
+        from chameleon_mcp.enforcement_calibration import SECURITY_BLOCK_RULES
+
         main = _make_enforce_main(tmp_path / "main")
         wt = tmp_path / "wt"
         _git("worktree", "add", "-q", str(wt), "-b", "feature", cwd=main)
-        # the bug: the RAW worktree path has no enforcement.json -> empty set
-        assert active_block_rules(wt / ".chameleon") == set()
-        # the fix: through _enf_profile_dir the gate sees the main's active rules
-        assert active_block_rules(hook_helper._enf_profile_dir(wt)) == {
-            "secret-detected-in-content"
-        }
+        # the bug: the RAW worktree path has no enforcement.json, so no MEASURED
+        # rule resolves there (only the read-time-exempt security rules survive)
+        assert active_block_rules(wt / ".chameleon") == SECURITY_BLOCK_RULES
+        # the fix: through _enf_profile_dir the gate sees the main's active
+        # measured rules too
+        assert (
+            active_block_rules(hook_helper._enf_profile_dir(wt))
+            == {"phantom-import"} | SECURITY_BLOCK_RULES
+        )
 
     def test_mode_seen_via_resolved_dir_in_worktree(self, tmp_path):
         # Pin the main to a NON-default mode so the resolved path's answer is

@@ -4,6 +4,55 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.38.32] - 2026-07-04
+
+Two effectiveness fixes from the verified roadmap: the credential/eval deny no
+longer depends on witness-count calibration, and the cross-file tools stopped
+mislabeling a damaged Python index as a TypeScript-only feature.
+
+### Fixed
+
+- **Security deny un-gated from the witness floor.** `active_block_rules` now
+  seeds the two calibration-exempt security rules (`secret-detected-in-content`
+  hard kinds, error-severity `eval-call`) unconditionally. Calibration never
+  measures them (the committed-corpus pass runs no content scans), so their
+  persisted verdict carried only the `n > 0` witness floor — which disarmed the
+  PreToolUse credential/eval deny on exactly the repos most exposed: fresh,
+  small, or sparse zero-witness profiles, legacy artifacts, and missing/torn
+  `enforcement.json`. A planted zero-witness profile could switch the
+  credential deny off; it no longer can. Trust, `enforcement.mode`,
+  `CHAMELEON_ENFORCE=0`, and the rule-named `chameleon-ignore` override are
+  unchanged and still gate actual blocking. `calibrate_block_rules` writes the
+  two entries with `exempt_reason: "security-rule"` for artifact provenance;
+  `get_status` lists them active on any profiled repo (never on unprofiled
+  ones) and never as demoted; the torn-artifact banner now says the
+  credential/eval deny stays armed. Note: repos with committed fixture keys
+  that previously slipped the zero-witness gate now get the deny — the
+  rule-named ignore directive is the escape, and comment-less formats (JSON)
+  need the fixture moved or `enforcement.mode: "shadow"`.
+- **Cross-file damage no longer reads as "typescript-only".**
+  `query_symbol_importers` / `get_crossfile_context` reported `typescript-only`
+  for every non-TS profile, mislabeling a damaged or missing Python
+  `reverse_index.json` (built for Python since the Python program landed) as
+  by-design absence and suppressing the repair suggestion. New contract:
+  `index-unavailable` = the profile's language should have the index, run
+  `/chameleon-refresh`; `unsupported-language` = by-design absence (e.g. a
+  stray `.ts` file in a Ruby profile, a stray `.rb` in a Python profile — the
+  latter previously got a dead-end "re-run refresh" loop from the constant-index
+  path). The build gate, the refresh-repair check, and the read tools now share
+  `symbol_index.REVERSE_INDEXED_LANGUAGES` so they cannot drift; Ruby damage in
+  `get_crossfile_context` (missing constant index) reads as repairable damage.
+
+### Added
+
+- **Comprehension routing in `using-chameleon`.** The skill now tells the main
+  loop when to reach for `search_codebase` / `get_callers` / `get_blast_radius`
+  / `query_symbol_importers` / `describe_codebase` (before renames, signature
+  changes, side-effect assumptions), with an honesty note keyed to the
+  `index-unavailable` / `no-calls-index` / `unsupported-language` reasons. The
+  MCP-visible docstrings of both crossfile tools drop their stale
+  "TypeScript-only" headlines.
+
 ## [2.38.31] - 2026-07-04
 
 Plugin-conformance audit against the official Claude Code plugin spec. The

@@ -233,8 +233,8 @@ All JSON artifacts carry `schema_version`, `engine_min_version`, and a
 | `rules.json` | Tool-derived rules keyed by source: prettier, tsconfig compiler options, eslint, editorconfig, rubocop. |
 | `idioms.md` | Human-authored team idioms. Carried forward byte-identical across refresh; never regenerated. |
 | `profile.summary.md` | Human-readable summary for PR review and the trust prompt. |
-| `enforcement.json` | Per-rule block-calibration verdict (`{rule: {active, fp_rate, sampled}}`). |
-| `exports_index.json`, `reverse_index.json` | TypeScript symbol export map and its inverse importer graph. TS only. |
+| `enforcement.json` | Per-rule block-calibration verdict (`{rule: {active, fp_rate, sampled, flagged}}`; the two calibration-exempt security rules also carry `exempt_reason: "security-rule"` and are active regardless of this artifact). |
+| `exports_index.json`, `reverse_index.json` | Symbol export map and its inverse importer graph. TS/JS + Python (`REVERSE_INDEXED_LANGUAGES`). |
 | `function_catalog.json` | Per-function name, shape, and body-hash for the duplication prefilter. All three languages. |
 | `calls_index.json` | Deterministic caller -> callee edges for the judge. All three languages. |
 | `symbol_signatures.json` | Per-callable signature and body span for forward-definition hydration. All three languages (declared types TS only). |
@@ -528,11 +528,11 @@ re-parsing callers on the hot path. All key on repo-relative paths, are
 byte-reproducible, are hashed into the trust SHA, and fail open to "no facts"
 (never a crash, never a fabricated claim) on any corruption.
 
-- **`exports_index.json`** (TS only): each source path to the set of names it
-  exports. A file with `export * from` is marked open and skipped by the
-  phantom-symbol check, since barrel files are the dominant false-positive
+- **`exports_index.json`** (TS/JS + Python): each source path to the set of
+  names it exports. A file with `export * from` is marked open and skipped by
+  the phantom-symbol check, since barrel files are the dominant false-positive
   source.
-- **`reverse_index.json`** (TS only): the inverse view, exported-name to the
+- **`reverse_index.json`** (TS/JS + Python): the inverse view, exported-name to the
   files that import it by name plus the import line. Backs the edit-time
   blast-radius advisory and the cross-file symbol-existence check (a name that
   was exported is gone and an indexed importer still references it).
@@ -727,8 +727,8 @@ All read-only except `record_review_verdict` (ledger append) and `dep_audit`
 | Tool | Purpose |
 |---|---|
 | `get_autopass_verdict` | Advisory: is a branch diff safe to auto-pass, or needs human? Never gates. |
-| `get_crossfile_context` | Cross-file existence breaks (removed/renamed exports still imported). TS. |
-| `query_symbol_importers` | Importers of a module's exports plus which break on rename. TS. |
+| `get_crossfile_context` | Cross-file existence breaks (removed/renamed exports still imported). TS/JS + Python; Ruby via the constant graph. |
+| `query_symbol_importers` | Importers of a module's exports plus which break on rename. TS/JS + Python; Ruby via the constant graph. |
 | `get_callers` | Deterministic committed callers of a function. |
 | `get_blast_radius` | Bounded transitive callers of a function (multi-hop change reach); the judge's own walk, surfaced as a tool. |
 | `get_callees` | What a function calls (forward edges), inverting the reverse calls index. Comprehension. |
@@ -780,9 +780,11 @@ Five places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
 
 1. **PreToolUse secret deny.** A deterministic hard-kind credential in the
    *proposed* content. Archetype-independent (fires even when no archetype
-   resolves), gated on a trusted profile and the rule being calibration-active,
-   scanning the first 100 KB with a regex-only hard-kind scanner so the hot path
-   holds on large payloads.
+   resolves), gated on a trusted profile and enforce mode — the rule itself is
+   calibration-EXEMPT (always in the active set; calibration runs no content
+   scans, so a witness-count floor must not disarm it) — scanning the first
+   100 KB with a regex-only hard-kind scanner so the hot path holds on large
+   payloads. The eval/exec deny shares the same exemption.
 2. **PreToolUse import deny.** A banned or competing import in the proposed
    content, gated on a high-confidence AST match.
 3. **PostToolUse block.** A hard-class violation on a file already escalated to
@@ -1069,10 +1071,13 @@ Two consequences of persistence are deliberate:
   `stale`, so calibrated block rules apply (and a `config.json` flip to
   `enforcement.mode: "enforce"` takes effect) where they previously fell through to
   advisory-under-stale. Intended, and bounded: only `BLOCK_ELIGIBLE_RULES` can be
-  promoted (an arbitrary rule can't be planted), a promoted rule blocks only on
-  the calibrated verdict in `enforcement.json` (recomputed locally at every
-  bootstrap/refresh; a pulled artifact carries the author's verdict until the next
-  local refresh), and the block reason is sanitized, so the worst case is a denied
+  promoted (an arbitrary rule can't be planted), a promoted MEASURED rule blocks
+  only on the calibrated verdict in `enforcement.json` (recomputed locally at
+  every bootstrap/refresh; a pulled artifact carries the author's verdict until
+  the next local refresh) — the two calibration-exempt security rules are active
+  regardless of that artifact, closing the inverse tamper vector (a planted
+  zero-witness or torn artifact can no longer disarm the credential/eval deny)
+  — and the block reason is sanitized, so the worst case is a denied
   edit from a drifted/pulled profile, not code execution. A repo whose
   `enforcement.json` / `config.json` may change via an
   un-reviewed `git pull` and which wants those changes to re-prompt before they

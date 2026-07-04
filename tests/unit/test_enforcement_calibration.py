@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from chameleon_mcp.enforcement_calibration import (
+    SECURITY_BLOCK_RULES,
     active_block_rules,
     calibrate_block_rules,
     load_block_rules,
@@ -17,17 +18,24 @@ def test_roundtrip(tmp_path: Path):
     write_block_rules(tmp_path, data)
     loaded = load_block_rules(tmp_path)
     assert loaded["phantom-import"]["active"] is True
-    assert active_block_rules(tmp_path) == {"phantom-import"}
+    assert active_block_rules(tmp_path) == {"phantom-import"} | SECURITY_BLOCK_RULES
 
 
-def test_missing_file_is_empty(tmp_path: Path):
+def test_missing_file_keeps_only_security_rules(tmp_path: Path):
+    # No enforcement.json: every MEASURED rule fails open to inactive, but the
+    # calibration-exempt security rules stay active — a fresh or legacy profile
+    # must not lose the credential/eval deny.
     assert load_block_rules(tmp_path) == {}
-    assert active_block_rules(tmp_path) == set()
+    assert active_block_rules(tmp_path) == SECURITY_BLOCK_RULES
 
 
-def test_corrupt_file_is_empty(tmp_path: Path):
+def test_corrupt_file_keeps_only_security_rules(tmp_path: Path):
+    # A torn/tampered artifact must not disarm the security rules either: the
+    # exemption is read-time, so no enforcement.json state can switch the deny
+    # off. (config.json's enforcement.mode remains the deliberate, surfaced
+    # operator control — off/shadow still disables blocking downstream.)
     (tmp_path / "enforcement.json").write_text("{not json", encoding="utf-8")
-    assert active_block_rules(tmp_path) == set()
+    assert active_block_rules(tmp_path) == SECURITY_BLOCK_RULES
 
 
 def test_clean_repo_activates_phantom(tmp_path):
@@ -153,8 +161,11 @@ def test_sibling_sample_is_bounded(tmp_path, monkeypatch):
     assert result["phantom-import"]["sampled"] == 4
 
 
-def test_no_witnesses_keeps_all_rules_inactive(tmp_path):
-    # Empty/unbootstrapped profile: zero evidence must NOT greenlight blockers.
+def test_no_witnesses_keeps_measured_rules_inactive_security_exempt(tmp_path):
+    # Empty/unbootstrapped profile: zero evidence must NOT greenlight MEASURED
+    # blockers — but the security rules are calibration-exempt (the pass runs
+    # no content scans, so n carries no information about them) and must stay
+    # active precisely on this kind of fresh/sparse profile.
     class _Loaded:
         canonicals = {"canonicals": {}}
         conventions = {"conventions": {}}
@@ -163,7 +174,11 @@ def test_no_witnesses_keeps_all_rules_inactive(tmp_path):
     result = calibrate_block_rules(tmp_path, _Loaded())
     assert result["phantom-import"]["sampled"] == 0
     for rule, meta in result.items():
-        assert meta["active"] is False, rule
+        if rule in SECURITY_BLOCK_RULES:
+            assert meta["active"] is True, rule
+            assert meta["exempt_reason"] == "security-rule", rule
+        else:
+            assert meta["active"] is False, rule
 
 
 def test_jsx_demoted_when_sampled_file_breaks_nonjsx_baseline(tmp_path):
@@ -650,7 +665,9 @@ def test_load_block_rules_rejects_oversized_file(tmp_path):
     oversized += '"}}}'
     (tmp_path / "enforcement.json").write_text(oversized, encoding="utf-8")
     assert load_block_rules(tmp_path) == {}
-    assert active_block_rules(tmp_path) == set()
+    # Measured rules are gone; the calibration-exempt security rules survive
+    # even this attacker-shaped artifact (the exemption is read-time).
+    assert active_block_rules(tmp_path) == SECURITY_BLOCK_RULES
 
 
 def test_active_block_rules_filters_to_block_eligible(tmp_path):
@@ -668,7 +685,7 @@ def test_active_block_rules_filters_to_block_eligible(tmp_path):
             "made-up-rule": {"active": True},
         },
     )
-    assert active_block_rules(tmp_path) == {"phantom-import", "secret-detected-in-content"}
+    assert active_block_rules(tmp_path) == {"phantom-import"} | SECURITY_BLOCK_RULES
 
 
 def test_language_gating_demotes_ts_only_rules_on_ruby_profile(tmp_path):

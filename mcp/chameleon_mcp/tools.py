@@ -3209,18 +3209,35 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
     return _envelope(out, truncated=truncated)
 
 
-def _crossfile_unavailable_reason(repo_root: Path) -> str:
-    """Why no reverse index exists here: a TS-only feature vs a missing artifact.
+# Languages with ANY cross-file existence surface for get_crossfile_context:
+# the reverse index (TS/Python) or the Ruby constant graph. A profile in one of
+# these that still cannot load an index is damaged, not unsupported.
+_CROSSFILE_SURFACE_LANGUAGES: frozenset[str] = frozenset({"typescript", "python", "ruby"})
 
-    The symbol indexes are built from TS/JS export extras only, so on a Ruby
-    profile their absence is by design; a bare not-found read as damage and
-    sent users chasing a repair that does not exist.
+
+def _crossfile_unavailable_reason(
+    repo_root: Path, *, surfaces: frozenset[str] | None = None
+) -> str:
+    """Why no cross-file index loads here: unsupported language vs damage.
+
+    ``surfaces`` is the set of profile languages whose bootstrap writes the
+    index the caller just failed to load. A stored language outside that set
+    makes the absence by design (``unsupported-language``); a language inside
+    it means the artifact should exist, so its absence is damage
+    (``index-unavailable``, repaired by /chameleon-refresh). The old shape of
+    this check reported ``typescript-only`` for every non-TS profile, which
+    mislabeled a damaged Python reverse index as by-design and suppressed the
+    repair suggestion (the indexes have been built for Python too since the
+    Python program landed).
     """
     from chameleon_mcp.enforcement_calibration import _stored_profile_languages
+    from chameleon_mcp.symbol_index import REVERSE_INDEXED_LANGUAGES
 
+    if surfaces is None:
+        surfaces = REVERSE_INDEXED_LANGUAGES
     langs = _stored_profile_languages(_effective_profile_dir(repo_root))
-    if langs and "typescript" not in langs:
-        return "typescript-only"
+    if langs and not (langs & surfaces):
+        return "unsupported-language"
     return "index-unavailable"
 
 
@@ -3251,7 +3268,18 @@ def _ruby_constant_importers(repo_root: Path, file_path: Path) -> dict:
     index = load_constant_index(repo_root)
     if index is None:
         out = dict(empty)
-        out["reason"] = "no constant index for this repo (re-run /chameleon-refresh)"
+        # Only a Ruby profile ever writes constant_index.json. A stray .rb
+        # file in a TS/Python-profiled repo lands here by file extension, and
+        # suggesting a refresh there is a dead-end loop (refresh will never
+        # create the artifact) — that absence is by design, same contract as
+        # _crossfile_unavailable_reason.
+        from chameleon_mcp.enforcement_calibration import _stored_profile_languages
+
+        langs = _stored_profile_languages(_effective_profile_dir(repo_root))
+        if langs and "ruby" not in langs:
+            out["reason"] = "unsupported-language"
+        else:
+            out["reason"] = "index-unavailable (no constant index; re-run /chameleon-refresh)"
         return out
     try:
         rel = file_path.resolve().relative_to(Path(repo_root).resolve()).as_posix()
@@ -3278,7 +3306,8 @@ def _ruby_constant_importers(repo_root: Path, file_path: Path) -> dict:
 
 
 def query_symbol_importers(repo: str, file_path: str) -> dict:
-    """Who imports a TypeScript module's bindings, and which imports it now breaks.
+    """Who imports a module's bindings (TS/JS + Python; Ruby via the constant
+    graph), and which imports it now breaks.
 
     The cross-file read backing PR-review and the Stop existence check. Reads the
     prebuilt reverse index (``symbol -> importers``) plus the module's CURRENT
@@ -4243,7 +4272,8 @@ def _ruby_constant_existence_breaks(repo_root: Path) -> dict:
 
 
 def get_crossfile_context(repo: str) -> dict:
-    """Cross-file existence breaks across a TypeScript repo, for PR review.
+    """Cross-file existence breaks across a repo (TS/JS + Python via the
+    reverse index; Ruby via the constant graph), for PR review.
 
     The single cross-file finding class chameleon can assert deterministically: a
     binding a module USED to export (so the reverse index records importers for
@@ -4309,9 +4339,8 @@ def get_crossfile_context(repo: str) -> dict:
 
     index = load_reverse_index(repo_root)
     if index is None:
-        # No named-export reverse index -> Ruby (the constant graph) instead of
-        # the typescript-only stance: a referenced class removed/renamed on disk
-        # is the Ruby existence break.
+        # No named-export reverse index -> try Ruby (the constant graph): a
+        # referenced class removed/renamed on disk is the Ruby existence break.
         ruby = _ruby_constant_existence_breaks(repo_root)
         if not ruby.get("_index_missing"):
             return _envelope(
@@ -4323,7 +4352,14 @@ def get_crossfile_context(repo: str) -> dict:
                 truncated=ruby.get("_truncated", False),
             )
         out = dict(empty)
-        out["reason"] = _crossfile_unavailable_reason(repo_root)
+        # Every supported language has SOME cross-file surface for this scan
+        # (reverse index for TS/Python, constant index for Ruby), so reaching
+        # here with a known language means the backing artifact is damaged or
+        # missing, never by-design absence — include Ruby in the surface set
+        # so its reason reads as repairable damage too.
+        out["reason"] = _crossfile_unavailable_reason(
+            repo_root, surfaces=_CROSSFILE_SURFACE_LANGUAGES
+        )
         # The existence-break scan could not run (no reverse index and no Ruby
         # constant index -- corrupt/missing artifact, or an unsupported layout).
         # Mark it degraded, mirroring get_contract_breaks, so a reader (pr-review
@@ -5171,11 +5207,13 @@ def _enforcement_artifact_unreadable(profile_dir: Path) -> bool:
     or absent.
 
     ``load_block_rules`` swallows a torn/truncated/non-dict artifact to ``{}``,
-    which is indistinguishable from a repo with zero calibrated block rules, so
-    the enforcement panel would read ``mode=enforce, active=[]`` as if healthy
-    while blocking is silently neutered. Every real profile writes this artifact,
-    so absent is also damage. Gated on ``profile.json`` presence: an unprofiled
-    repo is not an enforcement-artifact problem.
+    which silently drops every MEASURED block rule (the calibration-exempt
+    security pair stays armed via ``active_block_rules``) -- indistinguishable
+    from a repo whose calibration legitimately kept zero measured rules, so the
+    enforcement panel would read as healthy while the measured blocking is
+    neutered. Every real profile writes this artifact, so absent is also
+    damage. Gated on ``profile.json`` presence: an unprofiled repo is not an
+    enforcement-artifact problem.
     """
     if not (profile_dir / "profile.json").exists():
         return False
@@ -5293,11 +5331,14 @@ def get_status(repo: str) -> dict:
     - ``config_malformed`` — True when config.json is present but its enforcement
       section is unparseable, so enforcement is off (gates fail open) until fixed.
 
-    Fail-open: a missing/corrupt config or enforcement.json degrades to the
-    safest default (advisory mode, no active rules) rather than raising. The
-    richer profile/trust/drift surface stays in the dedicated tools the
-    /chameleon-status skill already calls; this returns only the enforcement
-    section those tools do not cover.
+    Fail-open: a missing/corrupt config degrades to the safest default
+    (advisory mode) rather than raising, and a missing/corrupt
+    enforcement.json empties the MEASURED rules from ``active``. The two
+    calibration-exempt security rules (hard-kind credential, eval/exec) stay
+    listed on any profiled repo regardless of the artifact — the deny they
+    back is read-time-exempt and still fires. The richer profile/trust/drift
+    surface stays in the dedicated tools the /chameleon-status skill already
+    calls; this returns only the enforcement section those tools do not cover.
     """
     from chameleon_mcp.enforcement_calibration import load_block_rules
     from chameleon_mcp.profile.loader import find_repo_root
@@ -5405,6 +5446,21 @@ def get_status(repo: str) -> dict:
         lang_inert=lambda r: rule_inert_for_language(r, profile_dir),
         signal_inert=lambda r: rule_inert_missing_signal(r, profile_dir),
     )
+    # The security rules deny regardless of the persisted verdict (the
+    # read-time exemption in active_block_rules), so status must list them
+    # active even on a legacy zero-witness entry or a missing/torn
+    # enforcement.json — otherwise it reports a deny gate as off while the
+    # gate is firing. Gated on a profile actually existing (mirroring
+    # _enforcement_artifact_unreadable): on an unprofiled repo no hook gate
+    # can fire at all, and listing the rules active there would be a false
+    # assurance. Arming additionally requires trust and mode=enforce, which
+    # the /chameleon-status skill reads from detect_repo and `mode` alongside
+    # this list.
+    from chameleon_mcp.enforcement_calibration import SECURITY_BLOCK_RULES
+
+    if (profile_dir / "profile.json").exists():
+        active = sorted(set(active) | SECURITY_BLOCK_RULES)
+        demoted = [d for d in demoted if d.get("rule") not in SECURITY_BLOCK_RULES]
     if config_malformed:
         # Enforcement is off because the config could not be parsed; do not list
         # rules as "active" when the mode that would arm them is unreadable.
@@ -5437,9 +5493,10 @@ def get_status(repo: str) -> dict:
         "config_malformed": config_malformed,
         # True when the block-rules artifact (enforcement.json) is present-but-
         # unparseable or absent on a profiled repo: load_block_rules swallows that
-        # to {} so `active` is [] and blocking is silently neutered. This
-        # distinguishes "artifact damaged, regenerate it" from "repo legitimately
-        # has zero calibrated block rules" -- the two are otherwise identical.
+        # to {}, dropping every measured rule from `active` (the calibration-
+        # exempt security pair stays armed and listed). This distinguishes
+        # "artifact damaged, regenerate it" from "repo legitimately has zero
+        # measured block rules" -- the two are otherwise identical.
         "enforcement_artifact_unreadable": _enforcement_artifact_unreadable(profile_dir),
         # Headline calibration-precision: the measured false-positive ceiling the
         # active block rules clear against this repo's own committed files.
@@ -7207,9 +7264,10 @@ def _profile_needs_rederive(profile_dir) -> bool:
     - ``profile.summary.md`` must exist and be non-empty;
     - ``principles.md`` must carry the anti-hallucination protocol.
 
-    ``enforcement.json`` matters most: ``active_block_rules`` fails open to an
-    empty rule set on a missing/corrupt file OR one whose ``block_rules`` is not a
-    dict, so a damaged one silently voids ALL block-rule enforcement while
+    ``enforcement.json`` matters most: ``active_block_rules`` drops every
+    MEASURED rule on a missing/corrupt file OR one whose ``block_rules`` is not
+    a dict (only the calibration-exempt security pair stays active), so a
+    damaged one silently voids the measured block-rule enforcement while
     ``mode=enforce`` still reads normal. The noop refresh would never repair it
     without this check.
 
@@ -7295,24 +7353,29 @@ def _profile_needs_rederive(profile_dir) -> bool:
             return True
         if not isinstance(obj, dict):
             return True
-    # Block-rule calibration. active_block_rules reads enforcement.json's inner
-    # "block_rules" value and falls open to an EMPTY set on anything that is not a
-    # dict -- so a missing file, a non-dict top level, OR a block_rules that is not
-    # itself a dict all silently void ALL block-rule enforcement under
-    # mode=enforce. Mirror load_block_rules' shape check so the noop refresh
-    # repairs every one of those states, not just unparseable JSON.
+    # Block-rule calibration. active_block_rules drops every measured rule on
+    # anything whose inner "block_rules" value is not a dict (the calibration-
+    # exempt security pair stays active) -- so a missing file, a non-dict top
+    # level, OR a block_rules that is not itself a dict all silently void the
+    # measured block-rule enforcement under mode=enforce. Mirror
+    # load_block_rules' shape check so the noop refresh repairs every one of
+    # those states, not just unparseable JSON.
     try:
         enf = _json.loads((profile_dir / "enforcement.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return True
     if not isinstance(enf, dict) or not isinstance(enf.get("block_rules"), dict):
         return True
-    # Symbol indexes: TypeScript always writes them (absence == damage). Other
-    # languages that write them (Python) must repair a corrupt one; Ruby never
-    # writes them, so validate-if-present and don't force a rebuild on absence.
+    # Symbol indexes: reverse-indexed languages always write them (absence ==
+    # damage); Ruby never writes them, so validate-if-present and don't force
+    # a rebuild on absence. Shares REVERSE_INDEXED_LANGUAGES with the
+    # bootstrap build gate so the repair check cannot drift from what
+    # bootstrap actually writes.
+    from chameleon_mcp.symbol_index import REVERSE_INDEXED_LANGUAGES as _RIL
+
     for name in ("exports_index.json", "reverse_index.json"):
         path = profile_dir / name
-        if manifest.get("language") in ("typescript", "python") or path.exists():
+        if manifest.get("language") in _RIL or path.exists():
             try:
                 obj = _json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
