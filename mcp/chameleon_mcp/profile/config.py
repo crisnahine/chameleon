@@ -134,6 +134,16 @@ class EnforcementConfig:
     # regex presence check (no parse at Stop). Advisory only, never a block: a
     # mid-rename turn may legitimately leave a call site for a follow-up edit.
     crossfile_existence_advisory: bool = True
+    # crossfile_existence_block: OFF by default (opt-in). When True AND mode is
+    # enforce, a turn that removed a named export an indexed importer still uses --
+    # re-verified live against the working tree at Stop and scoped to a
+    # HEAD-exported removal -- BLOCKS the turn (Stop-only, never inline). mode
+    # shadow logs a would_block row instead. The deny is off by default so an
+    # existing enforce repo is never surprised by a new block class on upgrade; the
+    # advisory above still surfaces the same breaks, so a team can watch them before
+    # opting the block on. Overridable inline with a `chameleon-ignore
+    # removed-export-breaks-importers` comment and bounded by stop_block_cap.
+    crossfile_existence_block: bool = False
     # duplication_review: on by default. At turn end, when the session introduced a
     # function whose body hash matches an existing one in the catalog or earlier
     # this session, surface an advisory naming the original so the author can reuse
@@ -292,6 +302,12 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
             "`enforcement.crossfile_existence_advisory` must be bool, got "
             f"{type(crossfile_existence_advisory).__name__}"
         )
+    crossfile_existence_block = raw.get("crossfile_existence_block", False)
+    if not isinstance(crossfile_existence_block, bool):
+        raise ChameleonConfigError(
+            "`enforcement.crossfile_existence_block` must be bool, got "
+            f"{type(crossfile_existence_block).__name__}"
+        )
     duplication_review = raw.get("duplication_review", True)
     if not isinstance(duplication_review, bool):
         raise ChameleonConfigError("enforcement.duplication_review must be a boolean")
@@ -346,6 +362,7 @@ def _coerce_enforcement(raw: Any) -> EnforcementConfig:
         stale_test_advisory=stale_test_advisory,
         changeset_completeness=changeset_completeness,
         crossfile_existence_advisory=crossfile_existence_advisory,
+        crossfile_existence_block=crossfile_existence_block,
         duplication_review=duplication_review,
         judge_crossfile_facts=judge_crossfile_facts,
         signature_contract_diff=signature_contract_diff,

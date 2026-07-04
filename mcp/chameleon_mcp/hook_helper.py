@@ -7151,7 +7151,13 @@ def _imported_source_keys(content: str, name: str, importer_dir: Path, lang: str
         else:
             from chameleon_mcp.phantom_imports import _TS_IMPORT_SPEC_RE, _named_specifiers
 
-            for m in _TS_IMPORT_SPEC_RE.finditer(content):
+            # Blank comments (keeping string specifiers intact) before the scan so a
+            # commented-out stale import -- `// import { foo } from './t'` left behind
+            # after repointing foo to another module -- cannot re-introduce the old
+            # target key and defeat repoint detection. Length-preserving, so match
+            # offsets and the named-specifier extraction below are unaffected.
+            scan = _blank_strings_comments(content, "typescript", keep_strings=True)
+            for m in _TS_IMPORT_SPEC_RE.finditer(scan):
                 raw = m.group(1) or m.group(2) or m.group(3)
                 if not raw:
                     continue
@@ -7283,9 +7289,16 @@ _REGEX_KEYWORDS = frozenset(
 )
 
 
-def _blank_strings_comments(text: str, language: str | None) -> str:
+def _blank_strings_comments(text: str, language: str | None, *, keep_strings: bool = False) -> str:
     """Blank string-literal and comment CONTENT to spaces (newlines preserved),
     leaving code intact, via a single left-to-right character scan.
+
+    ``keep_strings`` (default False) blanks ONLY comments, leaving string content
+    intact. It still tracks string state (so a `//` inside a string never starts a
+    comment), but does not blank the string chars. Used where a downstream scan
+    must still see string literals -- e.g. an import specifier `from './x'` -- yet
+    must NOT be fooled by a commented-out import line. Default False preserves the
+    blank-both behavior every existing caller relies on.
 
     A scan -- not regex ordering -- is the only sound way to blank both without
     one hiding a real reference: comments are recognized BEFORE strings, so an
@@ -7367,7 +7380,8 @@ def _blank_strings_comments(text: str, language: str | None) -> str:
         # triple-quoted string (Python docstring)
         if is_py and c in ("'", '"') and i + 2 < n and text[i + 1] == c and text[i + 2] == c:
             q = c
-            out[i] = out[i + 1] = out[i + 2] = " "
+            if not keep_strings:
+                out[i] = out[i + 1] = out[i + 2] = " "
             i += 3
             while i < n:
                 if (
@@ -7377,35 +7391,39 @@ def _blank_strings_comments(text: str, language: str | None) -> str:
                     and i + 2 < n
                     and text[i + 2] == q
                 ):
-                    out[i] = out[i + 1] = out[i + 2] = " "
+                    if not keep_strings:
+                        out[i] = out[i + 1] = out[i + 2] = " "
                     i += 3
                     break
-                if text[i] != "\n":
+                if text[i] != "\n" and not keep_strings:
                     out[i] = " "
                 i += 1
             continue
         # string literal
         if c in ("'", '"') or (ts_comments and c == "`"):
             q = c
-            out[i] = " "
+            if not keep_strings:
+                out[i] = " "
             i += 1
             while i < n:
                 ch = text[i]
                 if ch == "\\" and i + 1 < n:
-                    out[i] = " "
-                    if text[i + 1] != "\n":
-                        out[i + 1] = " "
+                    if not keep_strings:
+                        out[i] = " "
+                        if text[i + 1] != "\n":
+                            out[i + 1] = " "
                     i += 2
                     continue
                 if ch == q:
-                    out[i] = " "
+                    if not keep_strings:
+                        out[i] = " "
                     i += 1
                     break
                 if ch == "\n" and q != "`":
                     # single/double quotes do not span a raw newline; an unclosed
                     # one was not a real string literal -- stop, leave rest as code.
                     break
-                if ch != "\n":
+                if ch != "\n" and not keep_strings:
                     out[i] = " "
                 i += 1
             # A string is a VALUE, so a following `/` is division, not a regex.
@@ -7684,12 +7702,163 @@ def _mark_pending_deletions_surfaced(repo_data: Path, session_id, paths: list[st
         pass
 
 
+def _module_exports_at_head(ws_root: Path, target_key: str, lang: str) -> set[str] | None:
+    """The named-export set of ``target_key`` at git HEAD, or None if unknowable.
+
+    F3 scope check for the crossfile BLOCK: a break is deny-eligible only when the
+    turn INTRODUCED it -- the name was exported at HEAD and is gone now. A name
+    already absent at HEAD (a pre-existing broken import surfaced only because the
+    module was edited this turn for an unrelated reason) must NOT block. Returns
+    None -- read as "cannot confirm, do not block" -- when git is unavailable, the
+    blob is not in HEAD (a file created this session), or the export set is open
+    (`export *`, an unexpandable star). TS/Python only; the reverse index records
+    import intent, not export reality, so only HEAD tells us the name was real.
+    """
+    try:
+        from chameleon_mcp.judge import _run_git
+        from chameleon_mcp.phantom_imports import (
+            _current_export_names,
+            _python_current_export_names,
+        )
+        from chameleon_mcp.production_ref import git_toplevel
+
+        top = git_toplevel(ws_root)
+        if top is None:
+            return None
+        try:
+            git_rel = (ws_root / target_key).resolve().relative_to(top).as_posix()
+        except (ValueError, OSError):
+            return None
+        res = _run_git(["show", f"HEAD:{git_rel}"], cwd=ws_root)
+        if res is None or res.returncode != 0:
+            return None
+        content = res.stdout or ""
+        if lang == "python":
+            # Absolute path so the __init__.py sibling-listing resolves against the
+            # module's real directory, not the process cwd (the content is HEAD's,
+            # but the dirname must still be the package dir).
+            names, open_set = _python_current_export_names(content, ws_root / target_key)
+        elif lang == "typescript":
+            names, open_set = _current_export_names(content)
+        else:
+            return None
+        if open_set:
+            return None
+        return set(names)
+    except Exception:
+        return None
+
+
+def _importer_confirms_crossfile_break(
+    ws_root: Path, importer_rel: str, name: str, line, target_key: str, lang: str
+) -> bool:
+    """STRICT per-importer block confirmation (F2): the importer still references
+    ``name`` AND that reference still POSITIVELY resolves to ``target_key``.
+
+    Stricter than the advisory's ``_live_break``, which keep-biases to "broken"
+    when the import specifier does not resolve (empty keys). For a DENY the
+    keep-bias is an over-block vector: a same-turn repoint of ``name`` to a
+    bare-package / out-of-repo module yields empty keys, and blocking on that is a
+    false positive. So the block requires keys NON-EMPTY and containing the target;
+    anything less is "cannot confirm still-sourced-from-target" -> advisory only.
+    """
+    try:
+        from chameleon_mcp.symbol_index import make_module_resolver
+
+        ip = ws_root / importer_rel
+        text = ip.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+        if not _reference_present(text, name, line, lang):
+            return False
+        try:
+            resolver = make_module_resolver(Path(ws_root).resolve(), lang)
+        except Exception:
+            return False
+        keys = _imported_source_keys(text, name, ip.parent, lang, resolver)
+        return bool(keys) and target_key in keys
+    except Exception:
+        return False
+
+
+def _target_still_provides(ws_root: Path, target_key: str, name: str, lang: str) -> bool:
+    """True if the target module's CURRENT content still provides ``name``.
+
+    Defense-in-depth so the deny is self-contained: the advisory only emits a break
+    for a currently-removed name, but the block predicate must not TRUST that
+    invariant. A name the target still provides -- re-added this turn, re-exported
+    (`export { name } from './impl'`), behind an open `export *`, or converted from
+    an ES export to a CommonJS one (`module.exports` / `exports.name`, which the
+    ES-only export scan reads as "removed") -- must never reach a hard block. Fails
+    open to False (cannot confirm it provides) so a genuine break is not suppressed
+    by a read error; F2/F3 then decide.
+    """
+    try:
+        from chameleon_mcp.phantom_imports import (
+            _current_export_names,
+            _python_current_export_names,
+        )
+
+        abs_target = Path(ws_root) / target_key
+        content = abs_target.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+        if lang == "python":
+            names, open_set = _python_current_export_names(content, abs_target)
+        else:
+            names, open_set = _current_export_names(content)
+        if open_set or name in names:
+            return True
+        if lang == "typescript" and (
+            re.search(r"\bmodule\.exports\b", content)
+            or re.search(r"(?<![A-Za-z0-9_$])exports\." + re.escape(name) + r"\b", content)
+        ):
+            return True
+    except Exception:
+        return False
+    return False
+
+
+def _confirmed_crossfile_break_sites(rec: dict) -> list[tuple[str, int | None]]:
+    """Deny-eligible importer sites for one structured break, or [] if none.
+
+    Applies F3 (turn-introduced: name exported by the module at HEAD) then F2 (each
+    importer strictly re-confirmed to still source ``name`` from the target). Block
+    scope for v1: TS/Python ``export`` (a named export removed from an existing
+    module) only. ``deleted`` is advisory-only for now -- a gone target makes the
+    importer specifier unresolvable, so the strict F2 sourcing check (which
+    separates "still points at the target" from "repointed to a bare package")
+    cannot run without raw-specifier comparison; keep-biasing instead would
+    reintroduce the very over-block F2 exists to stop. Ruby ``constant`` (global
+    resolution -- cannot cheaply prove no other file defines it at Stop) and
+    ``barrel`` (star-expansion at HEAD too costly) are advisory-only too.
+    Under-block is the safe direction; a deny must be FP-free.
+    """
+    kind = rec.get("kind")
+    lang = rec.get("lang")
+    if kind != "export" or lang not in ("typescript", "python"):
+        return []
+    ws_root = rec.get("ws_root")
+    name = rec.get("name")
+    target_key = rec.get("target_key")
+    if not (ws_root and isinstance(name, str) and isinstance(target_key, str)):
+        return []
+    head_exports = _module_exports_at_head(ws_root, target_key, lang)
+    if head_exports is None or name not in head_exports:
+        return []  # cannot confirm the removal was introduced this turn -> advisory only
+    if _target_still_provides(ws_root, target_key, name, lang):
+        return []  # target still provides it (re-added / re-exported / CJS) -> not a break
+    confirmed: list[tuple[str, int | None]] = []
+    for imp_rel, line in rec.get("importers") or []:
+        if _importer_confirms_crossfile_break(ws_root, imp_rel, name, line, target_key, lang):
+            confirmed.append((imp_rel, line))
+    return confirmed
+
+
 def _crossfile_existence_advisory_lines(
     *,
     repo_root: Path,
     state,
     cfg,
     deleted_paths: list[str] | None = None,
+    out_breaks: list | None = None,
+    for_block: bool = False,
 ) -> list[str]:
     """Build the turn-end cross-file existence-break advisory lines, or [].
 
@@ -7705,7 +7874,10 @@ def _crossfile_existence_advisory_lines(
     to [] on any error.
     """
     try:
-        if cfg.mode == "off" or not cfg.crossfile_existence_advisory:
+        # for_block: the deny caller collects out_breaks under its own feature flag,
+        # so it bypasses the advisory nudge flag here (mode==off still short-circuits
+        # both -- an enforcement-off repo runs neither the advisory nor the block).
+        if cfg.mode == "off" or (not for_block and not cfg.crossfile_existence_advisory):
             return []
 
         from chameleon_mcp.constant_index import load_constant_index
@@ -7978,6 +8150,19 @@ def _crossfile_existence_advisory_lines(
                     breaks.append(
                         (_safe_ref_field(const), _safe_ref_field(rrel), rsites, "constant")
                     )
+                    if out_breaks is not None:
+                        # Raw (unsanitized) fields the Stop block branch needs to
+                        # re-verify with its stricter predicate + HEAD check.
+                        out_breaks.append(
+                            {
+                                "name": const,
+                                "target_key": rrel,
+                                "kind": "constant",
+                                "lang": "ruby",
+                                "ws_root": ws_root,
+                                "importers": [(r, None) for r in sorted(rlive)],
+                            }
+                        )
                 continue
             # The reverse index spans the TS and Python module graphs, so both
             # languages are checked here; anything else is skipped. A Ruby-only
@@ -8025,6 +8210,17 @@ def _crossfile_existence_advisory_lines(
                     for imp in live_sorted[:max_sites]
                 ]
                 breaks.append((_safe_ref_field(name), _safe_ref_field(target_key), sites, "export"))
+                if out_breaks is not None:
+                    out_breaks.append(
+                        {
+                            "name": name,
+                            "target_key": target_key,
+                            "kind": "export",
+                            "lang": lang,
+                            "ws_root": ws_root,
+                            "importers": [(imp.path, imp.line) for imp in live_sorted],
+                        }
+                    )
 
         # Deleted TS/Python modules: a file the turn edited then removed exports
         # nothing now, so every importer the reverse index still attributes to it
@@ -8086,6 +8282,17 @@ def _crossfile_existence_advisory_lines(
                 breaks.append(
                     (_safe_ref_field(name), _safe_ref_field(target_key), sites, "deleted")
                 )
+                if out_breaks is not None:
+                    out_breaks.append(
+                        {
+                            "name": name,
+                            "target_key": target_key,
+                            "kind": "deleted",
+                            "lang": lang,
+                            "ws_root": del_ws_root,
+                            "importers": [(imp.path, imp.line) for imp in live_sorted],
+                        }
+                    )
 
         # Barrel (star re-export) breaks: an edited TS ORIGIN file whose exports
         # flow to importers through a sibling `index.*` barrel (`export * from
@@ -8162,6 +8369,17 @@ def _crossfile_existence_advisory_lines(
                         breaks.append(
                             (_safe_ref_field(name), _safe_ref_field(bkey), bsites, "barrel")
                         )
+                        if out_breaks is not None:
+                            out_breaks.append(
+                                {
+                                    "name": name,
+                                    "target_key": bkey,
+                                    "kind": "barrel",
+                                    "lang": "typescript",
+                                    "ws_root": ws_root,
+                                    "importers": [(imp.path, imp.line) for imp in live_sorted],
+                                }
+                            )
         except Exception:
             pass
 
@@ -9282,6 +9500,97 @@ def _stop_gates(
                 # unresolved violation.
                 return {}
             # shadow / capped enforce: fall through to the advisories below.
+
+        # Cross-file existence BLOCK: a named export the turn removed from an
+        # existing module that indexed importers still reference. Runs AFTER the
+        # calibrated-lint block above (that gate wins) and only when it did not
+        # block. Stop-only, never inline. Each break is re-verified live and
+        # HEAD-scoped by _confirmed_crossfile_break_sites (F3 turn-introduced +
+        # F2 strict target-sourcing), so a mid-turn fix, a bare-package repoint,
+        # or a pre-existing HEAD break never reaches here. Mirrors the unresolved
+        # branch: shadow / capped-enforce emit a would_block row (carrying the
+        # session id) and fall through to the advisory; enforce hard-blocks.
+        # Fail-open: any error leaves the advisory pass untouched.
+        if cfg.mode in ("shadow", "enforce") and getattr(cfg, "crossfile_existence_block", False):
+            try:
+                cf_breaks: list = []
+                # for_block bypasses the advisory feature flag: the deny is gated by
+                # its own crossfile_existence_block flag, not the advisory nudge's.
+                _crossfile_existence_advisory_lines(
+                    repo_root=repo_root,
+                    state=state,
+                    cfg=cfg,
+                    out_breaks=cf_breaks,
+                    for_block=True,
+                )
+                cf_confirmed: list = []
+                for rec in cf_breaks:
+                    sites = _confirmed_crossfile_break_sites(rec)
+                    if sites:
+                        cf_confirmed.append((rec, sites))
+                if cf_confirmed:
+                    cf_count = _effective_stop_blocks(state, _block_scope)
+                    cf_cap_reached = cf_count >= cfg.stop_block_cap
+                    cf_hard = cfg.mode == "enforce" and not cf_cap_reached
+                    if cfg.mode == "shadow" or (cf_cap_reached and cfg.mode == "enforce"):
+                        try:
+                            from chameleon_mcp.metrics import emit_hook_metric
+
+                            for rec, _sites in cf_confirmed:
+                                mod_abs = str(Path(rec["ws_root"]) / rec["target_key"])
+                                emit_hook_metric(
+                                    "stop-backstop",
+                                    elapsed_ms=0,
+                                    repo_id=repo_id,
+                                    advisory_emitted=True,
+                                    would_block=True,
+                                    rule="removed-export-breaks-importers",
+                                    file_rel=_repo_rel(repo_root, mod_abs),
+                                    session_id=session_id,
+                                )
+                        except Exception:
+                            pass
+                    if cf_hard:
+                        from chameleon_mcp.sanitization import (
+                            sanitize_for_chameleon_context as _cf_s,
+                        )
+
+                        parts: list[str] = []
+                        for rec, sites in cf_confirmed[:5]:
+                            nm = _cf_s(str(rec.get("name")))
+                            tgt = _cf_s(str(rec.get("target_key")))
+                            shown = ", ".join(
+                                _cf_s(f"{s}:{ln}" if ln is not None else s) for s, ln in sites[:5]
+                            )
+                            parts.append(f"'{nm}' (removed from {tgt}) still imported by {shown}")
+                        more = f" (+{len(cf_confirmed) - 5} more)" if len(cf_confirmed) > 5 else ""
+                        # Charge the per-workspace anti-loop budget, same as the
+                        # unresolved branch, so a persistent break cannot loop.
+                        state.stop_hook_blocks_by_root[_block_scope] = cf_count + 1
+                        try:
+                            save_state(state, repo_data, session_id or "")
+                        except Exception:
+                            pass
+                        hint_files = [
+                            str(
+                                Path(cf_confirmed[0][0]["ws_root"])
+                                / cf_confirmed[0][0]["target_key"]
+                            )
+                        ]
+                        return {
+                            "decision": "block",
+                            "reason": (
+                                "chameleon: you removed exports still imported elsewhere: "
+                                + "; ".join(parts)
+                                + more
+                                + ". Restore the export or update the call sites before "
+                                "ending, or add "
+                                + _ignore_hint(hint_files, "removed-export-breaks-importers")
+                                + " in the source you touched."
+                            ),
+                        }
+            except Exception:
+                pass
 
         return _run_advisories()
     except Exception as exc:

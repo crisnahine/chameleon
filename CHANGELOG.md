@@ -4,6 +4,48 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.46.0] - 2026-07-05
+
+Cross-file existence breaks can now BLOCK at the Stop backstop (roadmap #10),
+opt-in per repo. Removing a named export that other files still import is exactly
+the defect a human reviewer catches, and the engine already detected it — but
+only as an advisory the model could ignore. When enabled, a turn-introduced,
+live-re-verified export removal now refuses the turn.
+
+### Added
+
+- **Cross-file existence deny** (opt-in; `enforcement.crossfile_existence_block`,
+  default `false`). When enabled and `enforcement.mode` is `enforce`, a Stop where
+  the turn removed a named TypeScript/Python export an indexed importer still
+  references BLOCKS the turn, naming the removed export and its broken call sites;
+  `mode: shadow` logs a `would_block` row instead. Stop-only, never inline
+  (PreToolUse/PostToolUse are untouched). Overridable with a
+  `chameleon-ignore removed-export-breaks-importers` comment in the edited source
+  and bounded by `stop_block_cap`. Off by default so an existing enforce repo
+  gains no new block class on upgrade; the default-on cross-file advisory still
+  surfaces the same breaks, so a team can watch them before opting the deny on.
+
+  The deny is engineered false-positive-free: every block is (1) re-verified live
+  against the working tree at Stop, so a break the model fixed later in the same
+  turn never blocks; (2) scoped to a removal introduced THIS turn, by confirming
+  the export existed at git HEAD, so a pre-existing broken import is never blamed
+  on the turn that merely edited the file; (3) confirmed per importer to still
+  source the name from the target, so a same-turn repoint to another module or a
+  bare package does not block; and (4) suppressed when the target still provides
+  the name via a re-export or a CommonJS conversion. Ruby constants, barrels, and
+  deleted modules stay advisory-only — under-blocking is the safe direction for a
+  deny. See `_confirmed_crossfile_break_sites` in `hook_helper.py`.
+
+### Fixed
+
+- **Comment-defeats-repoint over-block** in cross-file import-source resolution: a
+  commented-out stale import (`// import { foo } from './old'` left behind after
+  repointing `foo` elsewhere) was parsed as a live binding, re-introducing the old
+  target and firing a phantom break. `_imported_source_keys` now blanks comments
+  (keeping string specifiers intact) before scanning, via a new comment-only mode
+  on the string/comment tokenizer. The advisory tolerated this as noise; the new
+  deny could not.
+
 ## [2.45.0] - 2026-07-05
 
 Finding->fix loop closure (roadmap #9). The correctness judge and multi-lens

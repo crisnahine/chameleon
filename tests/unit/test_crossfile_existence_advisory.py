@@ -66,6 +66,46 @@ def test_flags_removed_export_with_live_importer(tmp_path):
     assert "editPrice" not in text
 
 
+def test_out_breaks_collects_raw_record(tmp_path):
+    # The Stop block branch consumes the raw (unsanitized) structured breaks via
+    # out_breaks: name, target_key, kind, lang, ws_root, and raw importer sites.
+    src = _touch(tmp_path, "src/pricing.ts", "export function editPrice() {}\n")
+    _touch(tmp_path, "src/cart.ts", "import { oldName } from './pricing';\noldName();\n")
+    _write_reverse_index(
+        tmp_path,
+        {
+            "src/pricing.ts": {
+                "editPrice": [{"path": "src/cart.ts", "line": 1}],
+                "oldName": [{"path": "src/cart.ts", "line": 1}],
+            }
+        },
+    )
+    collected: list = []
+    lines = _crossfile_existence_advisory_lines(
+        repo_root=tmp_path, state=_state_for([src]), cfg=_cfg(), out_breaks=collected
+    )
+    # Advisory output is unchanged by passing the collector.
+    assert "oldName" in "\n".join(lines)
+    assert len(collected) == 1
+    rec = collected[0]
+    assert rec["name"] == "oldName"
+    assert rec["target_key"] == "src/pricing.ts"
+    assert rec["kind"] == "export"
+    assert rec["lang"] == "typescript"
+    assert rec["importers"] == [("src/cart.ts", 1)]
+
+
+def test_out_breaks_stays_empty_when_no_break(tmp_path):
+    src = _touch(tmp_path, "p.ts", "export const keep = 1;\n")
+    _touch(tmp_path, "c.ts", "import { keep } from './p';\nkeep();\n")
+    _write_reverse_index(tmp_path, {"p.ts": {"keep": [{"path": "c.ts", "line": 1}]}})
+    collected: list = []
+    _crossfile_existence_advisory_lines(
+        repo_root=tmp_path, state=_state_for([src]), cfg=_cfg(), out_breaks=collected
+    )
+    assert collected == []
+
+
 def test_off_mode_emits_nothing(tmp_path):
     src = _touch(tmp_path, "p.ts", "export const keep = 1;\n")
     _touch(tmp_path, "c.ts", "import { gone } from './p';\ngone();\n")

@@ -157,6 +157,22 @@ def test_crossfile_existence_advisory_must_be_bool(tmp_path):
         load_config(d)
 
 
+def test_crossfile_existence_block_defaults_off(tmp_path):
+    # Opt-in deny: default False so an existing enforce repo is not surprised.
+    assert load_config(tmp_path).enforcement.crossfile_existence_block is False
+
+
+def test_crossfile_existence_block_parsed(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"crossfile_existence_block": True}})
+    assert load_config(d).enforcement.crossfile_existence_block is True
+
+
+def test_crossfile_existence_block_must_be_bool(tmp_path):
+    d = _write(tmp_path, {"enforcement": {"crossfile_existence_block": "yes"}})
+    with pytest.raises(ChameleonConfigError):
+        load_config(d)
+
+
 def test_correctness_judge_default_on_no_file(tmp_path):
     assert load_config(tmp_path).enforcement.correctness_judge is True
 
