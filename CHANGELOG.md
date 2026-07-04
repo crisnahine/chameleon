@@ -4,6 +4,27 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.42.0] - 2026-07-05
+
+Model-tier arms in the effectiveness eval (roadmap #5). All existing lift /
+no-lift evidence is sonnet-worker evidence; this makes the instrument that every
+model-era decision depends on able to measure a stronger worker. Local-only eval
+harness — no production hook, no user surface.
+
+### Added
+
+- **Per-arm worker model** in the effectiveness runner: `--arm-model
+  shadow=opus,enforce=fable` spawns each arm's sessions on its own model (arms
+  not named fall back to `--model`). A paired toggle arm inherits its base arm's
+  model so the A/B isolates the feature, not the model. The effective model is
+  recorded per cell and in `run.json`'s new `arm_models` map, and
+  `compare_to_baseline` is now model-aware: a legacy flat baseline answers only
+  the sonnet arm, a model-keyed baseline is matched per arm's model, so a
+  stronger-model arm never regresses against a sonnet baseline.
+- `archetype_facts` (`CHAMELEON_ARCHETYPE_FACTS`) added to the eval's env-toggle
+  set, so the per-edit archetype-facts directive can be A/B'd like the other
+  default-on injection features (`--toggle archetype_facts`).
+
 ## [2.41.0] - 2026-07-04
 
 Build-time barrel-chase resolution from the verified roadmap: named TypeScript

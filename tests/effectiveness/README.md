@@ -49,14 +49,30 @@ Missing env repos skip that language's tasks with a reason (never an error).
     PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner \
       --tier ci --arms off,shadow --toggle judge_crossfile_facts
 
-adds the paired arm `shadow~judge_crossfile_facts=false`.
+adds the paired arm `shadow~judge_crossfile_facts=false`. Env-flag features
+(`nearby_signatures`, `counterexample`, `stop_idiom_terse`, `inbound_callers`,
+`archetype_facts`) get a paired arm that flips the env var instead of a config
+key.
+
+## Model-tier arms
+
+    PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner \
+      --tier dup --arms off,shadow --arm-model shadow=opus
+
+runs each arm on its own worker model (arms not named fall back to `--model`).
+A paired toggle arm inherits its base arm's model so the A/B isolates the
+feature, not the model. The effective model is recorded per cell and in
+`run.json`'s `arm_models` map.
 
 ## Baselines
 
 `baselines.json` is committed and updated MANUALLY at release time: copy the
 release run's aggregate values for (tier, category, arm) plus the run_id.
 The runner only reads it; a worsening beyond 20% prints an advisory
-regression banner in run.md and never blocks anything.
+regression banner in run.md and never blocks anything. Baseline comparison is
+model-aware: a legacy flat entry (`{metric: val}`) answers only the sonnet arm,
+and a model-keyed entry (`{model: {metric: val}}`) is matched per arm's model,
+so a stronger-model arm never regresses against a sonnet baseline.
 
 ## Requirements
 

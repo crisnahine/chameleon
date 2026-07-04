@@ -24,7 +24,7 @@ if str(_REPO_ROOT) not in sys.path:
 import time  # noqa: E402
 
 from tests.effectiveness import report  # noqa: E402
-from tests.effectiveness.arms import ArmError, parse_arms  # noqa: E402
+from tests.effectiveness.arms import ArmError, parse_arm_models, parse_arms  # noqa: E402
 from tests.effectiveness.bootstrap import (  # noqa: E402
     bootstrap_fixture,
     ensure_chameleon_env,
@@ -83,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--repeats", type=int, default=None, help="Override per-task repeats")
     p.add_argument("--model", default="sonnet")
+    p.add_argument(
+        "--arm-model",
+        default=None,
+        help="Per-arm worker model, e.g. 'shadow=opus,enforce=fable'. "
+        "Arms not listed fall back to --model.",
+    )
     p.add_argument("--panel", action="store_true", help="Run the blind pairwise judge panel")
     p.add_argument("--max-budget-usd", type=float, default=8.0)
     p.add_argument(
@@ -145,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_list([t for t in _collect_tasks() if t.tier == args.tier])
 
     try:
-        arms = parse_arms(args.arms, args.toggle)
+        arms = parse_arms(args.arms, args.toggle, parse_arm_models(args.arm_model))
         tasks = _select_tasks(args)
     except (ArmError, SystemExit2) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -294,6 +300,9 @@ def _execute(args, tasks, arms, cells) -> int:
         "tier": args.tier,
         "arms": [a.name for a in arms],
         "model": args.model,
+        # Effective worker model per arm (arm --arm-model, else --model). Lets a
+        # mixed-model run record what each arm ran on without re-deriving from cells.
+        "arm_models": {a.name: (a.model or args.model) for a in arms},
         "toggle": args.toggle,
         "cells": cell_rows,
         "panel": panel_rows,
@@ -332,12 +341,16 @@ def _cleanup_env_worktree(ctx, fixture_roots, leaked_env_repos, task, arm, rep, 
         leaked_env_repos[task.fixture] = fixture_roots[task.fixture]
 
 
-def _cell_row(task, arm, rep, status, reason=None, session=None, scores=None) -> dict:
+def _cell_row(task, arm, rep, status, reason=None, session=None, scores=None, model=None) -> dict:
     return {
         "task_id": task.task_id,
         "category": task.category,
         "fixture": task.fixture,
         "arm": arm.name,
+        # Effective worker model for this cell (arm --arm-model, else run --model).
+        # Top-level so report.aggregate can key baselines by it; None on a cell
+        # skipped before the model was resolved (never aggregated).
+        "model": model,
         "repeat": rep,
         "status": status,
         "reason": reason,
@@ -359,14 +372,15 @@ def _resolve_prompt(task, pack, repo_root) -> tuple[str | None, str | None]:
 
 
 def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
-    from tests.effectiveness.arms import arm_env
+    from tests.effectiveness.arms import arm_env, arm_model
 
+    cell_model = arm_model(arm, args.model)
     cell_id = _cell_id(task, arm, rep)
     dest = ctx.run_dir / "worktrees" / cell_id
     try:
         prompt, skip_reason = _resolve_prompt(task, pack, fixture_repo)
         if skip_reason:
-            return _cell_row(task, arm, rep, "skipped", skip_reason)
+            return _cell_row(task, arm, rep, "skipped", skip_reason, model=cell_model)
         setup_fn = pack.setups.get(task.setup) if task.setup else None
         baseline_sha = _prepare_cell(
             fixture_repo=fixture_repo,
@@ -388,7 +402,7 @@ def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
             max_turns=task.max_turns,
             allowed_tools=SESSION_TOOLS,
             timeout_s=600,
-            model=args.model,
+            model=cell_model,
             plugin_root=ctx.plugin_root,
         )
         wall = round(time.monotonic() - t0, 2)
@@ -399,7 +413,7 @@ def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
             "returncode": session.returncode,
             "transcript": str(transcript),
             "baseline_sha": baseline_sha,
-            "model": args.model,
+            "model": cell_model,
         }
         if session.returncode != 0:
             return _cell_row(
@@ -409,6 +423,7 @@ def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
                 "error",
                 f"session returncode {session.returncode}",
                 session=session_meta,
+                model=cell_model,
             )
         changed = _changed_files(dest, baseline_sha)
         diff = _session_diff(dest, baseline_sha)
@@ -433,11 +448,11 @@ def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
         scores = {
             name: run_scorer(name, score_ctx) for name in task.scorers if name != PANEL_SCORER
         }
-        row = _cell_row(task, arm, rep, "ok", session=session_meta, scores=scores)
+        row = _cell_row(task, arm, rep, "ok", session=session_meta, scores=scores, model=cell_model)
         row["_diff"] = diff  # consumed by the panel phase, stripped before output
         return row
     except Exception as exc:  # noqa: BLE001 - one bad cell never kills the run
-        return _cell_row(task, arm, rep, "error", f"{type(exc).__name__}: {exc}")
+        return _cell_row(task, arm, rep, "error", f"{type(exc).__name__}: {exc}", model=cell_model)
 
 
 def _panel_phase(args, ctx, tasks, arms, cells_by_task, diffs_by_task) -> list[dict]:

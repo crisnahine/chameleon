@@ -5,7 +5,14 @@ from __future__ import annotations
 import json
 
 import pytest
-from tests.effectiveness.arms import ArmError, apply_arm_config, arm_env, parse_arms
+from tests.effectiveness.arms import (
+    ArmError,
+    apply_arm_config,
+    arm_env,
+    arm_model,
+    parse_arm_models,
+    parse_arms,
+)
 
 
 def test_parse_three_arms():
@@ -151,3 +158,63 @@ def test_unknown_toggle_error_lists_env_toggles():
 
     with pytest.raises(ArmError, match="env toggles"):
         parse_arms("off,shadow", "bogus_toggle")
+
+
+# --- per-arm model (#5) ------------------------------------------------------
+
+
+def test_parse_arm_models_maps_and_validates():
+    assert parse_arm_models("shadow=opus,enforce=fable") == {"shadow": "opus", "enforce": "fable"}
+    assert parse_arm_models(None) == {}
+    assert parse_arm_models("") == {}
+
+
+def test_parse_arm_models_rejects_malformed():
+    with pytest.raises(ArmError):
+        parse_arm_models("shadow")  # no '='
+    with pytest.raises(ArmError):
+        parse_arm_models("shadow=")  # empty model
+    with pytest.raises(ArmError):
+        parse_arm_models("bogus=opus")  # unknown arm
+
+
+def test_parse_arm_models_rejects_duplicate_arm():
+    # A duplicate arm key must raise, not silently last-wins run the wrong model.
+    with pytest.raises(ArmError, match="more than once"):
+        parse_arm_models("shadow=opus,shadow=fable")
+
+
+def test_arm_model_field_threads_and_defaults():
+    off, shadow = parse_arms("off,shadow", None, {"shadow": "opus"})
+    assert shadow.model == "opus"
+    assert arm_model(shadow, "sonnet") == "opus"
+    # An arm with no override falls back to the run-level --model.
+    assert off.model is None
+    assert arm_model(off, "sonnet") == "sonnet"
+
+
+def test_arm_model_absent_leaves_run_default():
+    specs = parse_arms("off,shadow", None)
+    assert all(s.model is None for s in specs)
+    assert [arm_model(s, "fable") for s in specs] == ["fable", "fable"]
+
+
+def test_toggle_arm_inherits_base_model():
+    # The paired toggle arm must run on the SAME model as its base so the A/B
+    # isolates the feature, not the model.
+    specs = parse_arms("off,shadow", "inbound_callers", {"shadow": "opus"})
+    paired = next(s for s in specs if "~" in s.name)
+    assert paired.model == "opus"
+
+
+def test_arm_model_rejects_arm_not_in_arms():
+    with pytest.raises(ArmError):
+        parse_arms("off,shadow", None, {"enforce": "opus"})
+
+
+def test_archetype_facts_is_a_known_env_toggle():
+    # #5 added CHAMELEON_ARCHETYPE_FACTS to the env-toggle set.
+    specs = parse_arms("off,shadow", "archetype_facts")
+    paired = next(s for s in specs if "~" in s.name)
+    env = arm_env(paired, {})
+    assert env.get("CHAMELEON_ARCHETYPE_FACTS") == "0"

@@ -23,6 +23,11 @@ class ArmSpec:
     toggle_value: bool | None = None
     env_key: str | None = None  # env var set for this arm (env-flag toggle)
     env_value: str | None = None  # the value env_key is set to ("1" or "0")
+    # Per-arm worker model. None means "use the run-level --model default", so a
+    # single-model run is unchanged; a mixed run (--arm-model shadow=opus) spawns
+    # each arm's sessions on its own model. A paired toggle arm inherits its base
+    # arm's model so the A/B isolates the feature, not the model.
+    model: str | None = None
 
 
 # Feature toggles that are env vars, not config.json enforcement keys. The
@@ -36,6 +41,7 @@ _ENV_TOGGLES: dict[str, tuple[str, str]] = {
     "counterexample": ("CHAMELEON_COUNTEREXAMPLE", "0"),
     "stop_idiom_terse": ("CHAMELEON_STOP_IDIOM_TERSE", "0"),
     "inbound_callers": ("CHAMELEON_INBOUND_CALLERS", "0"),
+    "archetype_facts": ("CHAMELEON_ARCHETYPE_FACTS", "0"),
 }
 
 
@@ -50,7 +56,39 @@ def _toggleable_keys() -> dict[str, bool]:
     }
 
 
-def parse_arms(arms_csv: str, toggle: str | None) -> list[ArmSpec]:
+def parse_arm_models(spec_csv: str | None) -> dict[str, str]:
+    """Parse ``--arm-model shadow=opus,enforce=fable`` into ``{arm: model}``.
+
+    Empty / None yields ``{}`` (every arm falls back to the run-level --model).
+    Each entry must name a valid arm; an unknown arm or a malformed pair is an
+    error so a typo can't silently run the wrong model.
+    """
+    if not spec_csv:
+        return {}
+    out: dict[str, str] = {}
+    for pair in spec_csv.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if "=" not in pair:
+            raise ArmError(f"--arm-model entry {pair!r} must be arm=model")
+        arm, model = (s.strip() for s in pair.split("=", 1))
+        if arm not in VALID_ARM_NAMES:
+            raise ArmError(f"--arm-model arm {arm!r} unknown; valid: {VALID_ARM_NAMES}")
+        if not model:
+            raise ArmError(f"--arm-model entry {pair!r} has an empty model")
+        if arm in out:
+            # Last-wins would silently drop the first model a typo/copy-paste
+            # typed; reject it so a duplicate can't run the wrong model unseen
+            # (mirrors parse_arms' duplicate-arm rejection).
+            raise ArmError(f"--arm-model names arm {arm!r} more than once")
+        out[arm] = model
+    return out
+
+
+def parse_arms(
+    arms_csv: str, toggle: str | None, arm_models: dict[str, str] | None = None
+) -> list[ArmSpec]:
     names = [a.strip() for a in arms_csv.split(",") if a.strip()]
     if not names:
         raise ArmError("--arms must name at least one arm")
@@ -59,8 +97,17 @@ def parse_arms(arms_csv: str, toggle: str | None) -> list[ArmSpec]:
         raise ArmError(f"unknown arm(s) {bad}; valid: {VALID_ARM_NAMES}")
     if len(set(names)) != len(names):
         raise ArmError("duplicate arm names")
+    models = arm_models or {}
+    unknown = [a for a in models if a not in names]
+    if unknown:
+        raise ArmError(f"--arm-model names arm(s) not in --arms: {unknown}")
     specs = [
-        ArmSpec(name=n, base_mode=("shadow" if n == "off" else n), disable_env=(n == "off"))
+        ArmSpec(
+            name=n,
+            base_mode=("shadow" if n == "off" else n),
+            disable_env=(n == "off"),
+            model=models.get(n),
+        )
         for n in names
     ]
     if toggle:
@@ -83,6 +130,7 @@ def parse_arms(arms_csv: str, toggle: str | None) -> list[ArmSpec]:
                     disable_env=False,
                     env_key=env_key,
                     env_value=env_value,
+                    model=base.model,
                 )
             )
             return specs
@@ -101,9 +149,15 @@ def parse_arms(arms_csv: str, toggle: str | None) -> list[ArmSpec]:
                 disable_env=False,
                 toggle_key=key,
                 toggle_value=flipped,
+                model=base.model,
             )
         )
     return specs
+
+
+def arm_model(spec: ArmSpec, run_model: str) -> str:
+    """Effective worker model for an arm: its own --arm-model, else the run --model."""
+    return spec.model or run_model
 
 
 def arm_env(spec: ArmSpec, base_env: dict[str, str]) -> dict[str, str]:

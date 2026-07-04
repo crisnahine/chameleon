@@ -379,3 +379,55 @@ def test_write_outputs_shapes(tmp_path):
     loaded = json.loads((tmp_path / "run.json").read_text())
     assert loaded["run_id"] == "effectiveness_x"
     assert (tmp_path / "run.md").is_file()
+
+
+# --- model-tier aggregation + model-aware baselines (#5) ---------------------
+
+
+def _model_cell(arm, model, category="convention", violations=2):
+    c = _cell(arm, category=category, scores={"convention": {"violations": violations}})
+    c["model"] = model
+    return c
+
+
+def test_aggregate_attaches_uniform_arm_model():
+    aggs = aggregate([_model_cell("shadow", "opus"), _model_cell("shadow", "opus")])
+    assert aggs["convention|shadow"]["model"] == "opus"
+
+
+def test_aggregate_defaults_missing_model_to_sonnet():
+    # Legacy cells (pre-model-capture) have no top-level model; aggregate must
+    # fall back to sonnet rather than crash or key on None.
+    cells = [_cell("shadow", scores={"convention": {"violations": 1}})]
+    assert cells[0].get("model") is None
+    assert aggregate(cells)["convention|shadow"]["model"] == "sonnet"
+
+
+def test_legacy_flat_baseline_only_answers_sonnet():
+    from tests.effectiveness.report import _resolve_arm_baseline
+
+    flat = {"findings_per_task": 3.0, "cells": 4}
+    assert _resolve_arm_baseline(flat, "sonnet") == flat
+    # A non-sonnet arm gets no baseline from a sonnet-only flat entry.
+    assert _resolve_arm_baseline(flat, "opus") == {}
+
+
+def test_model_keyed_baseline_selects_by_model():
+    from tests.effectiveness.report import _resolve_arm_baseline
+
+    keyed = {"sonnet": {"findings_per_task": 3.0}, "opus": {"findings_per_task": 1.0}}
+    assert _resolve_arm_baseline(keyed, "opus") == {"findings_per_task": 1.0}
+    assert _resolve_arm_baseline(keyed, "fable") == {}  # no baseline for this model yet
+
+
+def test_compare_skips_cross_model_against_legacy_baseline():
+    # An opus arm compared against a sonnet-only (legacy flat) baseline must NOT
+    # produce a regression row (apples-to-oranges), while the sonnet arm does.
+    aggs = aggregate([_model_cell("shadow", "opus", violations=9)])
+    baselines = {"baselines": {"ci": {"convention": {"shadow": {"findings_per_task": 1.0}}}}}
+    rows = compare_to_baseline(aggs, baselines, tier="ci")
+    assert rows == []  # opus vs sonnet-flat -> no comparison
+
+    aggs_sonnet = aggregate([_model_cell("shadow", "sonnet", violations=9)])
+    rows_sonnet = compare_to_baseline(aggs_sonnet, baselines, tier="ci")
+    assert any(r["metric"] == "findings_per_task" and r["model"] == "sonnet" for r in rows_sonnet)

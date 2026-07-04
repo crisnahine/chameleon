@@ -43,6 +43,12 @@ def aggregate(cells: list[dict]) -> dict[str, dict]:
     ok = [c for c in cells if c.get("status") == "ok"]
     for cat, arm in sorted({(c["category"], c["arm"]) for c in ok}):
         group = [c for c in ok if c["category"] == cat and c["arm"] == arm]
+        # An arm runs on one model within a run, so the group's model is uniform;
+        # default to sonnet for legacy cells that predate per-cell model capture.
+        # Kept as an entry field (not folded into the key) so run.json aggregate
+        # keys stay `cat|arm` and only the baseline lookup becomes model-aware.
+        cell_models = {c.get("model") for c in group if c.get("model")}
+        model = next(iter(cell_models)) if len(cell_models) == 1 else "sonnet"
         findings: list[float] = []
         conv_vals: list[float] = []
         broken_vals: list[float] = []
@@ -82,6 +88,7 @@ def aggregate(cells: list[dict]) -> dict[str, dict]:
                 wall.append(float(co["wall_seconds"]))
         out[f"{cat}|{arm}"] = {
             "cells": len(group),
+            "model": model,
             "findings_per_task": _mean(findings),
             "conv_violations_mean": _mean(conv_vals),
             "broken_exports_mean": _mean(broken_vals),
@@ -135,12 +142,31 @@ def load_baselines(path: Path) -> dict:
         return {}
 
 
+def _resolve_arm_baseline(base_arm: dict, model: str) -> dict:
+    """The metrics dict for ``model`` under an arm's baseline entry.
+
+    Supports both the model-keyed schema (``{model: {metric: val}}``) and the
+    legacy flat schema (``{metric: val}``, all sonnet). A flat entry answers only
+    the sonnet model, so an opus/fable arm compared against a sonnet-only baseline
+    gets no comparison rather than a spurious cross-model regression.
+    """
+    if not isinstance(base_arm, dict):
+        return {}
+    sub = base_arm.get(model)
+    if isinstance(sub, dict):
+        return sub
+    if model == "sonnet" and any(m in base_arm for m in METRIC_DIRECTION):
+        return base_arm
+    return {}
+
+
 def compare_to_baseline(aggregates: dict, baselines_doc: dict, tier: str) -> list[dict]:
     rows: list[dict] = []
     tier_base = ((baselines_doc or {}).get("baselines") or {}).get(tier) or {}
     for key, metrics in sorted(aggregates.items()):
         cat, arm = key.split("|", 1)
-        base = (tier_base.get(cat) or {}).get(arm) or {}
+        model = metrics.get("model") or "sonnet"
+        base = _resolve_arm_baseline((tier_base.get(cat) or {}).get(arm) or {}, model)
         for metric, direction in METRIC_DIRECTION.items():
             cur = metrics.get(metric)
             old = base.get(metric)
@@ -159,6 +185,7 @@ def compare_to_baseline(aggregates: dict, baselines_doc: dict, tier: str) -> lis
                 {
                     "category": cat,
                     "arm": arm,
+                    "model": model,
                     "metric": metric,
                     "baseline": old,
                     "current": cur,
@@ -191,8 +218,9 @@ def render_run_md(
         lines += ["**!! REGRESSION vs baseline** (advisory, never blocking):", ""]
         for d in regressions:
             delta = "n/a (baseline 0)" if d["delta_pct"] is None else f"{d['delta_pct']:+.1f}%"
+            arm_label = d["arm"] if d.get("model") in (None, "sonnet") else f"{d['arm']}@{d['model']}"
             lines.append(
-                f"- {d['category']}/{d['arm']} {d['metric']}: "
+                f"- {d['category']}/{arm_label} {d['metric']}: "
                 f"{d['baseline']} -> {d['current']} ({delta})"
             )
         lines.append("")
