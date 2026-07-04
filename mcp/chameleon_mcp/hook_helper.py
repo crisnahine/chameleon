@@ -5610,6 +5610,7 @@ def _idiom_review_gate(
     state,
     cfg,
     repo_data: Path,
+    marker_scope: str | None = None,
 ) -> dict | None:
     """Reflexive idiom/principle review at turn end.
 
@@ -5705,9 +5706,14 @@ def _idiom_review_gate(
         # next turn from re-blocking.
         from chameleon_mcp.optouts import _safe_session_marker
 
-        marker = repo_data / _IDIOM_REVIEWED_FILENAME.format(
-            session=_safe_session_marker(session_id)
-        )
+        # marker_scope discriminates the once-per-session marker by workspace so
+        # a shared-repo_id monorepo (apps/a + apps/b under ONE repo_data) reviews
+        # each workspace's distinct idioms.md instead of collapsing them onto the
+        # first root's marker. None (single-root) keeps the legacy filename.
+        _marker_name = _IDIOM_REVIEWED_FILENAME.format(session=_safe_session_marker(session_id))
+        if marker_scope:
+            _marker_name = f"{_marker_name}.{marker_scope}"
+        marker = repo_data / _marker_name
         if marker.exists():
             _emit_check_event(repo_id, session_id, "idiom_review", "skipped", "marker_exists")
             return None
@@ -8328,6 +8334,8 @@ def _stop_gates(
     is_subagent: bool,
     repo_data: Path,
     daemon_state: dict | None = None,
+    only_files: set[str] | None = None,
+    allow_model_spawn: bool = True,
 ) -> dict:
     """Run the turn-end gates and return the hook-output dict (never emits).
 
@@ -8338,6 +8346,26 @@ def _stop_gates(
     before repo resolution so an enforce-off session still reaches the caller's
     attestation write with its env state recorded; it returns {} immediately,
     exactly as the old early return did. Fails open to {}.
+
+    Multi-root (coordinator monorepo) parameters, all defaulting to the
+    single-root behavior so the ordinary path is unchanged:
+
+    - ``only_files``: when set, ``state.files`` is filtered to just these
+      absolute paths right after load, scoping the candidate re-lint AND every
+      advisory helper (they all read ``state.files``) to one workspace's edits.
+      A shared-repo_id monorepo keeps ALL workspaces' files in one state file;
+      scoping lets each workspace re-lint against its own profile. In this mode
+      the internal saves use ``prune_missing=False`` so root-A's save cannot
+      delete root-B's just-deleted entry before root-B's scoped pass records it.
+    - ``allow_model_spawn``: when False, the correctness judge, multi-lens, AND
+      duplication gates (every ``claude -p`` spawn site) are skipped so the whole
+      Stop pays for at most one reviewer across all roots; deterministic
+      advisories still run.
+
+    The multi-root caller short-circuits on the first blocking root (armed roots
+    rank first), so ``stop_hook_blocks`` is incremented for exactly one root per
+    Stop even when several workspaces share one ``repo_data`` -- the anti-loop
+    cap cannot be double-spent.
     """
     try:
         from chameleon_mcp.enforcement import load_state, save_state
@@ -8356,13 +8384,41 @@ def _stop_gates(
             return {}
 
         state = load_state(repo_data, session_id or "")
+        # Multi-root scoping: keep only this workspace's files so the candidate
+        # loop and every advisory helper (which all iterate state.files) see just
+        # the edits that belong to repo_root. The session counters ride along on
+        # the same loaded state; the additive save-merge preserves other roots'
+        # entries. prune_missing must be off here (see the save below).
+        if only_files is not None:
+            state.files = {k: v for k, v in state.files.items() if k in only_files}
+        _prune_on_save = only_files is None
+        # Per-workspace discriminator in multi-root mode: a shared-repo_id monorepo
+        # keeps one repo_data for many workspaces. Both the once-per-session idiom
+        # marker AND the anti-loop block budget must be scoped by workspace, or one
+        # workspace collapses the other's idiom review / exhausts the other's cap.
+        # None (single-root) keeps the legacy scalar/marker so old state and tests
+        # are unchanged.
+        _ws_scope: str | None = None
+        if only_files is not None:
+            try:
+                _ws_scope = hashlib.sha256(str(repo_root.resolve()).encode("utf-8")).hexdigest()[
+                    :12
+                ]
+            except OSError:
+                _ws_scope = hashlib.sha256(str(repo_root).encode("utf-8")).hexdigest()[:12]
 
         # Cap reached: the backstop must never BLOCK again this session (so an
         # unresolvable violation cannot trap the turn in a loop), but the turn-end
         # advisories still run below -- silencing them once the block budget was
         # spent was a coverage gap. cap_reached suppresses only the block, not the
-        # advisory pipeline.
-        cap_reached = state.stop_hook_blocks >= cfg.stop_block_cap
+        # advisory pipeline. Multi-root reads the per-workspace budget so one dirty
+        # workspace's blocks never downgrade a sibling's hard block to advisory.
+        _block_count = (
+            state.stop_hook_blocks_by_root.get(_ws_scope, 0)
+            if _ws_scope
+            else state.stop_hook_blocks
+        )
+        cap_reached = _block_count >= cfg.stop_block_cap
         if cap_reached:
             _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "cap_reached")
 
@@ -8464,7 +8520,7 @@ def _stop_gates(
 
         if cleared_any:
             try:
-                save_state(state, repo_data, session_id or "", prune_missing=True)
+                save_state(state, repo_data, session_id or "", prune_missing=_prune_on_save)
             except Exception:
                 pass
 
@@ -8497,6 +8553,7 @@ def _stop_gates(
                     state=state,
                     cfg=cfg,
                     repo_data=repo_data,
+                    marker_scope=_ws_scope,
                 )
             )
             idiom_advisory: str | None = None
@@ -8511,16 +8568,38 @@ def _stop_gates(
             # before the gate runs. The duplication gate reads this to defer
             # when the judge is already paying for a spawn, so a single turn
             # never fires two reviewer models.
-            route = _correctness_judge_route(
-                repo_root=repo_root,
-                repo_id=repo_id,
-                session_id=session_id,
-                state=state,
-                cfg=cfg,
-                repo_data=repo_data,
-                daemon_state=daemon_state,
-                is_subagent=is_subagent,
-            )
+            #
+            # allow_model_spawn is False on every non-first root of a multi-root
+            # Stop: the reviewer budget (one claude -p across the whole 55s Stop)
+            # was spent by the ranked-first root. Skip the route computation
+            # entirely (its risk facts / blast-radius reads are the fixed cost we
+            # do not want to pay per root) and force a non-spawning route so the
+            # multi-lens, correctness, AND duplication gates below all read
+            # spawn=False. Deterministic advisories still run for this root.
+            if allow_model_spawn:
+                route = _correctness_judge_route(
+                    repo_root=repo_root,
+                    repo_id=repo_id,
+                    session_id=session_id,
+                    state=state,
+                    cfg=cfg,
+                    repo_data=repo_data,
+                    daemon_state=daemon_state,
+                    is_subagent=is_subagent,
+                )
+            else:
+                _emit_check_event(
+                    repo_id, session_id, "correctness_judge", "skipped", "multiroot_budget"
+                )
+                route = {
+                    "spawn": False,
+                    "fresh": [],
+                    "digests": {},
+                    "turn_key": None,
+                    "intent_tokens": [],
+                    "skip_reason": "multiroot_budget",
+                    "reason": None,
+                }
             corr_spawning = bool(route.get("spawn"))
 
             # Idiom gate did not block: the turn is free to end. Run the
@@ -8541,28 +8620,33 @@ def _stop_gates(
             )
             multilens_lines: list[str] = []
             judged = None
-            if cfg.multi_lens_review and not is_subagent:
-                multilens_lines = _multi_lens_review_lines(
-                    repo_root=repo_root,
-                    repo_id=repo_id,
-                    session_id=session_id,
-                    state=state,
-                    cfg=cfg,
-                    repo_data=repo_data,
-                    daemon_state=daemon_state,
-                    route=route,
-                )
-            else:
-                judged = _correctness_judge_gate(
-                    repo_root=repo_root,
-                    repo_id=repo_id,
-                    session_id=session_id,
-                    state=state,
-                    cfg=cfg,
-                    repo_data=repo_data,
-                    daemon_state=daemon_state,
-                    route=route,
-                )
+            # allow_model_spawn=False (a non-first root) skips the reviewer gates
+            # outright: the ranked-first root owns the session's one spawn. Both
+            # bail internally on a non-spawning route anyway, but skipping the call
+            # also spares the per-root fixed cost of their pre-spawn reads.
+            if allow_model_spawn:
+                if cfg.multi_lens_review and not is_subagent:
+                    multilens_lines = _multi_lens_review_lines(
+                        repo_root=repo_root,
+                        repo_id=repo_id,
+                        session_id=session_id,
+                        state=state,
+                        cfg=cfg,
+                        repo_data=repo_data,
+                        daemon_state=daemon_state,
+                        route=route,
+                    )
+                else:
+                    judged = _correctness_judge_gate(
+                        repo_root=repo_root,
+                        repo_id=repo_id,
+                        session_id=session_id,
+                        state=state,
+                        cfg=cfg,
+                        repo_data=repo_data,
+                        daemon_state=daemon_state,
+                        route=route,
+                    )
 
             # Stale-test advisory: a turn that edited a paired source but left its
             # existing test untouched gets a coverage nudge. Advisory only, folded
@@ -8622,8 +8706,14 @@ def _stop_gates(
             # duplication, so the standalone gate must run here -- otherwise the
             # default config silently starves duplication after the session's first
             # spawn.
+            # allow_model_spawn gates the standalone duplication gate too: it
+            # spawns its own reviewer independently of the correctness route, so
+            # forcing route.spawn=False would REMOVE the defer and let a non-first
+            # root spawn a second claude -p, blowing the 55s wall cap. On a
+            # non-first root skip it entirely -- the ranked-first root already
+            # owns the session's one reviewer spawn.
             dup_lines: list[str] = []
-            if not is_subagent and not multilens_owns_dup:
+            if allow_model_spawn and not is_subagent and not multilens_owns_dup:
                 _corr_active = bool(
                     corr_spawning
                     and (not route.get("spawn_failed") or route.get("spawn_timed_out"))
@@ -8780,7 +8870,16 @@ def _stop_gates(
                     if distinct_rules
                     else ""
                 )
-                state.stop_hook_blocks += 1
+                # The multi-root caller short-circuits on the FIRST blocking root
+                # (armed roots rank first), so exactly one root reaches this
+                # increment per Stop even when several workspaces share one
+                # repo_data -- the anti-loop cap cannot be double-spent in a
+                # single Stop. Multi-root charges the per-workspace budget so one
+                # workspace's blocks never exhaust a sibling's cap.
+                if _ws_scope:
+                    state.stop_hook_blocks_by_root[_ws_scope] = _block_count + 1
+                else:
+                    state.stop_hook_blocks += 1
                 try:
                     save_state(state, repo_data, session_id or "")
                 except Exception:
@@ -9084,6 +9183,190 @@ def _write_session_attestation(
         pass
 
 
+def _discover_stop_roots(cwd: Path, session_id) -> list[dict]:
+    """Every workspace root whose enforcement state was touched this session.
+
+    Closes the coordinator-root dead spot: a session launched at a monorepo
+    coordinator (its cwd resolves to a profile-less git root, or edits landed in
+    sibling repos) has its per-edit state written under EACH edited file's own
+    workspace repo_id, not the cwd's. This globs the session-keyed state files
+    across every repo_id dir and regroups their recorded files by each file's
+    OWN ``find_repo_root``, so the Stop can gate every touched workspace against
+    its own profile instead of the one cwd resolves to.
+
+    Each state file's parent dir NAME is the authoritative repo_id (the dir the
+    armed state actually lives in). It is NOT recomputed via
+    ``_compute_repo_id(ws_root)`` -- a workspace's live git identity can shift
+    between the posttool write and the Stop (a remote added mid-session, a
+    transient ``git remote`` failure), which would point the gate at a different,
+    empty state dir and silently miss the armed block.
+
+    Returns an ordered list of dicts (armed-bearing roots first, then by
+    descending touched-file count, then path -- a deterministic tiebreak so the
+    single model-spawn budget and any replay are stable), each:
+    ``{"ws_root", "repo_id", "repo_data", "files": set[str], "has_armed": bool}``.
+    Fails open to the cwd root alone (or []) on any error.
+    """
+    from chameleon_mcp.optouts import _safe_session_marker
+    from chameleon_mcp.profile.loader import find_repo_root
+    from chameleon_mcp.tools import _compute_repo_id
+
+    groups: dict[str, dict] = {}
+
+    def _add(ws_root: Path, repo_id: str, repo_data: Path, *, path=None, armed=False):
+        try:
+            ws_key = str(ws_root.resolve())
+        except OSError:
+            ws_key = str(ws_root)
+        # Key by (repo_data, ws_root), NOT ws_root alone: if a workspace's git
+        # identity shifts mid-session (an origin remote added, a transient git
+        # failure changing the _compute_repo_id fallback), the same ws_root has
+        # armed state under TWO repo_data dirs. Keying by ws_root alone would
+        # collapse them and gate only the first dir's state, silently missing the
+        # other's armed block. A (repo_data, ws_root) key gates each contributing
+        # state file so every armed entry is re-linted. Normal topologies (one
+        # repo_data per ws_root) produce one group either way.
+        key = f"{repo_data}\x00{ws_key}"
+        g = groups.get(key)
+        if g is None:
+            g = {
+                "ws_root": ws_root,
+                "repo_id": repo_id,
+                "repo_data": repo_data,
+                "files": set(),
+                "has_armed": False,
+            }
+            groups[key] = g
+        if path is not None:
+            g["files"].add(path)
+        if armed:
+            g["has_armed"] = True
+
+    marker = _safe_session_marker(session_id)
+    # A degenerate empty/None session_id collapses to the shared "unknown" marker.
+    # Globbing that bucket would pull in unrelated repos' leftover "unknown" state
+    # (state files are never reaped), so restrict discovery to the cwd root only.
+    if marker != "unknown":
+        from chameleon_mcp.enforcement import load_state
+
+        try:
+            # Sorted so the discovered order (and, with the (repo_data, ws_root)
+            # keying above, which group a ws_root's files land in) is stable
+            # rather than filesystem glob-order dependent.
+            state_files = sorted(_plugin_data_dir().glob(f"*/.enforcement.{marker}.json"))
+        except OSError:
+            state_files = []
+        for sf in state_files:
+            repo_data = sf.parent
+            repo_id = repo_data.name
+            try:
+                st = load_state(repo_data, session_id or "")
+            except Exception:
+                continue
+            for path, fs in st.files.items():
+                try:
+                    ws = find_repo_root(Path(path))
+                except Exception:
+                    ws = None
+                if ws is None:
+                    continue
+                _add(
+                    ws,
+                    repo_id,
+                    repo_data,
+                    path=path,
+                    armed=bool(getattr(fs, "blockable_unresolved", False)),
+                )
+
+    # Always include the cwd root if it resolves + carries a profile, so the
+    # idiom review and attestation run for the primary repo even with zero armed
+    # files (today's behavior). A cwd root already grouped from a state file keeps
+    # that state file's authoritative repo_id.
+    try:
+        cwd_root = find_repo_root(cwd)
+    except Exception:
+        cwd_root = None
+    if cwd_root is not None:
+        try:
+            cwd_id = _compute_repo_id(cwd_root)
+            _add(cwd_root, cwd_id, _plugin_data_dir() / cwd_id)
+        except Exception:
+            pass
+
+    ordered = sorted(
+        groups.values(),
+        key=lambda g: (0 if g["has_armed"] else 1, -len(g["files"]), str(g["ws_root"])),
+    )
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+
+        cap = threshold_int("STOP_MAX_ROOTS")
+    except Exception:
+        cap = 16
+    return ordered[:cap]
+
+
+def _gate_one_root(
+    *,
+    payload: dict,
+    root: dict,
+    session_id,
+    is_subagent: bool,
+    daemon_state: dict,
+    only_files: set[str] | None,
+    allow_model_spawn: bool,
+) -> dict:
+    """Trust / suppression / stale gates + ``_stop_gates`` for one workspace.
+
+    Returns ``{"output", "attest", "gated", "suppressed_reason"}``. ``gated`` is
+    False for an untrusted or stale grant -- that root is skipped entirely and,
+    matching today's single-root behavior, writes no attestation. A suppressed
+    (paused / session-disabled) root skips the gates (output {}) but still
+    attests, because the disable window is the scrutiny-relevant fact.
+    """
+    from chameleon_mcp.optouts import is_chameleon_suppressed
+    from chameleon_mcp.profile.trust import profile_diverged_from_grant, trust_state_for
+
+    ws_root = root["ws_root"]
+    repo_id = root["repo_id"]
+    repo_data = root["repo_data"]
+
+    rec = trust_state_for(repo_id)
+    # Per-root trust, never unioned: a grant on one workspace (or the coordinator)
+    # does not vouch for another workspace's unreviewed profile. grants_root
+    # resolves membership correctly even under a monorepo-shared repo_id.
+    if rec is None or not rec.grants_root(ws_root):
+        return {"output": {}, "attest": False, "gated": False, "suppressed_reason": None}
+    if profile_diverged_from_grant(rec, ws_root, _enf_profile_dir(ws_root)):
+        return {"output": {}, "attest": False, "gated": False, "suppressed_reason": None}
+
+    suppressed_reason = is_chameleon_suppressed(ws_root, repo_id, session_id)
+    if suppressed_reason is not None:
+        _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "suppressed")
+        return {
+            "output": {},
+            "attest": True,
+            "gated": True,
+            "suppressed_reason": suppressed_reason,
+        }
+
+    try:
+        output = _stop_gates(
+            payload=payload,
+            repo_root=ws_root,
+            repo_id=repo_id,
+            session_id=session_id,
+            is_subagent=is_subagent,
+            repo_data=repo_data,
+            daemon_state=daemon_state,
+            only_files=only_files,
+            allow_model_spawn=allow_model_spawn,
+        )
+    except Exception:
+        output = {}
+    return {"output": output, "attest": True, "gated": True, "suppressed_reason": None}
+
+
 def stop_backstop() -> int:
     """Stop / SubagentStop: refuse to end the turn while a touched file holds an
     unresolved hard-class violation, then run a once-per-session reflexive
@@ -9091,19 +9374,26 @@ def stop_backstop() -> int:
     per-session cap and the stop_hook_active flag so it can never trap the user
     in a loop.
 
-    After the gates finish (see _stop_gates), a top-level Stop writes one
-    signed session attestation -- which checks ran/skipped/degraded, the
-    governed vs ungoverned touched files with pinned decision snapshots, the
-    session's inline overrides, and any observable disable/pause state. The
-    write happens strictly after the gates saved state and strictly before the
-    hook output is emitted, so it can never race the state it reads (no
-    concurrent Stop gate exists in-process and SubagentStop never writes).
-    CHAMELEON_ATTESTATION=0 disables the write. Sessions that never reach the
-    gates -- no repo, untrusted, stale profile hash, stop_hook_active, and
-    CHAMELEON_DISABLE=1 (the bash wrapper exits pre-python) -- write nothing:
-    that absence is itself the downstream signal. Paused/disabled and
-    enforce-off sessions DO write a minimal attestation, because the disable
-    window is exactly the scrutiny-relevant fact, with hook output unchanged.
+    Multi-root by default (kill switch ``CHAMELEON_MULTIROOT_STOP=0``): the turn
+    edited files whose per-edit hooks wrote state under EACH file's own workspace
+    repo_id, so a session launched at a monorepo coordinator (whose own root is
+    profile-less/untrusted) would otherwise leave every touched workspace
+    ungated. Discovery regroups the session's state by each file's workspace and
+    runs the gate pipeline per workspace against its own profile, honoring
+    per-workspace trust (never unioned) and spending at most one reviewer spawn
+    across the whole Stop. It short-circuits on the first blocking root (armed
+    roots rank first), so the anti-loop cap is charged to one root per Stop;
+    advisories from every non-blocking root are merged into one Stop context.
+
+    After the gates finish, each distinct run-root (top-level Stop only) writes
+    one signed session attestation -- checks ran/skipped/degraded, governed vs
+    ungoverned touched files with pinned decision snapshots, inline overrides,
+    and any observable disable/pause state. CHAMELEON_ATTESTATION=0 disables the
+    write. Untrusted/stale roots, stop_hook_active, and CHAMELEON_DISABLE=1 (the
+    bash wrapper exits pre-python) write nothing; a Stop that discovers no
+    trusted run-root at all writes nothing, so that absence stays a downstream
+    signal. Paused/disabled and enforce-off roots DO write a minimal attestation,
+    because the disable window is the scrutiny-relevant fact.
     """
     payload = _read_payload_dict()
     if payload is None:
@@ -9127,71 +9417,108 @@ def stop_backstop() -> int:
         cwd = Path.cwd()
 
     try:
-        from chameleon_mcp.optouts import is_chameleon_suppressed
-        from chameleon_mcp.profile.loader import find_repo_root
-        from chameleon_mcp.profile.trust import (
-            profile_diverged_from_grant,
-            trust_state_for,
-        )
-        from chameleon_mcp.tools import _compute_repo_id
-
-        repo_root = find_repo_root(cwd)
-        if repo_root is None:
-            _emit({})
-            return 0
-        repo_id = _compute_repo_id(repo_root)
-        # Suppression no longer exits immediately: a paused or session-disabled
-        # session skips the gates (hook output stays {}) but still writes a
-        # minimal attestation below carrying the suppression state.
-        suppressed_reason = is_chameleon_suppressed(repo_root, repo_id, session_id)
-        rec = trust_state_for(repo_id)
-        if rec is None or not rec.grants_root(repo_root):
-            _emit({})
-            return 0
-        # A "stale" grant (the profile hash drifted from the one the user trusted)
-        # only verifies; it never blocks the turn, mirroring the PreToolUse and
-        # PostToolUse gates. Trust persists across changes by default, so this is
-        # reached only under CHAMELEON_TRUST_REVALIDATE=1.
-        if profile_diverged_from_grant(rec, repo_root, _enf_profile_dir(repo_root)):
-            _emit({})
-            return 0
-
-        repo_data = _plugin_data_dir() / repo_id
-        # One daemon-liveness flag for the whole Stop, shared between the gates
-        # and the attestation writer: a hung daemon costs at most one probe.
-        daemon_state = {"available": True}
-
-        if suppressed_reason is not None:
-            _emit_check_event(repo_id, session_id, "stop_relint", "skipped", "suppressed")
-            output: dict = {}
+        multiroot = os.environ.get("CHAMELEON_MULTIROOT_STOP") != "0"
+        if multiroot:
+            roots = _discover_stop_roots(cwd, session_id)
         else:
-            try:
-                output = _stop_gates(
-                    payload=payload,
-                    repo_root=repo_root,
-                    repo_id=repo_id,
-                    session_id=session_id,
-                    is_subagent=is_subagent,
-                    repo_data=repo_data,
-                    daemon_state=daemon_state,
-                )
-            except Exception:
-                output = {}
+            # Kill switch: today's single-root discovery (cwd only), so the
+            # legacy path is available if the fan-out ever misbehaves.
+            from chameleon_mcp.profile.loader import find_repo_root
+            from chameleon_mcp.tools import _compute_repo_id
 
-        if not is_subagent and os.environ.get("CHAMELEON_ATTESTATION") != "0":
+            cwd_root = find_repo_root(cwd)
+            if cwd_root is None:
+                _emit({})
+                return 0
+            cwd_id = _compute_repo_id(cwd_root)
+            roots = [
+                {
+                    "ws_root": cwd_root,
+                    "repo_id": cwd_id,
+                    "repo_data": _plugin_data_dir() / cwd_id,
+                    "files": set(),
+                    "has_armed": False,
+                }
+            ]
+
+        if not roots:
+            _emit({})
+            return 0
+
+        single = len(roots) == 1
+        # One daemon-liveness flag for the whole Stop, shared across every root's
+        # gates and attestation, so a hung daemon costs at most one probe.
+        daemon_state = {"available": True}
+        attested: set[str] = set()
+        allow_spawn = True
+        block_output: dict | None = None
+        advisory_contexts: list[str] = []
+
+        def _attest(root: dict, suppressed_reason) -> None:
+            if is_subagent or os.environ.get("CHAMELEON_ATTESTATION") == "0":
+                return
+            if root["repo_id"] in attested:
+                return
+            attested.add(root["repo_id"])
             try:
                 _write_session_attestation(
-                    repo_root=repo_root,
-                    repo_id=repo_id,
+                    repo_root=root["ws_root"],
+                    repo_id=root["repo_id"],
                     session_id=session_id,
-                    repo_data=repo_data,
+                    repo_data=root["repo_data"],
                     suppressed_reason=suppressed_reason,
                     daemon_state=daemon_state,
                 )
             except Exception:
                 pass
 
-        _emit(output)
+        for root in roots:
+            # Single root scopes to nothing (only_files=None) so the fast path is
+            # output-equivalent to today, including prune_missing=True. Multi-root
+            # scopes each pass to its workspace's files so a shared-repo_id state
+            # file is re-linted per profile.
+            only_files = None if single else set(root["files"])
+            res = _gate_one_root(
+                payload=payload,
+                root=root,
+                session_id=session_id,
+                is_subagent=is_subagent,
+                daemon_state=daemon_state,
+                only_files=only_files,
+                allow_model_spawn=allow_spawn,
+            )
+            if not res["gated"]:
+                continue
+            _attest(root, res["suppressed_reason"])
+            out = res["output"]
+            if out.get("decision") == "block":
+                # Short-circuit: refuse the turn on the first blocking workspace
+                # (armed roots rank first). A block discards advisories, exactly
+                # as the single-root path does.
+                block_output = out
+                break
+            ac = (out.get("hookSpecificOutput") or {}).get("additionalContext")
+            if ac:
+                advisory_contexts.append(ac)
+            # The first gated, non-suppressed root spent the session's one
+            # reviewer-spawn budget; every later root runs deterministic-only.
+            if res["suppressed_reason"] is None:
+                allow_spawn = False
+
+        if block_output is not None:
+            _emit(block_output)
+            return 0
+        if advisory_contexts:
+            _emit(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "Stop",
+                        "additionalContext": "\n\n".join(advisory_contexts),
+                    }
+                }
+            )
+            return 0
+        _emit({})
         return 0
     except Exception:
         _emit({})

@@ -4,6 +4,60 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.39.0] - 2026-07-04
+
+Closes the tracked v2.38.28 coordinator-root dead spot: the turn-end Stop safety
+net now runs for a pure-coordinator monorepo instead of silently no-op'ing at the
+profile-less root.
+
+### Added
+
+- **Multi-root Stop backstop** (default on, kill switch `CHAMELEON_MULTIROOT_STOP=0`).
+  At a coordinator monorepo (a pnpm/turbo/nx root that has its own `.git` but no
+  `.chameleon`, with each workspace carrying its own profile) the session's cwd
+  resolved to the profile-less root, so `stop_backstop` bailed at the trust gate
+  and the ENTIRE turn-end layer — the unresolved-violation block, the idiom
+  review, the correctness/multi-lens/duplication judges, and the attestation —
+  never ran, even though the per-edit hooks worked. The per-edit hooks already
+  key enforcement state by each edited file's OWN workspace repo_id (not cwd), so
+  `stop_backstop` now discovers every touched workspace from that state
+  (`_discover_stop_roots` globs `_plugin_data_dir()/*/.enforcement.<marker>.json`
+  and regroups each state file's recorded files by `find_repo_root(file)`) and
+  runs the gate pipeline per workspace against its own profile. It also covers the
+  sibling-repo case (cwd resolves fine but the turn edited files in another repo).
+  - **Per-workspace trust, never unioned.** Each workspace is gated by
+    `grants_root(ws_root)`; a grant on the coordinator or one workspace does not
+    vouch for another. Under a remote-backed monorepo where every workspace shares
+    one git-remote-derived repo_id, an ungranted workspace still reads untrusted
+    and is skipped — its unreviewed profile never gates and never surfaces.
+  - **One reviewer spawn per Stop.** The ranked-first armed root owns the
+    session's single `claude -p` budget; every other root runs deterministic gates
+    only (the correctness route/gate, multi-lens, AND the standalone duplication
+    gate are all skipped when the budget is spent), so the fan-out stays inside
+    the wrapper's 55s wall cap. Bounded by `CHAMELEON_STOP_MAX_ROOTS` (default 16;
+    armed roots rank first, so the cap only ever drops advisory-only roots).
+  - **Short-circuit on the first blocking root** (armed roots rank first), so the
+    anti-loop `stop_block_cap` is charged to exactly one root per Stop. The cap is
+    tracked per workspace (`stop_hook_blocks_by_root`, a migration-safe addition to
+    the enforcement state), so under a shared-repo_id monorepo one dirty
+    workspace's blocks never exhaust a sibling's budget and downgrade its genuine
+    hard block to advisory. Advisories from every non-blocking workspace merge into
+    one Stop context; one signed attestation is written per distinct run-root.
+  - **Repo-identity shift safety.** If a workspace's git identity shifts
+    mid-session (an origin remote added, a transient `git` failure) so its state
+    lands under two repo_id dirs, discovery keys groups by (repo_data, workspace)
+    and reads the state files in sorted order, so both dirs' armed entries are
+    re-linted instead of one being silently dropped.
+  - **Per-workspace idiom review.** The once-per-session idiom-review marker is
+    keyed by workspace, so a shared-repo_id monorepo reviews each workspace's
+    distinct `idioms.md` instead of collapsing them onto the first root's marker.
+  - A degenerate empty/None `session_id` (marker `unknown`) skips the glob (cwd
+    root only) so a shared bucket cannot pull unrelated repos into the Stop. A
+    single-repo session is output-equivalent to the legacy single-root path, which
+    the kill switch restores exactly. Discovery/gating fail open per root: a
+    corrupt state file, an unresolvable path, or a raising helper drops that root
+    and never crashes the Stop.
+
 ## [2.38.32] - 2026-07-04
 
 Two effectiveness fixes from the verified roadmap: the credential/eval deny no
@@ -227,6 +281,7 @@ build; the co-change advisory rules had three framework gaps, now fixed.
 
 - The turn-end Stop safety net does not run for a pure-coordinator monorepo root
   (Claude Code's cwd is the profile-less root); per-edit guidance still works.
+  (Closed in v2.39.0 by the multi-root Stop backstop.)
 - A cross-workspace existence break (a removed export imported only across a
   workspace boundary) is not flagged, because per-workspace reverse indexes don't
   record sibling-workspace importers.

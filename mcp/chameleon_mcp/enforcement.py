@@ -81,6 +81,14 @@ class EnforcementState:
     idioms_shown_names: set[str] = field(default_factory=set)
     files: dict[str, FileState] = field(default_factory=dict)
     stop_hook_blocks: int = 0
+    # Per-workspace anti-loop block budget, keyed by a workspace discriminator.
+    # A coordinator monorepo whose workspaces share one git-remote-derived repo_id
+    # shares ONE state file, so the scalar stop_hook_blocks above would let one
+    # dirty workspace exhaust the cap and downgrade a sibling's genuine hard block
+    # to advisory. The multi-root Stop charges the cap per workspace here instead.
+    # The single-root path still uses the scalar (this stays empty), so old state
+    # files load unchanged.
+    stop_hook_blocks_by_root: dict[str, int] = field(default_factory=dict)
     duplication_spawns: int = 0
     correctness_spawns: int = 0
 
@@ -91,12 +99,14 @@ class EnforcementState:
             "idioms_shown_names": sorted(self.idioms_shown_names),
             "files": {k: v.to_dict() for k, v in self.files.items()},
             "stop_hook_blocks": self.stop_hook_blocks,
+            "stop_hook_blocks_by_root": dict(self.stop_hook_blocks_by_root),
             "duplication_spawns": self.duplication_spawns,
             "correctness_spawns": self.correctness_spawns,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> EnforcementState:
+        raw_by_root = d.get("stop_hook_blocks_by_root", {})
         return cls(
             archetypes_seen=set(d.get("archetypes_seen", [])),
             archetypes_with_violations=set(d.get("archetypes_with_violations", [])),
@@ -106,6 +116,13 @@ class EnforcementState:
             idioms_shown_names=set(d.get("idioms_shown_names", [])),
             files={k: FileState.from_dict(v) for k, v in d.get("files", {}).items()},
             stop_hook_blocks=d.get("stop_hook_blocks", 0),
+            # Absent in pre-upgrade files: empty map -> the multi-root gate starts
+            # every workspace's budget at zero, exactly like a fresh session.
+            stop_hook_blocks_by_root=(
+                {str(k): int(v) for k, v in raw_by_root.items()}
+                if isinstance(raw_by_root, dict)
+                else {}
+            ),
             duplication_spawns=d.get("duplication_spawns", 0),
             correctness_spawns=d.get("correctness_spawns", 0),
         )
@@ -157,6 +174,11 @@ def _merge_states(disk: EnforcementState, mem: EnforcementState) -> EnforcementS
         if dfs is None or (mfs.last_verified_at or 0) >= (dfs.last_verified_at or 0):
             merged.files[key] = mfs
     merged.stop_hook_blocks = max(disk.stop_hook_blocks, mem.stop_hook_blocks)
+    # Per-workspace block budget: max per key, monotonic like the scalar above,
+    # so concurrent writers sharing a session never lower a workspace's count.
+    merged.stop_hook_blocks_by_root = dict(disk.stop_hook_blocks_by_root)
+    for k, v in mem.stop_hook_blocks_by_root.items():
+        merged.stop_hook_blocks_by_root[k] = max(merged.stop_hook_blocks_by_root.get(k, 0), v)
     merged.duplication_spawns = max(disk.duplication_spawns, mem.duplication_spawns)
     merged.correctness_spawns = max(disk.correctness_spawns, mem.correctness_spawns)
     return merged

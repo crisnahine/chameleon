@@ -795,7 +795,19 @@ Five places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
    violation that still fails a live re-lint refuses to end the turn, bounded by
    `enforcement.stop_block_cap` (default 3). This is the only place
    `phantom-import` and a single-edit secret block, since they are
-   level-independent here.
+   level-independent here. **Multi-root** (default on, kill switch
+   `CHAMELEON_MULTIROOT_STOP=0`): the per-edit hooks key enforcement state by
+   each edited file's OWN workspace repo_id, not the launch cwd, so at a
+   pure-coordinator monorepo root the Stop discovers every touched workspace
+   (`_discover_stop_roots` globs the session's state files and regroups their
+   recorded files by `find_repo_root(file)`) and runs the gate pipeline per
+   workspace against its own profile. Per-workspace trust is honored and never
+   unioned (`grants_root`), at most one reviewer spawn is paid across the whole
+   Stop, the block short-circuits on the first blocking root (so the cap is
+   charged to one root per Stop), advisories from every non-blocking workspace
+   merge into one context, and one attestation is written per distinct run-root.
+   A single-repo session is output-equivalent to the legacy single-root path.
+   Closes the v2.38.28 coordinator-root turn-end dead spot.
 5. **Idiom review.** When the turn edited files governed by idioms or
    principles and no lint block stood, the Stop hook blocks once per session to
    force a self-review against `idioms.md`/`principles.md`. Gated by

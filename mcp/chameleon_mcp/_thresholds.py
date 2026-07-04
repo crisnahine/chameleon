@@ -297,6 +297,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # beyond this depth the remaining outer text stays a harmless over-fire (never
     # a false negative). A safety bound on the fixpoint loop, not a tuning knob.
     "JSX_MAX_NEST_DEPTH": 32,
+    # Cap on the workspace roots the multi-root Stop backstop gates in one Stop.
+    # A coordinator-monorepo session can touch many workspaces; deterministic
+    # gates run per root, so this bounds the turn-end wall-clock (the 55s wrapper
+    # cap) against a pathological fan-out. Ranked armed-first, so the cap only
+    # drops the lowest-priority advisory-only roots, never an armed (blockable)
+    # one until every armed root is already covered.
+    "STOP_MAX_ROOTS": 16,
     # Cap on the source files the turn-end stale-test advisory names. When a turn
     # edits many paired sources without their tests, the list is truncated so the
     # advisory stays a short nudge rather than a wall of paths.
