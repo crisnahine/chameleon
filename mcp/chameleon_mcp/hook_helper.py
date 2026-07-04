@@ -5351,6 +5351,144 @@ _MACHINE_BLOCK_RE = re.compile(
 )
 
 
+_FINDING_HIGH_CONFIDENCE = 0.7
+
+
+def _finding_fingerprint(lens: str, rel: str | None, line, message: str | None) -> str:
+    """Stable per-(lens, file, locus) dedup key so the same finding across turns
+    is one logical ledger row. Uses a message PREFIX (wording is stable enough at
+    80 chars; the full message drifts less than the line does under edits)."""
+    loc = line if isinstance(line, int) else ""
+    key = f"{lens}|{rel or ''}|{loc}|{(message or '')[:80]}"
+    return hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _finding_severity(f: dict) -> str | None:
+    """Normalize a finding's severity across lens shapes: an explicit ``severity``
+    string wins; a correctness finding carries only ``confidence`` (0..1), mapped
+    to high at/above the confidence floor; a multi-lens finding surfaced by TWO
+    lenses independently agreeing reads high; else medium/unknown."""
+    sev = f.get("severity")
+    if isinstance(sev, str) and sev:
+        return sev
+    conf = f.get("confidence")
+    if isinstance(conf, (int, float)):
+        return "high" if conf >= _FINDING_HIGH_CONFIDENCE else "medium"
+    lenses = f.get("lenses")
+    if isinstance(lenses, list) and len(lenses) >= 2:
+        return "high"
+    return None
+
+
+def _finding_message(f: dict) -> str | None:
+    """The finding's human message across shapes: correctness uses ``message``,
+    the multi-lens synthesis uses ``claim``."""
+    m = f.get("message") or f.get("claim")
+    return m if isinstance(m, str) else None
+
+
+def _finding_is_high(severity: str | None) -> bool:
+    return isinstance(severity, str) and severity.strip().lower() in ("high", "block", "critical")
+
+
+def _ledger_persist(repo_id, session_id, repo_root: Path, lens: str, findings) -> None:
+    """Persist surfaced findings to the judge_findings ledger (the finding->fix
+    loop). ``findings`` is a list of ``{file, line, message, confidence?/severity?}``.
+    Records the reviewed file's content digest as the addressed/ignored anchor.
+    Gated by CHAMELEON_FINDING_LEDGER, fail-open, off the per-edit hot path."""
+    if os.environ.get("CHAMELEON_FINDING_LEDGER") == "0" or not repo_id or not findings:
+        return
+    try:
+        from chameleon_mcp.drift.observations import record_judge_finding
+
+        for f in findings:
+            if not isinstance(f, dict):
+                continue
+            rel = f.get("file")
+            rel = rel if isinstance(rel, str) else None
+            line = f.get("line")
+            anchor = None
+            if rel:
+                try:
+                    anchor = _content_digest_16(
+                        (repo_root / rel).read_bytes()[:100_000].decode("utf-8", errors="replace")
+                    )
+                except OSError:
+                    anchor = None
+            record_judge_finding(
+                repo_id,
+                lens=lens,
+                fingerprint=_finding_fingerprint(lens, rel, line, _finding_message(f)),
+                severity=_finding_severity(f),
+                rel_path=rel,
+                line=line if isinstance(line, int) else None,
+                anchor_digest=anchor,
+                ws_root=str(repo_root),
+                session_id=session_id,
+            )
+    except Exception:
+        return
+
+
+def _ledger_recheck_and_resurface(repo_id, session_id, repo_root: Path) -> list[str]:
+    """At Stop, BEFORE this turn's findings persist: re-check every open ledger
+    finding against the reviewed file's CURRENT digest -- changed or gone since
+    review => addressed (mark + drop) -- and re-surface an unaddressed
+    high-severity finding ONCE (mark resurfaced, emit one advisory line). A
+    finding already resurfaced and still unchanged is left alone (no re-nag).
+    Gated, fail-open to []."""
+    if os.environ.get("CHAMELEON_FINDING_LEDGER") == "0" or not repo_id:
+        return []
+    try:
+        from chameleon_mcp.drift.observations import mark_judge_finding, open_judge_findings
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        now = int(time.time())
+        resurfaced: list[dict] = []
+        # Scope to THIS workspace: in a shared-repo_id monorepo several workspaces
+        # share one drift.db, and a finding's rel_path is relative to the root
+        # that persisted it, so an unscoped re-check would mis-resolve a sibling
+        # workspace's findings against this root (file-not-here read as addressed).
+        for row in open_judge_findings(repo_id, ws_root=str(repo_root)):
+            fid = row.get("id")
+            rel = row.get("rel_path")
+            anchor = row.get("anchor_digest")
+            current = None
+            if isinstance(rel, str):
+                try:
+                    current = _content_digest_16(
+                        (repo_root / rel).read_bytes()[:100_000].decode("utf-8", errors="replace")
+                    )
+                except OSError:
+                    current = None  # file gone since review -> treat as addressed
+            # Changed or gone => the cited content moved => addressed (a proxy;
+            # aggregate telemetry, never per-row enforcement).
+            if current is None or (anchor is not None and current != anchor):
+                mark_judge_finding(repo_id, fid, status="addressed", resolved_at=now)
+                continue
+            # Unchanged and still 'open' and high-severity => one re-surface.
+            if row.get("status") == "open" and _finding_is_high(row.get("severity")):
+                mark_judge_finding(repo_id, fid, status="resurfaced")
+                resurfaced.append(row)
+        if not resurfaced:
+            return []
+        lines = [
+            f"[🦎 chameleon: {len(resurfaced)} unaddressed high-severity finding(s) "
+            "from a previous turn's review, surfaced once more]",
+            "Advisory; verify each before acting -- they may be wrong, or already handled.",
+        ]
+        for row in resurfaced[:8]:
+            rel = row.get("rel_path")
+            loc = sanitize_for_chameleon_context(str(rel)) if rel else "?"
+            ln = row.get("line")
+            if isinstance(ln, int):
+                loc += f":{ln}"
+            lines.append(f"- {loc} ({sanitize_for_chameleon_context(str(row.get('lens') or '?'))})")
+        return lines
+    except Exception:
+        return []
+
+
 def _pending_findings_block(repo_root: Path, repo_data: Path, session_id) -> str | None:
     """Deliver findings a detached judge left pending, or None.
 
@@ -6647,6 +6785,20 @@ def _correctness_judge_gate(
                 )
         except Exception:
             pass
+
+        # Persist to the finding->fix ledger (mirrors the multi-lens gate) so an
+        # unaddressed high-severity correctness finding is re-surfaced once next
+        # Stop. Correctness Findings carry `confidence`, mapped to severity.
+        _ledger_persist(
+            repo_id,
+            session_id,
+            repo_root,
+            "correctness",
+            [
+                {"file": f.file, "line": f.line, "message": f.message, "confidence": f.confidence}
+                for f in findings
+            ],
+        )
 
         if not findings:
             return None
@@ -8471,6 +8623,9 @@ def _multi_lens_review_lines(
             )
 
         surfaced = [f for f in synthesized if f.get("surface")]
+        # Persist to the finding->fix ledger so the next Stop can track whether
+        # each was addressed and re-surface an unaddressed high-severity one once.
+        _ledger_persist(repo_id, session_id, repo_root, "multi_lens", surfaced)
         if not surfaced:
             return []
 
@@ -8678,6 +8833,13 @@ def _stop_gates(
         # Stop pays for at most one failed daemon probe.
         if daemon_state is None:
             daemon_state = {"available": True}
+
+        # Finding->fix loop re-check (#9): run BEFORE this Stop's gates persist
+        # their findings, so it only ever re-checks PRIOR-Stop findings. It marks
+        # each addressed (the cited file changed since review) or leaves it open,
+        # and returns re-surface lines for an unaddressed high-severity finding
+        # (once each). Gated by CHAMELEON_FINDING_LEDGER, fail-open to [].
+        resurface_lines = _ledger_recheck_and_resurface(repo_id, session_id, repo_root)
 
         unresolved: list[str] = []
         # path -> enforceable hard rules still standing, so the shadow would_block
@@ -8976,6 +9138,10 @@ def _stop_gates(
                 )
 
             context_blocks: list[str] = []
+            if resurface_lines:
+                context_blocks.append(
+                    "<chameleon-context>\n" + "\n".join(resurface_lines) + "\n</chameleon-context>"
+                )
             if idiom_advisory:
                 context_blocks.append(idiom_advisory)
             if judged is not None:

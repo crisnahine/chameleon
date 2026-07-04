@@ -301,6 +301,161 @@ def record_decision(
         return
 
 
+def record_judge_finding(
+    repo_id: str,
+    *,
+    lens: str,
+    fingerprint: str,
+    severity: str | None = None,
+    rel_path: str | None = None,
+    line: int | None = None,
+    anchor_digest: str | None = None,
+    ws_root: str | None = None,
+    session_id: str | None = None,
+    observed_at: int | None = None,
+) -> None:
+    """Append one surfaced-finding row (the finding->fix loop).
+
+    Idempotent per fingerprint WITHIN a session: a re-surface at a later Stop
+    must not create a duplicate open row, so an existing open/resurfaced row for
+    the same (fingerprint, session) short-circuits the insert. Fail-open: any
+    sqlite error is swallowed (the ledger is advisory telemetry, never
+    load-bearing). ``repo_id``, ``lens``, and ``fingerprint`` are required.
+    """
+    if not repo_id or not lens or not fingerprint:
+        return
+    ts = observed_at if observed_at is not None else int(time.time())
+    try:
+        conn = _get_drift_conn(repo_id)
+    except (sqlite3.Error, OSError):
+        return
+    try:
+        with conn:
+            existing = conn.execute(
+                """
+                SELECT 1 FROM judge_findings
+                WHERE fingerprint = ? AND session_id IS ?
+                  AND status IN ('open', 'resurfaced')
+                LIMIT 1
+                """,
+                (fingerprint, session_id),
+            ).fetchone()
+            if existing:
+                return
+            conn.execute(
+                """
+                INSERT INTO judge_findings
+                  (session_id, lens, severity, rel_path, line, anchor_digest,
+                   fingerprint, ws_root, status, observed_at, resolved_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, NULL)
+                """,
+                (
+                    session_id,
+                    lens,
+                    severity,
+                    rel_path,
+                    line,
+                    anchor_digest,
+                    fingerprint,
+                    ws_root,
+                    ts,
+                ),
+            )
+            (count,) = conn.execute("SELECT COUNT(*) FROM judge_findings").fetchone()
+            if count > _EDIT_OBS_HARD_CAP:
+                # Same two-stage trim as the other durable tables.
+                ninety_days_ago = ts - 90 * 24 * 3600
+                conn.execute(
+                    "DELETE FROM judge_findings WHERE observed_at < ?",
+                    (ninety_days_ago,),
+                )
+                (count_after,) = conn.execute("SELECT COUNT(*) FROM judge_findings").fetchone()
+                if count_after > _EDIT_OBS_SOFT_CAP:
+                    conn.execute(
+                        """
+                        DELETE FROM judge_findings
+                        WHERE id NOT IN (
+                            SELECT id FROM judge_findings
+                            ORDER BY observed_at DESC LIMIT ?
+                        )
+                        """,
+                        (_EDIT_OBS_SOFT_CAP,),
+                    )
+    except sqlite3.Error:
+        return
+
+
+def open_judge_findings(
+    repo_id: str, *, ws_root: str | None = None, limit: int = 200
+) -> list[dict]:
+    """Findings not yet resolved (status open / resurfaced), newest first.
+
+    Powers the next-Stop re-check: each row's ``anchor_digest`` is compared to the
+    reviewed file's CURRENT digest to classify addressed vs still-open. ``ws_root``
+    MUST be passed by the re-check in a monorepo whose sub-projects share one
+    repo_id: it scopes to the workspace that persisted the row, so one workspace's
+    Stop never mis-resolves a sibling workspace's finding (its ``rel_path`` is
+    relative to a different root). Fail-open: any sqlite/OS error returns []."""
+    if not repo_id:
+        return []
+    try:
+        conn = _get_drift_conn(repo_id)
+    except (sqlite3.Error, OSError):
+        return []
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, session_id, lens, severity, rel_path, line, anchor_digest,
+                   fingerprint, status, observed_at
+            FROM judge_findings
+            WHERE status IN ('open', 'resurfaced') AND ws_root IS ?
+            ORDER BY observed_at DESC
+            LIMIT ?
+            """,
+            (ws_root, int(limit)),
+        ).fetchall()
+    except (sqlite3.Error, OSError, TypeError, ValueError):
+        return []
+    cols = (
+        "id",
+        "session_id",
+        "lens",
+        "severity",
+        "rel_path",
+        "line",
+        "anchor_digest",
+        "fingerprint",
+        "status",
+        "observed_at",
+    )
+    return [dict(zip(cols, r, strict=False)) for r in rows]
+
+
+def mark_judge_finding(
+    repo_id: str, finding_id: int, *, status: str, resolved_at: int | None = None
+) -> None:
+    """Set a finding row's ``status`` (addressed / ignored / resurfaced) by id.
+
+    ``resolved_at`` is stamped for a terminal status (addressed / ignored). Keyed
+    by the row id (from open_judge_findings) so a re-check updates exactly the row
+    it read. Fail-open: any sqlite error is swallowed."""
+    if not repo_id or not isinstance(finding_id, int) or not status:
+        return
+    resolved = resolved_at if status in ("addressed", "ignored") else None
+    try:
+        conn = _get_drift_conn(repo_id)
+    except (sqlite3.Error, OSError):
+        return
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE judge_findings SET status = ?, resolved_at = ? WHERE id = ?",
+                (status, resolved, finding_id),
+            )
+    except sqlite3.Error:
+        return
+
+
 def latest_decision(repo_id: str, rel_path: str) -> dict | None:
     """Most-recent decision_log row for a file, or None when there is no record.
 

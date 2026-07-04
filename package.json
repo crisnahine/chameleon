@@ -1,6 +1,6 @@
 {
   "name": "chameleon",
-  "version": "2.44.0",
+  "version": "2.45.0",
   "description": "Code that blends in. Auto-derives codebase conventions and injects archetype-aware guidance for AI-generated code.",
   "private": true,
   "license": "MIT",

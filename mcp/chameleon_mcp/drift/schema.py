@@ -116,6 +116,47 @@ CREATE TABLE IF NOT EXISTS decision_log (
 CREATE INDEX IF NOT EXISTS idx_decision_log_at ON decision_log(observed_at);
 CREATE INDEX IF NOT EXISTS idx_decision_log_path ON decision_log(rel_path, observed_at);
 CREATE INDEX IF NOT EXISTS idx_decision_log_digest ON decision_log(rel_path, content_digest);
+
+-- Surfaced-finding ledger (the finding->fix loop). The correctness judge and the
+-- multi-lens review can never block; nothing tracked whether a surfaced advisory
+-- was ever acted on, so a dropped high-severity finding was simply lost and there
+-- was zero telemetry on advisory efficacy. Each surfaced finding writes one row
+-- here at Stop; the next Stop re-checks the anchor (the reviewed file's content
+-- digest) to classify it addressed (the cited content changed) vs still-open, and
+-- an unaddressed high-severity finding is re-surfaced ONCE. `fingerprint` is the
+-- per-(lens, file, locus) dedup key so the same finding across turns is one
+-- logical row; `anchor_digest` is the 16-hex content digest of the reviewed file
+-- at review time (the addressed/ignored proxy); `status` is open / addressed /
+-- ignored / resurfaced. Durable per-repo history (not reset on refresh), bounded
+-- by the same two-stage age+recency trim as the other durable tables.
+-- `ws_root` is the absolute workspace root that persisted the row. In a
+-- monorepo whose sub-projects share ONE repo_id (a shared git remote), several
+-- workspaces share one drift.db, and each workspace's turn-end Stop must
+-- re-check only ITS OWN findings: without this discriminator the first
+-- workspace to run would compute `<its root>/<the other workspace's rel_path>`,
+-- find no such file, and wrongly mark every sibling workspace's finding
+-- "addressed" (file-gone), silently defeating the re-surface loop for them. The
+-- re-check filters on it; a legacy row (NULL ws_root) matches only the NULL
+-- filter, so it is not attributed to any workspace. Absolute + machine-local,
+-- which is correct: drift.db is a per-machine cache, never committed or shared.
+CREATE TABLE IF NOT EXISTS judge_findings (
+  id INTEGER PRIMARY KEY,
+  session_id TEXT,
+  lens TEXT NOT NULL,
+  severity TEXT,
+  rel_path TEXT,
+  line INTEGER,
+  anchor_digest TEXT,
+  fingerprint TEXT NOT NULL,
+  ws_root TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  observed_at INTEGER NOT NULL,
+  resolved_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_judge_findings_session ON judge_findings(session_id);
+CREATE INDEX IF NOT EXISTS idx_judge_findings_fp ON judge_findings(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_judge_findings_status ON judge_findings(status, ws_root);
+CREATE INDEX IF NOT EXISTS idx_judge_findings_at ON judge_findings(observed_at);
 """
 
 
