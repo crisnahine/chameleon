@@ -1605,6 +1605,15 @@ def _classify_profile_load_failure(profile_file: Path) -> str:
     schema = peek.get("schema_version") if isinstance(peek, dict) else None
     if isinstance(schema, int) and schema > MAX_SUPPORTED_SCHEMA_VERSION:
         return "profile_unsupported_schema_version"
+    # A parseable profile that declares a newer engine_min_version is not corrupt
+    # either -- it needs a chameleon upgrade, not a re-derive. Distinguish it so
+    # the degraded banner (and detect_repo) steer to upgrade, not a dead-end
+    # /chameleon-refresh on the too-old engine.
+    try:
+        if _profile_requires_newer_engine(profile_file.parent) is not None:
+            return "profile_too_new"
+    except Exception:
+        pass
     return "profile_corrupted"
 
 
@@ -1738,7 +1747,17 @@ def _idiom_block_names(idioms_text: str) -> set[str]:
     """
     truncated = False
     text = idioms_text
+    # _shape_idioms_for_block emits one of two char-cap tails: the legacy
+    # "(idioms truncated ...)" or the honest-count "+N idiom(s) not shown ...".
+    # Both mark that the cut landed inside the last block, so BOTH must strip the
+    # tail and trip the last-block skip guard -- otherwise a char-cut-sliced idiom
+    # (header only, description gone) is wrongly recorded as shown and the Stop
+    # review reduces a never-read idiom to a name (the v2.38.22 regression).
     marker = text.rfind("\n... (idioms truncated")
+    if marker == -1:
+        alt = text.rfind("\n... +")
+        if alt != -1 and "idiom(s) not shown" in text[alt : alt + 64]:
+            marker = alt
     if marker != -1:
         truncated = True
         text = text[:marker]

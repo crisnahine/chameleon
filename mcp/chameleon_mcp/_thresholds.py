@@ -362,6 +362,13 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # unbounded scan; 200 ranks any real directory in full while capping the
     # pathological case on the <100ms hot path.
     "NEARBY_SIG_SCAN_CAP": 200,
+    # Per-edit inbound caller-contract section (#2): how many of the edited file's
+    # OWN exports to show recorded callers for, how many caller sites per export,
+    # and the total char budget. Bounded so the "who breaks if you change this
+    # signature" directive stays a short pre-edit nudge, not a wall of call sites.
+    "INBOUND_CALLERS_MAX_EXPORTS": 3,
+    "INBOUND_CALLERS_MAX_SITES": 5,
+    "INBOUND_CALLERS_MAX_CHARS": 600,
     # Minimum shared domain-word tokens between a new function's name and a
     # catalog candidate before the candidate is surfaced. One shared token (date,
     # slug, total) is enough to be worth the judge's look; zero overlap means the

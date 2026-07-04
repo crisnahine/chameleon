@@ -4,6 +4,46 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.40.0] - 2026-07-04
+
+Per-edit surface batch from the verified roadmap: turn cross-file staleness from
+turn-end detection into pre-edit prevention, and close two silent-coverage gaps
+in the Tier-2 block.
+
+### Added
+
+- **Inbound caller-contract injection** (default on, kill switch
+  `CHAMELEON_INBOUND_CALLERS=0`). On a Tier-2 edit, chameleon now injects the
+  edited file's own exports paired with their recorded call sites —
+  `getUser() <- src/order.ts:3, src/checkout/summary.ts:44 (+3 more)` — with a
+  "change a signature -> update these call sites in the same turn" directive.
+  This is the inbound counterpart to the nearby-signatures section (which shows
+  outbound contracts you might call); it moves chameleon's most-detected defect
+  class, cross-file staleness (previously surfaced only by the turn-end
+  correctness judge), to the moment of edit. Reads the same mtime-cached
+  `calls_index.json` + `symbol_signatures.json` (no live parse, no network),
+  renders outside the imitate-spotlight with sanitized paths/names, is bounded
+  (`CHAMELEON_INBOUND_CALLERS_MAX_EXPORTS`/`_MAX_SITES`/`_MAX_CHARS`), trust-gated
+  (untrusted repos return before composition), carries an honesty note (barrels
+  and dynamic dispatch are invisible, so an empty list is not proof it's safe to
+  break), and fails open. Ships with a day-one A/B arm (`--toggle inbound_callers`).
+
+### Fixed
+
+- **Honest idiom-overflow count.** When taught idioms exceed the per-edit char
+  cap, the tail now reports how many idiom blocks were dropped
+  (`+N idiom(s) not shown (see .chameleon/idioms.md)`) instead of a bare
+  "truncated" the reader couldn't quantify — so a repo investing in
+  `/chameleon-teach` can see when it is outgrowing the per-edit budget (the Stop
+  self-review's full-text-for-unseen pass still compensates the rest).
+- **Corrupt-profile degraded banner.** A trusted repo whose `.chameleon/` profile
+  is corrupt or written by an unsupported newer schema loaded no archetype data
+  and emitted the same empty result as a healthy unarchetyped edit — a
+  silent-false-clean where the model assumed it got clean guidance. The per-edit
+  hook now emits a "profile degraded" banner telling the model to fall back to
+  grep / comprehension tools and the user to run `/chameleon-refresh`. Fires only
+  on genuine corruption, never on a healthy `profile_present` no-archetype edit.
+
 ## [2.39.1] - 2026-07-04
 
 Post-ship hardening of the v2.39.0 multi-root Stop backstop: a turn-end review

@@ -1768,7 +1768,30 @@ def _shape_idioms_for_block(idioms_text: str, witness: str) -> str:
         # would drop the whole description. A partial `### header` this can leave at
         # the tail is handled downstream: _idiom_block_names never records a
         # truncated tail block whose description did not actually appear.
-        text = text[:_IDIOM_CONTEXT_CHAR_CAP].rstrip() + "\n... (idioms truncated; see idioms.md)"
+        # Honest overflow: count idiom `### ` headers whose block starts ENTIRELY
+        # past the cut (dropped outright), so the tail reports coverage loss instead
+        # of a bare "truncated" the reader can't quantify. A repo that invests in
+        # /chameleon-teach otherwise silently loses per-edit coverage as it teaches
+        # more; the Stop review's full-text-for-unseen pass compensates the rest.
+        cap = _IDIOM_CONTEXT_CHAR_CAP
+        # Count dropped idiom BLOCKS fence-awarely (a `### ` inside an example code
+        # fence is not a header): parse the full text and the kept prefix with the
+        # same parser _idiom_block_names uses, and diff the block counts. Bounded to
+        # the idioms text, which the reorder+dedup upstream already trims.
+        try:
+            from chameleon_mcp.tools import _parse_idiom_blocks
+
+            _, _full = _parse_idiom_blocks(text)
+            _, _kept = _parse_idiom_blocks(text[:cap])
+            dropped = max(0, len(_full) - len(_kept))
+        except Exception:
+            dropped = 0
+        tail = (
+            f"\n... +{dropped} idiom(s) not shown (see .chameleon/idioms.md)"
+            if dropped
+            else "\n... (idioms truncated; see .chameleon/idioms.md)"
+        )
+        text = text[:cap].rstrip() + tail
     return text
 
 
@@ -1796,6 +1819,22 @@ _CONFIG_MALFORMED_BANNER = (
     "**Enforcement degraded**: chameleon could not parse `.chameleon/config.json` "
     "(malformed or torn JSON), so credential / import blocking is OFF for this edit. "
     "Fix the JSON and run /chameleon-doctor to confirm enforcement is restored.\n\n"
+)
+
+# A trusted repo whose PROFILE (not just config.json) is corrupt, written by an
+# unsupported newer schema, or requires a newer engine loads no archetype data, so
+# the per-edit block would emit {} -- indistinguishable from a healthy repo editing
+# an unarchetyped file. That is a silent-false-clean: the model assumes it got clean
+# guidance when it got none. Surface it so the model falls back to grep /
+# comprehension tools instead of trusting an empty result. The repair differs by
+# cause: a corrupt profile re-derives (/chameleon-refresh); a too-new profile
+# (unsupported schema / newer engine_min_version) needs a chameleon UPGRADE, not a
+# re-derive on the too-old engine (which would be a dead-end loop).
+_PROFILE_DEGRADED_BANNER = (
+    "**Profile degraded**: chameleon could not load this repo's `.chameleon/` "
+    "profile ({reason}), so NO pattern guidance is available for this edit -- treat "
+    "the absence of guidance as unknown, not as clean. Use grep or the comprehension "
+    "tools (search_codebase / get_callers) to check conventions yourself. {fix}\n\n"
 )
 
 # Sibling of the config banner for a present-but-unreadable enforcement.json. A
@@ -1965,6 +2004,111 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
         section = "Nearby collaborator signatures:\n" + "\n".join(rendered)
         if len(section) > _NEARBY_SIG_MAX_CHARS:
             section = section[:_NEARBY_SIG_MAX_CHARS].rstrip() + "\n..."
+        return section
+    except Exception:
+        return ""
+
+
+def _inbound_contracts_section(file_path: str, repo_root: Path | None) -> str:
+    """Pre-edit inbound dependents: who breaks if this file's exports change.
+
+    The counterpart to ``_nearby_signatures_section`` -- that shows OUTBOUND
+    sibling signatures (contracts you might call); this shows INBOUND callers
+    (contracts that break if you change THIS file's exported signatures). Reads
+    the SAME mtime-cached reverse calls index already loaded per Tier-2 edit plus
+    ``symbol_signatures.json`` for the edited file's own exports, and renders each
+    exported symbol with the call sites recorded against it, so cross-file
+    staleness -- chameleon's most-detected defect class -- is PREVENTED at the
+    edit instead of only detected at turn end.
+
+    Bounded (few exports / few sites / small char budget), fires only when real
+    caller edges exist, and carries the blast-radius honesty note so an empty or
+    short list is never read as "safe to break" (barrels and dynamic dispatch are
+    invisible to the snapshot). Default-ON, kill switch ``CHAMELEON_INBOUND_CALLERS=0``;
+    no repo-code execution and no network (cached artifact reads only), so it
+    follows the default-on-with-kill-switch principle. Fails open to "".
+    """
+    if os.environ.get("CHAMELEON_INBOUND_CALLERS") == "0" or repo_root is None:
+        return ""
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.calls_index import load_calls_index
+        from chameleon_mcp.conventions import _safe_display_name
+        from chameleon_mcp.symbol_signatures import load_symbol_signatures
+        from chameleon_mcp.worktree import resolve_profile_root
+
+        edited_rel = _repo_rel(repo_root, file_path)
+        if not edited_rel:
+            return ""
+        profile_root = resolve_profile_root(repo_root)
+        calls = load_calls_index(profile_root)
+        if calls is None:
+            return ""
+        sigs = load_symbol_signatures(profile_root)
+        # The edited file's OWN exported callables are the contracts at risk. Fall
+        # back to whatever names the calls index recorded for this file when no
+        # signatures exist (still a valid caller-edge source).
+        export_names = list(sigs.for_file(edited_rel)) if sigs is not None else []
+        if not export_names:
+            return ""
+
+        max_exports = threshold_int("INBOUND_CALLERS_MAX_EXPORTS")
+        max_sites = threshold_int("INBOUND_CALLERS_MAX_SITES")
+        max_chars = threshold_int("INBOUND_CALLERS_MAX_CHARS")
+
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        lines: list[str] = []
+        # Bound the export SCAN, not just the rendered count: a file with hundreds
+        # of exports must not walk them all when few have callers (callers_of is a
+        # cheap dict hit, but the scan stays bounded on the <100ms hot path).
+        for name in export_names[: threshold_int("NEARBY_SIG_SCAN_CAP")]:
+            if len(lines) >= max_exports:
+                break
+            entry = calls.callers_of(edited_rel, name)
+            if not entry:
+                continue
+            callers = entry.get("callers") or []
+            if not callers:
+                continue
+            sites: list[str] = []
+            for row in callers[:max_sites]:
+                # Paths and names come from the committed (attacker-controllable)
+                # calls index and render OUTSIDE the imitate-spotlight as a
+                # chameleon directive, so they must be fully neutralized against
+                # context-tag escape / forged-header injection, not just control-
+                # char stripped. sanitize_for_chameleon_context is the boundary the
+                # sibling counterexample section already uses.
+                p = sanitize_for_chameleon_context(_safe_display_name(str(row.get("path") or "")))
+                if not p:
+                    continue
+                ln = row.get("line")
+                sites.append(f"{p}:{ln}" if isinstance(ln, int) else p)
+            if not sites:
+                continue
+            total = entry.get("total")
+            more = ""
+            if isinstance(total, int) and total > len(sites):
+                more = f" (+{total - len(sites)} more)"
+            safe_name = sanitize_for_chameleon_context(_safe_display_name(name))
+            lines.append(f"  {safe_name}() <- {', '.join(sites)}{more}")
+
+        if not lines:
+            return ""
+        section = (
+            "Inbound callers of this file's exports (change a signature -> update "
+            "these call sites in the same turn):\n"
+            + "\n".join(lines)
+            + "\n"
+            + (
+                "Direct call sites from the committed calls snapshot. An empty or "
+                "short list is NOT proof it's safe to change a signature: barrels, "
+                "dynamic dispatch, and callers added since the last refresh are "
+                "invisible here. Run /chameleon-refresh to update the snapshot."
+            )
+        )
+        if len(section) > max_chars:
+            section = section[:max_chars].rstrip() + "\n..."
         return section
     except Exception:
         return ""
@@ -2787,6 +2931,33 @@ def preflight_and_advise() -> int:
                 + "\n</chameleon-context>"
             )
             return 0
+        # A corrupt / too-new PROFILE loads no archetype data, so this exit would
+        # emit {} the same as a healthy unarchetyped edit. Surface the degraded
+        # state instead so the empty result is never read as "clean". The repair
+        # steer differs: too-new profiles need a chameleon upgrade, not a re-derive
+        # on the too-old engine (a dead-end loop).
+        profile_status = repo_info.get("profile_status")
+        _too_new = profile_status in (
+            "profile_unsupported_schema_version",
+            "profile_too_new",
+        )
+        if profile_status == "profile_corrupted" or _too_new:
+            _metric(advisory_emitted=True, repo_id=repo_id, trust_state=trust_state)
+            if _too_new:
+                _reason = "profile written by a newer chameleon"
+                _fix = (
+                    "Upgrade chameleon to the version that wrote this profile "
+                    "(a /chameleon-refresh on this older engine will not fix it)."
+                )
+            else:
+                _reason = "corrupt or unreadable profile"
+                _fix = "Run /chameleon-refresh (or /chameleon-init) to rebuild the profile."
+            _emit_chameleon_context(
+                "<chameleon-context>\n[🦎 chameleon: profile degraded]\n\n"
+                + _PROFILE_DEGRADED_BANNER.format(reason=_reason, fix=_fix).rstrip()
+                + "\n</chameleon-context>"
+            )
+            return 0
         # The once-per-session untrusted trust prompt gates on trust state, not on
         # a shape match: a session that edits only no-archetype files (config, data,
         # a brand-new file) in an untrusted repo must still be told the profile is
@@ -3215,6 +3386,14 @@ def preflight_and_advise() -> int:
     )
     if counterexample:
         block += counterexample + "\n\n"
+    # Inbound caller contracts: who breaks if this file's exported signatures
+    # change. A chameleon directive over repo-derived facts (paths/names sanitized
+    # in the section), so like the counterexample it stays OUTSIDE the imitate-
+    # spotlight. Converts the turn-end crossfile-staleness finding into a pre-edit
+    # prevention.
+    inbound = _inbound_contracts_section(file_path, repo_root_path)
+    if inbound:
+        block += inbound + "\n\n"
     if canonical.get("missing"):
         block += (
             f"(canonical witness {sanitize_for_chameleon_context(str(canonical.get('witness_path')))} is "
