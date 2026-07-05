@@ -543,6 +543,253 @@ def chase_reexport(
     return cur_rel, cur_name, via
 
 
+# Cross-workspace index constants. The cross index has its OWN schema version,
+# decoupled from reverse_index's SCHEMA_VERSION, so a shape change to one never
+# forces a rebuild of the other.
+CROSS_REVERSE_INDEX_FILENAME = "cross_reverse_index.json"
+CROSSWS_SCHEMA_VERSION = 1
+# Per-workspace cap on captured cross-package candidates ridden out in-memory on
+# the BootstrapReport, so a pathological workspace cannot balloon workspace_reports.
+_MAX_CROSS_CANDIDATES_PER_WS = 5000
+
+
+def _is_cross_package_specifier(module: str, importer_dir: Path, ws_root: Path) -> bool:
+    """True when an unresolved-in-workspace specifier is a CROSS-package shape.
+
+    Two shapes qualify: a bare/scoped package name (`@scope/a`, `@scope/a/sub`,
+    or a plain `lodash` -- the coordinator's package-name map decides whether it
+    actually names a SIBLING workspace, so an external npm package falls out there
+    with no false edge), or a relative specifier whose resolved path ESCAPES the
+    importer's workspace root (`../other-pkg/x`). An unresolved relative specifier
+    that stays inside the workspace is just a missing file, not a cross-package
+    edge, so it is excluded.
+    """
+    if not module.startswith("."):
+        return True
+    try:
+        target = (importer_dir / module).resolve()
+    except OSError:
+        return False
+    try:
+        target.relative_to(ws_root)
+        return False
+    except ValueError:
+        return True
+
+
+def collect_cross_package_candidates(files, ws_root: Path | str, language: str = "typescript"):
+    """Cross-PACKAGE import rows that :func:`build_reverse_index` DROPS, captured
+    for the coordinator cross-workspace JOIN. Returns a list of candidate dicts.
+
+    build_reverse_index resolves each named import against the importer's OWN
+    workspace and keeps only in-workspace targets; a ``@scope/a`` or an escaping
+    ``../other-pkg`` import resolves to None and is dropped -- exactly the
+    cross-workspace edge WP-C5 needs. This re-walks the same rows, keeps only the
+    dropped ones of a cross-package shape, and records the RAW specifier (so the
+    coordinator can resolve it against the package-name map it builds from every
+    workspace's package.json). Importer paths are workspace-relative; the
+    coordinator re-roots them to monorepo-relative. Fails open to a (possibly
+    partial) list; bounded by ``_MAX_CROSS_CANDIDATES_PER_WS``.
+    """
+    out: list[dict] = []
+    try:
+        root = Path(ws_root).resolve()
+        resolve = make_module_resolver(root, language)
+        for pf in files or ():
+            if len(out) >= _MAX_CROSS_CANDIDATES_PER_WS:
+                break
+            extras = getattr(pf, "extras", None) or {}
+            rows = extras.get("import_symbols")
+            if not isinstance(rows, list) or not rows:
+                continue
+            try:
+                importer_rel = Path(pf.path).resolve().relative_to(root).as_posix()
+                importer_dir = Path(pf.path).resolve().parent
+            except (ValueError, OSError):
+                continue
+            for row in rows:
+                if len(out) >= _MAX_CROSS_CANDIDATES_PER_WS:
+                    break
+                if not isinstance(row, dict):
+                    continue
+                name = row.get("name")
+                module = row.get("module")
+                if not isinstance(name, str) or not isinstance(module, str):
+                    continue
+                if resolve(module, importer_dir) is not None:
+                    continue  # resolves in-workspace -> build_reverse_index already has it
+                if not _is_cross_package_specifier(module, importer_dir, root):
+                    continue  # external package or in-workspace miss -> not a cross edge
+                line = row.get("line")
+                out.append(
+                    {
+                        "importer": importer_rel,
+                        "name": name,
+                        "module": module,
+                        "line": int(line) if isinstance(line, int) else None,
+                    }
+                )
+    except Exception:
+        return out
+    return out
+
+
+_JS_EXTS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+
+
+def _probe_module_file(mono_root: Path, rel_no_ext: str) -> str | None:
+    """Resolve a module path (no extension) to an actual in-repo file's mono-key.
+
+    Probes the JS/TS extension set then the ``/index.*`` directory form, mirroring
+    the resolver's own probing. Returns the mono-root-relative POSIX key of the
+    first file that exists, or None. Keys stay repo-relative for reproducibility.
+    """
+    base = (mono_root / rel_no_ext).resolve()
+    for ext in _JS_EXTS:
+        cand = base.with_suffix(base.suffix + ext) if base.suffix else Path(str(base) + ext)
+        try:
+            if cand.is_file():
+                return cand.relative_to(mono_root).as_posix()
+        except (OSError, ValueError):
+            continue
+    for ext in _JS_EXTS:
+        cand = base / f"index{ext}"
+        try:
+            if cand.is_file():
+                return cand.relative_to(mono_root).as_posix()
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _resolve_package_main(mono_root: Path, pkg_dir_rel: str) -> str | None:
+    """The entry file (mono-key) for a bare package import ``@scope/a``.
+
+    Reads the workspace's package.json ``main``/``module`` (best-effort v1); falls
+    back to ``index.*``. Deep ``exports`` conditional maps are a documented v1 gap
+    (fail-closed -> None). None when nothing resolves.
+    """
+    pkg_dir = (mono_root / pkg_dir_rel).resolve()
+    try:
+        pj = json.loads((pkg_dir / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pj = {}
+    for key in ("module", "main"):
+        entry = pj.get(key) if isinstance(pj, dict) else None
+        if isinstance(entry, str) and entry.strip():
+            rel = f"{pkg_dir_rel}/{entry.strip()}"
+            # main may already carry an extension; probe both the literal and the
+            # extension-less form.
+            direct = (mono_root / rel).resolve()
+            try:
+                if direct.is_file():
+                    return direct.relative_to(mono_root).as_posix()
+            except (OSError, ValueError):
+                pass
+            probed = _probe_module_file(mono_root, rel.rsplit(".", 1)[0] if "." in entry else rel)
+            if probed:
+                return probed
+    return _probe_module_file(mono_root, f"{pkg_dir_rel}/index")
+
+
+def _split_scoped_package(module: str) -> tuple[str, str]:
+    """Split a package specifier into (package_name, subpath). ``@scope/a/b/c`` ->
+    ('@scope/a', 'b/c'); ``lodash/fp`` -> ('lodash', 'fp'); ``@scope/a`` ->
+    ('@scope/a', '')."""
+    parts = module.split("/")
+    if module.startswith("@"):
+        pkg = "/".join(parts[:2])
+        sub = "/".join(parts[2:])
+    else:
+        pkg = parts[0]
+        sub = "/".join(parts[1:])
+    return pkg, sub
+
+
+def build_cross_reverse_index(candidates, packages: dict, mono_root: Path | str, exports_by_key):
+    """Resolve every workspace's captured cross-package candidate to the sibling
+    workspace file it targets and emit the cross_reverse_index.json payload.
+
+    ``candidates``: list of ``{importer, name, module, line}`` with MONO-relative
+    importer paths (the coordinator has already re-rooted them). ``packages``:
+    ``{package_name -> workspace mono-relative dir}`` from each workspace's
+    package.json ``name`` -- the link that lets ``@scope/a`` find package A.
+    ``exports_by_key``: callable ``mono_key -> set[str]`` (or dict) of the names
+    that file actually exports, for the FAIL-CLOSED name check -- an edge is
+    emitted only when the target file genuinely exports the imported name, so a
+    name that does not exist there (or an external npm package with no workspace
+    entry) yields NO edge. Returns ``{schema_version, targets, packages}`` with
+    mono-relative keys; deterministic (sorted, deduped, capped). Never raises.
+    """
+    root = Path(mono_root)
+    lookup = (
+        exports_by_key if callable(exports_by_key) else (lambda k: exports_by_key.get(k) or set())
+    )
+    accum: dict[str, dict[str, set[tuple[str, int | None]]]] = {}
+    for c in candidates or ():
+        try:
+            if not isinstance(c, dict):
+                continue
+            importer = c.get("importer")
+            name = c.get("name")
+            module = c.get("module")
+            if not (
+                isinstance(importer, str) and isinstance(name, str) and isinstance(module, str)
+            ):
+                continue
+            target_key = None
+            if module.startswith("."):
+                # Relative specifier that escaped its workspace: resolve against the
+                # importer's mono-relative directory to a mono-key.
+                resolved = ((root / importer).resolve().parent / module).resolve()
+                if _under(root, resolved):
+                    target_key = _probe_module_file(root, resolved.relative_to(root).as_posix())
+            else:
+                pkg, sub = _split_scoped_package(module)
+                pkg_dir = packages.get(pkg)
+                if pkg_dir is None:
+                    continue  # external package (no sibling workspace) -> no edge
+                target_key = (
+                    _probe_module_file(root, f"{pkg_dir}/{sub}")
+                    if sub
+                    else _resolve_package_main(root, pkg_dir)
+                )
+            if not target_key:
+                continue
+            exps = lookup(target_key)
+            if not isinstance(exps, (set, frozenset, list, tuple)) or name not in exps:
+                continue  # fail-closed: target does not actually export the name
+            line = c.get("line")
+            line_val = int(line) if isinstance(line, int) else None
+            accum.setdefault(target_key, {}).setdefault(name, set()).add((importer, line_val))
+        except Exception:
+            continue
+
+    targets: dict[str, dict[str, list[dict]]] = {}
+    for tkey, by_name in accum.items():
+        names_out: dict[str, list[dict]] = {}
+        for name, rows in by_name.items():
+            rows_sorted = sorted(rows, key=lambda r: (r[0], r[1] if r[1] is not None else -1))
+            names_out[name] = [
+                {"path": p, "line": ln} for p, ln in rows_sorted[:_MAX_IMPORTERS_PER_SYMBOL]
+            ]
+        if names_out:
+            targets[tkey] = names_out
+    return {
+        "schema_version": CROSSWS_SCHEMA_VERSION,
+        "targets": targets,
+        "packages": {k: v for k, v in sorted((packages or {}).items())},
+    }
+
+
+def _under(root: Path, p: Path) -> bool:
+    try:
+        p.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def build_reverse_index(files, repo_root: Path | str, language: str = "typescript") -> dict:
     """Build the ``reverse_index.json`` payload from parsed TypeScript/JS files.
 
@@ -689,6 +936,43 @@ class ReverseIndex:
 _REVERSE_CACHE: dict[str, tuple[tuple[int, int], ReverseIndex]] = {}
 
 
+def _parse_reverse_targets(raw_targets) -> dict[str, dict[str, list[Importer]]]:
+    """Parse a reverse-index ``targets`` payload (target -> name -> importer rows)
+    into the internal ``dict[str, dict[str, list[Importer]]]``. Shared by the
+    reverse index and the WP-C5 cross index, which carry the identical target
+    shape. Skips any malformed row; never raises."""
+    targets: dict[str, dict[str, list[Importer]]] = {}
+    for target_rel, by_name in (raw_targets or {}).items():
+        if not isinstance(target_rel, str) or not isinstance(by_name, dict):
+            continue
+        names: dict[str, list[Importer]] = {}
+        for name, rows in by_name.items():
+            if not isinstance(name, str) or not isinstance(rows, list):
+                continue
+            importers: list[Importer] = []
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                p = r.get("path")
+                if not isinstance(p, str):
+                    continue
+                ln = r.get("line")
+                raw_via = r.get("via")
+                via = (
+                    tuple(v for v in raw_via if isinstance(v, str))
+                    if isinstance(raw_via, list)
+                    else ()
+                )
+                importers.append(
+                    Importer(path=p, line=ln if isinstance(ln, int) else None, via=via)
+                )
+            if importers:
+                names[name] = importers
+        if names:
+            targets[target_rel] = names
+    return targets
+
+
 def load_reverse_index(repo_root: Path | str | None) -> ReverseIndex | None:
     """Load the committed ``reverse_index.json`` for ``repo_root``, or None.
 
@@ -730,39 +1014,59 @@ def load_reverse_index(repo_root: Path | str | None) -> ReverseIndex | None:
     if not isinstance(raw_targets, dict):
         return None
 
-    targets: dict[str, dict[str, list[Importer]]] = {}
-    for target_rel, by_name in raw_targets.items():
-        if not isinstance(target_rel, str) or not isinstance(by_name, dict):
-            continue
-        names: dict[str, list[Importer]] = {}
-        for name, rows in by_name.items():
-            if not isinstance(name, str) or not isinstance(rows, list):
-                continue
-            importers: list[Importer] = []
-            for r in rows:
-                if not isinstance(r, dict):
-                    continue
-                p = r.get("path")
-                if not isinstance(p, str):
-                    continue
-                ln = r.get("line")
-                raw_via = r.get("via")
-                via = (
-                    tuple(v for v in raw_via if isinstance(v, str))
-                    if isinstance(raw_via, list)
-                    else ()
-                )
-                importers.append(
-                    Importer(path=p, line=ln if isinstance(ln, int) else None, via=via)
-                )
-            if importers:
-                names[name] = importers
-        if names:
-            targets[target_rel] = names
-
-    index = ReverseIndex(targets)
+    index = ReverseIndex(_parse_reverse_targets(raw_targets))
     _REVERSE_CACHE[key] = (token, index)
     return index
+
+
+# Cross-workspace index cache, same (mtime, size) keying as _REVERSE_CACHE. The
+# value is (ReverseIndex over the cross targets, package-name -> mono-dir map).
+_CROSS_REVERSE_CACHE: dict[str, tuple[tuple[int, int], tuple[ReverseIndex, dict]]] = {}
+
+
+def load_cross_reverse_index(path: Path | str | None):
+    """Load the WP-C5 cross_reverse_index.json at ``path`` -> ``(ReverseIndex,
+    packages)``, or None.
+
+    ``path`` is the PLUGIN-DATA artifact (``<data>/<coordinator repo_id>/
+    cross_reverse_index.json``), NOT a repo-resident file -- the caller resolves
+    it. The cross index carries the identical target->name->importers shape as the
+    reverse index (so ``ReverseIndex.broken_importers`` works unchanged) plus a
+    ``packages`` name->mono-dir map. Fail-open to None on any ambiguity: missing,
+    empty, oversize, corrupt, or a foreign ``CROSSWS_SCHEMA_VERSION``. Keys are
+    monorepo-root-relative, so the consumer must join importer paths against the
+    coordinator root, never a workspace root.
+    """
+    if path is None:
+        return None
+    try:
+        p = Path(path)
+        st = os.stat(p)
+    except OSError:
+        return None
+    if not st.st_size or st.st_size > 16_000_000:
+        return None
+    key = str(p)
+    token = (int(st.st_mtime_ns), int(st.st_size))
+    cached = _CROSS_REVERSE_CACHE.get(key)
+    if cached is not None and cached[0] == token:
+        return cached[1]
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema_version") != CROSSWS_SCHEMA_VERSION:
+        return None
+    targets = _parse_reverse_targets(data.get("targets"))
+    raw_packages = data.get("packages")
+    packages = (
+        {k: v for k, v in raw_packages.items() if isinstance(k, str) and isinstance(v, str)}
+        if isinstance(raw_packages, dict)
+        else {}
+    )
+    result = (ReverseIndex(targets), packages)
+    _CROSS_REVERSE_CACHE[key] = (token, result)
+    return result
 
 
 def module_key_for_path(file_path: Path | str, repo_root: Path | str | None) -> str | None:

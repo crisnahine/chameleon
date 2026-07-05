@@ -4,6 +4,40 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.47.0] - 2026-07-05
+
+Cross-workspace existence advisory for monorepos (WP-C5). The reverse index that
+backs the cross-file existence checks is built per workspace, so a file in
+package B importing from package A across the package boundary is invisible to
+A's own index: remove an export A's sibling still imports and nothing notices.
+This closes that blind spot. Advisory only (no deny path), off by a single kill
+switch, and stored off the trust surface.
+
+### Added
+
+- **Cross-workspace existence advisory** (default on; kill with
+  `CHAMELEON_CROSSWS_INDEX=0`). At bootstrap/refresh, each workspace captures the
+  cross-package import specifiers its own reverse index drops (e.g. a `@scope/a`
+  import that resolves outside the workspace), a coordinator pass resolves each to
+  the sibling workspace's file via a package.json-`name` map with a fail-closed
+  name-in-exports confirmation, and the resolved edges are written to a single
+  `cross_reverse_index.json` in the plugin data dir (`~/.local/share/chameleon/
+  <coordinator repo_id>/`). At turn end, for each edited TypeScript file, chameleon
+  resolves that index via the file's workspace profile back-reference and flags a
+  removed export a sibling workspace still imports — confirmed by a live presence
+  re-check on the importer so a repoint or a stale row does not fire. Advisory
+  only, never a block. Works for the common pure-coordinator monorepo (a
+  `package.json workspaces` root with no source of its own) as well as
+  root-has-profile monorepos. TypeScript/JS cross-package resolution in v1
+  (Python is a documented gap). Off the per-edit hot path, fail-open at every
+  seam, no repo-code execution and no network.
+
+  Storing the index in the plugin data dir rather than a repo-resident
+  `.chameleon` is deliberate: a pre-code security review found that materializing
+  a coordinator profile to host it would create a new grantable trust anchor and
+  arm the unconditional security-deny floor on previously-ungoverned root-level
+  files. The plugin-data location keeps it off the trust-hashed surface entirely.
+
 ## [2.46.0] - 2026-07-05
 
 Cross-file existence breaks can now BLOCK at the Stop backstop (roadmap #10),

@@ -857,6 +857,14 @@ class BootstrapReport:
           {"subdir": "apps/api", "abs_path": "/.../apps/api", "language": "ruby"},
         ]
     """
+    cross_candidates: list[dict] = field(default_factory=list)
+    """WP-C5: cross-PACKAGE import rows this bootstrap DROPPED (a specifier that
+    resolves to no in-workspace target), captured in-memory for the coordinator
+    cross-workspace JOIN in _amend_root_profile_with_workspaces. Never persisted
+    per-workspace; each row is {importer(ws-rel), name, module, line}."""
+    package_name: str | None = None
+    """WP-C5: this workspace's package.json `name` (e.g. @scope/a) -- the link the
+    coordinator JOIN uses to resolve a sibling's `@scope/a` import to this dir."""
 
     def to_dict(self) -> dict:
         per_workspace: dict[str, int] = {}
@@ -1455,6 +1463,12 @@ def bootstrap_repo(
             "files_processed": ws_report.files_processed,
             "duration_ms": ws_report.duration_ms,
             "error": ws_report.error,
+            # WP-C5: cross-workspace JOIN inputs. ws_mono_rel is this workspace's
+            # dir relative to the monorepo root, the prefix that re-roots the
+            # ws-relative candidate importer paths (and locates this package's dir).
+            "cross_candidates": ws_report.cross_candidates,
+            "package_name": ws_report.package_name,
+            "ws_mono_rel": parent_ws_path,
         }
         if ws_write_root is not None:
             # The tree the second indexing pass must hash (same tree the
@@ -1481,10 +1495,150 @@ def bootstrap_repo(
             report.status = "success_workspaces_only"
             report.error = None
 
+        # WP-C5: persist the coordinator cross-workspace index to the plugin data
+        # dir for BOTH shapes -- a root-has-profile monorepo AND the common
+        # pure-coordinator monorepo (which has no root profile). Off the
+        # trust-hashed surface, kill-gated, fail-open.
+        _persist_cross_index_to_plugin_data(
+            repo_root, workspace_reports, report.cross_candidates, report.package_name
+        )
+
     return report
 
 
-def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: list[dict]) -> None:
+def _build_cross_index_payload(
+    mono_root: Path,
+    workspace_reports: list[dict],
+    root_cross_candidates: list[dict] | None,
+    root_package_name: str | None,
+    root_profile_dir: Path | None,
+) -> dict | None:
+    """Assemble the cross_reverse_index.json payload (WP-C5) from the root's own
+    plus every successful workspace's captured cross-package candidates.
+
+    Re-roots each participant's ws-relative importer paths to monorepo-root space
+    by its ``ws_mono_rel`` prefix, builds the package-name -> mono-dir map from
+    each participant's package.json name, and loads each participant's
+    exports_index.json (re-rooted) so the JOIN can confirm the imported name is
+    genuinely exported (fail-closed). ``root_profile_dir`` is the coordinator
+    root's own .chameleon (for its own exports) or None for a pure-coordinator
+    root that has no profile of its own. Returns the payload, or None to write
+    nothing (feature off, no candidates, or no resolved edge). Fail-open: any
+    error returns None so bootstrap never breaks on it.
+    """
+    if os.environ.get("CHAMELEON_CROSSWS_INDEX") == "0":
+        return None
+    try:
+        from chameleon_mcp.symbol_index import build_cross_reverse_index
+
+        # (mono_rel_dir, candidates, package_name, ws_profile_dir)
+        participants: list[tuple[str, list, str | None, Path | None]] = [
+            ("", root_cross_candidates or [], root_package_name, root_profile_dir)
+        ]
+        for w in workspace_reports:
+            if w.get("status") != "success":
+                continue
+            pdir = w.get("profile_dir")
+            participants.append(
+                (
+                    w.get("ws_mono_rel") or "",
+                    w.get("cross_candidates") or [],
+                    w.get("package_name"),
+                    Path(pdir) if pdir else None,
+                )
+            )
+
+        packages: dict[str, str] = {}
+        all_candidates: list[dict] = []
+        exports_by_key: dict[str, set] = {}
+        for mono_rel, cands, pkg_name, ws_pdir in participants:
+            prefix = (mono_rel.rstrip("/") + "/") if mono_rel else ""
+            if isinstance(pkg_name, str) and pkg_name.strip():
+                packages[pkg_name.strip()] = mono_rel or "."
+            for c in cands:
+                if not isinstance(c, dict) or not isinstance(c.get("importer"), str):
+                    continue
+                all_candidates.append(
+                    {
+                        "importer": prefix + c["importer"],
+                        "name": c.get("name"),
+                        "module": c.get("module"),
+                        "line": c.get("line"),
+                    }
+                )
+            if ws_pdir is not None:
+                try:
+                    ei = json.loads((ws_pdir / "exports_index.json").read_text(encoding="utf-8"))
+                    files = ei.get("files") if isinstance(ei, dict) else None
+                    if isinstance(files, dict):
+                        for rel, entry in files.items():
+                            if not isinstance(rel, str) or not isinstance(entry, dict):
+                                continue
+                            names = entry.get("names")
+                            exports_by_key[prefix + rel] = (
+                                set(names) if isinstance(names, list) else set()
+                            )
+                except (OSError, ValueError):
+                    pass
+
+        if not all_candidates:
+            return None
+        payload = build_cross_reverse_index(all_candidates, packages, mono_root, exports_by_key)
+        return payload if payload.get("targets") else None
+    except Exception:
+        return None
+
+
+def _persist_cross_index_to_plugin_data(
+    repo_root: Path,
+    workspace_reports: list[dict],
+    root_cross_candidates: list[dict] | None,
+    root_package_name: str | None,
+) -> None:
+    """WP-C5: write the coordinator cross-workspace index to the PLUGIN DATA DIR
+    (``~/.local/share/chameleon/<coordinator repo_id>/``), never a repo-resident
+    ``.chameleon``.
+
+    Storing it outside the profile surface is deliberate: a pre-code security
+    review found that materializing a coordinator ``profile.json`` to host it
+    would create a NEW grantable trust anchor and arm the security-deny floor on
+    previously-ungoverned root-level files. Here it sits next to drift.db /
+    enforcement state, carries no trust hash, is never a gateable profile, and
+    works for the common PURE-COORDINATOR monorepo (which has no root profile to
+    host it). The future Stop advisory reads it from the same place.
+    Kill-switch-gated, fail-open: any error leaves no file (today's behavior).
+    """
+    if os.environ.get("CHAMELEON_CROSSWS_INDEX") == "0":
+        return
+    try:
+        from chameleon_mcp.hook_helper import _plugin_data_dir
+        from chameleon_mcp.symbol_index import CROSS_REVERSE_INDEX_FILENAME
+        from chameleon_mcp.tools import _compute_repo_id
+
+        root = Path(repo_root).resolve()
+        root_profile_dir = root / ".chameleon"
+        payload = _build_cross_index_payload(
+            root,
+            workspace_reports,
+            root_cross_candidates,
+            root_package_name,
+            root_profile_dir if root_profile_dir.is_dir() else None,
+        )
+        if payload is None:
+            return
+        out_dir = _plugin_data_dir() / _compute_repo_id(root)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / CROSS_REVERSE_INDEX_FILENAME).write_text(
+            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+        )
+    except Exception:
+        return
+
+
+def _amend_root_profile_with_workspaces(
+    profile_dir: Path,
+    workspace_reports: list[dict],
+) -> None:
     """Re-write profile.json with a `workspaces` array describing each
     successfully bootstrapped sub-workspace.
 
@@ -1596,6 +1750,9 @@ def _amend_root_profile_with_workspaces(profile_dir: Path, workspace_reports: li
             except OSError:
                 pass
 
+    # WP-C5: the coordinator cross-workspace index, built fresh from all
+    # (WP-C5's cross index is NOT written here -- it lives in the plugin data dir,
+    # off the trust-hashed profile surface; see _persist_cross_index_to_plugin_data.)
     with atomic_profile_commit(profile_dir) as txn_dir:
         (txn_dir / "profile.json").write_text(
             json.dumps(profile_data, indent=2, sort_keys=True), encoding="utf-8"
@@ -2677,6 +2834,35 @@ def _bootstrap_single(
                 rel = str(match)
             nested_warnings.append(rel)
 
+    # WP-C5: capture cross-package import candidates + this workspace's
+    # package.json name, ridden out in-memory for the coordinator cross-workspace
+    # JOIN in _amend_root_profile_with_workspaces. Kill-switch-gated, fail-open,
+    # never persisted per-workspace; only reachable on this success path.
+    wpc5_candidates: list[dict] = []
+    wpc5_package_name: str | None = None
+    if os.environ.get("CHAMELEON_CROSSWS_INDEX") != "0":
+        try:
+            from chameleon_mcp.symbol_index import (
+                REVERSE_INDEXED_LANGUAGES as _RIL,
+            )
+            from chameleon_mcp.symbol_index import (
+                collect_cross_package_candidates,
+            )
+
+            if extractor.language in _RIL:
+                wpc5_candidates = collect_cross_package_candidates(
+                    parse_result.files, repo_root, extractor.language
+                )
+        except Exception:
+            wpc5_candidates = []
+        try:
+            _pj = json.loads((Path(repo_root) / "package.json").read_text(encoding="utf-8"))
+            _nm = _pj.get("name") if isinstance(_pj, dict) else None
+            if isinstance(_nm, str) and _nm.strip():
+                wpc5_package_name = _nm.strip()
+        except Exception:
+            wpc5_package_name = None
+
     return BootstrapReport(
         status="success",
         archetypes_detected=archetype_count,
@@ -2699,6 +2885,8 @@ def _bootstrap_single(
         discovered_files_pre_exclusion=pre_exclusion_count,
         discovered_files_post_exclusion=post_exclusion_count,
         sparse_dropped_files=sparse_dropped_files,
+        cross_candidates=wpc5_candidates,
+        package_name=wpc5_package_name,
     )
 
 

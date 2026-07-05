@@ -7851,6 +7851,148 @@ def _confirmed_crossfile_break_sites(rec: dict) -> list[tuple[str, int | None]]:
     return confirmed
 
 
+def _resolve_coordinator_cross_index(ws_root: Path):
+    """(mono_root, (ReverseIndex, packages)) for the coordinator of ``ws_root``, or
+    (None, None). Reads the workspace profile's ``workspace.parent.repo_id`` (the
+    coordinator repo_id, written at bootstrap) and loads the coordinator cross
+    index from the PLUGIN DATA DIR. ``mono_root`` is ws_root with its mono-relative
+    workspace path stripped, so the consumer can join mono-relative index paths.
+    Fail-open to (None, None)."""
+    try:
+        from chameleon_mcp.symbol_index import (
+            CROSS_REVERSE_INDEX_FILENAME,
+            load_cross_reverse_index,
+        )
+
+        data = json.loads((ws_root / ".chameleon" / "profile.json").read_text(encoding="utf-8"))
+        parent = (data.get("workspace") or {}).get("parent") or {}
+        coord_id = parent.get("repo_id")
+        ws_mono_rel = parent.get("workspace_path")
+        if not (isinstance(coord_id, str) and coord_id and isinstance(ws_mono_rel, str)):
+            return (None, None)
+        mono_root = ws_root
+        for _ in Path(ws_mono_rel).parts:
+            mono_root = mono_root.parent
+        res = load_cross_reverse_index(_plugin_data_dir() / coord_id / CROSS_REVERSE_INDEX_FILENAME)
+        return (mono_root, res)
+    except Exception:
+        return (None, None)
+
+
+def _crossworkspace_existence_advisory_lines(*, repo_root: Path, state, cfg) -> list[str]:
+    """Turn-end advisory for cross-WORKSPACE existence breaks (WP-C5): a monorepo
+    workspace file that removed a named export a SIBLING workspace still imports.
+
+    The counterpart to :func:`_crossfile_existence_advisory_lines` (which is
+    scoped to one workspace's own reverse index): this consults the coordinator
+    cross index in the plugin data dir, resolved per edited file via its workspace
+    profile's parent repo_id. Advisory ONLY, never a block; a repoint or a stale
+    row is tolerable noise. Each break is confirmed by a live presence re-check on
+    the importer's CURRENT content (importer paths are monorepo-root-relative, so
+    they join against the coordinator root, not a workspace root). Fail-open to [];
+    gated by CHAMELEON_CROSSWS_INDEX and cfg.mode != off.
+    """
+    try:
+        if cfg.mode == "off" or os.environ.get("CHAMELEON_CROSSWS_INDEX") == "0":
+            return []
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.lint_engine import detect_language
+        from chameleon_mcp.phantom_imports import _current_export_names
+        from chameleon_mcp.profile.loader import find_repo_root
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        def _s(v: str) -> str:
+            return sanitize_for_chameleon_context(re.sub(r"[\x00-\x1f\x7f]", "", v))
+
+        max_files = threshold_int("CROSSFILE_STOP_ADVISORY_MAX_FILES")
+        max_sites = threshold_int("CROSSFILE_MAX_SITES_PER_FINDING")
+        coord_cache: dict[str, tuple] = {}
+        # (symbol, edited-module mono-key, [importer sites])
+        # (symbol, edited-module mono-key, [importer sites], truncated?)
+        breaks: list[tuple[str, str, list[str], bool]] = []
+        seen = 0
+        for path in state.files:
+            if seen >= max_files:
+                break
+            p = Path(path)
+            if not p.is_file():
+                continue
+            lang = detect_language(str(p))
+            # v1 resolves cross-package specifiers for TypeScript/JS only (the
+            # coordinator JOIN probes JS extensions + package.json main); Python
+            # cross-package resolution is a documented follow-up, so no Python
+            # cross-workspace edge is ever produced and checking a .py edit here
+            # would only ever no-op. Scope to TS so the code matches the pipeline.
+            if lang != "typescript":
+                continue
+            ws_root = find_repo_root(p)
+            if ws_root is None:
+                continue
+            key = str(ws_root)
+            if key not in coord_cache:
+                coord_cache[key] = _resolve_coordinator_cross_index(ws_root)
+            mono_root, res = coord_cache[key]
+            if mono_root is None or res is None:
+                continue
+            ri, _packages = res
+            try:
+                mono_key = p.resolve().relative_to(mono_root).as_posix()
+            except (ValueError, OSError):
+                continue
+            try:
+                content = p.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            current, open_set = _current_export_names(content)
+            if open_set:
+                continue
+            seen += 1
+            broken = ri.broken_importers(mono_key, current)
+            if not broken:
+                continue
+            for name in sorted(broken):
+                live = []
+                for imp in broken[name]:
+                    ip = mono_root / imp.path
+                    try:
+                        itext = ip.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    if _reference_present(itext, name, imp.line, detect_language(str(ip))):
+                        live.append(imp)
+                if not live:
+                    continue
+                live_sorted = sorted(
+                    live, key=lambda i: (i.path, i.line if i.line is not None else -1)
+                )
+                sites = [
+                    _s(f"{i.path}:{i.line}" if i.line is not None else i.path)
+                    for i in live_sorted[:max_sites]
+                ]
+                breaks.append((_s(name), _s(mono_key), sites, len(live_sorted) > max_sites))
+
+        if not breaks:
+            return []
+        plural = len(breaks) != 1
+        lines = [
+            f"[🦎 chameleon: {len(breaks)} export{'s' if plural else ''} you removed "
+            f"{'are' if plural else 'is'} still imported by ANOTHER workspace]",
+            "These names are gone from the workspace file you edited but a sibling "
+            "workspace still imports them across the package boundary; their call "
+            "sites are now broken. Restore the export or update the importers. "
+            "This is advisory, not a block.",
+        ]
+        for name, module, sites, truncated in breaks:
+            shown = ", ".join(sites)
+            more = " ..." if truncated else ""
+            lines.append(
+                f"- '{name}' no longer exported by {module}; still imported by {shown}{more}"
+            )
+        return lines
+    except Exception:
+        return []
+
+
 def _crossfile_existence_advisory_lines(
     *,
     repo_root: Path,
@@ -9286,6 +9428,13 @@ def _stop_gates(
             )
             _mark_pending_deletions_surfaced(repo_data, session_id, all_deleted)
 
+            # WP-C5: cross-WORKSPACE existence breaks -- an export this workspace
+            # file removed that a SIBLING workspace still imports (read from the
+            # coordinator cross index in the plugin data dir). Advisory only.
+            crossws_lines = _crossworkspace_existence_advisory_lines(
+                repo_root=repo_root, state=state, cfg=cfg
+            )
+
             # Turn-end duplication: a function this turn introduced whose body
             # matches an existing one (catalog or earlier this session) gets named
             # so the author can reuse the original. Confirmed by a bounded judge
@@ -9377,6 +9526,10 @@ def _stop_gates(
             if crossfile_lines:
                 context_blocks.append(
                     "<chameleon-context>\n" + "\n".join(crossfile_lines) + "\n</chameleon-context>"
+                )
+            if crossws_lines:
+                context_blocks.append(
+                    "<chameleon-context>\n" + "\n".join(crossws_lines) + "\n</chameleon-context>"
                 )
             if dup_lines:
                 context_blocks.append(
