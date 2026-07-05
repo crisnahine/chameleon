@@ -4,6 +4,48 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.48.0] - 2026-07-05
+
+Real-usage QA pass: every shipped roadmap feature was driven through its actual
+entry points (hook executables fed real payloads, the MCP stdio server, real
+bootstraps) against real repositories. Most passed; this release fixes the eight
+gaps that surfaced, three of them substantive.
+
+### Fixed
+
+- **Cross-workspace advisory false-fire on a same-turn repoint** (WP-C5): a
+  monorepo file that removed an export while a sibling package repointed its
+  import elsewhere in the same turn still got flagged, naming a now-wrong source.
+  The advisory now suppresses only when the importer cleanly repointed the name
+  to a DIFFERENT known workspace package; a relative, aliased, external, or
+  otherwise ambiguous specifier keeps the advisory, so a genuine break is never
+  missed (parity with the same-workspace live re-verify).
+- **Auto-pass under-attributed a fully verification-suppressed session**: a
+  session run entirely with `CHAMELEON_VERIFY=0` records no touched files, so the
+  attestation's file-overlap attribution never saw it and the change auto-passed —
+  the exact scenario the governance signal exists to catch. A verify-suppressed
+  attestation with empty file lists is now attributed to the diff (raise-only: it
+  can only route to a human, never cause a false auto-pass).
+- **Finding ledger silently dropped a file-less high-severity finding**: a
+  finding with no cited file was marked "addressed" by the content-digest proxy
+  (which it has nothing to compare against) instead of being re-surfaced once.
+  File-less findings now bypass the digest proxy; a high one re-surfaces once, a
+  low one resolves rather than accumulating.
+- **Refuter model was never validated**: a garbage `CHAMELEON_REFUTER_MODEL`
+  reached `claude -p --model` (which would fail every verdict open), unlike the
+  judge base which validates. It now falls back to a valid tier, honoring the
+  same never-garbage contract as the model ladder.
+- **Inbound-callers pre-edit context** now falls back to the calls index for a
+  file's callable names when no signature artifact exists (the documented
+  fallback was unreachable), so a repo without symbol signatures still gets the
+  "who breaks if you change this" section.
+- **Cross-workspace index left an orphan** under the old path-hash id after a
+  no-remote monorepo's first refresh moved it to the uuid id; the stale copy is
+  now removed.
+- **Effectiveness eval `--dry-run`** now shows the per-arm model (the point of
+  `--arm-model`) and runs the environment preflight it always claimed to, minus
+  the Claude-CLI check that a dry run does not need.
+
 ## [2.47.0] - 2026-07-05
 
 Cross-workspace existence advisory for monorepos (WP-C5). The reverse index that

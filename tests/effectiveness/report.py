@@ -218,7 +218,9 @@ def render_run_md(
         lines += ["**!! REGRESSION vs baseline** (advisory, never blocking):", ""]
         for d in regressions:
             delta = "n/a (baseline 0)" if d["delta_pct"] is None else f"{d['delta_pct']:+.1f}%"
-            arm_label = d["arm"] if d.get("model") in (None, "sonnet") else f"{d['arm']}@{d['model']}"
+            arm_label = (
+                d["arm"] if d.get("model") in (None, "sonnet") else f"{d['arm']}@{d['model']}"
+            )
             lines.append(
                 f"- {d['category']}/{arm_label} {d['metric']}: "
                 f"{d['baseline']} -> {d['current']} ({delta})"

@@ -47,7 +47,7 @@ from tests.effectiveness.worktrees import (  # noqa: E402
 from tests.journey.harness import preflight as journey_preflight  # noqa: E402
 from tests.journey.harness.claude import spawn_claude  # noqa: E402
 from tests.journey.harness.context import build_context  # noqa: E402
-from tests.journey.harness.fixtures import setup_fixture  # noqa: E402
+from tests.journey.harness.fixtures import GitVersionError, setup_fixture  # noqa: E402
 
 # Per-session cost ceiling used for budget projection (tier-ci tasks cap at
 # 12 turns on sonnet; observed journey acts of similar size run $0.15-0.30).
@@ -168,23 +168,44 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    from tests.effectiveness.arms import arm_model
+
     print(
-        f"plan: tasks={len(tasks)} arms={[a.name for a in arms]} cells: {len(cells)} "
+        f"plan: tasks={len(tasks)} "
+        f"arms={[f'{a.name}={arm_model(a, args.model)}' for a in arms]} cells: {len(cells)} "
         f"estimated ${est:.2f} (ceiling ${args.max_budget_usd:.2f})",
         file=sys.stderr,
     )
     if args.dry_run:
+        # Match the journey runner's --dry-run semantics (CLAUDE.md bills this as
+        # "preflight only, no Claude spawn"): actually run preflight so a broken
+        # environment surfaces here instead of only at the paid run.
+        try:
+            _preflight(args, tasks, require_claude=False)
+        except (journey_preflight.PreflightError, GitVersionError) as exc:
+            print(f"PREFLIGHT FAILED: {exc}", file=sys.stderr)
+            return 1
         for task, arm, rep in cells:
-            print(f"  {task.task_id} | {arm.name} | repeat {rep}", file=sys.stderr)
+            print(
+                f"  {task.task_id} | {arm.name} | model {arm_model(arm, args.model)} | repeat {rep}",
+                file=sys.stderr,
+            )
         print("DRY RUN complete (no sessions spawned)", file=sys.stderr)
         return 0
 
     return _execute(args, tasks, arms, cells)
 
 
-def _preflight(args, tasks) -> None:
-    """Abort before any spawn if the environment cannot run the selection."""
-    journey_preflight.claude_on_path()
+def _preflight(args, tasks, *, require_claude: bool = True) -> None:
+    """Abort before any spawn if the environment cannot run the selection.
+
+    ``require_claude`` is False for a --dry-run: a dry run spawns no Claude
+    session, so the claude CLI is irrelevant to it -- gating dry-run on
+    claude-on-PATH would (wrongly) fail on CI runners that never install the CLI,
+    while git / venv / fixture problems are still worth surfacing there.
+    """
+    if require_claude:
+        journey_preflight.claude_on_path()
     from tests.journey.harness.fixtures import check_git_version
 
     check_git_version((2, 28))

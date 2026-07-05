@@ -1626,11 +1626,39 @@ def _persist_cross_index_to_plugin_data(
         )
         if payload is None:
             return
-        out_dir = _plugin_data_dir() / _compute_repo_id(root)
+        canonical_id = _compute_repo_id(root)
+        out_dir = _plugin_data_dir() / canonical_id
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / CROSS_REVERSE_INDEX_FILENAME).write_text(
             json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
         )
+        # A no-remote monorepo's first bootstrap wrote this index under the
+        # PATH-HASH id (branch 3), then stamped a repo_uuid; every later refresh
+        # resolves to the UUID id and writes here, orphaning the old path-hash
+        # copy. Remove just that stale file (never the dir -- it may hold other
+        # per-repo state) when the path-hash id differs from the canonical one, so
+        # a future consumer that recomputes the id can never read a stale index.
+        try:
+            import hashlib
+
+            from chameleon_mcp.repo_id import _fs_is_case_insensitive
+            from chameleon_mcp.worktree import resolve_profile_root
+
+            # Reproduce _compute_repo_id's branch-3 exactly: it hashes the
+            # profile-root-resolved path (a linked worktree maps to its main root),
+            # so a coordinator bootstrapped from a worktree computes the same
+            # path-hash id and its orphan is found.
+            id_root = resolve_profile_root(root).resolve()
+            path_key = (
+                str(id_root) if not _fs_is_case_insensitive(id_root) else str(id_root).lower()
+            )
+            path_hash_id = hashlib.sha256(path_key.encode("utf-8")).hexdigest()
+            if path_hash_id != canonical_id:
+                orphan = _plugin_data_dir() / path_hash_id / CROSS_REVERSE_INDEX_FILENAME
+                if orphan.is_file():
+                    orphan.unlink()
+        except Exception:
+            pass
     except Exception:
         return
 

@@ -421,12 +421,32 @@ def session_coverage_from_attestations(records, changed_files) -> dict:
     for rec in records or ():
         if not isinstance(rec, dict):
             continue
-        gov = {e.get("file") for e in (rec.get("governed_files") or []) if isinstance(e, dict)}
-        ungov = {e.get("file") for e in (rec.get("ungoverned_files") or []) if isinstance(e, dict)}
-        if not ((gov | ungov) & changed):
+        # Filter out None/non-str file entries so a record whose file dicts are all
+        # malformed ({}) reads as EMPTY (not {None}), letting the verify_off
+        # empty-list fallback below fire instead of a phantom None never matching.
+        gov = {
+            e.get("file")
+            for e in (rec.get("governed_files") or [])
+            if isinstance(e, dict) and isinstance(e.get("file"), str)
+        }
+        ungov = {
+            e.get("file")
+            for e in (rec.get("ungoverned_files") or [])
+            if isinstance(e, dict) and isinstance(e.get("file"), str)
+        }
+        env = rec.get("env") if isinstance(rec.get("env"), dict) else {}
+        # A session that ran ENTIRELY under CHAMELEON_VERIFY=0 records no touched
+        # files (both the verify and recorder hooks skip), so its file lists are
+        # empty and file-overlap attribution can never see it -- the feature's own
+        # headline scenario (verify suppressed for the whole session) would then
+        # silently auto-pass. verify_off is a session-GLOBAL fact, not per-file, so
+        # attribute such a record to the diff: the record is already repo_id- and
+        # recent-window-scoped, and raise-only makes conservative attribution of an
+        # otherwise-unattributable suppression the correct (route-to-human) call.
+        verify_off_no_files = bool(env.get("verify_off")) and not (gov or ungov)
+        if not ((gov | ungov) & changed) and not verify_off_no_files:
             continue  # this session did not touch the diff -> no attribution
         flags["matched"] = True
-        env = rec.get("env") if isinstance(rec.get("env"), dict) else {}
         if env.get("verify_off"):
             flags["verify_suppressed"] = True
         for chk in rec.get("checks") or []:

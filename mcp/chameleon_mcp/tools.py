@@ -4574,7 +4574,16 @@ def refute_finding(repo: str, findings: list, base_ref: str = "main") -> dict:
     if _absent is not None:
         return _envelope({"refuter": "unavailable", "verdicts": _all_unverified(_absent)})
 
+    # Validate the base like the judge does (judge.py `_spawn_judge`): a garbage /
+    # typo'd CHAMELEON_REFUTER_MODEL must fall back to a valid tier, never reach
+    # `claude -p --model` (which would exit nonzero and fail-open every verdict to
+    # unverified). Mirrors the never-garbage contract the model ladder already
+    # honors for the HIGH escalation.
+    from chameleon_mcp.judge import _valid_model as _vm
+
     model = os.environ.get("CHAMELEON_REFUTER_MODEL", "sonnet")
+    if not _vm(model):
+        model = "sonnet"
     timeout = threshold_int("REFUTER_TIMEOUT_SECONDS")
     max_spawns = threshold_int("REFUTER_MAX_SPAWNS_PER_INVOCATION")
     # Prefetch an inlined excerpt for each finding so the no-tools refuter

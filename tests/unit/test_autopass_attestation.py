@@ -54,6 +54,33 @@ def test_verify_off_env_flags_when_file_overlaps():
     assert sc["verify_suppressed"] is True
 
 
+def test_whole_session_verify_off_no_files_still_attributes():
+    # A session that ran entirely under CHAMELEON_VERIFY=0 records NO touched files
+    # (both verify + recorder hooks skip), so its file lists are empty. verify_off
+    # is session-global, so this must STILL attribute (the feature's headline
+    # scenario) -> route to human, not silently auto-pass.
+    rec = _att(governed=[], ungoverned=[], env={"verify_off": True})
+    sc = session_coverage_from_attestations([rec], ["src/a.ts"])
+    assert sc["matched"] is True
+    assert sc["verify_suppressed"] is True
+
+
+def test_verify_off_with_recorded_files_but_no_overlap_does_not_attribute():
+    # A verify-off session that DID record files (so overlap is meaningful) but
+    # touched none of the diff must NOT attribute -- only the empty-list
+    # (whole-session-suppressed) case gets the session-global fallback.
+    rec = _att(governed=["other/x.ts"], env={"verify_off": True})
+    sc = session_coverage_from_attestations([rec], ["src/a.ts"])
+    assert sc["verify_suppressed"] is False
+
+
+def test_verify_on_empty_record_buys_nothing():
+    # Raise-only: a forged clean (verify_off False) empty record never attributes.
+    rec = _att(governed=[], ungoverned=[], env={"verify_off": False})
+    sc = session_coverage_from_attestations([rec], ["src/a.ts"])
+    assert sc["matched"] is False
+
+
 def test_posttool_verify_skipped_flags():
     rec = _att(
         ungoverned=["a.ts"],

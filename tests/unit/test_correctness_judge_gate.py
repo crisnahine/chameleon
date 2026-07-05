@@ -239,8 +239,11 @@ def test_same_content_second_stop_does_not_respawn(make_trusted_repo):
     assert "additionalContext" in out1.get("hookSpecificOutput", {})
 
     out2, mock2 = _run_stop(_payload(repo, sid), env={"CHAMELEON_ENFORCE": "1"}, findings=findings)
+    # The spawn-dedup contract: no RESPAWN on unchanged content (+ the
+    # skipped_digest_dup event). The finding ledger (default on) separately
+    # surfaces this unaddressed high-severity finding once more here -- a distinct
+    # #9 concern covered in test_finding_ledger -- so out2 is not required empty.
     mock2.assert_not_called()
-    assert out2 == {}
     assert any(e["status"] == "skipped_digest_dup" for e in _events(sid))
 
 

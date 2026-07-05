@@ -40,7 +40,9 @@ def _w(root, rel, body):
     return p
 
 
-def _build(tmp_path, *, edited_exports="export const bar = 1;\n", importer_body=None):
+def _build(
+    tmp_path, *, edited_exports="export const bar = 1;\n", importer_body=None, packages=None
+):
     repo = tmp_path / "repo"
     # workspace A: profile with a parent (coordinator) back-reference + the edited file
     _w(
@@ -65,7 +67,7 @@ def _build(tmp_path, *, edited_exports="export const bar = 1;\n", importer_body=
                 "targets": {
                     "packages/a/index.ts": {"foo": [{"path": "packages/b/b.ts", "line": 1}]}
                 },
-                "packages": {"@scope/a": "packages/a"},
+                "packages": packages or {"@scope/a": "packages/a"},
             }
         ),
         encoding="utf-8",
@@ -110,6 +112,51 @@ def test_importer_no_longer_references_name_no_break(tmp_path):
         _crossworkspace_existence_advisory_lines(repo_root=repo, state=_state(edited), cfg=_cfg())
         == []
     )
+
+
+def test_same_turn_repoint_to_other_known_package_suppressed(tmp_path):
+    # B repointed foo to a DIFFERENT KNOWN workspace package (@scope/c is in the
+    # packages map) -> the removal from @scope/a no longer affects B -> suppress.
+    repo, edited = _build(
+        tmp_path,
+        importer_body="import { foo } from '@scope/c';\nfoo();\n",
+        packages={"@scope/a": "packages/a", "@scope/c": "packages/c"},
+    )
+    assert (
+        _crossworkspace_existence_advisory_lines(repo_root=repo, state=_state(edited), cfg=_cfg())
+        == []
+    )
+
+
+def test_repoint_to_relative_into_owning_still_breaks(tmp_path):
+    # NEVER-MISS: B still imports foo via a RELATIVE path that targets package a
+    # (the owning package). The bareword is present and the spec is not another
+    # known package, so the genuine break must STILL fire -- a name-prefix-only
+    # suppression would wrongly drop this.
+    repo, edited = _build(tmp_path, importer_body="import { foo } from '../a/index';\nfoo();\n")
+    lines = _crossworkspace_existence_advisory_lines(
+        repo_root=repo, state=_state(edited), cfg=_cfg()
+    )
+    assert "foo" in "\n".join(lines)
+
+
+def test_repoint_to_external_unmapped_keeps_advisory(tmp_path):
+    # A repoint to an UNMAPPED bare package (external npm dep) is ambiguous, so the
+    # advisory is KEPT (tolerable noise beats a miss). Safe direction.
+    repo, edited = _build(tmp_path, importer_body="import { foo } from 'lodash';\nfoo();\n")
+    lines = _crossworkspace_existence_advisory_lines(
+        repo_root=repo, state=_state(edited), cfg=_cfg()
+    )
+    assert "foo" in "\n".join(lines)
+
+
+def test_still_imports_from_target_package_still_breaks(tmp_path):
+    # Control: B still imports foo from @scope/a -> genuine break still fires.
+    repo, edited = _build(tmp_path)  # default importer imports from '@scope/a'
+    lines = _crossworkspace_existence_advisory_lines(
+        repo_root=repo, state=_state(edited), cfg=_cfg()
+    )
+    assert "foo" in "\n".join(lines)
 
 
 def test_off_mode_and_kill_switch(tmp_path, monkeypatch):

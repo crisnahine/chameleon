@@ -444,6 +444,12 @@ class CallsIndex:
             "truncated": entry["truncated"],
         }
 
+    def names_for(self, rel: str) -> list[str]:
+        """Callable names the index recorded for ``rel`` (a caller-edge source
+        used as the inbound-contracts fallback when no signature artifact exists).
+        Empty list for an unrecorded file."""
+        return list((self._callees.get(rel) or {}).keys())
+
     def items(self):
         """``(callee_rel, {name: entry})`` pairs for the whole index.
 

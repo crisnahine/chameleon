@@ -73,6 +73,29 @@ def test_high_severity_unchanged_resurfaces_once_then_addressed_on_change(tmp_pa
     assert obs.open_judge_findings(rid, ws_root=str(repo)) == []
 
 
+def test_file_less_high_finding_resurfaces_not_silently_addressed(tmp_path, monkeypatch):
+    # A HIGH finding with no rel_path (a whole-diff / lens finding, no anchor) must
+    # NOT be auto-"addressed" by the digest proxy (it has no file to compare) --
+    # it must still get its one-shot high-severity resurface, then not nag again.
+    repo, rid = _setup(tmp_path, monkeypatch)
+    obs.record_judge_finding(
+        rid,
+        lens="correctness",
+        fingerprint="ff-fileless",
+        severity="high",
+        rel_path=None,
+        anchor_digest=None,
+        ws_root=str(repo),
+        session_id="s1",
+    )
+    assert len(obs.open_judge_findings(rid, ws_root=str(repo))) == 1
+    # Turn N+1: no file to change, must resurface once (was previously lost).
+    lines = hook_helper._ledger_recheck_and_resurface(rid, "s1", repo)
+    assert lines and any("unaddressed high-severity" in ln for ln in lines)
+    # Turn N+2: already resurfaced -> no second nag.
+    assert hook_helper._ledger_recheck_and_resurface(rid, "s1", repo) == []
+
+
 def test_medium_severity_never_resurfaces(tmp_path, monkeypatch):
     repo, rid = _setup(tmp_path, monkeypatch)
     hook_helper._ledger_persist(

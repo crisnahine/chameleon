@@ -2050,6 +2050,8 @@ def _inbound_contracts_section(file_path: str, repo_root: Path | None) -> str:
         # signatures exist (still a valid caller-edge source).
         export_names = list(sigs.for_file(edited_rel)) if sigs is not None else []
         if not export_names:
+            export_names = calls.names_for(edited_rel)
+        if not export_names:
             return ""
 
         max_exports = threshold_int("INBOUND_CALLERS_MAX_EXPORTS")
@@ -5453,8 +5455,9 @@ def _ledger_recheck_and_resurface(repo_id, session_id, repo_root: Path) -> list[
             fid = row.get("id")
             rel = row.get("rel_path")
             anchor = row.get("anchor_digest")
+            has_path = isinstance(rel, str)
             current = None
-            if isinstance(rel, str):
+            if has_path:
                 try:
                     current = _content_digest_16(
                         (repo_root / rel).read_bytes()[:100_000].decode("utf-8", errors="replace")
@@ -5462,8 +5465,20 @@ def _ledger_recheck_and_resurface(repo_id, session_id, repo_root: Path) -> list[
                 except OSError:
                     current = None  # file gone since review -> treat as addressed
             # Changed or gone => the cited content moved => addressed (a proxy;
-            # aggregate telemetry, never per-row enforcement).
-            if current is None or (anchor is not None and current != anchor):
+            # aggregate telemetry, never per-row enforcement). The digest proxy
+            # only applies to a finding that CITED a file: a file-less finding
+            # (rel_path=None -- a whole-diff or lens finding with no anchor) has no
+            # content to compare, so it must NOT be auto-addressed here (that
+            # silently loses a real high-severity finding); it falls through to the
+            # one-shot high-severity resurface below and otherwise stays open.
+            if has_path and (current is None or (anchor is not None and current != anchor)):
+                mark_judge_finding(repo_id, fid, status="addressed", resolved_at=now)
+                continue
+            # A file-less finding (no digest proxy) that is NOT high never
+            # resurfaces, so leaving it open would clog the recheck window forever.
+            # Resolve it here (its pre-fix fate); only a file-less HIGH finding
+            # escapes to the one-shot resurface below.
+            if not has_path and not _finding_is_high(row.get("severity")):
                 mark_judge_finding(repo_id, fid, status="addressed", resolved_at=now)
                 continue
             # Unchanged and still 'open' and high-severity => one re-surface.
@@ -7879,6 +7894,64 @@ def _resolve_coordinator_cross_index(ws_root: Path):
         return (None, None)
 
 
+def _owning_package(mono_key: str, packages: dict) -> str | None:
+    """The package NAME whose monorepo-relative dir owns ``mono_key`` (longest
+    prefix wins), or None. ``packages`` is the cross index's name -> mono-dir map."""
+    best: str | None = None
+    best_len = -1
+    for pname, pdir in (packages or {}).items():
+        if not isinstance(pname, str) or not isinstance(pdir, str):
+            continue
+        d = pdir.rstrip("/")
+        if (mono_key == d or mono_key.startswith(d + "/")) and len(d) > best_len:
+            best, best_len = pname, len(d)
+    return best
+
+
+def _importer_cleanly_repointed(itext: str, name: str, owning_pkg: str, packages: dict) -> bool:
+    """True (=> SUPPRESS the cross-workspace break) ONLY when the importer now
+    imports ``name`` from a DIFFERENT KNOWN workspace package and no longer from
+    ``owning_pkg`` (the package the removed export lived in).
+
+    The cross-package analog of :func:`_live_break`'s repoint suppression, but
+    fail-SAFE toward keeping the advisory: suppression requires a POSITIVE match
+    to another package in the cross index's ``packages`` map. Anything ambiguous
+    -- a relative or tsconfig-alias specifier that may still resolve INTO
+    ``owning_pkg``, an external/unmapped bare package, a re-export, an import
+    still from ``owning_pkg``, or an unparseable form -- returns False so the
+    advisory is KEPT. A name-prefix-only check would wrongly suppress a still-
+    broken relative import like ``../a/src/foo`` (it doesn't start with the
+    package name yet targets the package), i.e. MISS a genuine break; that is the
+    one direction this must never take. TypeScript/JS only (the v1 consumer scope).
+    """
+    try:
+        from chameleon_mcp.phantom_imports import _TS_IMPORT_SPEC_RE, _named_specifiers
+
+        known_others = {p for p in (packages or {}) if isinstance(p, str) and p and p != owning_pkg}
+        scan = _blank_strings_comments(itext, "typescript", keep_strings=True)
+        from_owning = False
+        from_other_known = False
+        for m in _TS_IMPORT_SPEC_RE.finditer(scan):
+            raw = m.group(1) or m.group(2) or m.group(3)
+            if not raw:
+                continue
+            spec = raw.split("?", 1)[0].split("#", 1)[0]
+            if not spec:
+                continue
+            names = _named_specifiers(m.group(0))
+            if not names or name not in names:
+                continue
+            if spec == owning_pkg or spec.startswith(owning_pkg + "/"):
+                from_owning = True
+            elif any(spec == k or spec.startswith(k + "/") for k in known_others):
+                from_other_known = True
+            # A relative / alias / external-bare spec is left AMBIGUOUS on purpose
+            # (it may still target owning_pkg), so it never drives suppression.
+        return from_other_known and not from_owning
+    except Exception:
+        return False
+
+
 def _crossworkspace_existence_advisory_lines(*, repo_root: Path, state, cfg) -> list[str]:
     """Turn-end advisory for cross-WORKSPACE existence breaks (WP-C5): a monorepo
     workspace file that removed a named export a SIBLING workspace still imports.
@@ -7950,6 +8023,9 @@ def _crossworkspace_existence_advisory_lines(*, repo_root: Path, state, cfg) -> 
             broken = ri.broken_importers(mono_key, current)
             if not broken:
                 continue
+            # The package that owns the edited/removed-from file, so a same-turn
+            # repoint away from it can be suppressed (parity with _live_break).
+            owning_pkg = _owning_package(mono_key, _packages)
             for name in sorted(broken):
                 live = []
                 for imp in broken[name]:
@@ -7958,8 +8034,17 @@ def _crossworkspace_existence_advisory_lines(*, repo_root: Path, state, cfg) -> 
                         itext = ip.read_bytes()[:1_000_000].decode("utf-8", errors="replace")
                     except OSError:
                         continue
-                    if _reference_present(itext, name, imp.line, detect_language(str(ip))):
-                        live.append(imp)
+                    if not _reference_present(itext, name, imp.line, detect_language(str(ip))):
+                        continue
+                    # Repoint suppression: if the importer cleanly repointed the
+                    # name to a DIFFERENT known workspace package, this
+                    # cross-workspace break is stale (the removal no longer affects
+                    # it). Ambiguous specifiers keep the advisory (never miss).
+                    if owning_pkg is not None and _importer_cleanly_repointed(
+                        itext, name, owning_pkg, _packages
+                    ):
+                        continue
+                    live.append(imp)
                 if not live:
                     continue
                 live_sorted = sorted(
