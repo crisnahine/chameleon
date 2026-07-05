@@ -23,6 +23,22 @@ Grades:
   yields no edge. ``new`` is TypeScript-only (Python has no construction
   call); Python contributes bare calls of named imports and ``recv.attr()``
   through a runtime namespace import (``import a.b as x; x.f()``).
+- ``typed_property`` - TypeScript only: ``this.<prop>.<method>()`` where
+  ``<prop>`` is a class instance property whose DECLARED type (a constructor
+  parameter-property ``private x: Foo`` or a typed field ``private x: Foo``)
+  resolves to a class the method belongs to. The dependency-injection call
+  shape (NestJS/Angular constructor injection, any typed field). Deterministic
+  end to end: the property type must be a bare identifier (generics, unions,
+  qualified names, and untyped fields yield nothing); the receiver is resolved
+  against the property types of the ENCLOSING CLASS the call is made in (each
+  site carries its enclosing class), so a sibling class in the same file
+  declaring the same field name differently -- or using it untyped -- can never
+  leak its type in; the type resolves to an imported class in a CLOSED export
+  set (barrels yield nothing) or a same-file class, chased through named
+  re-export barrels to the defining file; and the method must be a recorded
+  member of that class. Any gap yields no edge rather than a guess. Python's
+  ``self.attr`` counterpart is a documented follow-up (Python DI is not
+  idiomatic and needs __init__ assignment tracking).
 - ``constant_receiver`` - Ruby only: Const.method where Const matches a
   class key exactly. Keys are fully qualified (``enclosing_class_path``,
   module nesting included; old dumps fall back to the lexical class name),
@@ -78,12 +94,21 @@ CALLS_INDEX_FILENAME = "calls_index.json"
 # v1 artifact fails the load gate and refreshes on the next engine-upgrade
 # session; the read is fail-open, so a caller query simply omits the chased edge
 # until then. Never a crash, never a false claim.
+# Adding the ``typed_property`` grade (TS `this.<prop>.<method>()` DI edges) is
+# purely ADDITIVE: the stored artifact structure is unchanged (only a new grade
+# VALUE can appear), and the load gate below filters unknown grades per row. So
+# the version is NOT bumped -- an old (pre-DI) index loads fine under new code
+# (it just lacks DI edges until a refresh rebuilds it, never a hard reject that
+# would silently zero the existing import/same_file/constant edges too), and a
+# new index loaded by older code drops the unknown grade gracefully. A bump
+# here would force every existing user's call graph empty on upgrade until they
+# refresh -- avoidable for an additive change. Bump only on a STRUCTURAL change.
 SCHEMA_VERSION = 2
 
 # The closed grade set build_calls_index emits. A row carrying any other
 # grade is malformed (hand-edited or future-schema) and is skipped on load
 # like every other malformed row.
-VALID_GRADES = frozenset({"same_file", "import", "constant_receiver"})
+VALID_GRADES = frozenset({"same_file", "import", "constant_receiver", "typed_property"})
 
 
 def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
@@ -130,6 +155,14 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
     ns_aliases: dict[str, dict[str, str]] = {}
     file_dir: dict[str, Path] = {}
     sites_by_rel: dict[str, list[dict]] = {}
+    # rel -> class name -> instance-property name -> declared simple type name.
+    # Keyed PER CLASS (not per file): a `this.<prop>.<method>()` site carries its
+    # enclosing class, so the receiver is resolved against the property types of
+    # the class it is called in -- a sibling class in the same file declaring the
+    # same field name differently (or not at all) can never leak its type in. A
+    # property declared twice within ONE class with different types is poisoned
+    # (empty-string sentinel -> no edge).
+    prop_types: dict[str, dict[str, dict[str, str]]] = {}
     # Caller files whose site list was capped at dump time. Every entry that
     # file contributed callers to is marked truncated: its recorded sites are
     # a lower bound on the real call count.
@@ -176,6 +209,26 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                 if isinstance(kind, str) and kind:
                     kinds.add(kind)
                 class_defs.setdefault(cls, set()).add(rel)
+
+        for row in extras.get("class_property_types") or ():
+            if not isinstance(row, dict):
+                continue
+            cls = row.get("class")
+            props = row.get("props")
+            if not (isinstance(cls, str) and cls and isinstance(props, dict)):
+                continue
+            cls_map = prop_types.setdefault(rel, {}).setdefault(cls, {})
+            for prop, typ in props.items():
+                if not (isinstance(prop, str) and prop and isinstance(typ, str) and typ):
+                    continue
+                prev = cls_map.get(prop)
+                if prev is None:
+                    cls_map[prop] = typ
+                elif prev != typ:
+                    # The same property declared twice within one class with
+                    # different types (a param-property plus a field, say):
+                    # poison it so the receiver resolves to nothing.
+                    cls_map[prop] = ""
 
         names_raw = extras.get("named_export_names")
         is_open = bool(extras.get("export_set_open"))
@@ -307,6 +360,45 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
             elif kind in ("this", "self"):
                 if name in own_members:
                     _add(rel, name, rel, caller_fn, line, "same_file")
+            elif kind == "this_prop":
+                # `this.<prop>.<method>()` (TS DI / typed field). Resolve the
+                # receiver property's DECLARED type to a target class, then
+                # confirm that class defines `name`. Deterministic end to end:
+                # the property type is a bare identifier (ts_dump drops generics/
+                # unions), file-scoped and dropped on a type conflict; the type
+                # resolves to an imported class in a CLOSED export set or a
+                # same-file class; the method must be a recorded member. Any gap
+                # yields no edge.
+                if language != "typescript":
+                    continue
+                receiver = site.get("receiver")
+                enclosing = site.get("enclosing_class")
+                # The receiver's type is resolved ONLY against the class the call
+                # is made in. No enclosing class (module-level `this`, or an older
+                # dump without the field) -> no edge, never a file-scoped guess.
+                if not (isinstance(receiver, str) and receiver):
+                    continue
+                if not (isinstance(enclosing, str) and enclosing):
+                    continue
+                type_name = ((prop_types.get(rel) or {}).get(enclosing) or {}).get(receiver)
+                if not type_name:
+                    continue
+                if type_name in import_targets:
+                    t, exported = import_targets[type_name]
+                    if t is None or _closed_target(t, exported) is None:
+                        continue
+                    target_rel, target_cls = t, exported
+                elif type_name in (class_members.get(rel) or {}):
+                    target_rel, target_cls = rel, type_name
+                else:
+                    continue
+                # Chase a re-export barrel to the file that DEFINES the class, so
+                # a DI type imported through an index still resolves to the method
+                # on its real file (additive via chain, like the import grade).
+                final_rel, final_cls, via = chase_reexport(target_rel, target_cls, reexport_map)
+                members = (class_members.get(final_rel) or {}).get(final_cls) or {}
+                if name in members:
+                    _add(final_rel, name, rel, caller_fn, line, "typed_property", tuple(via))
             elif kind in ("new", "member"):
                 if language not in ("typescript", "python"):
                     continue

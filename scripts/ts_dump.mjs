@@ -313,6 +313,22 @@ function callSiteOf(node) {
     if (recv.kind === ts.SyntaxKind.SuperKeyword) {
       return { name, receiver: "super", kind: "super" };
     }
+    // `this.<prop>.<method>()` -- the dependency-injection / typed-field call
+    // shape (NestJS/Angular constructor injection, any `private x: Foo` field).
+    // The receiver is a PropertyAccess whose own receiver is `this`; capture the
+    // property name so the builder can resolve it through the class's declared
+    // property types to the concrete callee. `new this.x.Foo()` is not a
+    // construction shape worth resolving, so restrict to plain calls.
+    if (
+      !isNew &&
+      recv.kind === ts.SyntaxKind.PropertyAccessExpression &&
+      recv.expression &&
+      recv.expression.kind === ts.SyntaxKind.ThisKeyword &&
+      recv.name &&
+      recv.name.kind === ts.SyntaxKind.Identifier
+    ) {
+      return { name, receiver: recv.name.text, kind: "this_prop" };
+    }
     // Only depth-1 chains (svc.sync(), new api.Klass()) carry a resolvable
     // receiver identifier. A deeper chain (api.utils.helper()) dispatches
     // through a property of the receiver; the receiver's export set proves
@@ -323,6 +339,56 @@ function callSiteOf(node) {
     return { name, receiver: recv.text, kind: isNew ? "new" : "member" };
   }
   return null;
+}
+
+// The simple type NAME a type node references, or null when it is anything the
+// calls index cannot resolve deterministically. Only a bare identifier type
+// reference (`Foo`) with no type arguments qualifies; a qualified name
+// (`a.b.Foo`), a generic (`Foo<T>`), a union/intersection, an array, or a
+// missing annotation yields null so the builder never guesses a receiver type.
+function simpleTypeName(typeNode) {
+  if (!typeNode || typeNode.kind !== ts.SyntaxKind.TypeReference) return null;
+  const tn = typeNode.typeName;
+  if (!tn || tn.kind !== ts.SyntaxKind.Identifier) return null;
+  if (typeNode.typeArguments && typeNode.typeArguments.length > 0) return null;
+  return tn.text;
+}
+
+// Instance-property name -> declared simple type name for one class, covering
+// the two shapes a `this.<prop>.<method>()` call resolves through:
+//   - constructor parameter-properties: `constructor(private readonly x: Foo)`
+//   - typed field declarations:         `private x: Foo;`
+// Only bare-identifier types are recorded (see simpleTypeName); an untyped,
+// generic, or union property is omitted, so an unresolved receiver yields no
+// edge rather than a fabricated one.
+function classPropertyTypesOf(node) {
+  const out = {};
+  if (!Array.isArray(node.members)) return out;
+  const PROP_MODS = new Set([
+    ts.SyntaxKind.PrivateKeyword,
+    ts.SyntaxKind.PublicKeyword,
+    ts.SyntaxKind.ProtectedKeyword,
+    ts.SyntaxKind.ReadonlyKeyword,
+  ]);
+  for (const m of node.members) {
+    if (
+      m.kind === ts.SyntaxKind.PropertyDeclaration &&
+      m.name &&
+      m.name.kind === ts.SyntaxKind.Identifier
+    ) {
+      const t = simpleTypeName(m.type);
+      if (t) out[m.name.text] = t;
+    } else if (m.kind === ts.SyntaxKind.Constructor && Array.isArray(m.parameters)) {
+      for (const p of m.parameters) {
+        const isProp = Array.isArray(p.modifiers) && p.modifiers.some((mod) => PROP_MODS.has(mod.kind));
+        if (isProp && p.name && p.name.kind === ts.SyntaxKind.Identifier) {
+          const t = simpleTypeName(p.type);
+          if (t) out[p.name.text] = t;
+        }
+      }
+    }
+  }
+  return out;
 }
 
 // Structured parameter shape for one callable: each entry carries the binding
@@ -488,6 +554,9 @@ function extractFile(filePath) {
     function_scopes: [],
     callable_signatures: [],
     class_shapes: [],
+    // Per-class instance-property -> declared type name, for resolving
+    // `this.<prop>.<method>()` (DI / typed-field) call edges. `{class, props}`.
+    class_property_types: [],
     call_sites: [],
     call_sites_total: 0,
     call_sites_truncated: false,
@@ -736,6 +805,10 @@ function extractFile(filePath) {
         extends: ext,
         implements: impl,
       });
+      const propTypes = classPropertyTypesOf(node);
+      if (Object.keys(propTypes).length > 0) {
+        result.class_property_types.push({ class: node.name.text, props: propTypes });
+      }
     }
 
     const isFn = isFunctionLike(node);
@@ -822,11 +895,21 @@ function extractFile(filePath) {
       if (site !== null) {
         result.call_sites_total++;
         if (result.call_sites.length < MAX_CALL_SITES) {
-          result.call_sites.push({
+          const row = {
             ...site,
             line: startLineOf(node),
             caller: callerStack.length > 0 ? callerStack[callerStack.length - 1] : "<module>",
-          });
+          };
+          // A `this.<prop>.<method>()` receiver must be resolved against the
+          // property types of the class it is CALLED IN -- a sibling class in the
+          // same file may declare the same property name with a different type or
+          // not at all. Record the enclosing class so the builder scopes the
+          // lookup and never leaks one class's field type into another's site.
+          if (site.kind === "this_prop") {
+            row.enclosing_class =
+              classStack.length ? classStack[classStack.length - 1] : null;
+          }
+          result.call_sites.push(row);
         } else {
           result.call_sites_truncated = true;
         }

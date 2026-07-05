@@ -341,6 +341,182 @@ class TestImportGrade:
         assert "src/api.ts" not in idx["callees"]
 
 
+class TestTypedPropertyGrade:
+    """`this.<prop>.<method>()` resolved through a class's declared property
+    types -- the TS dependency-injection / typed-field call shape."""
+
+    def _service(self, tmp_path):
+        _touch(tmp_path, "src/svc.ts")
+        return FakeParsed(
+            tmp_path / "src" / "svc.ts",
+            {
+                "named_export_names": ["Svc"],
+                "export_set_open": False,
+                "callable_signatures": [
+                    _sig("run", enclosing_class="Svc", kind="method"),
+                ],
+            },
+        )
+
+    def _prop_site(self, method, receiver, enclosing, caller, line=4):
+        # A `this.<receiver>.<method>()` site carrying its enclosing class, as
+        # ts_dump emits it. The enclosing class scopes the receiver's type lookup.
+        row = _site(method, receiver, "this_prop", line, caller)
+        row["enclosing_class"] = enclosing
+        return row
+
+    def _consumer(self, tmp_path, props, sites, cls="Ctrl"):
+        return FakeParsed(
+            tmp_path / "src" / "ctrl.ts",
+            {
+                "import_symbols": [{"name": "Svc", "module": "./svc", "line": 1}],
+                "class_property_types": [{"class": cls, "props": props}],
+                "call_sites": sites,
+                "callable_signatures": [_sig("go", enclosing_class=cls, kind="method")],
+            },
+        )
+
+    def test_constructor_injected_property_resolves(self, tmp_path):
+        target = self._service(tmp_path)
+        ctrl = self._consumer(
+            tmp_path, {"svc": "Svc"}, [self._prop_site("run", "svc", "Ctrl", "go")]
+        )
+        idx = build_calls_index([target, ctrl], tmp_path, "typescript")
+        entry = idx["callees"]["src/svc.ts"]["run"]
+        assert entry["callers"] == [
+            {"path": "src/ctrl.ts", "caller": "go", "line": 4, "grade": "typed_property"}
+        ]
+
+    def test_unknown_property_type_yields_no_edge(self, tmp_path):
+        target = self._service(tmp_path)
+        # Property `svc` has no recorded type -> receiver unresolved -> no edge.
+        ctrl = self._consumer(tmp_path, {}, [self._prop_site("run", "svc", "Ctrl", "go")])
+        idx = build_calls_index([target, ctrl], tmp_path, "typescript")
+        assert "src/svc.ts" not in idx["callees"]
+
+    def test_missing_enclosing_class_yields_no_edge(self, tmp_path):
+        target = self._service(tmp_path)
+        # A this_prop site with no enclosing class (module-level `this`, or an
+        # older dump) must not resolve via a file-scoped guess.
+        ctrl = self._consumer(tmp_path, {"svc": "Svc"}, [_site("run", "svc", "this_prop", 4, "go")])
+        idx = build_calls_index([target, ctrl], tmp_path, "typescript")
+        assert "src/svc.ts" not in idx["callees"]
+
+    def test_method_not_on_target_class_yields_no_edge(self, tmp_path):
+        target = self._service(tmp_path)
+        # `missing` is not a member of Svc -> no fabricated edge.
+        ctrl = self._consumer(
+            tmp_path, {"svc": "Svc"}, [self._prop_site("missing", "svc", "Ctrl", "go")]
+        )
+        idx = build_calls_index([target, ctrl], tmp_path, "typescript")
+        assert "src/svc.ts" not in idx["callees"]
+
+    def test_open_export_set_target_yields_no_edge(self, tmp_path):
+        _touch(tmp_path, "src/svc.ts")
+        target = FakeParsed(
+            tmp_path / "src" / "svc.ts",
+            {
+                # A barrel (`export * from`) can't be enumerated -> no edge.
+                "export_set_open": True,
+                "callable_signatures": [_sig("run", enclosing_class="Svc", kind="method")],
+            },
+        )
+        ctrl = self._consumer(
+            tmp_path, {"svc": "Svc"}, [self._prop_site("run", "svc", "Ctrl", "go")]
+        )
+        idx = build_calls_index([target, ctrl], tmp_path, "typescript")
+        assert "src/svc.ts" not in idx["callees"]
+
+    def test_sibling_class_untyped_property_does_not_leak(self, tmp_path):
+        # THE regression pin (P1): class A declares `svc: Svc` and resolves; a
+        # sibling class B in the same file uses `this.svc.run()` with svc NOT
+        # typed. B's site must NOT inherit A's type -- only A.goA gets the edge.
+        target = self._service(tmp_path)
+        ctrl = FakeParsed(
+            tmp_path / "src" / "ctrl.ts",
+            {
+                "import_symbols": [{"name": "Svc", "module": "./svc", "line": 1}],
+                "class_property_types": [{"class": "A", "props": {"svc": "Svc"}}],
+                "call_sites": [
+                    self._prop_site("run", "svc", "A", "goA", line=4),
+                    self._prop_site("run", "svc", "B", "goB", line=9),
+                ],
+                "callable_signatures": [
+                    _sig("goA", enclosing_class="A", kind="method"),
+                    _sig("goB", enclosing_class="B", kind="method"),
+                ],
+            },
+        )
+        idx = build_calls_index([target, ctrl], tmp_path, "typescript")
+        assert idx["callees"]["src/svc.ts"]["run"]["callers"] == [
+            {"path": "src/ctrl.ts", "caller": "goA", "line": 4, "grade": "typed_property"}
+        ]
+
+    def test_two_classes_distinct_types_each_resolve_per_class(self, tmp_path):
+        # Two classes in one file declare `svc` with DIFFERENT types. Per-class
+        # scoping resolves each to its own type (not ambiguous): A.svc:Svc ->
+        # Svc.run, B.svc:Other -> Other.run. Both real edges.
+        target = self._service(tmp_path)
+        _touch(tmp_path, "src/other.ts")
+        other = FakeParsed(
+            tmp_path / "src" / "other.ts",
+            {
+                "named_export_names": ["Other"],
+                "export_set_open": False,
+                "callable_signatures": [_sig("ping", enclosing_class="Other", kind="method")],
+            },
+        )
+        ctrl = FakeParsed(
+            tmp_path / "src" / "ctrl.ts",
+            {
+                "import_symbols": [
+                    {"name": "Svc", "module": "./svc", "line": 1},
+                    {"name": "Other", "module": "./other", "line": 1},
+                ],
+                "class_property_types": [
+                    {"class": "A", "props": {"svc": "Svc"}},
+                    {"class": "B", "props": {"svc": "Other"}},
+                ],
+                "call_sites": [
+                    self._prop_site("run", "svc", "A", "goA", line=4),
+                    self._prop_site("ping", "svc", "B", "goB", line=9),
+                ],
+                "callable_signatures": [
+                    _sig("goA", enclosing_class="A", kind="method"),
+                    _sig("goB", enclosing_class="B", kind="method"),
+                ],
+            },
+        )
+        idx = build_calls_index([target, other, ctrl], tmp_path, "typescript")
+        assert idx["callees"]["src/svc.ts"]["run"]["callers"][0]["caller"] == "goA"
+        assert idx["callees"]["src/other.ts"]["ping"]["callers"][0]["caller"] == "goB"
+
+    def test_intra_class_conflicting_types_poison_the_property(self, tmp_path):
+        # One class declares `svc` twice with different types (param-property +
+        # field). Poisoned -> no edge.
+        target = self._service(tmp_path)
+        ctrl = self._consumer(
+            tmp_path,
+            {"svc": "Svc"},
+            [self._prop_site("run", "svc", "Ctrl", "go")],
+        )
+        # Simulate a second, conflicting declaration by appending another row for
+        # the SAME class with a different type for the same property.
+        ctrl.extras["class_property_types"].append({"class": "Ctrl", "props": {"svc": "Nope"}})
+        idx = build_calls_index([target, ctrl], tmp_path, "typescript")
+        assert "src/svc.ts" not in idx["callees"]
+
+    def test_ruby_this_prop_site_is_ignored(self, tmp_path):
+        # typed_property is TS-only; a stray this_prop site on a Ruby build is a
+        # no-op (Ruby has no static property types to resolve through).
+        target = self._service(tmp_path)
+        ctrl = self._consumer(
+            tmp_path, {"svc": "Svc"}, [self._prop_site("run", "svc", "Ctrl", "go")]
+        )
+        idx = build_calls_index([target, ctrl], tmp_path, "ruby")
+        assert "src/svc.ts" not in idx["callees"]
+
+
 class TestNamespaceImport:
     def test_member_call_via_namespace_alias(self, tmp_path):
         _touch(tmp_path, "src/utils.ts")

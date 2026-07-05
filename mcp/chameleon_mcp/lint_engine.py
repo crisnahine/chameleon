@@ -979,8 +979,10 @@ def lint(
     - `default-export-kind-mismatch`: warning. Mixing function-export and
       class-export styles within an archetype is a real inconsistency but
       not always a bug (refactors happen).
-    - `top-level-node-kinds-mismatch`: warning. Missing a top-level kind
-      the archetype expects often means the file is restructured.
+    - `top-level-node-kinds-mismatch`: info. Missing a top-level kind the
+      archetype expects is a fit heuristic that is never block-eligible and
+      whose message concedes the match may be wrong, so it is surfaced as an
+      advisory note, not with the "Fix these." imperative.
     - `named-export-count-bucket-mismatch`: info. The bucket boundaries are
       coarse; a bucket mismatch is a soft signal.
     - `jsx-presence-mismatch`: warning when the file has JSX and the
@@ -1041,7 +1043,12 @@ def lint(
                     rule="top-level-node-kinds-mismatch",
                     expected=repr(list(expected_kinds)),
                     actual=repr(snapshot.top_level_node_kinds),
-                    severity="warning",
+                    # Info, not warning: this is an archetype-FIT heuristic (never
+                    # block-eligible) whose own message concedes the match may be
+                    # wrong and tells the reader not to restructure. Surfacing it
+                    # with the "Fix these." imperative and the escalation tone
+                    # contradicts that hedge, so it renders as an advisory note.
+                    severity="info",
                     message=(
                         f"file is missing top-level constructs the archetype "
                         f"expects: {missing_desc} (extras are ok, missing kinds "

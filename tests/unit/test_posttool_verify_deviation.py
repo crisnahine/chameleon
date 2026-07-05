@@ -34,8 +34,10 @@ from unittest.mock import MagicMock, patch
 from chameleon_mcp.enforcement import (
     LEVEL_L0,
     LEVEL_L1,
+    LEVEL_NONE,
     EnforcementState,
     FileState,
+    load_state,
     save_state,
 )
 from chameleon_mcp.profile.loader import LoadedProfile
@@ -51,6 +53,12 @@ VIOLATING_SRC = "export default function widget() {}\n"
 
 # Matches the archetype exactly.
 CLEAN_SRC = "export default class OtherWidget {}\n"
+
+# Matches the archetype's ACTIONABLE shape (class default export) but adds named
+# exports, tripping ONLY the info-severity named-export-count-bucket signal. Used
+# to exercise the info-only branch: advisory-note render, record_clean (no level
+# ratchet).
+INFO_ONLY_SRC = "export default class Widget {}\nexport const alpha = 1;\nexport const beta = 2;\n"
 
 
 def _build_repo(tmp_path: Path) -> tuple[Path, str, LoadedProfile]:
@@ -189,12 +197,15 @@ def test_violating_file_emits_real_deviation_feedback(tmp_path: Path):
     assert "updatedToolOutput" not in out
 
     ctx = out["additionalContext"]
-    # Exactly the two violations the real engine produces for a function
-    # default export against a class archetype.
-    assert "[🦎 chameleon: 2 violations]" in ctx
+    # The real engine produces one ACTIONABLE violation (default-export kind
+    # mismatch) plus one INFO fit-signal (top-level-node-kinds mismatch). The
+    # info row renders as an advisory note under its own header and is never
+    # counted toward the "Fix these." violation total.
+    assert "[🦎 chameleon: 1 violation]" in ctx
+    assert "[🦎 chameleon: 1 advisory note — review, not conformance violations]" in ctx
     assert "archetype expects a default export of classes; file has functions" in ctx
     assert "file is missing top-level constructs the archetype expects" in ctx
-    # Numbered list shape.
+    # Numbered list shape; the actionable violation leads its section.
     assert "1. archetype expects a default export of classes" in ctx
     assert ctx.startswith("<chameleon-context>")
     assert ctx.rstrip().endswith("</chameleon-context>")
@@ -293,6 +304,115 @@ def test_escalation_l0_to_l1_tone(tmp_path: Path):
     # Not yet the L2 STOP escalation.
     assert "STOP. Fix these violations" not in ctx
     assert "chameleon is flagging repeated violations" not in ctx
+
+
+def test_render_violation_sections_splits_by_severity():
+    """Direct contract test for the shared render helper both the archetype and
+    no-archetype paths use, so info rows are framed identically on both."""
+    from chameleon_mcp.hook_helper import _render_violation_sections
+
+    warn = {"severity": "warning", "message": "real problem"}
+    info = {"severity": "info", "message": "just context"}
+
+    # Mixed: actionable section carries the tone, info section does not, and the
+    # info header says "review", never "no action required" / "Fix these".
+    block, actionable, informational = _render_violation_sections(
+        [warn, info], actionable_tone="Fix these."
+    )
+    assert actionable == [warn] and informational == [info]
+    assert "[🦎 chameleon: 1 violation]" in block
+    assert "Fix these." in block
+    assert "[🦎 chameleon: 1 advisory note — review, not conformance violations]" in block
+    # The imperative must not attach to the advisory section.
+    assert block.index("real problem") < block.index("Fix these.") < block.index("just context")
+
+    # Info-only: no violation header, no imperative, even when a tone is passed.
+    block_i, act_i, info_i = _render_violation_sections([info], actionable_tone="Fix these.")
+    assert act_i == [] and info_i == [info]
+    assert "violation]" not in block_i
+    assert "Fix these." not in block_i
+    assert "advisory note" in block_i
+
+    # Actionable-only with no tone (the no-archetype path passes None): plain
+    # violation list, no trailing imperative, no advisory header.
+    block_a, _, _ = _render_violation_sections([warn], actionable_tone=None)
+    assert "[🦎 chameleon: 1 violation]" in block_a
+    assert "advisory note" not in block_a
+    assert block_a.rstrip().endswith("real problem")
+
+
+def test_info_only_edit_records_clean_and_de_escalates(tmp_path: Path):
+    """An edit whose only findings are info-severity advisories (here the
+    count-bucket signal) must render as advisory notes with no imperative AND be
+    recorded CLEAN for the per-file escalation: the level decrements and the
+    blockable flag clears, exactly as a zero-violation edit would. This is the
+    state half of the D1 fix -- the render half is covered above; a silent
+    regression here would re-introduce the ratchet-on-advisory bug."""
+    repo, repo_id, loaded = _build_repo(tmp_path)
+    cand = _write_source(repo, "src/InfoOnly.tsx", INFO_ONLY_SRC)
+    fp = str(cand)
+    sid = "s-info-only"
+
+    # Seed the file as if a prior real violation left it armed at L1.
+    state = EnforcementState()
+    state.files[fp] = FileState(
+        level=LEVEL_L1,
+        violation_count=3,
+        correction_count=2,
+        last_violation_at=time.time() - 1000,
+        blockable_unresolved=True,
+    )
+    save_state(state, tmp_path / repo_id, sid)
+
+    result = _run_verify(
+        repo=repo,
+        repo_id=repo_id,
+        loaded=loaded,
+        tmp_path=tmp_path,
+        file_path=fp,
+        session_id=sid,
+    )
+
+    ctx = _ctx(result)
+    # Render: advisory note only -- no violation header, no imperative.
+    assert "advisory note" in ctx
+    assert "violation]" not in ctx
+    assert "Fix these" not in ctx
+
+    # State: record_clean ran -> level decremented (L1 -> L0), flag disarmed,
+    # correction breaker reset. NOT a ratchet.
+    persisted = load_state(tmp_path / repo_id, sid)
+    fs = persisted.files[fp]
+    assert fs.level == LEVEL_L0
+    assert fs.blockable_unresolved is False
+    assert fs.correction_count == 0
+    # An info-only turn does not add its archetype to the violation set.
+    assert "component" not in persisted.archetypes_with_violations
+
+
+def test_info_only_edit_from_clean_stays_at_none(tmp_path: Path):
+    """A fresh file (no prior state) whose only finding is info-severity records
+    clean and stays at LEVEL_NONE -- never escalates into the L0 violation
+    state off an advisory alone."""
+    repo, repo_id, loaded = _build_repo(tmp_path)
+    cand = _write_source(repo, "src/InfoFresh.tsx", INFO_ONLY_SRC)
+    fp = str(cand)
+    sid = "s-info-fresh"
+
+    result = _run_verify(
+        repo=repo,
+        repo_id=repo_id,
+        loaded=loaded,
+        tmp_path=tmp_path,
+        file_path=fp,
+        session_id=sid,
+    )
+
+    assert "advisory note" in _ctx(result)
+    persisted = load_state(tmp_path / repo_id, sid)
+    fs = persisted.files[fp]
+    assert fs.level == LEVEL_NONE
+    assert fs.blockable_unresolved is False
 
 
 def test_escalation_l1_to_l2_stop_tone_and_user_surface(tmp_path: Path):
@@ -420,7 +540,7 @@ def test_cooldown_suppresses_repeat_then_emits_dedup_note(tmp_path: Path):
     ctx = _ctx(result)
     assert "already verified this file" in ctx
     # The real violation list must NOT be recomputed/emitted on a cooldown hit.
-    assert "2 violations" not in ctx
+    assert "violation" not in ctx
 
 
 def test_cooldown_reverifies_when_content_changed_within_window(tmp_path: Path):
@@ -448,7 +568,7 @@ def test_cooldown_reverifies_when_content_changed_within_window(tmp_path: Path):
 
     ctx = _ctx(result)
     assert "already verified this file" not in ctx
-    assert "2 violations" in ctx
+    assert "1 violation" in ctx
 
 
 def test_legacy_empty_marker_forces_reverification(tmp_path: Path):
@@ -473,7 +593,7 @@ def test_legacy_empty_marker_forces_reverification(tmp_path: Path):
 
     ctx = _ctx(result)
     assert "already verified this file" not in ctx
-    assert "2 violations" in ctx
+    assert "1 violation" in ctx
     assert marker.read_text(encoding="utf-8") == _content_digest(VIOLATING_SRC)
 
 
@@ -496,7 +616,7 @@ def test_violation_writes_verify_seen_marker(tmp_path: Path):
         session_id="s-mark",
     )
 
-    assert "[🦎 chameleon: 2 violations]" in _ctx(result)
+    assert "[🦎 chameleon: 1 violation]" in _ctx(result)
     assert marker.exists()
 
 

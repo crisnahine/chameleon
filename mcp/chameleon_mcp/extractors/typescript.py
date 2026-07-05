@@ -485,6 +485,12 @@ def _extras_from_record(record: dict) -> dict:
     class_shapes = record.get("class_shapes")
     if isinstance(class_shapes, list) and class_shapes:
         extras["class_shapes"] = class_shapes
+    # Per-class instance-property declared types, so the calls index can resolve
+    # a `this.<prop>.<method>()` (DI / typed field) edge through the property's
+    # type to the concrete callee.
+    class_property_types = record.get("class_property_types")
+    if isinstance(class_property_types, list) and class_property_types:
+        extras["class_property_types"] = class_property_types
     # Named export bindings + the open-set flag drive the phantom-symbol index.
     # `named_export_names` is the full set of importable names; `export_set_open`
     # is True when the file does `export * from` and its export set can't be

@@ -102,6 +102,12 @@ class TrustRecord:
             given repo_root prefer this map; absence falls back to
             ``profile_sha256``. Legacy records that lack this field still
             load (defaults to ``{}``).
+        repo_root_specific_granted_at: optional map of resolved-repo_root path
+            → ISO-8601 grant time for THAT root, so a subsequent grant of a
+            workspace under a monorepo-shared repo_id reports its own grant
+            time rather than the first root's. The top-level ``granted_at``
+            stays the first grant. Legacy records lack this field (defaults
+            to ``{}``); lookups fall back to ``granted_at``.
     """
 
     granted_at: str
@@ -109,6 +115,7 @@ class TrustRecord:
     profile_sha256: str
     repo_root: str = ""
     repo_root_specific_hashes: dict[str, str] = field(default_factory=dict)
+    repo_root_specific_granted_at: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict) -> TrustRecord:
@@ -118,12 +125,19 @@ class TrustRecord:
             for k, v in raw_map.items():
                 if isinstance(k, str) and isinstance(v, str):
                     specific[k] = v
+        raw_times = data.get("repo_root_specific_granted_at") or {}
+        specific_times: dict[str, str] = {}
+        if isinstance(raw_times, dict):
+            for k, v in raw_times.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    specific_times[k] = v
         return cls(
             granted_at=str(data.get("granted_at", "")),
             granted_by_user=str(data.get("granted_by_user", "")),
             profile_sha256=str(data.get("profile_sha256", "")),
             repo_root=str(data.get("repo_root", "")),
             repo_root_specific_hashes=specific,
+            repo_root_specific_granted_at=specific_times,
         )
 
     def to_dict(self) -> dict:
@@ -135,7 +149,22 @@ class TrustRecord:
         }
         if self.repo_root_specific_hashes:
             out["repo_root_specific_hashes"] = dict(self.repo_root_specific_hashes)
+        if self.repo_root_specific_granted_at:
+            out["repo_root_specific_granted_at"] = dict(self.repo_root_specific_granted_at)
         return out
+
+    def granted_at_for_root(self, repo_root: Path | str) -> str:
+        """Grant time recorded for ``repo_root`` specifically.
+
+        Prefers the per-root map (the honest "when did I trust THIS root"),
+        falling back to the top-level first-grant ``granted_at`` for legacy
+        records and for the root that carries the top-level fields.
+        """
+        try:
+            key = str(Path(repo_root).resolve())
+        except OSError:
+            key = str(repo_root)
+        return self.repo_root_specific_granted_at.get(key) or self.granted_at
 
     def hash_for_root(self, repo_root: Path | str) -> str:
         """Return the most-specific trusted hash for ``repo_root``.
@@ -380,33 +409,43 @@ def grant_trust(repo_id: str, profile_dir: Path) -> TrustRecord:
         if not portable_flock_deadline(lock_fd, threshold_float("TRUST_LOCK_TIMEOUT_SECONDS")):
             raise LockHeldError(lock_path, None, None)
 
+        now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         existing = trust_state_for(repo_id)
         if existing is None:
             record = TrustRecord(
-                granted_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                granted_at=now_iso,
                 granted_by_user=_current_user(),
                 profile_sha256=new_hash,
                 repo_root=repo_root_str,
                 repo_root_specific_hashes={repo_root_str: new_hash},
+                repo_root_specific_granted_at={repo_root_str: now_iso},
             )
         else:
             specific = dict(existing.repo_root_specific_hashes)
             specific[repo_root_str] = new_hash
+            # This root's own grant time, so a later query for THIS root reports
+            # when it was actually trusted, not the first root's grant time.
+            specific_times = dict(existing.repo_root_specific_granted_at)
+            specific_times[repo_root_str] = now_iso
             if existing.repo_root == repo_root_str or not existing.repo_root:
                 record = TrustRecord(
-                    granted_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    granted_at=now_iso,
                     granted_by_user=_current_user(),
                     profile_sha256=new_hash,
                     repo_root=repo_root_str,
                     repo_root_specific_hashes=specific,
+                    repo_root_specific_granted_at=specific_times,
                 )
             else:
+                # A DIFFERENT root under the same (monorepo-shared) repo_id: keep
+                # the top-level first-grant fields, only extend the per-root maps.
                 record = TrustRecord(
                     granted_at=existing.granted_at,
                     granted_by_user=existing.granted_by_user,
                     profile_sha256=existing.profile_sha256,
                     repo_root=existing.repo_root,
                     repo_root_specific_hashes=specific,
+                    repo_root_specific_granted_at=specific_times,
                 )
 
         tmp_path = trust_path.with_suffix(".trust.tmp")

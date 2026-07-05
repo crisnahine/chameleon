@@ -2919,6 +2919,63 @@ def preflight_and_advise() -> int:
             or _cfg_malformed
         )
 
+    # Content-derived secret protection is NOT trust-gated. scan_hard_secrets
+    # reads the user's OWN proposed edit, not the repo profile, so a hardcoded
+    # credential is a leak regardless of trust -- and the trust gate's rationale
+    # ("a planted profile must not configure a block") does not apply, because no
+    # profile is consulted. The trust contract still reserves BLOCKING for a
+    # trusted profile (chameleon must not deny edits on a repo the user has not
+    # opted into), so on an untrusted repo this NEVER denies; it surfaces the
+    # deterministic hard-kind secret as an advisory so a pre-trust user is not
+    # silently unprotected. FP-free: only the high-precision deterministic kinds
+    # reach the hard set (entropy/keyword hits stay out), and an inline
+    # chameleon-ignore on the line suppresses it like the trusted deny.
+    if trust_state == "untrusted" and repo_root_path is not None:
+        try:
+            _tool = str(payload.get("tool_name") or "")
+            _proposed = _proposed_content_for_tool(_tool, tool_input)
+            if _proposed and isinstance(_proposed, str):
+                _hard_sec, _ = _proposed_hard_secret_violations(
+                    _proposed, file_path, tool_name=_tool
+                )
+                if _hard_sec:
+                    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+                    from chameleon_mcp.violation_class import violation_line
+
+                    _parts = []
+                    for _v in _hard_sec[:3]:
+                        _kind = _v.get("secret_kind") or "credential"
+                        _ln = violation_line(_v)
+                        _parts.append(f"{_kind} at line {_ln}" if _ln else _kind)
+                    _summary = "; ".join(_parts)
+                    if len(_hard_sec) > 3:
+                        _summary += f" (+{len(_hard_sec) - 3} more)"
+                    _metric(
+                        advisory_emitted=True,
+                        repo_id=repo_info.get("id") or repo_id_hint,
+                        trust_state="untrusted",
+                    )
+                    # Summary carries only the secret kind + line (the scanner
+                    # redacts the matched token), so the advisory cannot echo the
+                    # credential back.
+                    _emit_chameleon_context(
+                        "<chameleon-context>\n[🦎 chameleon: hardcoded credential]\n\n"
+                        + sanitize_for_chameleon_context(
+                            f"{_summary} in the proposed content. Rotate any real "
+                            "credential and load it from an environment variable or a "
+                            "secret manager. This repo's chameleon profile is "
+                            "untrusted, so this is an advisory only -- run "
+                            "/chameleon-trust to enable the pre-write credential block. "
+                            "If this is a known-fake fixture value, add "
+                            f"{_ignore_hint(file_path, 'secret-detected-in-content')} "
+                            "on the offending line."
+                        )
+                        + "\n</chameleon-context>"
+                    )
+                    return 0
+        except Exception:
+            pass
+
     if not archetype_name:
         repo_id = repo_info.get("id") or repo_id_hint
         # A no-archetype file (e.g. a new .env) is the most common credential-leak
@@ -3768,6 +3825,7 @@ def _record_bash_write_mutations(
             from chameleon_mcp.enforcement import (
                 FileState,
                 load_state,
+                record_clean,
                 record_violation,
                 save_state,
             )
@@ -3782,13 +3840,20 @@ def _record_bash_write_mutations(
             if fs is None:
                 fs = FileState()
                 state.files[file_path] = fs
-            record_violation(
-                fs,
-                now=now,
-                archetype=record_archetype,
-                hard_class=bool(hard),
-            )
-            state.archetypes_with_violations.add(record_archetype)
+            # Info-only content has no conformance failure: record it clean so a
+            # Bash-written file escalates on the same terms the Edit-tool path
+            # does (info advisories never ratchet the per-file level). `hard`
+            # can never be info, so an armed file is unaffected.
+            if any(not _is_info_violation(v) for v in violations):
+                record_violation(
+                    fs,
+                    now=now,
+                    archetype=record_archetype,
+                    hard_class=bool(hard),
+                )
+                state.archetypes_with_violations.add(record_archetype)
+            else:
+                record_clean(fs, now=now)
             save_state(state, repo_data_dir, session_id or "")
         except Exception:
             pass
@@ -4177,8 +4242,6 @@ def _posttool_no_archetype_advisory(
     ``_read_file_for_ignore`` reads, so the ignore directives it finds are the
     same; falls back to that read only when the caller passed nothing.
     """
-    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
-
     ignore_scan_content = content if content is not None else _read_file_for_ignore(file_path)
 
     hard: list[dict] = []
@@ -4242,14 +4305,11 @@ def _posttool_no_archetype_advisory(
         displayed = _displayable_violations(violations, ignore_scan_content, file_path)
         if not displayed:
             return False
-        lines = []
-        for i, v in enumerate(displayed):
-            msg = sanitize_for_chameleon_context(v.get("message", ""))
-            lines.append(f"{i + 1}. {msg}")
-        block = (
-            f"[🦎 chameleon: {len(displayed)} "
-            f"violation{'s' if len(displayed) != 1 else ''}]\n" + "\n".join(lines)
-        )
+        # Same severity split as the archetype path: info rows (a test-integrity
+        # finding, then-without-catch, an authz-guard hint reachable here via the
+        # archetype-independent scans) render as advisory notes, never counted
+        # under "[N violations]". This path has no escalation tone.
+        block, _, _ = _render_violation_sections(displayed, actionable_tone=None)
         _emit_posttool_context(f"<chameleon-context>\n{block}\n</chameleon-context>")
         return True
     except Exception:
@@ -4569,6 +4629,72 @@ def _read_file_for_ignore(file_path: str) -> str:
         return Path(file_path).read_bytes()[:100_000].decode("utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _is_info_violation(v: dict) -> bool:
+    """True when a violation is an informational advisory, not a conformance
+    failure.
+
+    ``info``-severity rows (cross-file importer blast-radius, the hedged
+    named-export count-bucket signal) are FYI context a reviewer would give
+    before a rename -- they explicitly say "not a defect". They must not be
+    counted toward the "N violations / Fix these." imperative, and an edit that
+    raises ONLY these must not ratchet the per-file escalation level: doing so
+    turns a purely additive edit into an escalating "violation" and pairs a
+    "do not change anything to satisfy this" message with a "Fix these."
+    order. Anything without an explicit ``info`` severity stays actionable.
+    """
+    return isinstance(v, dict) and str(v.get("severity") or "").lower() == "info"
+
+
+def _render_violation_sections(
+    displayed: list[dict], *, actionable_tone: str | None
+) -> tuple[str, list[dict], list[dict]]:
+    """Render surfaced violations as up to two severity-framed sections.
+
+    Actionable rows (warning/error) render under "[N violation(s)]" and carry
+    ``actionable_tone`` (the escalation imperative) when one is given; info rows
+    render under an advisory-note header with NO imperative -- they are context a
+    reviewer weighs, not conformance failures to correct, and pairing them with
+    "Fix these." is self-contradictory (the info class spans blast-radius, the
+    count-bucket "not a defect" hint, a fit-shape "may be wrong" signal, a
+    missing-authz-guard "confirm" hint, and the test-integrity family). The
+    header says "review", NOT "no action required": some info rows (the authz
+    hint, an assertion-free test) do warrant a look -- they are just not the
+    blocking-violation class that gets the imperative.
+
+    Returns ``(block, actionable, info)`` so the caller drives escalation and the
+    statusline off the same partition it renders. Shared by the archetype path
+    and the no-archetype advisory so the two never frame info rows differently.
+    """
+    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+    actionable = [v for v in displayed if not _is_info_violation(v)]
+    info = [v for v in displayed if _is_info_violation(v)]
+    sections: list[str] = []
+    if actionable:
+        lines = [
+            f"{i + 1}. {sanitize_for_chameleon_context(v.get('message', ''))}"
+            for i, v in enumerate(actionable)
+        ]
+        sec = (
+            f"[🦎 chameleon: {len(actionable)} "
+            f"violation{'s' if len(actionable) != 1 else ''}]\n" + "\n".join(lines)
+        )
+        if actionable_tone:
+            sec += "\n" + actionable_tone
+        sections.append(sec)
+    if info:
+        lines = [
+            f"{i + 1}. {sanitize_for_chameleon_context(v.get('message', ''))}"
+            for i, v in enumerate(info)
+        ]
+        sections.append(
+            f"[🦎 chameleon: {len(info)} "
+            f"advisory note{'s' if len(info) != 1 else ''} "
+            "— review, not conformance violations]\n" + "\n".join(lines)
+        )
+    return "\n\n".join(sections), actionable, info
 
 
 def _displayable_violations(
@@ -5066,15 +5192,27 @@ def posttool_verify() -> int:
                 hard = []
                 blockable_now = []
 
+            # An edit that raises ONLY info-severity advisories (cross-file
+            # blast-radius, the hedged count-bucket signal) has no conformance
+            # failure: escalating its level would penalize a purely additive
+            # edit and, on the next edit, greet it with a sterner "STOP. Fix
+            # these" tone for advisories that explicitly say "not a defect".
+            # Treat an info-only turn as clean for the per-file escalation while
+            # still surfacing the notes below.
+            actionable_violations = [v for v in violations if not _is_info_violation(v)]
+            info_only = not actionable_violations
             if enforcement_state is not None and file_state is not None:
                 try:
-                    record_violation(
-                        file_state,
-                        now=_started,
-                        archetype=archetype_name,
-                        hard_class=bool(hard),
-                    )
-                    enforcement_state.archetypes_with_violations.add(archetype_name)
+                    if info_only:
+                        record_clean(file_state, now=_started)
+                    else:
+                        record_violation(
+                            file_state,
+                            now=_started,
+                            archetype=archetype_name,
+                            hard_class=bool(hard),
+                        )
+                        enforcement_state.archetypes_with_violations.add(archetype_name)
                 except Exception:
                     pass
 
@@ -5219,20 +5357,23 @@ def posttool_verify() -> int:
             )
 
             if displayed:
-                violation_lines = []
-                for i, v in enumerate(displayed):
-                    msg = sanitize_for_chameleon_context(v.get("message", ""))
-                    violation_lines.append(f"{i + 1}. {msg}")
-
-                block = (
-                    f"[🦎 chameleon: {len(displayed)} "
-                    f"violation{'s' if len(displayed) != 1 else ''}]\n"
-                    + "\n".join(violation_lines)
-                    + "\n"
-                    + current_tone
+                # Split the surfaced rows by severity (shared with the
+                # no-archetype advisory so both frame info rows the same way): an
+                # actionable violation (warning/error) carries the "Fix these."
+                # imperative and the escalation tone; an info advisory is FYI
+                # context and must NOT be ordered "fixed".
+                block, displayed_actionable, displayed_info = _render_violation_sections(
+                    displayed, actionable_tone=current_tone
                 )
 
-                if enforcement_state is not None and file_state is not None:
+                # The "repeated violations" nudge is an escalation signal: only
+                # append it when an actionable violation drove the surface, never
+                # for an info-only FYI turn.
+                if (
+                    displayed_actionable
+                    and enforcement_state is not None
+                    and file_state is not None
+                ):
                     try:
                         if should_surface_to_user(file_state):
                             safe_path = sanitize_for_chameleon_context(file_path)
@@ -5245,10 +5386,14 @@ def posttool_verify() -> int:
                         pass
 
                 _emit_posttool_context(f"<chameleon-context>\n{block}\n</chameleon-context>")
-                _update_statusline(
-                    f"{len(displayed)} violation{'s' if len(displayed) != 1 else ''}",
-                    repo_root=repo_root,
-                )
+                if displayed_actionable:
+                    _status = (
+                        f"{len(displayed_actionable)} "
+                        f"violation{'s' if len(displayed_actionable) != 1 else ''}"
+                    )
+                else:
+                    _status = f"{len(displayed_info)} note{'s' if len(displayed_info) != 1 else ''}"
+                _update_statusline(_status, repo_root=repo_root)
             else:
                 # Every fired rule was overridden by an inline directive; the
                 # override is recorded above, so surface nothing to the model.

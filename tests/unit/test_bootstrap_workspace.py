@@ -702,6 +702,35 @@ class TestWorkspaceParentBackReference:
             assert parent["repo_id"] == root_repo_id
             assert parent["workspace_path"] == f"apps/{name}"
 
+    def test_standalone_workspace_refresh_preserves_parent(self, tmp_path: Path, monkeypatch):
+        """A `/chameleon-refresh` run from INSIDE a workspace does not re-run the
+        coordinator fan-out, so without carry-forward it would drop the parent
+        back-reference and silently break WP-C5's cross-workspace advisory. The
+        parent link must survive a standalone (re)bootstrap of the workspace."""
+        from chameleon_mcp.tools import _compute_repo_id
+
+        monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "package.json").write_text(json.dumps({"workspaces": ["apps/*"]}))
+        ws = repo / "apps" / "web"
+        ws.mkdir(parents=True)
+        (ws / "package.json").write_text(json.dumps({"devDependencies": {"typescript": "5"}}))
+        (ws / "tsconfig.json").write_text("{}")
+        (ws / "main.ts").write_text("export const x = 1;\n")
+
+        orch.bootstrap_repo(repo)
+        root_repo_id = _compute_repo_id(repo)
+        ws_profile = ws / ".chameleon" / "profile.json"
+        assert json.loads(ws_profile.read_text())["workspace"]["parent"]["repo_id"] == root_repo_id
+
+        # Standalone re-bootstrap of just the workspace (no coordinator fan-out).
+        orch.bootstrap_repo(ws)
+        parent = json.loads(ws_profile.read_text())["workspace"].get("parent")
+        assert parent is not None, "standalone workspace refresh dropped the WP-C5 parent link"
+        assert parent["repo_id"] == root_repo_id
+        assert parent["workspace_path"] == "apps/web"
+
     def test_non_workspace_repo_omits_parent_block(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
         repo = tmp_path / "solo"
@@ -714,3 +743,34 @@ class TestWorkspaceParentBackReference:
 
         profile_json = json.loads((repo / ".chameleon" / "profile.json").read_text())
         assert "parent" not in profile_json["workspace"]
+
+
+class TestReadPriorWorkspaceParent:
+    """Unit coverage for the WP-C5 parent carry-forward helper (no TS needed)."""
+
+    def _write_profile(self, d: Path, workspace: dict) -> None:
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "profile.json").write_text(json.dumps({"workspace": workspace}))
+
+    def test_returns_parent_when_present(self, tmp_path: Path):
+        pd = tmp_path / ".chameleon"
+        self._write_profile(pd, {"parent": {"repo_id": "abc123", "workspace_path": "apps/web"}})
+        got = orch._read_prior_workspace_parent(pd)
+        assert got == {"repo_id": "abc123", "workspace_path": "apps/web"}
+
+    def test_none_when_no_parent(self, tmp_path: Path):
+        pd = tmp_path / ".chameleon"
+        self._write_profile(pd, {"workspace_roots": ["apps/web"]})
+        assert orch._read_prior_workspace_parent(pd) is None
+
+    def test_none_when_parent_lacks_repo_id(self, tmp_path: Path):
+        pd = tmp_path / ".chameleon"
+        self._write_profile(pd, {"parent": {"workspace_path": "apps/web"}})
+        assert orch._read_prior_workspace_parent(pd) is None
+
+    def test_none_on_missing_or_corrupt_profile(self, tmp_path: Path):
+        pd = tmp_path / ".chameleon"
+        assert orch._read_prior_workspace_parent(pd) is None  # absent
+        pd.mkdir()
+        (pd / "profile.json").write_text("{ not valid json ][")
+        assert orch._read_prior_workspace_parent(pd) is None  # corrupt

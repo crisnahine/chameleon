@@ -1845,6 +1845,37 @@ def _generate_archetype_summary(
     return ". ".join(parts) + "." if parts else ""
 
 
+def _read_prior_workspace_parent(profile_dir: Path) -> dict | None:
+    """The ``workspace.parent`` back-reference an earlier profile at ``profile_dir``
+    held, or None.
+
+    Preserves the WP-C5 coordinator link across a STANDALONE workspace
+    (re)bootstrap: a ``/chameleon-refresh`` (or auto-refresh) run from inside a
+    workspace does not re-run the coordinator fan-out that stamps the parent, so
+    without carrying it forward the cross-workspace existence advisory silently
+    stops working for that workspace until the monorepo root is re-bootstrapped.
+    Fail-open (absent / corrupt / no parent -> None), same stance as the
+    idioms.md / renames carry-forward.
+    """
+    try:
+        prev = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(prev, dict):
+        return None
+    parent = (prev.get("workspace") or {}).get("parent")
+    if (
+        isinstance(parent, dict)
+        and isinstance(parent.get("repo_id"), str)
+        and parent.get("repo_id")
+    ):
+        return {
+            "repo_id": parent.get("repo_id"),
+            "workspace_path": parent.get("workspace_path"),
+        }
+    return None
+
+
 def _bootstrap_single(
     repo_root: Path,
     *,
@@ -2474,6 +2505,14 @@ def _bootstrap_single(
             "repo_id": parent_repo_id,
             "workspace_path": parent_workspace_path,
         }
+    else:
+        # No explicit parent means this is NOT a coordinator fan-out -- a
+        # standalone (re)bootstrap of the workspace. Carry forward the parent
+        # link a prior coordinator bootstrap stamped, so a workspace-level
+        # refresh does not silently break WP-C5's cross-workspace advisory.
+        _prior_parent = _read_prior_workspace_parent(profile_dir)
+        if _prior_parent is not None:
+            profile_data["workspace"]["parent"] = _prior_parent
     if language_hint is not None:
         profile_data["language_hint"] = language_hint
 

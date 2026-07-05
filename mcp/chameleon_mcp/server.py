@@ -149,6 +149,7 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     Reads the prebuilt calls_index.json artifact. Returns the recorded caller
     rows for ``function_name`` defined in the file at ``file_path``. Grades are
     deterministic: same_file, import (TypeScript and Python), constant_receiver
+    (Ruby), typed_property (TypeScript DI edges)
     (Ruby only). Dynamic/unsupported call paths are absent by design.
 
     Absence of callers is NOT evidence of dead code -- dynamic dispatch and
@@ -171,7 +172,7 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
 
     This is the same conservative reach the turn-end correctness judge walks,
     surfaced so pr-review and the human can ask beyond one-hop get_callers.
-    Grades are deterministic (same_file, import, constant_receiver). Absence of a
+    Grades are deterministic (same_file, import, constant_receiver, typed_property). Absence of a
     caller is NOT dead code (dynamic dispatch / reflection / post-bootstrap
     callers are invisible). Fails open with found=False on any ambiguity. Never
     fabricates a caller.

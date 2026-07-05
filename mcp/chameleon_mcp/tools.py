@@ -3695,7 +3695,7 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     This is the same conservative reach the turn-end correctness judge already
     walks, surfaced as a tool so pr-review and the human can ask it directly
     instead of being limited to one-hop ``get_callers``. Grades are deterministic
-    (same_file, import, constant_receiver); name-only / dynamic / inheritance
+    (same_file, import, constant_receiver, typed_property); name-only / dynamic / inheritance
     call paths are absent by design.
 
     Interpretation note (returned in ``note``): absence of a caller is NOT
@@ -4044,7 +4044,7 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     The forward counterpart to ``get_callers`` / ``get_blast_radius``: it inverts
     the reverse ``calls_index`` to answer "what does this function call". Each
     result is ``{callee, file, grade}`` with the same three deterministic grades
-    (same_file, import, constant_receiver). Absence of a callee is NOT proof the
+    (same_file, import, constant_receiver, typed_property). Absence of a callee is NOT proof the
     function calls nothing: dynamic dispatch and unsupported call paths are
     invisible. Fails open with ``found: False`` on any ambiguity.
     """
@@ -9930,7 +9930,10 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
 
     data: dict = {
         "status": "success",
-        "trusted_at": record.granted_at,
+        # This root's own grant time, not the shared record's first-grant time:
+        # granting a workspace under a monorepo-shared repo_id must report when
+        # the user just trusted THIS root, not the original one.
+        "trusted_at": record.granted_at_for_root(profile_dir.parent),
         "granted_by_user": record.granted_by_user,
     }
     if workspace_trust_count:

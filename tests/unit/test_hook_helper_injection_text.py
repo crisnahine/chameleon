@@ -70,11 +70,17 @@ def test_preflight_echo_screens_principles_via_safe_prose_text():
 
 
 def test_violation_header_pluralizes():
-    src = _posttool_verify_source()
+    # The violation/advisory-note headers are built in the shared render helper
+    # (used by both the archetype and no-archetype paths); inspect it, not the
+    # posttool_verify body the construction was factored out of.
+    src = inspect.getsource(hook_helper._render_violation_sections)
     # The hardcoded plural form must be gone.
     assert "{len(violations)} violations]" not in src
+    assert "} violations]" not in src
     # The header must select singular/plural the same way the statusline does.
     assert re.search(r"violation\{'s' if .* != 1 else ''\}\]", src)
+    # The info section pluralizes its own header identically.
+    assert re.search(r"advisory note\{'s' if .* != 1 else ''\}", src)
 
 
 # --- C4.1: spotlight the verbatim repo-derived region -----------------------

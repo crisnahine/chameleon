@@ -4,6 +4,68 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.49.0] - 2026-07-05
+
+Real-usage QA pass driving the plugin through its actual entry points (hook
+executables fed real payloads against real repositories, the calls index rebuilt
+from real bootstraps). One new capability and three gap fixes, each verified in
+real usage and adversarially reviewed.
+
+### Added
+
+- **Dependency-injection call edges for TypeScript** (`typed_property` grade): a
+  `this.<svc>.<method>()` call — the NestJS/Angular constructor-injection and
+  typed-field shape — was invisible to the calls index, so `get_callers`,
+  `get_blast_radius`, the turn-end correctness judge's caller grounding, and the
+  per-edit inbound-callers section all came up empty on the entire DI pattern.
+  The index now resolves the receiver property through its declared type to the
+  concrete callee. Deterministic and false-positive-free: bare-identifier
+  property types only (generics, unions, qualified names, and untyped fields
+  yield nothing); the receiver is resolved against the property types of the
+  ENCLOSING CLASS the call is made in, so a sibling class in the same file
+  declaring the same field name differently — or using it untyped — never leaks
+  its type in; and the target must be an imported class in a closed export set
+  (chased through re-export barrels to its defining file) whose member set
+  contains the method. On a real NestJS repo this surfaces every
+  controller→service DI edge that was previously unrecorded. The change is
+  purely additive — no calls-index schema bump — so an existing call graph keeps
+  working on upgrade and a `/chameleon-refresh` adds the DI edges. Python's
+  `self.attr` counterpart remains a follow-up.
+
+### Fixed
+
+- **Info-severity advisories were rendered as violations with a "Fix these."
+  order.** On every cross-file edit, informational signals (cross-file
+  blast-radius, the export-count-bucket hint, and the archetype-fit
+  top-level-node-kinds mismatch) were counted under "[N violations]" and told
+  the model to fix them — while their own text says "not a defect" and "do not
+  restructure working code." An info-only edit also ratcheted the per-file
+  enforcement escalation level, so a purely additive change earned a sterner
+  "STOP. Fix these" tone on the next edit. Advisories now render under a separate
+  "[N advisory note(s) — review, not conformance violations]" header with no
+  imperative; an info-only edit is recorded clean and never escalates. The same
+  split applies on the no-archetype advisory path, and `top-level-node-kinds`
+  (a never-block-eligible fit heuristic) is reclassified to info.
+- **`trust_profile` reported the wrong grant time for a workspace under a
+  monorepo-shared repo id.** Granting a second root returned the first root's
+  original grant timestamp. Each root now records its own grant time; the
+  top-level first-grant value is unchanged and legacy records fall back to it.
+- **Hardcoded-secret protection was inert on untrusted repos.** The pre-write
+  credential deny was gated on a trusted profile, yet the secret scan reads the
+  user's own proposed edit, not the repo profile — leaving every pre-trust user
+  unprotected against the highest-value deterministic stop. An untrusted repo now
+  surfaces a deterministic hard-kind secret as an advisory (never a block, so the
+  trust contract's "only a trusted profile may block" still holds), suppressible
+  with an inline `chameleon-ignore`.
+- **A workspace-level refresh silently broke the cross-workspace advisory
+  (WP-C5).** The parent back-reference that links a monorepo workspace to its
+  coordinator's cross-package index was written only by the coordinator's
+  fan-out, so a `/chameleon-refresh` (or auto-refresh) run from inside a single
+  workspace dropped it — leaving that workspace with no cross-workspace existence
+  advisory until the whole monorepo was re-bootstrapped. A standalone workspace
+  refresh now carries the parent link forward, the same way it preserves taught
+  idioms and renames.
+
 ## [2.48.0] - 2026-07-05
 
 Real-usage QA pass: every shipped roadmap feature was driven through its actual
