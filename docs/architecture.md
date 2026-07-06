@@ -5,7 +5,7 @@
 This document describes how chameleon works as built. It is the reference for
 the bootstrap pipeline, the hook stack, the MCP tool surface, the enforcement
 and review gate, the profile schema, the state stores, and the security model.
-It tracks engine version **2.53.0** and profile **schema version 8**. When the
+It tracks engine version **2.54.0** and profile **schema version 8**. When the
 code and this document disagree, the code is right; please file an issue.
 
 ## Contents
@@ -250,13 +250,14 @@ Overridable with `CHAMELEON_PLUGIN_DATA`. Never committed, never exfiltrated.
 | Path | Contents |
 |---|---|
 | `index.db` | SQLite registry of every repo this user has bootstrapped. |
-| `<repo_id>/drift.db` | Per-edit confidence history, override audit, decision log. |
+| `<repo_id>/drift.db` | Per-edit confidence history, override audit, decision log, finding ledger. |
 | `<repo_id>/.trust` | Per-user trust grant for this repo. |
 | `<repo_id>/.pause_until` | `/chameleon-pause-15m` expiry. |
 | `<repo_id>/.session_disabled.<hash>` | HMAC-signed per-session disable marker. |
 | `<repo_id>/prodtree/` | Materialized production-branch worktrees (swept after use). |
 | `<repo_id>/.intent.<session>.ndjson` | Captured intent tokens and digests (never raw prose). |
 | `<repo_id>/review_ledger.ndjson`, `session_attestations.ndjson` | HMAC-signed review and attestation records. |
+| `<coordinator repo_id>/cross_reverse_index.json` | Monorepo cross-workspace import edges (deliberately off the trust-hashed profile surface). |
 
 The Bash exec log lives separately under `${TMPDIR:-/tmp}/.chameleon_exec_log/<repo_id>/`
 (mode 0700), and the HMAC key under `~/.claude/hooks/.exec_hmac.key`
@@ -294,9 +295,11 @@ The pipeline stages, in order:
    post-exclusion ceiling of 200k files raises `TooManyFilesError`; large repos
    pass an explicit `paths_glob`.
 5. **AST parse.** Run the extractor over the candidates. A missing language
-   toolchain degrades to a typed report (`failed_node_unavailable` for TS,
-   `failed_ruby_unavailable` otherwise), not a crash. A corpus that parsed too
-   poorly degrades to `failed_extractor_degraded`.
+   toolchain degrades to a typed report naming the actual missing toolchain
+   (`failed_node_unavailable` for TS, `failed_ruby_unavailable` for Ruby,
+   `failed_python_unavailable` for Python, with a generic
+   `failed_extractor_unavailable` fallback), not a crash. A corpus that parsed
+   too poorly degrades to `failed_extractor_degraded`.
 6. **Clustering.** Group files by their [cluster signature](#cluster-signature-function),
    then run loose-merge, shape-fuzzy-merge, and sub-bucket-split passes.
    Generated files are skipped here.
@@ -320,12 +323,17 @@ The pipeline stages, in order:
 
 All three extractors are long-lived subprocesses fed file paths on stdin,
 emitting NDJSON on stdout, read under a 600-second wall-clock timeout. They are
-spawned from a neutral working directory with `RUBYOPT`/`RUBYLIB` (Ruby) or
-`NODE_PATH`/`CHAMELEON_NODE_MODULES` (TypeScript) controlled, so they never load
-repo-controlled startup code.
+spawned from a neutral working directory with the interpreter's
+startup-injection environment scrubbed so they never load repo-controlled
+startup code: Ruby drops `RUBYOPT`/`RUBYLIB`; TypeScript pops `NODE_OPTIONS`
+(so a poisoned `--require` cannot preload code) and sets
+`NODE_PATH`/`CHAMELEON_NODE_MODULES` itself; Python drops
+`PYTHONPATH`/`PYTHONSTARTUP`.
 
 Per-file ceilings are application-level, enforced inside the extractor:
-`MAX_AST_NODES = 50_000`, `MAX_FILE_SIZE = 1_000_000` bytes,
+`MAX_AST_NODES` (50,000 for TS and Ruby; 165,000 for Python, because libcst CST
+nodes are roughly 3.3x denser and an equal ceiling would unfairly drop
+equivalent Python files), `MAX_FILE_SIZE = 1_000_000` bytes,
 `MAX_PARSE_DIAGNOSTICS = 20`, `MAX_CALLABLE_SIGNATURES`, and `MAX_CALL_SITES`.
 A symlink is refused; an oversize or too-broken file is skipped and marked so
 the partial corpus stays visible. There is no OS-level RSS or CPU rlimit and no
@@ -457,9 +465,15 @@ The canonical excerpt injected at edit time is a **witness, not a template**:
 match its shape and idioms, not its specific business logic.
 
 Selection walks the cluster's eligible members sorted by `(-recency_weight,
--typicality, path)` (recency weight is 2.0 for files modified within 90 days,
-else 1.0; typicality is closeness to the cluster's most common AST shape). The
-first member that passes all three security scans wins. If none pass, the
+-typicality, demoted, path)` (recency weight is 2.0 for files modified within
+90 days, else 1.0; typicality is closeness to the cluster's most common AST
+shape). The demotion term sits between typicality and the path tiebreak and
+pushes structural non-representatives below their concrete siblings: a Rails
+`application_*.rb` abstract base, an imports-only NestJS `@Module` aggregator,
+and a migration whose `ActiveRecord::Migration[x.y]` version is behind the
+cluster's current one. On a fresh clone with uniform mtimes the primary
+signals tie, so this term is what separates witnesses before the path string
+decides. The first member that passes all three security scans wins. If none pass, the
 cluster is flagged `clusters_with_only_failing_canonicals` so the gap is visible
 rather than silently shipping a poisoned example.
 
@@ -543,7 +557,7 @@ byte-reproducible, are hashed into the trust SHA, and fail open to "no facts"
   candidate-narrowing layer for cross-file duplication; the LLM caller judges
   equivalence against real bodies.
 - **`calls_index.json`** (all three languages): callee file to callable name to
-  recorded caller rows. It stores exactly three deterministic grades and never
+  recorded caller rows. It stores exactly five deterministic grades and never
   name-only repo-wide matches (the false-positive bulk):
   - `same_file` a bare call to a same-file callable, or a `this.`/`self.` call
     to a same-file class member.
@@ -552,10 +566,20 @@ byte-reproducible, are hashed into the trust SHA, and fail open to "no facts"
     target's closed export set.
   - `constant_receiver` (Ruby only) `Const.method` where `Const` resolves to
     exactly one defining class and the member is class-level.
+  - `typed_property` (TS only) `this.<prop>.<method>()` where the property's
+    declared type (a constructor parameter-property or typed field) resolves to
+    a class that records the method as a member — the dependency-injection call
+    shape (NestJS/Angular constructor injection). Any resolution gap (generics,
+    unions, untyped fields, open barrel exports) yields no edge.
+  - `module_attribute` (Python only) `mod.func()` where `mod` is a submodule
+    bound by `from pkg import mod` resolving to a real in-repo module file, and
+    the member is a callable defined in that file — the Python analog of
+    `typed_property`/`constant_receiver`.
   Each entry carries an honest `total` and a `truncated` flag so a capped count
-  reads as a lower bound, not an undercount. Unlike the other indexes, a failed
-  rebuild drops the old copy rather than carrying it forward: stale caller facts
-  fed to the judge are worse than none.
+  reads as a lower bound, not an undercount. Like every protocol artifact (see
+  [Atomicity](#atomicity-locking-and-crash-safety)), a failed rebuild drops the
+  old copy rather than carrying it forward: stale caller facts fed to the judge
+  are worse than none.
 - **`symbol_signatures.json`** (all three languages): per callable, the parameter
   shape, declared types (TS only), and body span, for the judge's
   forward-definition hydration.
@@ -568,6 +592,25 @@ caller-facts block (including multi-hop transitive callers) for the callables a
 diff changed. Absence of an edge is never evidence of dead code; the facts block
 says so explicitly. The same artifacts back `get_callers`,
 `query_symbol_importers`, `get_crossfile_context`, and `get_duplication_candidates`.
+
+A seventh index lives outside the committed profile: the monorepo
+**cross-workspace existence index**, `cross_reverse_index.json` (default on,
+kill switch `CHAMELEON_CROSSWS_INDEX=0`). `build_reverse_index` runs per
+workspace, so a file in package B importing from package A over a
+`@scope/a`-style specifier is invisible to A's own reverse index, and a removed
+export a sibling package still imports goes unseen. At bootstrap and refresh
+each workspace captures the cross-package import specifiers its own reverse
+index drops, and the coordinator join resolves each `@scope/pkg` specifier to
+the sibling workspace's file through a `package.json`-name map with a
+fail-closed name-in-exports confirmation. The resolved edges are written to the
+plugin data dir (`<data>/<coordinator repo_id>/cross_reverse_index.json`),
+deliberately **off the trust-hashed profile surface**: materializing a
+coordinator profile to host it would create a new trust anchor and arm the
+security-deny floor on previously ungoverned root files. Its consumer is a
+Stop-time advisory (never a deny) that flags an export the turn removed which a
+sibling workspace still imports, confirmed by a live presence re-check on the
+importer. TypeScript/JS cross-package resolution only; Python is a documented
+gap.
 
 ---
 
@@ -610,23 +653,56 @@ banner and the other hooks fail open silently and log a `no-interpreter` line.
 - **session-start** loads the `using-chameleon` skill, detects the repo and
   language, injects the convention primer wrapped in `<chameleon-context>`,
   appends a drift banner when warranted, runs the default-on auto-refresh, and
-  fires the advisor daemon asynchronously. It defers to a status line the user
-  already configured.
+  fires the advisor daemon asynchronously. It also wires the status line: when
+  neither the project's `settings.json` nor the global `~/.claude/settings.json`
+  declares a `statusLine`, `_wire_statusline_settings` writes the chameleon
+  statusline command into the project's `settings.local.json`. A status line
+  the user already configured is left alone, and any error leaves the settings
+  untouched.
 - **preflight-and-advise** primes the model before an edit. It resolves the
-  archetype (daemon fast path, in-process fallback), records a drift
-  observation, applies the trust gate, runs the two pre-write deny gates
-  (secret, banned import), and injects tiered context: a short pointer for an
-  archetype already seen this session, or the full canonical excerpt on the
-  first edit in an archetype or after a prior violation. The full witness is
-  injected (quality over token cost), bounded only by a 5 MB safety read. The
-  Tier-2 block also injects proximity-ranked "Nearby collaborator signatures":
-  the real callable signatures of source files in the edited file's directory,
-  from the precomputed `symbol_signatures.json`, ranked by recorded call
-  proximity from `calls_index.json` so the closest collaborators lead.
-  Default-on, kill switch `CHAMELEON_NEARBY_SIGNATURES=0`.
+  archetype (daemon fast path, in-process fallback), applies the trust gate,
+  runs the pre-write deny gates (secret, eval, banned import), and injects
+  tiered context: a short pointer for an archetype already seen this session,
+  or the full canonical excerpt on the first edit in an archetype or after a
+  prior violation. (The drift observation for the edit is recorded once, by
+  posttool-verify, which also covers denied and failed edits and the
+  no-archetype branch; recording at preflight too doubled every drift
+  statistic.) The witness is injected whole up to a 16,000-character cap with
+  a truncation marker — quality over token cost; the 5 MB safe-read ceiling
+  bounds the underlying file read, not the injection. The Tier-2 block carries
+  several more default-on sections, each with its own kill switch:
+  - **Nearby collaborator signatures** (`CHAMELEON_NEARBY_SIGNATURES=0`): the
+    real callable signatures of source files in the edited file's directory,
+    from the precomputed `symbol_signatures.json`, ranked by recorded call
+    proximity from `calls_index.json` so the closest collaborators lead.
+  - **Inbound-caller contracts** (`CHAMELEON_INBOUND_CALLERS=0`): the edited
+    file's own exports with the recorded call sites that depend on each, plus
+    a "change a signature -> update these call sites in the same turn"
+    directive. The counterpart of the sibling signatures: outbound shows the
+    contracts to call, inbound shows the dependents that break. It fires only
+    when real caller edges exist, is bounded, and carries an honesty note
+    (barrels and dynamic dispatch are invisible to the snapshot, so an empty
+    list is not proof a break is safe).
+  - **Archetype facts** (`CHAMELEON_ARCHETYPE_FACTS=0`): on a first-in-archetype
+    edit, the archetype's class contract (base class, required methods, DSL
+    macros) and its `key_exports` rendered as a "reuse these before creating a
+    new one" directive, read from `conventions.json` and scoped to the edited
+    archetype.
+  - **Taught counterexample** (`CHAMELEON_COUNTEREXAMPLE=0`): when a taught
+    competing import is still present in a real file, that off-pattern line is
+    paired with the witness as a "do NOT write it this way" contrast, read
+    from the precomputed `counterexamples.json`.
+  The witness sits inside the imitate-spotlight; the counterexample, inbound
+  contracts, and archetype facts render outside it (they are chameleon
+  directives or negative examples, not data to imitate), with every value
+  sanitized at the boundary.
 - **posttool-recorder** records the HMAC-signed Bash exec log and re-lints
   single-target Bash file writes (`>`, `>>`, `tee`, `sed -i`) into the
-  enforcement state so the Stop backstop covers them. (The drift observation and
+  enforcement state so the Stop backstop covers them. The capture is
+  deliberately narrow: only a single unquoted (or simply quoted) literal target
+  word counts — globs, variables, command substitution, heredocs piped onward,
+  and patch-body writes like `git apply` yield no target and are skipped, and
+  the target must resolve inside a profiled repo. (The drift observation and
   the per-edit decision row are recorded by posttool-verify, not the recorder.)
 - **posttool-verify** lints the written file against its archetype and emits
   violations as advisory context. Gated additionally by `CHAMELEON_VERIFY`.
@@ -638,11 +714,18 @@ banner and the other hooks fail open silently and log a `no-interpreter` line.
   reviewer model inside it under a 45s budget, and the cap must clear that with
   headroom under Claude Code's own 60s hook ceiling.
 
-**Fail-open and fail-closed split.** Safety failures block; everything else
-degrades. The PreToolUse safety gate fails closed (cannot lstat or resolve a
-path means deny the edit). Archetype resolution, lint, and the advisory layer
-all fail open: a degraded banner or nothing at all, and the edit proceeds. An
-edit never fails because chameleon's advisory layer broke.
+**Fail-open and fail-closed split.** Every hook failure path fails open: a
+degraded banner or nothing at all, and the edit proceeds. There is no
+fail-closed PreToolUse path — an unreadable config, an unresolvable path, or a
+crashed lookup emits an empty decision rather than a deny (failing closed on an
+unreadable config would be circular), and the only PreToolUse denies are the
+deliberate scans of the *proposed content*: the hard-kind secret deny, the
+error-severity eval deny, and the banned-import deny. The genuinely fail-closed
+pieces live elsewhere: the intent-capture hard-secret scan (a hit persists zero
+tokens), the escape-hatch string-literal blanking (text it cannot lex safely
+never activates a directive), and the merge driver (a merge it cannot run is
+left conflicted for manual resolution, never silently resolved). An edit never
+fails because chameleon's advisory layer broke.
 
 Output uses the `additionalContext` channel, not `decision: block`, for
 advisory feedback, so the model reads the context without re-prompt or
@@ -787,11 +870,16 @@ Five places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
    100 KB with a regex-only hard-kind scanner so the hot path holds on large
    payloads. The eval/exec deny shares the same exemption.
 2. **PreToolUse import deny.** A banned or competing import in the proposed
-   content, gated on a high-confidence AST match.
+   content, gated on a confident archetype match: `match_quality` in
+   (`ast`, `exact`) at `high` or `medium` confidence. `exact` is the path-based
+   match a brand-new file resolves to (a Write target with no content on disk
+   yet) — a stronger signal, not a weaker one, and excluding it would let every
+   new file slip the deny exactly where a banned import is most often
+   introduced.
 3. **PostToolUse block.** A hard-class violation on a file already escalated to
-   L2, when the archetype match is high-confidence AST and the profile is
-   trusted and not stale. `phantom-import` is deferred from here to the Stop
-   backstop.
+   L2, when the archetype match is AST-grade at high or medium confidence and
+   the profile is trusted and not stale. `phantom-import` is deferred from here
+   to the Stop backstop.
 4. **Stop backstop.** At turn end, a file with an unresolved hard-class
    violation that still fails a live re-lint refuses to end the turn, bounded by
    `enforcement.stop_block_cap` (default 3). This is the only place
@@ -814,7 +902,21 @@ Five places can stop work, all gated by trust, mode, and `CHAMELEON_ENFORCE`.
    force a self-review against `idioms.md`/`principles.md`. Gated by
    `enforcement.idiom_review` (default on). `enforcement.idiom_judge` (default on)
    only hardens the directive text; it does not spawn a model. Set it false to
-   restore the blanket self-review directive.
+   restore the blanket self-review directive. The rendering is **terse by
+   default** (kill switch `CHAMELEON_STOP_IDIOM_TERSE=0` restores the legacy
+   full dump of every idiom plus the principles text): the review is scoped to
+   the edited archetypes' idioms plus untagged general ones, idioms the model
+   already saw this session are summarized to one line each, and full text is
+   shown only for in-scope idioms not yet surfaced — so an idiom the model
+   never saw is never reduced to a name. "Seen" is tracked per idiom name in
+   the enforcement state's `idioms_shown_names`, computed from the `###`
+   headers that actually survived the char-capped Tier-2 block, so an idiom
+   truncated out of that block (or one from the deny path, which emits no
+   idioms) still renders full. Principles become a one-line pointer to
+   `.chameleon/principles.md` (they were already injected at SessionStart),
+   and a turn that touched no idiom-governed file does not fire — and does not
+   burn the once-per-session marker, so a later governed edit still gets its
+   review.
 
 ### Escalation
 
@@ -865,7 +967,7 @@ escape hatch.
 | `inheritance-convention-violation` | warning | Ruby; calibration-gated. |
 | `file-naming-convention-violation` | warning | Calibration-gated. |
 | `default-export-kind-mismatch`, `top-level-node-kinds-mismatch`, `named-export-count-bucket-mismatch`, `content-signal-mismatch` | warning/info | Advisory structural shape. |
-| `insecure-random`, `weak-hash`, `sql-string-interpolation` | warning | Advisory security sinks. |
+| `insecure-random`, `weak-hash`, `sql-string-interpolation`, `command-injection`, `insecure-deserialization` | warning | Advisory security sinks; never block-eligible. |
 | `style-rule-violation`, `then-without-catch`, `required-guard-convention` | warning/info | Advisory. |
 | `skipped-test`, `tautological-assertion`, `real-sleep-in-test`, `random-in-test`, `assertion-free-test`, `unstubbed-network`, `unfrozen-clock` | info | Advisory, test archetypes only. |
 | `phantom-symbol`, `cross-file-importers`, `removed-export-breaks-importers` | info/warning | Advisory cross-file. |
@@ -910,17 +1012,38 @@ These run in the Stop backstop after the block gates decline, produce only
   recursion, secret-bearing files are filtered out, and diff bytes/file
   count/finding count are capped. Model: `CHAMELEON_JUDGE_MODEL` (default
   `sonnet`); sync wall-clock budget 45s. With `CHAMELEON_JUDGE_ASYNC=1` (POSIX
-  only) the spawn detaches and findings arrive at the next prompt; the route
-  also auto-detaches when a prior spawn proved `claude --bare` loses
-  credentials on the install. The prompt is grounded with committed caller
-  facts, multi-hop transitive callers, imported-symbol signatures, and captured
-  intent tokens (each grounding block has its own default-on config flag).
+  only) the spawn detaches and findings arrive at the next prompt via a pending
+  file the UserPromptSubmit hook consumes exactly once, dropping any finding
+  whose file has changed since review; the route also auto-detaches when a
+  prior spawn proved `claude --bare` loses credentials on the install (a
+  marker with a one-day TTL, so a login fix is re-probed). The prompt is
+  grounded with committed caller facts, multi-hop transitive callers,
+  imported-symbol signatures, and captured intent tokens (each grounding block
+  has its own default-on config flag).
+  A **reviewer model ladder** (`judge_model_for_route`) escalates the judge to
+  `CHAMELEON_JUDGE_MODEL_HIGH` (default `opus`) on a high-risk route
+  (`risk_high` / intent-forced); low-risk routes keep the base model. The
+  escalation runs **only on the detached async path** (opted in or
+  auto-detached): the synchronous Stop path is capped by the 55s hook wrapper
+  (45s judge budget, shared with the duplication lens), where a slower model
+  would time out and fail open to zero findings on exactly the turns the
+  escalation is meant to strengthen, so a sync turn keeps the base model. The
+  ladder is raise-only and never garbage: an unrecognized model name falls back
+  to the valid base rather than being spawned (a bad `--model` exits nonzero
+  and would silently disable the judge), so it can only strengthen the reviewer
+  or leave it unchanged. The round-3 refuter has the same shape
+  (`_refuter_model_for`): a BLOCK/high/critical-severity finding escalates to
+  `CHAMELEON_REFUTER_MODEL_HIGH` (default `opus`), nits keep
+  `CHAMELEON_REFUTER_MODEL`. `CHAMELEON_JUDGE_TIERING=0` kills the whole
+  ladder, flattening judge and refuter to their base models on every route.
 - **Turn-end duplication** (`enforcement.duplication_review`, default on). Each
   new function is matched by body hash against the committed function catalog
   and functions added earlier this session; a hit goes through a bounded judge
   spawn that confirms real re-implementations. Confirmed matches surface as a
   `[🦎 chameleon: N possible duplicates]` advisory. Skipped on SubagentStop,
-  capped per session, deduplicated per (file, content).
+  capped per session, deduplicated per (file, content). The confirm spawn's
+  model is independently tunable with `CHAMELEON_DUP_MODEL` (default `sonnet`;
+  an unrecognized value falls back rather than failing the spawn open).
 - **Multi-lens review** (`enforcement.multi_lens_review`, default on). When on,
   it replaces the separate correctness and duplication gates with one
   coordinated pass that runs both lenses concurrently and surfaces a finding
@@ -930,9 +1053,28 @@ These run in the Stop backstop after the block gates decline, produce only
 - **Deterministic advisories** (each a default-on config flag): stale-test (a
   changed source whose paired test is untouched), change-set completeness (a new
   file of a kind that needs a companion, like a Rails model needing a
-  migration), cross-file existence break, test integrity (live source changed
-  while tests were weakened), and intent scope drift (changed files that share
-  no word with any requested identifier).
+  migration), cross-file existence break, the cross-workspace existence break
+  (an export the turn removed that a sibling monorepo workspace still imports,
+  read from the coordinator `cross_reverse_index.json` and confirmed by a live
+  re-check; kill switch `CHAMELEON_CROSSWS_INDEX=0`, see
+  [Cross-file indexes](#cross-file-indexes)), test integrity (live source
+  changed while tests were weakened), and intent scope drift (changed files
+  that share no word with any requested identifier).
+- **Finding->fix ledger** (`CHAMELEON_FINDING_LEDGER=0` to disable; default
+  on). Every finding the multi-lens review or the synchronous correctness
+  judge surfaces at Stop is persisted to the durable `judge_findings` table in
+  drift.db, anchored to the reviewed file's 16-hex content digest. The next
+  Stop re-checks each open finding *before* that turn's gates persist (so a
+  turn's own findings are never immediately re-surfaced): a cited file that
+  changed or is gone since review counts as addressed and leaves the open set;
+  an unchanged one stays open. An unaddressed high-severity finding (judge
+  confidence >= 0.7, or a multi-lens finding two lenses independently agreed
+  on) is re-surfaced exactly once via a `<chameleon-context>` block, then
+  marked `resurfaced` and never nagged again. Stop-only (off the per-edit hot
+  path), fail-open, bounded, with paths and lens names sanitized on the way to
+  the model surface. Findings a detached async judge delivers through the
+  pending file are outside the ledger's scope; they keep their own one-shot
+  next-prompt delivery.
 
 ---
 
@@ -999,7 +1141,18 @@ does not verify goes to a human regardless of gate color.
   disable window. It is **raise-only**: nothing in it may lower scrutiny
   anywhere downstream. A consumer may use it only to raise gate depth and to
   make post-incident replay honest; the merge gate's floor is computed from diff
-  facts alone, so a forged-clean attestation buys nothing.
+  facts alone, so a forged-clean attestation buys nothing. The concrete
+  consumer is the auto-pass router (`CHAMELEON_AUTOPASS_ATTESTATION=0` to
+  disable; default on): `get_autopass_verdict` reads the recent attestations
+  (window `CHAMELEON_ATTESTATION_MATCH_LIMIT`, default 25), attributes them to
+  the branch diff by file overlap (`session_coverage_from_attestations`), and
+  folds three governance signals in raise-only fashion — verification
+  suppressed while the diff was written, a genuinely degraded judge spawn
+  (never the deliberate low-risk skip), and an inline override on one of the
+  diff's own files — each adding a needs-human reason, so an under-governed
+  diff routes to a human on terms a fully-governed one does not. No match
+  leaves the verdict identical to having no attestation at all, and the router
+  still never blocks.
 
 ### PR-review and refuter
 
@@ -1015,9 +1168,19 @@ Surviving model-judgment findings pass a round-3 refuter (`refute_finding`,
 `CHAMELEON_REVIEW_REFUTER` default on, `CHAMELEON_REFUTER_MODEL` default
 `sonnet`) that spawns an independent no-tools model per finding to try to refute
 it; a finding it cannot ground is dropped. A "confirmed" verdict never
-authorizes an edit or a post. Only a secret, an irreversible `change` migration,
-and a new direct dependency reach BLOCK; everything else caps at FIX. The skills
-draft replies and never auto-post.
+authorizes an edit or a post. BLOCK is reached two ways: by the witnessed
+deterministic facts — a hard-kind secret inside an added or changed hunk, an
+error-severity eval-call on an added line, an irreversible operation in a
+Rails `change` migration — and by the model-judgment logic classes the hunk
+gate admits: a removed guard or error branch that can crash or skip
+authorization (the change-delta pass), a race condition, and a ticket
+requirement with no implementation in the diff. The advisory passes
+(authz/taint heuristics, migration table-size reminders, every cross-file
+finding) cap at FIX. A
+new direct dependency is an **ACK** — a confirm-before-merge line in its own
+non-verdict channel — never a BLOCK, so a routine dependency add does not
+pollute the durable verdict ledger. The skills draft replies and never
+auto-post.
 
 ---
 
@@ -1050,7 +1213,10 @@ each framed by null bytes: `.archetype_renames.json`,
 `idioms.md`, `profile.json`, `reverse_index.json`, `rules.json`, and
 `symbol_signatures.json`. Because all
 the convention, index, and calibration artifacts are in the set, a refresh that
-changes any of them flips the profile to stale until re-approval. `config.json`
+changes any of them flips the profile to stale until re-approval — but only
+under `CHAMELEON_TRUST_REVALIDATE=1`; by default trust is one-time and the
+hash serves as provenance, not a staleness gate (see "Trust persistence"
+below). `config.json`
 is in the hash deliberately: it is why the override audit never rewrites
 `enforcement.json` at runtime (that would silently flip the profile to stale and
 disable blocking).
@@ -1109,7 +1275,9 @@ Two consequences of persistence are deliberate:
 
 What untrusted suppresses, at the data layer: the canonical excerpt body is
 redacted, `get_rules` returns nothing, and the cross-file, callers, importers,
-duplication, refuter, and rename-proposal tools all return an untrusted status.
+duplication, and refuter tools all return an untrusted status.
+(`propose_archetype_renames` carries no trust gate: it reads only the profile's
+own archetype names and paths, never witness content.)
 
 ---
 
@@ -1128,9 +1296,16 @@ fsynced, and the backup is removed. On any exception the txn dir is removed and
 the original profile is untouched. Loaders refuse a profile whose `COMMITTED` is
 missing or carries git-merge conflict markers.
 
-`calls_index.json` and `symbol_signatures.json` deliberately do not carry
-forward on a failed rebuild: serving stale judge facts is worse than serving
-none.
+Protocol artifacts — the manifest, archetype/canonical/convention/rule
+artifacts, the prose artifacts, `renames.json`, `counterexamples.json`, and
+the cross-file indexes except the Ruby `constant_index.json` (the
+`_PROTOCOL_FILES` set) — deliberately do not carry forward when the current
+build did not rewrite them: a failed rebuild, or a derive whose detected
+language no longer produces an index, drops the old copy rather than serving
+it stale. Absence fails open in every reader, while stale bytes drive false
+phantom-import and cross-file findings and would be silently re-trusted. The
+siblings carried forward are the non-protocol files — `enforcement.json`,
+`config.json`, `constant_index.json` — and any user-dropped content.
 
 **Crash recovery.** `cleanup_orphan_tmp_dirs` runs before every bootstrap and
 refresh. It restores a committed backup when the live profile is gone and sweeps
@@ -1152,13 +1327,17 @@ or aged out) is broken with a warning.
 
 ## State stores
 
-Three SQLite databases, all opened WAL with a busy timeout and
-`trusted_schema=OFF`, with per-process retry-and-jitter on `SQLITE_BUSY`.
+Two SQLite databases — the per-repo `drift.db` and the single cross-repo
+`index.db` — opened WAL with a busy timeout and `trusted_schema=OFF`, with
+per-process retry-and-jitter on `SQLITE_BUSY`. (A read-only open applies only
+the busy-timeout and `trusted_schema` pragmas; the WAL pragmas need write
+access and would abort a read-only open.) The Bash exec log is NDJSON, not
+SQLite (see below).
 
 ### drift.db (per-repo, `<data>/<repo_id>/drift.db`)
 
-A cache plus two durable tables. Schema version 1; a corrupt file self-heals by
-drop-and-recreate.
+A cache plus three durable tables. Schema version 1; a corrupt file self-heals
+by drop-and-recreate.
 
 ```sql
 CREATE TABLE schema_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
@@ -1180,26 +1359,42 @@ CREATE TABLE decision_log (
   match_quality TEXT, confidence_band TEXT, violations_raised INTEGER NOT NULL DEFAULT 0,
   blockable_rules TEXT, outcome TEXT NOT NULL, content_digest TEXT,
   session_id TEXT, observed_at INTEGER NOT NULL);
+
+-- Surfaced-finding ledger (the finding->fix loop). Durable, NOT reset on refresh.
+CREATE TABLE judge_findings (
+  id INTEGER PRIMARY KEY, session_id TEXT, lens TEXT NOT NULL, severity TEXT,
+  rel_path TEXT, line INTEGER, anchor_digest TEXT, fingerprint TEXT NOT NULL,
+  ws_root TEXT, status TEXT NOT NULL DEFAULT 'open',
+  observed_at INTEGER NOT NULL, resolved_at INTEGER);
 ```
 
 `observed_drift_score` is `clamp(0, 1, 1 - mean(confidence_observed))` over a
 trailing window (default 14 days). The SessionStart banner fires only when the
 score and the observation count both clear their floors (default 0.4 over at
 least 10 observations) and a cooldown marker is older than its TTL (default 7
-days). `rule_overrides` and `decision_log` are durable because the questions
-they answer (is a convention fighting the team; what did chameleon know when a
-defect escaped) span many profile revisions; they are bounded by an
-age-then-recency trim, not drop-and-recreate.
+days). `rule_overrides`, `decision_log`, and `judge_findings` are durable
+because the questions they answer (is a convention fighting the team; what did
+chameleon know when a defect escaped; was a surfaced finding ever acted on)
+span many profile revisions; they are bounded by an age-then-recency trim, not
+drop-and-recreate. `judge_findings` backs the finding->fix ledger (see
+[Enforcement](#enforcement)): `fingerprint` is the per-(lens, file, locus)
+dedup key, `anchor_digest` is the reviewed file's content digest at review
+time (the addressed/still-open proxy), `status` walks open / addressed /
+resurfaced / ignored, and `ws_root` scopes each row to the workspace that
+wrote it so, in a monorepo whose workspaces share one repo_id, one workspace's
+Stop cannot mark a sibling's findings addressed. Its DDL is additive and
+idempotent — no drift schema bump.
 
 (There is no `files` table; the old per-file cache table was removed when it lost
 its last reader.)
 
 ### index.db (single, `<data>/index.db`)
 
-The cross-repo registry. Two tables: `repos` (composite primary key
-`(repo_id, repo_root)` so a monorepo sub-workspace does not clobber the root
-row) and `file_clusters` (per-file cluster assignment, used by refresh to decide
-partial versus full re-cluster). `list_profiles` enumerates `repos` ordered by
+The cross-repo registry. Three tables: `schema_meta` (pins the schema
+version), `repos` (composite primary key `(repo_id, repo_root)` so a monorepo
+sub-workspace does not clobber the root row), and `file_clusters` (per-file
+cluster assignment, used by refresh to decide partial versus full re-cluster).
+`list_profiles` enumerates `repos` ordered by
 `last_seen_at DESC, repo_id ASC` with keyset (not OFFSET) cursor pagination.
 
 ### Exec log and the HMAC key
@@ -1261,8 +1456,10 @@ input**. A committed profile, idioms file, or source file can be hostile.
 - **Canonical scans.** The secret, injection, and poisoning scans (see
   [Canonical selection](#canonical-selection)) keep a poisoned example out of
   the profile.
-- **JSON hardening.** The profile parser caps depth, rejects duplicate keys,
-  bounds numeric ranges, and NFC-normalizes before validation.
+- **JSON hardening.** The profile parser caps nesting depth, rejects duplicate
+  keys, and requires a top-level JSON object. (NFC normalization lives
+  elsewhere: `safe_open` normalizes paths and `sanitize_for_chameleon_context`
+  normalizes context output.)
 - **Trust gate.** Untrusted profiles inject no canonical content; `idioms.md`
   and `principles.md` are injection-scanned at trust-grant time.
 - **HMAC integrity.** The exec log, session-disable markers, review ledger, and
@@ -1365,7 +1562,7 @@ in `mcp/chameleon_mcp/_thresholds.py`, each overridable with a
 
 Engine versions stay in lockstep across six manifests, kept in sync by
 `scripts/bump-version.sh` (the plugin cache is version-keyed). The current
-engine is 2.36.1 and the current profile schema is 8.
+engine is 2.54.0 and the current profile schema is 8.
 
 **Compatibility contract for committed `.chameleon/`:** chameleon will not break
 a committed profile schema without a major version bump. An engine reads any
@@ -1385,7 +1582,8 @@ re-bootstrap re-clusters under the new metric. The first migration script will
 be authored when a bump needs one.
 
 `drift.db` is a cache: drop-and-recreate is permitted on a schema bump (the
-durable `rule_overrides` and `decision_log` tables migrate additively).
+durable `rule_overrides`, `decision_log`, and `judge_findings` tables migrate
+additively).
 `index.db` uses additive-only `ALTER TABLE`.
 
 **MCP tool surface** is a public API. Adding a tool, an optional field, or
@@ -1445,4 +1643,3 @@ anyone considering dropping mandatory review.
 | **sha_hint** | A non-crypto xxhash64 of file content, for fast change detection. |
 | **trust** | Per-user approval of a committed profile (`/chameleon-trust`). |
 | **witness** | The actual file chosen as an archetype's canonical. |
-```

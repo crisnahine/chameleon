@@ -1,256 +1,235 @@
 # chameleon
 
-> *"Code that blends in."*
+> "Code that blends in."
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED.svg)](https://docs.claude.com/claude-code)
-[![Languages](https://img.shields.io/badge/languages-TS%20%7C%20Ruby%20%7C%20Python-2ea44f.svg)](#what-it-actually-supports)
-[![Tests](https://img.shields.io/badge/unit%20tests-4%2C777-blue.svg)](#proof-not-promises)
+[![Languages](https://img.shields.io/badge/languages-TS%20%7C%20Ruby%20%7C%20Python-2ea44f.svg)](#languages-and-frameworks)
+[![Tests](https://img.shields.io/badge/unit%20tests-5%2C205-blue.svg)](#proof-not-promises)
 [![Listed on ClaudePluginHub](https://www.claudepluginhub.com/badge/crisnahine-chameleon)](https://www.claudepluginhub.com/plugins/crisnahine-chameleon?ref=badge)
 
-**Your AI writes code that works. It just doesn't write code that looks like yours.**
-
-It reaches for `axios` when your team standardized on `@/lib/http` six months ago. It hand-rolls a date format when `fmt()` already exists. It builds a service that ignores the base class every other service in the repo extends. The code passes. The diff is wrong. And you find out in review, every single time, because the model never saw how *your* repo does it.
-
-Chameleon fixes that before the model writes a line.
+**Your AI writes code that works, and it reads wrong. Chameleon shows the model your repo's own conventions at the moment it types, then reviews the turn's diff before you do.**
 
 ---
 
-## The one thing it does
+## Watch it work
 
-Before Claude edits a file, chameleon hands it context drawn straight from your own codebase:
+### 1. Before the first edit, the model sees your repo's actual shape
 
-1. **A real example file** of the same kind it's about to write (the "canonical witness"), derived automatically when you profile the repo.
-2. **Your team's idioms** for that kind of file (the wrapper to use, the import that's banned, the guard that's mandatory), as you teach them or let chameleon auto-derive them.
-3. **The anti-pattern to avoid**, quoted from a real off-pattern line in your repo and labeled "do NOT write it this way," once your team has taught a competing import.
+![chameleon injecting pre-edit context: the resolved archetype, a canonical witness file from the repo, team idioms, and a "do NOT write it this way" counterexample](assets/chameleon-injection.svg)
 
-Here is the full first-touch block the model gets before editing a service. The canonical witness is automatic; the off-pattern line shows up once your team has taught a competing import:
+*Real capture: every line above is the actual output of the PreToolUse hook run against a real TypeScript repo (the archetype, the witness imports, the taught idiom, and the axios counterexample are verbatim, not a mockup).*
 
-![chameleon injecting archetype-aware guidance before an edit: the resolved archetype and confidence, the canonical witness to mirror, and a "do NOT write it this way" counterexample drawn from the repo's own off-pattern](assets/chameleon-injection.svg)
+A hook injects this on the first touch of each kind of file (an "archetype"). The block is:
 
-Every Edit and Write gets convention context. The first edit to a given kind of file gets the full block above; later edits in the same session get a compact one-line pointer, so it doesn't bloat your context window.
+- **a real conforming file from your repo** to imitate (the canonical witness, capped at 16,000 chars)
+- **your team's idioms** for that kind of file
+- **a counterexample**: a real off-pattern line from your own code, labeled "do NOT write it this way" (appears once you teach a competing import)
+- **the signatures of the collaborator files** it is about to call, ranked by call proximity
+- **the inbound callers** of the file being edited: "change this signature, update these call sites in the same turn"
+- **archetype facts**: the base class contract this cohort implements, and the exports that already exist so it reuses instead of re-inventing
 
-No prompt engineering. No rule files to hand-write. No "please follow our conventions" in your CLAUDE.md that the model forgets by the third tool call. The example is real, it's from your repo, and it lands in context at the exact moment the model is deciding what to type.
+Later edits to a seen archetype get a one-line pointer instead, so your context window survives. Zero commands. The hooks do it.
+
+### 2. The diff it exists to kill
+
+Task: "add a fetch to the orders page." Without chameleon:
+
+```ts
+import axios from "axios";                 // team standardized on @/lib/http months ago
+
+function formatMoney(cents: number) {      // fmtMoney() already exists in @/lib/format
+  return "$" + (cents / 100).toFixed(2);
+}
+const res = await axios.get(`/api/orders/${id}`);
+```
+
+Same task with the witness and the "already defined in this archetype" facts in context:
+
+```ts
+import { http } from "@/lib/http";
+import { fmtMoney } from "@/lib/format";
+
+const res = await http.get(`/api/orders/${id}`);
+```
+
+The first version compiles, passes tests, and dies in review, where you have been catching it by hand every single time. Duplication up and reuse down is AI's biggest measured maintainability regression. Chameleon attacks it twice: at write time (show the wrapper and the existing helper first) and at turn end (a semantic duplication catch grounded in your real call graph: "this already exists, called from 7 sites").
+
+### 3. When the turn ends, a second reviewer reads the diff
+
+```
+chameleon turn-end review
+
+CROSS-FILE (deterministic):
+  `AuthModule` is no longer exported from src/auth/auth.module.ts,
+  but src/app.module.ts:3 still imports it (re-verified live on disk).
+
+CORRECTNESS (diff-only judge):
+  src/jobs/sync.ts:27  this turn's refactor dropped the `await` on
+  queue.flush(); the process can exit before the flush completes.
+```
+
+The cross-file line is a real capture (the `golden-ts-nestjs` fixture with `AuthModule`'s export removed): it is deterministic, from a prebuilt import index plus a live disk probe, for TypeScript, Python, and Ruby. The correctness line is representative, because the judge is a separate `claude -p` spawn whose prose varies per run: it reads only the turn's diff and hunts what static analysis misses (inverted conditions, dropped awaits, missing guards), escalating to a stronger model on high-risk routes. An unaddressed HIGH finding resurfaces exactly once on a later turn, then stops nagging. Advisory by default; it never eats your turn.
+
+### 4. Ask who calls this, before you change it
+
+```
+> get_callers  src/auth/auth.service.ts  create
+
+total: 1  (deterministic, from the committed calls index)
+  src/auth/auth.controller.ts:18   grade=typed_property   (DI edge)
+```
+
+Real output from the bundled `golden-ts-nestjs` fixture, so you can reproduce it exactly. Every returned site is a call the bootstrap actually recorded, graded by how it was resolved (`same_file`, `import`, `constant_receiver`, `typed_property` for a dependency-injection edge, `module_attribute` for Python). `get_blast_radius` walks the same index to the transitive callers a change reaches. The same profile answers the rest of the comprehension surface fully offline: `search_codebase` (functions and classes by name, ranked, with signature and caller count), `get_callees`, `query_symbol_importers`, `describe_codebase`, and `explain_edit`, a post-incident replay of exactly what chameleon knew and did the last time a file was edited. No embeddings service, no network.
 
 ---
 
-## Why this is different from what you've tried
+## Why we built this
 
-You already have tools that care about conventions. None of them work like this:
+We ship a Rails + TypeScript codebase at [Empire Flippers](https://empireflippers.com/), and we review every AI PR that touches it. The failure mode was always the same: the code worked, and it read wrong. `axios` where the team standardized on our HTTP wrapper, a hand-rolled date formatter next to the one we already had, a new service that skipped the base class every other service extends. We wrote CLAUDE.md rules for all of it, and they rotted in a week, because prose about code goes stale the moment the code moves and nobody's job is rewriting the style guide after every refactor. Then we noticed when the model DID conform: exactly when a real file from our repo happened to be sitting in its context. It needs to see one of our files at the moment it writes, not read prose about them. So we built the thing that shows it one, automatically, derived from the repo itself.
 
-- **Linters and formatters** check your code *after* it's written. The model writes it wrong, then a hook yells, then the model fixes it, then you pay for two round trips. Chameleon shows the right shape *first*, so there's nothing to fix.
-- **Hand-written rule files** (`.cursorrules`, `CLAUDE.md` style guides, AGENTS.md) put the work on you. You write the rules. You keep them current. They go stale the day someone refactors. Chameleon derives the conventions from the repo itself, by parsing it, and re-derives them when the code moves.
-- **"Add our docs to context"** dumps a wall of prose and hopes. Chameleon gives the model a concrete file to imitate and one anti-pattern to dodge, which is how in-context learning actually works.
+That was 172 releases ago. We still run it daily on the code that pays our salaries.
 
-The mechanism is the product: **per-repo conventions, auto-derived, shown to the model as a real example at write-time.**
+## Why the rule-file approach fails
+
+You have tried this: a conventions section in `CLAUDE.md`, a `.cursorrules`, an `AGENTS.md`. Three structural problems:
+
+1. **You write them.** Nobody enumerates every convention their repo follows. The list is partial on day one.
+2. **They rot.** Someone refactors the HTTP wrapper; the rule file still names the old one; the model follows the stale rule with full confidence. Rot is invisible until it bites.
+3. **Prose loses.** "Please use our wrapper" competes with everything else in context. A concrete file to imitate is how in-context learning actually works.
+
+Chameleon inverts all three. Conventions are derived by parsing the code itself: the official TypeScript Compiler API for TS/JS, Prism for Ruby, bundled libcst for Python. The profile derives from the production branch tip through a clean git worktree, never your dirty checkout, so a half-finished experiment cannot poison the team's norms. It refreshes automatically on drift. The rules cannot rot, because they are recomputed from the thing they describe.
+
+## Each failure, mapped to the mechanism that kills it
+
+| The failure | The mechanism | When it fires |
+|---|---|---|
+| `axios` instead of `@/lib/http` | The canonical witness already imports the wrapper; teach the rule once and every later edit also gets the counterexample quoted from your own repo | Before the edit |
+| The second `formatDate` | Turn-end semantic duplication catch, grounded in the real call graph; `search_codebase` finds the original first | Turn end |
+| Rename breaks 7 callers | Inbound-callers block before the edit; contract-break and removed-export checks against a prebuilt import index at turn end; `get_blast_radius` for the transitive picture | Before and after |
+| Hardcoded `sk_live_` key | Deterministic write-time block (AWS `AKIA`, GitHub `ghp_`, Anthropic `sk-ant-`, Stripe `sk_live_`, Slack, Google, PEM keys, more), even on brand-new files; same for error-severity `eval`/`exec` | At write, always |
+| Hallucinated dependency | A don't-invent-dependencies protocol in context; phantom-import probes against the live disk; a deterministic dependency diff scan in PR review. About 1 in 5 AI-recommended packages do not exist, and attackers pre-register the recurring fake names | Write time and PR review |
+| The three-hour review loop | A turn-end correctness judge reads the diff in the same minute it was written; `/chameleon-pr-review` runs the mechanical review rounds before a human opens the PR | Turn end and pre-review |
 
 ---
 
-## Install in 30 seconds
+## The full surface
 
-You need `uv` and Node.js 20+ on your `PATH`. Ruby repos need Ruby with Prism; Python repos need nothing extra (chameleon ships its own parser). Exact version matrix and per-OS setup: [docs/install.md](docs/install.md).
+Six hooks across six lifecycle events, 46 MCP tools, 14 skills. You will call almost none of it directly; it works behind two moments, before the model writes and after the turn ends.
 
-In any Claude Code session:
+| When | What runs |
+|---|---|
+| Session start | One-time convention summary + team principles for the repo |
+| Before each edit | Archetype resolve + the injection above; deterministic deny on hard-kind secrets and error-severity eval/exec, even on brand-new files |
+| After each edit (x2) | Record the observation, then verify against the archetype's calibrated rules |
+| On your prompt | Intent capture: checkable assertion tokens (secret-scanned digests, never your raw prose) that sharpen the turn-end judge |
+| Turn end | Correctness judge, duplication vs call graph, cross-file existence, stale-test and co-change advisories (Django model without a migration, Rails controller without a route, NestJS controller not registered in a module, Redux slice never added to the store), test-integrity facts, finding ledger, once-per-session idiom self-review |
+| On demand | 13 slash commands + the comprehension and review tool surface |
+
+**Enforcement earns the right to block.** A convention rule blocks only after it is calibrated: measured near-zero false positives against your repo's own committed files. Rules your team overrides get auto-demoted back to advisory. Modes are `off` / `shadow` / `enforce`; shadow logs what would have blocked, and `/chameleon-status --shadow` shows you the evidence before you turn enforcement on. Inline escape hatch: `// chameleon-ignore <rule>` (`#` in Ruby/Python). The only unconditional blocks are facts nobody argues with: leaked credentials and error-severity eval/exec, at write time. Kill switches exist for everything.
+
+**Cross-file work is indexed ahead of time.** A reverse import index and a calls index with five deterministic edge grades (`same_file`, `import`, `constant_receiver`, `typed_property` for TS dependency injection, `module_attribute` for Python) power contract-break detection (you narrowed positional params a committed caller still passes), transitive blast radius, phantom imports, and removed-export-breaks-importers. Monorepos are first-class: per-workspace profiles (pnpm / yarn / turbo / nx / lerna, plus plain `apps/` `packages/` `services/` layouts), a cross-workspace existence index for the break a per-package view cannot see, and a multi-root turn-end backstop covering every workspace the session touched, even from a coordinator root with no profile of its own.
+
+**Two review skills, built to kill their own findings.** `/chameleon-pr-review` runs a multi-round, hunk-gated review: deterministic BLOCKs for secrets and eval, a dependency supply-chain diff scan (install scripts, non-registry sources, typosquat acknowledgment, minified and packed manifest evasion), Rails migration safety, coverage delta, an auto-pass routing verdict with a complexity tier, and an independent round-3 refuter that attacks each finding before you ever see it. Verdicts land in a signed review ledger. `/chameleon-receiving-code-review` does the reverse: it verifies a teammate's review against the actual code before you apply it, so you push back with evidence instead of performative agreement.
+
+**Teach what parsers can't see.** `/chameleon-teach` captures rules like "use our wrapper, never raw fetch"; from then on the model also sees a counterexample quoted from your own off-pattern code. `/chameleon-auto-idiom` mines idioms from the repo with occurrence evidence and proposes them for approval. A prose miner reads your CONTRIBUTING / STYLE docs and proposes only the rules your code already backs.
+
+---
+
+## Languages and frameworks
+
+| Language | Parser | Deeper awareness |
+|---|---|---|
+| TypeScript / JavaScript (`.ts` `.tsx` `.js` `.jsx` `.mjs` `.cjs`) | official TypeScript Compiler API | Next.js, NestJS |
+| Ruby | Prism | Rails |
+| Python | libcst (bundled, nothing to install) | Django, DRF, Flask, FastAPI |
+
+Framework-agnostic by default: chameleon learns your repo's own conventions, so any framework works. The named ones get extra structural understanding where their conventions are strong. Nothing else is supported today. No Go, Rust, or Java.
+
+---
+
+## Install
+
+Needs `uv` and Node 20+ on PATH. Ruby repos need Ruby with Prism; Python repos need nothing extra.
 
 ```
 /plugin marketplace add crisnahine/chameleon
 /plugin install chameleon@chameleon
 ```
 
-Restart Claude Code. Then point it at a repo:
+Restart Claude Code, then in the repo you care about:
 
 ```
-/chameleon-init     # parse the repo, derive conventions (a one-time scan)
-/chameleon-trust    # review the profile and approve it for this machine
+/chameleon-init     # parse the repo, derive conventions
+/chameleon-trust    # review the profile, approve it for this machine
 ```
 
-That's it. From here, every edit Claude makes to that repo gets convention context automatically. You don't call anything. The hooks do the work.
+Done. Every edit from here gets the injection automatically. Version matrix and troubleshooting: [docs/install.md](docs/install.md).
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `/chameleon-init` | Parse the repo, build the profile |
+| `/chameleon-trust` | Approve a profile for use on this machine |
+| `/chameleon-refresh` | Re-derive from the production branch tip after drift |
+| `/chameleon-status` | Profile health, drift, enforcement mode, shadow evidence |
+| `/chameleon-teach` | Capture a rule AST can't infer (banned import, mandatory wrapper) |
+| `/chameleon-auto-idiom` | Mine team idioms from the repo, evidence-backed |
+| `/chameleon-pr-review` | Multi-round PR / branch review with a round-3 refuter |
+| `/chameleon-receiving-code-review` | Verify a teammate's review against the code before applying it |
+| `/chameleon-explain` | Drill into one rule, or replay what chameleon knew when a file was edited |
+| `/chameleon-doctor` | Installation health triage |
+| `/chameleon-journey` | End-to-end release verification harness |
+| `/chameleon-disable` | Off for this session |
+| `/chameleon-pause-15m` | Off for 15 minutes |
 
 ---
 
-## Usage
+## The tradeoffs, straight
 
-Once a repo is profiled and trusted, chameleon runs on its own. The things you will actually do:
-
-**Edit code normally (zero commands).** Before Claude writes to a file, it sees a block like the one above: the matched archetype, a real example from your repo, your team's idioms, and any anti-pattern to avoid.
-
-**Teach a rule the parser can't infer:**
-
-```
-/chameleon-teach
-# then describe it, e.g. "use @/lib/http, never raw axios (archetype: api-client)"
-```
-
-Every later edit to that archetype gets the rule, paired with a real off-pattern line from your own code as the counterexample.
-
-**Review a PR against your own conventions:**
-
-```
-/chameleon-pr-review <PR-URL>
-```
-
-A multi-round, self-refuting review grounded in your repo's patterns and cross-file contracts, reported as BLOCK / FIX / NIT.
-
-**Check health, then refresh when the code has moved:**
-
-```
-/chameleon-status     # profile state, drift, enforcement mode, rule precision
-/chameleon-refresh    # re-derive from the production branch's current tip
-```
-
-The full [command reference](#command-reference) has the rest.
-
----
-
-## How it learns your repo
-
-`/chameleon-init` parses your codebase with real compilers, not regex guesses:
-
-- **TypeScript / JavaScript** via the official TypeScript Compiler API (`typescript` 6.0.3)
-- **Ruby** via Prism, Ruby's own parser
-- **Python** via libcst (bundled with the plugin, so your repo needs nothing installed)
-
-From those ASTs it clusters your files into **archetypes** (service, controller, React component, worker, model, and whatever else your repo actually contains), picks a **canonical witness** for each (a real, conforming file that exemplifies the shape), and derives the conventions that hold across each cluster:
-
-- preferred imports and the wrappers that dominate over raw libraries
-- naming and casing rules (interface prefixes, file naming, class/method casing)
-- base classes, mixins, and per-archetype **class contracts** (the DSL macros, decorators, and required methods a cohort shares)
-- authorization guards (Rails `before_action` patterns, Django/DRF permission classes)
-- test-pairing conventions, doc coverage, error-handling shape, import ordering, layering rules
-
-Two honest details a skeptic should know. First: conventions are derived from **real ASTs**, but the per-edit hot path uses fast string heuristics so it never adds noticeable latency to your edits (the full parser only runs at init and refresh, never on the keystroke path). Second: chameleon profiles your **production branch**, not your dirty feature checkout. For origin-backed repos it locks onto `origin/HEAD` (or `production` / `main`) and derives conventions from a clean worktree of that tip, so a half-finished experiment on your branch never poisons the team's norms. ([mcp/chameleon_mcp/production_ref.py](mcp/chameleon_mcp/production_ref.py))
-
----
-
-## What you get beyond the per-edit nudge
-
-The convention injection is the headline. Underneath it are layers that catch the mistakes a single edit can't see. Most are advisory; the few that enforce are gated and always overridable inline: a convention rule blocks only after it's calibrated against your own committed code, deterministic facts like a leaked credential block on sight, and a once-per-session nudge asks you to self-review against your team's idioms.
-
-- **Calibrated enforcement.** A block rule never fires until chameleon has measured it against your own committed files and confirmed a near-zero false-positive rate. Rules that fight your team get auto-demoted to advisory. You won't get nagged by a rule your repo disagrees with. ([enforcement_calibration.py](mcp/chameleon_mcp/enforcement_calibration.py))
-- **A turn-end correctness judge.** When a turn ends, chameleon can spawn a separate reviewer that reads only your diff for the bugs static analysis misses: inverted conditions, dropped `await`s, off-by-one, missing guards. Advisory, runs on its own budget, never blocks the turn. ([judge.py](mcp/chameleon_mcp/judge.py))
-- **Duplication detection.** It notices when the model just re-implemented a function that already exists, grounded in your real call graph ("reuse it, it's already called from 7 sites"), not a fuzzy name match. ([duplication_review.py](mcp/chameleon_mcp/duplication_review.py))
-- **Cross-file blast radius and contract breaks.** Change a function's signature and chameleon knows which committed callers you just broke, from a prebuilt import index, with zero re-parsing on the hot path. The `get_blast_radius` tool walks the same index to the transitive callers a change reaches, not just the direct ones. It flags phantom imports (paths that resolve to nothing) and exports you removed that other files still import. ([signature_diff.py](mcp/chameleon_mcp/signature_diff.py), [blast_radius.py](mcp/chameleon_mcp/blast_radius.py), [phantom_imports.py](mcp/chameleon_mcp/phantom_imports.py))
-- **Comprehension, not just conformance.** The same committed profile answers questions about code that already exists: `search_codebase` finds a symbol by name or file, ranked, with its signature and caller count; `describe_codebase` gives a structural overview (language, framework, archetypes, the most-called production functions); `get_callees` answers "what does this function call." All offline, deterministic, off one profile, so the model can understand and navigate your repo, not only conform new edits to it. ([comprehension.py](mcp/chameleon_mcp/comprehension.py))
-- **Two real review commands.** `/chameleon-pr-review` runs a multi-round, self-refuting review of a PR or branch diff against your repo's own conventions, with a final independent refuter pass to kill findings that can't survive scrutiny. `/chameleon-receiving-code-review` helps you verify a teammate's review against the code before you blindly apply it. ([skills/chameleon-pr-review](skills/chameleon-pr-review/SKILL.md))
-- **Teach what AST can't see.** `/chameleon-teach` captures the rules no parser can infer ("use our HTTP wrapper, never raw `fetch`"). `/chameleon-auto-idiom` mines the repo for those rules itself, grounded in occurrence counts, and proposes them for your approval. The `get_prose_rule_candidates` miner reads your CONTRIBUTING / STYLE / AGENTS docs for stated "use X not Y" rules and proposes only the ones your code already backs.
-
----
-
-## What it truly resolves (and what it doesn't)
-
-Straight, because a tool that overstates what it fixes is not worth trusting. Measured against the real problems of AI-assisted coding in 2026, here is the honest line.
-
-**It resolves:**
-
-- **Code that doesn't fit your repo.** The most-cited comprehension complaint of 2026 ("the AI doesn't know how OUR codebase works") is chameleon's whole reason to exist: the witness, the idioms, the archetype rules, shown before the model types.
-- **Hallucinated dependencies and symbols.** The anti-hallucination protocol bans importing a package that is not already in your manifest or lockfile, and inventing a symbol the repo does not define. That is the direct, deterministic counter to "slopsquatting" (about 1 in 5 AI-recommended packages do not exist, and the same fake names recur, so attackers pre-register them).
-- **Code duplication.** It catches a re-implemented function against your real call graph ("reuse it, called from 7 sites") and `search_codebase` finds the existing one first. AI's biggest measured maintainability regression is duplication up, reuse down.
-- **Leaked secrets.** A hardcoded credential is a deterministic write-time block, on sight, even on a brand-new file.
-- **Not understanding the codebase.** The comprehension layer (`search_codebase` / `describe_codebase` / `get_callees`) lets the model query and navigate the repo it is editing.
-
-**It partially helps:**
-
-- **The review bottleneck.** `/chameleon-pr-review` and the cross-file contract checks offload the mechanical part of review (conventions, duplication, broken callers); human judgment on logic still stays.
-- **Plausible-but-wrong code.** The turn-end judge reads your diff for inverted conditions, dropped `await`s, off-by-one, and missing guards. A real but bounded set, not all of it.
-- **Insecure code.** Secrets and `eval`/`exec` are caught deterministically; taint, SSRF, and authz are advisory in pr-review. This is not a full SAST.
-
-**It does not resolve, and will not pretend to:**
-
-- **The model's correctness and security ceiling.** Roughly 45% of AI-generated code ships an OWASP Top 10 vulnerability regardless of model or tooling (Veracode, 2026), and it is not improving with scale. chameleon catches a slice, never the ceiling.
-- **Destructive agent autonomy, token cost, and latency.** chameleon adds some cost and latency; it does not gate an agent from deleting your database, and it does not make agent loops cheaper.
-- **Whether your tests actually test anything.**
-
-Those need better models, runtime and dataflow analysis, sandboxing, and team process, not a write-time conformance tool. chameleon owns the conformance and codebase-context slice, and owns it well. That is the pitch, and the whole of it.
-
----
-
-## You should know the tradeoff
-
-Three honest admissions, because a tool that hides its costs isn't worth trusting:
-
-1. **It spends tokens and adds latency per turn.** Injecting a real example file and running a turn-end judge isn't free. In our committed cost baselines the context-on arm runs longer and, in most categories, costs more per task than the off arm. That's the price of the model seeing your conventions before it writes, instead of you catching the miss in review. If your edits are tiny and your repo has no conventions worth enforcing, you may not want it on.
-2. **TypeScript/JavaScript, Ruby, and Python only.** No Go, Rust, Java, or anything else today. If your repo isn't one of those three, this isn't for you yet.
-3. **We don't publish a "writes better code by X%" number, and we won't make one up.** The shipped effectiveness baselines track cost and latency for regression detection; they are not a powered efficacy study. We'd rather hand you the harness than a marketing stat.
-
-On that last point, the harness is real and it's in the repo. It runs paired Claude sessions (context off vs. on), scores them, and reports the delta. Reproduce our baseline on the bundled fixtures:
+1. **It costs tokens and latency per turn.** Injecting a witness file and spawning a turn-end judge is not free. If your edits are tiny and your repo has no conventions worth keeping, leave it off.
+2. **Three languages.** TypeScript/JavaScript, Ruby, Python. If your repo is something else, this isn't for you yet.
+3. **It catches a slice, not the ceiling.** Roughly 45% of AI-generated code ships an OWASP Top 10 vulnerability regardless of model or tooling (Veracode, 2026). Chameleon blocks secrets and eval deterministically and its judge catches a real but bounded set of logic bugs. It is not a SAST and won't pretend to be one.
+4. **No made-up efficacy number.** We will not print "writes better code by X%". We ship the measuring instrument instead: an effectiveness harness that runs paired Claude sessions, context off vs on, and reports the delta. Reproducible for about $3-5 at the ci tier:
 
 ```bash
 PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner --tier ci --arms off,shadow
 ```
 
-To measure it on your own code, run `--tier full` with your repo paths set in the `CHAMELEON_TEST_*_REPO` env vars (details in the harness README). We'd rather you check than take our word. ([tests/effectiveness/README.md](tests/effectiveness/README.md))
+We'd rather you measure than take our word.
 
 ---
 
 ## Your code stays your code
 
-This is a plugin that reads your source. Here is exactly what it does and doesn't do:
-
-- **The hot path is fully offline.** The hooks that fire on every edit make zero network calls. No telemetry, no phone-home, ever. Everything chameleon learns lives on your machine, in `.chameleon/` in the repo and `~/.local/share/chameleon/`.
-- **It does not execute your repo's code by default.** Parsing is static. Running your `tsc`, your test suite, or `npm audit` are all separate, opt-in switches, off until you set an environment variable, and even then resolved only from your repo's own `node_modules/.bin`, never your `PATH`.
-- **The one default network call is a bounded `git fetch`** of your production branch at refresh time, so conventions track the latest production. It's timeout-capped, suppressed under CI, fails open, and is a single kill switch away (`CHAMELEON_FETCH_PRODUCTION_REF=0`).
-- **A committed profile must be trusted before it's used.** Clone a repo with a `.chameleon/` someone else committed and chameleon won't inject any of it until you run `/chameleon-trust`. The trust step scans the profile's prose for prompt-injection and secrets first. Repo-derived content is wrapped so the model treats it as an example to imitate, never as instructions to follow.
-
-If you want it gone for a bit: `/chameleon-pause-15m`, `/chameleon-disable` (this session), or `CHAMELEON_DISABLE=1` (global). It gets out of your way on command.
+- **The per-edit hot path is 100% offline.** No telemetry, ever. Everything chameleon learns lives in `.chameleon/` in the repo and `~/.local/share/chameleon/`.
+- **No repo code execution by default.** Parsing is static. Running your `tsc`, your tests, or `npm audit` are separate opt-in env flags; `tsc` and the test runner resolve only from your repo's own `node_modules/.bin`, never PATH (the opt-in dependency audit shells the `npm` already on your PATH; it never downloads a tool).
+- **Default network is exactly two things:** a bounded `git fetch` of your own production branch at refresh time (kill switch: `CHAMELEON_FETCH_PRODUCTION_REF=0`), and a once-per-plugin-version `npm ci` of chameleon's own pinned parser into `~/.local/share/chameleon`.
+- **A committed profile is inert until you `/chameleon-trust` it.** Clone a repo with a `.chameleon/` someone else committed and nothing injects until you approve it. Profile prose is injection- and secret-scanned at trust time and again at read time. Repo-derived content is wrapped as data to imitate, never as instructions to follow.
+- Want it gone: `/chameleon-pause-15m`, `/chameleon-disable`, or `CHAMELEON_DISABLE=1`.
 
 ---
 
 ## Proof, not promises
 
-Everything below is checkable in the repo right now:
+Every number below is checkable in this repo right now:
 
-| What | Count | Verify |
-|------|-------|--------|
-| Unit tests | **4,777** | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
-| Released versions | **125** (v0.1.1 to v2.36.1) | `git tag \| wc -l` |
-| Changelog | **3,299 lines** | `wc -l CHANGELOG.md` |
-| First-class languages | **3** (TS/JS, Ruby, Python) | [extractors/registry.py](mcp/chameleon_mcp/extractors/registry.py) |
-| CI matrix | Ubuntu + macOS + **native Windows**, Python 3.11 to 3.13 | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
+| What | Count | Verify yourself |
+|---|---|---|
+| Unit tests | **5,205** | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
+| Released versions | **172** (v0.1.1 to v2.54.0) | `git tag \| wc -l` |
+| Changelog | **6,000 lines** | `wc -l CHANGELOG.md` |
+| CI | ubuntu + macos + **native Windows**, Python 3.11-3.13 | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
+| Per-edit hot path | benchmarked cold/warm p50 and p99 | `PYTHONPATH=. mcp/.venv/bin/python tests/bench_hot_path.py` |
+| Effectiveness harness | paired off-vs-on sessions | `PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner --list` |
 
-On top of unit tests, there are real-repo QA batteries per language, a hook-simulation battery, a hot-path latency benchmark, and a journey harness that drives real `claude -p` editing sessions against seed fixtures before each release. This is not a weekend prototype.
-
----
-
-## What it actually supports
-
-- **TypeScript / JavaScript** (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`), framework-agnostic, with awareness for **Next.js and NestJS** (framework detection, naming roles, and framework-specific anti-hallucination guidance).
-- **Ruby**, framework-agnostic, with deeper structural awareness for **Rails** (sidecar detection, controller guards, archetype-aware base classes).
-- **Python**, framework-agnostic, with awareness for **Django, DRF, Flask, and FastAPI**.
-
-"Framework-agnostic" is the point: chameleon learns *your* repo's conventions, so it works on any framework. The named frameworks just get extra structural understanding where their conventions are strong.
+Beyond unit tests: real-repo QA batteries per language, hook fuzzing against malformed payloads, and a journey harness that drives real `claude -p` editing sessions against seed fixtures before each release. Profile writes are atomic transactions, `.chameleon` merge conflicts get a dedicated git merge driver, the statusline stays under 100ms, and a warm-path advisor daemon keeps per-edit latency in milliseconds.
 
 ---
 
-## Command reference
+## Who builds this
 
-| Command | What it does |
-|---------|--------------|
-| `/chameleon-init` | Parse the repo and build a profile |
-| `/chameleon-trust` | Review and approve a profile for this machine |
-| `/chameleon-refresh` | Re-derive after the code has moved |
-| `/chameleon-status` | Profile health, drift, enforcement mode, rule precision |
-| `/chameleon-teach` | Capture a convention AST can't infer (banned import, mandatory wrapper) |
-| `/chameleon-auto-idiom` | Mine the repo for team idioms, evidence-backed, for your approval |
-| `/chameleon-pr-review` | Multi-round review of a PR or diff against your conventions |
-| `/chameleon-receiving-code-review` | Verify a teammate's review before you apply it |
-| `/chameleon-explain` | Why a rule is active, or replay what chameleon knew the last time a file was edited |
-| `/chameleon-doctor` | Triage your installation health |
-| `/chameleon-journey` | Run the end-to-end journey test harness (release verification) |
-| `/chameleon-disable`, `/chameleon-pause-15m` | Turn it off for the session, or pause it briefly |
+Built by [Cris Nahine](https://github.com/crisnahine) and [Daniel Lisboa](https://github.com/danlisb), dogfooded daily at [Empire Flippers](https://empireflippers.com/) on the code that runs the business. We depend on it; rough edges get found and fixed fast.
 
----
-
-## Built by people who ship with it
-
-Chameleon is built by [Cris Nahine](https://github.com/crisnahine) and [Daniel Lisboa](https://github.com/danlisb). Daniel runs it on real work every day and keeps it honest: rough edges get found and fixed fast. We use it at [Empire Flippers](https://empireflippers.com/), on the code that runs the business. We depend on this tool, not a side project we shipped and forgot.
-
-## Get started
-
-```
-/plugin marketplace add crisnahine/chameleon
-/plugin install chameleon@chameleon
-```
-
-Then `/chameleon-init` and `/chameleon-trust` on a repo you care about, make an edit, and watch the model write code that already looks like yours.
-
-Architecture and internals: [docs/architecture.md](docs/architecture.md). Install troubleshooting: [docs/install.md](docs/install.md). MIT licensed.
+Architecture and internals: [docs/architecture.md](docs/architecture.md). Docs index: [docs/README.md](docs/README.md). MIT licensed.

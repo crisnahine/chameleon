@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="432" viewBox="0 0 880 432" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+<rect x="1" y="1" width="878" height="430" rx="12" fill="#0d1117" stroke="#30363d"/>
+<rect x="1" y="1" width="878" height="40" rx="12" fill="#161b22"/>
+<rect x="1" y="28" width="878" height="14" fill="#161b22"/>
+<circle cx="24" cy="21" r="6" fill="#ff5f56"/>
+<circle cx="44" cy="21" r="6" fill="#ffbd2e"/>
+<circle cx="64" cy="21" r="6" fill="#27c93f"/>
+<text x="440" y="26" fill="#8b949e" font-size="13" text-anchor="middle">chameleon · PreToolUse (Edit / Write)</text>
+<text x="28" y="70" fill="#8b949e" font-size="15" xml:space="preserve"># you start editing  src/services/payment_service.ts</text>
+<text x="28" y="122" fill="#3fb950" font-size="15" xml:space="preserve">🦎 chameleon  archetype=service · confidence=high · match_quality=exact</text>
+<text x="28" y="174" fill="#8b949e" font-size="15" xml:space="preserve">Canonical witness (how this archetype is written here):</text>
+<text x="28" y="200" fill="#79c0ff" font-size="15" xml:space="preserve">  import { logger } from &quot;@/lib/logger&quot;;</text>
+<text x="28" y="226" fill="#79c0ff" font-size="15" xml:space="preserve">  import { fmt } from &quot;@/lib/date&quot;;</text>
+<text x="28" y="252" fill="#c9d1d9" font-size="15" xml:space="preserve">  export class Svc { run() { logger.info(fmt(new Date())); } }</text>
+<text x="28" y="304" fill="#d29922" font-size="15" xml:space="preserve">⚠  Known off-pattern in this repo. Do NOT write it this way:</text>
+<text x="28" y="330" fill="#f85149" font-size="15" xml:space="preserve">     import winston from &quot;winston&quot;;</text>
+<text x="28" y="356" fill="#3fb950" font-size="15" xml:space="preserve">✓  Use @/lib/logger instead of winston. The witness above is the</text>
+<text x="28" y="382" fill="#3fb950" font-size="15" xml:space="preserve">   conforming form.</text>
+</svg>

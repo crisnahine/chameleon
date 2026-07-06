@@ -24,6 +24,8 @@ Restart Claude Code. Done. Verify it worked: [Verify the plugin loaded](#verify-
 
 Editing Ruby repos too? You also need Ruby 3.0+ with the `prism` gem. The [Full setup](#full-setup) section has the per-OS commands. Python repos need nothing extra: chameleon parses them with its own bundled libcst.
 
+One floor worth knowing: chameleon's hooks and server need **Python 3.11 or newer**. With `uv` on your `PATH` this is automatic (`uv` provisions the right interpreter), which is why it is not listed as a step — but if you strip the machine down to a bare system python older than 3.11, the hooks go silent (fail-open) and SessionStart shows a degraded banner instead of running on an unsupported interpreter.
+
 ---
 
 ## One command to check everything
@@ -203,21 +205,24 @@ Open a TypeScript/JavaScript, Ruby, or Python repo in Claude Code.
 
 3. **Edit a file.** Before the edit lands, chameleon should mention which archetype the file matches and point at the canonical example. That is it working.
 
+**The status line wires itself.** At session start (any repo, profiled or not, unless chameleon is opted out for it), chameleon writes its status line (`bin/chameleon-statusline.sh` — profile name, trust state, and an update badge, in a <100ms budget) into the repo's `.claude/settings.local.json`. It deliberately skips this when you already configured a `statusLine` in the project's `settings.json` or your global `~/.claude/settings.json`, so it never overrides a choice you made. To opt out afterwards, delete the `statusLine` block from `settings.local.json` and set your own anywhere.
+
 ---
 
 ## Opt-out
 
-Five layers, most permanent at the top:
+Six layers, most permanent at the top:
 
 ```
 .chameleon/.skip       per-repo, all users (committed to the repo)
 CHAMELEON_DISABLE=1     per-user, every repo (set in your shell rc)
+CHAMELEON_ENFORCE=0     keep the advisories, kill all blocking (deny/block/backstop)
 CHAMELEON_VERIFY=0      disable post-edit verification only
 /chameleon-disable      this session only
 /chameleon-pause-15m    next 15 minutes, then auto-resumes
 ```
 
-Use `.chameleon/.skip` for repos chameleon should never touch (a docs-only repo, for example). Use the env var to turn it off for yourself everywhere. Use the slash commands for a quick, scoped pause.
+Use `.chameleon/.skip` for repos chameleon should never touch (a docs-only repo, for example). Use `CHAMELEON_DISABLE=1` to turn it off for yourself everywhere. `CHAMELEON_ENFORCE=0` is the middle ground: the per-edit pattern advisories keep flowing, but nothing ever denies or blocks (the turn-end backstop goes fully silent). Use the slash commands for a quick, scoped pause.
 
 ---
 
@@ -259,6 +264,16 @@ rm -rf ~/.local/share/chameleon
 
 `.chameleon/` folders committed in your repos are untouched. Delete them per repo if you want them gone.
 
+Three small artifacts live outside `~/.local/share/chameleon` and survive the cleanup above; remove them too for a complete scrub:
+
+```bash
+rm -f ~/.claude/hooks/.exec_hmac.key            # per-user HMAC key for exec-log signing
+rm -rf "${TMPDIR:-/tmp}"/.chameleon_exec_log     # HMAC-signed exec logs (30-day GC while installed)
+rm -f <repo>/.claude/.chameleon-statusline-cache # per-repo statusline cache (one per profiled repo)
+```
+
+chameleon also auto-wires its status line into a repo's `.claude/settings.local.json` (only when you had no statusLine configured); remove the `statusLine` block there if you kept one around.
+
 ---
 
 ## How dependencies resolve
@@ -266,8 +281,8 @@ rm -rf ~/.local/share/chameleon
 You install three tools (`uv`, Node, optionally Ruby). chameleon builds everything else itself:
 
 - **Python server.** The plugin's [`.mcp.json`](../.mcp.json) runs `uvx --refresh-package chameleon-mcp --from ${CLAUDE_PLUGIN_ROOT}/mcp chameleon-mcp`. On first launch `uv` builds an isolated environment in its own cache (5 to 10 seconds). After that, instant.
-- **TypeScript reader.** The first `/chameleon-init` on a TypeScript repo runs `npm install` once inside the plugin folder (about 10 seconds). If you only touch Ruby repos this never runs.
-- **Hook scripts.** The hooks resolve a python by a fallback ladder (a bundled `mcp/.venv`, then a system `python3`). The fast-path hooks use only the standard library, so a plain system python is fine for them. The background auto-refresh and bootstrap need chameleon's third-party deps (e.g. `xxhash`); when the resolved python lacks them, that path falls back to `uv run` against the bundled `mcp` project (same deps the server uses). Keep `uv` on `PATH` and the fallback is automatic. `/chameleon-doctor` reports a `hook_interpreter_deps` check so you can see which interpreter the hooks land on and whether it carries the deps.
+- **TypeScript reader.** The first `/chameleon-init` on a TypeScript repo provisions chameleon's own lockfile-pinned `typescript` parser once, via `npm ci` (with an `npm install` fallback), into `~/.local/share/chameleon/node-deps/<plugin-version>/` — the plugin data dir, not the plugin folder, so the install survives plugin-cache pruning and never dirties the plugin checkout. About 10 seconds, once per plugin version. If you only touch Ruby or Python repos this never runs.
+- **Hook scripts.** The hooks resolve a python via `hooks/_resolve-python.sh`, a ladder that enforces a **Python >= 3.11 floor at every rung**: the bundled `mcp/.venv` first, then `python3.13`/`python3.12`/`python3.11` by name, then `uv run` against the bundled `mcp` project, and only last an unversioned `python3`/`python` that a quick probe confirms is >= 3.11. No qualifying interpreter means the hooks stay silent (fail-open) and SessionStart shows a degraded banner rather than guessing with an old python. The fast-path hooks use only the standard library; the background auto-refresh and bootstrap need chameleon's third-party deps (e.g. `xxhash`), which is why the `uv run` rung exists — keep `uv` on `PATH` and that fallback is automatic. `/chameleon-doctor` reports a `hook_interpreter_deps` check so you can see which interpreter the hooks land on and whether it carries the deps.
 
 This is why the prerequisite list is short: the tools build the rest on demand.
 
@@ -307,11 +322,11 @@ If `gem install` needs sudo and you do not want system-wide gems, use a version 
 
 ### Bootstrap fails with `failed_unsupported_language`
 
-The repo has no TypeScript signal (`tsconfig.json` or `package.json`), no Ruby signal (`Gemfile`), and no Python signal (a project marker like `pyproject.toml`, `setup.py`, `requirements.txt`, or `manage.py`, or any `.py` file). chameleon supports only those three languages. There is nothing to fix; the repo is out of scope.
+The repo has no TypeScript signal, no Ruby signal (`Gemfile`, or a root-level `*.gemspec`), and no Python signal (a project marker like `pyproject.toml`, `setup.py`, `requirements.txt`, or `manage.py`, or any `.py` file). The TypeScript signal is `tsconfig.json`, a `package.json` that actually references a TS toolchain (`typescript`, `ts-node`, `vite`), or any `.ts`/`.tsx` file near the root — a bare `package.json` alone does not count, so a plain-JS-free repo with only a manifest is out of scope by design. chameleon supports only those three languages. There is nothing to fix; the repo is out of scope.
 
 ### First MCP start is slow
 
-Expected, once. `uv` builds the Python environment (5 to 10 seconds) on first launch. The first `/chameleon-init` on a TypeScript repo also runs `npm install` once (about 10 seconds). Both are one-time per install.
+Expected, once. `uv` builds the Python environment (5 to 10 seconds) on first launch. The first `/chameleon-init` on a TypeScript repo also provisions the pinned `typescript` parser into `~/.local/share/chameleon/node-deps/` once (about 10 seconds). Both are one-time per install.
 
 ### Slash commands or tools do not show up
 
@@ -324,7 +339,7 @@ Run `/plugin list` and confirm `chameleon` is installed and enabled.
 
 Check that `~/.local/share/chameleon/<repo_id>/.trust` exists. If not, run `/chameleon-trust` again and type the repo's folder name exactly when asked.
 
-If the state is `stale`, the committed profile changed after you trusted it. Run `/chameleon-trust` once more to re-approve the new version.
+A `stale` state only exists if you opted into trust re-validation (`CHAMELEON_TRUST_REVALIDATE=1`). By default trust is one-time: once granted it persists across refreshes, re-bootstraps, and profile edits, and never flips to `stale`. If you do run with re-validation on and see `stale`, the committed profile changed after you trusted it — run `/chameleon-trust` once more to re-approve the new version.
 
 ### Edits feel slow
 

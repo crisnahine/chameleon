@@ -53,8 +53,8 @@ Repo **shapes** (orthogonal to framework, all handled agnostically):
 
 | # | Shape | Exercised on | Tier |
 |---|---|---|:--:|
-| S1 | single-package | `excalidraw`, `py-flask-flaskbb` | 1 (folded into C1/C7) |
-| S2 | monorepo / workspace (`packages`/`apps`/`libs`/`workspaces`) | `plane`, `bulletproof-react` | 2 |
+| S1 | single-package | `py-django-readthedocs`, `bulletproof-react` | 1 (readthedocs folds into C7; `bulletproof-react` is the S2 no-fan-out contrast: `apps/*` dirs, recorded `workspace_roots`, but `is_workspace: false` and one root profile) |
+| S2 | monorepo / workspace (`packages`/`apps`/`libs`/`workspaces`) | `plane`, `excalidraw` | 2 |
 | S3 | hybrid frontend+backend | `ef-api` (Ruby) + `ef-client` (TS) | 2 |
 
 Edge / robustness:
@@ -63,6 +63,26 @@ Edge / robustness:
 |---|---|---|:--:|
 | E1 | `gitlabhq` | large/real Rails repo (size, cross-file at scale) | 1 (size check) |
 | E2 | `golden-messy` (built) | polyglot, odd-but-legal syntax, stale data-dir state, in-progress merge | 2 |
+
+Dimension notes (scoping):
+
+- **Windows** is a CI-verified dimension, not a sign-off column. Native Windows
+  support (the `hooks/run-hook.cmd` polyglot launcher, `msvcrt`-based locking in
+  `mcp/chameleon_mcp/locks.py`) is exercised by the CI matrix: the `test-windows`
+  job (import smoke + cross-platform locking) and the `runtime-windows` job, which
+  drives `run-hook.cmd` → Git Bash → venv python for the five fast hooks plus a
+  real bootstrap → trust → refresh (`tests/ci_windows_runtime.py`; the sixth
+  hook, the Stop backstop, is not driven there — its coverage is the unit
+  suite on the POSIX matrix). Human per-cell
+  verification in this tracker happens on the primary (POSIX) platform.
+- **Monorepo pure-coordinator root** is part of S2's checklist, not a separate
+  cell: a session launched at a workspace root that itself derives no profile
+  (bootstrap status `success_workspaces_only`,
+  `mcp/chameleon_mcp/bootstrap/orchestrator.py`) must still gate member-file edits
+  at turn end via the multi-root Stop backstop (`_discover_stop_roots` in
+  `mcp/chameleon_mcp/hook_helper.py`; kill switch `CHAMELEON_MULTIROOT_STOP=0`).
+  Drive S2 both from inside a member workspace and from the coordinator root; the
+  `qa-coord-shared` / `qa-coord-local` fixtures exercise the profile-less-root case.
 
 ### Golden-repo gaps (now closed at asset level — see `docs/gap-log.md`)
 
@@ -99,19 +119,37 @@ framework-aware family at least at spot-check depth, per the goal's philosophy
 
 ## C. Subsystem applicability per tier
 
-All 15 subsystems are required on Tier-1 cells. Tier-2 cells require the
-language-varying subsystems (bold) plus any subsystem whose behavior the cell is
-the unique witness for (e.g. C3 → #2/#3/#11 NestJS pairing; C8 → #11 authz-guard).
+All 15 subsystems are required at Tier 1 (#12 packaging is machine-scoped — see
+below). Tier-2 cells require the language-varying subsystems (bold) plus any
+subsystem whose behavior the cell is the unique witness for (e.g. C3 → #2/#3/#11
+NestJS pairing; C8 → #11 authz-guard).
 
 1. Hooks · 2. Skills · 3. MCP tools · 4. Statusline · 5. Daemon · 6. Merge driver ·
 7. Migrations · 8. **Generated artifacts** · 9. Data-dir state · 10. **AST
-dumpers/extractors** · 11. **Cross-cutting engines** · 12. **Framework awareness** ·
+dumpers/extractors** · 11. **Cross-cutting engines** · 12. Plugin packaging ·
 13. Config + kill switches · 14. Version sync + build/CI · 15. Hot-path budget.
 
+Numbering follows `docs/chameleon-goal.md` § "The 15 subsystems" — #12 there is
+**Plugin packaging** (an earlier revision of this matrix listed "Framework
+awareness" as #12 and tracked packaging nowhere; both are tracked now).
+**FW. Framework awareness** is a matrix-local extra row, not one of the goal
+doc's 15: the goal treats framework behavior as part of the cell grid itself
+(the cells ARE language × framework), and this tracker gives it an explicit
+sign-off row so per-cell framework behavior cannot fall through the cracks.
+
 Subsystems #4 (statusline), #5 (daemon), #6 (merge driver), #7 (migrations),
-#13-15 are largely language-independent — verify once on a Tier-1 cell, spot-check
-elsewhere only if a cell-specific risk is identified. #12 (framework awareness) is
-language- AND framework-varying — it is a required spot-check on every Tier-2 cell.
+#14-15 are largely language-independent — verify once on a Tier-1 cell, spot-check
+elsewhere only if a cell-specific risk is identified. #12 (plugin packaging) is
+machine-scoped, not cell-scoped: one clean install + full real session on a fresh
+machine signs it off (tracked under C1 in the Tier-1 table; the clean-room install
+simulation in `docs/gap-log.md` is scaffolding, zero credit). FW (framework
+awareness) is language- AND framework-varying — it is a required spot-check on
+every Tier-2 cell. #13 (config + kill switches) gets its full switch-surface sweep
+once, on a Tier-1 cell; the #13 row on every Tier-2 cell records a scoped
+spot-check of just the switches/config that gate that cell's signature behavior
+(e.g. the co-change/enforcement toggles for C3, the authz-guard advisory path for
+C8) — a cell-specific feature's off-state can only be proven on the cell that
+exhibits it, which is why the tracker table carries #13 on all ten Tier-2 cells.
 
 ---
 
@@ -139,7 +177,8 @@ mark each cell. Automated scaffolding has been run as a bug-finder (see
 | 9. Data-dir state | PENDING | PENDING | PENDING | PENDING |
 | 10. AST dumpers/extractors | PENDING | PENDING | PENDING | PENDING |
 | 11. Cross-cutting engines | PENDING | PENDING | PENDING | PENDING |
-| 12. Framework awareness | PENDING | PENDING | PENDING | PENDING |
+| 12. Plugin packaging | PENDING (once — fresh machine) | N/A | N/A | N/A |
+| FW. Framework awareness | PENDING | PENDING | PENDING | PENDING |
 | 13. Config + kill switches | PENDING | PENDING | PENDING | PENDING |
 | 14. Version sync + build/CI | PENDING | PENDING | PENDING | PENDING |
 | 15. Hot-path budget | PENDING | PENDING | PENDING | PENDING |
@@ -151,7 +190,7 @@ mark each cell. Automated scaffolding has been run as a bug-finder (see
 | 8. Generated artifacts | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 | 10. AST dumpers/extractors | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 | 11. Cross-cutting engines | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
-| 12. Framework awareness | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
+| FW. Framework awareness | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 | 13. Config + kill switches | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING | PENDING |
 
 All cells are now drivable (the three previously-blocking golden repos are built and
@@ -171,7 +210,8 @@ This tracker reflects reality on the date it was generated:
 - The three golden-repo gaps (G-001 NestJS, G-002 Python plain, G-003 messy repo) are
   now closed at the asset level — the repos are built and bootstrapped — so every cell
   is drivable. They remain `FIX-STAGED` in `docs/gap-log.md` (asset created; human
-  sign-off still pending). One open observation (G-006, NestJS cluster naming) is an
-  investigate-only question, not a confirmed bug.
+  sign-off still pending). G-006 (NestJS cluster naming) was investigated, grounded
+  by experiment (`golden-ts-nestjs-rolegrouped`), and closed WONT-FIX in
+  `docs/gap-log.md` — works as designed, not a bug.
 - Automated scaffolding results live in `docs/gap-log.md` as bug-finder output, never
   as sign-off evidence here.

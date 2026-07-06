@@ -70,7 +70,11 @@ codebase, not memory.
   - **TypeScript/JavaScript** — `.ts .tsx .js .jsx .mjs .cjs`, AST via the TypeScript
     Compiler API (`scripts/ts_dump.mjs`).
   - **Ruby** — `.rb`, AST via Prism (`scripts/prism_dump.rb`).
-  - **Python** — `.py .pyi`, CST via libcst (`scripts/libcst_dump.py`).
+  - **Python** — `.py .pyi`, CST via libcst (`scripts/libcst_dump.py`). Nuance: `.pyi`
+    is linted/detected (`_PY_EXTENSIONS`, `lint_engine.py`) but bootstrap discovery
+    globs `**/*.py` only (`_glob_for_extractor`, `bootstrap/orchestrator.py`), so
+    `.pyi` files are never clustered into the profile — don't assume a `.pyi`-heavy
+    cell is profiled.
 
   No other languages are supported. Go, Rust, Java, and C# have no extractor, dumper, or
   detection signal — `detect_language()` returns only these three
@@ -88,6 +92,14 @@ codebase, not memory.
   Repo **shapes** (orthogonal to framework, all handled agnostically): single-package,
   monorepo / workspace (`packages` / `apps` / `libs` / `workspaces`), and hybrid
   frontend+backend. Source the list from `docs/language-support-matrix.md`, not memory.
+- **Platform (explicitly scoped, not a matrix axis):** the matrix is language ×
+  framework; platform is a separate, deliberately-scoped dimension. The code ships
+  native Windows support (`hooks/run-hook.cmd` polyglot dispatch, the `msvcrt` lock
+  fallback in `mcp/chameleon_mcp/locks.py`, `windows-latest` CI jobs in
+  `.github/workflows/ci.yml`; the daemon stays POSIX-only). Windows is verified via
+  the CI matrix plus manual spot-checks — per this repo's own testing conventions —
+  not by multiplying every matrix cell by platform; the human protocol below runs on
+  the primary (POSIX) platform.
 - **Tiering:**
   - **Tier 1** = cells that must be *fully* human-verified for every relevant subsystem.
   - **Tier 2** = cells that get a human spot-check (or, if you relaxed the philosophy,
@@ -195,14 +207,28 @@ Each entry: *what correct means in real usage* → *how a human observes it* →
    "<plugin>/scripts/chameleon-merge-driver.sh %O %A %B %P"`. *Observe:* register it the
    documented way, create a genuine conflict in a golden repo, run the merge, and inspect
    the merged file and git state. *Note:* install does NOT auto-register the driver
-   (`setup.sh` / `docs/install.md` don't touch `.gitattributes`); confirm the documented
+   (`scripts/setup.sh` / `docs/install.md` don't touch `.gitattributes`); confirm the documented
    manual registration works end to end, or log "install doesn't auto-register" as a gap.
 
-7. **Migrations** — Upgrading a *real* older data-dir state to current runs cleanly, is
-   idempotent, loses no data, and is safe/reversible on failure. *Observe:* take a repo
-   with old-format state, upgrade, run again (idempotency), and simulate an interrupted
-   upgrade by killing it mid-run. *Note:* keep at least one fixture from each prior
-   schema version.
+7. **Migrations** — There is no migration framework to exercise
+   (`mcp/chameleon_mcp/profile/migrations/` is a docstring-only stub); what must be
+   verified are the *actual* upgrade mechanisms: refresh forces a full re-derive when
+   the engine or profile schema changed (`_engine_version_changed` /
+   `_profile_needs_rederive`, `mcp/chameleon_mcp/tools.py`); the loader loads older
+   profiles (schema_version <= 7 under the current v8) but refuses anything newer than
+   `MAX_SUPPORTED_SCHEMA_VERSION` (8) with a clean "upgrade chameleon-mcp" error
+   (`profile/loader.py`); drift.db is a drop-and-recreate cache by policy
+   for its cache table, plus one in-place durable-table migration (the
+   `decision_log` content-digest column add, `_migrate_decision_log` in
+   `drift/schema.py`); and index.db carries the other in-place migration (the
+   one-time `repos` composite-PK conversion, `index_db.py`). Correct means each path
+   runs cleanly, is idempotent, and loses no durable data (taught state like
+   `idioms.md` survives a forced re-derive). *Observe:* take a repo with an
+   older-engine profile, refresh, and confirm a real re-derive (not a noop-preserve)
+   with taught state intact; load a too-new profile and confirm the clean refusal;
+   corrupt drift.db and confirm drop-and-recreate recovery; run each path twice
+   (idempotency) and kill a re-derive mid-run. *Note:* keep at least one fixture from
+   each prior schema version to drive the re-derive and loader paths against.
 
 8. **Generated profile artifacts** — Generated content is correct, deterministic where it
    should be, valid for whatever consumes it, and regenerates correctly when inputs
@@ -240,16 +266,23 @@ Each entry: *what correct means in real usage* → *how a human observes it* →
     each kill switch, when set, *fully* disables its feature with zero residual effect;
     env-var vs config precedence is correct (env overrides config); the default state
     (nothing set) is the intended one. The `CHAMELEON_*` surface is **not one uniform
-    set** — verify each off-state on its own: (a) ~10 default-ON env kill switches
-    (`CHAMELEON_DISABLE`, `VERIFY`, `ENFORCE`, `FETCH_PRODUCTION_REF`, `INTENT_CAPTURE`,
-    `ATTESTATION`, `NEARBY_SIGNATURES`, `COUNTEREXAMPLE`, `REVIEW_REFUTER`,
-    `REVIEW_FANOUT`); (b) the 4-layer per-repo opt-out hierarchy (`.chameleon/.skip`,
+    set** — verify each off-state on its own: (a) 18 default-ON env kill switches:
+    `CHAMELEON_DISABLE` (kill polarity `=1`) plus 17 `=0`-polarity switches
+    (`CHAMELEON_VERIFY`, `ENFORCE`, `FETCH_PRODUCTION_REF`, `INTENT_CAPTURE`,
+    `ATTESTATION`, `NEARBY_SIGNATURES`, `INBOUND_CALLERS`, `COUNTEREXAMPLE`,
+    `ARCHETYPE_FACTS`, `CROSSWS_INDEX`, `MULTIROOT_STOP`, `FINDING_LEDGER`,
+    `AUTOPASS_ATTESTATION`, `STOP_IDIOM_TERSE`, `JUDGE_TIERING`, `REVIEW_REFUTER`,
+    `REVIEW_FANOUT`) — new features ship default-ON with a kill switch, so re-derive
+    this list at verification time (grep the `== "0"` / `!= "0"` env reads across
+    `mcp/chameleon_mcp/` + `hooks/`) rather than trusting this enumeration;
+    (b) the 4-layer per-repo opt-out hierarchy (`.chameleon/.skip`,
     `CHAMELEON_DISABLE=1`, `.session_disabled.<sid>`, `.pause_until` — `optouts.py`);
     (c) ~7 default-OFF opt-**in** gates (`CHAMELEON_ALLOW_*`, `JUDGE_ASYNC`,
-    `TRUST_REVALIDATE`) that are NOT kill switches; (d) ~15 `config.json` `enforcement.*`
-    feature toggles. *Observe:* for each, use the feature with it ON, then flip it and
-    confirm the feature is genuinely gone (not just hidden); test env-vs-config precedence
-    directly. *Note:* the off-state proof is itself a real-usage check — don't skip it.
+    `TRUST_REVALIDATE`) that are NOT kill switches; (d) the 18 `config.json`
+    `enforcement.*` keys — `mode`, `stop_block_cap`, and 16 feature booleans
+    (`EnforcementConfig`, `mcp/chameleon_mcp/profile/config.py`). *Observe:* for each,
+    use the feature with it ON, then flip it and confirm the feature is genuinely gone
+    (not just hidden); test env-vs-config precedence directly. *Note:* the off-state proof is itself a real-usage check — don't skip it.
 
 14. **Version sync + build/CI scripts** — Versions are consistent across every manifest,
     the build produces the shippable artifact, and CI runs its intended build/package

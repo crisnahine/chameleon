@@ -17,6 +17,41 @@ Status legend: `OPEN` · `FIX-STAGED` (code landed, awaiting human re-sign-off) 
 
 ---
 
+## Addendum — 2026-07-07 (post-campaign status snapshot)
+
+Everything below this section is the v2.38.x verification-campaign record (newest
+entry 2026-06-29, v2.38.5) and is left as written. Recorded here rather than by
+editing history:
+
+- **Every staged fix has shipped.** The FIX-STAGED entries — G-001..G-003 (asset
+  builds) and G-007..G-019 (code fixes) — all landed in tagged releases and are
+  present in current code through `v2.54.0`. Spot-verified against today's tree:
+  G-007 `_python_source_roots` (`mcp/chameleon_mcp/symbol_index.py:336`); G-008
+  read ceiling derived from the build edge cap (`max_read_bytes =
+  threshold_int("CALLS_INDEX_MAX_TOTAL_EDGES") * 700`,
+  `mcp/chameleon_mcp/calls_index.py:663`); G-010 non-idioms top-title guard in
+  `looks_like_idioms_markdown` (`mcp/chameleon_mcp/idiom_coverage.py:1176`);
+  G-013 `fanout_clipped` (`mcp/chameleon_mcp/blast_radius.py:45-63`). Statuses
+  stay FIX-STAGED because formal CLOSED still requires human re-sign-off per the
+  protocol above — shipping is not sign-off.
+- **G-020 superseded.** Class/module name search shipped in v2.50.0: the
+  symbol-signatures artifact now carries an additive `classes` section
+  (`mcp/chameleon_mcp/symbol_signatures.py` — built at :178, `class_items()` at
+  :214; a pre-v2.50 artifact simply has no `classes` key until the next refresh)
+  and `search_codebase` returns `kind="class"` rows. The WONT-FIX rationale ("no
+  committed artifact exposes class shapes in a searchable form") no longer holds;
+  the entry's own re-open-as-a-feature clause was exercised.
+- **Scope boundary.** Gaps found after v2.38.5 are recorded in `CHANGELOG.md`
+  release entries (v2.39.0 through v2.54.0), not here. This log is a bounded
+  snapshot of the v2.38.x campaign, not a live tracker of all known gaps.
+- **Numbering note.** Some entries below use "subsystem 12" for framework
+  awareness (G-001, G-006) and others for packaging (G-004). Per
+  `docs/chameleon-goal.md`, #12 is plugin packaging;
+  `docs/verification-matrix.md` now tracks framework awareness as its own
+  unnumbered `FW` row. The entries are left as written.
+
+---
+
 ## Open gaps
 
 ### G-001 — NestJS golden repo (asset created, human sign-off pending)
@@ -27,7 +62,7 @@ Status legend: `OPEN` · `FIX-STAGED` (code landed, awaiting human re-sign-off) 
 - **Status:** FIX-STAGED (repo built + bootstrapped + advisory verified; C3 now
   drivable, awaiting human sign-off)
 - **Repro:** The NestJS framework-aware layer (controller→module co-change at
-  `cochange.py:421`, `*.controller.ts`/`*.module.ts`/`*.guard.ts` role priors in
+  `cochange.py:489`, `*.controller.ts`/`*.module.ts`/`*.guard.ts` role priors in
   `_TS_PRIORS`, `naming.py:486,511-516`) shipped with a unit fixture but no real,
   driven golden repo.
 - **Resolution (done):** Built `~/Documents/Projects/Testing Apps/golden-ts-nestjs`
@@ -38,7 +73,7 @@ Status legend: `OPEN` · `FIX-STAGED` (code landed, awaiting human re-sign-off) 
   advisory FIRES on a lone new controller, SUPPRESSES when the module companion is in
   the change-set, and is GATED OFF on a non-NestJS repo (excalidraw).
 - **Sizing note:** the advisory needs ≥ `COCHANGE_MIN_TRIGGER_FILES` (default 8)
-  committed controllers to arm (the repo-applicability gate, `cochange.py:550`); the
+  committed controllers to arm (the repo-applicability gate, `cochange.py:654`); the
   first 4-module draft was correctly silent — that is by-design, not a bug. The repo
   was expanded to 8 controllers so the feature is exercisable.
 
@@ -130,7 +165,7 @@ Status legend: `OPEN` · `FIX-STAGED` (code landed, awaiting human re-sign-off) 
   is only testable by synthetically downgrading a profile.
 - **Resolution:** The migration model is **forward-compatible-load +
   `/chameleon-refresh` regenerate**, not per-version transformation. The loader
-  (`profile/loader.py:620`) rejects a profile NEWER than `MAX_SUPPORTED_SCHEMA_VERSION`
+  (`profile/loader.py:626`) rejects a profile NEWER than `MAX_SUPPORTED_SCHEMA_VERSION`
   ("upgrade chameleon-mcp") and loads an OLDER one as-is if it is still structurally
   consistent; a structural mismatch raises `ProfileLoadError`, the hooks fail open,
   and the user re-derives with `/chameleon-refresh`. There is therefore no per-version
@@ -264,6 +299,10 @@ Nine are fixed with regression tests; one is an accepted scoped limitation.
 Verification note: the report also claimed `doctor` emits an `index_db` check — it does
 NOT (the 12 real check names were confirmed in code), so that part was a false report and
 no `index_db` reference was added (anti-hallucination on the report itself).
+[Correction, 2026-07-07: this note was itself the false claim. `doctor()` does emit an
+`index_db` check — `{"name": "index_db", ...}` in `mcp/chameleon_mcp/tools.py`, present
+since v2.6.0 — so the original panel report was right and this note's rebuttal was the
+hallucination. Kept, struck-by-correction, as its own anti-hallucination lesson.]
 
 ### G-020 — class/type/interface/module names not searchable (accepted limitation)
 
