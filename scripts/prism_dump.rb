@@ -306,12 +306,24 @@ def extract_file(file_path)
     if node.is_a?(Prism::ClassNode)
       name = constant_name(node.constant_path)
       if name && class_shapes.length < MAX_CALLABLE_SIGNATURES
-        class_shapes << {
+        shape = {
           name: name,
           kind: 'class',
           start_line: line_of(node.location),
           extends: constant_name(node.superclass)
         }
+        # Block-form nesting spells the full constant path across several
+        # nodes (`module M; class C`), so the verbatim name is just the leaf
+        # and a `M::C` query misses it while the compact form (`class M::C`)
+        # hits. Record the nesting-qualified path additively; `name` stays the
+        # leaf because the class-contract join keys on it. A `::`-anchored
+        # name is absolute and takes no lexical prefix; an absolute segment
+        # already on the stack (`class ::Foo` enclosing this node) drops its
+        # anchor when joined, since `::Foo::Bar` IS `Foo::Bar` at top level.
+        prefix = nesting_stack.map { |s| s.sub(/\A::/, '') }
+        qualified = name.start_with?('::') ? name : (prefix + [name]).join('::')
+        shape[:qualified] = qualified if qualified != name
+        class_shapes << shape
       end
       class_stack.push({ name: name,
                          superclass: constant_name(node.superclass),
@@ -338,8 +350,13 @@ def extract_file(file_path)
       if name && class_shapes.length < MAX_CALLABLE_SIGNATURES
         # A Ruby module is a searchable top-level definition too (e.g. a service
         # `module Authentication::Totp`); record it, tagged `module` so search
-        # renders `module X`, not `class X`.
-        class_shapes << { name: name, kind: 'module', start_line: line_of(node.location), extends: nil }
+        # renders `module X`, not `class X`. Same nesting-qualified additive
+        # path as the class emission above.
+        shape = { name: name, kind: 'module', start_line: line_of(node.location), extends: nil }
+        prefix = nesting_stack.map { |s| s.sub(/\A::/, '') }
+        qualified = name.start_with?('::') ? name : (prefix + [name]).join('::')
+        shape[:qualified] = qualified if qualified != name
+        class_shapes << shape
       end
       if name
         nesting_stack.push(name)

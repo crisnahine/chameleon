@@ -1601,6 +1601,69 @@ class TestModuleAttribute:
         idx = build_calls_index([caller], tmp_path, "python")
         assert idx["callees"] == {}
 
+    def test_class_member_only_name_yields_no_edge(self, tmp_path):
+        # `mod.method()` where `method` exists only INSIDE a class in mod: the
+        # module object has no such attribute (AttributeError at runtime), so
+        # asserting an edge would be a false positive.
+        _touch(tmp_path, "backend/app/__init__.py")
+        _touch(tmp_path, "backend/app/klass.py")
+        _touch(tmp_path, "backend/app/routes.py")
+        klass = FakeParsed(
+            tmp_path / "backend" / "app" / "klass.py",
+            {"callable_signatures": [_sig("method", enclosing_class="SomeClass", kind="method")]},
+        )
+        init = FakeParsed(
+            tmp_path / "backend" / "app" / "__init__.py",
+            {"named_export_names": ["klass"], "export_set_open": False},
+        )
+        caller = FakeParsed(
+            tmp_path / "backend" / "app" / "routes.py",
+            {
+                "import_symbols": [{"name": "klass", "local": "klass", "module": "app", "line": 1}],
+                "call_sites": [_site("method", "klass", "member", 5, "handler")],
+                "callable_signatures": [_sig("handler")],
+            },
+        )
+        idx = build_calls_index([klass, init, caller], tmp_path, "python")
+        assert "backend/app/klass.py" not in idx["callees"]
+
+    def test_module_level_def_beside_class_member_keeps_edge(self, tmp_path):
+        # A module-level def is a real module attribute even when a class in
+        # the same file defines a member with the same name; the edge stands.
+        _touch(tmp_path, "backend/app/__init__.py")
+        _touch(tmp_path, "backend/app/crud.py")
+        _touch(tmp_path, "backend/app/routes.py")
+        crud = FakeParsed(
+            tmp_path / "backend" / "app" / "crud.py",
+            {
+                "callable_signatures": [
+                    _sig("run"),
+                    _sig("run", enclosing_class="Runner", kind="method"),
+                ]
+            },
+        )
+        init = FakeParsed(
+            tmp_path / "backend" / "app" / "__init__.py",
+            {"named_export_names": ["crud"], "export_set_open": False},
+        )
+        caller = FakeParsed(
+            tmp_path / "backend" / "app" / "routes.py",
+            {
+                "import_symbols": [{"name": "crud", "local": "crud", "module": "app", "line": 1}],
+                "call_sites": [_site("run", "crud", "member", 5, "handler")],
+                "callable_signatures": [_sig("handler")],
+            },
+        )
+        idx = build_calls_index([crud, init, caller], tmp_path, "python")
+        assert idx["callees"]["backend/app/crud.py"]["run"]["callers"] == [
+            {
+                "path": "backend/app/routes.py",
+                "caller": "handler",
+                "line": 5,
+                "grade": "module_attribute",
+            }
+        ]
+
     def test_grade_is_python_only(self, tmp_path):
         # A TS member call on a from-import must never produce a module_attribute
         # edge -- the grade is gated to Python.

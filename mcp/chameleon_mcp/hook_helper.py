@@ -2034,7 +2034,21 @@ def _nearby_signatures_section(file_path: str, repo_root: Path | None) -> str:
         if len(section) > _NEARBY_SIG_MAX_CHARS:
             section = section[:_NEARBY_SIG_MAX_CHARS].rstrip() + "\n..."
         return section
-    except Exception:
+    except Exception as exc:  # noqa: BLE001
+        # Fail open, but leave a trace: this section silently vanishing from a
+        # Tier-2 block is indistinguishable from "no siblings", so a systematic
+        # failure would otherwise never surface in doctor's error-log check.
+        try:
+            import time as _time
+
+            stamp = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime())
+            with open(_hook_error_log_path(), "a", encoding="utf-8") as fh:
+                fh.write(
+                    f"[{stamp}] chameleon: nearby-signatures section failed "
+                    f"({type(exc).__name__}: {exc})\n"
+                )
+        except OSError:
+            pass
         return ""
 
 
@@ -3147,6 +3161,42 @@ def preflight_and_advise() -> int:
         return 0
 
     excerpt_content = canonical.get("content") or ""
+    # Editing the archetype's own canonical witness: re-injecting the edited
+    # file's current content back at the editor as "the witness to imitate" is
+    # pure redundancy (the model already has the file open), and on a large
+    # canonical it dominates the whole block. Drop the excerpt and replace it
+    # with a one-line self-witness note below.
+    self_witness = False
+    try:
+        _wit_rel = canonical.get("witness_path")
+        if (
+            excerpt_content
+            and isinstance(_wit_rel, str)
+            and _wit_rel
+            and repo_root_path is not None
+            and file_path
+        ):
+            self_witness = (repo_root_path / _wit_rel).resolve() == Path(file_path).resolve()
+    except OSError:
+        self_witness = False
+    if self_witness:
+        excerpt_content = ""
+    elif excerpt_content:
+        # A pathological canonical (a 1000-line module) would inject tens of KB
+        # on the per-edit hot path; the imitation value lives in the head of the
+        # file (imports, naming, structure), so cap at a line boundary with an
+        # honest truncation marker.
+        from chameleon_mcp._thresholds import threshold_int as _thr_int
+
+        _wit_cap = _thr_int("TIER2_WITNESS_MAX_CHARS")
+        if len(excerpt_content) > _wit_cap:
+            _cut = excerpt_content.rfind("\n", 0, _wit_cap)
+            if _cut <= 0:
+                _cut = _wit_cap
+            excerpt_content = (
+                excerpt_content[:_cut]
+                + "\n… (witness truncated; open the canonical file for the rest)"
+            )
     rules_count = len(data.get("rules") or [])
     idioms_text = data.get("idioms") or ""
     has_idioms = bool(idioms_text.strip())
@@ -3454,15 +3504,25 @@ def preflight_and_advise() -> int:
         dir_listing = format_directory_listing(file_path) or ""
     except Exception:
         dir_listing = ""
-    # Experimental (default-off): append nearby collaborator SIGNATURES, not just
-    # filenames, so the model sees the contracts of calls it must make. Repo-
-    # derived, so it rides the same sanitize + spotlight path as the listing.
+    # Nearby collaborator SIGNATURES (default-ON, kill switch
+    # CHAMELEON_NEARBY_SIGNATURES=0), not just filenames, so the model sees the
+    # contracts of calls it must make. Repo-derived, so it rides the same
+    # sanitize + spotlight path as the listing.
     nearby_sigs = _nearby_signatures_section(file_path, repo_root_path)
     if nearby_sigs:
         dir_listing = (dir_listing + "\n\n" + nearby_sigs) if dir_listing else nearby_sigs
     untrusted_region = _build_untrusted_region(
         excerpt_content, idioms_text, has_idioms, dir_listing, match_quality=match_quality
     )
+    if self_witness:
+        # A chameleon directive (not repo data), so it stays outside the
+        # imitate-spotlight, in the position the witness lead would occupy.
+        block += (
+            "This file IS the archetype's canonical witness — sibling files are "
+            "guided to imitate it, so its content is not re-shown here. Keep its "
+            "conventions stable: changes here shift the pattern the rest of the "
+            "archetype is measured against.\n\n"
+        )
     if untrusted_region:
         # Calibrate how hard to lean on the witness by match quality. This is a
         # chameleon directive about the data, so it stays OUTSIDE the untrusted
@@ -7191,6 +7251,7 @@ def _changeset_completeness_lines(
     state,
     cfg,
     daemon_state: dict | None,
+    persist=None,
 ) -> list[str]:
     """Build the turn-end change-set-completeness advisory lines, or [].
 
@@ -7256,6 +7317,13 @@ def _changeset_completeness_lines(
             language_of=detect_language,
             rule_enabled=_rule_enabled,
         )
+        # Once per session per (file, rule): the same still-unresolved pairing
+        # would otherwise re-render verbatim on every consecutive Stop. The
+        # caller persists `state` after the gates run, so the marker survives
+        # the turn. Only items actually DISPLAYED are recorded: one that fell
+        # past the display cap (surfaced only as "...and N more") has not been
+        # shown and may resurface on a later Stop.
+        items = [it for it in items if f"{it.source_rel}::{it.rule_id}" not in state.cochange_shown]
         if not items:
             return []
 
@@ -7265,6 +7333,17 @@ def _changeset_completeness_lines(
         max_items = threshold_int("COCHANGE_ADVISORY_MAX_ITEMS")
         shown = items[:max_items]
         extra = len(items) - len(shown)
+        state.cochange_shown.update(f"{it.source_rel}::{it.rule_id}" for it in shown)
+        # The advisory path has no downstream save_state (only the block paths
+        # save), so without persisting here the marker dies with this process
+        # and the same advisory re-renders on every consecutive Stop. The
+        # caller supplies the writer; a persist failure must not cost the
+        # advisory itself.
+        if persist is not None:
+            try:
+                persist()
+            except Exception:
+                pass
 
         lines = [
             f"[🦎 chameleon: {len(items)} new file"
@@ -9688,6 +9767,7 @@ def _stop_gates(
                 state=state,
                 cfg=cfg,
                 daemon_state=daemon_state,
+                persist=lambda: save_state(state, repo_data, session_id or ""),
             )
 
             # Cross-file existence breaks: a turn that removed/renamed a TS export

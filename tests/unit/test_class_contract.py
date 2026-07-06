@@ -80,6 +80,52 @@ def test_ts_nest_contract():
     assert "dsl_macros" not in out  # TS has no DSL-macro key
 
 
+def test_minority_rich_anchor_does_not_beat_dominant_cohort():
+    # Flask-shaped: many classes per file. A niche decorator carried by 4 of 12
+    # classes clears the file-count anchor gate (4 >= 0.6 * 5 files) and yields
+    # a richer contract than the dominant base, but its within-cohort
+    # frequencies are NOT the archetype's contract — the dominant cohort must
+    # win, and the niche decorator must not be projected onto every class.
+    files = []
+    rich = [f"Rich{j}View" for j in range(4)]
+    files.append(
+        _pf(
+            "app/user/views.py",
+            extras={
+                "class_shapes": [
+                    {"name": c, "bases": ["MethodView"], "decorators": ["attr.s"]} for c in rich
+                ],
+                "callable_signatures": [
+                    {"name": m, "kind": "method", "enclosing_class": c}
+                    for c in rich
+                    for m in ("get", "post", "redirect")
+                ],
+            },
+        )
+    )
+    for i in range(1, 5):
+        classes = [f"Plain{i}AView", f"Plain{i}BView"]
+        files.append(
+            _pf(
+                f"app/mod{i}/views.py",
+                extras={
+                    "class_shapes": [
+                        {"name": c, "bases": ["MethodView"], "decorators": []} for c in classes
+                    ],
+                    "callable_signatures": [
+                        {"name": "get", "kind": "method", "enclosing_class": c} for c in classes
+                    ],
+                },
+            )
+        )
+    out = extract_class_contract_conventions(files, language="python")
+    assert out["base"] == "MethodView"
+    assert out["sample_size"] == 12
+    assert "attr.s" not in out.get("decorators", [])
+    assert "redirect" not in out.get("required_methods", [])
+    assert "get" in out.get("required_methods", [])
+
+
 def test_below_sample_size_returns_empty():
     files = [_ruby_interaction(i) for i in range(9)]
     assert extract_class_contract_conventions(files, language="ruby") == {}

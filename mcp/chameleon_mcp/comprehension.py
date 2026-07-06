@@ -64,8 +64,10 @@ def search_symbols(repo_root, query: str, *, limit: int) -> list[dict]:
     present (name or path) > file-path substring. Ties break by how many callers
     the symbol has in ``calls_index`` (a more-called symbol is more central), then
     by ``(file, name)`` for determinism. Returns up to ``limit`` dicts
-    ``{name, file, line, signature, callers}``. Empty on no index / no match /
-    blank query. The "where is X / find Y" comprehension primitive.
+    ``{name, file, line, signature, callers}`` plus ``kind`` when the row
+    records one (``class`` for class/module definitions, the callable kind
+    otherwise). Empty on no index / no match / blank query. The "where is X /
+    find Y" comprehension primitive.
     """
     from chameleon_mcp.calls_index import load_calls_index
     from chameleon_mcp.symbol_signatures import load_symbol_signatures
@@ -155,15 +157,21 @@ def search_symbols(repo_root, query: str, *, limit: int) -> list[dict]:
     candidates.sort(key=lambda c: (-c[0], -c[1], c[2], c[3]))
     out: list[dict] = []
     for _tier, callers, rel, name, row in candidates[: max(0, int(limit))]:
-        out.append(
-            {
-                "name": name,
-                "file": rel,
-                "line": row.get("start_line"),
-                "signature": _signature_string(name, row, rel),
-                "callers": callers,
-            }
-        )
+        item = {
+            "name": name,
+            "file": rel,
+            "line": row.get("start_line"),
+            "signature": _signature_string(name, row, rel),
+            "callers": callers,
+        }
+        # class rows carry kind="class"; callable rows carry the recorded
+        # function/method kind; calls_index fallback rows have none. Exposing
+        # it lets a "find class Account" reader tell the model class apart
+        # from same-named attribute readers without opening every file.
+        kind = row.get("kind")
+        if isinstance(kind, str) and kind:
+            item["kind"] = kind
+        out.append(item)
     return out
 
 
@@ -197,7 +205,7 @@ def god_symbols(repo_root, *, limit: int, exclude_tests: bool = True) -> list[di
     calls = load_calls_index(resolve_profile_root(Path(repo_root)))
     if calls is None:
         return []
-    ranked: list[tuple] = []  # (count, rel, name)
+    ranked: list[tuple] = []  # (count, rel, name, capped)
     for rel, names in calls.items():
         if exclude_tests and _is_test_path(rel):
             continue
@@ -206,9 +214,11 @@ def god_symbols(repo_root, *, limit: int, exclude_tests: bool = True) -> list[di
                 continue
             if exclude_tests:
                 # Count only production callers, so a symbol used mostly by tests
-                # is not ranked as production-central. (Recorded callers, which
-                # may undercount a truncated high-caller list -- acceptable for a
-                # ranking signal.)
+                # is not ranked as production-central. The stored caller rows are
+                # capped per callee, so on a truncated entry this count is a
+                # floor; `capped` rides out with the row so the displayed number
+                # is not read as exact (search_codebase reports the uncapped
+                # total for the same symbol).
                 count = sum(
                     1
                     for c in (entry.get("callers") or [])
@@ -217,12 +227,15 @@ def god_symbols(repo_root, *, limit: int, exclude_tests: bool = True) -> list[di
             else:
                 count = entry.get("total", 0)
             if count > 0:
-                ranked.append((count, rel, name))
+                ranked.append((count, rel, name, bool(entry.get("truncated"))))
     ranked.sort(key=lambda r: (-r[0], r[1], r[2]))
-    return [
-        {"name": name, "file": rel, "callers": total}
-        for total, rel, name in ranked[: max(0, int(limit))]
-    ]
+    out = []
+    for total, rel, name, capped in ranked[: max(0, int(limit))]:
+        row = {"name": name, "file": rel, "callers": total}
+        if capped:
+            row["capped"] = True
+        out.append(row)
+    return out
 
 
 def describe_codebase(repo_root) -> dict:

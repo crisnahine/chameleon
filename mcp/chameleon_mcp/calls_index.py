@@ -158,6 +158,14 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
     # Pass 1: per-file fact tables. A rel appearing twice merges, mirroring
     # the reverse index's dedupe stance.
     callables: dict[str, set[str]] = {}
+    # rel -> names defined at MODULE level (no enclosing class). The
+    # module_attribute grade gates on this set, not `callables`: `mod.name()`
+    # dispatches on the module object, so a name that exists only as a class
+    # member inside `mod` is unreachable through it (AttributeError at
+    # runtime) and must not produce an edge. `callables` keeps class members
+    # because the same-file bare grade needs them (a bare call inside a Ruby
+    # class body is real self-dispatch).
+    module_callables: dict[str, set[str]] = {}
     # rel -> class name -> member name -> kinds recorded for that member.
     # Kinds matter to the constant_receiver grade only: Const.method can
     # dispatch only to a class-level (singleton_method) member, Const.new
@@ -227,6 +235,8 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                 if isinstance(kind, str) and kind:
                     kinds.add(kind)
                 class_defs.setdefault(cls, set()).add(rel)
+            else:
+                module_callables.setdefault(rel, set()).add(name)
 
         for row in extras.get("class_property_types") or ():
             if not isinstance(row, dict):
@@ -474,7 +484,10 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                         else f"{module_spec}.{exported}"
                     )
                     sub_rel = _resolved_module(sub_spec, fdir)
-                    if sub_rel is not None and name in (callables.get(sub_rel) or set()):
+                    # Module-level defs only: a name defined solely inside a
+                    # class in the target module is not an attribute of the
+                    # module object, so `mod.name()` cannot dispatch to it.
+                    if sub_rel is not None and name in (module_callables.get(sub_rel) or set()):
                         _add(sub_rel, name, rel, caller_fn, line, "module_attribute")
             elif kind == "constant":
                 if language != "ruby":

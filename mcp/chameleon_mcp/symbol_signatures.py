@@ -146,6 +146,13 @@ def build_symbol_signatures(files, repo_root: Path | str) -> dict:
             if not isinstance(entry, dict):
                 continue
             name = entry.get("name")
+            # A Ruby block-form nested class records its full constant path
+            # additively under `qualified` (the leaf `name` keys the contract
+            # join); the qualified path is the searchable identity, and a leaf
+            # query still hits it on the substring tier.
+            qualified = entry.get("qualified")
+            if isinstance(qualified, str) and qualified:
+                name = qualified
             start = entry.get("start_line")
             if not isinstance(name, str) or not name or not isinstance(start, int):
                 continue

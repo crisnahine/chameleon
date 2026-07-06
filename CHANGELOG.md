@@ -4,6 +4,123 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.51.0] - 2026-07-06
+
+A second same-day real-usage QA round, aimed at the surfaces v2.50.0 shipped
+after its own QA passes closed: the class/module name search, the Python
+`module_attribute` call edges, and the refresh envelope cap — plus a
+whole-plugin day-in-the-life pass on Flask, Next.js, and Rails repos. All three
+v2.50.0 additions survived hostile testing (the relative-import join held
+against parent-package decoys, the envelope cap is accurate and lossless, all
+five sampled honesty fixes behave as claimed, and search line numbers were
+exact on every spot check across the three languages). The gaps this release
+closes came from the edges of those features and from dogfooding chameleon on
+its own large source files.
+
+### Added
+
+- **Absolute-import phantom-symbol check for Python.** `from
+  flaskbb.utils.helpers import totally_fake` — a real in-repo module, a
+  hallucinated name, the single most common LLM import mistake — previously
+  passed the post-edit verify as clean, because only relative imports were
+  scanned and repos whose own idiom is absolute imports (most Flask and Django
+  apps) effectively had no symbol check at all. The scan now also resolves
+  absolute first-party specifiers against the repo's Python source roots and
+  flags a bound name absent from the resolved module's closed export set. The
+  module itself is never flagged: an unresolvable specifier may be stdlib or a
+  dependency, so it stays silent; open export sets (`__getattr__`, star
+  re-exports) are respected; and a `from pkg import name` where `name` exists
+  on disk as the package's submodule file or subpackage directory is never
+  flagged even when the index misses it (PEP 420 namespace subpackages are
+  unenumerable at dump time, and an index built by an older engine may
+  predate submodule listing — reality on disk beats the index).
+- **Ruby block-form nested classes are searchable by their qualified name.**
+  `module Qa51Mod; class Qa51Nested` was findable only by leaf name while the
+  compact form (`class Qa51Mod::Qa51Nested`) carried its full path — the same
+  concept, findability depending on definition spelling. The Ruby dump now
+  records an additive `qualified` constant path (lexical nesting join) and the
+  symbol index prefers it, so qualified queries hit, leaf queries still hit on
+  the substring tier, and two same-leaf nested classes (`BudgetCategory::Group`
+  vs `Category::Group`) render disambiguated instead of as identical rows.
+- **Search results carry `kind` and honest truncation.** `search_codebase`
+  rows now say what they are (`class` vs the callable kind), so "find class
+  Account" is distinguishable from same-named attribute readers, and a query
+  matching more symbols than the result cap sets `truncated` plus a note
+  instead of silently dropping the tail. `describe_codebase` god-symbol counts
+  saturated silently at the per-callee stored-row cap (a symbol with 177 real
+  callers displayed as 100, disagreeing with `search_codebase` on the same
+  name); a capped count now rides out with `capped: true` so it reads as a
+  floor.
+
+### Fixed
+
+- **`module_attribute` false edge on class-member names.** `mod.method()`
+  where `method` exists only INSIDE a class in the target module recorded a
+  call edge to a dispatch that is an `AttributeError` at runtime — the gate
+  checked the target's full callable table, class members included, unlike the
+  Ruby grade's member-kind gate and the TS closed-export gate. The gate now
+  requires a module-level definition. Zero legitimate edges lost on the real
+  corpora (the Django fixture's 67 edges survive exactly).
+- **Phantom "removed-export" violations on files over 100KB.** The post-edit
+  scan reads a capped 100KB prefix; when that prefix happened to parse as
+  valid Python, every export defined past the cap read as removed — editing
+  chameleon's own `conventions.py` produced 5 bogus "removed-export"
+  violations naming present symbols (and `hook_helper.py` produced 27). The
+  removed-export check is now skipped on truncated content (absence from a
+  truncated prefix is not evidence of removal); importer-count advisories
+  keep applying to visible names.
+- **Transitive caller walk no longer burns its budget on duplicate call
+  sites.** The calls index stores one row per call site, and the shared
+  blast-radius/judge walker expanded a full duplicate subtree per site — in
+  chameleon's own index 18.8% of caller rows are duplicate sites and 34% of
+  callees are affected, so `truncated` walks hid real unique callers behind
+  repeats (and the turn-end judge live-reverified the same chain twice).
+  Expansion now dedups per node by caller function: `threshold_int`'s reach
+  went from 41 to 48 distinct callers under the same caps.
+- **Editing an archetype's canonical witness no longer injects that file's
+  own content back as the thing to imitate.** On a Flask repo whose `view`
+  witness is a 1,000-line module, editing it produced a 43KB Tier-2 block
+  whose "canonical witness" was the edited file itself, led by "mirror the
+  canonical witness below closely." A self-witness edit now gets a one-line
+  note (keep the exemplar's conventions stable) instead, and any witness
+  excerpt is capped at a line boundary (`TIER2_WITNESS_MAX_CHARS`, default
+  16000) with an honest truncation marker, so one pathological canonical
+  cannot dominate every edit's block.
+- **Class contracts are measured over the dominant cohort, not a rich
+  minority.** A decorator carried by 4 of an archetype's 76 classes could
+  clear the file-count anchor gate (Flask view modules pack dozens of classes
+  per file) and out-rank the real contract on richness — every `view` edit
+  then read "decorated with @attr.s; define get, post, redirect" as archetype
+  fact when 72 of 76 classes disagree. Candidate anchors must now cover a
+  comparable share of the largest candidate cohort before competing on
+  richness; the Flask fixture's contract corrected to `extends MethodView;
+  define post, get` over all 76 classes.
+- **Rails model-migration advisory skips POROs and stops repeating.** A plain
+  class under `app/models` (no ActiveRecord descent) was told to add a
+  migration it cannot need; the rule now requires
+  `ApplicationRecord`/`ActiveRecord::Base` descent in the added file's
+  content. The same still-unresolved advisory also re-rendered verbatim on
+  every consecutive Stop; it now surfaces once per session per (file, rule),
+  the same discipline the idiom self-review and finding ledger follow.
+- **TypeScript class definition lines and class-expression names.** A
+  decorated class reported its first decorator's line (every NestJS class was
+  offset from the `class` keyword, inconsistently with Python); the name
+  identifier's line is recorded now. A named class expression (`const C =
+  class Inner {}`) was indexed under the body-scoped `Inner` — a name repo
+  code cannot use — and an anonymous-but-bound expression not at all; both
+  now index under the variable binding.
+- **Smaller honesty items.** `get_canonical_excerpt`'s `no_witness` reason
+  claimed "below confidence threshold, or all candidates contained secrets"
+  when the usual cause is the canonical-pool exclusion of test/legacy paths —
+  the reason now names the real causes. `doctor`'s `recent_hook_errors` warn
+  is labeled installation-wide so a fresh repo's user does not read another
+  repo's three-day-old fixture errors as their problem. The Tier-2
+  nearby-signatures section logged nothing when its assembly failed (a vanished
+  section was indistinguishable from "no siblings"); the swallowed exception
+  now lands in the hook error log. The v2.50.0 CHANGELOG's "false-positive-
+  free" claim for `module_attribute` was corrected to name the documented
+  binding-shadow imprecision and the class-member gap fixed above.
+
 ## [2.50.0] - 2026-07-06
 
 Real-usage QA pass over the whole plugin, driven through its actual entry points
@@ -41,12 +158,16 @@ report health said everything was fine. This release closes them.
   grounding came up empty on it. This is the Python analog of the TypeScript
   `typed_property` (v2.49) and Ruby `constant_receiver` edges. The index now
   resolves the receiver to the submodule it names and records the edge on the
-  method defined there. Deterministic and false-positive-free: the receiver must
-  be a from-imported name whose `pkg.mod` specifier resolves to a real in-repo
-  module file (a name that is a callable or class from the package's `__init__`,
-  not a submodule, resolves to no file and yields nothing), and the target must
-  be a callable defined in that module. Validated on two real Python repos —
-  47 edges on the FastAPI template and 67 on a Django app, with zero false edges.
+  method defined there. Deterministic, with one documented imprecision (a local
+  binding that shadows the imported module name keeps the edge, the same class
+  of imprecision already accepted for a param shadowing an import): the receiver
+  must be a from-imported name whose `pkg.mod` specifier resolves to a real
+  in-repo module file (a name that is a callable or class from the package's
+  `__init__`, not a submodule, resolves to no file and yields nothing), and the
+  target must be a callable defined in that module. Validated on two real
+  Python repos — 47 edges on the FastAPI template and 67 on a Django app, with
+  zero false edges. (`mod.SomeClass()` construction through a module attribute
+  records no edge — classes are not in the callable table; absent-but-honest.)
   Additive to the calls-index schema (a new grade value only), so an old index
   loads unchanged and simply gains these edges on the next refresh.
 

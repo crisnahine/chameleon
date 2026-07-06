@@ -102,6 +102,12 @@ class EnforcementState:
     # only when its name is in this set; otherwise it renders full text, so an idiom
     # the model never saw is never reduced to a name.
     idioms_shown_names: set[str] = field(default_factory=set)
+    # "rel::rule_id" keys of change-set-completeness advisories already surfaced
+    # this session. The same unresolved pairing (a new model still missing its
+    # migration) would otherwise re-render verbatim on every consecutive Stop;
+    # once is a nudge, repeats are nagging (same discipline as the idiom
+    # self-review marker and the finding ledger's one-shot resurface).
+    cochange_shown: set[str] = field(default_factory=set)
     files: dict[str, FileState] = field(default_factory=dict)
     stop_hook_blocks: int = 0
     # Per-workspace anti-loop block budget, keyed by a workspace discriminator.
@@ -120,6 +126,7 @@ class EnforcementState:
             "archetypes_seen": sorted(self.archetypes_seen),
             "archetypes_with_violations": sorted(self.archetypes_with_violations),
             "idioms_shown_names": sorted(self.idioms_shown_names),
+            "cochange_shown": sorted(self.cochange_shown),
             "files": {k: v.to_dict() for k, v in self.files.items()},
             "stop_hook_blocks": self.stop_hook_blocks,
             "stop_hook_blocks_by_root": dict(self.stop_hook_blocks_by_root),
@@ -137,6 +144,9 @@ class EnforcementState:
             # treats every idiom as not-yet-shown and renders full text (safe,
             # just more verbose) until the first Tier-2 emission repopulates it.
             idioms_shown_names=set(d.get("idioms_shown_names", [])),
+            # Absent in pre-upgrade state files: default empty -> every pending
+            # cochange advisory renders once more, then dedups from there.
+            cochange_shown={str(x) for x in d.get("cochange_shown", []) or []},
             files={k: FileState.from_dict(v) for k, v in d.get("files", {}).items()},
             stop_hook_blocks=d.get("stop_hook_blocks", 0),
             # Absent in pre-upgrade files: empty map -> the multi-root gate starts
@@ -194,6 +204,8 @@ def _merge_states(disk: EnforcementState, mem: EnforcementState) -> EnforcementS
         # concurrent writer (or a later posttool save) never wipes the Tier-2
         # "idioms shown" signal the turn-end self-review reads.
         idioms_shown_names=disk.idioms_shown_names | mem.idioms_shown_names,
+        # Monotonic like the sets above: a surfaced advisory stays surfaced.
+        cochange_shown=disk.cochange_shown | mem.cochange_shown,
         files=dict(disk.files),
     )
     for key, mfs in mem.files.items():

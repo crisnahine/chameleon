@@ -109,7 +109,7 @@ class TestRuleDisable:
 
 class TestChangeSetItems:
     def test_new_model_without_migration_flags(self, tmp_path):
-        model = _touch(tmp_path, "app/models/order.rb")
+        model = _touch(tmp_path, "app/models/order.rb", "class Order < ApplicationRecord\nend\n")
         items = changeset_completeness_items(
             repo_root=tmp_path,
             new_files_abs={str(model)},
@@ -119,6 +119,18 @@ class TestChangeSetItems:
         assert len(items) == 1
         assert items[0].rule_id == "cochange-model-migration"
         assert items[0].source_rel == "app/models/order.rb"
+
+    def test_new_poro_model_not_flagged(self, tmp_path):
+        # A plain class under app/models has no table; demanding a migration
+        # for it was the reported false nag. Only ActiveRecord descent fires.
+        model = _touch(tmp_path, "app/models/loyalty_tier.rb", "class LoyaltyTier\nend\n")
+        items = changeset_completeness_items(
+            repo_root=tmp_path,
+            new_files_abs={str(model)},
+            edited_abs={str(model)},
+            language_of=detect_language,
+        )
+        assert items == []
 
     def test_new_model_with_migration_in_changeset_is_quiet(self, tmp_path):
         model = _touch(tmp_path, "app/models/order.rb")
@@ -223,12 +235,25 @@ class TestStopGate:
 
     def test_new_uncommitted_model_flagged(self, tmp_path):
         self._seed_rails(tmp_path)
-        new_model = _touch(tmp_path, "app/models/order.rb")
+        new_model = _touch(
+            tmp_path, "app/models/order.rb", "class Order < ApplicationRecord\nend\n"
+        )
         lines = self._call(tmp_path, self._state_for([new_model]), self._cfg())
         assert lines
         joined = "\n".join(lines)
         assert "app/models/order.rb" in joined
         assert "companion" in joined
+
+    def test_advisory_not_repeated_on_second_stop(self, tmp_path):
+        self._seed_rails(tmp_path)
+        new_model = _touch(
+            tmp_path, "app/models/order.rb", "class Order < ApplicationRecord\nend\n"
+        )
+        state = self._state_for([new_model])
+        first = self._call(tmp_path, state, self._cfg())
+        assert first
+        second = self._call(tmp_path, state, self._cfg())
+        assert second == []
 
     def test_existing_committed_model_edit_not_flagged(self, tmp_path):
         self._seed_rails(tmp_path)

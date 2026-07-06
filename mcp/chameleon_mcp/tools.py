@@ -2394,8 +2394,10 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             {
                 "status": "no_witness",
                 "reason": (
-                    "archetype has no canonical witness (below confidence "
-                    "threshold, or all candidates contained secrets)"
+                    "archetype has no canonical witness (all candidates excluded "
+                    "from the canonical pool, e.g. test/legacy paths; or trivial/"
+                    "empty; or below the confidence threshold; or none passed the "
+                    "secret/injection scans)"
                 ),
                 "archetype_name": archetype,
                 "repo_id": repo_id,
@@ -2423,8 +2425,10 @@ def get_canonical_excerpt(repo: str, archetype: str) -> dict:
             {
                 "status": "no_witness",
                 "reason": (
-                    "archetype has no canonical witness (below confidence "
-                    "threshold, or all candidates contained secrets)"
+                    "archetype has no canonical witness (all candidates excluded "
+                    "from the canonical pool, e.g. test/legacy paths; or trivial/"
+                    "empty; or below the confidence threshold; or none passed the "
+                    "secret/injection scans)"
                 ),
                 "archetype_name": archetype,
                 "repo_id": repo_id,
@@ -3139,6 +3143,11 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
                 file_path=file_path,
                 repo_root=repo_root,
                 language=language,
+                # A >100KB file is scanned as a capped prefix; when that prefix
+                # happens to parse cleanly, every export defined past the cap
+                # would read as removed. The flag skips the removed-export
+                # check; importer-count advisories still apply to visible names.
+                content_truncated=truncated,
             )
         ]
     except Exception:
@@ -3978,17 +3987,29 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
     def _ss(v):
         return _s(v) if isinstance(v, str) else v
 
-    results = [
-        {
+    # Fetch one past the effective limit: a full page alone cannot distinguish
+    # "exactly limit matches" from "more were silently dropped", and the cap
+    # clamp (limit > COMPREHEND_SEARCH_MAX_RESULTS) is invisible to the caller.
+    fetched = search_symbols(repo_root, query, limit=n + 1)
+    more_matches = len(fetched) > n
+    results = []
+    for r in fetched[:n]:
+        row = {
             "name": _ss(r.get("name")),
             "file": _ss(r.get("file")),
             "line": r.get("line"),
             "signature": _ss(r.get("signature")),
             "callers": r.get("callers"),
         }
-        for r in search_symbols(repo_root, query, limit=n)
-    ]
+        if isinstance(r.get("kind"), str):
+            row["kind"] = _ss(r.get("kind"))
+        results.append(row)
     out = {"found": True, "query": _ss(query), "results": results}
+    if more_matches:
+        out["truncated"] = True
+        out["truncated_note"] = (
+            "more symbols matched than the result cap; narrow the query to see the rest"
+        )
     from chameleon_mcp.worktree import resolve_profile_root
 
     _pr = resolve_profile_root(repo_root)
@@ -4073,10 +4094,14 @@ def describe_codebase(repo: str) -> dict:
         }
         for a in d.get("archetypes", [])
     ]
-    god = [
-        {"name": _ss(g.get("name")), "file": _ss(g.get("file")), "callers": g.get("callers")}
-        for g in d.get("god_symbols", [])
-    ]
+    god = []
+    for g in d.get("god_symbols", []):
+        row = {"name": _ss(g.get("name")), "file": _ss(g.get("file")), "callers": g.get("callers")}
+        if g.get("capped"):
+            # The per-callee row cap bounded the stored caller list, so this
+            # count is a floor, not an exact production-caller total.
+            row["capped"] = True
+        god.append(row)
     out = {
         "found": True,
         "language": _ss(d.get("language")),
@@ -12920,6 +12945,18 @@ def doctor(repo: str | None = None) -> dict:
                     recent.append(line)
             tail = recent[-5:]
             if tail:
+                # Log lines can embed repo-derived text (an exception message
+                # carrying a symbol name, a path from a hostile fixture), and
+                # this detail reaches the model surface — sanitize each line.
+                from chameleon_mcp.sanitization import sanitize_for_chameleon_context as _san
+
+                tail = [_san(ln) for ln in tail]
+                # The log is installation-wide: entries may come from other
+                # repos (deleted QA fixtures included). Say so, or a fresh-repo
+                # user reads a stale unrelated error as their repo's problem.
+                tail = [
+                    "installation-wide hook error log (last 72h; entries may be from other repos):"
+                ] + tail
                 checks.append({"name": "recent_hook_errors", "status": "warn", "detail": tail})
             else:
                 checks.append(

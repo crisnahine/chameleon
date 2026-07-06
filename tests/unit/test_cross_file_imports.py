@@ -186,3 +186,39 @@ class TestRemovedExportBreak:
         )
         v = _lint(tmp_path, "pricing.ts", content)
         assert all(x.rule != "removed-export-breaks-importers" for x in v)
+
+    def test_truncated_content_suppresses_break(self, tmp_path):
+        # A >100KB file reaches this lint as a capped prefix; when the prefix
+        # happens to parse cleanly, every export defined past the cap is
+        # invisible and would read as removed. The truncation flag must
+        # suppress the removed-export check (absence from a truncated prefix
+        # is not evidence of removal) while keeping the importer-count
+        # advisory for names still visible in the prefix.
+        _write_reverse(
+            tmp_path,
+            {
+                "big.py": {
+                    "tail_helper": [{"path": "app.py", "line": 3}],
+                    "head_helper": [{"path": "app.py", "line": 4}],
+                }
+            },
+        )
+        # The "prefix": tail_helper's def fell past the cap; head_helper survived.
+        prefix = "def head_helper():\n    return 1\n"
+        v = lint_cross_file_imports(
+            prefix,
+            file_path=str(tmp_path / "big.py"),
+            repo_root=str(tmp_path),
+            language="python",
+            content_truncated=True,
+        )
+        assert all(x.rule != "removed-export-breaks-importers" for x in v)
+        assert any(x.rule == "cross-file-importers" and x.expected == "head_helper" for x in v)
+        # Untruncated, the same content is authoritative: the break must fire.
+        v2 = lint_cross_file_imports(
+            prefix,
+            file_path=str(tmp_path / "big.py"),
+            repo_root=str(tmp_path),
+            language="python",
+        )
+        assert any(x.rule == "removed-export-breaks-importers" for x in v2)

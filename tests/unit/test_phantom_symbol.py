@@ -228,3 +228,91 @@ class TestPhantomSymbol:
         content = "const code = \"import { ghost } from './api'\";\n"
         v = _lint(tmp_path, "app.ts", content)
         assert v == []
+
+
+class TestPythonAbsolutePhantomSymbol:
+    """Absolute first-party `from pkg.mod import x`: the symbol check must fire
+    when the spec resolves to an indexed in-repo module whose closed export set
+    lacks the name — repos whose idiom is absolute imports (Flask/Django) got
+    no symbol check at all when only relative forms were scanned. The module
+    itself is never flagged: an unresolvable spec may be stdlib or a dependency."""
+
+    def _plint(self, repo, editing_rel, content):
+        return lint_phantom_imports(
+            content,
+            file_path=str(repo / editing_rel),
+            repo_root=str(repo),
+            language="python",
+            rules={},
+        )
+
+    def test_absolute_missing_symbol_flagged(self, tmp_path):
+        _write(tmp_path / "flaskbb" / "__init__.py", "")
+        _write(tmp_path / "flaskbb" / "utils" / "__init__.py", "")
+        _write(tmp_path / "flaskbb" / "utils" / "helpers.py", "def real_helper():\n    pass\n")
+        _index(tmp_path, {"flaskbb/utils/helpers.py": {"names": ["real_helper"], "open": False}})
+        v = self._plint(
+            tmp_path,
+            "flaskbb/forum/views.py",
+            "from flaskbb.utils.helpers import totally_fake\n",
+        )
+        assert [x.actual for x in v if x.rule == "phantom-symbol"] == ["totally_fake"]
+
+    def test_absolute_present_symbol_clean(self, tmp_path):
+        _write(tmp_path / "flaskbb" / "__init__.py", "")
+        _write(tmp_path / "flaskbb" / "utils" / "__init__.py", "")
+        _write(tmp_path / "flaskbb" / "utils" / "helpers.py", "def real_helper():\n    pass\n")
+        _index(tmp_path, {"flaskbb/utils/helpers.py": {"names": ["real_helper"], "open": False}})
+        v = self._plint(
+            tmp_path, "flaskbb/forum/views.py", "from flaskbb.utils.helpers import real_helper\n"
+        )
+        assert v == []
+
+    def test_unresolvable_absolute_module_silent(self, tmp_path):
+        # `from django.db import models` with no in-repo django/: could be a
+        # dependency; both the module and its symbols stay unflagged.
+        _write(tmp_path / "app.py", "")
+        _index(tmp_path, {"app.py": {"names": [], "open": False}})
+        v = self._plint(tmp_path, "views.py", "from django.db import made_up_models\n")
+        assert v == []
+
+    def test_absolute_open_export_set_silent(self, tmp_path):
+        _write(tmp_path / "pkg" / "__init__.py", "")
+        _write(tmp_path / "pkg" / "lazy.py", "def __getattr__(n):\n    return n\n")
+        _index(tmp_path, {"pkg/lazy.py": {"names": [], "open": True}})
+        v = self._plint(tmp_path, "views.py", "from pkg.lazy import anything\n")
+        assert v == []
+
+    def test_submodule_import_from_package_clean(self, tmp_path):
+        # `from flaskbb.utils import helpers` binds a SUBMODULE; the dump lists
+        # sibling submodules in the package __init__'s export set, so this is
+        # clean, not phantom.
+        _write(tmp_path / "flaskbb" / "__init__.py", "")
+        _write(tmp_path / "flaskbb" / "utils" / "__init__.py", "")
+        _write(tmp_path / "flaskbb" / "utils" / "helpers.py", "def real_helper():\n    pass\n")
+        _index(
+            tmp_path,
+            {"flaskbb/utils/__init__.py": {"names": ["helpers"], "open": False}},
+        )
+        v = self._plint(tmp_path, "views.py", "from flaskbb.utils import helpers\n")
+        assert v == []
+
+    def test_namespace_subpackage_import_clean(self, tmp_path):
+        # PEP 420: `from pkg import sub` where sub/ has NO __init__.py is a
+        # real import, but a directory without __init__ is unenumerable at
+        # dump time so it is absent from pkg/__init__'s closed export set.
+        # Reality on disk beats the index: no flag.
+        _write(tmp_path / "pkg" / "__init__.py", "")
+        _write(tmp_path / "pkg" / "sub" / "mod.py", "def f():\n    pass\n")
+        _index(tmp_path, {"pkg/__init__.py": {"names": [], "open": False}})
+        v = self._plint(tmp_path, "views.py", "from pkg import sub\n")
+        assert v == []
+
+    def test_stale_index_missing_submodule_listing_clean(self, tmp_path):
+        # An exports index built by an older engine may lack submodule names
+        # in package __init__ entries; the on-disk submodule file rescues it.
+        _write(tmp_path / "pkg" / "__init__.py", "")
+        _write(tmp_path / "pkg" / "helpers.py", "def h():\n    pass\n")
+        _index(tmp_path, {"pkg/__init__.py": {"names": [], "open": False}})
+        v = self._plint(tmp_path, "views.py", "from pkg import helpers\n")
+        assert v == []

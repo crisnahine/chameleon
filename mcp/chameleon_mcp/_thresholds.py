@@ -460,6 +460,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # is one sub-role's exemplar, not the archetype template, so the Tier-2 lead
     # downgrades "mirror closely" to "loose reference" even on a structural match.
     "TIER2_LOOSE_WITNESS_SUB_BUCKETS": 5,
+    # Char ceiling on the canonical witness excerpt injected into the Tier-2
+    # per-edit block. Typical witnesses are a few KB and pass whole; a
+    # 1000-line canonical module would otherwise dominate the block with tens
+    # of KB whose tail adds little imitation value. Truncation lands on a line
+    # boundary with an honest marker.
+    "TIER2_WITNESS_MAX_CHARS": 16_000,
     # The DETERMINISTIC hard-secret / hard-eval PreToolUse DENY paths scan a much
     # larger window than the advisory 100KB cap above: the deny is the only gate
     # that stops the write from landing on disk (PostToolUse/Stop fire after the

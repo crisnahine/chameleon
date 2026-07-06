@@ -84,6 +84,12 @@ _IGNORE_RUBY_RE = re.compile(r"#\s*chameleon-ignore\s+([\w-]+)")
 # Absolute imports (`import os`, `from django.db import ...`) are not relative
 # and unverifiable without sys.path, so they are not matched.
 _PY_RELATIVE_IMPORT_RE = re.compile(r"^[ \t]*from\s+(\.+)([\w.]*)\s+import\b(.*)$", re.MULTILINE)
+# Absolute `from pkg.mod import x` (first char not a dot). Only the SYMBOL
+# check consumes these: an unresolvable absolute spec may be stdlib or a
+# dependency, so the module itself is never flagged.
+_PY_ABSOLUTE_IMPORT_RE = re.compile(
+    r"^[ \t]*from\s+([A-Za-z_][\w.]*)\s+import\b(.*)$", re.MULTILINE
+)
 
 
 def _py_imported_names(clause: str) -> list[str]:
@@ -811,6 +817,59 @@ def lint_phantom_imports(
                     for nm in _py_imported_names(names_clause):
                         if nm not in entry.names:
                             violations.append(_symbol_violation(nm, spec))
+        # Absolute first-party `from pkg.mod import name`. The module itself is
+        # never flagged (an unresolvable spec may be stdlib or a dependency,
+        # both invisible to the repo), but a spec resolving to a real in-repo
+        # module whose CLOSED export set lacks a bound name is the
+        # highest-frequency hallucination shape — and a repo whose own idiom is
+        # absolute imports (most Flask/Django apps) previously got no symbol
+        # check at all, because only relative forms were scanned.
+        if symbol_check_on:
+            _resolve_abs = None
+            for m in _PY_ABSOLUTE_IMPORT_RE.finditer(scan):
+                if len(seen_py) >= _MAX_SPECS:
+                    break
+                module, names_clause = m.group(1), m.group(2)
+                if module in seen_py:
+                    continue
+                seen_py.add(module)
+                names = _py_imported_names(names_clause)
+                if not names:
+                    continue
+                if _resolve_abs is None:
+                    # Built on first need: construction scans the repo root's
+                    # top-level dirs for Python source roots, a cost an edit
+                    # with no absolute imports must not pay.
+                    from chameleon_mcp.symbol_index import make_module_resolver
+
+                    _resolve_abs = make_module_resolver(root, "python")
+                key = _resolve_abs(module, file_dir)
+                if key is None:
+                    continue
+                entry = exports_index.lookup(key)
+                if entry is None or entry.open:
+                    continue
+                # A package __init__'s export set lists sibling submodules, but
+                # a PEP 420 namespace subpackage (a directory with no __init__)
+                # is unenumerable at dump time, and an index built by an older
+                # engine may predate submodule listing. Reality on disk beats
+                # the index: a name that exists as the package's submodule file
+                # or subpackage directory is a real import, not a phantom.
+                pkg_dir = (
+                    root / Path(key).parent
+                    if key.endswith(("__init__.py", "__init__.pyi"))
+                    else None
+                )
+                for nm in names:
+                    if nm in entry.names:
+                        continue
+                    if pkg_dir is not None and (
+                        _safe_is_dir(pkg_dir / nm)
+                        or (pkg_dir / f"{nm}.py").is_file()
+                        or (pkg_dir / f"{nm}.pyi").is_file()
+                    ):
+                        continue
+                    violations.append(_symbol_violation(nm, module))
     return violations
 
 
@@ -1106,6 +1165,7 @@ def lint_cross_file_imports(
     file_path: str | None,
     repo_root: Path | str | None,
     language: str | None,
+    content_truncated: bool = False,
 ) -> list[Violation]:
     """Cross-file context for the edited module, read from the prebuilt reverse
     index only (no caller is re-parsed).
@@ -1122,8 +1182,12 @@ def lint_cross_file_imports(
 
     Returns ``[]`` when the language is neither TypeScript nor Python, the path
     can't be resolved, the reverse index is absent/corrupt, or the file's export
-    set is open (``export * from``). Suppress with ``// chameleon-ignore <rule>``
-    (``# chameleon-ignore <rule>`` in Python).
+    set is open (``export * from``). ``content_truncated`` means the caller
+    capped the content read: everything defined past the cap is invisible, so
+    the removed-export check is skipped (a name absent from a truncated prefix
+    is not evidence of removal — when the truncation happens to parse cleanly,
+    every tail export would otherwise read as removed). Suppress with
+    ``// chameleon-ignore <rule>`` (``# chameleon-ignore <rule>`` in Python).
     """
     if language not in ("typescript", "python") or not file_path:
         return []
@@ -1184,7 +1248,7 @@ def lint_cross_file_imports(
         if in_exports and crossfile_on:
             sample = [imp.path for imp in importers]
             violations.append(_crossfile_violation(name, len(importers), sample))
-        elif not in_exports and broken_on:
+        elif not in_exports and broken_on and not content_truncated:
             sites = [
                 (f"{imp.path}:{imp.line}" if imp.line is not None else imp.path)
                 for imp in importers

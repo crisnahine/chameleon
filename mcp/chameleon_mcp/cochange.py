@@ -266,6 +266,7 @@ class CoChangeRule:
         "framework",
         "min_trigger",
         "fires_on_edit",
+        "trigger_content",
     )
 
     def __init__(
@@ -278,6 +279,7 @@ class CoChangeRule:
         framework=None,
         min_trigger=None,
         fires_on_edit=False,
+        trigger_content=None,
     ) -> None:
         self.rule_id = rule_id
         self.language = language
@@ -293,6 +295,11 @@ class CoChangeRule:
         # fires the rule. A Prisma schema change is almost always an edit to the
         # single existing schema.prisma, so a new-files-only rule never sees it.
         self.fires_on_edit = fires_on_edit
+        # Optional content predicate over the trigger file's text. The path
+        # predicate alone can over-match (app/models holds POROs that need no
+        # migration); when set, the rule fires only when the content also
+        # matches. An unreadable file skips the rule (advisory stays quiet).
+        self.trigger_content = trigger_content
 
 
 def _is_rails_model(rel: str) -> bool:
@@ -303,6 +310,20 @@ def _is_rails_model(rel: str) -> bool:
     if "/concerns/" in rel:
         return False
     return rel.rsplit("/", 1)[-1] != "application_record.rb"
+
+
+_RUBY_AR_MODEL_RE = re.compile(r"<\s*(?:ApplicationRecord\b|ActiveRecord::Base\b)")
+
+
+def _rails_model_content_needs_migration(text: str) -> bool:
+    # Only an ActiveRecord-backed model needs a schema migration; a PORO under
+    # app/models (a value object, a form object) has no table. Direct
+    # ApplicationRecord / ActiveRecord::Base descent is the deterministic
+    # signal. An STI subclass extending another model inherits its table and
+    # needs no migration, so not matching it is correct; a model descending a
+    # project-specific abstract base is missed (accepted under-advisory — the
+    # false nag on POROs is the harm this closes).
+    return bool(_RUBY_AR_MODEL_RE.search(text))
 
 
 def _is_rails_migration(rel: str) -> bool:
@@ -429,6 +450,7 @@ _COCHANGE_RULES: tuple[CoChangeRule, ...] = (
         _is_rails_model,
         _is_rails_migration,
         "new model added without a db/migrate migration in the same change",
+        trigger_content=_rails_model_content_needs_migration,
     ),
     CoChangeRule(
         "cochange-controller-route",
@@ -721,6 +743,13 @@ def changeset_completeness_items(
                     continue
                 if not rule.trigger(rel):
                     continue
+                if rule.trigger_content is not None:
+                    try:
+                        text = Path(ap).read_bytes()[:100_000].decode("utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    if not rule.trigger_content(text):
+                        continue
                 # Some file in the change-set already satisfies the companion: the
                 # change is coherent, nothing to surface.
                 if any(rule.companion(c) for c in changeset_rel):

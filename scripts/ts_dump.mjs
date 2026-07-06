@@ -793,24 +793,54 @@ function extractFile(filePath) {
     // implies (NestJS @Injectable, TypeORM @Entity, a shared base) that the
     // signature index never records. Interfaces carry no runtime contract here.
     if (
-      isNamedClass &&
       (node.kind === ts.SyntaxKind.ClassDeclaration ||
         node.kind === ts.SyntaxKind.ClassExpression) &&
       result.class_shapes.length < MAX_CALLABLE_SIGNATURES
     ) {
-      const { ext, impl } = heritageOf(node);
-      result.class_shapes.push({
-        name: node.name.text,
-        // start_line lets the symbol index record a searchable class definition
-        // (name -> file:line) alongside callables.
-        start_line: startLineOf(node),
-        decorators: decoratorsOf(node),
-        extends: ext,
-        implements: impl,
-      });
-      const propTypes = classPropertyTypesOf(node);
-      if (Object.keys(propTypes).length > 0) {
-        result.class_property_types.push({ class: node.name.text, props: propTypes });
+      // A class expression is reachable in repo code only through its variable
+      // binding (`const C = class Inner {}` scopes `Inner` to the class body),
+      // so the binding is the searchable name; an expression with neither a
+      // binding nor an own name stays unindexed.
+      const bindingName =
+        node.kind === ts.SyntaxKind.ClassExpression &&
+        node.parent &&
+        node.parent.kind === ts.SyntaxKind.VariableDeclaration &&
+        node.parent.name &&
+        node.parent.name.kind === ts.SyntaxKind.Identifier
+          ? node.parent.name.text
+          : null;
+      const searchName =
+        node.kind === ts.SyntaxKind.ClassExpression && bindingName
+          ? bindingName
+          : isNamedClass
+            ? node.name.text
+            : null;
+      if (searchName) {
+        const { ext, impl } = heritageOf(node);
+        // The line of the name identifier (or the binding identifier), not
+        // node.getStart(): a decorated class starts at its first decorator,
+        // which would report the @Decorator line and disagree with the Python
+        // dump's `class` line for the same shape.
+        const lineNode = node.name || (bindingName ? node.parent.name : null) || node;
+        result.class_shapes.push({
+          name: searchName,
+          // start_line lets the symbol index record a searchable class definition
+          // (name -> file:line) alongside callables.
+          start_line: startLineOf(lineNode),
+          decorators: decoratorsOf(node),
+          extends: ext,
+          implements: impl,
+        });
+      }
+      // Property types stay keyed by the class's OWN name: the DI grade joins
+      // them against method rows' enclosing_class, which the class stack
+      // records from the inner name (an anonymous class pushes a sentinel and
+      // its methods carry no enclosing class at all).
+      if (isNamedClass) {
+        const propTypes = classPropertyTypesOf(node);
+        if (Object.keys(propTypes).length > 0) {
+          result.class_property_types.push({ class: node.name.text, props: propTypes });
+        }
       }
     }
 

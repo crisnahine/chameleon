@@ -82,6 +82,7 @@ def transitive_caller_chains(
             ),
         )
         expanded: list[tuple[list[tuple], set]] = []
+        expanded_keys: set[tuple] = set()
         for r in ordered:
             if nodes >= total_nodes:
                 break
@@ -94,6 +95,16 @@ def transitive_caller_chains(
             key = (r.get("path"), r.get("caller"))
             if key in seen:  # a cycle within THIS chain
                 continue
+            if key in expanded_keys:
+                # The index stores one row per call SITE, so a caller invoking this
+                # function on several lines yields several rows for the same
+                # (path, caller). Reach is measured in distinct caller functions;
+                # expanding each site would walk identical subtrees and burn the
+                # fanout/total-node budgets on duplicates, truncating real unique
+                # callers out. Keep the first row (lowest line in sort order) as
+                # the representative call site.
+                continue
+            expanded_keys.add(key)
             nodes += 1
             expanded.append(
                 (chain + [(r.get("path"), r.get("caller"), r.get("line"))], seen | {key})

@@ -1401,13 +1401,25 @@ def extract_class_contract_conventions(files: list[ParsedFile], *, language: str
         return {}
 
     # When several anchors qualify (e.g. an error base co-occurs with the real one),
-    # pick the anchor whose cohort yields the richest contract.
-    best: tuple[tuple, dict] | None = None
+    # pick the anchor whose cohort yields the richest contract — but only among
+    # anchors covering a comparable share of the largest candidate cohort. The
+    # file-count gate above tolerates many classes per file (Flask view modules
+    # pack dozens), so a niche anchor (a decorator carried by 4 of 76 classes)
+    # can qualify and then out-richness the archetype's real contract; its
+    # within-cohort frequencies would be projected onto the whole archetype as
+    # fact. A minority cohort never beats the dominant one on richness.
+    materialized: list[tuple[str, str, list[dict]]] = []
     for kind, value in candidates:
         if kind == "base":
             cohort = [c for c in classes if c["base"] == value]
         else:
             cohort = [c for c in classes if value in c["decorators"]]
+        materialized.append((kind, value, cohort))
+    max_cohort = max(len(c) for _k, _v, c in materialized)
+    best: tuple[tuple, dict] | None = None
+    for kind, value, cohort in materialized:
+        if len(cohort) < _INHERITANCE_THRESHOLD * max_cohort:
+            continue
         result = _contract_from_cohort(cohort, language=language)
         if not result:
             continue
