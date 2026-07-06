@@ -245,6 +245,9 @@ def extract_file(file_path)
   import_specifiers = []
   function_scopes = []
   callable_signatures = []
+  # Class/module definitions (name -> file:line) so the symbol index can record a
+  # searchable class alongside callables; TS/Python emit the same shape.
+  class_shapes = []
   call_sites = []
   call_sites_total = 0
   call_sites_truncated = false
@@ -302,6 +305,14 @@ def extract_file(file_path)
     pushed_nesting = false
     if node.is_a?(Prism::ClassNode)
       name = constant_name(node.constant_path)
+      if name && class_shapes.length < MAX_CALLABLE_SIGNATURES
+        class_shapes << {
+          name: name,
+          kind: 'class',
+          start_line: line_of(node.location),
+          extends: constant_name(node.superclass)
+        }
+      end
       class_stack.push({ name: name,
                          superclass: constant_name(node.superclass),
                          path: name ? (nesting_stack + [name]).join('::') : nil })
@@ -324,6 +335,12 @@ def extract_file(file_path)
       end
     elsif node.is_a?(Prism::ModuleNode)
       name = constant_name(node.constant_path)
+      if name && class_shapes.length < MAX_CALLABLE_SIGNATURES
+        # A Ruby module is a searchable top-level definition too (e.g. a service
+        # `module Authentication::Totp`); record it, tagged `module` so search
+        # renders `module X`, not `class X`.
+        class_shapes << { name: name, kind: 'module', start_line: line_of(node.location), extends: nil }
+      end
       if name
         nesting_stack.push(name)
         pushed_nesting = true
@@ -434,6 +451,7 @@ def extract_file(file_path)
     parse_diagnostics_count: diagnostics,
     function_scopes: function_scopes,
     callable_signatures: callable_signatures,
+    class_shapes: class_shapes,
     class_body_calls: class_body_calls,
     call_sites: call_sites,
     call_sites_total: call_sites_total,

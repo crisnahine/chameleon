@@ -63,6 +63,21 @@ _CORE_ARTIFACTS = (
 )
 
 
+# The version-gated indexes are validated by calling their real loader, not just
+# json.loads, so a healthy fixture must carry the loader's expected
+# schema_version + top-level key -- a bare "{}" is present-but-unloadable (the
+# stale-schema state doctor now flags), which is right for production but would
+# false-fail these healthy-path fixtures.
+_LOADABLE_ARTIFACT_CONTENT = {
+    "calls_index.json": {"schema_version": 2, "callees": {}},
+    "exports_index.json": {"schema_version": 2, "files": {}},
+    "reverse_index.json": {"schema_version": 2, "targets": {}},
+    "constant_index.json": {"schema_version": 1, "language": "ruby", "constants": {}},
+    "symbol_signatures.json": {"schema_version": 1, "files": {}},
+    "counterexamples.json": {"schema_version": 2, "archetypes": {}},
+}
+
+
 def _make_profile(repo: Path, *, language: str = "typescript", artifacts=_ALL_TS_ARTIFACTS):
     cham = repo / ".chameleon"
     cham.mkdir(parents=True, exist_ok=True)
@@ -72,7 +87,8 @@ def _make_profile(repo: Path, *, language: str = "typescript", artifacts=_ALL_TS
         encoding="utf-8",
     )
     for name in (*_CORE_ARTIFACTS, *artifacts):
-        (cham / name).write_text("{}", encoding="utf-8")
+        content = _LOADABLE_ARTIFACT_CONTENT.get(name, {})
+        (cham / name).write_text(json.dumps(content), encoding="utf-8")
     return cham
 
 

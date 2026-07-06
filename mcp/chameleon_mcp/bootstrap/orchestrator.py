@@ -715,6 +715,20 @@ PROFILE_SCHEMA_VERSION = 8
 from chameleon_mcp import __version__ as ENGINE_MIN_VERSION
 
 
+def _workspace_report_for_envelope(w: dict) -> dict:
+    """A response-safe copy of one workspace report: the unbounded WP-C5
+    ``cross_candidates`` list (an internal JOIN input, already consumed) is
+    replaced by ``cross_candidates_count`` so the aggregated refresh envelope
+    stays within MCP transport limits on a large monorepo. Every other field is
+    kept verbatim. Non-dict input is passed through untouched (defensive)."""
+    if not isinstance(w, dict) or "cross_candidates" not in w:
+        return w
+    trimmed = {k: v for k, v in w.items() if k != "cross_candidates"}
+    cc = w.get("cross_candidates")
+    trimmed["cross_candidates_count"] = len(cc) if isinstance(cc, (list, tuple, dict)) else 0
+    return trimmed
+
+
 @dataclass
 class BootstrapReport:
     """Summary of a bootstrap run, returned to the MCP caller."""
@@ -894,7 +908,17 @@ class BootstrapReport:
             "taught_import_warnings": list(self.taught_import_warnings),
             "idiom_warnings": list(self.idiom_warnings),
             "nested_profile_warnings": list(self.nested_profile_warnings),
-            "workspaces": list(self.workspace_reports),
+            # ``cross_candidates`` is the WP-C5 cross-package import specifier list
+            # per workspace -- an internal JOIN input the coordinator already
+            # consumed (_amend_root_profile_with_workspaces) before this response
+            # is serialized. In the ENVELOPE it is vestigial and unbounded: on a
+            # 20-workspace monorepo where each package imports many siblings it
+            # ballooned the refresh response past ~1.9MB, blowing MCP transport
+            # limits (the sparse/bimodal warning lists are already capped; this
+            # was the one uncapped per-workspace aggregate). Emit a count in the
+            # response instead of the full list, without touching the in-memory
+            # workspace_reports the JOIN read from.
+            "workspaces": [_workspace_report_for_envelope(w) for w in self.workspace_reports],
             "workspace_skipped_warnings": list(self.workspace_skipped_warnings),
             "workspace_glob_warnings": list(self.workspace_glob_warnings),
             "workspace_potential_paths": list(self.workspace_potential_paths),

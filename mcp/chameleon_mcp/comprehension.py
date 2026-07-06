@@ -22,8 +22,16 @@ from chameleon_mcp._thresholds import threshold_int
 
 
 def _signature_string(name: str, row: dict, rel: str) -> str:
-    """Compact ``name(params): ret -- path`` for a signature row, or the bare
-    name if rendering fails."""
+    """Compact ``name(params): ret -- path`` for a callable signature row, or
+    ``class Name(Base) -- path`` for a class/module row, or the bare name if
+    rendering fails."""
+    if isinstance(row, dict) and row.get("kind") == "class":
+        base = row.get("extends")
+        keyword = row.get("keyword") if row.get("keyword") in ("module", "class") else "class"
+        head = (
+            f"{keyword} {name}({base})" if isinstance(base, str) and base else f"{keyword} {name}"
+        )
+        return f"{head} — {rel}"
     from chameleon_mcp.symbol_signatures import render_imported_definition
 
     try:
@@ -68,7 +76,12 @@ def search_symbols(repo_root, query: str, *, limit: int) -> list[dict]:
         return []
     profile_root = resolve_profile_root(Path(repo_root))
     sigs = load_symbol_signatures(profile_root)
-    if sigs is None or len(sigs) == 0:
+    # len(sigs) counts CALLABLE files only; a repo whose files carry classes but
+    # no recorded callables (e.g. Ruby module/DSL files, bare dataclasses) has an
+    # empty callable map yet real class definitions, so also proceed when the
+    # class section is non-empty -- otherwise class search would silently return
+    # nothing while the empty-result note claims classes are covered.
+    if sigs is None or (len(sigs) == 0 and not any(True for _ in sigs.class_items())):
         return []
     calls = load_calls_index(profile_root)
     qtokens = q.split()
@@ -88,12 +101,42 @@ def search_symbols(repo_root, query: str, *, limit: int) -> list[dict]:
                     callers = entry.get("total", 0)
             candidates.append((tier, callers, rel, name, row))
 
-    # symbol_signatures indexes CALLABLES only, but calls_index (which
-    # describe_codebase's god_symbols draws from) also records CLASSES as callees.
-    # Without this fallback a class surfaced in the overview (e.g. a god-symbol)
-    # is unfindable here, so the two comprehension tools disagree on the symbol
-    # universe. Add matching calls_index callee names not already covered by a
-    # signature row (minimal row: no def line/signature, but a real callers count).
+    # Class/module definitions from the additive class section, so "find class X"
+    # resolves even when the class is never instantiated. This runs BEFORE the
+    # calls_index fallback so a class that IS instantiated still gets its rich
+    # class row (real def line + `class X(Base)` shape) rather than the fallback's
+    # minimal line-less callee row. Deduped against callable matches on (rel, name).
+    seen_cls = {(rel, name) for _t, _c, rel, name, _r in candidates}
+    for rel, cnames in sigs.class_items():
+        pl = rel.lower()
+        path_hit = q in pl
+        for name, crow in cnames.items():
+            if (rel, name) in seen_cls or not isinstance(crow, dict):
+                continue
+            tier = _match_tier(q, qtokens, name.lower(), pl, path_hit)
+            if tier is None:
+                continue
+            callers = 0
+            if calls is not None:
+                entry = calls.callers_of(rel, name)
+                if entry:
+                    callers = entry.get("total", 0)
+            crow_out: dict = {"start_line": crow.get("start_line"), "kind": "class"}
+            ext = crow.get("extends")
+            if isinstance(ext, str) and ext:
+                crow_out["extends"] = ext
+            kw = crow.get("keyword")
+            if kw in ("module", "class"):
+                crow_out["keyword"] = kw
+            candidates.append((tier, callers, rel, name, crow_out))
+            seen_cls.add((rel, name))
+
+    # symbol_signatures indexes CALLABLES + (now) classes, but calls_index also
+    # records classes/constants as callees. Without this fallback a callee
+    # surfaced in the overview (e.g. a god-symbol) that is neither a callable nor
+    # a recorded class definition is unfindable here, so the two comprehension
+    # tools disagree on the symbol universe. Add matching calls_index callee names
+    # not already covered (minimal row: no def line, but a real callers count).
     if calls is not None:
         seen = {(rel, name) for _t, _c, rel, name, _r in candidates}
         for rel, names in calls.items():
@@ -244,23 +287,33 @@ def describe_codebase(repo_root) -> dict:
     if sigs is not None:
         out["file_count"] = len(sigs)
         out["symbol_count"] = sum(len(v) for _, v in sigs.items())
-    elif (Path(profile_root) / ".chameleon" / "symbol_signatures.json").is_file():
-        # The artifact is present but unreadable (corrupt / merge-mangled):
-        # load_symbol_signatures returns None for both absent AND corrupt, so
-        # without this the overview reports file_count=0/symbol_count=0 as if the
-        # codebase were empty. Mark it degraded so the zero totals read as
-        # "unknown, artifact damaged", not a verified empty repo.
+        # The signatures artifact caps at DUPLICATION_CATALOG_MAX_FILES files, so
+        # on a repo above the cap len(sigs) is the cap value, not the repo's real
+        # file total -- reporting it bare read as truth (e.g. file_count 8000 on a
+        # 30k-file monolith). At the cap the count is a floor: flag it truncated
+        # and degraded so the "what is this codebase" answer never states a capped
+        # number as the whole picture. (A repo with exactly the cap many
+        # signature-bearing files trips this too; degraded is the safe direction.)
+        if len(sigs) >= threshold_int("DUPLICATION_CATALOG_MAX_FILES"):
+            out["truncated"] = True
+            out["degraded"] = True
+    else:
+        # load_symbol_signatures returns None for absent, corrupt, AND
+        # schema-stale (a profile built before this artifact, or one whose
+        # schema the current loader gates out). In every one of those the zero
+        # file_count/symbol_count is UNKNOWN, not a verified empty repo, so mark
+        # the overview degraded. The absent case (an older-engine profile that
+        # never built the artifact) is the common one after an upgrade; without
+        # this it reported clean zeros next to populated archetypes.
         out["degraded"] = True
     out["god_symbols"] = god_symbols(repo_root, limit=threshold_int("COMPREHEND_GOD_SYMBOLS"))
-    if (
-        load_calls_index(profile_root) is None
-        and (Path(profile_root) / ".chameleon" / "calls_index.json").is_file()
-    ):
-        # Same honesty posture as the symbol_signatures branch above: a
-        # present-but-corrupt calls_index makes god_symbols silently return []
-        # (and zeroes every caller count that search_codebase surfaces), so mark
+    if load_calls_index(profile_root) is None:
+        # Same honesty posture as the symbol_signatures branch: an absent,
+        # corrupt, or schema-stale calls_index makes god_symbols silently return
+        # [] (and zeroes every caller count search_codebase surfaces), so mark
         # the overview degraded rather than reporting a verified call-graph-free
-        # repo.
+        # repo. Absent-vs-damaged is not distinguished here; both leave the
+        # call-graph reads blind.
         out["degraded"] = True
     return out
 

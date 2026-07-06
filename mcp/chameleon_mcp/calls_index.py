@@ -52,6 +52,20 @@ Grades:
   when it does not, and is also skipped when the class overrides ``def
   self.new`` (the override owns construction; mapping through it is
   unprovable).
+- ``module_attribute`` - Python only: ``mod.func()`` where ``mod`` is a
+  submodule bound by ``from pkg import mod`` -- the Python analog of
+  ``typed_property`` / ``constant_receiver``. Deterministic: the receiver must
+  be a from-imported name whose ``pkg.mod`` specifier resolves to a real
+  in-repo module FILE (a name that is a callable/class from ``pkg``'s
+  ``__init__`` rather than a submodule resolves to no file and yields no edge),
+  and the target member must be a callable DEFINED in that module file. Same
+  binding-shadow limitation as the ``import`` grade (below), with a wider
+  surface because the trigger is ``receiver.method()`` (the common Python call
+  shape) rather than a bare call: a param/local/attribute that shadows the
+  from-imported name, or a ``__init__`` rebinding ``mod`` to an unrelated
+  object, can yield a false edge -- accepted imprecision, bounded by requiring
+  the same-file ``from pkg import <receiver>`` of that exact name. Any
+  resolution gap yields no edge, never a guess.
 
 Known limitations (accepted imprecision, by design):
 
@@ -103,12 +117,16 @@ CALLS_INDEX_FILENAME = "calls_index.json"
 # new index loaded by older code drops the unknown grade gracefully. A bump
 # here would force every existing user's call graph empty on upgrade until they
 # refresh -- avoidable for an additive change. Bump only on a STRUCTURAL change.
+# The ``module_attribute`` grade (Python `from pkg import mod; mod.func()`) is
+# additive for the same reasons: a new grade value only, no structural change.
 SCHEMA_VERSION = 2
 
 # The closed grade set build_calls_index emits. A row carrying any other
 # grade is malformed (hand-edited or future-schema) and is skipped on load
 # like every other malformed row.
-VALID_GRADES = frozenset({"same_file", "import", "constant_receiver", "typed_property"})
+VALID_GRADES = frozenset(
+    {"same_file", "import", "constant_receiver", "typed_property", "module_attribute"}
+)
 
 
 def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
@@ -426,6 +444,38 @@ def build_calls_index(files, repo_root: Path | str, language: str) -> dict:
                     t = alias_targets[receiver]
                     if t is not None and _closed_target(t, name) is not None:
                         _add_import_edge(t, name, rel, caller_fn, line)
+                elif language == "python" and isinstance(receiver, str) and receiver in own_imports:
+                    # `from pkg import mod; mod.func()` -- the submodule-attribute
+                    # call the alias path (`import a.b as x`) misses. Resolve the
+                    # submodule the from-import names (pkg + "." + exported) to a
+                    # real in-repo module FILE: a name that is a callable/class from
+                    # pkg's __init__ (not a submodule) resolves to no file and yields
+                    # nothing, and the member must be a callable DEFINED in that
+                    # file. The `import` grade's documented binding-shadow limitation
+                    # applies here too -- if pkg's __init__ rebinds `mod` to an
+                    # unrelated object with a same-named method the edge can be
+                    # wrong -- accepted imprecision, the same class already accepted
+                    # for a param/local shadowing an import. (A guard on pkg's export
+                    # set does NOT work: a package __init__ lists every submodule in
+                    # named_export_names, so it would skip the entire normal case.)
+                    module_spec, exported = own_imports[receiver]
+                    # The dumper encodes a relative from-import's module as bare
+                    # dots (`from . import v` -> "."; `from .. import v` -> ".."),
+                    # so the submodule specifier is dots + name with NO extra
+                    # separator; only an absolute or `.sub`-style spec takes the
+                    # joining dot. A naive `f"{spec}.{name}"` bumped a pure-dot
+                    # level by one (".v" -> "..v"), resolving `from . import views`
+                    # to the PARENT package's views -- a false edge on the most
+                    # common Django/DRF layout, where same-named modules (views,
+                    # serializers) recur at every package level.
+                    sub_spec = (
+                        f"{module_spec}{exported}"
+                        if module_spec.endswith(".")
+                        else f"{module_spec}.{exported}"
+                    )
+                    sub_rel = _resolved_module(sub_spec, fdir)
+                    if sub_rel is not None and name in (callables.get(sub_rel) or set()):
+                        _add(sub_rel, name, rel, caller_fn, line, "module_attribute")
             elif kind == "constant":
                 if language != "ruby":
                     continue

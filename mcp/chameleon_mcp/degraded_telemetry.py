@@ -188,6 +188,12 @@ def read_degraded_summary(window_days: int) -> dict:
     no-interpreter and spawn-failed lines (``.hook_errors.log``) over
     ``now - window_days``. Best-effort: any failure yields the all-zero summary,
     never raises (a status read must not crash on a corrupt log).
+
+    ``scope`` is ``"user-global"``: both sources are per-user, not per-repo (a
+    no-interpreter failure happens before any repo resolves, so it carries no
+    repo id), so these counts span every repo this user touched. get_status
+    embeds the summary in a per-repo envelope, which read as per-repo without
+    this marker -- three different repos returned byte-identical degraded blocks.
     """
     try:
         since = time.time() - max(0, int(window_days)) * 86400.0
@@ -197,6 +203,7 @@ def read_degraded_summary(window_days: int) -> dict:
         total = advisor_unavailable + no_interpreter + spawn_failed
         return {
             "window_days": int(window_days),
+            "scope": "user-global",
             "advisor_unavailable": advisor_unavailable,
             "no_interpreter": no_interpreter,
             "spawn_failed": spawn_failed,
@@ -206,6 +213,7 @@ def read_degraded_summary(window_days: int) -> dict:
     except Exception:
         return {
             "window_days": int(window_days) if isinstance(window_days, int) else 0,
+            "scope": "user-global",
             "advisor_unavailable": 0,
             "no_interpreter": 0,
             "spawn_failed": 0,

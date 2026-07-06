@@ -87,12 +87,17 @@ def test_not_found_when_no_row(repo):
     assert data["classification"] is None
 
 
-def test_coverage_gap_fallback_quality(repo):
+def test_advised_fallback_quality_with_violations(repo):
+    # fallback/none quality drops the archetype-SHAPE rules, so a raised violation
+    # there is necessarily an archetype-INDEPENDENT rule (a secret, an eval) that
+    # DID fire -- the gate was not silent, so this is "advised", not a coverage
+    # gap. Classifying it coverage-gap routed a flagged-and-overridden credential
+    # to the wrong remediation ("refresh so an archetype resolves").
     _record("src/a.ts", match_quality="fallback", outcome="advised", violations=1)
     out = explain_edit(str(repo), str(repo / "src" / "a.ts"))
     data = out["data"]
     assert data["found"] is True
-    assert data["classification"] == "coverage-gap"
+    assert data["classification"] == "advised"
     assert data["decision"]["match_quality"] == "fallback"
 
 

@@ -63,6 +63,9 @@ def profiled_repo(tmp_path, monkeypatch):
                     "consumer.py": {"setup": _sig(5)},
                     "tests/test_svc.py": {"test_make_service": _sig(3)},
                 },
+                "classes": {
+                    "svc.py": {"ServiceMaker": {"start_line": 30, "extends": "Base"}},
+                },
             }
         )
     )
@@ -138,6 +141,18 @@ def test_search_prefix_beats_substring(profiled_repo):
 
 def test_search_blank_query_empty(profiled_repo):
     assert C.search_symbols(profiled_repo, "   ", limit=10) == []
+
+
+def test_search_finds_class_definition(profiled_repo):
+    # "find class X" resolves from the additive class section with a real def
+    # line and a `class X(Base)` signature, not only callables.
+    results = C.search_symbols(profiled_repo, "ServiceMaker", limit=10)
+    assert results, "class definition should be searchable"
+    top = results[0]
+    assert top["name"] == "ServiceMaker"
+    assert top["file"] == "svc.py"
+    assert top["line"] == 30
+    assert "class ServiceMaker(Base)" in top["signature"]
 
 
 def test_god_symbols_exclude_tests(profiled_repo):

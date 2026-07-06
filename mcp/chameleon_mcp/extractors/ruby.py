@@ -187,6 +187,11 @@ def _extras_from_record(record: dict) -> dict:
     signatures = record.get("callable_signatures")
     if isinstance(signatures, list) and signatures:
         extras["callable_signatures"] = signatures
+    # Class/module definitions (name + start_line) so the symbol index can record
+    # a searchable Ruby class/module, mirroring the TS/Python passthrough.
+    class_shapes = record.get("class_shapes")
+    if isinstance(class_shapes, list) and class_shapes:
+        extras["class_shapes"] = class_shapes
     # Receiverless class-body calls (the DSL-macro vocabulary), tagged with class.
     class_body_calls = record.get("class_body_calls")
     if isinstance(class_body_calls, list) and class_body_calls:

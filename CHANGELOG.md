@@ -4,6 +4,159 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.50.0] - 2026-07-06
+
+Real-usage QA pass over the whole plugin, driven through its actual entry points
+(hook executables fed real payloads, the MCP server over real stdio JSON-RPC, and
+the statusline/merge/daemon surfaces) against real bootstrapped repositories in
+TypeScript, Ruby, and Python. Five parallel adversarial QA passes confirmed the
+newest surfaces are solid — the v2.49.0 TypeScript DI call edges and the v2.47.0
+WP-C5 cross-workspace advisory both survived hostile re-testing with every
+fail-open holding, every v2.46–v2.49 fix claim held under original-repro plus
+adjacent attack, and the blocking/enforcement surface passed with zero P1s. The
+gaps found were honesty gaps on older comprehension and diagnostic surfaces: a
+profile built before a schema bump would silently degrade while the tools that
+report health said everything was fine. This release closes them.
+
+### Added
+
+- **Class and module names are searchable** (`search_codebase`). The symbol
+  index held callables only, so "find class `Foo`" (or a Ruby `module`) returned
+  nothing — a class only surfaced if it happened to be a called constructor. The
+  index now records class and module definitions with their file and line
+  across all three languages: TypeScript and Python from each extractor's
+  `class_shapes` (with a new `start_line`), Ruby from its class and module nodes
+  (a new emission). `search_codebase` returns them as `class Name(Base) —
+  file:line`, and a class that is also instantiated keeps its real definition
+  line rather than the caller-graph fallback's line-less row. The class section
+  is additive to the symbol-signatures artifact — an index built before it
+  simply has no classes until the next refresh, and describe/nearby-signature
+  consumers that count or render callables are unaffected.
+
+- **Python module-attribute call edges** (`module_attribute` grade): a
+  `mod.func()` call where `mod` is a submodule bound by `from pkg import mod` —
+  the dominant Django/FastAPI layering idiom (`from app import crud;
+  crud.create_user(...)`) — was invisible to the calls index, so `get_callers`,
+  `get_callees`, `get_blast_radius`, and the turn-end correctness judge's caller
+  grounding came up empty on it. This is the Python analog of the TypeScript
+  `typed_property` (v2.49) and Ruby `constant_receiver` edges. The index now
+  resolves the receiver to the submodule it names and records the edge on the
+  method defined there. Deterministic and false-positive-free: the receiver must
+  be a from-imported name whose `pkg.mod` specifier resolves to a real in-repo
+  module file (a name that is a callable or class from the package's `__init__`,
+  not a submodule, resolves to no file and yields nothing), and the target must
+  be a callable defined in that module. Validated on two real Python repos —
+  47 edges on the FastAPI template and 67 on a Django app, with zero false edges.
+  Additive to the calls-index schema (a new grade value only), so an old index
+  loads unchanged and simply gains these edges on the next refresh.
+
+### Fixed
+
+- **`doctor` now catches a stale-schema index, not just a missing or corrupt
+  one.** The `profile_artifacts` check parsed each generated artifact as JSON but
+  never applied the loader's schema gate, so a pre-v2.41 `calls_index.json` (or
+  `exports_index`/`reverse_index`) — valid JSON at the old `schema_version` —
+  read as "present and parseable" while every calls and cross-file tool silently
+  returned nothing. `doctor` now calls each version-gated artifact's real loader
+  and warns "unreadable by this engine (stale schema or oversize); run
+  /chameleon-refresh" when it rejects the file. Each loader honors its own
+  readable-version set, so a still-accepted version is never false-flagged.
+
+- **The caller-graph tools distinguish a stale index from a never-built one.**
+  `get_callers`, `get_callees`, and `get_blast_radius` returned a flat
+  `no-calls-index` for both "the profile predates the calls index" and "the index
+  is present but on an older schema" — indistinguishable, and only the latter is
+  fixed by a refresh. They now return `calls-index-stale` when the artifact is on
+  disk but the loader rejects it, so the result says whether /chameleon-refresh
+  will help.
+
+- **`describe_codebase` marks its answer degraded when the symbol or calls index
+  is absent, not only when it is corrupt.** A profile built before those
+  artifacts existed reported `file_count: 0, symbol_count: 0, god_symbols: []`
+  next to a populated archetype list with no degraded flag, reading as a verified
+  empty repo. Absent now sets `degraded` the same way corrupt already did. It
+  also flags `truncated` + `degraded` when the file count sits at the signatures
+  artifact cap, so a capped count on a large monorepo is not reported as the
+  repo's true total.
+
+- **`get_callers` / `get_callees` carry the "absence is not dead code" caveat on
+  an empty result,** the same note `get_blast_radius` already returned, so a
+  consumer echoing the payload never reads an empty edge set as proof a symbol is
+  unused.
+
+- **`doctor` collapses stale registry rows for one path.** A repo re-bootstrapped
+  under a new identity (a uuid or id-scheme change) left older rows in the
+  registry, so `known_repos` listed the same path several times with
+  contradictory trust states. It now shows each path once — the most recent,
+  active profile — with a `stale_registry_entries` count and a note when the
+  older rows disagree on trust.
+
+- **The per-edit "inbound callers" section ranks cross-file dependents first.**
+  With a small export cap, a cluster of same-file callers (a class's private
+  methods calling each other) could crowd the section and push out the one
+  export whose caller lives in *another* file — exactly the cross-file break the
+  section exists to warn about, and the one a same-file edit can't see for
+  itself. Exports are now ordered by their cross-file caller count before the
+  cap applies, and cross-file call sites lead within each export's own list.
+
+- **`CHAMELEON_ENFORCE=0` is documented accurately.** Its env-var reference said
+  "advisory-only regardless of enforcement.mode," but the Stop backstop returns
+  nothing under it (a deliberate, test-encoded contract) — advisory-only holds
+  at the per-edit hooks, while Stop is fully silent. The doc now states that and
+  points at `enforcement.mode=shadow` for turn-end advisories without the block.
+
+- **The `session-start` and `posttool-recorder` hooks no longer leak a traceback
+  when the process working directory was deleted** (a git-worktree removal or
+  repo move mid-session). Both fell through to `Path.cwd()` / `os.getcwd()`,
+  which re-raise the same `FileNotFoundError` the fallback was meant to catch;
+  the traceback landed in the error log that `/chameleon-doctor` reads for
+  degraded health, so a benign deleted directory looked like a broken install.
+  Both now route through a guarded cwd helper and fail open cleanly.
+
+- **`get_status` labels its degraded-delivery counters as user-global.** The
+  no-interpreter and spawn-failed counts come from per-user logs (a
+  no-interpreter failure happens before any repo resolves), so three different
+  repos returned byte-identical degraded blocks. The block now carries
+  `scope: "user-global"` so it is not read as this repo's alone.
+
+- **`explain_edit` no longer mislabels a fired credential rule as a coverage
+  gap.** On a no-archetype (fallback/none quality) file, the classification put
+  the coverage-gap check ahead of the "a rule fired" check, so a leaked
+  credential the scanner flagged — and a human waved through with
+  `chameleon-ignore` — replayed as `coverage-gap`, whose remediation ("refresh
+  so an archetype resolves") is the wrong route. Fallback/none quality drops the
+  archetype-shape rules, so a violation raised there is necessarily an
+  archetype-independent rule (a secret, an eval) that did fire; it now classifies
+  as `advised`. A true coverage gap (no archetype and nothing fired) is unchanged.
+
+- **The refresh/bootstrap response no longer balloons on a large monorepo.**
+  Each workspace's WP-C5 `cross_candidates` list (an internal cross-package
+  JOIN input the coordinator consumes before the response is built) was serialized
+  in full into the envelope — the one uncapped per-workspace aggregate — so a
+  20-workspace repo where packages import many siblings pushed the refresh
+  response past ~1.9MB and blew MCP transport limits. The envelope now emits a
+  `cross_candidates_count` instead of the full list; the in-memory JOIN (and the
+  cross-workspace existence index it builds) is unchanged.
+
+- **The `teach_profile` MCP tool now forwards its `archetype` argument.** The
+  MCP wrapper exposed only `(repo, feedback)`, so an archetype-scoped freeform
+  teach silently wrote an untagged idiom — the underlying function implemented
+  the scoping, but no shipping interface delivered it. The wrapper now passes
+  `archetype` through.
+
+- **`teach_profile` is idempotent on an identical idiom.** Re-teaching the exact
+  same feedback (a user repeat or a skill retry) appended a duplicate — the slug
+  guard only avoided a duplicate header, not a duplicate body — so the same idiom
+  rendered two or three times in every injected block. An identical body already
+  in the active set is now a no-op (`already_present: true`); a body sitting under
+  `## deprecated` still re-activates.
+
+- **`doctor`'s judge-spawn-health message counts distinct sessions,** not
+  attestation records, and the `repo_uuid` docstring no longer claims a moved
+  checkout keeps its trust grant (the uuid stabilizes the repo identity; a
+  whole-repo trust grant is root-path scoped, so a moved checkout can still need
+  one `/chameleon-trust`).
+
 ## [2.49.0] - 2026-07-05
 
 Real-usage QA pass driving the plugin through its actual entry points (hook

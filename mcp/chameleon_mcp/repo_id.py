@@ -151,10 +151,15 @@ def _persisted_repo_uuid(repo_root: Path) -> str | None:
 
     A non-empty string repo_uuid pins a no-remote repo's identity to a value
     that travels with the committed profile, so moving or renaming the working
-    tree on disk does not orphan the trust grant. Fail-open: any read/parse
-    error returns None and the caller falls back to the path hash. Read with a
-    raw json.loads (not the strict config loader) so a config that is malformed
-    for some unrelated feature still yields a usable uuid here.
+    tree on disk keeps the same repo_id (and thus its profile and drift history)
+    instead of re-deriving a fresh id from the new path. Note this stabilizes the
+    IDENTITY, not necessarily the trust grant: a whole-repo grant is root-path
+    scoped (see ``grants_root`` in ``profile/trust.py``), so a moved checkout can
+    still read untrusted and need one ``/chameleon-trust`` at the new path.
+    Fail-open: any read/parse error returns None and the caller falls back to the
+    path hash. Read with a raw json.loads (not the strict config loader) so a
+    config that is malformed for some unrelated feature still yields a usable
+    uuid here.
     """
     try:
         raw = (repo_root / ".chameleon" / "config.json").read_text(encoding="utf-8")

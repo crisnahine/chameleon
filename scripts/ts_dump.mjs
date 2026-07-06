@@ -801,6 +801,9 @@ function extractFile(filePath) {
       const { ext, impl } = heritageOf(node);
       result.class_shapes.push({
         name: node.name.text,
+        // start_line lets the symbol index record a searchable class definition
+        // (name -> file:line) alongside callables.
+        start_line: startLineOf(node),
         decorators: decoratorsOf(node),
         extends: ext,
         implements: impl,

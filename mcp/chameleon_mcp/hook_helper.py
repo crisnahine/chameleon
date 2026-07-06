@@ -74,6 +74,33 @@ def _emit(output: dict) -> None:
         _absorb_broken_stdout()
 
 
+def _safe_cwd() -> Path:
+    """Path.cwd() that never raises when the process cwd was deleted.
+
+    A hook can be spawned with its process cwd already unlinked (a git-worktree
+    removal, a repo move, a tmpdir cleanup mid-session). ``Path.cwd()`` /
+    ``os.getcwd()`` then raise ``FileNotFoundError`` -- the bash wrapper still
+    masks the exit, but the traceback lands in the error log that
+    /chameleon-doctor reads for degraded health, so a benign deleted-cwd looks
+    like a broken install. The payload's own ``cwd`` field is authoritative for
+    the repo anyway; this default only fills the pre-parse gap, so a static
+    fallback (home, else root) is correct when the real cwd is gone.
+    """
+    try:
+        return Path.cwd()
+    except (FileNotFoundError, OSError):
+        try:
+            home = os.path.expanduser("~")
+            # expanduser returns the literal "~" (a RELATIVE path) when HOME is
+            # unset and the pwd lookup can't resolve it; fall through to an
+            # absolute root so the fallback is never a relative path.
+            if home and home != "~":
+                return Path(home)
+        except (OSError, RuntimeError):
+            pass
+        return Path("/")
+
+
 def _read_payload_dict() -> dict | None:
     """Read+parse hook stdin JSON, returning a dict or None on malformed input.
 
@@ -577,7 +604,7 @@ def _update_statusline(
     statusline script reads. Falls back to cwd when the root is unknown.
     """
     try:
-        base = repo_root if repo_root else Path.cwd()
+        base = repo_root if repo_root else _safe_cwd()
         cache = base / ".claude" / ".chameleon-statusline-cache"
         if cache.is_file():
             data = json.loads(cache.read_text(encoding="utf-8"))
@@ -1462,7 +1489,7 @@ def session_start() -> int:
     # Claude Code operation, but an agent/harness whose process cwd diverges from
     # the session cwd would otherwise inject the WRONG repo's conventions and
     # reuse list at session start.
-    session_cwd = Path.cwd()
+    session_cwd = _safe_cwd()
     try:
         if not sys.stdin.isatty():
             raw = sys.stdin.read()
@@ -1476,7 +1503,7 @@ def session_start() -> int:
                     try:
                         session_cwd = Path(cwd_raw).expanduser()
                     except (OSError, ValueError):
-                        session_cwd = Path.cwd()
+                        session_cwd = _safe_cwd()
     except Exception:
         session_id = None
     drift_banner = _drift_banner_for_repo(session_cwd, session_id=session_id)
@@ -1636,7 +1663,7 @@ def session_start() -> int:
     # Wire the statusline command into the repo root's settings, matching the
     # cache placement above: Claude resolves project settings at the workspace
     # root, so a subdir-launched session must not split them into the subdir.
-    _wire_statusline_settings(repo_root if repo_root else Path.cwd(), plugin_root)
+    _wire_statusline_settings(repo_root if repo_root else _safe_cwd(), plugin_root)
 
     conventions_block = ""
     try:
@@ -1709,16 +1736,18 @@ def session_start() -> int:
     if drift_banner:
         wrapped_parts.append("")
         wrapped_parts.append(drift_banner)
-    production_banner = _production_tip_banner(repo_root or Path.cwd(), session_id=session_id)
+    production_banner = _production_tip_banner(repo_root or _safe_cwd(), session_id=session_id)
     if production_banner:
         wrapped_parts.append("")
         wrapped_parts.append(production_banner)
-    judge_health_banner = _judge_spawn_health_banner(repo_root or Path.cwd(), session_id=session_id)
+    judge_health_banner = _judge_spawn_health_banner(
+        repo_root or _safe_cwd(), session_id=session_id
+    )
     if judge_health_banner:
         wrapped_parts.append("")
         wrapped_parts.append(judge_health_banner)
     interpreter_banner = _interpreter_degraded_banner(
-        repo_root or Path.cwd(), session_id=session_id
+        repo_root or _safe_cwd(), session_id=session_id
     )
     if interpreter_banner:
         wrapped_parts.append("")
@@ -1730,7 +1759,7 @@ def session_start() -> int:
 
     # Reuse the repo root already resolved above instead of re-deriving it from
     # cwd inside the helper.
-    _maybe_auto_refresh(repo_root or Path.cwd())
+    _maybe_auto_refresh(repo_root or _safe_cwd())
 
     return 0
 
@@ -2060,21 +2089,39 @@ def _inbound_contracts_section(file_path: str, repo_root: Path | None) -> str:
 
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-        lines: list[str] = []
-        # Bound the export SCAN, not just the rendered count: a file with hundreds
-        # of exports must not walk them all when few have callers (callers_of is a
-        # cheap dict hit, but the scan stays bounded on the <100ms hot path).
+        # Collect every export that has callers, tagging each by how many of its
+        # callers are CROSS-FILE. A same-file caller "breaking" when you change a
+        # signature is trivially visible -- it's in the file you're editing -- so
+        # the section's real value is the cross-file dependents you'd otherwise
+        # miss. Ranking cross-file-first (and capping AFTER the rank) stops a
+        # cluster of same-file private-method callers from crowding the genuine
+        # cross-file break out past the export cap. Bound the export SCAN, not just
+        # the render: a file with hundreds of exports must not walk them all
+        # (callers_of is a cheap dict hit, but the scan stays bounded on the hot path).
+        candidates: list[tuple[int, str, list[dict], int]] = []
         for name in export_names[: threshold_int("NEARBY_SIG_SCAN_CAP")]:
-            if len(lines) >= max_exports:
-                break
             entry = calls.callers_of(edited_rel, name)
             if not entry:
                 continue
             callers = entry.get("callers") or []
             if not callers:
                 continue
+            # Cross-file callers lead within the export's own site list too, so the
+            # max_sites cap never drops a cross-file dependent in favor of a
+            # same-file one.
+            ordered = sorted(
+                callers, key=lambda r: 0 if str(r.get("path") or "") != edited_rel else 1
+            )
+            cross = sum(1 for r in callers if str(r.get("path") or "") != edited_rel)
+            candidates.append((cross, name, ordered, entry.get("total")))
+
+        # Exports with more cross-file callers first, then deterministic name order.
+        candidates.sort(key=lambda c: (-c[0], c[1]))
+
+        lines: list[str] = []
+        for _cross, name, ordered, total in candidates[:max_exports]:
             sites: list[str] = []
-            for row in callers[:max_sites]:
+            for row in ordered[:max_sites]:
                 # Paths and names come from the committed (attacker-controllable)
                 # calls index and render OUTSIDE the imitate-spotlight as a
                 # chameleon directive, so they must be fully neutralized against
@@ -2088,7 +2135,6 @@ def _inbound_contracts_section(file_path: str, repo_root: Path | None) -> str:
                 sites.append(f"{p}:{ln}" if isinstance(ln, int) else p)
             if not sites:
                 continue
-            total = entry.get("total")
             more = ""
             if isinstance(total, int) and total > len(sites):
                 more = f" (+{total - len(sites)} more)"
@@ -3873,11 +3919,14 @@ def posttool_recorder() -> int:
     exit_code = tool_response.get("returnCode") if isinstance(tool_response, dict) else None
 
     cwd_raw = payload.get("cwd")
-    cwd_str = cwd_raw if isinstance(cwd_raw, str) and cwd_raw else os.getcwd()
+    # os.getcwd() re-raises FileNotFoundError when the process cwd was deleted --
+    # the same fault the resolve() fallback below was trying to catch -- so both
+    # the default and the fallback route through _safe_cwd(), which never raises.
+    cwd_str = cwd_raw if isinstance(cwd_raw, str) and cwd_raw else str(_safe_cwd())
     try:
         cwd = Path(cwd_str).resolve()
     except (OSError, ValueError):
-        cwd = Path(os.getcwd())
+        cwd = _safe_cwd()
     try:
         from chameleon_mcp.tools import _compute_repo_id
 
@@ -10511,9 +10560,9 @@ def stop_backstop() -> int:
     is_subagent = payload.get("hook_event_name") == "SubagentStop"
     cwd_raw = payload.get("cwd")
     try:
-        cwd = Path(cwd_raw).expanduser() if isinstance(cwd_raw, str) and cwd_raw else Path.cwd()
+        cwd = Path(cwd_raw).expanduser() if isinstance(cwd_raw, str) and cwd_raw else _safe_cwd()
     except (OSError, ValueError):
-        cwd = Path.cwd()
+        cwd = _safe_cwd()
 
     try:
         multiroot = os.environ.get("CHAMELEON_MULTIROOT_STOP") != "0"

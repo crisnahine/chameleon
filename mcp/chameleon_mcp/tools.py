@@ -3533,6 +3533,46 @@ def _reroot_rel(rel_path, answering_root: Path, arg_root) -> object:
         return rel_path
 
 
+EMPTY_CALLERS_NOTE = (
+    "No caller in the committed calls snapshot. Absence is NOT evidence of dead "
+    "code: dynamic dispatch, reflection, and callers added since the last refresh "
+    "are invisible. Run /chameleon-refresh to update the snapshot before treating "
+    "this as unused."
+)
+
+EMPTY_CALLEES_NOTE = (
+    "No callee in the committed calls snapshot. Absence is NOT evidence that this "
+    "function calls nothing: dynamic dispatch, reflection, and edges added since "
+    "the last refresh are invisible. Run /chameleon-refresh to update the snapshot."
+)
+
+
+def _calls_index_unavailable_reason(repo_root: Path) -> str:
+    """Why load_calls_index returned None: never built vs present-but-stale.
+
+    Both cases zero the caller graph, but the fix differs: a stale index (an
+    older engine's schema, or one over the read ceiling) IS repaired by
+    /chameleon-refresh, while a never-built one means the profile predates the
+    feature. Distinguishing them lets the tool result carry the actionable
+    signal instead of a flat "no-calls-index" the language-depth pass flagged as
+    indistinguishable from "never built". Mirrors load_calls_index's own path
+    resolution so the file-presence probe matches what the loader read.
+    """
+    try:
+        from chameleon_mcp.calls_index import CALLS_INDEX_FILENAME
+        from chameleon_mcp.worktree import resolve_profile_root
+
+        # .resolve() before resolve_profile_root mirrors load_calls_index's own
+        # path handling, so the file-presence probe matches exactly what the
+        # loader read (no divergence on a symlinked or relative root).
+        root = resolve_profile_root(Path(repo_root).resolve())
+        if (root / ".chameleon" / CALLS_INDEX_FILENAME).is_file():
+            return "calls-index-stale"
+    except Exception:
+        pass
+    return "no-calls-index"
+
+
 def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     """Who calls a function, from the committed calls snapshot (deterministic grades only).
 
@@ -3612,7 +3652,7 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     index = load_calls_index(repo_root)
     if index is None:
         out = dict(empty)
-        out["reason"] = "no-calls-index"
+        out["reason"] = _calls_index_unavailable_reason(repo_root)
         return _envelope(out)
 
     rel = module_key_for_path(p, repo_root)
@@ -3644,6 +3684,7 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
                 "callers": [],
                 "total": 0,
                 "truncated": False,
+                "note": EMPTY_CALLERS_NOTE,
             }
         )
 
@@ -3668,16 +3709,20 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
             clean_row["via"] = [_sanitize(_rr(v)) for v in raw_via if isinstance(v, str)]
         clean_callers.append(clean_row)
 
-    return _envelope(
-        {
-            "found": True,
-            "module": _sanitize(_rr(rel)),
-            "function": _sanitize(function_name),
-            "callers": clean_callers,
-            "total": entry["total"],
-            "truncated": entry["truncated"],
-        }
-    )
+    result = {
+        "found": True,
+        "module": _sanitize(_rr(rel)),
+        "function": _sanitize(function_name),
+        "callers": clean_callers,
+        "total": entry["total"],
+        "truncated": entry["truncated"],
+    }
+    # An entry that exists but yields no surviving rows is a real "no known
+    # caller" answer; carry the same absence-is-not-dead-code caveat the
+    # known-absent branch and get_blast_radius already return.
+    if not clean_callers:
+        result["note"] = EMPTY_CALLERS_NOTE
+    return _envelope(result)
 
 
 def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int = 0) -> dict:
@@ -3695,7 +3740,7 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     This is the same conservative reach the turn-end correctness judge already
     walks, surfaced as a tool so pr-review and the human can ask it directly
     instead of being limited to one-hop ``get_callers``. Grades are deterministic
-    (same_file, import, constant_receiver, typed_property); name-only / dynamic / inheritance
+    (same_file, import, constant_receiver, typed_property, module_attribute); name-only / dynamic / inheritance
     call paths are absent by design.
 
     Interpretation note (returned in ``note``): absence of a caller is NOT
@@ -3763,7 +3808,7 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     index = load_calls_index(repo_root)
     if index is None:
         out = dict(empty)
-        out["reason"] = "no-calls-index"
+        out["reason"] = _calls_index_unavailable_reason(repo_root)
         return _envelope(out)
 
     rel = module_key_for_path(p, repo_root)
@@ -3970,6 +4015,17 @@ def search_codebase(repo: str, query: str, limit: int = 10) -> dict:
     if _reasons:
         out["degraded"] = True
         out["reason"] = "; ".join(_reasons) + "; results may be incomplete"
+    elif not results:
+        # A clean (non-degraded) empty result: the query matched no callable and
+        # no class/module definition. The index covers both, but only what the
+        # last profile build captured, so point at the actionable next steps
+        # rather than let an empty result read as "this symbol does not exist".
+        out["note"] = (
+            "No symbol matched. The index covers callables (functions, methods) "
+            "and class/module definitions from the last profile build -- try a "
+            "different name or a file-path fragment, describe_codebase for the "
+            "archetype overview, or /chameleon-refresh if the index may be stale."
+        )
     return _envelope(out)
 
 
@@ -4035,6 +4091,11 @@ def describe_codebase(repo: str) -> dict:
     # language fields may be partial and can suggest /chameleon-refresh.
     if d.get("degraded"):
         out["degraded"] = True
+    # file_count sits at the signatures-artifact cap, so it is a floor on a repo
+    # above the cap, not the true total; forward the flag so the count is not
+    # read as ground truth.
+    if d.get("truncated"):
+        out["truncated"] = True
     return _envelope(out)
 
 
@@ -4044,7 +4105,7 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     The forward counterpart to ``get_callers`` / ``get_blast_radius``: it inverts
     the reverse ``calls_index`` to answer "what does this function call". Each
     result is ``{callee, file, grade}`` with the same three deterministic grades
-    (same_file, import, constant_receiver, typed_property). Absence of a callee is NOT proof the
+    (same_file, import, constant_receiver, typed_property, module_attribute). Absence of a callee is NOT proof the
     function calls nothing: dynamic dispatch and unsupported call paths are
     invisible. Fails open with ``found: False`` on any ambiguity.
     """
@@ -4094,7 +4155,7 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
 
     if load_calls_index(repo_root) is None:
         out = dict(empty)
-        out["reason"] = "no-calls-index"
+        out["reason"] = _calls_index_unavailable_reason(repo_root)
         return _envelope(out)
 
     rel = module_key_for_path(p, repo_root)
@@ -4120,14 +4181,18 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
         }
         for r in callees_of(repo_root, rel, function_name)
     ]
-    return _envelope(
-        {
-            "found": True,
-            "module": _ss(_reroot_rel(rel, repo_root, _arg_root)),
-            "function": _ss(function_name),
-            "callees": clean,
-        }
-    )
+    result = {
+        "found": True,
+        "module": _ss(_reroot_rel(rel, repo_root, _arg_root)),
+        "function": _ss(function_name),
+        "callees": clean,
+    }
+    # No recorded callee is a real answer, not a failure; carry the same
+    # absence-is-not-dead-code caveat get_callers / get_blast_radius return so a
+    # consumer echoing the payload never reads empty as "calls nothing".
+    if not clean:
+        result["note"] = EMPTY_CALLEES_NOTE
+    return _envelope(result)
 
 
 def _crossfile_module_resolver(repo_root: Path, language: str):
@@ -6032,17 +6097,20 @@ def explain_edit(repo: str, file_path: str) -> dict:
     the fix. ``classification`` is:
 
     - ``coverage-gap`` — no archetype matched, or it matched at fallback/none
-      quality, so the per-edit lint never had a calibrated shape to check against.
-      Route to ``/chameleon-refresh`` (re-derive archetypes) or ``/chameleon-teach``
-      (capture the missing convention).
+      quality, AND nothing fired, so the per-edit lint never had a calibrated
+      shape to check against. Route to ``/chameleon-refresh`` (re-derive
+      archetypes) or ``/chameleon-teach`` (capture the missing convention).
     - ``in-scope-miss`` — an ast/exact archetype matched and chameleon raised
       NOTHING on the edit that later broke. The shape was covered but no rule
       fired; route to a new rule / idiom rather than a refresh.
-    - ``advised`` — an ast/exact archetype matched and chameleon raised advisory
-      violations (or shadow-logged a would-block) but did not block. The rules
-      fired; they were advisory. Route to enforce-mode calibration or a stronger
-      rule, not a refresh. Kept distinct from ``in-scope-miss`` so a raised
-      advisory is not misread as silence.
+    - ``advised`` — chameleon raised advisory violations (or shadow-logged a
+      would-block) but did not block. The rules fired; they were advisory. This
+      takes precedence over ``coverage-gap``: a fallback/none-quality file drops
+      the archetype-SHAPE rules, so a violation raised there is an archetype-
+      INDEPENDENT rule (a secret, an eval) that DID fire -- not a coverage gap
+      (which would mis-route a flagged-and-overridden credential to a refresh).
+      Route to enforce-mode calibration or a stronger rule, not a refresh. Kept
+      distinct from ``in-scope-miss`` so a raised advisory is not misread as silence.
     - ``blocked`` / ``overridden`` — the gate did fire: it blocked, or a block was
       waved through with an inline ``chameleon-ignore``. Surfaced so a postmortem
       sees the gate was not silent.
@@ -6093,13 +6161,19 @@ def explain_edit(repo: str, file_path: str) -> dict:
         violations_raised = 0
     if outcome in ("blocked", "overridden"):
         classification = outcome
-    elif match_quality in (None, "none", "fallback"):
-        classification = "coverage-gap"
     elif violations_raised > 0:
         # The gate was not silent: it raised advisories (or shadow-logged a
         # would-block) but did not block. Not a miss — the rules fired, they were
         # advisory — so a postmortem routes this apart from a true in-scope miss.
+        # This precedes the coverage-gap check: an archetype-INDEPENDENT rule (a
+        # secret, an eval) fires on a no-archetype file too, so a raised violation
+        # there is "advised", NOT "coverage-gap" — the latter's remediation (run
+        # /chameleon-refresh so an archetype resolves) is the wrong route when the
+        # deterministic scanner already fired (a leaked credential the human
+        # chameleon-ignored replayed as coverage-gap before this order).
         classification = "advised"
+    elif match_quality in (None, "none", "fallback"):
+        classification = "coverage-gap"
     else:
         classification = "in-scope-miss"
 
@@ -9486,6 +9560,57 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
                 "",
                 1,
             )
+            # Idempotency: an identical body already active must not be appended a
+            # second time. The slug guard above only avoids a duplicate `### slug`
+            # header, so re-teaching the exact same feedback (a user repeat or a
+            # skill retry) fell through to a fresh random slug and rendered the same
+            # idiom 2-3x in every injected Tier-2 block. The dedup keys on the
+            # (body, archetype) PAIR, not the body alone: a re-teach of the same
+            # rationale with a DIFFERENT archetype scope is a genuinely new idiom
+            # and must append, not no-op. Scoped to the ACTIVE section only -- a
+            # body under `## deprecated` SHOULD re-activate on a re-teach. The
+            # deprecated split anchors to a line start so a body that merely
+            # mentions `## deprecated` cannot truncate the active section early.
+            _active = current
+            _dep_idx = current.find("\n## deprecated")
+            if _dep_idx != -1:
+                _active = current[:_dep_idx]
+            _dup = False
+            if body.strip():
+                if body.lstrip().startswith("### "):
+                    # Structured path: `body` is the whole rendered block (its own
+                    # `### ` header + Language/Status/any Archetype line), so an
+                    # exact block match IS the identity. A raw containment check is
+                    # right here -- the block is long and self-delimited.
+                    _dup = f"\n{body.rstrip()}\n" in _active
+                else:
+                    # Free-form path: the identity is the (body, archetype) PAIR --
+                    # `archetype_line` is a separate line the else-branch above set,
+                    # so a re-teach of the same rationale scoped to a DIFFERENT
+                    # archetype is a new idiom and must append, not no-op. Walk each
+                    # active idiom block (split on the `### ` header); a block whose
+                    # newline-bounded `\n{body}\n` matches (so a SHORT body cannot
+                    # collide with a fragment of an unrelated idiom) AND whose
+                    # archetype scoping matches is the duplicate.
+                    _body_block = f"\n{body}\n"
+                    _want_arch = archetype_line.strip()  # "Archetype: <name>" or ""
+                    for _block in _active.split("\n### "):
+                        if _body_block not in f"\n{_block}\n":
+                            continue
+                        _block_has_arch = "\nArchetype: " in f"\n{_block}"
+                        if (_want_arch and _want_arch in _block) or (
+                            not _want_arch and not _block_has_arch
+                        ):
+                            _dup = True
+                            break
+            if _dup:
+                return _envelope(
+                    {
+                        "status": "success",
+                        "already_present": True,
+                        "note": "an identical idiom is already active; not duplicated.",
+                    }
+                )
             if "## active" in current:
                 new_content = current.replace("## active\n", f"## active\n{addition}", 1)
             else:
@@ -12997,6 +13122,52 @@ def doctor(repo: str | None = None) -> dict:
                 expected_artifacts += ["exports_index.json", "reverse_index.json"]
             elif _lang == "ruby":
                 expected_artifacts += ["constant_index.json"]
+            # A parseable artifact can still be STALE-SCHEMA: an index built by an
+            # older engine (e.g. a pre-v2.41 calls_index at schema_version 1) is
+            # valid JSON, so a plain parse check reads it "ok" while the loader
+            # rejects the schema and every calls / cross-file tool silently
+            # degrades to zero facts -- the exact false-clean this detector exists
+            # to catch, one layer deeper than a missing/corrupt file. Call the real
+            # loader (present file + None return = stale schema or oversize, both
+            # of which /chameleon-refresh repairs); each loader honors its own
+            # readable-version set (counterexamples reads {1,2}), so this never
+            # false-flags a version the engine still accepts. Fail-open: if the
+            # loaders can't be imported, fall back to the parse-only check.
+            _schema_loaders: dict = {}
+            try:
+                from chameleon_mcp.calls_index import load_calls_index as _ld_calls
+                from chameleon_mcp.constant_index import load_constant_index as _ld_const
+                from chameleon_mcp.counterexamples import load_counterexamples as _ld_cx
+                from chameleon_mcp.symbol_index import (
+                    load_exports_index as _ld_exports,
+                )
+                from chameleon_mcp.symbol_index import (
+                    load_reverse_index as _ld_reverse,
+                )
+                from chameleon_mcp.symbol_signatures import (
+                    load_symbol_signatures as _ld_sigs,
+                )
+
+                _schema_loaders = {
+                    "calls_index.json": _ld_calls,
+                    "exports_index.json": _ld_exports,
+                    "reverse_index.json": _ld_reverse,
+                    "constant_index.json": _ld_const,
+                    "symbol_signatures.json": _ld_sigs,
+                    "counterexamples.json": _ld_cx,
+                }
+            except Exception:
+                _schema_loaders = {}
+
+            def _schema_stale(art: str) -> bool:
+                loader = _schema_loaders.get(art)
+                if loader is None:
+                    return False
+                try:
+                    return loader(cwd_root) is None
+                except Exception:
+                    return False
+
             for art in expected_artifacts:
                 apath = cwd_profile_dir / art
                 if not apath.is_file():
@@ -13006,6 +13177,11 @@ def doctor(repo: str | None = None) -> dict:
                     _json.loads(apath.read_text(encoding="utf-8"))
                 except Exception:
                     artifact_problems.append(f"{art} corrupt")
+                    continue
+                if _schema_stale(art):
+                    artifact_problems.append(
+                        f"{art} unreadable by this engine (stale schema or oversize)"
+                    )
             # Advisory artifacts (nearby-signatures, counterexamples): validate
             # IF PRESENT (a present-but-corrupt one degrades those features), but
             # do not require presence -- an older profile may predate them.
@@ -13016,6 +13192,11 @@ def doctor(repo: str | None = None) -> dict:
                         _json.loads(apath.read_text(encoding="utf-8"))
                     except Exception:
                         artifact_problems.append(f"{art} corrupt")
+                        continue
+                    if _schema_stale(art):
+                        artifact_problems.append(
+                            f"{art} unreadable by this engine (stale schema or oversize)"
+                        )
             if artifact_problems:
                 checks.append(
                     {
@@ -13096,10 +13277,16 @@ def doctor(repo: str | None = None) -> dict:
             if degraded and not completed:
                 judge_warn = True
                 _reasons = sorted({str(e.get("reason") or "unknown") for e in degraded})
+                _n_sessions = len({r.get("session_id") for r in _records if r.get("session_id")})
+                _span = (
+                    f"{_n_sessions} recent session(s)"
+                    if _n_sessions
+                    else f"{len(_records)} recent attestation(s)"
+                )
                 judge_detail = (
                     f"turn-end reviewer failing to spawn ({', '.join(_reasons)}) across the "
-                    f"last {len(_records)} attested session(s); correctness review is not "
-                    "running. Check the claude binary/auth, then verify with a new session."
+                    f"last {_span}; correctness review is not running. Check the claude "
+                    "binary/auth, then verify with a new session."
                 )
             elif judge_events:
                 judge_detail = "reviewer spawning normally in recent sessions"
@@ -13214,8 +13401,24 @@ def doctor(repo: str | None = None) -> dict:
         profiles = lp.get("data", {}).get("profiles", [])
         repo_states = []
         any_corrupt = False
+        # A single path can carry several registry rows -- an older repo_id left
+        # behind by a re-bootstrap or an id-scheme change (remote->uuid->path).
+        # list_profiles orders most-recent-first, so the FIRST row for a root is
+        # the active profile; the rest are stale. Listing the path three times
+        # with contradictory trust states (the reported symptom) is noise, so
+        # collapse the stale rows into a count on the authoritative entry.
+        seen_roots: dict[str, int] = {}
         for r in profiles:
             root = r.get("repo_root")
+            if root and root in seen_roots:
+                prior = repo_states[seen_roots[root]]
+                prior["stale_registry_entries"] = prior.get("stale_registry_entries", 0) + 1
+                if r.get("trust_state") != prior.get("trust_state"):
+                    prior["note"] = (
+                        "older registry rows for this path record a different "
+                        "trust state; the most recent profile (shown) governs"
+                    )
+                continue
             if root and is_committed(Path(root) / ".chameleon"):
                 # A committed profile can still be unloadable (corrupt or
                 # incomplete JSON); load_profile_dir rejects it on every edit,
@@ -13249,6 +13452,8 @@ def doctor(repo: str | None = None) -> dict:
                         "run /chameleon-refresh to regenerate"
                     )
                     any_corrupt = True
+            if root:
+                seen_roots[root] = len(repo_states)
             repo_states.append(entry)
         checks.append(
             {

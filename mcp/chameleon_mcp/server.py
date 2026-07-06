@@ -149,8 +149,9 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     Reads the prebuilt calls_index.json artifact. Returns the recorded caller
     rows for ``function_name`` defined in the file at ``file_path``. Grades are
     deterministic: same_file, import (TypeScript and Python), constant_receiver
-    (Ruby), typed_property (TypeScript DI edges)
-    (Ruby only). Dynamic/unsupported call paths are absent by design.
+    (Ruby), typed_property (TypeScript DI edges), module_attribute (Python
+    ``from pkg import mod; mod.func()``). Dynamic/unsupported call paths are
+    absent by design.
 
     Absence of callers is NOT evidence of dead code -- dynamic dispatch and
     callers added after the last bootstrap are invisible. Fails open with
@@ -172,8 +173,8 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
 
     This is the same conservative reach the turn-end correctness judge walks,
     surfaced so pr-review and the human can ask beyond one-hop get_callers.
-    Grades are deterministic (same_file, import, constant_receiver, typed_property). Absence of a
-    caller is NOT dead code (dynamic dispatch / reflection / post-bootstrap
+    Grades are deterministic (same_file, import, constant_receiver, typed_property, module_attribute).
+    Absence of a caller is NOT dead code (dynamic dispatch / reflection / post-bootstrap
     callers are invisible). Fails open with found=False on any ambiguity. Never
     fabricates a caller.
     """
@@ -213,9 +214,10 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
 
     The forward counterpart to get_callers / get_blast_radius: inverts the reverse
     calls_index to answer "what does this function call". Each result is
-    {callee, file, grade} with the three deterministic grades (same_file, import,
-    constant_receiver). Absence of a callee is NOT proof it calls nothing
-    (dynamic dispatch is invisible). Fails open with found=False on any ambiguity.
+    {callee, file, grade} with the deterministic grades (same_file, import,
+    constant_receiver, typed_property, module_attribute). Absence of a callee is
+    NOT proof it calls nothing (dynamic dispatch is invisible). Fails open with
+    found=False on any ambiguity.
     """
     return tools.get_callees(repo, file_path, function_name)
 
@@ -442,9 +444,12 @@ def explain_edit(repo: str, file_path: str) -> dict:
     The post-incident recovery read. Returns the most-recent per-edit decision
     log row for file_path (archetype, match_quality, confidence_band, violations
     raised, the block-eligible rules that stood, the resolved outcome) and a
-    classification: coverage-gap (no archetype or fallback/none match quality),
-    in-scope-miss (ast/exact match but nothing caught the defect), or blocked /
-    overridden (the gate did fire). found is False when no edit was ever logged.
+    classification: advised (a rule fired but did not block -- including an
+    archetype-independent secret/eval on a no-archetype file, which takes
+    precedence over the match quality), coverage-gap (no archetype or
+    fallback/none quality AND nothing fired), in-scope-miss (ast/exact match but
+    nothing caught the defect), or blocked / overridden (the gate did block).
+    found is False when no edit was ever logged.
     """
     return tools.explain_edit(repo, file_path)
 
@@ -489,12 +494,17 @@ def merge_profiles(repo: str, base: str, ours: str, theirs: str) -> dict:
 
 
 @mcp.tool()
-def teach_profile(repo: str, feedback: str) -> dict:
+def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dict:
     """Apply user-driven correction to profile (idiom, banned import, mandatory wrapper).
 
     Renamed from `refine_profile` in v4 to align with `/chameleon-teach` slash command.
+    Pass an optional ``archetype`` to scope the idiom to one archetype's edits (an
+    unrecognized name is dropped, leaving a general idiom). This forwards the
+    scoping the underlying function already implements; without it the parameter
+    was unreachable through the MCP surface and a scoped teach silently wrote an
+    untagged idiom.
     """
-    return tools.teach_profile(repo, feedback)
+    return tools.teach_profile(repo, feedback, archetype)
 
 
 @mcp.tool()

@@ -313,6 +313,9 @@ class _Collector(cst.CSTVisitor):
                 self.class_shapes.append(
                     {
                         "name": name,
+                        # start_line lets the symbol index record a searchable
+                        # class definition (name -> file:line) alongside callables.
+                        "start_line": self._line(node),
                         "bases": bases,
                         # `extends` mirrors ts_dump's single-base string so consumers
                         # that read the TS-shaped class_shapes pick up the base too.

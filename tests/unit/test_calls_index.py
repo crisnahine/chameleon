@@ -1506,6 +1506,128 @@ class TestPythonSrcLayout:
         assert roots == [tmp_path.resolve()]
 
 
+class TestModuleAttribute:
+    """Python `from pkg import mod; mod.func()` submodule-attribute edges: the
+    ``module_attribute`` grade (the Python analog of TS ``typed_property`` /
+    Ruby ``constant_receiver``)."""
+
+    def _repo(self, tmp_path, sites, crud_sig="create_user"):
+        _touch(tmp_path, "backend/app/__init__.py")
+        _touch(tmp_path, "backend/app/crud.py")
+        _touch(tmp_path, "backend/app/routes.py")
+        crud = FakeParsed(
+            tmp_path / "backend" / "app" / "crud.py",
+            {"callable_signatures": [_sig(crud_sig)]},
+        )
+        # The package __init__ lists the submodule `crud` in named_export_names,
+        # exactly as the dumper does for a package -- the case a naive
+        # export-set "shadow" guard wrongly skipped, defeating the whole grade.
+        init = FakeParsed(
+            tmp_path / "backend" / "app" / "__init__.py",
+            {"named_export_names": ["crud"], "export_set_open": False},
+        )
+        caller = FakeParsed(
+            tmp_path / "backend" / "app" / "routes.py",
+            {
+                "import_symbols": [{"name": "crud", "local": "crud", "module": "app", "line": 1}],
+                "call_sites": sites,
+                "callable_signatures": [_sig("handler")],
+            },
+        )
+        return [crud, init, caller]
+
+    def test_from_import_submodule_member_resolves(self, tmp_path):
+        files = self._repo(tmp_path, [_site("create_user", "crud", "member", 5, "handler")])
+        idx = build_calls_index(files, tmp_path, "python")
+        entry = idx["callees"]["backend/app/crud.py"]["create_user"]
+        assert entry["callers"] == [
+            {
+                "path": "backend/app/routes.py",
+                "caller": "handler",
+                "line": 5,
+                "grade": "module_attribute",
+            }
+        ]
+
+    def test_member_not_defined_in_submodule_yields_no_edge(self, tmp_path):
+        files = self._repo(tmp_path, [_site("no_such_fn", "crud", "member", 5, "handler")])
+        idx = build_calls_index(files, tmp_path, "python")
+        assert "backend/app/crud.py" not in idx["callees"]
+
+    def test_relative_from_import_resolves_to_current_package(self, tmp_path):
+        # `from . import views` (module=".") must resolve to the CURRENT package's
+        # views (`.views`), not the parent's (`..views`). A naive dot-join bumped
+        # the level, pointing a real call at the parent-level same-named module --
+        # a false edge on the standard Django/DRF layout. The parent `views.py`
+        # here (same method name) would be the WRONG target under that bug.
+        _touch(tmp_path, "views.py")
+        _touch(tmp_path, "pkg/__init__.py")
+        _touch(tmp_path, "pkg/views.py")
+        _touch(tmp_path, "pkg/urls.py")
+        parent_views = FakeParsed(tmp_path / "views.py", {"callable_signatures": [_sig("render")]})
+        pkg_views = FakeParsed(
+            tmp_path / "pkg" / "views.py", {"callable_signatures": [_sig("render")]}
+        )
+        urls = FakeParsed(
+            tmp_path / "pkg" / "urls.py",
+            {
+                "import_symbols": [{"name": "views", "local": "views", "module": ".", "line": 1}],
+                "call_sites": [_site("render", "views", "member", 3, "route")],
+                "callable_signatures": [_sig("route")],
+            },
+        )
+        idx = build_calls_index([parent_views, pkg_views, urls], tmp_path, "python")
+        # The edge points at pkg/views.py, and the parent views.py gets NONE.
+        assert idx["callees"]["pkg/views.py"]["render"]["callers"] == [
+            {"path": "pkg/urls.py", "caller": "route", "line": 3, "grade": "module_attribute"}
+        ]
+        assert "render" not in idx["callees"].get("views.py", {})
+
+    def test_receiver_not_a_submodule_file_yields_no_edge(self, tmp_path):
+        # `from app import helper` where app/helper.py does NOT exist (helper is a
+        # name from app/__init__, not a submodule) resolves to no module file.
+        _touch(tmp_path, "backend/app/__init__.py")
+        _touch(tmp_path, "backend/app/routes.py")
+        caller = FakeParsed(
+            tmp_path / "backend" / "app" / "routes.py",
+            {
+                "import_symbols": [
+                    {"name": "helper", "local": "helper", "module": "app", "line": 1}
+                ],
+                "call_sites": [_site("do", "helper", "member", 5, "handler")],
+                "callable_signatures": [_sig("handler")],
+            },
+        )
+        idx = build_calls_index([caller], tmp_path, "python")
+        assert idx["callees"] == {}
+
+    def test_grade_is_python_only(self, tmp_path):
+        # A TS member call on a from-import must never produce a module_attribute
+        # edge -- the grade is gated to Python.
+        _touch(tmp_path, "src/crud.ts")
+        _touch(tmp_path, "src/routes.ts")
+        crud = FakeParsed(
+            tmp_path / "src" / "crud.ts",
+            {
+                "named_export_names": ["createUser"],
+                "export_set_open": False,
+                "callable_signatures": [_sig("createUser")],
+            },
+        )
+        caller = FakeParsed(
+            tmp_path / "src" / "routes.ts",
+            {
+                "import_symbols": [{"name": "crud", "module": "./crud", "line": 1}],
+                "call_sites": [_site("createUser", "crud", "member", 5, "handler")],
+            },
+        )
+        idx = build_calls_index([crud, caller], tmp_path, "typescript")
+        grades = {
+            c["grade"] for bn in idx["callees"].values() for e in bn.values() for c in e["callers"]
+        }
+        assert "module_attribute" not in grades
+
+
 class TestLoadReadCap:
     """Regression: the read ceiling derives from the edge cap so the two cannot
     drift. A fixed 16MB cap rejected a legitimately-built large index, silently

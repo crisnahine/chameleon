@@ -175,6 +175,10 @@ def test_summary_all_zero_when_no_sources(monkeypatch, tmp_path: Path):
     summary = read_degraded_summary(window_days=7)
     assert summary == {
         "window_days": 7,
+        # The counters are per-user, not per-repo (a no-interpreter failure has
+        # no repo id), so the summary is tagged user-global to keep get_status's
+        # per-repo envelope from reading them as this repo's alone.
+        "scope": "user-global",
         "advisor_unavailable": 0,
         "no_interpreter": 0,
         "spawn_failed": 0,

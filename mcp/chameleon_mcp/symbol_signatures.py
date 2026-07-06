@@ -96,17 +96,21 @@ def build_symbol_signatures(files, repo_root: Path | str) -> dict:
     per_file_cap = threshold_int("DUPLICATION_CATALOG_MAX_FNS_PER_FILE")
 
     collected: list[tuple[str, dict]] = []
+    collected_classes: list[tuple[str, dict]] = []
     for pf in files or ():
         extras = getattr(pf, "extras", None) or {}
         raw = extras.get("callable_signatures")
-        if not isinstance(raw, list) or not raw:
+        raw_cls = extras.get("class_shapes")
+        has_callables = isinstance(raw, list) and raw
+        has_classes = isinstance(raw_cls, list) and raw_cls
+        if not has_callables and not has_classes:
             continue
         try:
             rel = Path(pf.path).resolve().relative_to(root).as_posix()
         except (ValueError, OSError):
             continue
         by_name: dict[str, dict] = {}
-        for entry in raw:
+        for entry in raw if has_callables else ():
             if len(by_name) >= per_file_cap:
                 break
             if not isinstance(entry, dict):
@@ -132,17 +136,56 @@ def build_symbol_signatures(files, repo_root: Path | str) -> dict:
             by_name[name] = row
         if by_name:
             collected.append((rel, by_name))
+        # Searchable class/module definitions (name -> file:line), sourced from the
+        # per-language class_shapes (TS/Python) plus Ruby class/module nodes. Only a
+        # name with an integer start_line is recorded, so search can cite file:line.
+        cls_by_name: dict[str, dict] = {}
+        for entry in raw_cls if has_classes else ():
+            if len(cls_by_name) >= per_file_cap:
+                break
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            start = entry.get("start_line")
+            if not isinstance(name, str) or not name or not isinstance(start, int):
+                continue
+            if name in cls_by_name:
+                continue
+            crow: dict = {"start_line": start}
+            ext = entry.get("extends")
+            if isinstance(ext, str) and ext:
+                crow["extends"] = _truncate_type(ext)
+            # `keyword` distinguishes a Ruby module from a class so search renders
+            # the truthful `module X` / `class X`; TS/Python omit it (all classes).
+            kw = entry.get("kind")
+            if kw in ("module", "class"):
+                crow["keyword"] = kw
+            cls_by_name[name] = crow
+        if cls_by_name:
+            collected_classes.append((rel, cls_by_name))
 
     collected.sort(key=lambda item: item[0])
+    collected_classes.sort(key=lambda item: item[0])
     out = {rel: names for rel, names in collected[:file_cap]}
-    return {"schema_version": SCHEMA_VERSION, "files": out}
+    out_classes = {rel: names for rel, names in collected_classes[:file_cap]}
+    return {"schema_version": SCHEMA_VERSION, "files": out, "classes": out_classes}
 
 
 class SymbolSignatures:
-    """Repo-relative path -> name -> signature row, loaded from the artifact."""
+    """Repo-relative path -> name -> signature row, loaded from the artifact.
 
-    def __init__(self, entries: dict[str, dict[str, dict]]) -> None:
+    Carries a parallel ``classes`` map (rel -> classname -> {start_line, extends?})
+    so a comprehension search can locate a class/module by name, not only
+    callables. It is a SEPARATE section: the callable views (:meth:`for_file`,
+    :meth:`items`, :meth:`__len__`) are unchanged, so describe/nearby-signature
+    consumers that count or render callables are unaffected by class entries.
+    """
+
+    def __init__(
+        self, entries: dict[str, dict[str, dict]], classes: dict[str, dict[str, dict]] | None = None
+    ) -> None:
         self._entries = entries
+        self._classes = classes or {}
 
     def lookup(self, rel: str, name: str) -> dict | None:
         """The signature row for ``name`` defined in ``rel``, or None."""
@@ -160,6 +203,12 @@ class SymbolSignatures:
         name across the repo); the per-edit hot path uses :meth:`for_file`.
         """
         return self._entries.items()
+
+    def class_items(self):
+        """``(rel, {classname: {start_line, extends?}})`` pairs for every file
+        with recorded class/module definitions -- the class-name search walk.
+        Empty for an artifact built before class definitions were indexed."""
+        return self._classes.items()
 
     def __len__(self) -> int:
         return len(self._entries)
@@ -218,7 +267,22 @@ def load_symbol_signatures(repo_root: Path | str | None) -> SymbolSignatures | N
         if names:
             entries[rel] = names
 
-    index = SymbolSignatures(entries)
+    # The class/module section is additive: an artifact written before it existed
+    # simply has no "classes" key, so class search stays empty until a refresh.
+    classes: dict[str, dict[str, dict]] = {}
+    raw_classes = data.get("classes")
+    if isinstance(raw_classes, dict):
+        for rel, by_name in raw_classes.items():
+            if not isinstance(rel, str) or not isinstance(by_name, dict):
+                continue
+            cnames: dict[str, dict] = {}
+            for name, row in by_name.items():
+                if isinstance(name, str) and isinstance(row, dict):
+                    cnames[name] = row
+            if cnames:
+                classes[rel] = cnames
+
+    index = SymbolSignatures(entries, classes)
     _CACHE[key] = (token, index)
     return index
 
