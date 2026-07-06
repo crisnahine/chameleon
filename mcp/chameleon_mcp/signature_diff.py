@@ -79,23 +79,53 @@ def _required_positional_count(params) -> int:
     return n
 
 
+def _required_keyword_count(params) -> int:
+    """Number of REQUIRED keyword-only parameters in a dump param-shape list.
+
+    Python only: a ``def f(*, x)`` param is kind='keyword'. Every caller of such a
+    function passes ``x`` BY KEYWORD, so adding a new required keyword-only arg is
+    a breaking narrowing exactly like adding a required positional -- but the
+    positional count stays flat, so the positional-only check is blind to it. Ruby
+    required-keywords are intentionally NOT counted here (the caller derives
+    language from the file extension), preserving the existing Ruby behavior.
+    """
+    if not isinstance(params, list):
+        return 0
+    n = 0
+    for p in params:
+        if not isinstance(p, dict):
+            continue
+        if p.get("kind") == "keyword" and not bool(p.get("optional")):
+            n += 1
+    return n
+
+
 def diff_file_contracts(
-    old_callables: dict[str, list], new_callables: dict[str, list]
+    old_callables: dict[str, list],
+    new_callables: dict[str, list],
+    *,
+    language: str | None = None,
 ) -> list[ContractBreak]:
     """Contract breaks for callables present in BOTH versions of one file.
 
     ``old_callables`` / ``new_callables`` map an (unambiguous) callable name to
-    its raw dump param-shape list. A break is emitted only when the required
-    positional count INCREASED -- the narrowing that breaks an existing
-    positional caller. Names on only one side are skipped.
+    its raw dump param-shape list. A break is emitted when the required positional
+    count INCREASED (breaks a positional caller) OR -- for Python only -- the
+    required keyword-only count increased (breaks a keyword caller of a
+    ``def f(*, ...)`` function). Names on only one side are skipped.
     """
     out: list[ContractBreak] = []
+    _py = language == "python"
     for name, new_params in (new_callables or {}).items():
         if name not in (old_callables or {}):
             continue
-        old_req = _required_positional_count(old_callables[name])
-        new_req = _required_positional_count(new_params)
-        if new_req > old_req:
+        old_pos = _required_positional_count(old_callables[name])
+        new_pos = _required_positional_count(new_params)
+        old_req = old_pos + (_required_keyword_count(old_callables[name]) if _py else 0)
+        new_req = new_pos + (_required_keyword_count(new_params) if _py else 0)
+        # Break on a rise in EITHER dimension (a positional add and an unrelated
+        # keyword drop must not net out to "no break").
+        if new_pos > old_pos or new_req > old_req:
             out.append(
                 ContractBreak(
                     name=name,
@@ -144,7 +174,8 @@ def compute_contract_breaks(
         try:
             old = old_params_fn(rel) or {}
             new = new_params_fn(rel) or {}
-            for brk in diff_file_contracts(old, new):
+            _lang = "python" if Path(rel).suffix.lower() in (".py", ".pyi") else None
+            for brk in diff_file_contracts(old, new, language=_lang):
                 callers = callers_fn(rel, brk.name)
                 if not callers:
                     continue

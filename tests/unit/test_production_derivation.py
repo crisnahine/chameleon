@@ -539,7 +539,12 @@ class TestSymlinkedDataDir:
         self._assert_no_prodtree_fragments(clone)
 
         # The whole point of repo-relative buckets: a real checkout file
-        # resolves to a live archetype at edit time.
+        # resolves to a live archetype at edit time. get_archetype now trust-gates
+        # like every sibling read tool, so grant trust first -- this also exercises
+        # that the trust record resolves THROUGH the symlinked data dir.
+        from chameleon_mcp.profile.trust import grant_trust
+
+        grant_trust(tools._compute_repo_id(clone), clone / ".chameleon")
         target = clone / "src" / "services" / "alphaService.ts"
         res = tools.get_archetype(str(clone), str(target))["data"]
         assert res["archetype"] is not None

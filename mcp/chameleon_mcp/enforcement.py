@@ -88,6 +88,21 @@ def _coerce_block_map(raw) -> dict[str, int]:
     return out
 
 
+def _coerce_nonneg_int(v, default: int = 0) -> int:
+    """A single non-negative int scalar from the committed/attacker-controllable
+    state file. A non-numeric or negative value fails open to ``default`` rather
+    than surviving raw: a poisoned string scalar loads fine here but then crashes
+    every subsequent save_state (arithmetic on a str), and that crash is
+    swallowed -- silently losing enforcement accounting for the whole session.
+    Mirrors _coerce_block_map's fail-open stance for the map counterpart.
+    """
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return default
+    return n if n >= 0 else default
+
+
 @dataclass
 class EnforcementState:
     archetypes_seen: set[str] = field(default_factory=set)
@@ -148,7 +163,7 @@ class EnforcementState:
             # cochange advisory renders once more, then dedups from there.
             cochange_shown={str(x) for x in d.get("cochange_shown", []) or []},
             files={k: FileState.from_dict(v) for k, v in d.get("files", {}).items()},
-            stop_hook_blocks=d.get("stop_hook_blocks", 0),
+            stop_hook_blocks=_coerce_nonneg_int(d.get("stop_hook_blocks", 0)),
             # Absent in pre-upgrade files: empty map -> the multi-root gate starts
             # every workspace's budget at zero, exactly like a fresh session. A
             # committed/tampered file is attacker-controlled, so a non-numeric or
@@ -156,8 +171,8 @@ class EnforcementState:
             # bare int(v) would throw ValueError, which load_state's except does
             # not catch, breaking its documented fail-open contract.
             stop_hook_blocks_by_root=_coerce_block_map(raw_by_root),
-            duplication_spawns=d.get("duplication_spawns", 0),
-            correctness_spawns=d.get("correctness_spawns", 0),
+            duplication_spawns=_coerce_nonneg_int(d.get("duplication_spawns", 0)),
+            correctness_spawns=_coerce_nonneg_int(d.get("correctness_spawns", 0)),
         )
 
 

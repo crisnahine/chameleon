@@ -4,6 +4,121 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.53.0] - 2026-07-06
+
+A hostile, exhaustive QA round across every supported language and framework
+plus a code-quality audit of the plugin source, for a production-stability
+release. 32 findings were confirmed and fixed: 1 correctness BLOCK, 22
+gap/inconsistency/honesty fixes, and 9 slop cleanups. The language and
+framework fixes were verified live by re-deriving the real Next.js, NestJS,
+Rails, Django/DRF, Flask, and FastAPI repos; the deterministic fixes are pinned
+red-green.
+
+### Fixed
+
+- **Cross-file existence check reported a false break (and could false-deny) on
+  a name surviving only in a multi-line comment or template literal.**
+  `_reference_present` blanked a single recorded line in isolation, so a removed
+  export whose name lingered inside a block comment or template that opened on an
+  earlier line read as a live reference. It now blanks the whole file first, then
+  indexes the line, matching the Ruby sibling. (`hook_helper.py`)
+
+- **Ruby module methods were invisible to the constant graph and call index.** A
+  `def self.foo` inside a `module` is invoked as `Module.foo` (the
+  constant-receiver shape), but the AST dumper never pushed the module as a
+  receiver identity, so `Module.foo` calls got no edge and the module's
+  `defined_in` was empty. get_callers on such a method returned zero callers
+  despite real call sites. The dumper now records the module as the enclosing
+  identity for its singleton methods. (`prism_dump.rb`)
+
+- **NestJS DI call edges were dropped for a non-null-asserted or parenthesized
+  receiver.** `this.foo!.m()` and `(this.foo).m()` emitted no call site while
+  `this.foo.m()` and `this.foo?.m()` did, so get_callers / get_blast_radius
+  under-reported. The dumper now unwraps non-null assertions and parentheses on
+  the receiver. (`ts_dump.mjs`)
+
+- **get_contract_breaks was blind to a required keyword-only argument in Python.**
+  A `def f(*, x)` addition breaks every caller (all pass by keyword) but the
+  positional-only count stayed flat, so the break read as clean. Required
+  keyword-only params now count as a narrowing for Python; Ruby stays unchanged.
+  (`signature_diff.py`)
+
+- **Class-contract directive projected a minority cohort as an archetype-wide
+  MUST.** A base/decorator carried by a minority of an archetype's files (or a
+  smaller cohort out-ranking the dominant one on richness) was rendered as an
+  absolute "extends X; define Y" -- a DRF-view archetype was told to extend a CBV
+  mixin 0 of its files use. The anchor now counts distinct files (matching its
+  own threshold and the inheritance detector) and the dominant cohort always
+  wins. (`conventions.py`)
+
+- **DRF authz advisory false-fired on a viewset guarded by a project decorator.**
+  A viewset with `@allow_permission(...)` on every action was flagged "declares
+  none" because the authz vocabulary was Django built-ins only. A decorator whose
+  name carries an authz token now satisfies the convention. (`lint_engine.py`)
+
+- **Framework detection mislabeled non-Django repos as Django.** A bare
+  `manage.py` forced 'django' before the dependency checks ran, so a Flask repo
+  using the Flask-Script `manage.py` convention resolved to django. Dependency
+  signal now decides first; `manage.py` counts only when its content is a real
+  Django entrypoint. (`orchestrator.py`)
+
+- **get_archetype masked a corrupt profile as a clean no-match and had no trust
+  gate.** It collapsed a load failure to the same empty payload as a legitimate
+  no-match (every sibling reports degraded), and served classification from an
+  untrusted profile while all siblings refuse. It now reports degraded on a
+  corrupt bundle, trust-gates like its siblings, and names a repo-arg mismatch.
+  (`tools.py`)
+
+- **query_symbol_importers missed all broken importers of a deleted module.** A
+  deleted module's unreadable content returned found:false, lumping deletion in
+  with oversized/unsafe. A deleted module now resolves to a closed empty export
+  set so every still-referencing importer is reported, matching
+  get_crossfile_context. (`tools.py`)
+
+- **The correctness judge's array parser could drop real findings to a decoy.** It
+  returned the FIRST object-containing array, so a decoy array in the model's
+  reasoning shadowed the real findings emitted after it. It now keeps the last,
+  matching its documented contract. (`judge.py`)
+
+- **A poisoned enforcement-state scalar bypassed fail-open and then crashed every
+  save.** Non-map scalar counters were read raw, so a tampered string survived
+  load and crashed each subsequent (swallowed) save, silently losing enforcement
+  accounting for the session. Scalars now coerce fail-open like the map
+  counterpart. (`enforcement.py`)
+
+- **posttool-recorder armed the Stop backstop during a pause/disable window** and
+  wrote an empty exec-log row for every Edit/Write. It now honors suppression
+  before recording a Bash-written file and only appends the exec log for the Bash
+  tool. (`hook_helper.py`)
+
+- **The per-edit cross-file advisory surfaced only on the daemon path.** The
+  in-process lint fallback (daemon down, Bash writes, Stop re-lint) omitted the
+  removed-export / importer advisory; it now runs there too, with the truncation
+  flag threaded so a >100KB prefix does not false-flag. (`hook_helper.py`)
+
+- **The phantom-symbol check skipped multi-line parenthesized Python imports** --
+  the dominant multi-name style -- so a hallucinated name inside `from m import
+  (\n a,\n b\n)` was never flagged. The import scan now spans the parenthesized
+  body. (`phantom_imports.py`)
+
+- **get_rules, doctor, and the shadow/longitudinal windows carried honesty and
+  robustness gaps:** get_rules conflated an unresolvable repo with a healthy
+  zero-rules repo; doctor false-cleaned on a bare-array or generation-mismatched
+  core artifact; bootstrap_repo crashed on a non-string paths_glob; an untrusted
+  repo's advisory surfaced secrets but not eval; the report window had no upper
+  clamp. All now report or fail honestly. (`tools.py`, `hook_helper.py`,
+  `shadow_report.py`)
+
+### Removed
+
+- Dead code: `refuter_available` / `refuter_unavailable_reason` (superseded by
+  `refuter_cli_absent`), the unused `_line_at` secret-scanner helper, and the
+  never-read `ClusteringResult.cluster_count` / `total_files_clustered`
+  properties. Stale doc/skill references (idiom_judge default, the recorder's
+  drift-observation attribution, the engine version in architecture.md, the
+  `enforcement_artifact_unreadable` status flag) were corrected, and the
+  prose-rule miner now skips git-ignored ephemeral docs.
+
 ## [2.52.0] - 2026-07-06
 
 A from-zero whole-plugin QA round for a production release. Every supported

@@ -1271,7 +1271,7 @@ def _collect_contract_classes(files: list[ParsedFile], *, language: str) -> list
     the same file is its own record and never dilutes the primary class's contract.
     """
     classes: list[dict] = []
-    for f in files:
+    for _fidx, f in enumerate(files):
         extras = getattr(f, "extras", {}) or {}
         by_name: dict[str, dict] = {}
 
@@ -1313,6 +1313,13 @@ def _collect_contract_classes(files: list[ParsedFile], *, language: str) -> list
             if base and not rec["base"]:
                 rec["base"] = base
 
+        for _rec in by_name.values():
+            # Tag the source file so the anchor gate can count DISTINCT FILES (its
+            # 0.6*len(files) bar), not classes: many classes packed into a few
+            # files must not inflate an anchor past a minority of the archetype's
+            # files (a mixin in 2 of 15 files carried by 11 classes was projected
+            # as archetype-wide though inheritance -- per-file -- rightly declined).
+            _rec["_file"] = _fidx
         classes.extend(by_name.values())
     return classes
 
@@ -1389,8 +1396,19 @@ def extract_class_contract_conventions(files: list[ParsedFile], *, language: str
     # The anchor must clear the dominance threshold against the member count, the
     # same reference inheritance uses, so a file with two classes can't halve it.
     anchor_min = _INHERITANCE_THRESHOLD * len(files)
-    base_counts: Counter = Counter(c["base"] for c in classes if c["base"])
-    decorator_counts: Counter = Counter(d for c in classes for d in c["decorators"])
+    # Count DISTINCT FILES carrying each base/decorator, not classes, so the gate
+    # shares anchor_min's file basis (and matches the per-file inheritance
+    # detector). Class-counting let a mixin concentrated in a few files clear a
+    # file-scaled bar it should have failed.
+    _base_files: dict[str, set] = {}
+    _dec_files: dict[str, set] = {}
+    for c in classes:
+        if c["base"]:
+            _base_files.setdefault(c["base"], set()).add(c["_file"])
+        for d in c["decorators"]:
+            _dec_files.setdefault(d, set()).add(c["_file"])
+    base_counts = {b: len(fs) for b, fs in _base_files.items()}
+    decorator_counts = {d: len(fs) for d, fs in _dec_files.items()}
 
     candidates: list[tuple[str, str]] = [
         ("base", b) for b, cnt in base_counts.items() if cnt >= anchor_min
@@ -1428,7 +1446,12 @@ def extract_class_contract_conventions(files: list[ParsedFile], *, language: str
             + len(result.get("decorators", []))
             + len(result.get("required_methods", []))
         )
-        rank = (richness, len(cohort), kind == "decorator", value)
+        # Cohort size leads the rank so the dominant cohort always wins; richness
+        # is only a tiebreak among equally-dominant anchors. Leading with richness
+        # let a smaller cohort (a decorator carried by 6 of 14 classes) out-rank
+        # the dominant base (carried by 9) and project its within-cohort
+        # frequencies as an archetype-wide MUST -- the case the docstring forbids.
+        rank = (len(cohort), richness, kind == "decorator", value)
         if best is None or rank > best[0]:
             best = (rank, result)
 

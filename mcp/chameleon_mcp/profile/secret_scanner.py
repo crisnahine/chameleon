@@ -79,15 +79,6 @@ _CREDENTIAL_CONTEXT = re.compile(
 )
 
 
-def _line_at(content: str, position: int) -> str:
-    """Return the full source line that contains the byte offset `position`."""
-    start = content.rfind("\n", 0, position) + 1
-    end = content.find("\n", position)
-    if end == -1:
-        end = len(content)
-    return content[start:end]
-
-
 def _line_number_at(content: str, position: int) -> int:
     """1-based line number for the char offset `position`.
 

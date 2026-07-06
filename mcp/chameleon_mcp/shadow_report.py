@@ -166,6 +166,10 @@ def build_shadow_report(
         window_days = threshold_int("SHADOW_REPORT_WINDOW_DAYS")
     if window_days <= 0:
         window_days = threshold_int("SHADOW_REPORT_WINDOW_DAYS")
+    # Upper clamp: an absurd value (echoed into the report) otherwise produces a
+    # window_start far in the past with no truncation signal, reading as "all
+    # data" while claiming a finite window.
+    window_days = min(window_days, threshold_int("REPORT_MAX_WINDOW_DAYS"))
 
     now = time.time() if now is None else now
     window_start = now - window_days * 86400
@@ -374,6 +378,8 @@ def build_longitudinal_signals(
         window_days = threshold_int("LONGITUDINAL_WINDOW_DAYS")
     if window_days <= 0:
         window_days = threshold_int("LONGITUDINAL_WINDOW_DAYS")
+    # Upper clamp, same rationale as build_shadow_report.
+    window_days = min(window_days, threshold_int("REPORT_MAX_WINDOW_DAYS"))
 
     conformance = _structural_conformance(repo_id, window_days)
     outcomes = _enforcement_outcomes(repo_id, window_days, now=now, metrics_path=metrics_path)

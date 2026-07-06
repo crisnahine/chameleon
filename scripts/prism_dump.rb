@@ -359,6 +359,16 @@ def extract_file(file_path)
         class_shapes << shape
       end
       if name
+        # A module is also a call-graph RECEIVER identity: `def self.foo` inside
+        # `module Accountable` is invoked as `Accountable.foo` -- the exact
+        # constant_receiver edge shape. Push a class_stack frame (like ClassNode,
+        # but a module has no superclass) so those defs carry enclosing_class /
+        # enclosing_class_path = the module, instead of None (which dropped both
+        # the Module.method call edge AND the module's constant_index defined_in).
+        class_stack.push({ name: name,
+                           superclass: nil,
+                           path: (nesting_stack + [name]).join('::') })
+        pushed_class = true
         nesting_stack.push(name)
         pushed_nesting = true
       end

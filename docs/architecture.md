@@ -5,7 +5,7 @@
 This document describes how chameleon works as built. It is the reference for
 the bootstrap pipeline, the hook stack, the MCP tool surface, the enforcement
 and review gate, the profile schema, the state stores, and the security model.
-It tracks engine version **2.36.1** and profile **schema version 8**. When the
+It tracks engine version **2.53.0** and profile **schema version 8**. When the
 code and this document disagree, the code is right; please file an issue.
 
 ## Contents
@@ -624,9 +624,10 @@ banner and the other hooks fail open silently and log a `no-interpreter` line.
   from the precomputed `symbol_signatures.json`, ranked by recorded call
   proximity from `calls_index.json` so the closest collaborators lead.
   Default-on, kill switch `CHAMELEON_NEARBY_SIGNATURES=0`.
-- **posttool-recorder** records the drift observation and the HMAC-signed Bash
-  exec log, and re-lints single-target Bash file writes (`>`, `>>`, `tee`,
-  `sed -i`) into the enforcement state so the Stop backstop covers them.
+- **posttool-recorder** records the HMAC-signed Bash exec log and re-lints
+  single-target Bash file writes (`>`, `>>`, `tee`, `sed -i`) into the
+  enforcement state so the Stop backstop covers them. (The drift observation and
+  the per-edit decision row are recorded by posttool-verify, not the recorder.)
 - **posttool-verify** lints the written file against its archetype and emits
   violations as advisory context. Gated additionally by `CHAMELEON_VERIFY`.
 - **callout-detector** (UserPromptSubmit) captures checkable intent tokens for

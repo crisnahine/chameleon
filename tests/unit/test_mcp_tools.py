@@ -1113,6 +1113,9 @@ class TestMatchBasisField:
         (repo / "src" / "components" / "Real.tsx").write_text(
             "export default function Real() { return null }\n", encoding="utf-8"
         )
+        # get_archetype now trust-gates like every sibling read tool, so the
+        # fixture must grant trust to exercise real classification.
+        grant_trust(tools._compute_repo_id(repo), cham)
         return repo
 
     def test_phantom_path_is_path_only_and_marked_nonexistent(self, tmp_path, monkeypatch):

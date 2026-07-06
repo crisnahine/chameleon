@@ -83,6 +83,11 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # pass an explicit window. Two-to-three weeks of real editing is the volume a
     # lead reads before deciding whether to flip shadow -> enforce.
     "SHADOW_REPORT_WINDOW_DAYS": 21,
+    # Upper clamp for a caller-supplied window_days (shadow report + longitudinal
+    # signals): ~10 years is effectively "all history". Guards against an absurd
+    # value producing a meaningless window_start far in the past with no
+    # truncation signal. Shared by both window normalizers.
+    "REPORT_MAX_WINDOW_DAYS": 3650,
     # Cap on the sampled file:line list the report returns per call, so a noisy
     # rule cannot flood the output the human has to eyeball.
     "SHADOW_REPORT_SAMPLE_CAP": 20,

@@ -490,9 +490,21 @@ def _classify_framework(repo_root: Path, language: str | None) -> str | None:
                     return "rails"
             return None
         if language == "python":
-            # manage.py is the strongest Django marker; a DRF repo is still Django.
-            if any((d / "manage.py").is_file() for d in dirs):
-                return "django"
+            # A manage.py whose CONTENT is a real Django entrypoint is the
+            # strongest, corroborated Django signal (stronger than an incidental
+            # fastapi/drf dep that may also appear in a Django repo), so it wins
+            # first. A BARE manage.py (a click/task-runner that merely shares the
+            # name, no django content) is NOT this signal and falls through to the
+            # dependency checks -- the Flask-Script `manage.py` convention must not
+            # force django. This mirrors the Ruby/TS detectors, which require a
+            # corroborating content signal, never a filename alone.
+            for d in dirs:
+                mp = d / "manage.py"
+                if mp.is_file() and re.search(
+                    r"\bdjango\b|DJANGO_SETTINGS_MODULE", _read_marker_text(mp), re.IGNORECASE
+                ):
+                    return "django"
+
             dep_names: set[str] = set()
             for d in dirs:
                 dep_names |= _python_dep_names(d)
@@ -503,7 +515,8 @@ def _classify_framework(repo_root: Path, language: str | None) -> str | None:
                 # symmetric across all three families.
                 return any(n == family or n.startswith(family + "-") for n in dep_names)
 
-            # Most specific first; fastapi/flask are unambiguous web frameworks.
+            # No corroborated manage.py: fall to the dependency signal, most
+            # specific first.
             if _has("fastapi"):
                 return "fastapi"
             if _has("flask"):

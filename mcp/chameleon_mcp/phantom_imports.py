@@ -83,30 +83,38 @@ _IGNORE_RUBY_RE = re.compile(r"#\s*chameleon-ignore\s+([\w-]+)")
 # imported-names clause to the end of the line (for the phantom-SYMBOL check).
 # Absolute imports (`import os`, `from django.db import ...`) are not relative
 # and unverifiable without sys.path, so they are not matched.
-_PY_RELATIVE_IMPORT_RE = re.compile(r"^[ \t]*from\s+(\.+)([\w.]*)\s+import\b(.*)$", re.MULTILINE)
+# The import clause is either a parenthesized body -- which may SPAN LINES (the
+# dominant multi-name style: `from x import (\n a,\n b,\n)`) -- or the rest of a
+# single line. The `\([^)]*\)` alternative crosses newlines because a negated
+# char class matches newlines regardless of DOTALL, so a hallucinated name inside
+# a parenthesized multi-line import is no longer invisible to the symbol check.
+_PY_RELATIVE_IMPORT_RE = re.compile(
+    r"^[ \t]*from\s+(\.+)([\w.]*)\s+import[ \t]*(\([^)]*\)|.*)$", re.MULTILINE
+)
 # Absolute `from pkg.mod import x` (first char not a dot). Only the SYMBOL
 # check consumes these: an unresolvable absolute spec may be stdlib or a
 # dependency, so the module itself is never flagged.
 _PY_ABSOLUTE_IMPORT_RE = re.compile(
-    r"^[ \t]*from\s+([A-Za-z_][\w.]*)\s+import\b(.*)$", re.MULTILINE
+    r"^[ \t]*from\s+([A-Za-z_][\w.]*)\s+import[ \t]*(\([^)]*\)|.*)$", re.MULTILINE
 )
 
 
 def _py_imported_names(clause: str) -> list[str]:
-    """Imported names from a single-line `import a, b as c` clause.
+    """Imported names from an ``import a, b as c`` clause, single- or multi-line.
 
     Returns the SOURCE name (left of any ``as``) of each binding -- the name the
-    target module must export. The single-line parenthesized form
-    (``from m import (a, b)``, which PEP 8 and the formatters favor) is handled by
-    stripping the wrapping parens; a genuine multi-line clause whose visible text
-    is just ``(`` strips to empty and yields nothing, so the symbol check
-    conservatively skips it (the names live on lines this single-line scan can't
-    see). A star import also yields nothing.
+    target module must export. Both the single-line parenthesized form
+    (``from m import (a, b)``) and the multi-line form (``from m import (\\n a,\\n
+    b,\\n)``, which PEP 8 and the formatters favor) are handled: the wrapping
+    parens are stripped and each physical line's trailing ``# comment`` is dropped
+    before splitting on commas, so a name is not lost to a per-line comment. A
+    star import yields nothing.
     """
-    # Drop a trailing inline comment, then strip wrapping parens BEFORE the
-    # empty/star test, so a single-line `(a, b)` flows through the splitter while
-    # the bare-`(` multi-line opener still collapses to empty.
-    clause = clause.split("#", 1)[0].strip().lstrip("(").rstrip(")").strip()
+    # Strip a per-LINE inline comment (a multi-line clause can carry one per row),
+    # then strip the wrapping parens. Rejoin to a single string for the comma
+    # split; newlines between names are just whitespace the per-part strip drops.
+    lines = [ln.split("#", 1)[0] for ln in clause.splitlines()]
+    clause = " ".join(lines).strip().lstrip("(").rstrip(")").strip()
     if not clause or clause == "*":
         return []
     names: list[str] = []

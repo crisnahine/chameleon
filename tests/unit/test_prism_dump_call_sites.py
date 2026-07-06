@@ -202,17 +202,19 @@ def test_compact_constant_path_class_keeps_full_name(tmp_path):
 
 @pytest.mark.skipif(not _have_prism(), reason="ruby + prism gem unavailable")
 def test_module_level_def_and_singleton_class_paths(tmp_path):
-    # A def directly inside a module has no enclosing class, so both fields
-    # stay nil; a `class << self` scope keeps the enclosing class's qualified
-    # path exactly as it keeps its name.
+    # `def self.helper` directly inside `module Util` is invoked as `Util.helper`
+    # (the constant_receiver call shape), so the module IS its enclosing identity
+    # -- the dump records enclosing_class/path = the module. A `class << self`
+    # scope keeps the enclosing class's qualified path exactly as it keeps its
+    # name.
     f = tmp_path / "namespaced.rb"
     f.write_text(FIXTURE_NAMESPACED, encoding="utf-8")
     rec = _dump(f)
     sigs = {s["name"]: s for s in rec["callable_signatures"]}
 
     helper = sigs["helper"]
-    assert helper["enclosing_class"] is None
-    assert helper["enclosing_class_path"] is None
+    assert helper["enclosing_class"] == "Util"
+    assert helper["enclosing_class_path"] == "Util"
     assert helper["kind"] == "singleton_method"
 
     go = sigs["go"]

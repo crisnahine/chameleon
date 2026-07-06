@@ -1011,8 +1011,13 @@ def _extract_json_array(text: str) -> list | None:
             if first_array is None:
                 first_array = value
             if any(isinstance(el, dict) for el in value):
+                # Keep the LAST object-containing array, not the first: a model
+                # emits its reasoning (which may itself contain an object-array
+                # decoy) BEFORE the final findings array, so breaking on the first
+                # dict-array lets a decoy shadow and silently drop the real
+                # findings. Scanning on to the last one matches the "last JSON
+                # array" contract in the docstring.
                 dict_array, dict_array_pos = value, i
-                break
         i = text.find("[", i + 1)
 
     obj: dict | None = None

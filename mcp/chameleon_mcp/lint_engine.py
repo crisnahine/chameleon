@@ -3973,6 +3973,18 @@ _PY_AUTHZ_DECORATOR_RE = re.compile(
     r"@\s*(?:[\w.]+\.)?(?:login_required|permission_required|user_passes_test|"
     r"staff_member_required)\b"
 )
+# Project authz decorators AST analysis cannot enumerate: a repo defines its own
+# `@allow_permission(...)`, `@require_permission`, `@authorize`, `@has_access`
+# per action. A decorator whose name carries an authz token IS an in-file access
+# decision and must satisfy the convention, or a fully-guarded DRF viewset (every
+# action decorated) false-fires "declares none". Loose by design, matching the
+# base-hint philosophy: over-recognizing an authz decorator only silences the
+# advisory (the safe direction), it never blocks.
+_PY_AUTHZ_DECORATOR_HINT_RE = re.compile(
+    r"@\s*(?:[\w.]+\.)?\w*(?:permission|allow|authoriz|authent|login|access|"
+    r"require_role|require_scope|require_auth|has_perm|guard)\w*",
+    re.IGNORECASE,
+)
 # The optional `\[...\]` after the name is a PEP 695 (3.12+) type-parameter list
 # (`class Foo[T](Base):`); without it a generic view skips the mixin-base check and
 # a properly-guarded view is falsely flagged. Mirrors _PY_CLASS_BASES_LINT_RE.
@@ -4009,8 +4021,14 @@ def _python_guard_violations(scan_content: str, conventions: dict) -> list[Viola
     guards = conventions.get("required_guards") or {}
     if not isinstance(guards, dict) or not guards.get("authz_required"):
         return []
-    # A real authz decision anywhere in the file satisfies the convention.
-    if _PY_AUTHZ_ATTR_RE.search(scan_content) or _PY_AUTHZ_DECORATOR_RE.search(scan_content):
+    # A real authz decision anywhere in the file satisfies the convention: a
+    # permission_classes assignment, a Django-builtin authz decorator, or a
+    # project authz decorator recognized by its name (`@allow_permission`, etc.).
+    if (
+        _PY_AUTHZ_ATTR_RE.search(scan_content)
+        or _PY_AUTHZ_DECORATOR_RE.search(scan_content)
+        or _PY_AUTHZ_DECORATOR_HINT_RE.search(scan_content)
+    ):
         return []
     # Authz mixins always count; a known cohort base counts only when its name
     # indicates authz (the generic dominant base does not).

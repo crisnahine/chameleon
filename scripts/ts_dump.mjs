@@ -306,7 +306,19 @@ function callSiteOf(node) {
   if (callee.kind === ts.SyntaxKind.PropertyAccessExpression) {
     const name = callee.name && callee.name.text;
     if (!name) return null;
-    const recv = callee.expression;
+    let recv = callee.expression;
+    // Unwrap non-null assertions (`this.foo!.m()`) and parentheses
+    // (`(this.foo).m()`) on the receiver so resolution below sees the underlying
+    // this.foo / identifier. Optional chaining (`this.foo?.m()`) already leaves
+    // the inner node intact and resolved incidentally; a wrapped receiver was
+    // otherwise dropped, silently losing the DI / import call edge asymmetrically.
+    while (
+      recv &&
+      (recv.kind === ts.SyntaxKind.NonNullExpression ||
+        recv.kind === ts.SyntaxKind.ParenthesizedExpression)
+    ) {
+      recv = recv.expression;
+    }
     if (recv.kind === ts.SyntaxKind.ThisKeyword) {
       return { name, receiver: "this", kind: "this" };
     }

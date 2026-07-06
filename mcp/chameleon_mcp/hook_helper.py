@@ -3033,6 +3033,39 @@ def preflight_and_advise() -> int:
                         + "\n</chameleon-context>"
                     )
                     return 0
+                # eval-call is the co-equal deterministic security sink: the
+                # trusted PreToolUse gate denies BOTH a hardcoded secret and an
+                # eval()/exec() RCE. The untrusted advisory must surface both too,
+                # or a pre-trust user is warned about credentials but silently
+                # unprotected against a dynamic-eval sink.
+                _hard_eval, _ = _proposed_hard_eval_violations(
+                    _proposed, file_path, tool_name=_tool
+                )
+                if _hard_eval:
+                    from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+                    from chameleon_mcp.violation_class import violation_line
+
+                    _elns = [violation_line(_v) for _v in _hard_eval[:3]]
+                    _eloc = ", ".join(f"line {ln}" for ln in _elns if ln) or "the proposed content"
+                    _metric(
+                        advisory_emitted=True,
+                        repo_id=repo_info.get("id") or repo_id_hint,
+                        trust_state="untrusted",
+                    )
+                    _emit_chameleon_context(
+                        "<chameleon-context>\n[🦎 chameleon: dynamic code execution]\n\n"
+                        + sanitize_for_chameleon_context(
+                            f"eval()/exec() dynamic code execution at {_eloc}. This is a "
+                            "remote-code-execution sink; prefer an explicit dispatch over "
+                            "evaluating a string. This repo's chameleon profile is "
+                            "untrusted, so this is an advisory only -- run "
+                            "/chameleon-trust to enable the pre-write eval block. If this "
+                            "use is deliberate and safe, add "
+                            f"{_ignore_hint(file_path, 'eval-call')} on the offending line."
+                        )
+                        + "\n</chameleon-context>"
+                    )
+                    return 0
         except Exception:
             pass
 
@@ -3861,7 +3894,9 @@ def _record_bash_write_mutations(
 
         file_path = str(p)
         try:
-            content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+            _rb = p.read_bytes()
+            _bw_truncated = len(_rb) > 100_000
+            content = _rb[:100_000].decode("utf-8", errors="replace")
         except OSError:
             continue
 
@@ -3888,7 +3923,13 @@ def _record_bash_write_mutations(
             record_archetype = _NO_ARCHETYPE_LABEL
         else:
             try:
-                violations = _lint_file_in_process(repo_root, archetype_name, content, file_path)
+                violations = _lint_file_in_process(
+                    repo_root,
+                    archetype_name,
+                    content,
+                    file_path,
+                    content_truncated=_bw_truncated,
+                )
             except Exception:
                 violations = []
             if not violations:
@@ -3972,11 +4013,23 @@ def posttool_recorder() -> int:
         _emit({})
         return 0
 
+    tool_name = payload.get("tool_name", "")
+    # The recorder is matched for Bash|Edit|Write|NotebookEdit, but its exec-log
+    # append and Bash-write re-lint are Bash-only work: an Edit/Write/NotebookEdit
+    # carries no command, so appending an exec-log row for it wrote an empty
+    # entry that violates the log's "one row per Bash invocation" invariant. Gate
+    # both on the Bash tool (non-string tool_name fails the check safely).
+    is_bash = isinstance(tool_name, str) and tool_name == "Bash"
+
     tool_input = _as_dict(payload.get("tool_input"))
     tool_response = _as_dict(payload.get("tool_response"))
     command = tool_input.get("command", "")
     session_id = payload.get("session_id", "unknown")
     exit_code = tool_response.get("returnCode") if isinstance(tool_response, dict) else None
+
+    if not is_bash:
+        _emit({})
+        return 0
 
     cwd_raw = payload.get("cwd")
     # os.getcwd() re-raises FileNotFoundError when the process cwd was deleted --
@@ -4020,7 +4073,15 @@ def posttool_recorder() -> int:
     # CHAMELEON_VERIFY=0 like the Edit verifier, and fails open on any error.
     if os.environ.get("CHAMELEON_VERIFY") != "0":
         try:
-            _record_bash_write_mutations(command, cwd, session_id)
+            # Recording a Bash-written file into the enforcement state ARMS the
+            # Stop backstop for it. During a /chameleon-pause or -disable window
+            # that must not happen -- posttool_verify returns early on the same
+            # suppression, so a Bash write would otherwise be the one edit path
+            # that still armed a turn-end block while the user muted chameleon.
+            from chameleon_mcp.optouts import is_chameleon_suppressed
+
+            if is_chameleon_suppressed(cwd, repo_id, session_id) is None:
+                _record_bash_write_mutations(command, cwd, session_id)
         except Exception:
             pass
 
@@ -4038,6 +4099,7 @@ def _lint_file_in_process(
     content: str,
     file_path: str,
     loaded=None,
+    content_truncated: bool = False,
 ) -> list[dict]:
     """Run the archetype AST-shape, convention, and phantom-import lints against
     ``content`` in-process and return the merged violation dicts.
@@ -4148,6 +4210,27 @@ def _lint_file_in_process(
                 repo_root=repo_root,
                 language=language,
                 rules=loaded.rules,
+            )
+        )
+    except Exception:
+        pass
+
+    # Cross-file importer / removed-export advisory, mirroring the daemon
+    # lint_file path (tools.py): without it, the per-edit cross-file signal
+    # surfaced ONLY when the daemon answered, so a daemon-down fallback silently
+    # dropped it. content_truncated is threaded so a >100KB prefix does not
+    # spuriously flag its tail exports as removed.
+    try:
+        from chameleon_mcp.phantom_imports import lint_cross_file_imports
+
+        violations.extend(
+            v.to_dict()
+            for v in lint_cross_file_imports(
+                content,
+                file_path=file_path,
+                repo_root=repo_root,
+                language=language,
+                content_truncated=content_truncated,
             )
         )
     except Exception:
@@ -5204,7 +5287,9 @@ def posttool_verify() -> int:
             pass
 
         if not daemon_responded:
-            violations = _lint_file_in_process(repo_root, archetype_name, content, file_path)
+            violations = _lint_file_in_process(
+                repo_root, archetype_name, content, file_path, content_truncated=content_truncated
+            )
 
         # Archetype-SHAPE rules presume the archetype actually fits the file.
         # On a fallback/none-quality match (new directory, no structural
@@ -6025,7 +6110,9 @@ def _stop_file_still_blockable(
         if not p.is_file():
             return False
         try:
-            content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+            _sb_raw = p.read_bytes()
+            _sb_truncated = len(_sb_raw) > 100_000
+            content = _sb_raw[:100_000].decode("utf-8", errors="replace")
         except OSError:
             # The file exists but could not be read this turn (a permissions flip,
             # a network-FS hiccup, an editor lock). "Couldn't check" is NOT
@@ -6107,7 +6194,12 @@ def _stop_file_still_blockable(
             return bool(enforceable)
 
         violations = _lint_file_in_process(
-            repo_root, archetype_name, content, file_path, loaded=loaded
+            repo_root,
+            archetype_name,
+            content,
+            file_path,
+            loaded=loaded,
+            content_truncated=_sb_truncated,
         )
         if not violations:
             return False
@@ -7901,15 +7993,20 @@ def _reference_present(
         # so `<Tag>Name</Tag>` text is not a live reference while `{Name}` is.
         return _blank_jsx_text(blanked)
 
-    lines = content.splitlines()
-    if line is not None and 1 <= line <= len(lines):
-        # The per-line scan can misread a token that opens on an earlier line (a
-        # multi-line block comment or template literal); only USE the line result
-        # to short-circuit a positive, and fall back to the whole-file scan
-        # otherwise (which sees the real string/comment state).
-        if needle.search(_blank(lines[line - 1])):
+    # Blank the WHOLE file first, THEN index the recorded line -- never blank a
+    # single line in isolation. A token that opens on an earlier line (a
+    # multi-line block comment or a template literal) is only resolved by the
+    # whole-file scan; blanking one line alone misreads a name surviving inside
+    # such a span as a live reference, which reports a false cross-file break
+    # (and a false deny on the crossfile deny path). The line short-circuit is a
+    # precision fast-path over the already-blanked text, mirroring the Ruby
+    # sibling _name_present.
+    blanked = _blank(content)
+    blanked_lines = blanked.splitlines()
+    if line is not None and 1 <= line <= len(blanked_lines):
+        if needle.search(blanked_lines[line - 1]):
             return True
-    return bool(needle.search(_blank(content)))
+    return bool(needle.search(blanked))
 
 
 def _pending_deletions_path(repo_data: Path, session_id) -> Path:

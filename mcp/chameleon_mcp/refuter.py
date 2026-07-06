@@ -56,45 +56,6 @@ def _refuter_model_for(finding: dict, base_model: str) -> str:
     return high if _valid_model(high) else base_model
 
 
-def refuter_available() -> bool:
-    """True iff the bare-``claude`` CLI probe says a spawn can succeed.
-
-    Reuses judge.py's real probe: checks both that the --bare flag is supported
-    (implying the CLI binary exists and responds) and that auth has not previously
-    been confirmed to fail. This matches the actual spawn gate rather than a
-    naive ``shutil.which`` check that passes even after auth failure.
-    """
-    try:
-        return _bare_flag_supported() and not _bare_auth_known_failed()
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def refuter_unavailable_reason() -> str | None:
-    """Precise reason the refuter cannot spawn, or None when it can.
-
-    Distinguishes a genuinely-absent CLI from the common case where the CLI is
-    present and logged in but ``--bare`` mode drops OAuth/keychain credentials on
-    this CLI version (the bare-auth probe failed and cached a marker). The second
-    case is NOT "claude CLI unavailable" -- a normal ``claude -p`` still works and
-    the review skills fall back to inline verification -- so reporting it as a
-    missing CLI misleads the user into thinking claude is not installed. Fails
-    open to a generic reason on any probe error.
-    """
-    try:
-        if not _bare_flag_supported():
-            return "claude CLI not found on PATH or too old to support --bare"
-        if _bare_auth_known_failed():
-            return (
-                "the refuter's --bare spawn loses credentials on this claude CLI "
-                "(you are logged in, but --bare drops OAuth); falling back to "
-                "inline verification"
-            )
-        return None
-    except Exception:  # noqa: BLE001
-        return "refuter CLI probe failed"
-
-
 def refuter_cli_absent() -> str | None:
     """Reason the ``claude`` CLI cannot run a refuter spawn at all, or None.
 

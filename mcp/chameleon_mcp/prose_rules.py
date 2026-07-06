@@ -111,10 +111,38 @@ def _is_doc_file(name: str) -> bool:
     return low.startswith(_DOC_PREFIXES) and low.endswith(_DOC_SUFFIXES)
 
 
+def _git_ignored(root: Path, paths: list[Path]) -> set[Path]:
+    """Subset of ``paths`` that git considers ignored, via one check-ignore call.
+
+    chameleon profiles what is COMMITTED, so a git-ignored, never-committed doc
+    (e.g. an ephemeral ``docs/superpowers/`` skill artifact) is not a team
+    convention source and must not seed a prose rule. Fails open to the empty set
+    (treat nothing as ignored, the prior over-inclusive behavior) when git is
+    absent or errors -- never crash the bootstrap over a doc scan.
+    """
+    if not paths:
+        return set()
+    try:
+        import subprocess
+
+        proc = subprocess.run(
+            ["git", "-C", str(root), "check-ignore", "--stdin"],
+            input="\n".join(str(p) for p in paths),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        ignored_str = {ln.strip() for ln in proc.stdout.splitlines() if ln.strip()}
+        return {p for p in paths if str(p) in ignored_str}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def _iter_doc_files(repo_root: Path):
     """Yield convention-bearing doc files (root allowlist + docs/ tree), bounded.
 
-    Deterministic order, skips symlinks, stops after ``PROSE_RULE_MAX_DOCS``.
+    Deterministic order, skips symlinks and git-ignored files, stops after
+    ``PROSE_RULE_MAX_DOCS``.
     """
     root = Path(repo_root)
     max_docs = threshold_int("PROSE_RULE_MAX_DOCS")
@@ -136,8 +164,15 @@ def _iter_doc_files(repo_root: Path):
                     os.path.join(dirpath, n)
                 ):
                     candidates.append(Path(dirpath) / n)
-    for p in candidates[:max_docs]:
+    ignored = _git_ignored(root, candidates)
+    yielded = 0
+    for p in candidates:
+        if p in ignored:
+            continue
         yield p
+        yielded += 1
+        if yielded >= max_docs:
+            break
 
 
 def _read_text(path: Path, max_bytes: int) -> str | None:

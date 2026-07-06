@@ -1350,19 +1350,40 @@ def get_archetype(repo: str, file_path: str) -> dict:
         return _envelope(_empty_archetype_envelope(content_signal_value, p.is_file()))
 
     expected_repo_id = _compute_repo_id(repo_root)
+    _mismatch = _empty_archetype_envelope(content_signal_value, p.is_file())
+    _mismatch["reason"] = "repo-arg-mismatch"
     if _REPO_ID_RE.match(repo) if isinstance(repo, str) else False:
         if expected_repo_id != repo:
-            return _envelope(_empty_archetype_envelope(content_signal_value, p.is_file()))
+            return _envelope(dict(_mismatch))
     else:
         _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
         if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            return _envelope(_empty_archetype_envelope(content_signal_value, p.is_file()))
+            return _envelope(dict(_mismatch))
+
+    # Trust-gate: archetype classification is profile-derived content served from
+    # the committed, attacker-controllable .chameleon/ profile, so refuse it from
+    # an untrusted profile like every sibling read tool does. Internal hook
+    # callers already gate trust upstream, so on a trusted repo this is a no-op.
+    from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for
+
+    _gate = _trust_state_for(expected_repo_id)
+    if _gate is None or not _gate.grants_root(repo_root):
+        _untrusted = _empty_archetype_envelope(content_signal_value, p.is_file())
+        _untrusted["status"] = "untrusted"
+        return _envelope(_untrusted)
 
     profile_dir = _effective_profile_dir(repo_root)
     try:
         loaded: LoadedProfile = load_profile_dir(profile_dir)
     except Exception:
-        return _envelope(_empty_archetype_envelope(content_signal_value, p.is_file()))
+        # A corrupt / unloadable profile is NOT a clean "no archetype match":
+        # collapsing it to the empty no-match payload hid a torn profile as
+        # healthy (every sibling read tool reports degraded here). Flag it so the
+        # caller and the per-edit hook treat guidance as unknown, not clean.
+        _degraded = _empty_archetype_envelope(content_signal_value, p.is_file())
+        _degraded["status"] = "degraded"
+        _degraded["reason"] = "profile_unavailable"
+        return _envelope(_degraded)
 
     return _get_archetype_with_loaded(p, repo_root, loaded, content_signal_value)
 
@@ -2633,7 +2654,10 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     if repo_root is None and repo_id is not None:
         repo_root = _resolve_repo_root_by_id(repo_id)
     if repo_root is None or not repo_root.is_dir():
-        env = {"rules": []}
+        # Mark the unresolvable case so it is not read as a healthy zero-rules
+        # repo (which returns a bare {"rules": []}); the untrusted / degraded
+        # branches below carry a status the same way.
+        env = {"rules": [], "status": "unresolved"}
         if deprecation_note:
             env["deprecation"] = deprecation_note
         return _envelope(env)
@@ -3449,22 +3473,31 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
         out["module"] = _reroot_rel(target_key, repo_root, _arg_root_ni)
         return _envelope(out)
 
-    try:
-        content = safe_read_text(repo_root, target_key, max_size_bytes=1_000_000)
-    except Exception:
-        # The module can't be read (deleted, oversized, unsafe path); without its
-        # current export set the existence check can't run -- fail open.
-        return _envelope(dict(empty))
-
-    # The reverse index spans the TS and Python module graphs, so the live export
-    # set must be read with the file's own language reader -- the TS regex finds
-    # zero exports in a Python module, which would misreport every Python importer
-    # as a broken reference. Pass the absolute path so the Python reader can add
-    # an __init__.py package's sibling re-exports.
-    if detect_language(str(p)) == "python":
-        current, open_set = _python_current_export_names(content, p)
+    if _module_file_missing(repo_root, target_key):
+        # A DELETED module exports nothing and the set is CLOSED, so every indexed
+        # importer that still names a binding is a genuine break. Separating this
+        # from an unreadable module (below) mirrors get_crossfile_context; the old
+        # code lumped deletion in with oversized/unsafe and returned found:false,
+        # missing every broken importer of a removed file.
+        current, open_set = frozenset(), False
     else:
-        current, open_set = _current_export_names(content)
+        try:
+            content = safe_read_text(repo_root, target_key, max_size_bytes=1_000_000)
+        except Exception:
+            # The module can't be READ (oversized, unsafe path -- not deletion,
+            # handled above); without its current export set the existence check
+            # can't run -- fail open.
+            return _envelope(dict(empty))
+
+        # The reverse index spans the TS and Python module graphs, so the live
+        # export set must be read with the file's own language reader -- the TS
+        # regex finds zero exports in a Python module, which would misreport every
+        # Python importer as a broken reference. Pass the absolute path so the
+        # Python reader can add an __init__.py package's sibling re-exports.
+        if detect_language(str(p)) == "python":
+            current, open_set = _python_current_export_names(content, p)
+        else:
+            current, open_set = _current_export_names(content)
 
     importers_out: list[dict] = []
     broken_out: list[dict] = []
@@ -7948,6 +7981,17 @@ def bootstrap_repo(
     """
     from chameleon_mcp.bootstrap.transaction import ProfileCommitError
     from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
+
+    if paths_glob is not None and not isinstance(paths_glob, str):
+        # Validated here alongside production_ref/now: an unvalidated non-string
+        # paths_glob reached discover_files and crashed with an uncaught
+        # AttributeError instead of a clean failed envelope.
+        return _envelope(
+            {
+                "status": "failed",
+                "error": "paths_glob must be a string glob or null",
+            }
+        )
 
     if production_ref is not None:
         if not isinstance(production_ref, str) or not _PRODUCTION_REF_ARG_RE.match(
@@ -13277,6 +13321,39 @@ def doctor(repo: str | None = None) -> dict:
                         artifact_problems.append(
                             f"{art} unreadable by this engine (stale schema or oversize)"
                         )
+            # The per-artifact checks above are parse-only for the CORE bundle
+            # (archetypes/canonicals/rules/conventions/profile.json), so a
+            # valid-JSON-but-wrong-schema core artifact slipped through as
+            # "parseable" while the profile is actually unloadable. Catch the two
+            # shapes the loader rejects that a bare json.loads does not:
+            #   (1) a core artifact that is not a JSON OBJECT (a bare array/scalar);
+            #   (2) a generation MISMATCH across the artifacts that carry one.
+            _core_bundle = (
+                "archetypes.json",
+                "canonicals.json",
+                "rules.json",
+                "conventions.json",
+                "profile.json",
+            )
+            _generations: set = set()
+            for art in _core_bundle:
+                apath = cwd_profile_dir / art
+                if not apath.is_file():
+                    continue
+                try:
+                    _obj = _json.loads(apath.read_text(encoding="utf-8"))
+                except Exception:
+                    continue  # already reported corrupt above if it was expected
+                if not isinstance(_obj, dict):
+                    artifact_problems.append(f"{art} is not a JSON object (wrong schema)")
+                    continue
+                if "generation" in _obj:
+                    _generations.add(_obj.get("generation"))
+            if len(_generations) > 1:
+                artifact_problems.append(
+                    f"profile generation mismatch across artifacts ({sorted(map(str, _generations))}); "
+                    "the bundle is unloadable"
+                )
             if artifact_problems:
                 checks.append(
                     {
