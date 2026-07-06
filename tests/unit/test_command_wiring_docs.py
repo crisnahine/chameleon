@@ -33,9 +33,7 @@ def test_architecture_and_readme():
 
 
 def test_deep_work_command_wired():
-    skill = (ROOT / "skills" / "chameleon-deep-work" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    skill = (ROOT / "skills" / "chameleon-deep-work" / "SKILL.md").read_text(encoding="utf-8")
     assert skill.startswith("---")
     assert "name: chameleon-deep-work" in skill
     # the four contract rules the skill encodes
@@ -48,9 +46,7 @@ def test_deep_work_command_wired():
     assert "re-issue the brief" in skill
     assert "on FAILURE too" in skill
     # listed everywhere a command must be listed
-    using = (ROOT / "skills" / "using-chameleon" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    using = (ROOT / "skills" / "using-chameleon" / "SKILL.md").read_text(encoding="utf-8")
     assert "/chameleon-deep-work" in using
     claude_md = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
     assert "deep-work" in claude_md
