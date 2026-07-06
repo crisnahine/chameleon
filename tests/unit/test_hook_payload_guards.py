@@ -39,6 +39,10 @@ HOSTILE_STDIN = [
     # _EDIT_TOOLS gate instead of bailing early.
     '{"tool_name": "Edit", "tool_input": "not-a-dict"}',
     '{"tool_name": "Write", "tool_input": [1, 2]}',
+    # A non-string tool_name is unhashable; a bare `tool_name in _EDIT_TOOLS`
+    # membership check raises TypeError on it instead of failing open.
+    '{"tool_name": ["Edit"], "tool_input": {"file_path": "/x.ts"}}',
+    '{"tool_name": {"k": "v"}, "tool_input": {"file_path": "/x.ts"}}',
     # non-string user_prompt/prompt would crash callout_detector's re.search.
     '{"user_prompt": ["chameleon", "broke"]}',
     '{"prompt": 42}',

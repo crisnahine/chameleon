@@ -474,6 +474,7 @@ def _dispatch(method: str, payload: dict) -> dict:
         archetype = payload.get("archetype")
         content = payload.get("content", "")
         file_path = payload.get("file_path")
+        content_truncated = payload.get("content_truncated")
         if not isinstance(repo, str) or not isinstance(archetype, str):
             return {"error": "repo + archetype required"}
         if not isinstance(content, str):
@@ -483,6 +484,9 @@ def _dispatch(method: str, payload: dict) -> dict:
             archetype,
             content,
             file_path=file_path if isinstance(file_path, str) else None,
+            # A caller that already capped an oversized file to its prefix flags
+            # it so the removed-export check is skipped; drop a non-bool.
+            content_truncated=content_truncated if isinstance(content_truncated, bool) else None,
         )
 
     if method == "invalidate_cache":
@@ -561,7 +565,12 @@ class _DaemonState:
 
     def __init__(self, idle_timeout_s: float) -> None:
         self.started_at = time.time()
-        self.last_request_at = time.time()
+        # None until the first real request is served (mark_request). ping and
+        # daemon_status surface this verbatim, and their contract is "None when
+        # the daemon hasn't served any requests yet" -- seeding it with the start
+        # time reported a phantom last-request before any work was done. The idle
+        # decision uses last_request_mono below, not this, so it is unaffected.
+        self.last_request_at: float | None = None
         # Monotonic clock drives the idle decision so a wall-clock jump
         # (NTP step, manual set) can't make the daemon hang or reap early.
         self.last_request_mono = time.monotonic()
@@ -1035,7 +1044,11 @@ def stop_daemon(*, timeout: float = 5.0) -> dict:
 def daemon_info() -> dict:
     """Read-only status snapshot — no side effects. Used by daemon_status()."""
     pid, sock = _read_pidfile()
-    alive = pid is not None and _pid_alive(pid)
+    # Match is_daemon_alive (the actual fast-path gate): a live PID whose socket
+    # is gone or unconnectable is unreachable, so the fast path is NOT engaged.
+    # Reporting alive off the PID alone (a /tmp reaper can unlink an idle socket
+    # while the process lives) contradicts what daemon_status exists to answer.
+    alive = pid is not None and _pid_alive(pid) and bool(sock) and _socket_connectable(sock)
     if not alive:
         return {
             "alive": False,

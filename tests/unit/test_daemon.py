@@ -185,19 +185,21 @@ def test_daemon_state_initial_values():
     assert state.request_count == 0
     assert state.shutdown_requested is False
     assert before <= state.started_at <= after
-    assert before <= state.last_request_at <= after
+    # None until the first real request is served (the ping/daemon_status contract).
+    assert state.last_request_at is None
 
 
 def test_daemon_state_mark_request():
     state = _DaemonState(idle_timeout_s=10.0)
-    initial_time = state.last_request_at
+    assert state.last_request_at is None
     assert state.request_count == 0
 
     time.sleep(0.01)
     state.mark_request()
 
     assert state.request_count == 1
-    assert state.last_request_at >= initial_time
+    assert state.last_request_at is not None
+    assert state.last_request_at >= state.started_at
 
 
 def test_daemon_state_mark_request_increments():
@@ -582,3 +584,97 @@ def test_stop_daemon_skips_recycle_probe_when_flock_unreliable(tmp_path, monkeyp
     assert (sentinel_pid, _signal.SIGTERM) in killed
     assert result["status"] == "stopped"
     assert result["pid"] == sentinel_pid
+
+
+class TestDispatchLintFileTruncation:
+    """The PostToolUse hook caps an oversized file to its 100KB prefix, then hands
+    that prefix to the daemon's lint_file. The daemon must forward the caller's
+    content_truncated flag so the removed-export check is skipped on the prefix;
+    dropping it made every export past the cap read as spuriously removed."""
+
+    def _capture(self, monkeypatch):
+        seen: dict = {}
+
+        def fake_lint_file(repo, archetype, content, file_path=None, content_truncated=None):
+            seen["content_truncated"] = content_truncated
+            return {"api_version": "1", "data": {"violations": []}}
+
+        monkeypatch.setattr("chameleon_mcp.tools.lint_file", fake_lint_file)
+        return seen
+
+    def _dispatch_lint(self, extra: dict):
+        from chameleon_mcp.daemon import _dispatch
+
+        payload = {"repo": "/x", "archetype": "a", "content": "y", "file_path": "f.ts"}
+        payload.update(extra)
+        return _dispatch("lint_file", payload)
+
+    def test_true_is_forwarded(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        self._dispatch_lint({"content_truncated": True})
+        assert seen["content_truncated"] is True
+
+    def test_false_is_forwarded(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        self._dispatch_lint({"content_truncated": False})
+        assert seen["content_truncated"] is False
+
+    def test_absent_defaults_to_none(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        self._dispatch_lint({})
+        assert seen["content_truncated"] is None
+
+    def test_non_bool_coerced_to_none(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        self._dispatch_lint({"content_truncated": "yes"})
+        assert seen["content_truncated"] is None
+
+
+class TestDaemonStatusHonesty:
+    """daemon_status/ping/daemon_info must report the true fast-path state:
+    no phantom last-request before any work, and not-alive when the socket
+    (the reachability the fast path needs) is gone even if the PID lives."""
+
+    def test_last_request_at_is_none_until_a_real_request(self):
+        from chameleon_mcp.daemon import _DaemonState
+
+        state = _DaemonState(30.0)
+        # ping and daemon_status surface this; the contract is "None until served".
+        assert state.last_request_at is None
+        assert state.request_count == 0
+        state.mark_request()
+        assert state.last_request_at is not None
+        assert state.request_count == 1
+
+    def test_daemon_info_not_alive_when_socket_gone_though_pid_lives(self, monkeypatch):
+        import os
+
+        from chameleon_mcp import daemon as d
+
+        monkeypatch.setattr(d, "_read_pidfile", lambda: (os.getpid(), "/no/such/socket.sock"))
+        monkeypatch.setattr(d, "_pid_alive", lambda pid: True)
+        # PID alive but the socket is gone -> unreachable -> fast path not engaged.
+        assert d.daemon_info()["alive"] is False
+
+    def test_daemon_info_alive_when_socket_connectable(self, monkeypatch):
+        import os
+        import socket
+        import tempfile
+
+        from chameleon_mcp import daemon as d
+
+        # A short socket path: AF_UNIX caps the path at ~104 bytes on macOS, and a
+        # pytest tmp_path under a deep scratch dir overruns it.
+        sock_dir = tempfile.mkdtemp(prefix="cd")
+        sock_path = os.path.join(sock_dir, "d.sock")
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(sock_path)
+        srv.listen(1)
+        try:
+            monkeypatch.setattr(d, "_read_pidfile", lambda: (os.getpid(), sock_path))
+            monkeypatch.setattr(d, "_pid_alive", lambda pid: True)
+            assert d.daemon_info()["alive"] is True
+        finally:
+            srv.close()
+            os.unlink(sock_path)
+            os.rmdir(sock_dir)

@@ -2730,7 +2730,13 @@ def get_rules(repo: str, source: str | None = None, **kwargs) -> dict:
     return _envelope(env)
 
 
-def lint_file(repo: str, archetype: str, content: str, file_path: str | None = None) -> dict:
+def lint_file(
+    repo: str,
+    archetype: str,
+    content: str,
+    file_path: str | None = None,
+    content_truncated: bool | None = None,
+) -> dict:
     """Compare `content` against the archetype's canonical AST shape; return
     structural violations.
 
@@ -2819,8 +2825,15 @@ def lint_file(repo: str, archetype: str, content: str, file_path: str | None = N
         file_path = None
 
     content_size = len(content)
-    truncated = content_size > 100_000
-    working_content = content[:100_000] if truncated else content
+    # `content_truncated` lets a caller that already capped an oversized file to
+    # its prefix (the PostToolUse hook reads file[:100_000] on the hot path) tell
+    # us the received content is a prefix. Without it, content_size sits at/under
+    # the cap so the size check alone reads the content as whole, and every export
+    # defined past the cap reads as removed -- spurious removed-export violations
+    # on any file above the cap. Honoring the caller's signal skips the
+    # removed-export check exactly as an in-house over-cap read would.
+    truncated = content_size > 100_000 or bool(content_truncated)
+    working_content = content[:100_000] if content_size > 100_000 else content
 
     secret_violations = [v.to_dict() for v in _scan_secrets(working_content)]
     # Tag each secret hit with whether its kind may hard-block, matching the hook
@@ -3392,11 +3405,17 @@ def query_symbol_importers(repo: str, file_path: str) -> dict:
     expected_repo_id = _compute_repo_id(repo_root)
     if isinstance(repo, str) and _REPO_ID_RE.match(repo):
         if repo != expected_repo_id:
-            return _envelope(dict(empty))
+            return _envelope({**empty, "reason": "repo-arg-mismatch"})
     else:
         _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
         if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            return _envelope(dict(empty))
+            # The file_path re-homes (via find_repo_root) to a repo/workspace
+            # other than the repo arg -- e.g. a nested monorepo package with its
+            # own .chameleon, which search_codebase surfaces from the coordinator
+            # index but whose per-file profile data lives in the package's profile.
+            # Name the mismatch instead of a bare empty so the caller can re-query
+            # with that workspace as `repo` (silent found:false read as "no data").
+            return _envelope({**empty, "reason": "repo-arg-mismatch"})
 
     # Trust-gate: the index is an attacker-controllable committed artifact, so
     # its importer paths must not reach the model surface from an untrusted
@@ -3644,11 +3663,17 @@ def get_callers(repo: str, file_path: str, function_name: str) -> dict:
     expected_repo_id = _compute_repo_id(repo_root)
     if isinstance(repo, str) and _REPO_ID_RE.match(repo):
         if repo != expected_repo_id:
-            return _envelope(dict(empty))
+            return _envelope({**empty, "reason": "repo-arg-mismatch"})
     else:
         _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
         if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            return _envelope(dict(empty))
+            # The file_path re-homes (via find_repo_root) to a repo/workspace
+            # other than the repo arg -- e.g. a nested monorepo package with its
+            # own .chameleon, which search_codebase surfaces from the coordinator
+            # index but whose per-file profile data lives in the package's profile.
+            # Name the mismatch instead of a bare empty so the caller can re-query
+            # with that workspace as `repo` (silent found:false read as "no data").
+            return _envelope({**empty, "reason": "repo-arg-mismatch"})
 
     # Trust-gate: the calls index is a committed artifact whose caller paths
     # must not reach the model surface from an untrusted profile.
@@ -3800,11 +3825,17 @@ def get_blast_radius(repo: str, file_path: str, function_name: str, depth: int =
     expected_repo_id = _compute_repo_id(repo_root)
     if isinstance(repo, str) and _REPO_ID_RE.match(repo):
         if repo != expected_repo_id:
-            return _envelope(dict(empty))
+            return _envelope({**empty, "reason": "repo-arg-mismatch"})
     else:
         _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
         if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            return _envelope(dict(empty))
+            # The file_path re-homes (via find_repo_root) to a repo/workspace
+            # other than the repo arg -- e.g. a nested monorepo package with its
+            # own .chameleon, which search_codebase surfaces from the coordinator
+            # index but whose per-file profile data lives in the package's profile.
+            # Name the mismatch instead of a bare empty so the caller can re-query
+            # with that workspace as `repo` (silent found:false read as "no data").
+            return _envelope({**empty, "reason": "repo-arg-mismatch"})
 
     # Trust-gate: the calls index is a committed artifact whose caller paths must
     # not reach the model surface from an untrusted profile.
@@ -4166,11 +4197,17 @@ def get_callees(repo: str, file_path: str, function_name: str) -> dict:
     expected_repo_id = _compute_repo_id(repo_root)
     if isinstance(repo, str) and _REPO_ID_RE.match(repo):
         if repo != expected_repo_id:
-            return _envelope(dict(empty))
+            return _envelope({**empty, "reason": "repo-arg-mismatch"})
     else:
         _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
         if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            return _envelope(dict(empty))
+            # The file_path re-homes (via find_repo_root) to a repo/workspace
+            # other than the repo arg -- e.g. a nested monorepo package with its
+            # own .chameleon, which search_codebase surfaces from the coordinator
+            # index but whose per-file profile data lives in the package's profile.
+            # Name the mismatch instead of a bare empty so the caller can re-query
+            # with that workspace as `repo` (silent found:false read as "no data").
+            return _envelope({**empty, "reason": "repo-arg-mismatch"})
 
     gate = _trust_state_for(expected_repo_id)
     if gate is None or not gate.grants_root(repo_root):
@@ -4930,11 +4967,17 @@ def get_duplication_candidates(repo: str, file_path: str) -> dict:
     expected_repo_id = _compute_repo_id(repo_root)
     if isinstance(repo, str) and _REPO_ID_RE.match(repo):
         if repo != expected_repo_id:
-            return _envelope(dict(empty))
+            return _envelope({**empty, "reason": "repo-arg-mismatch"})
     else:
         _resolved_path, resolved_repo_id = _resolve_repo_arg(repo)
         if resolved_repo_id is None or resolved_repo_id != expected_repo_id:
-            return _envelope(dict(empty))
+            # The file_path re-homes (via find_repo_root) to a repo/workspace
+            # other than the repo arg -- e.g. a nested monorepo package with its
+            # own .chameleon, which search_codebase surfaces from the coordinator
+            # index but whose per-file profile data lives in the package's profile.
+            # Name the mismatch instead of a bare empty so the caller can re-query
+            # with that workspace as `repo` (silent found:false read as "no data").
+            return _envelope({**empty, "reason": "repo-arg-mismatch"})
 
     # Trust-gate: the catalog is an attacker-controllable committed artifact, so
     # its function names and paths must not reach the model surface from an

@@ -112,6 +112,22 @@ class TestDetectOriginHead:
         assert det.conflict is True
         assert "production" in det.candidates
 
+    def test_dangling_origin_head_without_backing_ref_is_local(self, tmp_path: Path) -> None:
+        # A dangling origin/HEAD symref (left behind by `git remote remove` or a
+        # pruned remote default) resolves a branch NAME even though
+        # refs/remotes/origin/<head> is gone and no remote is configured. It must
+        # NOT read as origin-backed: auto-lock would otherwise pin a production_ref
+        # on a now-local-only repo to a branch that can never be fetched, and
+        # derivation would follow that branch instead of the working tree.
+        repo = _make_source_repo(tmp_path / "repo", head="master")
+        origin_dir = repo / ".git" / "refs" / "remotes" / "origin"
+        origin_dir.mkdir(parents=True, exist_ok=True)
+        (origin_dir / "HEAD").write_text("ref: refs/remotes/origin/master\n", encoding="utf-8")
+        det = detect_production_branch(repo)
+        assert det.branch == "master"
+        assert det.source == "default_name"
+        assert det.from_origin is False
+
 
 class TestDetectNamedProduction:
     def test_origin_production_without_symref(self, tmp_path: Path) -> None:

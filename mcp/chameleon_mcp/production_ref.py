@@ -179,7 +179,15 @@ def detect_production_branch(repo_root: Path) -> ProductionBranchDetection:
         names, origin_backed = _branch_names(repo_root)
 
         head = _origin_head_branch(repo_root)
-        if head:
+        # Trust origin/HEAD only when its target is a real tracking ref. `git
+        # remote remove` (and a pruned remote default) leaves the origin/HEAD
+        # symref file behind, dangling: symbolic-ref still resolves the NAME
+        # though refs/remotes/origin/<head> no longer exists and no remote is
+        # configured. Claiming from_origin off that stale name would auto-lock a
+        # production_ref on an effectively local-only repo and pin derivation to
+        # a branch that can never be fetched. When the symref is dangling, fall
+        # through to local-branch detection instead.
+        if head and head in origin_backed:
             prod_hits = [n for n in _group_hits(names, _PRODUCTION_NAMES) if n != head]
             return ProductionBranchDetection(
                 branch=head,

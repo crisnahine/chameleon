@@ -4848,7 +4848,11 @@ def posttool_verify() -> int:
         return 0
 
     tool_name = payload.get("tool_name", "")
-    if tool_name not in _EDIT_TOOLS:
+    # A non-string tool_name (malformed payload — e.g. a list or dict) is
+    # unhashable and raises TypeError from the set-membership check; guard it the
+    # same way the file_path check below does, so the hook fails open silently
+    # instead of surfacing a traceback in the error log doctor reads.
+    if not isinstance(tool_name, str) or tool_name not in _EDIT_TOOLS:
         _emit({})
         return 0
 
@@ -4901,7 +4905,14 @@ def posttool_verify() -> int:
         if not p.is_file():
             _emit({})
             return 0
-        content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+        _raw_bytes = p.read_bytes()
+        _capped = _raw_bytes[:100_000]
+        content = _capped.decode("utf-8", errors="replace")
+        # The cap above hides every export defined past it; carry the fact forward
+        # so lint_file skips the removed-export check on this prefix (else a
+        # >cap file's tail exports all read as spuriously removed). Derived from
+        # the slice itself so the two can never drift on the cap value.
+        content_truncated = len(_raw_bytes) > len(_capped)
 
         archetype_name: str | None = None
         try:
@@ -5172,6 +5183,7 @@ def posttool_verify() -> int:
                     "archetype": archetype_name,
                     "content": content,
                     "file_path": file_path,
+                    "content_truncated": content_truncated,
                 },
             )
             if lint_result is not None:

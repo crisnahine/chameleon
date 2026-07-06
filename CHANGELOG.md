@@ -4,6 +4,72 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.52.0] - 2026-07-06
+
+A from-zero whole-plugin QA round for a production release. Every supported
+language and framework was bootstrapped fresh on the current engine (all
+healthy, no degraded profiles), the upgrade path was re-verified (a schema-stale
+profile re-derives to current on refresh), and the tool, hook, and daemon
+surface was driven through real usage across the matrix. Six bugs surfaced and
+were fixed, each pinned red-green. The highest-impact one was caught by
+chameleon flagging its own large source files.
+
+### Fixed
+
+- **Spurious "removed-export" violations on any file over 100KB.** The
+  PostToolUse verify hook caps an oversized file to its first 100KB before
+  handing it to lint_file, but that truncation fact was lost at the boundary:
+  lint_file inferred truncation from the length of the content it received,
+  which already sat at the cap, so it read the prefix as the whole file and
+  every export defined past the cap looked removed. Editing a 486KB module
+  produced 27 false "you broke N importers" violations. The hook now derives
+  truncation from the file bytes it read and threads `content_truncated` through
+  the daemon dispatch into lint_file, which skips the removed-export check on a
+  known prefix. A genuine removed export in a file under the cap is still
+  flagged. (`tools.py`, `hook_helper.py`, `daemon.py`)
+
+- **posttool_verify crashed on a non-string tool_name.** A malformed payload
+  whose `tool_name` was a list or dict is unhashable, so the `tool_name in
+  _EDIT_TOOLS` membership check raised TypeError before the existing file_path
+  guard could run. The hook still failed open at its outer wrapper but logged a
+  traceback that /chameleon-doctor then surfaced as a spurious degraded signal.
+  It now guards the type the same way the adjacent file_path check does.
+  (`hook_helper.py`)
+
+- **Production-branch detection claimed origin backing on a repo with no
+  remote.** `git remote remove` (and a pruned remote default) leaves the
+  origin/HEAD symref behind, dangling: `git symbolic-ref` still resolves the
+  branch name even though the tracking ref is gone and no remote is configured.
+  detect_production_branch trusted that stale name and reported
+  source=origin_head / from_origin=True, which auto-locked a production_ref on
+  an effectively local-only repo and pinned derivation to a branch that can
+  never be fetched. It now requires the resolved head to have a real tracking
+  ref before claiming origin backing; a dangling symref falls through to local
+  detection. (`production_ref.py`)
+
+- **Call-graph tools returned a silent found:false across workspaces in a
+  monorepo.** In a nested-workspace repo, search_codebase surfaces a symbol from
+  the coordinator index, but get_callers, get_blast_radius, get_callees,
+  query_symbol_importers, and get_duplication_candidates re-home the file to its
+  own sub-workspace profile and reject the coordinator repo arg. They returned a
+  bare found:false with no reason, so the natural search-then-query flow read as
+  "no data" rather than "wrong repo arg." They now return
+  reason=repo-arg-mismatch so the caller can re-query with the file's own
+  workspace. (`tools.py`)
+
+- **daemon_status reported a phantom last request.** _DaemonState seeded
+  last_request_at with the process start time, so /chameleon-status showed a
+  last-request timestamp before the daemon had served anything, contradicting
+  the field's documented "None until a request is served" contract. It now
+  starts as None and is set only by a real request; the idle-reap decision runs
+  off a separate monotonic clock and is unchanged. (`daemon.py`)
+
+- **daemon_status reported alive when the socket was gone.** daemon_info judged
+  liveness from the PID alone, so a daemon whose socket a /tmp reaper had
+  unlinked while the process still lived was reported alive even though the fast
+  path was unreachable, diverging from is_daemon_alive (the real gate).
+  daemon_info now requires a connectable socket, matching the gate. (`daemon.py`)
+
 ## [2.51.0] - 2026-07-06
 
 A second same-day real-usage QA round, aimed at the surfaces v2.50.0 shipped
