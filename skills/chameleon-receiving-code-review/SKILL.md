@@ -163,7 +163,10 @@ routes it to plain judgment). Then:
     reviewer: surface it as evidence and let your read of the code decide APPLY vs
     ASK; do not auto-flip on an advisory alone.
 - Reviewer says "this duplicates X" → `get_duplication_candidates(repo=<repo.id>,
-  file_path=<abs>)` to confirm or deny with the returned candidate.
+  file_path=<abs>)` to confirm or deny with the returned candidate. The pairs are
+  under `data.matches` (NOT a top-level `candidates` key); each match is
+  `{function, candidates}`, and each candidate is `{name, file, ..., body_excerpt}`
+  — cite its `name` and `file`, not a `symbol`/`path`.
 
 The security/secret lint runs PRE-trust, so it grounds a claim even on an
 untrusted profile; the caller/cross-file/duplication tools and convention-based

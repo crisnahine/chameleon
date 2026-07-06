@@ -4,6 +4,78 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.54.0] - 2026-07-07
+
+A real-usage hardening round on the two review skills (`/chameleon-pr-review`,
+`/chameleon-receiving-code-review`), driving every engine tool the skills depend
+on against live-bootstrapped TypeScript, Ruby, and Python repos and cross-checking
+each field/enum the skill reads against the tool's actual return. Five contract-drift
+gaps (three of which silently no-oped a review pass) were corrected, and one
+supply-chain-scanner evasion was closed at the engine.
+
+### Fixed
+
+- **`get_duplication_candidates` shape drift silently disabled the duplication
+  pass.** pr-review Step 2.9b and receiving Step 3 told the model to read the
+  returned "candidates" and cite each candidate's `symbol`/`path`/`excerpt`. The
+  tool actually returns `{found, file, matches}` — the pairs are under
+  `data.matches` (there is NO top-level `candidates`), each match is
+  `{function, candidates}`, and a candidate's fields are `name`/`file`/`body_excerpt`
+  (never `symbol`/`path`/`excerpt`). A model following the old wording read the
+  wrong keys, got nothing, and never raised a duplication finding. Both skills now
+  name the exact shape. (`skills/chameleon-pr-review/SKILL.md`,
+  `skills/chameleon-receiving-code-review/SKILL.md`)
+
+- **`typecheck` was documented as a scalar but is a dict, mis-keying the auto-pass
+  routing.** pr-review Step 3h wrote the state as `typecheck: unavailable` and
+  rendered `Typecheck: N changed file(s) with type errors`. The engine returns
+  `typecheck` as `{status: "unavailable"|"clean"|"errors", ...}` (unavailable adds
+  `reason`, errors adds `files` and `diagnostics`). The skill now reads
+  `typecheck.status`/`typecheck.reason`/`typecheck.diagnostics`/`typecheck.files`
+  and the example output matches the render instruction. (`skills/chameleon-pr-review/SKILL.md`)
+
+- **`scan_dependency_changes` finding fields were unnamed, inviting a wrong-key
+  read.** Step 2.5 routed findings by their check type but never named the field;
+  a model assuming `lint_file`'s `rule`/`line` shape would read nothing. The finding
+  is `{check, severity, path, evidence, message, detail}` — the type is `check`
+  (not `rule`), the cited line is `evidence` (not `line`), and severity is the
+  literal `"FIX"`/`"NIT"`. Also documents that `manifests_changed`/`summary` are
+  absent on a degraded/failed scan and `uncovered_manifests` appears only when
+  non-empty. (`skills/chameleon-pr-review/SKILL.md`)
+
+- **`get_callers` grade set was stale.** Step 2.9d listed the deterministic grades
+  as a closed `same_file`/`import`/`constant_receiver` set, but the calls index now
+  also records `typed_property` (TypeScript dependency-injection edges, v2.49) and
+  `module_attribute` (Python module-attribute calls, v2.50). The skill now lists the
+  full set, treats it as open, and names the caller-site fields (`caller`, not
+  `name`). (`skills/chameleon-pr-review/SKILL.md`)
+
+- **Cross-file finding field names were left implicit.** Step 2.9c
+  (`get_crossfile_context`) and Step 2.9e (`get_contract_breaks`) described the
+  citation semantically without naming the fields; the crossfile importer file:line
+  in particular lives under `finding.sites` (`{path, line}`), not a flat
+  `file`/`line`, and a contract break's symbol is `name` with
+  `old_required_positional`/`new_required_positional`. Both are now named exactly.
+  (`skills/chameleon-pr-review/SKILL.md`)
+
+- **A partially-packed dependency object evaded the supply-chain scanner without
+  tripping the minified-manifest guard.** `scan_dependency_changes`'s per-key
+  scanners are line-oriented, and the `minified-manifest` guard fired only when the
+  WHOLE manifest was a single `{...}` line. A `package.json` diff that packs a
+  dependency/scripts container onto one physical line —
+  `"dependencies": { "evil": "git+ssh://…", "left-pad": "^1.0.0" }` — while the file
+  stayed multi-line defeated the install-script/non-registry-source/new-dependency
+  checks AND slipped past the guard, reading as a silent clean add. The guard now
+  also flags such packed-container lines (`detail.reason` `packed-container-line`),
+  scoped to dependency/pin/scripts containers so a legitimately-inline
+  `"repository": {...}`/`"engines": {...}` never false-fires. The scope also covers
+  npm `overrides` and yarn `resolutions` — they pin a TRANSITIVE dependency to an
+  arbitrary version or source, so a packed `"overrides": { "lib": "git+ssh://evil" }`
+  is the same non-registry-source evasion (the unpacked form was already caught
+  line-by-line; the packed form slipped both scanners). Verified with real packed
+  and one-per-line diffs across the false-positive and evasion cases.
+  (`mcp/chameleon_mcp/dep_diff.py`, `skills/chameleon-pr-review/SKILL.md`)
+
 ## [2.53.0] - 2026-07-06
 
 A hostile, exhaustive QA round across every supported language and framework

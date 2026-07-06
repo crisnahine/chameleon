@@ -535,25 +535,62 @@ _MANIFEST_KEYS = frozenset(
     {"dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "scripts"}
 )
 
+# A dependency/scripts container OPENED inline on one added line with at least one
+# ``"name": "value"`` pair after the brace -- e.g.
+# ``"dependencies": { "evil": "git+ssh://...", "left-pad": "^1.0.0" }``. The per-key
+# scanners are line-oriented (one ``"key": value`` per line), so pairs PACKED onto
+# such a container line are extracted for none of them: a git-source dep or an
+# install-shaped entry hidden there yields zero findings and reads as a clean add,
+# WITHOUT the object ever being a full single ``{...}`` line (so the strict
+# single-line check below misses it). ``overrides`` (npm) and ``resolutions`` (yarn)
+# are in scope too: they pin a TRANSITIVE dependency to an arbitrary version OR
+# source, so a packed ``"overrides": {"lib": "git+ssh://evil/x.git"}`` is the same
+# non-registry-source evasion (the unpacked form is already caught line-by-line).
+# Scoped to these dependency/pin/scripts containers only so a legitimately-inline
+# ``"repository": {"type": "git", ...}`` or ``"engines": {...}`` never trips it.
+_PACKED_MANIFEST_CONTAINER_RE = re.compile(
+    r'"(?:dependencies|devDependencies|optionalDependencies|peerDependencies'
+    r'|overrides|resolutions|scripts)"'
+    r'\s*:\s*\{[^}]*"[^"]+"\s*:\s*"'
+)
+
 
 def _scan_minified_manifest(path: str, diff_text: str) -> list[DepFinding]:
-    """Flag a package.json change minified to a single JSON line.
+    """Flag a package.json change that packs a dependency/scripts object onto one
+    added line (fully minified, or a single container opened inline with pairs).
 
     The per-key scanners cannot decompose a one-line object, so they would
     silently return nothing. Emit one FIX so the reviewer knows the structural
     checks were skipped and the raw diff needs a manual read. A normal
-    pretty-printed diff never has a full ``{...}`` object on one added line, so
-    this does not fire on the common case.
+    pretty-printed diff never has a full ``{...}`` object -- nor a
+    dependency/scripts container with inline pairs -- on one added line, so this
+    does not fire on the common one-key-per-line case.
     """
     for raw in _added_lines(diff_text):
         stripped = raw.strip().rstrip(",")
-        if not (stripped.startswith("{") and stripped.endswith("}")):
-            continue
-        try:
-            obj = json.loads(stripped)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if isinstance(obj, dict) and _MANIFEST_KEYS & obj.keys():
+        # Case 1: the whole manifest (or a top-level object) collapsed to one line.
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                obj = json.loads(stripped)
+            except (json.JSONDecodeError, ValueError):
+                obj = None
+            if isinstance(obj, dict) and _MANIFEST_KEYS & obj.keys():
+                return [
+                    DepFinding(
+                        check="minified-manifest",
+                        severity="FIX",
+                        path=path,
+                        evidence=(stripped[:120] + "…") if len(stripped) > 120 else stripped,
+                        message=(
+                            "package.json change is minified to a single line; the per-key "
+                            "supply-chain checks (install scripts, non-registry sources, new "
+                            "dependencies) could not run. Review the raw diff manually."
+                        ),
+                        detail={"reason": "single-line-manifest"},
+                    )
+                ]
+        # Case 2: a dependency/scripts container opened inline with packed pairs.
+        if _PACKED_MANIFEST_CONTAINER_RE.search(stripped):
             return [
                 DepFinding(
                     check="minified-manifest",
@@ -561,11 +598,13 @@ def _scan_minified_manifest(path: str, diff_text: str) -> list[DepFinding]:
                     path=path,
                     evidence=(stripped[:120] + "…") if len(stripped) > 120 else stripped,
                     message=(
-                        "package.json change is minified to a single line; the per-key "
-                        "supply-chain checks (install scripts, non-registry sources, new "
-                        "dependencies) could not run. Review the raw diff manually."
+                        "package.json change packs a dependency/scripts object onto one "
+                        "line; the per-key supply-chain checks (install scripts, "
+                        "non-registry sources, new dependencies) cannot decompose it and "
+                        "were silently skipped for that line. Expand it and review the raw "
+                        "diff manually."
                     ),
-                    detail={"reason": "single-line-manifest"},
+                    detail={"reason": "packed-container-line"},
                 )
             ]
     return []
