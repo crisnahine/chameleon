@@ -4,6 +4,27 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.55.0] - 2026-07-07
+
+### Added
+
+- **`/chameleon-deep-work` - a task-execution discipline skill.** Hands chameleon
+  a whole task instead of a single edit: understand everything first, ask no
+  clarifying questions (an unknown is dug out of the code, defaulted with a named
+  flippable decision, or - only for a missing hard dependency - blocks with one
+  line), map the change with the comprehension surface (`describe_codebase`,
+  `search_codebase`, `get_pattern_context`, `get_callers`/`get_callees`,
+  `get_blast_radius`, `query_symbol_importers`) plus reading the real files,
+  present a 100%-understanding brief, then implement in a linked git worktree -
+  where the per-edit injection, deny gates, and turn-end review stay live because
+  a linked worktree inherits the main checkout's profile and trust
+  (`worktree.py`). Ends with a delivery report keyed to the acceptance criteria,
+  every default taken, and the integration options; pushing or merging stays on
+  the user's explicit go. The skill is pure workflow prose: no engine change, no
+  new tools, no new hooks. All command-count surfaces (README, CLAUDE.md,
+  architecture.md, using-chameleon) updated to 14 user-invocable commands / 15
+  skills, with the wiring pinned in `test_command_wiring_docs.py`.
+
 ## [2.54.0] - 2026-07-07
 
 A real-usage hardening round on the two review skills (`/chameleon-pr-review`,

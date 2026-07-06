@@ -115,7 +115,7 @@ Chameleon inverts all three. Conventions are derived by parsing the code itself:
 
 ## The full surface
 
-Six hooks across six lifecycle events, 46 MCP tools, 14 skills. You will call almost none of it directly; it works behind two moments, before the model writes and after the turn ends.
+Six hooks across six lifecycle events, 46 MCP tools, 15 skills. You will call almost none of it directly; it works behind two moments, before the model writes and after the turn ends.
 
 | When | What runs |
 |---|---|
@@ -124,7 +124,7 @@ Six hooks across six lifecycle events, 46 MCP tools, 14 skills. You will call al
 | After each edit (x2) | Record the observation, then verify against the archetype's calibrated rules |
 | On your prompt | Intent capture: checkable assertion tokens (secret-scanned digests, never your raw prose) that sharpen the turn-end judge |
 | Turn end | Correctness judge, duplication vs call graph, cross-file existence, stale-test and co-change advisories (Django model without a migration, Rails controller without a route, NestJS controller not registered in a module, Redux slice never added to the store), test-integrity facts, finding ledger, once-per-session idiom self-review |
-| On demand | 13 slash commands + the comprehension and review tool surface |
+| On demand | 14 slash commands + the comprehension and review tool surface |
 
 **Enforcement earns the right to block.** A convention rule blocks only after it is calibrated: measured near-zero false positives against your repo's own committed files. Rules your team overrides get auto-demoted back to advisory. Modes are `off` / `shadow` / `enforce`; shadow logs what would have blocked, and `/chameleon-status --shadow` shows you the evidence before you turn enforcement on. Inline escape hatch: `// chameleon-ignore <rule>` (`#` in Ruby/Python). The only unconditional blocks are facts nobody argues with: leaked credentials and error-severity eval/exec, at write time. Kill switches exist for everything.
 
@@ -179,6 +179,7 @@ Done. Every edit from here gets the injection automatically. Version matrix and 
 | `/chameleon-pr-review` | Multi-round PR / branch review with a round-3 refuter |
 | `/chameleon-receiving-code-review` | Verify a teammate's review against the code before applying it |
 | `/chameleon-explain` | Drill into one rule, or replay what chameleon knew when a file was edited |
+| `/chameleon-deep-work` | Execute a task with the deep-work discipline: dig to full understanding, no questions, then implement in a worktree |
 | `/chameleon-doctor` | Installation health triage |
 | `/chameleon-journey` | End-to-end release verification harness |
 | `/chameleon-disable` | Off for this session |

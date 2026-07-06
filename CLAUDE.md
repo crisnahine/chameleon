@@ -16,7 +16,7 @@ chameleon/
 ├── hooks/             session-start, preflight-and-advise, posttool-recorder,
 │                      posttool-verify, callout-detector, stop-backstop
 │                      (+ _resolve-python.sh, run-hook.cmd, hooks.json)
-├── skills/            using-chameleon (auto) + 13 user-invocable slash commands
+├── skills/            using-chameleon (auto) + 14 user-invocable slash commands
 ├── mcp/               chameleon-mcp Python server (FastMCP, stdio transport)
 ├── scripts/           ts_dump.mjs, prism_dump.rb, bump-version.sh, merge driver
 ├── bin/               chameleon-statusline.sh (status line, <100ms budget)
@@ -24,7 +24,7 @@ chameleon/
 └── docs/              architecture.md (design) + install.md + language-support-matrix.md + parity-progress.md + qa-team.md
 ```
 
-The user-invocable commands: `init`, `refresh`, `status`, `teach`, `auto-idiom`, `trust`, `disable`, `pause-15m`, `doctor`, `journey`, `pr-review`, `receiving-code-review`, `explain` (all invoked as `/chameleon-*`).
+The user-invocable commands: `init`, `refresh`, `status`, `teach`, `auto-idiom`, `trust`, `disable`, `pause-15m`, `doctor`, `journey`, `pr-review`, `receiving-code-review`, `explain`, `deep-work` (all invoked as `/chameleon-*`).
 
 ## Conventions
 

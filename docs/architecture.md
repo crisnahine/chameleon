@@ -118,7 +118,7 @@ no repo-specific knowledge; the profile carries no code.
 |                                                                          |
 |  Hooks (subprocess-per-call, fail-open)     Skills (static prose)        |
 |  - session-start        (SessionStart)      - using-chameleon (auto)     |
-|  - preflight-and-advise  (PreToolUse)       - 13 user-invocable /commands|
+|  - preflight-and-advise  (PreToolUse)       - 14 user-invocable /commands|
 |  - posttool-recorder     (PostToolUse)                                   |
 |  - posttool-verify       (PostToolUse)                                   |
 |  - callout-detector      (UserPromptSubmit)                              |
@@ -148,8 +148,8 @@ the MCP server reads the profile, and the result is injected as a
 `<chameleon-context>` block. The model never has to call an MCP tool by hand,
 though the same tools are available to it and to the `/chameleon-*` skills.
 
-chameleon ships one auto-fired skill (`using-chameleon`) and thirteen
-user-invocable slash commands (13 commands); the full list is in the
+chameleon ships one auto-fired skill (`using-chameleon`) and fourteen
+user-invocable slash commands (14 commands); the full list is in the
 [README](../README.md#slash-commands).
 
 A per-user **advisor daemon** (POSIX only) is an optional performance layer that
@@ -179,7 +179,7 @@ chameleon/
 │   └── stop-backstop
 ├── skills/
 │   ├── using-chameleon/           # auto-fired foundation skill
-│   └── chameleon-*/               # 13 user-invocable slash commands
+│   └── chameleon-*/               # 14 user-invocable slash commands
 ├── mcp/
 │   ├── pyproject.toml             # Python package (requires-python >=3.11)
 │   ├── uv.lock, package.json      # committed locks
