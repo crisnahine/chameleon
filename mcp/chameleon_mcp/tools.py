@@ -7564,19 +7564,32 @@ def _profile_needs_rederive(profile_dir) -> bool:
     # verbatim, so a deleted or corrupt index would otherwise stay missing
     # forever -- the loaders fail open to "no facts", silently degrading the
     # judge caller facts, the duplication prefilter, and the phantom-symbol /
-    # cross-file checks.
-    index_names = [
-        "calls_index.json",
-        "function_catalog.json",
-        "symbol_signatures.json",
-        "counterexamples.json",
+    # cross-file checks. Each loader also HARD-REJECTS a foreign schema_version
+    # (calls_index.py / function_catalog.py / symbol_index.py: != current;
+    # counterexamples.py: outside its readable set), so a parseable index left
+    # behind by an older engine is exactly as dead as a corrupt one -- get_callers
+    # reports it as "calls-index-stale" and tells the user to refresh, so the
+    # refresh must actually rebuild it. Mirror each loader's own gate via its
+    # exported constant so a future schema bump propagates here automatically.
+    from chameleon_mcp.calls_index import SCHEMA_VERSION as _CALLS_SV
+    from chameleon_mcp.counterexamples import _READABLE_SCHEMA_VERSIONS as _CEX_SVS
+    from chameleon_mcp.function_catalog import SCHEMA_VERSION as _CATALOG_SV
+    from chameleon_mcp.symbol_signatures import SCHEMA_VERSION as _SIGS_SV
+
+    index_schemas = [
+        ("calls_index.json", (_CALLS_SV,)),
+        ("function_catalog.json", (_CATALOG_SV,)),
+        ("symbol_signatures.json", (_SIGS_SV,)),
+        ("counterexamples.json", tuple(_CEX_SVS)),
     ]
-    for name in index_names:
+    for name, readable in index_schemas:
         try:
             obj = _json.loads((profile_dir / name).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return True
         if not isinstance(obj, dict):
+            return True
+        if obj.get("schema_version") not in readable:
             return True
     # Block-rule calibration. active_block_rules drops every measured rule on
     # anything whose inner "block_rules" value is not a dict (the calibration-

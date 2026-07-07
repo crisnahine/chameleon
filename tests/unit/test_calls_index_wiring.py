@@ -163,6 +163,11 @@ def test_needs_rederive_index_checks(tmp_path):
     # a rebuild for every language; the symbol indexes only bind TS profiles
     # (a Ruby profile never writes them, so their absence must not force a
     # perpetual rebuild).
+    from chameleon_mcp.calls_index import SCHEMA_VERSION as CALLS_SV
+    from chameleon_mcp.counterexamples import SCHEMA_VERSION as CEX_SV
+    from chameleon_mcp.function_catalog import SCHEMA_VERSION as CATALOG_SV
+    from chameleon_mcp.symbol_signatures import SCHEMA_VERSION as SIGS_SV
+
     cham = tmp_path / ".chameleon"
     cham.mkdir(parents=True)
     # archetypes/canonicals/rules carry profile.json's generation: the repair
@@ -170,14 +175,18 @@ def test_needs_rederive_index_checks(tmp_path):
     # profile has them present and equal.
     for name in ("archetypes.json", "canonicals.json", "rules.json"):
         (cham / name).write_text(json.dumps({"generation": 1}), encoding="utf-8")
-    for name in (
-        "conventions.json",
-        "calls_index.json",
-        "function_catalog.json",
-        "symbol_signatures.json",
-        "counterexamples.json",
+    (cham / "conventions.json").write_text("{}", encoding="utf-8")
+    # The generated indexes must carry the schema version their loader accepts:
+    # each loader hard-rejects a foreign schema_version, so the repair predicate
+    # mirrors that gate (a parseable-but-old-schema index is dead data the noop
+    # refresh would otherwise preserve forever).
+    for name, sv in (
+        ("calls_index.json", CALLS_SV),
+        ("function_catalog.json", CATALOG_SV),
+        ("symbol_signatures.json", SIGS_SV),
+        ("counterexamples.json", CEX_SV),
     ):
-        (cham / name).write_text("{}", encoding="utf-8")
+        (cham / name).write_text(json.dumps({"schema_version": sv}), encoding="utf-8")
     # enforcement.json needs block_rules as a dict (active_block_rules's shape).
     (cham / "enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
     (cham / "profile.json").write_text(
@@ -194,12 +203,28 @@ def test_needs_rederive_index_checks(tmp_path):
     assert tools._profile_needs_rederive(cham) is True
     (cham / "calls_index.json").write_text("{not json", encoding="utf-8")
     assert tools._profile_needs_rederive(cham) is True
-    (cham / "calls_index.json").write_text("{}", encoding="utf-8")
+    # Parseable but schema-stale (pre-v2 engine wrote it): load_calls_index
+    # rejects it, so every consumer silently reads None while a noop refresh
+    # preserved it verbatim -- the exact silent-degradation shape this
+    # predicate exists to repair.
+    (cham / "calls_index.json").write_text(
+        json.dumps({"schema_version": CALLS_SV - 1, "callees": {}}), encoding="utf-8"
+    )
+    assert tools._profile_needs_rederive(cham) is True
+    (cham / "calls_index.json").write_text("{}", encoding="utf-8")  # no version at all
+    assert tools._profile_needs_rederive(cham) is True
+    (cham / "calls_index.json").write_text(
+        json.dumps({"schema_version": CALLS_SV}), encoding="utf-8"
+    )
     assert tools._profile_needs_rederive(cham) is False
 
     (cham / "function_catalog.json").unlink()
     assert tools._profile_needs_rederive(cham) is True
     (cham / "function_catalog.json").write_text("{}", encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is True  # loader rejects missing version
+    (cham / "function_catalog.json").write_text(
+        json.dumps({"schema_version": CATALOG_SV}), encoding="utf-8"
+    )
     assert tools._profile_needs_rederive(cham) is False
 
     # symbol_signatures.json (forward definition hydration) is built for every
@@ -207,17 +232,30 @@ def test_needs_rederive_index_checks(tmp_path):
     # pre-C2.2 profile picks it up on the next /chameleon-refresh.
     (cham / "symbol_signatures.json").unlink()
     assert tools._profile_needs_rederive(cham) is True
-    (cham / "symbol_signatures.json").write_text("{}", encoding="utf-8")
+    (cham / "symbol_signatures.json").write_text(
+        json.dumps({"schema_version": SIGS_SV - 1}), encoding="utf-8"
+    )
+    assert tools._profile_needs_rederive(cham) is True
+    (cham / "symbol_signatures.json").write_text(
+        json.dumps({"schema_version": SIGS_SV}), encoding="utf-8"
+    )
     assert tools._profile_needs_rederive(cham) is False
 
     # counterexamples.json (off-pattern index) is built for every language too, so
     # a missing/corrupt one forces a repair re-derive (a normal refresh otherwise
-    # noops on unchanged sources and leaves the damage forever).
+    # noops on unchanged sources and leaves the damage forever). Its loader still
+    # READS the legacy v1 shape, so v1 is healthy, not stale.
     (cham / "counterexamples.json").unlink()
     assert tools._profile_needs_rederive(cham) is True
     (cham / "counterexamples.json").write_text("{not json", encoding="utf-8")
     assert tools._profile_needs_rederive(cham) is True
     (cham / "counterexamples.json").write_text("{}", encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is True  # loader rejects missing version
+    (cham / "counterexamples.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    assert tools._profile_needs_rederive(cham) is False  # legacy v1 still loads
+    (cham / "counterexamples.json").write_text(
+        json.dumps({"schema_version": CEX_SV}), encoding="utf-8"
+    )
     assert tools._profile_needs_rederive(cham) is False
 
     # enforcement.json is built for every language; a corrupt/missing one, or a

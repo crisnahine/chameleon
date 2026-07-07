@@ -87,9 +87,22 @@ def _seed_repo(tmp_path: Path, monkeypatch, engine_version: str) -> Path:
     (pd / "rules.json").write_text(
         json.dumps({"schema_version": 8, "generation": 1}), encoding="utf-8"
     )
-    (pd / "calls_index.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
-    (pd / "function_catalog.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
-    (pd / "symbol_signatures.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    # The generated indexes must carry the schema their loader currently reads:
+    # the repair guard mirrors each loader's schema gate, so a stale-schema index
+    # forces a rebuild and would defeat the noop-eligibility this fixture needs.
+    from chameleon_mcp.calls_index import SCHEMA_VERSION as _calls_sv
+    from chameleon_mcp.function_catalog import SCHEMA_VERSION as _catalog_sv
+    from chameleon_mcp.symbol_signatures import SCHEMA_VERSION as _sigs_sv
+
+    (pd / "calls_index.json").write_text(
+        json.dumps({"schema_version": _calls_sv}), encoding="utf-8"
+    )
+    (pd / "function_catalog.json").write_text(
+        json.dumps({"schema_version": _catalog_sv}), encoding="utf-8"
+    )
+    (pd / "symbol_signatures.json").write_text(
+        json.dumps({"schema_version": _sigs_sv}), encoding="utf-8"
+    )
     (pd / "counterexamples.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     (pd / "enforcement.json").write_text(json.dumps({"block_rules": {}}), encoding="utf-8")
     (pd / "profile.summary.md").write_text("# summary\n", encoding="utf-8")
@@ -243,16 +256,23 @@ def _complete_profile(tmp_path):
         pd.joinpath(name).write_text(
             json.dumps({"generation": 1, "schema_version": 8}), encoding="utf-8"
         )
-    # conventions + the generated index artifacts are validated as JSON objects
-    # only (no generation cross-check), so a bare schema_version is complete.
-    for name in (
-        "conventions.json",
-        "calls_index.json",
-        "function_catalog.json",
-        "symbol_signatures.json",
-        "counterexamples.json",
+    # conventions is validated as a JSON object only; the generated index
+    # artifacts must carry the schema their loader currently reads -- the repair
+    # gate mirrors each loader's schema check, so a foreign version reads as
+    # dead data and correctly forces a rebuild.
+    from chameleon_mcp.calls_index import SCHEMA_VERSION as _calls_sv
+    from chameleon_mcp.counterexamples import SCHEMA_VERSION as _cex_sv
+    from chameleon_mcp.function_catalog import SCHEMA_VERSION as _catalog_sv
+    from chameleon_mcp.symbol_signatures import SCHEMA_VERSION as _sigs_sv
+
+    pd.joinpath("conventions.json").write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+    for name, sv in (
+        ("calls_index.json", _calls_sv),
+        ("function_catalog.json", _catalog_sv),
+        ("symbol_signatures.json", _sigs_sv),
+        ("counterexamples.json", _cex_sv),
     ):
-        pd.joinpath(name).write_text(json.dumps({"schema_version": 8}), encoding="utf-8")
+        pd.joinpath(name).write_text(json.dumps({"schema_version": sv}), encoding="utf-8")
     # enforcement.json is written by every bootstrap (all languages); a complete
     # profile carries it with block_rules as a DICT (the shape write_block_rules
     # emits and active_block_rules reads).

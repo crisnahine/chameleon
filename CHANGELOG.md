@@ -4,6 +4,28 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.57.1] - 2026-07-07
+
+### Fixed
+
+- **Refresh now repairs a stale-schema generated index instead of noop-preserving
+  it forever.** The repair predicate (`_profile_needs_rederive`) validated the
+  four generated indexes (`calls_index.json`, `function_catalog.json`,
+  `symbol_signatures.json`, `counterexamples.json`) as parseable JSON objects
+  only, but each loader hard-rejects a foreign `schema_version` — so an index
+  left behind by an older engine (e.g. a pre-v2.41 `calls_index` at schema 1)
+  read as "healthy" to refresh while every consumer silently got zero facts:
+  judge caller grounding, the duplication prefilter, `get_callers`
+  (`calls-index-stale`), and the cross-file checks. Doctor detected the state
+  and `get_callers` said "run /chameleon-refresh", but the recommended refresh
+  noop-preserved the damage — a detect-recommend-repair loop with the repair
+  missing. The predicate now mirrors each loader's own schema gate via its
+  exported constant (counterexamples honors its readable-legacy set, so a v1
+  file that still loads is not flagged), so a future schema bump propagates
+  automatically. Found by the Ruby QA battery against a real pre-v2.41 fixture;
+  verified end-to-end: the same refresh that previously nooped now re-derives
+  and the battery went 65/66 to 66/66.
+
 ## [2.57.0] - 2026-07-07
 
 ### Added
