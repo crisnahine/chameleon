@@ -1,6 +1,6 @@
 ---
 name: chameleon-deep-work
-description: "Use when the user explicitly invokes /chameleon-deep-work <task> to execute a substantive coding task with the deep-work discipline: understand the whole task first, ask no clarifying questions (resolve unknowns by digging and by defaulting open decisions), map the code with chameleon's comprehension tools until understanding is complete, present a 100%-understanding brief, then implement in an isolated git worktree under chameleon's per-edit guardrails."
+description: "Use when the user explicitly invokes /chameleon-deep-work <task> to execute a substantive coding task with the deep-work discipline: understand the whole task first, ask no clarifying questions (resolve unknowns by digging and by defaulting open decisions), map the code with chameleon's comprehension tools and hired parallel expert subagents (code scouts, web researchers, reviewers) until understanding is complete, present a 100%-understanding brief, then implement in an isolated git worktree under chameleon's per-edit guardrails."
 ---
 
 # Deep Work with Chameleon Context
@@ -26,10 +26,12 @@ the user should be able to walk away.
    (an API key that does not exist, a service that is not deployed) - the only
    case that blocks, and it blocks with a one-line statement of exactly what
    is missing, not a question list.
-3. **Dig all the code and do the deep research first.** Chameleon's
-   comprehension tools plus reading the real files, and external documentation
-   for any library or framework behavior you are not certain of. Never guess
-   an API you could verify.
+3. **Dig all the code and do the deep research first - and staff the dig.**
+   Chameleon's comprehension tools plus reading the real files, and external
+   documentation for any library or framework behavior you are not certain
+   of. Never guess an API you could verify. Digging is hired work, not a
+   solo grind: two or more independent unknowns means expert subagents
+   working them in parallel (see "Hire experts").
 4. **Come back at 100%, then implement in a worktree.** The comeback is the
    Understanding Brief (Step 4) - a report, not a permission request. Then
    the implementation happens in a linked git worktree, never on the user's
@@ -57,8 +59,50 @@ Restate, to yourself, before any tool call:
   nobody approved)
 
 Then enumerate every unknown and classify each one as dig / default / hard
-dependency per the contract. This list drives Steps 2-3; the brief reports
-where each item landed.
+dependency per the contract. Worktree feasibility belongs in this triage: a
+workspace that cannot host a linked worktree (not a git repo) is a rule-2c
+hard dependency, surfaced here - not discovered after the dig. This list
+drives Steps 2-3; the brief reports where each item landed.
+
+## Hire experts (dispatch discipline)
+
+The unknowns list from Step 1 is a work queue, and one context grinding
+through it serially is the slowest and shallowest way to drain it. The
+posture is proactive: whenever the list holds two or more independent
+unknowns - different subsystems, different files, an internal question next
+to an external one - hire expert subagents, one owned question each,
+dispatch the batch concurrently, and work the remaining unknown yourself
+while they run. Three kinds of expert, matched to the work:
+
+- **Code scouts** (read-only): "map every call path into the gateway
+  wrapper", "find how this repo does soft-deletion everywhere", "list every
+  file the checkout flow touches". Use the harness's read-only explore agent
+  type when one exists; a digging expert never edits anything.
+- **Web researchers**: "what changed in this library between the lockfile's
+  version and the latest docs", "the exact contract of this API at the
+  pinned version" - resolved per Step 3's rules, never from memory.
+- **Reviewers** (Step 6): a fresh-context, read-only pass over the finished
+  diff against the brief. Fresh eyes catch what the author's context has
+  gone blind to.
+
+The dispatch recipe - every expert prompt carries three things:
+
+1. ONE question, precisely scoped. A scout given five questions answers
+   each at a fifth of the depth.
+2. The context the expert cannot discover alone: the task's constraint, the
+   paths already found, the pinned version, the repo root.
+3. The required shape of the answer: file:line evidence for code claims,
+   the doc URL and version for external claims, a verdict with reasoning
+   for review findings.
+
+An expert's answer is input, not truth. Before it enters the brief,
+first-hand-verify every claim a decision rests on: read the cited line,
+rerun the cited search, fetch the cited doc. Experts inherit the contract -
+they answer their question and never ask the user one - and their claims
+pass through Step 2's honesty gates like any other tool result. Solo
+digging stays right when the task is one file, one subsystem, one question:
+a dispatch that costs more than the dig it replaces is theater, not
+thoroughness.
 
 ## Step 2: Dig the codebase (comprehension pass)
 
@@ -81,6 +125,13 @@ the files you will touch are zero:
    `query_symbol_importers` for any export you will move or remove.
 5. Read the real files. The tools locate and rank; the plan is grounded in
    code you actually read, never in a tool summary alone.
+
+On a wide surface - three or more subsystems in play, or an unfamiliar area
+of a large repo - do not climb the ladder alone: hire one code scout per
+subsystem (per "Hire experts") in a single concurrent batch, keep the
+cheapest rungs for yourself, and let the scouts' file:line answers point
+rung 5's reading. Scout claims pass through the same honesty gates below
+before the brief cites them.
 
 Honesty gates on this pass:
 
@@ -110,6 +161,13 @@ library API, a protocol detail:
   posts.
 - Research is bounded by the task: stop when the unknowns list is empty, not
   when the topic is exhausted.
+- Search deep, not wide-and-shallow: official docs for the pinned version
+  first, then the changelog or release notes across the exact version
+  window, then the installed package's own source. A blog post or a single
+  search hit is a lead to verify, never an answer to cite.
+- External unknowns are prime expert work: hire one web researcher per
+  independent unknown (per "Hire experts"), dispatched in the same batch as
+  the code scouts, so external answers land while the code dig runs.
 
 ## Step 4: The 100% Understanding Brief (the comeback)
 
@@ -123,6 +181,9 @@ The gate between digging and building. Every box checked, or back to Steps
       mapped, with the update plan for each call site
 - [ ] Every unknown is resolved (with where it was verified) or defaulted
       (with the chosen default and the reason)
+- [ ] Every expert answer a decision rests on was verified first-hand (the
+      cited line read, the cited doc fetched) or is marked unverified in
+      the brief
 - [ ] The step plan exists, ordered, each step with its own verification
 - [ ] Risks named, with the rollback (the worktree makes rollback trivial;
       say what else, if anything, is hard to undo)
@@ -135,12 +196,47 @@ dependency (contract rule 2c), stated in one line.
 
 ## Step 5: Implement in a worktree
 
-- Create it: the harness's native worktree tool when one exists, else
-  `git worktree add ../<repo>-deep-<slug> -b deep/<slug>` from the repo root.
-  Never implement on the branch the user has checked out: their working tree,
+- Detect before you create. The session may already be inside a linked
+  worktree: `git rev-parse --path-format=absolute --git-dir` differs from
+  `git rev-parse --path-format=absolute --git-common-dir` (compare as
+  absolute paths - the raw outputs differ spuriously when run from a
+  subdirectory). A plain submodule does not produce this mismatch; there
+  `git rev-parse --show-superproject-working-tree` prints the superproject
+  path instead of nothing. Being in a linked worktree is not enough on its
+  own: use it only when it is dedicated to this task (the harness created
+  it for this session, or `git status --porcelain` is clean with no user
+  work parked there). Otherwise it is the user's workspace like any other
+  checkout - create a SIBLING worktree per the placement rules below.
+  Never nest means never place the new worktree inside the current one; a
+  sibling is fine.
+- Create it where the user's instructions say worktrees live, when they
+  declare a placement: hand that path to the harness's native worktree
+  tool if it accepts one, else use the git fallback at that location. An
+  explicit user constraint outranks any tool default. With no declared
+  placement, prefer the native worktree tool when one exists - a manual
+  `git worktree add` beside a native tool leaves phantom state the harness
+  cannot see or clean up - and report the branch it creates as-is in
+  Step 7. Only without a native tool, fall back to git, placing the
+  worktree by priority: (1) an existing `.worktrees/` or `worktrees/`
+  directory at the repo root, but only if `git check-ignore` confirms it
+  is ignored - if it is not, do NOT edit the user's `.gitignore` (that
+  edits their checked-out branch); fall through instead; (2) the sibling
+  default `../<repo>-deep-<slug>`. Every git-fallback placement creates
+  the same branch - `git worktree add <dir> -b deep/<slug>` from the repo
+  root - only the directory differs.
+- Never implement on the branch the user has checked out: their working tree,
   stash, and half-staged files are not yours to disturb. If a worktree cannot
-  be created (not a git repo, `git worktree add` fails), STOP and report that
-  in one line - never fall back to implementing on the checked-out branch.
+  be created (not a git repo, `git worktree add` fails, the sandbox denies
+  it), that is a missing hard dependency of implementation - contract rule
+  2c: STOP and report it in one line, never fall back to implementing on the
+  checked-out branch.
+- Make it runnable, then baseline it. A fresh linked worktree shares the
+  repo's history, not its installed state: run the repo's own dependency
+  setup first (the lockfile's install command). Then run the gates for the
+  surface you are about to touch once, BEFORE the first edit. A pre-existing
+  failure found now is inherited, not yours to fix - note it for the Step 7
+  report (scope holds) and keep building. The baseline is what keeps Step 6
+  attributable: any new failure after it is yours.
 - Chameleon follows you in. A linked worktree inherits the main checkout's
   profile and trust (`worktree.py` resolves the profile root through the
   `.git` file pointer), so the per-edit injection, the deny gates, and the
@@ -162,12 +258,18 @@ dependency (contract rule 2c), stated in one line.
 ## Step 6: Verify like it ships
 
 - Run the repo's own gates for the touched surface: its tests, its linter,
-  its typechecker - whatever the repo itself uses.
+  its typechecker - whatever the repo itself uses - and compare against
+  Step 5's baseline: an inherited failure is reported, not fixed (scope
+  holds); any failure the baseline does not show is yours and blocks done.
 - Drive the change end to end at least once - the real flow, not only the
   unit tests. A feature that has never run is not done.
 - Re-read the whole diff against the brief's acceptance criteria, one final
   pass, before declaring done: every criterion either demonstrably met or
   explicitly reported as not met and why.
+- Hire a fresh-context reviewer (read-only, per "Hire experts") over the
+  final diff against the brief's acceptance criteria and the repo's
+  conventions. Verify its load-bearing findings before acting on them;
+  apply or decline each with a reason in the report.
 - Chameleon's turn-end gates have been reviewing each turn; anything they
   surfaced is addressed or consciously carried into the report.
 
@@ -187,7 +289,9 @@ Report back:
 - This applies on FAILURE too: a task that blocked on a hard dependency or
   could not pass verification still reports the worktree path and branch with
   whatever partial work it holds. Leave the worktree in place - removing it
-  is the user's call, same as merging it.
+  is the user's call, same as merging it. If the block hit before the
+  worktree existed, there is no path to report and nothing to leave - say
+  that instead.
 
 ## Integrity rules
 
@@ -197,6 +301,9 @@ Report back:
 - **Never claim understanding you cannot cite.** Every "I know how X works"
   in the brief traces to a file you read, a tool result you received, or a
   doc you fetched - not to memory of similar codebases.
+- **Experts answer; the brief decides.** Hired agents return evidence, never
+  take decisions or make edits of their own. A defaulted decision stays
+  yours to name and defend, whoever gathered the facts under it.
 - **Empty results are not clearance.** An empty caller list, an empty search,
   an empty importer set - each means "the index sees nothing", never "it is
   safe". Grep before concluding.

@@ -128,4 +128,4 @@ Chameleon is an output-layer advisory: archetype + canonical + rules shape the c
 | `/chameleon-pr-review` | Review a branch/PR against repo conventions and task intent |
 | `/chameleon-receiving-code-review` | Handle a review the team left on your PR: verify + adjudicate + draft replies + implement on approval |
 | `/chameleon-explain` | Drill down on one enforcement rule or replay a file's last edit |
-| `/chameleon-deep-work` | Execute a substantive task with the deep-work discipline: dig to full understanding (no questions), brief, then implement in a worktree |
+| `/chameleon-deep-work` | Execute a substantive task with the deep-work discipline: dig to full understanding with hired parallel experts (no questions), brief, then implement in a worktree |

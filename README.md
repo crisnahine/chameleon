@@ -179,7 +179,7 @@ Done. Every edit from here gets the injection automatically. Version matrix and 
 | `/chameleon-pr-review` | Multi-round PR / branch review with a round-3 refuter |
 | `/chameleon-receiving-code-review` | Verify a teammate's review against the code before applying it |
 | `/chameleon-explain` | Drill into one rule, or replay what chameleon knew when a file was edited |
-| `/chameleon-deep-work` | Execute a task with the deep-work discipline: dig to full understanding, no questions, then implement in a worktree |
+| `/chameleon-deep-work` | Execute a task with the deep-work discipline: dig to full understanding with hired parallel experts, no questions, then implement in a worktree |
 | `/chameleon-doctor` | Installation health triage |
 | `/chameleon-journey` | End-to-end release verification harness |
 | `/chameleon-disable` | Off for this session |

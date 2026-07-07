@@ -4,7 +4,7 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.55.0] - 2026-07-07
+## [2.56.0] - 2026-07-07
 
 ### Added
 
@@ -24,6 +24,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   new tools, no new hooks. All command-count surfaces (README, CLAUDE.md,
   architecture.md, using-chameleon) updated to 14 user-invocable commands / 15
   skills, with the wiring pinned in `test_command_wiring_docs.py`.
+
+- **Deep-work hires experts and manages its own worktree defensively.** The
+  skill's dig is now staffed, not solo: a "Hire experts (dispatch discipline)"
+  section makes parallel subagents the default posture whenever two or more
+  independent unknowns exist - read-only code scouts, version-pinned web
+  researchers, and a fresh-context reviewer at verification - each dispatched
+  with one owned question, the context it cannot discover alone, and a
+  required answer shape. An expert's answer is input, not truth: every claim
+  a decision rests on is verified first-hand before it enters the brief (new
+  brief checkbox), and hired agents return evidence only - the brief decides.
+  Step 3's external research gains a depth ladder (pinned-version docs, then
+  the changelog across the exact version window, then the installed package's
+  own source; a blog post is a lead, never a citation). Step 5's worktree
+  setup was rewritten against empirically tested git behavior (both
+  corrections refuted the guidance it was adapted from, live on git 2.50.1):
+  detect an existing linked worktree by comparing
+  `git rev-parse --path-format=absolute --git-dir` with the common dir (the
+  raw-output comparison false-positives from a subdirectory, and a plain
+  submodule does NOT produce the mismatch), use an existing worktree only
+  when it is dedicated to the task, honor a user-declared placement above any
+  tool default, never edit the user's `.gitignore` to make a placement work,
+  and run a dependency-install + gate baseline before the first edit so
+  Step 6 attributes new failures (inherited ones are reported, not fixed).
+  Worktree infeasibility is triaged as a rule-2c hard dependency at Step 1,
+  and the failure report covers the no-worktree-created case.
+  (`skills/chameleon-deep-work/SKILL.md`)
+
+### Changed
+
+- **README rewritten as a real-demo landing page, docs audited against the
+  code.** The README leads with the concrete failures chameleon prevents and
+  a headline demo whose every line is verbatim real hook output; a
+  dig-the-code-first audit fixed 60+ code-vs-doc gaps across
+  architecture.md (24 corrections plus eight previously-undocumented
+  subsystems), language-support-matrix.md (recounted: 210 rows, 133 at full
+  parity), SECURITY.md (both default network paths disclosed accurately),
+  install/hot-path-budget/qa-team/goal/gap-log/verification docs, and adds
+  `docs/README.md` as a reading-order index.
 
 ## [2.54.0] - 2026-07-07
 
