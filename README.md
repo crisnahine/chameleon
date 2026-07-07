@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-plugin-7C3AED.svg)](https://docs.claude.com/claude-code)
 [![Languages](https://img.shields.io/badge/languages-TS%20%7C%20Ruby%20%7C%20Python-2ea44f.svg)](#languages-and-frameworks)
-[![Tests](https://img.shields.io/badge/unit%20tests-5%2C205-blue.svg)](#proof-not-promises)
+[![Tests](https://img.shields.io/badge/unit%20tests-5%2C206-blue.svg)](#proof-not-promises)
 [![Listed on ClaudePluginHub](https://www.claudepluginhub.com/badge/crisnahine-chameleon)](https://www.claudepluginhub.com/plugins/crisnahine-chameleon?ref=badge)
 
 **Your AI writes code that works, and it reads wrong. Chameleon shows the model your repo's own conventions at the moment it types, then reviews the turn's diff before you do.**
@@ -88,7 +88,7 @@ Real output from the bundled `golden-ts-nestjs` fixture, so you can reproduce it
 
 We ship a Rails + TypeScript codebase at [Empire Flippers](https://empireflippers.com/), and we review every AI PR that touches it. The failure mode was always the same: the code worked, and it read wrong. `axios` where the team standardized on our HTTP wrapper, a hand-rolled date formatter next to the one we already had, a new service that skipped the base class every other service extends. We wrote CLAUDE.md rules for all of it, and they rotted in a week, because prose about code goes stale the moment the code moves and nobody's job is rewriting the style guide after every refactor. Then we noticed when the model DID conform: exactly when a real file from our repo happened to be sitting in its context. It needs to see one of our files at the moment it writes, not read prose about them. So we built the thing that shows it one, automatically, derived from the repo itself.
 
-That was 172 releases ago. We still run it daily on the code that pays our salaries.
+That was 175 releases ago. We still run it daily on the code that pays our salaries.
 
 ## Why the rule-file approach fails
 
@@ -166,6 +166,54 @@ Restart Claude Code, then in the repo you care about:
 
 Done. Every edit from here gets the injection automatically. Version matrix and troubleshooting: [docs/install.md](docs/install.md).
 
+## Usage examples
+
+Day to day you type almost nothing: the hooks inject context before each edit and review each turn on their own. These are the moments you actually reach for a command.
+
+**Teach the rule a parser can't infer.** One plain sentence is enough. A "use X, not Y" import rule becomes a convention the lint engine checks, and as long as the discouraged form still exists somewhere in your repo, later edits also see it quoted as a "do NOT write it this way" counterexample:
+
+```
+/chameleon-teach import our http wrapper from @/lib/http, never raw axios
+```
+
+The structured form, when you want exact control over the captured idiom:
+
+```
+/chameleon-teach
+slug: use-http-wrapper
+rationale: Retries, auth headers, and error normalization live in the wrapper.
+example: import { http } from "@/lib/http";
+counterexample: import axios from "axios";
+```
+
+**Ask the codebase before you change it.** Plain-English questions route to the comprehension tools, answered offline from the committed index:
+
+```
+where is invoice pricing calculated?       # search_codebase: ranked symbols, signature + caller count
+who calls create() in auth.service.ts?     # get_callers: deterministic, graded call edges
+what breaks if I narrow this signature?    # get_blast_radius: the transitive callers a change reaches
+```
+
+**Review the branch before a human does:**
+
+```
+/chameleon-pr-review                  # current branch vs the locked production base (or main)
+/chameleon-pr-review PROJ-1234        # also check the diff against the ticket's requirements
+/chameleon-pr-review <PR-URL>         # review a teammate's PR the same way
+```
+
+**Replay an incident.** A bug shipped through a file chameleon watches; see what it knew, what it injected, and why the gate stayed silent the last time that file was edited:
+
+```
+/chameleon-explain src/billing/invoice.service.ts
+```
+
+**Override a block inline, and it's audited.** An intentional deviation is one trailing comment (`#` in Ruby and Python). Rules your team keeps overriding get auto-demoted back to advisory:
+
+```ts
+import axios from "axios"; // chameleon-ignore import-preference-violation
+```
+
 ## Commands
 
 | Command | What it does |
@@ -218,8 +266,8 @@ Every number below is checkable in this repo right now:
 
 | What | Count | Verify yourself |
 |---|---|---|
-| Unit tests | **5,205** | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
-| Released versions | **172** (v0.1.1 to v2.54.0) | `git tag \| wc -l` |
+| Unit tests | **5,206** | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
+| Released versions | **175** (v0.1.1 to v2.56.1) | `git tag \| wc -l` |
 | Changelog | **6,000 lines** | `wc -l CHANGELOG.md` |
 | CI | ubuntu + macos + **native Windows**, Python 3.11-3.13 | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
 | Per-edit hot path | benchmarked cold/warm p50 and p99 | `PYTHONPATH=. mcp/.venv/bin/python tests/bench_hot_path.py` |

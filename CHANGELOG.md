@@ -4,6 +4,30 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.56.1] - 2026-07-07
+
+### Added
+
+- **README "Usage examples" section.** The landing page showed the hooks
+  working but never showed what you actually type. A new section between
+  Install and Commands covers the five moments you reach for a command:
+  teaching a wrapper-preference rule (the one-sentence free-form and the
+  structured `slug:`/`rationale:` forms), plain-English comprehension
+  questions and the tools they route to (`search_codebase`, `get_callers`,
+  `get_blast_radius`), the three `/chameleon-pr-review` input formats, the
+  `/chameleon-explain <file>` incident replay, and the inline
+  `chameleon-ignore` override with its demotion feedback loop. Every command
+  form, field name, and rule id in the section was verified against the skill
+  definitions and tool docstrings before shipping.
+
+### Fixed
+
+- **Stale proof numbers in the README.** The "Proof, not promises" table and
+  the tests badge lagged reality: 5,205 unit tests and 172 releases to
+  v2.54.0 where the checkable numbers are 5,206 tests and (with this release)
+  175 tags to v2.56.1. The table exists to be re-run; now it passes its own
+  verify commands again.
+
 ## [2.56.0] - 2026-07-07
 
 ### Added
