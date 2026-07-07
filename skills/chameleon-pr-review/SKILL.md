@@ -29,6 +29,27 @@ removed hunk line — see the grounding loop below.
 /chameleon-pr-review <PR-URL> PROJ-1234   → full review (explicit PR + ticket)
 ```
 
+## The five-phase discipline
+
+Every review runs the same pipeline the chameleon engine runs at turn end —
+**SCOPE → EVIDENCE → ATTACK → VERIFY → REPORT**. The steps below are that pipeline;
+each phase gates the next, so a finding never ships until it has survived VERIFY.
+
+- **SCOPE** — Step 1 (parse the diff into a per-file hunk map) + Step 2.0 (fan-out
+  routing). Fix exactly what changed; the hunk gate depends on precise scoping.
+- **EVIDENCE** — the tool-grounding passes: Step 2a `get_pattern_context`, 2b
+  `lint_file`, 2.5 `scan_dependency_changes`, 2.9 (`get_duplication_candidates`,
+  `get_crossfile_context`, `get_callers`, `get_contract_breaks`), 3a task context,
+  3h `get_autopass_verdict`. Gather grounded facts before judging.
+- **ATTACK** — the adversarial lenses: Step 2.6 security, 2.7 migration-safety,
+  2.9a layering, Step 3 logic (edge cases, perf, type safety), 3e change-delta. Hunt
+  defects across independent lenses.
+- **VERIFY** — Step 4a hunk gate + Step 4b round-3 `refute_finding`. Every
+  model-judgment finding must survive an independent refuter or it is dropped. A
+  finding that cannot survive round 3 does not ship.
+- **REPORT** — Step 4 output (verdict-first, BLOCK/FIX/NIT, grounding banner) +
+  Step 5 ledger. Emit only verified findings, ranked by severity.
+
 ## Execution
 
 Follow these steps in order. Do not skip steps.

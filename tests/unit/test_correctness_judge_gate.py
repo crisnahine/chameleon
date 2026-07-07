@@ -509,3 +509,113 @@ def test_judge_fails_open_when_run_raises(make_trusted_repo):
     mock_rcj.assert_called_once()
     # Fail open: no crash, no block, valid JSON.
     assert out.get("decision") != "block"
+
+
+# --- VERIFY stage wiring (sync gate) -------------------------------------------
+
+
+def _fresh_budget(monkeypatch):
+    """Anchor the sync VERIFY budget clock to 'now' so it behaves as it would in a
+    fresh one-shot hook process (the pytest process has been alive far longer)."""
+    from chameleon_mcp import hook_helper
+
+    monkeypatch.setattr(hook_helper, "_PROCESS_START_MONOTONIC", time.monotonic())
+
+
+def _stub_gate_refuter(monkeypatch, verdicts_by_id):
+    calls = {"run_batch": 0}
+
+    def fake_run_batch(repo_root, findings, excerpts, *, model, timeout, max_spawns, **kw):
+        calls["run_batch"] += 1
+        return [
+            {"id": f.get("id"), "verdict": verdicts_by_id.get(f.get("id"), "unverified")}
+            for f in findings[:max_spawns]
+        ]
+
+    import chameleon_mcp.refuter as refuter
+
+    monkeypatch.setattr(refuter, "refuter_cli_absent", lambda: None)
+    monkeypatch.setattr(refuter, "run_batch", fake_run_batch)
+    return calls
+
+
+def test_verify_drops_refuted_tags_confirmed_end_to_end(make_trusted_repo, monkeypatch, tmp_path):
+    """The full sync pipeline: judge findings -> VERIFY refutes one, confirms one ->
+    the advisory renders only survivors with the grounding banner, the raw findings
+    are still shadow-logged, and only survivors persist to the ledger."""
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+    _fresh_budget(monkeypatch)
+    calls = _stub_gate_refuter(monkeypatch, {"0": "refuted", "1": "confirmed"})
+    findings = [
+        Finding(message="false alarm", confidence=0.9, file="src/Widget.ts", line=1),
+        Finding(message="real dropped await", confidence=0.9, file="src/Widget.ts", line=1),
+    ]
+
+    with patch.dict(os.environ, {"CHAMELEON_PLUGIN_DATA": str(tmp_path)}, clear=False):
+        out, mock_rcj = _run_stop(
+            _payload(repo, sid),
+            env={"CHAMELEON_ENFORCE": "1"},
+            findings=findings,
+        )
+
+    mock_rcj.assert_called_once()
+    assert calls["run_batch"] == 1
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "real dropped await" in ctx
+    assert "false alarm" not in ctx  # refuted -> dropped from the advisory
+    assert "1 refuted and dropped, 1 confirmed" in ctx
+    assert "src/Widget.ts:1 [confirmed]" in ctx
+    # Raw findings (both) shadow-logged for precision sampling.
+    metrics = tmp_path / "metrics.jsonl"
+    rows = [json.loads(line) for line in metrics.read_text().splitlines() if line.strip()]
+    judge_rows = [r for r in rows if r.get("hook") == "stop-correctness-judge"]
+    assert len(judge_rows) == 2
+    # Only the survivor persists to the finding->fix ledger (rows carry a message
+    # fingerprint, not the text, so assert the count: 1 survivor, not 2 raw).
+    from chameleon_mcp.drift.observations import open_judge_findings
+
+    open_rows = open_judge_findings(REPO_ID, ws_root=str(repo))
+    assert len(open_rows) == 1
+    # The verified check event is recorded for attestation replay.
+    assert any(e["status"] == "verified" for e in _events(sid))
+
+
+def test_verify_exhausted_budget_passes_findings_through(make_trusted_repo, monkeypatch):
+    """A long-running Stop (no budget left under the 55s wrapper) must surface the
+    raw findings unverified -- never spawn, never drop, no banner."""
+    from chameleon_mcp import hook_helper
+
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+    monkeypatch.setattr(hook_helper, "_PROCESS_START_MONOTONIC", time.monotonic() - 60)
+    calls = _stub_gate_refuter(monkeypatch, {"0": "refuted"})
+
+    out, _ = _run_stop(
+        _payload(repo, sid),
+        env={"CHAMELEON_ENFORCE": "1"},
+        findings=[Finding(message="kept anyway", confidence=0.9, file="src/Widget.ts", line=1)],
+    )
+
+    assert calls["run_batch"] == 0
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "kept anyway" in ctx
+    assert "refuted and dropped" not in ctx  # no banner when VERIFY did not run
+
+
+def test_verify_kill_switch_passes_findings_through(make_trusted_repo, monkeypatch):
+    repo, data_dir, sid, file_path, profile_dir = make_trusted_repo()
+    _touch_edited_file(file_path, data_dir, sid)
+    _fresh_budget(monkeypatch)
+    calls = _stub_gate_refuter(monkeypatch, {"0": "refuted"})
+
+    out, _ = _run_stop(
+        _payload(repo, sid),
+        env={"CHAMELEON_ENFORCE": "1", "CHAMELEON_STOP_VERIFY": "0"},
+        findings=[Finding(message="kept anyway", confidence=0.9, file="src/Widget.ts", line=1)],
+    )
+
+    assert calls["run_batch"] == 0
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "kept anyway" in ctx
+    assert "refuted and dropped" not in ctx

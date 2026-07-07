@@ -26,7 +26,7 @@ def _finding(i):
 def test_cap_marks_remainder_unverified(monkeypatch):
     calls = []
 
-    def fake_run_one(repo_root, finding, excerpt, *, model, timeout):
+    def fake_run_one(repo_root, finding, excerpt, *, model, timeout, retry=True):
         calls.append(finding["id"])
         return {"id": finding["id"], "verdict": "confirmed", "reason": "ok"}
 
@@ -40,6 +40,28 @@ def test_cap_marks_remainder_unverified(monkeypatch):
     capped = [v for v in out if v["verdict"] == "unverified"]
     assert len(capped) == 2
     assert all("cap reached" in v["reason"] for v in capped)
+
+
+def test_run_one_retry_false_spawns_exactly_once(monkeypatch):
+    """The Stop-path VERIFY budget assumes one timeout window per slot, so
+    retry=False must suppress the transient-failure re-spawn."""
+    calls = {"n": 0}
+
+    def fake_spawn(prompt, cwd, *, model=None, timeout_s=None):
+        calls["n"] += 1
+        return (None, "spawn_nonzero_exit")
+
+    monkeypatch.setattr(refuter, "_spawn_status", fake_spawn)
+    out = refuter.run_one(
+        Path("/tmp"), _finding(1), "excerpt", model="sonnet", timeout=45, retry=False
+    )
+    assert calls["n"] == 1
+    assert out["verdict"] == "unverified"
+
+    # Default (retry=True) keeps the one re-spawn for the interactive skills.
+    calls["n"] = 0
+    refuter.run_one(Path("/tmp"), _finding(1), "excerpt", model="sonnet", timeout=45)
+    assert calls["n"] == 2
 
 
 def _stream_json(verdict_body: str) -> str:

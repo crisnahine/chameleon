@@ -159,6 +159,141 @@ def test_empty_fresh_silent(tmp_path, monkeypatch):
     assert _call(tmp_path, cfg=_cfg(), route=_route(fresh=[])) == []
 
 
+# --- VERIFY stage on the multi-lens (default-config) path -----------------------
+
+
+def _fresh_budget(monkeypatch):
+    """Anchor the sync VERIFY budget clock to 'now' (the pytest process has been
+    alive far longer than a one-shot hook process would be)."""
+    import time
+
+    monkeypatch.setattr(hook_helper, "_PROCESS_START_MONOTONIC", time.monotonic())
+
+
+def _stub_refuter(monkeypatch, verdicts_by_id):
+    calls = {"batches": []}
+
+    def fake_run_batch(repo_root, findings, excerpts, *, model, timeout, max_spawns, **kw):
+        calls["batches"].append([f.get("id") for f in findings])
+        return [
+            {"id": f.get("id"), "verdict": verdicts_by_id.get(f.get("id"), "unverified")}
+            for f in findings[:max_spawns]
+        ]
+
+    import chameleon_mcp.refuter as refuter
+
+    monkeypatch.setattr(refuter, "refuter_cli_absent", lambda: None)
+    monkeypatch.setattr(refuter, "run_batch", fake_run_batch)
+    return calls
+
+
+def test_verify_drops_refuted_lone_correctness_finding(tmp_path, monkeypatch):
+    """The default-config VERIFY: lone-correctness findings are refuted/confirmed,
+    duplication findings are exempt (their evidence spans two locations a one-file
+    excerpt cannot show) and pass through untouched."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "x.rb").write_text(
+        "\n".join(f"line{i}" for i in range(1, 11)), encoding="utf-8"
+    )
+    _fresh_budget(monkeypatch)
+    calls = _stub_refuter(monkeypatch, {"0": "refuted", "1": "confirmed"})
+    _surfaced(
+        monkeypatch,
+        [
+            {
+                "file": "app/x.rb",
+                "line": 2,
+                "claim": "false alarm",
+                "lenses": ["correctness"],
+                "confidence": 0.9,
+                "surface": True,
+            },
+            {
+                "file": "app/x.rb",
+                "line": 5,
+                "claim": "real missing guard",
+                "lenses": ["correctness"],
+                "confidence": 0.9,
+                "surface": True,
+            },
+            {
+                "file": "app/x.rb",
+                "line": 7,
+                "claim": "foo re-implements bar",
+                "lenses": ["duplication"],
+                "confidence": 0.9,
+                "surface": True,
+            },
+        ],
+    )
+    lines = _call(tmp_path, cfg=_cfg(), route=_route())
+    body = "\n".join(lines)
+    # Only the two lone-correctness findings were sent to the refuter.
+    assert calls["batches"] == [["0", "1"]]
+    assert "false alarm" not in body  # refuted -> dropped
+    assert "[correctness] [confirmed]: real missing guard" in body
+    assert "foo re-implements bar" in body  # duplication exempt, untouched
+    assert "[duplication] [confirmed]" not in body
+    assert "1 refuted and dropped, 1 confirmed" in body
+    assert "flagged 2 possible issue" in lines[0]  # header counts survivors
+
+
+def test_verify_exempts_cross_lens_agreement(tmp_path, monkeypatch):
+    """A finding two lenses independently raised is already independently
+    verified; it must not be spent refuter budget or risk a drop."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "x.rb").write_text("line1\n", encoding="utf-8")
+    _fresh_budget(monkeypatch)
+    calls = _stub_refuter(monkeypatch, {"0": "refuted"})
+    _surfaced(
+        monkeypatch,
+        [
+            {
+                "file": "app/x.rb",
+                "line": 1,
+                "claim": "agreed finding",
+                "lenses": ["correctness", "duplication"],
+                "confidence": 0.9,
+                "surface": True,
+            }
+        ],
+    )
+    lines = _call(tmp_path, cfg=_cfg(), route=_route())
+    assert calls["batches"] == []  # nothing eligible -> no refuter spawn
+    assert "agreed finding" in "\n".join(lines)
+
+
+def test_verify_failure_keeps_all_multilens_findings(tmp_path, monkeypatch):
+    """A broken refuter must never drop a multi-lens finding (fail-open)."""
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "x.rb").write_text("line1\nline2\n", encoding="utf-8")
+    _fresh_budget(monkeypatch)
+    import chameleon_mcp.refuter as refuter
+
+    monkeypatch.setattr(refuter, "refuter_cli_absent", lambda: None)
+
+    def boom(*a, **k):
+        raise RuntimeError("refuter exploded")
+
+    monkeypatch.setattr(refuter, "run_batch", boom)
+    _surfaced(
+        monkeypatch,
+        [
+            {
+                "file": "app/x.rb",
+                "line": 1,
+                "claim": "kept on failure",
+                "lenses": ["correctness"],
+                "confidence": 0.9,
+                "surface": True,
+            }
+        ],
+    )
+    body = "\n".join(_call(tmp_path, cfg=_cfg(), route=_route()))
+    assert "kept on failure" in body
+    assert "refuted and dropped" not in body  # no banner when VERIFY did not run
+
+
 # --- route gating: multi_lens must not depend on the correctness_judge flag ---
 
 

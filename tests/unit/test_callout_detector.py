@@ -163,13 +163,11 @@ def test_hard_secret_prompt_persists_suppressed_only(tmp_path):
 # --- pending-findings delivery stage ----------------------------------------------
 
 
-def _seed_pending(tmp_path, *, findings, digests):
-    _pending_path(tmp_path).write_text(
-        json.dumps(
-            {"turn_key": "t" * 32, "completed_ts": 0.0, "digests": digests, "findings": findings}
-        ),
-        encoding="utf-8",
-    )
+def _seed_pending(tmp_path, *, findings, digests, verify=None):
+    payload = {"turn_key": "t" * 32, "completed_ts": 0.0, "digests": digests, "findings": findings}
+    if verify is not None:
+        payload["verify"] = verify
+    _pending_path(tmp_path).write_text(json.dumps(payload), encoding="utf-8")
 
 
 def test_pending_findings_delivered_and_file_unlinked(tmp_path):
@@ -192,6 +190,66 @@ def test_pending_findings_delivered_and_file_unlinked(tmp_path):
     assert "dropped await" in ctx
     assert "advisory" in ctx
     assert not _pending_path(tmp_path).exists()
+
+
+def test_pending_findings_verify_banner_and_confirmed_tag(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    f = repo / "src" / "a.ts"
+    f.write_text("export const x = 1\n", encoding="utf-8")
+    _seed_pending(
+        tmp_path,
+        findings=[
+            {
+                "file": "src/a.ts",
+                "line": 3,
+                "message": "dropped await",
+                "confidence": 0.9,
+                "verify": "confirmed",
+            }
+        ],
+        digests={"src/a.ts": _digest_of(f)},
+        verify={"ran": True, "refuted": 2, "confirmed": 1, "unverified": 0},
+    )
+
+    ctx = json.loads(_run_with_repo(tmp_path, "carry on please"))["hookSpecificOutput"][
+        "additionalContext"
+    ]
+    # Grounding banner reflects the VERIFY stage; the surviving finding is tagged.
+    assert "2 refuted and dropped" in ctx
+    assert "1 confirmed" in ctx
+    assert "src/a.ts:3 [confirmed]" in ctx
+
+
+def test_pending_findings_verify_ran_false_renders_no_banner(tmp_path):
+    """The async child writes a verify summary even on passthrough (ran=false);
+    the delivery must not claim independent verification that never happened, and
+    an unverified finding renders without a tag."""
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True, exist_ok=True)
+    f = repo / "src" / "a.ts"
+    f.write_text("export const x = 1\n", encoding="utf-8")
+    _seed_pending(
+        tmp_path,
+        findings=[
+            {
+                "file": "src/a.ts",
+                "line": 3,
+                "message": "dropped await",
+                "confidence": 0.9,
+                "verify": "unverified",
+            }
+        ],
+        digests={"src/a.ts": _digest_of(f)},
+        verify={"ran": False, "refuted": 0, "confirmed": 0, "unverified": 1},
+    )
+
+    ctx = json.loads(_run_with_repo(tmp_path, "carry on please"))["hookSpecificOutput"][
+        "additionalContext"
+    ]
+    assert "Independently verified" not in ctx
+    assert "src/a.ts:3: dropped await" in ctx  # no [confirmed] tag
+    assert "[confirmed]" not in ctx
 
 
 def test_pending_findings_stale_digest_dropped(tmp_path):

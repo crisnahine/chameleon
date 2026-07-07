@@ -204,15 +204,62 @@ def test_main_writes_pending_marks_judged_clears_inflight(tmp_path):
     data = json.loads(pending.read_text(encoding="utf-8"))
     assert data["turn_key"] == "t" * 32
     assert data["digests"] == {"src/a.ts": "d" * 16}
+    # The VERIFY stage ran (refuter neutralized by the conftest guard -> unverified),
+    # so each delivered finding carries its verdict and the payload a verify summary.
     assert data["findings"] == [
-        {"file": "src/a.ts", "line": 3, "message": "dropped await", "confidence": 0.8}
+        {
+            "file": "src/a.ts",
+            "line": 3,
+            "message": "dropped await",
+            "confidence": 0.8,
+            "verify": "unverified",
+        }
     ]
+    assert data["verify"]["ran"] is True
+    assert data["verify"] == {"ran": True, "refuted": 0, "confirmed": 0, "unverified": 1}
     # The reviewed file is judged at its captured digest under the corr namespace.
     from chameleon_mcp.duplication_review import already_judged
 
     assert already_judged(repo_data, SID, "src/a.ts", "d" * 16, prefix=".corr_judged.") is True
     # No partial pending file left behind by the atomic write.
     assert not list(repo_data.glob("*.tmp"))
+
+
+def test_main_verify_drops_refuted_keeps_confirmed(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    (repo_root / "src").mkdir(parents=True)
+    (repo_root / "src" / "a.ts").write_text("export const x = 1\n", encoding="utf-8")
+    repo_data = tmp_path / "data"
+    req = _write_request(repo_root, repo_data, str(repo_root / "src" / "a.ts"))
+
+    findings = [
+        Finding(message="real bug", confidence=0.9, file="src/a.ts", line=1),
+        Finding(message="false positive", confidence=0.9, file="src/a.ts", line=2),
+    ]
+
+    def fake_run_batch(repo, fs, xs, *, model, timeout, max_spawns, **kw):
+        # id is the original finding index; refute #1, confirm #0.
+        return [
+            {"id": f.get("id"), "verdict": "confirmed" if f.get("id") == "0" else "refuted"}
+            for f in fs[:max_spawns]
+        ]
+
+    import chameleon_mcp.refuter as refuter
+
+    monkeypatch.setattr(refuter, "refuter_cli_absent", lambda: None)
+    monkeypatch.setattr(refuter, "run_batch", fake_run_batch)
+
+    with patch("chameleon_mcp.judge.run_correctness_judge", return_value=findings):
+        rc = judge_async.main([str(req)])
+
+    assert rc == 0
+    _, _, pending = _paths(repo_data)
+    data = json.loads(pending.read_text(encoding="utf-8"))
+    messages = [f["message"] for f in data["findings"]]
+    assert "real bug" in messages
+    assert "false positive" not in messages  # refuted -> dropped
+    assert data["verify"] == {"ran": True, "refuted": 1, "confirmed": 1, "unverified": 0}
+    assert data["findings"][0]["verify"] == "confirmed"
 
 
 def test_main_clears_inflight_even_when_judge_raises(tmp_path):

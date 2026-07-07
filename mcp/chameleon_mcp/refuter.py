@@ -142,11 +142,15 @@ def run_one(
     *,
     model: str,
     timeout: int,
+    retry: bool = True,
 ) -> dict:
     """Spawn one refuter. Fail open to unverified on any error, timeout, or unparse.
 
     ``model`` drives the ``--model`` flag; ``timeout`` is the wall-clock budget
-    in seconds. Both are forwarded directly to the underlying spawn.
+    in seconds. Both are forwarded directly to the underlying spawn. ``retry``
+    allows one re-spawn after a fast non-timeout failure; a caller on a hard
+    wall-clock budget (the turn-end Stop VERIFY stage) passes False so one slot
+    can never cost two timeout windows.
     """
     fid = finding.get("id")
     try:
@@ -157,7 +161,7 @@ def run_one(
         # It returns (stdout, reason) so a transient failure can be distinguished
         # from a timeout.
         stdout, reason = _spawn_status(prompt, repo_root, model=model, timeout_s=timeout)
-        if stdout is None and reason != "spawn_timeout":
+        if stdout is None and retry and reason != "spawn_timeout":
             # The plain-fallback spawn (taken whenever --bare drops auth, i.e.
             # every current CLI) starts a fresh full session and can transiently
             # exit nonzero -- an MCP-server startup race, a momentary rate limit --
@@ -203,8 +207,14 @@ def run_batch(
     timeout: int,
     max_spawns: int,
     concurrency: int = 4,
+    retry: bool = True,
 ) -> list[dict]:
-    """Refute up to ``max_spawns`` findings in parallel; remainder -> unverified (cap)."""
+    """Refute up to ``max_spawns`` findings in parallel; remainder -> unverified (cap).
+
+    ``retry=False`` (the turn-end Stop VERIFY caller) disables run_one's one
+    re-spawn so a slot is bounded by exactly one timeout window -- the budget
+    arithmetic a hard-capped hook depends on.
+    """
     head = list(zip(findings, excerpts, strict=False))[:max_spawns]
     tail = findings[max_spawns:]
     results: list[dict] = []
@@ -212,7 +222,13 @@ def run_batch(
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
             futures = [
                 ex.submit(
-                    run_one, repo_root, f, x, model=_refuter_model_for(f, model), timeout=timeout
+                    run_one,
+                    repo_root,
+                    f,
+                    x,
+                    model=_refuter_model_for(f, model),
+                    timeout=timeout,
+                    retry=retry,
                 )
                 for (f, x) in head
             ]

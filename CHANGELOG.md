@@ -4,6 +4,48 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.57.0] - 2026-07-07
+
+### Added
+
+- **Turn-end VERIFY stage: the automatic review now refutes its own findings
+  before you see them.** The turn-end pipeline ran SCOPE -> EVIDENCE -> ATTACK
+  -> REPORT with no VERIFY: the correctness judge's findings surfaced
+  unchallenged, while the fully-built independent refuter (`refuter.py`) was
+  wired only to the interactive pr-review / receiving skills — the plugin's
+  most-used review surface had no independent verification at all. A new
+  `stop_verify.py` module closes the gap on all three turn-end paths: the
+  default multi-lens pass (lone-correctness-lens findings only; cross-lens
+  agreement is already an independent signal and duplication findings' evidence
+  spans two locations a one-file excerpt cannot show, so those are exempt), the
+  single-lens correctness gate, and the async-detached judge child. A refuted
+  finding is dropped, a confirmed one is tagged `[confirmed]`, the rest surface
+  labeled unverified, and the advisory carries a grounding banner
+  (`N refuted and dropped, M confirmed`). Strictly raise-precision by contract:
+  only an actively-refuted finding is ever removed; any failure (no budget, CLI
+  absent, spawn error) passes everything through unverified; and a finding
+  whose excerpt cannot be safely fetched is never spawned, because the refuter
+  prompt commands refutation on cannot-tell and a zero-evidence spawn would
+  kill anchorless findings on engine-side data absence. Budget-honest under the
+  55s Stop wrapper: refuter spawns are retry-free (`run_one(retry=False)`, new
+  parameter) so a slot costs exactly one timeout window, and the sync path
+  anchors its remaining-budget math to process start — the same clock as the
+  wrapper's SIGKILL — spawning only when a full window fits. Excerpts are
+  containment-checked through `safe_read_text` (the finding's file field is
+  model output inlined into a prompt; an absolute or `..`-escaping path reads
+  nothing). Raw findings still shadow-log pre-VERIFY so precision sampling
+  keeps seeing the refuted rows; only survivors persist to the finding ledger.
+  Default-ON with the `CHAMELEON_STOP_VERIFY=0` kill switch; no repo-code
+  execution and no network (the refuter is a hardened no-tools `claude -p`).
+  Verified live end-to-end: a deliberately false claim came back refuted and
+  dropped, a real defect came back confirmed and kept, ~8-10s per spawn.
+
+- **The five-phase review discipline is now explicit in `/chameleon-pr-review`.**
+  The skill already ran all five phases; a new "The five-phase discipline"
+  section names them (SCOPE -> EVIDENCE -> ATTACK -> VERIFY -> REPORT) and maps
+  each existing step to its phase, so the skill and the engine's turn-end
+  pipeline now describe the same contract in the same terms.
+
 ## [2.56.1] - 2026-07-07
 
 ### Added

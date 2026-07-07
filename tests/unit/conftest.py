@@ -41,3 +41,18 @@ def _no_real_judge_spawn(request, monkeypatch):
         lambda *a, **k: (None, "spawn_exec_error"),
         raising=False,
     )
+    # The turn-end VERIFY stage spawns the refuter, which bound the status spawner
+    # via `from judge import _spawn_reviewer_status as _spawn_status` at import time,
+    # so patching judge above does NOT reach it. Neutralize the refuter's own binding
+    # (and its CLI probe) so a gate that reaches VERIFY degrades to unverified rather
+    # than launching a real, billable `claude -p`. Tests that assert on refuter
+    # verdicts patch `refuter.run_batch` themselves, overriding this.
+    try:
+        from chameleon_mcp import refuter
+
+        monkeypatch.setattr(
+            refuter, "_spawn_status", lambda *a, **k: (None, "spawn_exec_error"), raising=False
+        )
+        monkeypatch.setattr(refuter, "refuter_cli_absent", lambda: None, raising=False)
+    except Exception:
+        pass

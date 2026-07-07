@@ -160,6 +160,43 @@ def _child_spawn_budget_seconds() -> int:
         return threshold_int("CORRECTNESS_JUDGE_TIMEOUT_SECONDS")
 
 
+def _run_verify_stage(repo_root: Path, findings, judge_started: float):
+    """VERIFY the async judge's findings with the refuter under the child budget.
+
+    Computes the budget left after the judge spawn, clamps the refuter's per-spawn
+    timeout to fit, and refutes as many findings as the remainder affords. Fails open
+    to a pass-through result (every finding kept, unverified) on any error so a broken
+    verify never drops a real finding or crashes the child.
+    """
+    from chameleon_mcp import stop_verify
+
+    n = len(findings or [])
+    try:
+        from chameleon_mcp.judge import _valid_model
+
+        elapsed = max(0.0, time.time() - judge_started)
+        # Leave a safety margin under the child budget so the refuter batch and its
+        # cleanup finish before the parent's orphan-sweep window (2x the budget).
+        remaining = _child_spawn_budget_seconds() - elapsed - 10
+        model = os.environ.get("CHAMELEON_REFUTER_MODEL", "sonnet")
+        if not _valid_model(model):
+            model = "sonnet"
+        # Clamp the per-spawn timeout so at least one full window fits the remainder.
+        timeout = max(15, min(threshold_int("REFUTER_TIMEOUT_SECONDS"), int(remaining)))
+        return stop_verify.verify_stop_findings(
+            repo_root,
+            findings,
+            budget_seconds=remaining,
+            model=model,
+            max_spawns=threshold_int("REFUTER_MAX_SPAWNS_PER_INVOCATION"),
+            timeout=timeout,
+        )
+    except Exception:
+        return stop_verify.VerifyResult(
+            list(findings or []), ["unverified"] * n, 0, 0, n, False, "verify stage error"
+        )
+
+
 def is_inflight_fresh(repo_data: Path, session_id: str) -> bool:
     """True while a detached judge for this session is plausibly still running.
 
@@ -287,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
                 failures.append(kind)
             _event("degraded_spawn", kind, {"turn_key": turn_key, "detail": detail})
 
+        _judge_started = time.time()
         findings = judge.run_correctness_judge(
             repo_root,
             repo_root / ".chameleon",
@@ -297,6 +335,25 @@ def main(argv: list[str] | None = None) -> int:
             model=judge.judge_model_for_route(route_reason),
         )
 
+        # VERIFY stage: independently refute each finding before delivery. The
+        # detached child runs under the generous fallback budget, so unlike the
+        # 55s-capped sync gate it can afford the full refuter batch. A refuted
+        # finding is dropped; everything else is delivered labeled. Fails open to
+        # the raw findings on any error (verify_stop_findings' own contract).
+        verify = _run_verify_stage(repo_root, findings, _judge_started)
+        findings = verify.kept
+        if verify.ran:
+            _event(
+                "verified",
+                "completed",
+                {
+                    "turn_key": turn_key,
+                    "refuted": verify.refuted,
+                    "confirmed": verify.confirmed,
+                    "unverified": verify.unverified,
+                },
+            )
+
         if not failures:
             _atomic_write_json(
                 _pending_path(repo_data, session_id),
@@ -304,14 +361,21 @@ def main(argv: list[str] | None = None) -> int:
                     "turn_key": turn_key,
                     "completed_ts": time.time(),
                     "digests": digests,
+                    "verify": {
+                        "ran": verify.ran,
+                        "refuted": verify.refuted,
+                        "confirmed": verify.confirmed,
+                        "unverified": verify.unverified,
+                    },
                     "findings": [
                         {
                             "file": f.file,
                             "line": f.line,
                             "message": f.message,
                             "confidence": f.confidence,
+                            "verify": v,
                         }
-                        for f in findings
+                        for f, v in zip(findings, verify.kept_verdicts, strict=False)
                     ],
                 },
             )

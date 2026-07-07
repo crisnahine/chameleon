@@ -5744,6 +5744,57 @@ def _finding_is_high(severity: str | None) -> bool:
     return isinstance(severity, str) and severity.strip().lower() in ("high", "block", "critical")
 
 
+# The stop-backstop wrapper SIGKILLs the hook at 55s measured from PROCESS start
+# (hooks/stop-backstop). The sync VERIFY stage anchors its remaining-budget math to
+# the same clock -- module import time, which for the one-shot hook process is within
+# ~1s of exec -- so pre-judge hook work (route risk facts, ledger recheck, idiom gate)
+# is counted, not just the judge spawn. In a long-lived process (daemon, MCP server)
+# the anchor is stale and the budget reads exhausted: VERIFY then passes findings
+# through unverified, which is the safe direction (never a drop, never an overrun).
+_PROCESS_START_MONOTONIC = time.monotonic()
+_SYNC_STOP_WALL_BUDGET_SECONDS = 55
+_SYNC_VERIFY_SAFETY_SECONDS = 12
+
+
+def _sync_verify_stop_findings(repo_root: Path, findings):
+    """Budget-adaptive VERIFY for the synchronous Stop path.
+
+    VERIFY spawns a refuter only when the wall-clock remaining under the 55s wrapper
+    (measured from process start) fits a full timeout window -- the fast
+    bare-auth-works turns; otherwise it passes findings through unverified, today's
+    behavior, no regression. Spawns are retry-free (stop_verify passes retry=False),
+    so one slot is bounded by exactly one timeout window and the wrapper cap holds.
+    The duplication gate already defers whenever the judge spawned, so VERIFY takes
+    the second-spawn slot without competing with it. Fails open to pass-through on
+    any error.
+    """
+    from chameleon_mcp import stop_verify
+
+    n = len(findings or [])
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.judge import _valid_model
+
+        elapsed = time.monotonic() - _PROCESS_START_MONOTONIC
+        remaining = _SYNC_STOP_WALL_BUDGET_SECONDS - elapsed - _SYNC_VERIFY_SAFETY_SECONDS
+        model = os.environ.get("CHAMELEON_REFUTER_MODEL", "sonnet")
+        if not _valid_model(model):
+            model = "sonnet"
+        timeout = max(15, min(threshold_int("REFUTER_TIMEOUT_SECONDS"), int(max(0, remaining))))
+        return stop_verify.verify_stop_findings(
+            repo_root,
+            findings,
+            budget_seconds=remaining,
+            model=model,
+            max_spawns=threshold_int("REFUTER_MAX_SPAWNS_PER_INVOCATION"),
+            timeout=timeout,
+        )
+    except Exception:
+        return stop_verify.VerifyResult(
+            list(findings or []), ["unverified"] * n, 0, 0, n, False, "sync verify error"
+        )
+
+
 def _ledger_persist(repo_id, session_id, repo_root: Path, lens: str, findings) -> None:
     """Persist surfaced findings to the judge_findings ledger (the finding->fix
     loop). ``findings`` is a list of ``{file, line, message, confidence?/severity?}``.
@@ -5908,6 +5959,17 @@ def _pending_findings_block(repo_root: Path, repo_data: Path, session_id) -> str
         f"{n} possible correctness issue{'s' if n != 1 else ''}]",
         "These are advisory; verify each before acting, they may be wrong.",
     ]
+    # Grounding banner: when the VERIFY stage ran, show how many findings a second
+    # independent reviewer refuted (dropped) vs confirmed, so the surviving list
+    # reads as verified rather than raw.
+    verify = data.get("verify") if isinstance(data.get("verify"), dict) else None
+    if verify and verify.get("ran"):
+        refuted = verify.get("refuted") or 0
+        confirmed = verify.get("confirmed") or 0
+        lines.append(
+            f"Independently verified: {refuted} refuted and dropped, "
+            f"{confirmed} confirmed. A '[confirmed]' finding survived a second reviewer."
+        )
     for finding in live:
         rel = finding.get("file")
         loc = sanitize_for_chameleon_context(str(rel)) if rel else "?"
@@ -5915,7 +5977,9 @@ def _pending_findings_block(repo_root: Path, repo_data: Path, session_id) -> str
         if isinstance(line_no, int):
             loc += f":{line_no}"
         message = finding.get("message")
-        lines.append(f"- {loc}: {sanitize_for_chameleon_context(str(message or ''))}")
+        verdict = finding.get("verify")
+        tag = " [confirmed]" if verdict == "confirmed" else ""
+        lines.append(f"- {loc}{tag}: {sanitize_for_chameleon_context(str(message or ''))}")
     return "<chameleon-context>\n" + "\n".join(lines) + "\n</chameleon-context>"
 
 
@@ -7118,28 +7182,9 @@ def _correctness_judge_gate(
         )
         route["spawn_failed"] = bool(degraded)
 
-        if not failures:
-            _emit_check_event(
-                repo_id,
-                session_id,
-                "correctness_judge",
-                "spawned",
-                "completed",
-                detail={"turn_key": turn_key, "findings": len(findings)},
-            )
-            for path in fresh:
-                rel = dr._repo_rel(repo_root, path)
-                dr.mark_judged(
-                    repo_data,
-                    session_id or "",
-                    rel,
-                    digests.get(rel, ""),
-                    prefix=_CORR_JUDGED_PREFIX,
-                )
-
-        # Shadow-log every finding so a lead can sample judge precision over time.
-        # The judge never blocks, so would_block is always False; the row records
-        # the advisory finding, attributed to the file/line when known.
+        # Shadow-log every RAW finding before VERIFY so a lead can sample judge
+        # precision over time -- the refuted ones are exactly the rows a precision
+        # sample needs. The judge never blocks, so would_block is always False.
         try:
             from chameleon_mcp.metrics import emit_hook_metric
 
@@ -7159,9 +7204,47 @@ def _correctness_judge_gate(
         except Exception:
             pass
 
+        # VERIFY stage: independently refute each finding before REPORT, within the
+        # wall-clock left under the 55s wrapper. Only a refuted finding is dropped;
+        # the rest are surfaced labeled. A slow judge leaves no budget ->
+        # pass-through (today's behavior). Fails open so a broken refuter never
+        # drops a real finding.
+        verify = _sync_verify_stop_findings(repo_root, findings)
+        findings = verify.kept
+        kept_verdicts = verify.kept_verdicts
+        if verify.ran:
+            _emit_check_event(
+                repo_id,
+                session_id,
+                "correctness_judge",
+                "verified",
+                f"refuted={verify.refuted} confirmed={verify.confirmed}",
+                detail={"turn_key": turn_key},
+            )
+
+        if not failures:
+            _emit_check_event(
+                repo_id,
+                session_id,
+                "correctness_judge",
+                "spawned",
+                "completed",
+                detail={"turn_key": turn_key, "findings": len(findings)},
+            )
+            for path in fresh:
+                rel = dr._repo_rel(repo_root, path)
+                dr.mark_judged(
+                    repo_data,
+                    session_id or "",
+                    rel,
+                    digests.get(rel, ""),
+                    prefix=_CORR_JUDGED_PREFIX,
+                )
+
         # Persist to the finding->fix ledger (mirrors the multi-lens gate) so an
         # unaddressed high-severity correctness finding is re-surfaced once next
-        # Stop. Correctness Findings carry `confidence`, mapped to severity.
+        # Stop. Correctness Findings carry `confidence`, mapped to severity. Only
+        # VERIFY survivors persist: a refuted finding must never nag a later turn.
         _ledger_persist(
             repo_id,
             session_id,
@@ -7185,11 +7268,20 @@ def _correctness_judge_gate(
             "A separate reviewer read this turn's changes. These are advisory; "
             "verify each before acting, they may be wrong.",
         ]
-        for f in findings:
+        # Grounding banner: when the VERIFY stage ran, report how many findings a
+        # second independent reviewer refuted (dropped) vs confirmed.
+        if verify.ran:
+            lines.append(
+                f"Independently verified: {verify.refuted} refuted and dropped, "
+                f"{verify.confirmed} confirmed. A '[confirmed]' finding survived a "
+                "second reviewer."
+            )
+        for f, vd in zip(findings, kept_verdicts, strict=False):
             loc = sanitize_for_chameleon_context(f.file) if f.file else "?"
             if f.line is not None:
                 loc += f":{f.line}"
-            lines.append(f"- {loc}: {sanitize_for_chameleon_context(f.message)}")
+            tag = " [confirmed]" if vd == "confirmed" else ""
+            lines.append(f"- {loc}{tag}: {sanitize_for_chameleon_context(f.message)}")
 
         block = "<chameleon-context>\n" + "\n".join(lines) + "\n</chameleon-context>"
         return {
@@ -9450,8 +9542,41 @@ def _multi_lens_review_lines(
             )
 
         surfaced = [f for f in synthesized if f.get("surface")]
+
+        # VERIFY stage: independently refute the lone-correctness-lens findings
+        # before REPORT (the default-config counterpart of the single-lens gate's
+        # verify). Only single-lens correctness findings are eligible: cross-lens
+        # agreement is already an independent-verification signal, and a
+        # duplication finding references a SECOND location a one-file excerpt
+        # cannot show, so a refuter would reject it on missing evidence. A refuted
+        # finding is dropped; the rest surface labeled. Fails open to the raw set.
+        verify_eligible = [f for f in surfaced if f.get("lenses") == ["correctness"]]
+        verdict_by_key: dict = {}
+        verify = None
+        if verify_eligible:
+            verify = _sync_verify_stop_findings(repo_root, verify_eligible)
+            if verify.ran:
+                # Identity-based membership: dict equality would alias two
+                # identical findings and drop both when one was refuted.
+                eligible_ids = {id(f) for f in verify_eligible}
+                kept_ids = {id(f) for f in verify.kept}
+                surfaced = [f for f in surfaced if id(f) not in eligible_ids or id(f) in kept_ids]
+                verdict_by_key = {
+                    id(f): v for f, v in zip(verify.kept, verify.kept_verdicts, strict=False)
+                }
+                _emit_check_event(
+                    repo_id,
+                    session_id,
+                    "multi_lens_review",
+                    "verified",
+                    f"refuted={verify.refuted} confirmed={verify.confirmed}",
+                    detail={"turn_key": route.get("turn_key")},
+                )
+
         # Persist to the finding->fix ledger so the next Stop can track whether
         # each was addressed and re-surface an unaddressed high-severity one once.
+        # Only VERIFY survivors persist: a refuted finding must never nag a later
+        # turn.
         _ledger_persist(repo_id, session_id, repo_root, "multi_lens", surfaced)
         if not surfaced:
             return []
@@ -9471,13 +9596,20 @@ def _multi_lens_review_lines(
             f"A turn-end review ({ran_label}) read this turn's changes. "
             "These are advisory; verify each before acting, they may be wrong.",
         ]
+        if verify is not None and verify.ran:
+            lines.append(
+                f"Independently verified: {verify.refuted} refuted and dropped, "
+                f"{verify.confirmed} confirmed. A '[confirmed]' finding survived a "
+                "second reviewer."
+            )
         for f in surfaced:
             loc = sanitize_for_chameleon_context(str(f.get("file"))) if f.get("file") else "?"
             if f.get("line") is not None:
                 loc += f":{f.get('line')}"
             lens_tag = sanitize_for_chameleon_context("+".join(f.get("lenses") or []))
+            tag = " [confirmed]" if verdict_by_key.get(id(f)) == "confirmed" else ""
             claim = sanitize_for_chameleon_context(str(f.get("claim", "")))
-            lines.append(f"- {loc} [{lens_tag}]: {claim}")
+            lines.append(f"- {loc} [{lens_tag}]{tag}: {claim}")
         return lines
     except Exception:
         return []
