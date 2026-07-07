@@ -1518,11 +1518,26 @@ def bootstrap_repo(
 
     if workspace_reports:
         report.workspace_reports = workspace_reports
+        # The root single-repo pass sets language_hint blind to the workspace
+        # fan-out that runs here: a Python (or Rails) root points the hint at a
+        # JS/TS frontend and tells the user to bootstrap it, but that same
+        # frontend may have just been bootstrapped as a workspace above. Drop the
+        # hint when a successful workspace already covers the path it names, so
+        # the envelope + profile.json never advise a step that already ran.
+        hint_stale = report.language_hint is not None and _language_hint_covered_by_workspaces(
+            report.language_hint, workspace_reports, repo_root
+        )
+        if hint_stale:
+            report.language_hint = None
         # Only amend the root profile if the root actually produced one; a
         # coordinator-only root (failed language detection) has no root profile
         # to amend, but its workspaces were still bootstrapped above.
         if report.status == "success":
-            _amend_root_profile_with_workspaces(repo_root / profile_dir_name, workspace_reports)
+            _amend_root_profile_with_workspaces(
+                repo_root / profile_dir_name,
+                workspace_reports,
+                drop_language_hint=hint_stale,
+            )
         elif any(w.get("status") == "success" for w in workspace_reports):
             # Coordinator-only root (no own language) but >=1 workspace
             # bootstrapped — report partial success so the envelope doesn't
@@ -1700,9 +1715,62 @@ def _persist_cross_index_to_plugin_data(
         return
 
 
+def _language_hint_covered_by_workspaces(
+    language_hint: dict,
+    workspace_reports: list[dict],
+    repo_root: Path,
+) -> bool:
+    """True when a successfully bootstrapped workspace already covers the SUBTREE
+    the language_hint names.
+
+    A Python/Rails root emits a hint naming a JS/TS frontend SUBDIR and telling
+    the user to bootstrap it; when that same subdir was bootstrapped as a
+    workspace this run, the advice is stale. Coverage means a successful
+    workspace IS that subdir or lives INSIDE it (the subdir was scanned, wholly
+    or in part).
+
+    Two guards keep this from over-firing on the other hint shapes:
+    - The TS-root-with-sibling-Ruby/Python hints set ``secondary_path`` to the
+      repo root itself (a "a whole other-language tree lives somewhere in here,
+      bootstrap it separately" hint). A package workspace covers a subdir, never
+      that separate-language tree, so a hint whose target IS the repo root is
+      never treated as covered.
+    - Only workspaces at-or-inside the target count; an ANCESTOR workspace that
+      merely contains the target (and may exclude the target subtree entirely)
+      does not, so a still-valid frontend hint is not suppressed by an unrelated
+      parent package.
+    """
+    secondary = language_hint.get("secondary_path")
+    if not secondary:
+        return False
+    try:
+        target = Path(secondary).resolve()
+        root = repo_root.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    # A whole-repo secondary-language hint (target == repo root) is never covered
+    # by a package workspace; only a subdir-scoped frontend hint can be.
+    if target == root:
+        return False
+    for w in workspace_reports:
+        if w.get("status") != "success":
+            continue
+        ws = w.get("workspace_path") or w.get("repo_root")
+        if not ws:
+            continue
+        try:
+            ws_path = Path(ws).resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if ws_path == target or ws_path.is_relative_to(target):
+            return True
+    return False
+
+
 def _amend_root_profile_with_workspaces(
     profile_dir: Path,
     workspace_reports: list[dict],
+    drop_language_hint: bool = False,
 ) -> None:
     """Re-write profile.json with a `workspaces` array describing each
     successfully bootstrapped sub-workspace.
@@ -1734,6 +1802,14 @@ def _amend_root_profile_with_workspaces(
         }
         for w in workspace_reports
     ]
+
+    # A language_hint made stale by a covering workspace (the JS/TS half the hint
+    # told the user to bootstrap was bootstrapped here) must not persist. Drop it
+    # from profile.json; profile.summary.md, its human-facing render, is
+    # regenerated below rather than re-emitted so the retracted advice does not
+    # linger in the committed summary.
+    if drop_language_hint:
+        profile_data.pop("language_hint", None)
 
     artifact_names = ("archetypes.json", "canonicals.json", "rules.json")
     siblings: dict[str, str] = {}
@@ -1771,6 +1847,34 @@ def _amend_root_profile_with_workspaces(
         summary_text = summary_path.read_text(encoding="utf-8") if summary_path.is_file() else ""
     except OSError:
         summary_text = ""
+
+    # When the stale hint was dropped, re-render the summary from the
+    # hint-stripped profile_data so its "Secondary language detected / Run
+    # bootstrap_repo(...)" section (summary.py reads profile_meta.language_hint)
+    # does not survive verbatim. Rebuilt from the same committed artifacts the
+    # original render used, so only the hint section changes; fails open to the
+    # verbatim re-emit if any artifact does not parse.
+    if drop_language_hint:
+        try:
+            from chameleon_mcp.profile.summary import render_summary_md
+
+            # Decode idioms exactly as the initial render did: a non-UTF-8
+            # idioms.md falls back to the empty template (never the mojibake a
+            # replace-decode would yield), so the re-rendered Idioms section is
+            # byte-identical to the original and only the hint section changes.
+            try:
+                idioms_text = idioms_raw.decode("utf-8")
+            except UnicodeDecodeError:
+                idioms_text = _EMPTY_IDIOMS_TEMPLATE
+            summary_text = render_summary_md(
+                archetypes=json.loads(siblings["archetypes.json"]),
+                canonicals=json.loads(siblings["canonicals.json"]),
+                profile_meta=profile_data,
+                idioms_text=idioms_text,
+                rules_data=json.loads(siblings["rules.json"]),
+            )
+        except (KeyError, ValueError, TypeError):
+            pass
 
     renames_path = profile_dir / "renames.json"
     renames_text: str | None = None

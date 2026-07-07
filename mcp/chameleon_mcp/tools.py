@@ -4124,7 +4124,14 @@ def describe_codebase(repo: str) -> dict:
     functions, test files excluded). All from committed artifacts, offline.
 
     Fails open with ``found: False`` on an unresolvable / untrusted repo, and to
-    an empty-shaped overview when no profile is present.
+    an empty-shaped overview when no profile is present. A profile whose
+    ``schema_version`` is unsupported by this engine resolves but cannot be
+    trusted-and-derived: it returns ``found: True`` with ``degraded: True`` and
+    the profile-derived fields (``language``, ``framework``, ``archetypes``)
+    nulled/empty — an honest "a profile exists but is unusable under this
+    engine" signal, distinct from ``found: False`` ("no profile at all"). Check
+    ``degraded`` before reading the derived fields; ``detect_repo`` reports the
+    same state as ``profile_unsupported_schema_version``.
     """
     from chameleon_mcp.comprehension import describe_codebase as _describe
     from chameleon_mcp.profile.trust import trust_state_for as _trust_state_for

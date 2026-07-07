@@ -4,6 +4,60 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.58.0] - 2026-07-07
+
+### Added
+
+- **A standalone `ruff.toml` / `.ruff.toml` is now read for formatting conventions.**
+  `_read_python_format` only mined `[tool.ruff]` from `pyproject.toml`, so the
+  large population of repos that keep ruff config in a standalone file (ruff's
+  own `.ruff.toml` > `ruff.toml` > `pyproject.toml` discovery order) had their
+  `line-length`, `quote-style`, `indent-style`, and `indent-width` silently
+  dropped — `rules_extracted` came back 0 and the derived formatting convention
+  was blank. The reader now resolves the ruff config the way ruff does: a
+  standalone file takes precedence over `[tool.ruff]` and the two are never
+  merged (matching ruff's real behavior), with black still read independently
+  from `[tool.black]` and the flake8/pycodestyle line-length fallback intact.
+  The `pyproject.toml`-only path is unchanged. Verified end-to-end: a repo with
+  a standalone `ruff.toml` (`line-length = 120`, `[format] quote-style = single`)
+  now derives `python_format {line_length: 120, quote_style: single, source:
+  ruff.toml}` into `rules.json`. Found by the from-scratch QA sweep against a
+  real Django fixture.
+
+### Fixed
+
+- **A resolved profile no longer advises bootstrapping a frontend it already
+  bootstrapped.** A Python or Rails repo with a JS/TS frontend emits a
+  `language_hint` telling the user to run `bootstrap_repo(.../frontend)` for the
+  JS half. When that frontend is a declared workspace, the same run already
+  bootstrapped it, so that advice is stale. Bootstrap now drops the hint from
+  the envelope, `profile.json`, AND the rendered `profile.summary.md` when a
+  successfully bootstrapped workspace IS that frontend subdir or lives inside it.
+  It is careful to only fire on the frontend-subdir hints: the other hint shape
+  (TypeScript won at the root but a sibling Ruby/Python tree lives somewhere in
+  the repo) names the whole repo root, and a package workspace never covers that
+  separate-language tree, so those hints always survive; an unrelated or
+  merely-ancestor workspace never suppresses a still-valid frontend hint either.
+  The reconciliation rides the shared derivation path, so a stale hint on an
+  existing profile is cleaned up on the next `/chameleon-refresh`.
+
+- **`initialize` now reports the chameleon build as `serverInfo.version`.** The
+  stdio server passed no version to FastMCP, so `serverInfo.version` defaulted
+  to the installed `mcp` SDK's own package version (`1.27.1`) — a client could
+  not correlate the running server to the installed plugin. It now reports the
+  plugin build (`2.58.0`), set on the wrapped low-level server and guarded so a
+  future SDK internals change can never crash startup over a cosmetic string.
+
+- **`describe_codebase` documents its unsupported-schema shape.** The docstring
+  promised `found: False` on an unresolvable/untrusted repo but did not cover a
+  resolved profile whose `schema_version` is newer than the engine supports,
+  which returns `found: True` with `degraded: True` and the profile-derived
+  fields nulled — an honest "a profile exists but is unusable under this engine"
+  signal (distinct from "no profile at all"), the same state `detect_repo`
+  reports as `profile_unsupported_schema_version`. Behavior was already correct;
+  the contract is now accurate. Consumers must check `degraded` before reading
+  the derived fields.
+
 ## [2.57.1] - 2026-07-07
 
 ### Fixed

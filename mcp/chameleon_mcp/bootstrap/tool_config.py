@@ -56,6 +56,21 @@ def _read_capped(path: Path, *, max_bytes: int | None = None) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def _load_toml(path: Path) -> dict:
+    """Parse a TOML config to a dict, or ``{}`` on any read/parse failure.
+
+    Bounded via ``_read_capped``; fail-open like the sibling JSON/YAML readers so
+    a malformed config contributes nothing rather than raising.
+    """
+    try:
+        import tomllib
+
+        data = tomllib.loads(_read_capped(path))
+    except (OSError, ValueError, ImportError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 @dataclass
 class ToolConfigResult:
     """Aggregated tool config findings for a workspace/repo."""
@@ -218,46 +233,76 @@ def _read_python_format(repo_root: Path) -> tuple[dict | None, str | None]:
     skipped). Returns ``({line_length?, quote_style?}, source)`` or ``(None,
     None)`` when nothing is declared. Fails open: a malformed config contributes
     nothing rather than raising.
+
+    Ruff config discovery mirrors ruff's own: a standalone ``.ruff.toml`` or
+    ``ruff.toml`` takes precedence over ``pyproject.toml``'s ``[tool.ruff]`` and
+    ruff does NOT merge them (the first file found wins). In a standalone file the
+    keys live at the TOP LEVEL (``line-length``, ``[format]``), whereas in
+    pyproject they are nested under ``[tool.ruff]`` / ``[tool.ruff.format]``.
+    Black config is independent and only ever read from ``[tool.black]``.
     """
     fmt: dict = {}
     source: str | None = None
 
+    # Resolve the ruff config once: standalone .ruff.toml > ruff.toml >
+    # pyproject [tool.ruff]. A standalone file's keys are already top-level, so
+    # it maps directly onto the same shape as the [tool.ruff] table.
+    ruff: dict = {}
+    ruff_source: str | None = None
+    for name in (".ruff.toml", "ruff.toml"):
+        p = repo_root / name
+        if p.is_file():
+            ruff = _load_toml(p)
+            ruff_source = name
+            break
+
+    black: dict = {}
     pyproject = repo_root / "pyproject.toml"
     if pyproject.is_file():
-        try:
-            import tomllib
-
-            data = tomllib.loads(_read_capped(pyproject))
-        except (OSError, ValueError, ImportError):
-            data = {}
+        data = _load_toml(pyproject)
         tool = data.get("tool") if isinstance(data, dict) else None
         tool = tool if isinstance(tool, dict) else {}
-        ruff = tool.get("ruff") if isinstance(tool.get("ruff"), dict) else {}
-        black = tool.get("black") if isinstance(tool.get("black"), dict) else {}
+        # Only fall back to pyproject [tool.ruff] when no standalone ruff config
+        # was found — ruff ignores [tool.ruff] entirely once a standalone file
+        # exists, so honoring both would fabricate a merge ruff never performs.
+        if ruff_source is None and isinstance(tool.get("ruff"), dict):
+            ruff = tool["ruff"]
+            ruff_source = "pyproject.toml"
+        if isinstance(tool.get("black"), dict):
+            black = tool["black"]
+
+    if ruff or black:
         ruff_format = ruff.get("format") if isinstance(ruff.get("format"), dict) else {}
 
-        ll = _coerce_positive_int(ruff.get("line-length")) or _coerce_positive_int(
-            black.get("line-length")
-        )
+        ll_ruff = _coerce_positive_int(ruff.get("line-length"))
+        ll = ll_ruff if ll_ruff is not None else _coerce_positive_int(black.get("line-length"))
         if ll is not None:
             fmt["line_length"] = ll
+            if source is None:
+                source = ruff_source if ll_ruff is not None else "pyproject.toml"
         qs = ruff_format.get("quote-style")
         if qs in ("single", "double"):
             fmt["quote_style"] = qs
+            if source is None:
+                source = ruff_source
         elif "quote_style" not in fmt and black and not black.get("skip-string-normalization"):
             # black normalizes to double quotes unless told not to.
             fmt["quote_style"] = "double"
+            if source is None:
+                source = "pyproject.toml"
         # ruff indent: indent-style ("tab"/"space") lives under [tool.ruff.format];
         # indent-width is a top-level [tool.ruff] key the formatter inherits. black
         # has no indent config (it is always 4 spaces).
         ist = ruff_format.get("indent-style")
         if ist in ("tab", "space"):
             fmt["indent_style"] = ist
+            if source is None:
+                source = ruff_source
         iw = _coerce_positive_int(ruff.get("indent-width"))
         if iw is not None:
             fmt["indent_width"] = iw
-        if fmt:
-            source = "pyproject.toml"
+            if source is None:
+                source = ruff_source
 
     if "line_length" not in fmt:
         for name in ("setup.cfg", "tox.ini", ".flake8"):

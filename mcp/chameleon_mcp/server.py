@@ -17,9 +17,23 @@ than patched here because the guard belongs in the SDK, not chameleon.
 
 from mcp.server.fastmcp import FastMCP
 
-from chameleon_mcp import tools
+from chameleon_mcp import __version__, tools
 
 mcp = FastMCP("chameleon-mcp")
+
+# Report the plugin build as serverInfo.version so a client can correlate the
+# running server to the installed chameleon version. FastMCP's constructor does
+# not expose the low-level Server's `version` (left None, so serverInfo falls
+# back to the mcp SDK's own dist version, which identifies nothing about
+# chameleon). Set it on the wrapped server, guarded: this is a cosmetic string,
+# so a future SDK that renames the private attribute must NOT crash startup.
+# __version__ is kept in sync across the six manifest files by bump-version.sh.
+try:
+    _low_server = getattr(mcp, "_mcp_server", None)
+    if _low_server is not None and hasattr(_low_server, "version"):
+        _low_server.version = __version__
+except Exception:
+    pass
 
 
 @mcp.tool()
