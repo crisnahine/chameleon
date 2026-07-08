@@ -26,6 +26,17 @@ DEFAULTS: Final[dict[str, int | float]] = {
     "EDIT_OBS_HARD_CAP": 50_000,
     "EDIT_OBS_SOFT_CAP": 10_000,
     "EDIT_OBS_AGE_DAYS": 90,
+    # Canonical-witness recency decay. The boost off a witness's last git commit
+    # time halves every half-life: a file committed today gets the full
+    # RECENCY_WEIGHT_MULTIPLIER, one at this many days gets half the boost above
+    # 1.0. Default is half the legacy 90-day mtime window, so a file at the old
+    # window edge still carries a small boost instead of cliffing to 1.0.
+    "CANONICAL_RECENCY_HALF_LIFE_DAYS": 45.0,
+    # Timeout (s) for the single `git log` walk that builds the per-file
+    # last-commit-time map once per bootstrap/refresh. On timeout (a huge-history
+    # monolith) the pass falls back to mtime, same as when git is absent. Bootstrap
+    # is not a hook hot path, so this is generous relative to judge's 5s.
+    "CANONICAL_GIT_LOG_TIMEOUT_SECONDS": 20,
     # Row caps for the durable per-edit decision log. It is not wiped on refresh,
     # so it grows for the life of the repo; the same two-stage trim as
     # edit_observations bounds it (shed rows past the age window first, then

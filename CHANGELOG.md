@@ -4,6 +4,39 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.60.0] - 2026-07-08
+
+### Changed
+
+- **Canonical-witness recency now decays off git commit time, not file mtime.**
+  Selection weighted a witness 2.0 when its mtime fell within 90 days, else 1.0.
+  On a fresh clone every file shares the clone-time mtime, so recency carried no
+  signal and selection fell through to typicality (a majority count) then the
+  demote tiebreak — which mispicks the exact case chameleon exists for: a repo
+  mid-migration whose NEW idiom is still the cluster minority, where typicality
+  favors the legacy majority. A single bounded `git log` walk per bootstrap/
+  refresh now builds a `{path: last_commit_epoch}` map, and the weight decays
+  smoothly off commit time (full 2.0 for a just-committed file, halving its boost
+  every `CANONICAL_RECENCY_HALF_LIFE_DAYS`, default 45). Commit time survives a
+  fresh clone, so a recently committed minority idiom outranks the legacy
+  majority. Reads git metadata only — never repo code, never the network; off the
+  hook hot path (bootstrap/refresh only); fails open to the legacy mtime step when
+  git is unavailable, the tree is bare, a file is untracked, or the walk times out
+  (`CANONICAL_GIT_LOG_TIMEOUT_SECONDS`, default 20). `--relative` scopes the walk
+  to a workspace subtree so a monorepo package gets aligned keys. Kill switch:
+  `CHAMELEON_CANONICAL_GIT_RECENCY=0`.
+- **Demotion is now the top-priority selection key.** Because commit-time recency
+  is continuous (the old mtime step tied within its window), a structurally hollow
+  witness committed more recently than a concrete sibling would otherwise outrank
+  it. Demotion (a Rails `application_*.rb` abstract base, an imports-only NestJS
+  `@Module` aggregator, an obsolete-version migration) is a hard deprioritization
+  above recency, so a hollow witness stays below its concrete siblings regardless
+  of commit time; recency still beats typicality among non-demoted files, which is
+  the whole point of the change. A commit timestamp ahead of the bootstrap clock
+  (cross-machine / CI skew) is clamped to most-recent rather than penalized, so a
+  legitimately newest file is never demoted and selection does not flip across
+  refreshes.
+
 ## [2.59.0] - 2026-07-08
 
 ### Added

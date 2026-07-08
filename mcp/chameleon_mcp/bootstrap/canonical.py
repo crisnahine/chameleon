@@ -11,20 +11,33 @@ Phase 2C selects the witness with deterministic recency weighting:
 - Exclude files in the canonical-pool denylist dirs / leaf globs (tests, legacy)
 - Exclude files containing detected secrets
 - Exclude files containing instruction-shaped natural language
-- Among remaining: rank by recency weight (mtime-within-window doubles vote),
-  break ties on (typicality of AST shape, lexicographic path) for reproducibility.
+- Among remaining: rank by recency weight, break ties on (typicality of AST
+  shape, lexicographic path) for reproducibility.
 
-The recency window + multiplier are calibration targets.
+Recency weight decays smoothly off each witness's LAST GIT COMMIT TIME (a single
+`git log` walk per bootstrap builds the {path: commit_epoch} map): a recently
+committed file gets the full multiplier, older commits decay toward 1.0 with a
+configurable half-life. Commit time survives a fresh clone's uniform mtimes,
+which is why it replaces the old mtime step -- on a fresh clone mtime carried no
+signal, so a mid-migration repo whose NEW idiom is the cluster minority
+(typicality favors the legacy majority) mispicked the legacy witness. When git
+is unavailable, or a file is untracked, weight falls back to the legacy mtime
+step (multiplier within the window, else 1.0) and the degraded mode is recorded.
+
+The recency window, multiplier, and decay half-life are calibration targets.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import re
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from chameleon_mcp._thresholds import threshold_float, threshold_int
 from chameleon_mcp.bootstrap.canonical_scanner import scan_for_injection_signals
 from chameleon_mcp.bootstrap.clustering import Cluster
 from chameleon_mcp.bootstrap.discovery import is_eligible_as_canonical
@@ -88,9 +101,12 @@ class CanonicalSelection:
     injection_scan_passed: bool
     poisoning_scan_passed: bool
     recency_weight: float = 1.0
-    """Selection weight applied to the chosen witness. 2.0 means it fell
-    inside the recency window; 1.0 means it did not (or mtime was
-    unreadable, in which case we conservatively use 1.0)."""
+    """Selection weight applied to the chosen witness, in
+    [1.0, RECENCY_WEIGHT_MULTIPLIER]. With git commit time available it is the
+    smooth-decay weight (RECENCY_WEIGHT_MULTIPLIER for a just-committed file,
+    decaying toward 1.0 with the half-life); on the mtime fallback it is the
+    legacy step (RECENCY_WEIGHT_MULTIPLIER within the window, else 1.0, and 1.0
+    when mtime is unreadable)."""
 
     @property
     def all_scans_passed(self) -> bool:
@@ -129,24 +145,131 @@ def _hash_cluster_key(cluster: Cluster) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def _file_recency_weight(path: Path, *, now: float | None = None) -> float:
-    """Return RECENCY_WEIGHT_MULTIPLIER if path was modified within the
-    recency window, else 1.0.
+# ASCII Unit Separator. A git-tracked path cannot begin with it, so it
+# unambiguously marks a commit-header line in the combined `git log --name-only`
+# stream (a bare `%ct` header could otherwise be mistaken for a numeric filename
+# after an empty/merge commit that lists no files).
+_COMMIT_MARK = "\x1f"
 
-    Defensive: stat failures fall back to 1.0 (no boost) instead of
-    aborting; an unreadable mtime should not exclude a file that already
-    cleared every safety scanner.
+
+def _rel_posix(path: Path, repo_root: Path) -> str:
+    """Repo-relative POSIX key for the commit-time map, mirroring git's output."""
+    try:
+        return path.relative_to(repo_root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def _build_commit_time_map(repo_root: Path) -> tuple[dict[str, int] | None, str]:
+    """Map repo-relative POSIX path -> last (most-recent) commit epoch for every
+    tracked file under ``repo_root``, from a SINGLE ``git log`` walk.
+
+    Returns ``(map, "git")`` on success (an empty map is a success: a repo with
+    no history). On any failure returns ``(None, reason)`` and the caller falls
+    back to mtime for the whole pass. Bounded by one subprocess with a timeout
+    (the same discipline as judge._run_git); this is the only subprocess
+    canonical selection spawns, and it runs at bootstrap/refresh time, never on a
+    hook hot path.
+
+    ``--relative`` scopes the walk to ``repo_root``'s subtree and emits paths
+    relative to it, so a workspace root inside a larger monorepo gets aligned
+    keys and a bounded walk. ``--no-renames`` keeps a rename as delete+add (both
+    paths carry the commit time; a stale deleted key is harmless, it is never
+    looked up). Log order is newest-first, so the first time a path appears is
+    its most recent commit -- a plain first-wins fill is correct.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "-c",
+                "core.quotePath=false",
+                "log",
+                "--no-renames",
+                "--relative",
+                f"--format={_COMMIT_MARK}%ct",
+                "--name-only",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=threshold_int("CANONICAL_GIT_LOG_TIMEOUT_SECONDS"),
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        # ValueError guards an unencodable arg before spawn, mirroring _run_git.
+        return None, "git-error"
+    if proc.returncode != 0:
+        # Not a work tree, a bare repo, or git absent: fall back to mtime.
+        return None, "git-unavailable"
+
+    result: dict[str, int] = {}
+    current: int | None = None
+    for raw in (proc.stdout or "").split("\n"):
+        if not raw:
+            continue
+        if raw.startswith(_COMMIT_MARK):
+            try:
+                current = int(raw[len(_COMMIT_MARK) :])
+            except ValueError:
+                current = None
+            continue
+        if current is None:
+            continue
+        if raw not in result:  # newest-first: first occurrence is the latest commit
+            result[raw] = current
+    return result, "git"
+
+
+def _file_recency_weight(
+    path: Path,
+    *,
+    now: float | None = None,
+    commit_epoch: int | float | None = None,
+    half_life_days: float | None = None,
+) -> float:
+    """Selection weight for a witness, in [1.0, RECENCY_WEIGHT_MULTIPLIER].
+
+    When ``commit_epoch`` is supplied (the file's last commit time, from the
+    bootstrap-pass git walk), the weight decays smoothly with commit age:
+    RECENCY_WEIGHT_MULTIPLIER at age 0, its boost above 1.0 halving every
+    ``half_life_days``. Commit time survives a fresh clone's uniform mtimes, so a
+    recently committed minority idiom outranks an older majority one.
+
+    When ``commit_epoch`` is None (git unavailable, or an untracked file), it
+    falls back to the legacy mtime step: RECENCY_WEIGHT_MULTIPLIER within
+    RECENCY_WINDOW_DAYS, else 1.0. Defensive: a stat failure returns 1.0.
+
+    A commit time AHEAD of the bootstrap clock (cross-machine / CI clock skew is
+    routine) clamps to age 0 -- it is treated as most-recent, so a legitimately
+    newest file is never penalized and selection does not flip across refreshes
+    as the clock passes the commit time. A bogus far-future stamp reaches only
+    the SAME max boost as a genuine recent file, never more, so it cannot outrank
+    one. The mtime fallback keeps the stricter future -> 1.0 guard: a future mtime
+    is same-machine clock weirdness, not cross-machine commit skew.
     """
     reference = time.time() if now is None else now
+    if commit_epoch is not None:
+        age_seconds = max(0.0, reference - float(commit_epoch))
+        hl_days = (
+            threshold_float("CANONICAL_RECENCY_HALF_LIFE_DAYS")
+            if half_life_days is None
+            else half_life_days
+        )
+        if hl_days <= 0:
+            # A non-positive half-life is nonsensical; treat as no decay (full
+            # boost for any past commit) rather than a divide-by-zero.
+            return RECENCY_WEIGHT_MULTIPLIER
+        age_days = age_seconds / 86400.0
+        boost = (RECENCY_WEIGHT_MULTIPLIER - 1.0) * math.exp(-age_days / hl_days)
+        return 1.0 + boost
+
     try:
         mtime = os.stat(path).st_mtime
     except OSError:
         return 1.0
     age_seconds = reference - mtime
-    # A future mtime (clock skew, an archive extracted with bogus timestamps, a
-    # crafted file) gets no boost: only files genuinely modified within the
-    # window are treated as recent, so a far-future timestamp cannot outrank a
-    # just-edited file in canonical selection.
     if 0 <= age_seconds <= _RECENCY_WINDOW_SECONDS:
         return RECENCY_WEIGHT_MULTIPLIER
     return 1.0
@@ -220,6 +343,17 @@ def select_canonicals(
     selections: dict[str, CanonicalSelection] = {}
     no_eligible: list[Cluster] = []
     only_failing: list[Cluster] = []
+
+    # One git-log walk for the whole pass builds {rel_path: last_commit_epoch}.
+    # When git is unavailable the pass falls back to mtime for every file
+    # silently -- a capability fallback, not a hook-delivery degradation, so it is
+    # not telemetered (doctor/get_status surface profile health on demand); a
+    # per-file untracked miss falls back the same way. CHAMELEON_CANONICAL_GIT_RECENCY=0
+    # is the kill switch: skip the git walk and use the legacy mtime step.
+    if os.environ.get("CHAMELEON_CANONICAL_GIT_RECENCY") == "0":
+        commit_map = None
+    else:
+        commit_map, _recency_source = _build_commit_time_map(repo_root)
 
     for cluster in clusters:
         cluster_id = _hash_cluster_key(cluster)
@@ -317,19 +451,38 @@ def select_canonicals(
         # all-generated cluster. Files with real content (incl. thin barrel
         # re-exports) are unaffected.
         scored = [
-            (pf, _file_recency_weight(pf.path, now=now), typicality.get(i, 0), demote.get(i, False))
+            (
+                pf,
+                _file_recency_weight(
+                    pf.path,
+                    now=now,
+                    commit_epoch=(
+                        commit_map.get(_rel_posix(pf.path, repo_root))
+                        if commit_map is not None
+                        else None
+                    ),
+                ),
+                typicality.get(i, 0),
+                demote.get(i, False),
+            )
             for i, pf in enumerate(eligible)
             if not trivial.get(i, False)
         ]
         # demote (abstract base / imports-only aggregator / obsolete-version
-        # migration) is the tiebreak BELOW recency+typicality but ABOVE the path
-        # string, so a representative concrete sibling wins when the primary
-        # signals tie -- which they do on a fresh clone with uniform mtimes.
+        # migration) is a HARD deprioritization ABOVE every other signal: a
+        # structurally hollow witness must lose to any concrete sibling even when
+        # it was committed more recently. Commit-time recency is now continuous
+        # (not the old mtime step that tied on a fresh clone), so if demote sat
+        # below it a just-touched application_record.rb would outrank an older
+        # concrete model. Below demote: recency (newer commit wins -- this is what
+        # lets a recent minority idiom beat the legacy majority), then typicality
+        # (breaks the fresh-clone same-commit tie toward the majority shape), then
+        # the path string for full determinism.
         scored.sort(
             key=lambda item: (
+                item[3],
                 -item[1],
                 -item[2],
-                item[3],
                 str(item[0].path),
             )
         )

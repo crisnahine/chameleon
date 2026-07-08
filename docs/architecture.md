@@ -464,18 +464,26 @@ the engine is explicit about what part of the example is normative:
 The canonical excerpt injected at edit time is a **witness, not a template**:
 match its shape and idioms, not its specific business logic.
 
-Selection walks the cluster's eligible members sorted by `(-recency_weight,
--typicality, demoted, path)` (recency weight is 2.0 for files modified within
-90 days, else 1.0; typicality is closeness to the cluster's most common AST
-shape). The demotion term sits between typicality and the path tiebreak and
-pushes structural non-representatives below their concrete siblings: a Rails
-`application_*.rb` abstract base, an imports-only NestJS `@Module` aggregator,
-and a migration whose `ActiveRecord::Migration[x.y]` version is behind the
-cluster's current one. On a fresh clone with uniform mtimes the primary
-signals tie, so this term is what separates witnesses before the path string
-decides. The first member that passes all three security scans wins. If none pass, the
-cluster is flagged `clusters_with_only_failing_canonicals` so the gap is visible
-rather than silently shipping a poisoned example.
+Selection walks the cluster's eligible members sorted by `(demoted,
+-recency_weight, -typicality, path)`. **Demotion is the top-priority key**: it
+pushes structural non-representatives below their concrete siblings regardless of
+how recently they were committed, a Rails `application_*.rb` abstract base, an
+imports-only NestJS `@Module` aggregator, and a migration whose
+`ActiveRecord::Migration[x.y]` version is behind the cluster's current one. Below
+it, **recency weight** decays smoothly off each file's **last git commit time**:
+a single `git log` walk per bootstrap builds a `{path: commit_epoch}` map, and the
+weight is the full multiplier (2.0) for a just-committed file, halving its boost
+above 1.0 every `CANONICAL_RECENCY_HALF_LIFE_DAYS` (default 45). Commit time
+survives a fresh clone's uniform mtimes, so a recently committed minority idiom
+outranks the legacy majority, the exact case a mid-migration repo needs; a commit
+ahead of the clock (cross-machine skew) is clamped to most-recent, never
+penalized. When git is unavailable or a file is untracked, the weight falls back
+to the legacy mtime step (2.0 within 90 days, else 1.0); `CHAMELEON_CANONICAL_GIT_RECENCY=0`
+forces that fallback. **Typicality** (closeness to the cluster's most common AST
+shape) breaks a same-commit tie, then the path string decides. The first member
+that passes all three security scans wins. If none pass, the cluster is flagged
+`clusters_with_only_failing_canonicals` so the gap is visible rather than
+silently shipping a poisoned example.
 
 The three scans, run during selection:
 
@@ -1638,7 +1646,7 @@ anyone considering dropping mandatory review.
 | **idiom** | A team-specific convention recorded in `idioms.md`, what an AST cannot infer. |
 | **profile** | The per-repo committed data in `.chameleon/`. |
 | **production_ref** | The locked branch a profile derives from. |
-| **recency weight** | A 2x multiplier on files modified within 90 days, to defeat archive-majority repos. |
+| **recency weight** | Canonical-selection weight that decays off a file's last git commit time (full 2x for a just-committed file, halving every `CANONICAL_RECENCY_HALF_LIFE_DAYS`, default 45), to defeat archive-majority repos; falls back to a 2x/90-day mtime step when git is unavailable. |
 | **refresh** | Re-analyze and update the profile (`/chameleon-refresh`). |
 | **sha_hint** | A non-crypto xxhash64 of file content, for fast change detection. |
 | **trust** | Per-user approval of a committed profile (`/chameleon-trust`). |
