@@ -4,6 +4,26 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.65.0] - 2026-07-08
+
+### Added
+
+- **Refuter integrity canaries (F1).** The refuter is the only component allowed
+  to kill a finding, and nothing measured it — a miscalibrated-aggressive refuter
+  silently destroys recall, a too-lenient one lets false findings through, and
+  either could ship on a prompt or model change unnoticed. A new offline harness
+  (`chameleon_mcp.refuter_canary`) feeds a curated set of ground-truth canaries
+  through the REAL refuter path and scores recall (real bugs the refuter did NOT
+  kill) and precision (false alarms it DID kill), overall and per defect class.
+  Canaries are self-contained (excerpt + finding + expectation), so nothing
+  touches a repo and no worktree is needed; the scoring is a pure function
+  (`evaluate_canaries`), fully unit-tested without spawning. `python -m
+  chameleon_mcp.refuter_canary [repo]` runs it and exits nonzero when recall or
+  precision drops below 1.0 (a CI-gateable regression signal) or the refuter CLI
+  is absent. OFFLINE / periodic only — it spawns `claude -p` and is wired into no
+  hook or hot path, so it cannot affect the live pipeline; every spawn is
+  retry-free and fails open to `unverified`.
+
 ## [2.64.0] - 2026-07-08
 
 ### Added
