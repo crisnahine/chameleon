@@ -179,6 +179,13 @@ def load_exports_index(repo_root: Path | str | None) -> ExportsIndex | None:
         root = Path(repo_root).resolve()
     except OSError:
         return None
+    # Follow a linked git worktree to the main worktree's profile, mirroring
+    # load_reverse_index (this loader's sibling) -- without this, lint_file's
+    # phantom-symbol check silently loses named-import-existence checking on a
+    # linked worktree. worktree.py is pure filesystem, safe on this hot path.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    root = resolve_profile_root(root)
     artifact = root / ".chameleon" / EXPORTS_INDEX_FILENAME
     try:
         st = os.stat(artifact)
@@ -987,6 +994,14 @@ def load_reverse_index(repo_root: Path | str | None) -> ReverseIndex | None:
         root = Path(repo_root).resolve()
     except OSError:
         return None
+    # Follow a linked git worktree to the main worktree's profile, mirroring
+    # load_calls_index -- without this, every cross-file existence-break check
+    # (query_symbol_importers, get_crossfile_context, the Stop-hook advisory and
+    # deny) reads the worktree's absent .chameleon and silently degrades to
+    # "no data" instead of the real signal.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    root = resolve_profile_root(root)
     artifact = root / ".chameleon" / REVERSE_INDEX_FILENAME
     try:
         st = os.stat(artifact)

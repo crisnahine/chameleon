@@ -5210,16 +5210,25 @@ def get_drift_status(repo: str) -> dict:
 
     drift_score = compute_drift_score(repo_id)
 
+    # A linked worktree has no .chameleon of its own; every profile-artifact
+    # read below (never the git ops, which stay on resolved_path so they see
+    # the caller's actual worktree) resolves through the main worktree.
+    _profile_root = None
+    if resolved_path is not None:
+        from chameleon_mcp.worktree import resolve_profile_root
+
+        _profile_root = resolve_profile_root(resolved_path)
+
     # Engine-version mismatch is the strongest staleness signal: the analysis
     # logic, not just the codebase, changed. It outranks drift/age because a
     # refresh re-derives the profile regardless. This is the user-facing half of
     # the version-aware refresh (the refresh itself re-clusters on mismatch).
     engine_version_mismatch = False
-    if resolved_path is not None:
+    if _profile_root is not None:
         from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
 
         engine_version_mismatch = _engine_version_changed(
-            resolved_path / ".chameleon", ENGINE_MIN_VERSION
+            _profile_root / ".chameleon", ENGINE_MIN_VERSION
         )
 
     # A pre-current schema_version means the clustering algorithm changed
@@ -5228,12 +5237,12 @@ def get_drift_status(repo: str) -> dict:
     # engine stamp, so the engine branch above catches it first — this check
     # closes the remaining gap (hand-edited or partially-migrated profiles).
     schema_outdated = False
-    if resolved_path is not None:
+    if _profile_root is not None:
         try:
             from chameleon_mcp.profile.schema import CURRENT_SCHEMA_VERSION
 
             _parsed = json.loads(
-                (resolved_path / ".chameleon" / "profile.json").read_text(encoding="utf-8")
+                (_profile_root / ".chameleon" / "profile.json").read_text(encoding="utf-8")
             )
             # A hand-edited / corrupt profile.json may parse to a non-dict (a JSON
             # array parses cleanly past the ValueError guard); .get on it would
@@ -5249,14 +5258,14 @@ def get_drift_status(repo: str) -> dict:
     # (the LOCAL ref — current as of the user's last fetch; no network).
     production_block: dict | None = None
     production_tip_moved = False
-    if resolved_path is not None:
+    if _profile_root is not None:
         try:
             from chameleon_mcp.production_ref import resolve_production_ref
 
-            _prod_branch = _persisted_production_ref(resolved_path)
+            _prod_branch = _persisted_production_ref(_profile_root)
             if _prod_branch:
-                _prod_resolved = resolve_production_ref(resolved_path, _prod_branch)
-                _recorded = _recorded_derivation_sha(resolved_path / ".chameleon")
+                _prod_resolved = resolve_production_ref(_profile_root, _prod_branch)
+                _recorded = _recorded_derivation_sha(_profile_root / ".chameleon")
                 production_block = {
                     "branch": _prod_branch,
                     "ref": _prod_resolved.ref if _prod_resolved else None,
@@ -5315,8 +5324,8 @@ def get_drift_status(repo: str) -> dict:
         # "untrusted profile" (run trust). A bare repo_id has no path to inspect
         # and was seen before, so keep the trust wording.
         profile_absent = (
-            resolved_path is not None
-            and not (resolved_path / ".chameleon" / "profile.json").is_file()
+            _profile_root is not None
+            and not (_profile_root / ".chameleon" / "profile.json").is_file()
         )
         if profile_absent:
             recommended = "no profile found; run /chameleon-init first"
@@ -6051,7 +6060,13 @@ def _peek_profile_provenance(repo_root: Path | None, repo_id: str | None) -> dic
     if repo_root is None or repo_id is None:
         return out
 
-    profile_dir = repo_root / ".chameleon"
+    # A linked worktree has no .chameleon of its own; peek the main
+    # worktree's committed profile.json instead (trust.grants_root/
+    # is_material_change below already resolve this internally, but the
+    # direct profile.json open for generation/schema_version did not).
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    profile_dir = resolve_profile_root(repo_root) / ".chameleon"
     profile_file = profile_dir / "profile.json"
     try:
         with profile_file.open("r", encoding="utf-8") as fh:
@@ -7060,7 +7075,24 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
                 "error": "expected absolute repo path or 64-char repo_id hex digest",
             }
         )
-    repo_path = resolved_path
+    # Follow a linked git worktree to the main worktree BEFORE the locking /
+    # noop-check / trust-preservation logic below runs. Without this, refresh
+    # reads/writes repo_path's OWN .chameleon (which a linked worktree never
+    # has), so every check below sees "no prior profile" and silently
+    # bootstraps a brand-new, diverged profile INSIDE the worktree instead of
+    # updating the shared one at the main worktree -- orphaned the moment the
+    # worktree is removed, and permanently forked from main's profile in the
+    # meantime (resolve_profile_root's own no-.chameleon-yet check now finds
+    # one and stops resolving here). A no-op for every non-worktree case.
+    # raw_repo_path stays the CALLER's actual location: the unsafe-root check
+    # and the live statusline-cache write below must reason about where the
+    # caller actually is, not the redirected write target; the re-derive
+    # itself must also DISCOVER/PARSE the caller's real checked-out tree, not
+    # main's -- see analysis_root below.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    raw_repo_path = resolved_path
+    repo_path = resolve_profile_root(raw_repo_path)
     if not repo_path.is_absolute() or not repo_path.is_dir():
         return _envelope(
             {
@@ -7071,9 +7103,17 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
 
     # refresh resolves its path directly (never through find_repo_root), so it
     # must apply the unsafe-root guard itself — same hole bootstrap_repo had.
-    refusal = _unsafe_root_refusal(repo_path)
+    # Checked on raw_repo_path, not the redirected main worktree: a linked
+    # worktree in a temp/world-writable location must still be refused, since
+    # the re-derive below reads real source files from it.
+    refusal = _unsafe_root_refusal(raw_repo_path)
     if refusal is not None:
         return _envelope({"status": "failed", "error": refusal})
+
+    # A locked production_ref (checked inside _refresh_repo_locked) takes
+    # precedence over this; when unset, discovery/AST-parsing should read the
+    # caller's actual checked-out tree rather than main's redirected one.
+    _analysis_root = raw_repo_path if raw_repo_path != repo_path else None
 
     # Lock lives in plugin-data, NOT inside .chameleon/: atomic_profile_commit
     # renames the whole .chameleon/ dir away during refresh, which orphaned a
@@ -7120,7 +7160,9 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
                 ):
                     _wl_token = _REFRESH_HOLDS_WRITE_LOCKS.set(True)
                     try:
-                        envelope = _refresh_repo_locked(repo_path, force=force)
+                        envelope = _refresh_repo_locked(
+                            repo_path, force=force, analysis_root=_analysis_root
+                        )
                     finally:
                         _REFRESH_HOLDS_WRITE_LOCKS.reset(_wl_token)
             except LockHeldError as e:
@@ -7137,12 +7179,15 @@ def refresh_repo(repo: str, force: bool = False) -> dict:
             _maybe_preserve_trust_across_refresh(repo_path, pre_state, envelope)
             # Keep the status line in sync with the post-refresh trust state
             # (a refresh can flip trusted->stale; the cache otherwise lags a session).
+            # Cache keyed on raw_repo_path: that's the directory the live
+            # session's statusline script actually reads (its own cwd), which
+            # for a linked worktree differs from the redirected repo_path.
             try:
                 _ts = (
                     detect_repo(str(repo_path / "profile.json")).get("data", {}).get("trust_state")
                 )
                 if isinstance(_ts, str) and _ts in ("trusted", "stale", "untrusted"):
-                    _update_statusline_trust(repo_path, _ts)
+                    _update_statusline_trust(raw_repo_path, _ts)
             except Exception:
                 pass
             _notify_daemon_cache_invalidation()
@@ -7773,8 +7818,18 @@ def _update_statusline_trust(repo_path, trust_state: str) -> None:
         pass
 
 
-def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
-    """Execute refresh logic. Called while .chameleon/.refresh.lock is held."""
+def _refresh_repo_locked(repo_path, *, force: bool, analysis_root: Path | None = None) -> dict:
+    """Execute refresh logic. Called while .chameleon/.refresh.lock is held.
+
+    ``analysis_root``: when refresh_repo redirected ``repo_path`` from a
+    linked worktree to its main worktree, this is the caller's ORIGINAL
+    worktree path. Every ``bootstrap_repo(...)`` fallback below is handed it
+    straight through (so the orchestrator discovers/parses the caller's real
+    checkout, not main's); the working-tree staleness scan further down
+    (discover_files / partial-refresh) uses it directly as the scan root,
+    since a locked production_ref -- checked first, below -- always wins over
+    both.
+    """
     from chameleon_mcp import index_db
     from chameleon_mcp.bootstrap.discovery import discover_files
     from chameleon_mcp.bootstrap.orchestrator import (
@@ -7787,7 +7842,9 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     persisted_pg = _persisted_paths_glob(profile_dir)
 
     if force:
-        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+        return bootstrap_repo(
+            str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
+        )
 
     repo_root = repo_path.resolve()
     repo_id = _compute_repo_id(repo_root)
@@ -7800,7 +7857,9 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
         # caller can distinguish an INITIAL bootstrap from a re-derive -- the
         # status stays "success" because the profile written is complete and
         # correct, but "noop"/"refreshed" would misdescribe a first-time write.
-        result = bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+        result = bootstrap_repo(
+            str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
+        )
         if isinstance(result, dict) and isinstance(result.get("data"), dict):
             result["data"]["implicit_bootstrap"] = True
         return result
@@ -7821,7 +7880,9 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     from chameleon_mcp.bootstrap.orchestrator import ENGINE_MIN_VERSION
 
     if _engine_version_changed(profile_dir, ENGINE_MIN_VERSION):
-        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+        return bootstrap_repo(
+            str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
+        )
 
     # Repair guard: the noop and partial paths preserve artifacts verbatim, so a
     # structurally incomplete or corrupt profile (missing/unparseable core JSON,
@@ -7829,7 +7890,9 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
     # a normal refresh. Re-derive fully to repair it. A full re-derive preserves
     # user-taught idioms.md.
     if _profile_needs_rederive(profile_dir):
-        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+        return bootstrap_repo(
+            str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
+        )
 
     # Production-pinned refresh: when a production_ref is locked (or an old
     # profile migrates to one here), staleness is the REF TIP, not working-tree
@@ -7872,7 +7935,9 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
         # preserve artifacts verbatim, so the stale "production-pinned"
         # summary line and derivation_source would otherwise survive every
         # refresh. One full working-tree re-derive re-stamps the profile.
-        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+        return bootstrap_repo(
+            str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
+        )
     if prod_branch is not None:
         from chameleon_mcp.production_ref import resolve_production_ref
 
@@ -7924,24 +7989,35 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
             # Tip moved (or pre-feature profile without recorded provenance):
             # full re-derive from the new tip. The bootstrap path re-resolves
             # the lock and materializes the tree itself.
-            return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+            return bootstrap_repo(
+                str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
+            )
 
     # Working-tree staleness needs an extractor and a discovery pass; the
     # production-pinned gate above deliberately runs first because it needs
     # neither — a workspace-coordinator root (no root tsconfig/TS deps) has
     # no root-level extractor, and the tip-keyed noop must still engage there.
+    # Scanned off analysis_root (the caller's actual worktree) when set, so
+    # this staleness check answers "did the tree the caller is IN change",
+    # not "did main change" -- a worktree on its own branch with genuinely
+    # different files must never noop off main's unrelated file count/mtimes.
+    _scan_root = analysis_root if analysis_root is not None else repo_root
     try:
-        extractor = _select_extractor(repo_root)
+        extractor = _select_extractor(_scan_root)
     except Exception:
         extractor = None
     if extractor is None:
-        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+        return bootstrap_repo(
+            str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
+        )
 
     try:
         discovery_glob = persisted_pg or _glob_for_extractor(extractor)
-        candidates = discover_files(repo_root, glob=discovery_glob, paths_glob=persisted_pg)
+        candidates = discover_files(_scan_root, glob=discovery_glob, paths_glob=persisted_pg)
     except Exception:
-        return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+        return bootstrap_repo(
+            str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
+        )
 
     refresh_inputs = list(candidates) + [idioms_path]
     max_mtime = index_db.max_mtime_over(refresh_inputs)
@@ -7982,8 +8058,11 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
 
     prev_state = index_db.get_file_clusters(repo_id)
     if prev_state:
+        # _scan_root, not repo_root: candidates' absolute paths (from
+        # discover_files above) are relative_to()'d and re-read against
+        # whichever root actually holds them.
         partial_envelope = _attempt_partial_refresh(
-            repo_root,
+            _scan_root,
             repo_id,
             profile_dir,
             list(candidates),
@@ -8004,7 +8083,9 @@ def _refresh_repo_locked(repo_path, *, force: bool) -> dict:
                     pass
             return partial_envelope
 
-    return bootstrap_repo(str(repo_path), force=True, paths_glob=persisted_pg)
+    return bootstrap_repo(
+        str(repo_path), force=True, paths_glob=persisted_pg, analysis_root=analysis_root
+    )
 
 
 def _iso_to_epoch(ts: str) -> float:
@@ -8083,6 +8164,7 @@ def bootstrap_repo(
     force: bool = False,
     now: float | None = None,
     production_ref: str | None = None,
+    analysis_root: Path | None = None,
 ) -> dict:
     """First-time analysis, serialized by a per-repo advisory lock.
 
@@ -8096,6 +8178,12 @@ def bootstrap_repo(
     is production?": it pins this derivation to that branch's tree and
     persists the lock in ``.chameleon/config.json``. Omitted, the lock comes
     from the persisted config or (for origin-backed repos) auto-detection.
+
+    ``analysis_root``, like ``now``, is internal-only (not exposed by the
+    server.py MCP tool wrapper): refresh_repo passes the CALLER's actual
+    linked-worktree path here when ``path`` has already been redirected to the
+    main worktree, so discovery/AST-parsing still reads the caller's real
+    checkout instead of main's. See ``_bootstrap_repo_unlocked``.
     """
     from chameleon_mcp.bootstrap.transaction import ProfileCommitError
     from chameleon_mcp.locks import LockHeldError, acquire_advisory_lock
@@ -8129,7 +8217,7 @@ def bootstrap_repo(
     resolved_path, _ = _resolve_repo_arg(path)
     if resolved_path is None or not resolved_path.is_dir():
         # Degenerate input (or by-id): let the core emit the precise envelope.
-        return _bootstrap_repo_unlocked(path, paths_glob, force, now, production_ref)
+        return _bootstrap_repo_unlocked(path, paths_glob, force, now, production_ref, analysis_root)
     try:
         repo_root = resolved_path.resolve()
     except (OSError, ValueError):
@@ -8149,7 +8237,9 @@ def bootstrap_repo(
             _bootstrap_write_locks(lock_dir),
             acquire_advisory_lock(lock_dir / ".bootstrap.lock"),
         ):
-            result = _bootstrap_repo_unlocked(path, paths_glob, force, now, production_ref)
+            result = _bootstrap_repo_unlocked(
+                path, paths_glob, force, now, production_ref, analysis_root
+            )
         # A successful (re-)derive re-baselines drift: observations were scored
         # against the now-superseded profile, so the drift window resets to
         # empty. Harmless on a first bootstrap (no observations exist yet).
@@ -8260,7 +8350,11 @@ def get_contract_breaks(repo: str, base_ref: str = "main") -> dict:
             {"status": "failed", "error": "base_ref must be a non-empty ref name", "findings": []}
         )
     if base_ref == "main":
-        locked = _persisted_production_ref(repo_root)
+        # config.json (holding the lock) lives at the MAIN worktree; resolve
+        # for this read only -- the git ops below stay on repo_root itself.
+        from chameleon_mcp.worktree import resolve_profile_root
+
+        locked = _persisted_production_ref(resolve_profile_root(repo_root))
         if locked and locked != "main":
             base_ref = locked
 
@@ -8324,7 +8418,14 @@ def _compute_contract_breaks(
             return 0, [], None
 
         try:
-            enabled = load_config(repo_root / ".chameleon").enforcement.signature_contract_diff
+            # config.json lives at the MAIN worktree; resolve for this read
+            # only -- the git merge-base / contract_breaks calls below stay on
+            # repo_root itself so HEAD means the caller's own checkout.
+            from chameleon_mcp.worktree import resolve_profile_root
+
+            enabled = load_config(
+                resolve_profile_root(repo_root) / ".chameleon"
+            ).enforcement.signature_contract_diff
         except Exception:
             enabled = True  # fail-open to on, mirroring judge_crossfile_facts
         if not enabled:
@@ -8463,11 +8564,18 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
     # with empty output — reading as "no changes" and auto-passing anything.
     if not isinstance(base_ref, str) or not base_ref.strip():
         return _degraded("invalid_base_ref", "base_ref must be a non-empty ref name")
+    # config.json / enforcement.json live at the MAIN worktree, not a linked
+    # worktree's own (absent) .chameleon -- resolved ONCE here and reused
+    # below for every .chameleon/* read. git ops stay on repo_root itself:
+    # they must diff the actual worktree the caller is in, not main.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    _profile_root = resolve_profile_root(repo_root)
     # A caller leaving the "main" default on a production-pinned repo almost
     # certainly means "the repo's mainline" — which the lock names better. An
     # explicit non-default base_ref is always honored as given.
     if base_ref == "main":
-        _locked = _persisted_production_ref(repo_root)
+        _locked = _persisted_production_ref(_profile_root)
         if _locked and _locked != "main":
             base_ref = _locked
     repo_arg = repo_id or str(repo_root)
@@ -8541,7 +8649,7 @@ def get_autopass_verdict(repo: str, base_ref: str = "main") -> dict:
         tests_failed = tests_fact.get("status") == "failures"
 
     try:
-        active = active_block_rules(repo_root / ".chameleon")
+        active = active_block_rules(_profile_root / ".chameleon")
     except Exception:
         active = set()
 
@@ -8781,6 +8889,7 @@ def _bootstrap_repo_unlocked(
     force: bool = False,
     now: float | None = None,
     production_ref: str | None = None,
+    analysis_root: Path | None = None,
 ) -> dict:
     """First-time analysis: AST scan + (Phase 2D interview) + atomic profile commit.
 
@@ -8791,6 +8900,13 @@ def _bootstrap_repo_unlocked(
     Bug 1: `path` accepts either an absolute repo path or a
     64-char repo_id hex digest (for repos previously bootstrapped). See
     `_resolve_repo_arg`.
+
+    ``analysis_root``: an explicit override for what tree to discover/parse,
+    used when a caller (refresh_repo) already redirected ``path`` to the main
+    worktree and knows the ORIGINAL linked-worktree path it redirected from.
+    When unset, this function infers the same thing locally by comparing its
+    own raw-resolved root against the (possibly worktree-redirected) write
+    root. Either way, a locked production_ref still wins (see below).
 
     BUG-026: refuses to overwrite a committed profile unless
     ``force=True``. Earlier a second call silently clobbered the
@@ -8820,9 +8936,21 @@ def _bootstrap_repo_unlocked(
             }
         )
     try:
-        repo_root = resolved_path.resolve()
+        raw_root = resolved_path.resolve()
     except (OSError, ValueError):
-        repo_root = resolved_path
+        raw_root = resolved_path
+    # Follow a linked git worktree to the main worktree's ALREADY-COMMITTED
+    # profile (a no-op when there is none yet, e.g. a genuine first bootstrap
+    # run from inside a worktree, which still writes there). Without this, a
+    # forced re-bootstrap invoked from a worktree diverges the same way an
+    # unresolved refresh does -- see refresh_repo's identical guard. repo_root
+    # is the WRITE/identity root from here on; raw_root stays the caller's
+    # actual location for the safety check and (below) the analysis root, so
+    # a re-bootstrap from a worktree still analyzes the worktree's own
+    # checked-out files, not main's -- only the .chameleon write redirects.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    repo_root = resolve_profile_root(raw_root)
     if not repo_root.is_dir():
         return _envelope(
             {
@@ -8834,7 +8962,10 @@ def _bootstrap_repo_unlocked(
     # Defense in depth for every bootstrap path (including the degenerate
     # delegation from the locked wrapper): a profile written under a temp or
     # world-writable root would be unloadable by the hooks, a dead install.
-    refusal = _unsafe_root_refusal(repo_root)
+    # Checked on raw_root (the caller's actual location, which analysis reads
+    # from below when it differs from repo_root) -- not the redirected main
+    # worktree, whose safety says nothing about a linked worktree elsewhere.
+    refusal = _unsafe_root_refusal(raw_root)
     if refusal is not None:
         return _envelope({"status": "failed", "error": refusal})
 
@@ -8924,12 +9055,26 @@ def _bootstrap_repo_unlocked(
     # Snapshot the envelope block now: release() nulls the tree, and the
     # block's `locked` must reflect what THIS run derived from.
     prod_block = prod_state.envelope_block()
+    # A locked production_ref wins (existing precedence: the team's declared
+    # mainline over any working tree). Otherwise, when repo_root was
+    # redirected to a linked worktree's main, analyze the CALLER'S actual
+    # checked-out tree rather than main's -- discovery/AST-parsing must see
+    # the files the caller is actually working on; only the commit target
+    # moved. An explicit analysis_root from a caller who already redirected
+    # `path` (refresh_repo) wins over this function's own (now-moot) raw_root
+    # inference; plain non-worktree bootstrap is unchanged (None either way).
+    _worktree_analysis_root = (
+        analysis_root
+        if analysis_root is not None
+        else (raw_root if raw_root != repo_root else None)
+    )
+    _analysis_root = prod_state.tree if prod_state.tree is not None else _worktree_analysis_root
     try:
         report = _bootstrap(
             repo_root,
             paths_glob=paths_glob,
             now=now,
-            analysis_root=prod_state.tree,
+            analysis_root=_analysis_root,
             derivation_source=(prod_state.derivation_source() if prod_state.tree else None),
         )
 
@@ -8960,7 +9105,7 @@ def _bootstrap_repo_unlocked(
             )
             try:
                 file_cluster_rows = _compute_file_cluster_map(
-                    prod_state.tree if prod_state.tree is not None else repo_root,
+                    _analysis_root if _analysis_root is not None else repo_root,
                     paths_glob=paths_glob,
                 )
             except Exception:
@@ -9104,7 +9249,13 @@ def list_profiles(cursor: str | None = None, limit: int = 100) -> dict:
             row_root = row.get("repo_root")
             if row_root:
                 try:
-                    profile_dir = Path(row_root) / ".chameleon"
+                    # A linked worktree has no .chameleon of its own; without
+                    # this, a row recorded at a still-live worktree always
+                    # short-circuits past is_material_change below (no local
+                    # .chameleon to find) and silently never goes stale.
+                    from chameleon_mcp.worktree import resolve_profile_root
+
+                    profile_dir = resolve_profile_root(Path(row_root)) / ".chameleon"
                     if profile_dir.is_dir() and is_material_change(repo_id, profile_dir):
                         trust_state = "stale"
                 except OSError:
@@ -9186,7 +9337,13 @@ def _is_dead_chameleon_profile(repo_root: str | None) -> bool:
     root = Path(repo_root)
     if not root.is_dir():
         return False
-    return not (root / ".chameleon" / "profile.json").is_file()
+    # A linked worktree has no .chameleon of its own; check the main
+    # worktree's committed profile before declaring this row dead -- an
+    # index_db row recorded (by an older chameleon) at a still-live worktree
+    # must not be pruned just because ITS OWN directory has no .chameleon.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    return not (resolve_profile_root(root) / ".chameleon" / "profile.json").is_file()
 
 
 def _prune_dead_temp_repos() -> int:
@@ -9678,6 +9835,12 @@ def teach_profile(repo: str, feedback: str, archetype: str | None = None) -> dic
         )
     if not repo_path.is_dir():
         return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
+
+    # A linked worktree has no .chameleon of its own; the idiom is captured
+    # into the main worktree's committed idioms.md.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    repo_path = resolve_profile_root(repo_path)
 
     idioms_path = repo_path / ".chameleon" / "idioms.md"
     if not idioms_path.parent.exists():
@@ -10174,7 +10337,15 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     if _unsafe is not None:
         return _envelope({"status": "failed", "error": _unsafe})
 
-    profile_dir = repo_path / ".chameleon"
+    # A linked worktree has no .chameleon of its own; the committed profile
+    # being trusted lives at the main worktree. repo_path itself (and its
+    # basename) stays UNRESOLVED below for the confirmation_token check and
+    # the statusline update -- those are about where the user actually typed
+    # the command from, not where the profile is stored.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    _profile_root = resolve_profile_root(repo_path)
+    profile_dir = _profile_root / ".chameleon"
     if not profile_dir.is_dir():
         # A pure-coordinator monorepo root (pnpm/turbo/nx) has no root profile
         # even after a successful init -- its WORKSPACES were bootstrapped
@@ -10183,9 +10354,9 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
         # (init already ran; there is just nothing to trust at the bare root).
         try:
             _ws = sorted(
-                str(p.parent.relative_to(repo_path))
+                str(p.parent.relative_to(_profile_root))
                 for parent in ("apps", "packages", "services", "workspaces")
-                for p in (repo_path / parent).glob("*/.chameleon")
+                for p in (_profile_root / parent).glob("*/.chameleon")
                 if (p / "profile.json").is_file()
             )
         except Exception:
@@ -10260,7 +10431,7 @@ def trust_profile(repo: str, confirmation_token: str) -> dict:
     _update_statusline_trust(repo_path, "trusted")
 
     workspace_trust_count = 0
-    for child_chameleon in _iter_workspace_chameleon_dirs(repo_path):
+    for child_chameleon in _iter_workspace_chameleon_dirs(_profile_root):
         if child_chameleon == profile_dir:
             continue
         if not (child_chameleon / "profile.json").is_file():
@@ -10651,7 +10822,11 @@ def propose_archetype_renames(repo: str, top_n: int = 8) -> dict:
         )
     if not resolved_path.is_dir():
         return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
-    repo_root = resolved_path.resolve()
+    # A linked worktree has no .chameleon of its own; read the main
+    # worktree's committed profile instead.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    repo_root = resolve_profile_root(resolved_path.resolve())
 
     profile_dir = repo_root / ".chameleon"
     if not profile_dir.is_dir():
@@ -11016,7 +11191,11 @@ def apply_archetype_renames(repo: str, renames: dict) -> dict:
         )
     if not resolved_path.is_dir():
         return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
-    repo_root = resolved_path.resolve()
+    # A linked worktree has no .chameleon of its own; write the rename into
+    # the main worktree's committed profile instead.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    repo_root = resolve_profile_root(resolved_path.resolve())
 
     profile_dir = repo_root / ".chameleon"
     if not profile_dir.is_dir():
@@ -11457,7 +11636,13 @@ def teach_competing_import(
                 "error": "expected absolute repo path or 64-char repo_id hex digest",
             }
         )
-    profile_dir = repo_path / ".chameleon"
+    # A linked worktree has no .chameleon of its own; write the taught
+    # convention into the main worktree's committed profile. repo_path stays
+    # UNRESOLVED below for capture_counterexample_in_repo / package.json
+    # reads, which must scan the caller's ACTUAL checked-out source tree.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    profile_dir = resolve_profile_root(repo_path) / ".chameleon"
     if not profile_dir.is_dir():
         return _envelope(
             {"status": "failed", "error": "no profile in this repo (run /chameleon-init)"}
@@ -11717,7 +11902,13 @@ def unteach_competing_import(
                 "error": "expected absolute repo path or 64-char repo_id hex digest",
             }
         )
-    profile_dir = repo_path / ".chameleon"
+    # A linked worktree has no .chameleon of its own; write the removal into
+    # the main worktree's committed profile. repo_path stays UNRESOLVED below
+    # for capture_counterexamples_in_repo, which must scan the caller's
+    # ACTUAL checked-out source tree.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    profile_dir = resolve_profile_root(repo_path) / ".chameleon"
     if not profile_dir.is_dir():
         return _envelope(
             {"status": "failed", "error": "no profile in this repo (run /chameleon-init)"}
@@ -11965,6 +12156,11 @@ def teach_profile_structured(
         )
     if not repo_path.is_dir():
         return _envelope({"status": "failed", "error": f"repo path is not a directory: {repo!r}"})
+    # A linked worktree has no .chameleon of its own; the idiom is captured
+    # into the main worktree's committed idioms.md.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    repo_path = resolve_profile_root(repo_path)
     idioms_path = repo_path / ".chameleon" / "idioms.md"
     if not idioms_path.parent.exists():
         return _envelope(
@@ -12411,6 +12607,11 @@ def _resolve_profile_dir_for_idiom_tools(repo: str) -> tuple[Path | None, dict |
             "status": "failed",
             "error": "expected repo path or repo_id hex digest",
         }
+    # A linked worktree has no .chameleon of its own; read the main
+    # worktree's committed WORKING-TREE profile (see docstring above).
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    repo_path = resolve_profile_root(repo_path)
     cham = repo_path / ".chameleon"
     if not cham.is_dir():
         return None, {
@@ -12615,7 +12816,11 @@ def scan_dependency_changes(repo: str, base_ref: str = "main") -> dict:
     # A "main" default on a production-pinned repo means the repo's mainline,
     # which the lock names better; an explicit non-default base_ref is honored.
     if base_ref == "main":
-        locked = _persisted_production_ref(repo_root)
+        # config.json (holding the lock) lives at the MAIN worktree; resolve
+        # for this read only -- the git ops below stay on repo_root itself.
+        from chameleon_mcp.worktree import resolve_profile_root
+
+        locked = _persisted_production_ref(resolve_profile_root(repo_root))
         if locked and locked != "main":
             base_ref = locked
 
@@ -13196,6 +13401,11 @@ def doctor(repo: str | None = None) -> dict:
         # A pathological base (unresolvable / too-long path) must not crash the
         # per-repo checks: fall back to cwd so the plumbing checks still report.
         _doctor_root = Path.cwd()
+    # A linked worktree has no .chameleon of its own; every check below reads
+    # the main worktree's committed config/artifacts instead.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    _doctor_root = resolve_profile_root(_doctor_root)
     cwd_config = _doctor_root / ".chameleon" / "config.json"
     if cwd_config.is_file():
         try:

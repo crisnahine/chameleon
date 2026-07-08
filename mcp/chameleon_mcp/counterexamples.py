@@ -459,6 +459,13 @@ def load_counterexamples(repo_root: Path | str | None) -> Counterexamples | None
         root = Path(repo_root).resolve()
     except OSError:
         return None
+    # Follow a linked git worktree to the main worktree's profile, mirroring
+    # load_calls_index -- without this, a caller that has not already resolved
+    # (or that double-resolves, harmlessly) reads the worktree's absent
+    # .chameleon and the counterexample silently never fires.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    root = resolve_profile_root(root)
     artifact = root / ".chameleon" / COUNTEREXAMPLES_FILENAME
     try:
         st = os.stat(artifact)

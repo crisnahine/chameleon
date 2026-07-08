@@ -4,6 +4,48 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.68.0] - 2026-07-08
+
+### Fixed
+
+- **Linked git worktree support closed two dozen confirmed gaps.** A committed
+  `.chameleon/` profile is normally gitignored and lives only at a repo's main
+  git worktree; a linked worktree (`git worktree add`) has no `.chameleon` of
+  its own. `resolve_profile_root` (added in v2.22.3) maps a linked worktree
+  back to its main worktree's profile, but the mapping was applied
+  inconsistently -- some artifact loaders and MCP tools called it, others read
+  `.chameleon/<artifact>` off the raw worktree path and silently degraded.
+  Five artifact loaders (`load_reverse_index`, `load_constant_index`,
+  `load_symbol_signatures`, `load_counterexamples`, `load_function_catalog`)
+  now resolve internally, mirroring `load_calls_index`'s existing correct
+  behavior -- this alone fixed `query_symbol_importers`, `get_crossfile_context`,
+  `get_duplication_candidates`, and `lint_file`'s phantom-symbol check.
+  Eighteen more call sites across `refresh_repo`, `bootstrap_repo`,
+  `trust_profile`, `teach_profile`, `teach_profile_structured`,
+  `propose_archetype_renames`, `apply_archetype_renames`,
+  `teach_competing_import`, `unteach_competing_import`,
+  `get_idiom_coverage`, `check_idiom_candidates`, `get_autopass_verdict`,
+  `get_contract_breaks`, `get_drift_status`, `scan_dependency_changes`,
+  `doctor`, `list_profiles`, and `record_review_verdict` were fixed
+  individually. The most severe: `refresh_repo` invoked from a linked
+  worktree silently bootstrapped a brand-new, diverged profile INSIDE the
+  worktree instead of updating the shared profile at the main worktree --
+  orphaned the moment the worktree was removed, and permanently forked from
+  main's profile in the meantime. Fixing that write target alone was not
+  enough: `refresh_repo` and `bootstrap_repo` now separately track the
+  caller's actual worktree as an `analysis_root` (discovery/AST-parsing) from
+  the redirected `.chameleon` write target, mirroring the existing
+  `production_ref` analysis/write split -- otherwise a refresh from a
+  worktree would silently profile the MAIN worktree's files while reporting
+  success. The unsafe-root safety refusal (temp-dir / world-writable roots)
+  now runs on the caller's real location instead of the redirected target,
+  since analysis reads real source files from it. Found via real linked
+  worktrees against real bootstrapped repos (TypeScript/Next.js, Ruby/Rails,
+  Python/Django), each finding independently re-reproduced and verified
+  before being fixed; a follow-up workflow-backed code review caught the
+  analysis-root regression in the first pass and eight further gaps before
+  release.
+
 ## [2.67.0] - 2026-07-08
 
 ### Fixed

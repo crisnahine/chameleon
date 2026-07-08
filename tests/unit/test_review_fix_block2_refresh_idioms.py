@@ -38,7 +38,11 @@ def test_refresh_holds_idioms_lock_around_rederive(tmp_path, monkeypatch):
     monkeypatch.setattr(locks_mod, "acquire_advisory_lock", fake_lock)
     monkeypatch.setattr(tools, "_capture_pre_refresh_state", lambda p: None)
     monkeypatch.setattr(tools, "_maybe_fetch_production_ref", lambda p: None)
-    monkeypatch.setattr(tools, "_refresh_repo_locked", lambda p, *, force: {"status": "ok"})
+    monkeypatch.setattr(
+        tools,
+        "_refresh_repo_locked",
+        lambda p, *, force, analysis_root=None: {"status": "ok"},
+    )
     monkeypatch.setattr(tools, "_inject_production_ref_fetch", lambda e, f: None)
     monkeypatch.setattr(tools, "_inject_archetype_diff", lambda e, p, s: None)
     monkeypatch.setattr(tools, "_maybe_preserve_trust_across_refresh", lambda p, s, e: None)

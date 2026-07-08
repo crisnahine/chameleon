@@ -95,7 +95,17 @@ def load_constant_index(repo_root: Path | str | None) -> dict | None:
     absent, unreadable, or a future/unknown schema version."""
     if repo_root is None:
         return None
-    artifact = Path(repo_root) / ".chameleon" / _ARTIFACT_NAME
+    try:
+        root = Path(repo_root).resolve()
+    except OSError:
+        return None
+    # Follow a linked git worktree to the main worktree's profile, mirroring
+    # load_calls_index -- without this, the Ruby constant-graph cross-file
+    # existence check silently reads the worktree's absent .chameleon.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    root = resolve_profile_root(root)
+    artifact = root / ".chameleon" / _ARTIFACT_NAME
     try:
         st = artifact.stat()
     except OSError:

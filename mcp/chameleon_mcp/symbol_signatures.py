@@ -239,6 +239,12 @@ def load_symbol_signatures(repo_root: Path | str | None) -> SymbolSignatures | N
         root = Path(repo_root).resolve()
     except OSError:
         return None
+    # Follow a linked git worktree to the main worktree's profile, mirroring
+    # load_calls_index -- without this, the nearby-collaborator-signature and
+    # inbound-caller hydration silently reads the worktree's absent .chameleon.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    root = resolve_profile_root(root)
     artifact = root / ".chameleon" / SYMBOL_SIGNATURES_FILENAME
     try:
         st = os.stat(artifact)

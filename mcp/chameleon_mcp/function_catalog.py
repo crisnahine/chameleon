@@ -462,6 +462,12 @@ def load_function_catalog(repo_root: Path | str | None) -> FunctionCatalog | Non
         root = Path(repo_root).resolve()
     except OSError:
         return None
+    # Follow a linked git worktree to the main worktree's profile, mirroring
+    # load_calls_index -- without this, get_duplication_candidates silently
+    # reads the worktree's absent .chameleon and returns found=False.
+    from chameleon_mcp.worktree import resolve_profile_root
+
+    root = resolve_profile_root(root)
     artifact = root / ".chameleon" / FUNCTION_CATALOG_FILENAME
     try:
         st = os.stat(artifact)

@@ -631,7 +631,7 @@ def test_refresh_on_never_bootstrapped_repo_tags_implicit_bootstrap(tmp_path, mo
 
     captured = {}
 
-    def _fake_bootstrap(path, *, force, paths_glob=None):
+    def _fake_bootstrap(path, *, force, paths_glob=None, analysis_root=None):
         captured["force"] = force
         return tools._envelope({"status": "success", "files_indexed": 1})
 
@@ -653,7 +653,7 @@ def test_refresh_explicit_force_is_not_tagged_implicit(tmp_path, monkeypatch):
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "a.ts").write_text("export const a = 1;\n", encoding="utf-8")
 
-    def _fake_bootstrap(path, *, force, paths_glob=None):
+    def _fake_bootstrap(path, *, force, paths_glob=None, analysis_root=None):
         return tools._envelope({"status": "success", "files_indexed": 1})
 
     monkeypatch.setattr(tools, "bootstrap_repo", _fake_bootstrap)
