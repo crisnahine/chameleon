@@ -7475,6 +7475,109 @@ def _new_files_in_changeset(repo_root: Path, edited_abs: set[str]) -> set[str]:
         return set()
 
 
+def _cochange_history_advisory_lines(
+    *, repo_root: Path, repo_id: str | None, state, cfg, persist=None
+) -> list[str]:
+    """Turn-end historical co-change advisory, or [] (F7).
+
+    When this turn edited a file whose git history shows a strong co-change partner
+    (edited together in >= min_ratio of the file's commits) that the turn did NOT
+    touch, nudge to consider it. Framework-agnostic: mined from the repo's OWN
+    history at bootstrap (cochange_history.py) and read from the plugin data dir --
+    the complement to the hand-curated framework pairs of the sibling advisory.
+    Advisory only, never a block (a partial edit may defer its partner to a
+    follow-up commit). Once per session per (source, partner). Fails open to [].
+    """
+    try:
+        if cfg.mode == "off" or os.environ.get("CHAMELEON_COCHANGE_HISTORY") == "0" or not repo_id:
+            return []
+        from chameleon_mcp.cochange_history import (
+            COCHANGE_HISTORY_FILENAME,
+            load_cochange_history,
+            missing_partners,
+        )
+
+        index = load_cochange_history(_plugin_data_dir() / repo_id / COCHANGE_HISTORY_FILENAME)
+        if index is None:
+            return []
+        # Keys are relative to the work-tree top recorded at build time; relativize
+        # the turn's edited files to that SAME top so they match a monorepo's shared
+        # global index -- without spawning git on the Stop hot path.
+        top_str = index.get("root")
+        if not isinstance(top_str, str) or not top_str:
+            return []
+        git_top = Path(top_str)
+
+        from chameleon_mcp.violation_class import ignored_rules
+
+        changed_rels: set[str] = set()
+        for path in state.files:
+            p = Path(path)
+            if not p.is_file():
+                continue
+            try:
+                content = p.read_bytes()[:100_000].decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            ign = ignored_rules(content, file_path=path) or set()
+            if "" in ign or "cochange" in ign:  # honor the same inline opt-out
+                continue
+            try:
+                changed_rels.add(p.resolve().relative_to(git_top).as_posix())
+            except (ValueError, OSError):
+                continue
+        if not changed_rels:
+            return []
+
+        # Re-check each partner still exists in the tree at consume time: the index
+        # is only rebuilt at bootstrap/refresh, so a partner deleted since would
+        # otherwise be surfaced as an un-actionable false omission (a nudge to edit
+        # a file that no longer exists).
+        items = [
+            it
+            for it in missing_partners(index, changed_rels)
+            if (git_top / it["partner"]).is_file()
+        ]
+
+        # Once per session per (source -> partner); reuse the sibling advisory's
+        # dedup set with a namespaced key so the same pairing does not re-render
+        # on every consecutive Stop. Distinct key format, no collision.
+        def _key(it) -> str:
+            return f"cochist:{it['source']}->{it['partner']}"
+
+        items = [it for it in items if _key(it) not in state.cochange_shown]
+        if not items:
+            return []
+
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        shown = items[: threshold_int("COCHANGE_ADVISORY_MAX_ITEMS")]
+        state.cochange_shown.update(_key(it) for it in shown)
+        if persist is not None:
+            try:
+                persist()
+            except Exception:
+                pass
+
+        lines = [
+            "[🦎 chameleon: co-change]",
+            "This turn edited files whose git history shows a usual partner left "
+            "untouched (advisory; a follow-up commit may be intended):",
+        ]
+        for it in shown:
+            src = sanitize_for_chameleon_context(str(it["source"]))
+            partner = sanitize_for_chameleon_context(str(it["partner"]))
+            pct = int(round((it.get("ratio") or 0) * 100))
+            lines.append(
+                f"- {src} usually changes with {partner} "
+                f"({pct}% of {src}'s {it.get('of')} commits); {partner} is untouched."
+            )
+        return lines
+    except Exception:
+        return []
+
+
 def _changeset_completeness_lines(
     *,
     repo_root: Path,
@@ -10067,6 +10170,18 @@ def _stop_gates(
                 persist=lambda: save_state(state, repo_data, session_id or ""),
             )
 
+            # Historical co-change (F7): a turn that edited a file whose git history
+            # shows a usual partner, left untouched. Framework-agnostic complement
+            # to the curated pairs above, read from the plugin-data index built at
+            # bootstrap. Advisory only, folded into the same Stop context.
+            cochist_lines = _cochange_history_advisory_lines(
+                repo_root=repo_root,
+                repo_id=repo_id,
+                state=state,
+                cfg=cfg,
+                persist=lambda: save_state(state, repo_data, session_id or ""),
+            )
+
             # Cross-file existence breaks: a turn that removed/renamed a TS export
             # other files still import by name left their call sites broken. Reuse
             # the persisted reverse index + a regex presence check (no parse at
@@ -10178,6 +10293,10 @@ def _stop_gates(
             if cochange_lines:
                 context_blocks.append(
                     "<chameleon-context>\n" + "\n".join(cochange_lines) + "\n</chameleon-context>"
+                )
+            if cochist_lines:
+                context_blocks.append(
+                    "<chameleon-context>\n" + "\n".join(cochist_lines) + "\n</chameleon-context>"
                 )
             if crossfile_lines:
                 context_blocks.append(

@@ -4,6 +4,29 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.64.0] - 2026-07-08
+
+### Added
+
+- **Framework-agnostic historical co-change omission signal (F7).** The curated
+  co-change table knows only a handful of framework pairs (Rails model ->
+  migration, etc.). A new miner reads the repo's OWN git history: files that
+  change together across commits. If editing A has historically meant editing B
+  (B present in >= `COCHANGE_HISTORY_MIN_RATIO` of A's commits, with >=
+  `COCHANGE_HISTORY_MIN_SUPPORT` commits) and a turn touches A but not B, the
+  Stop advisory nudges to consider B — a deterministic, zero-LLM omission signal
+  that generalizes beyond the hand-curated framework pairs. Built once per
+  bootstrap/refresh from a single bounded `git log --name-only` walk (a bulk
+  commit touching more than `COCHANGE_HISTORY_MAX_FILES_PER_COMMIT` files is
+  skipped as a mass-reformat), keyed by work-tree-top-relative paths so a
+  monorepo's workspaces share one global index instead of colliding, and
+  persisted to the plugin data dir OFF the trust-hashed profile surface (reads
+  git metadata only — no repo code, no network). The Stop consumer re-checks
+  each partner still exists before nudging (never chases a deleted file). Reuses
+  the sibling advisory's once-per-session dedup and inline `chameleon-ignore
+  cochange` opt-out. Advisory only, never a block; fails open at every seam. Kill
+  switch `CHAMELEON_COCHANGE_HISTORY=0`.
+
 ## [2.63.0] - 2026-07-08
 
 ### Changed

@@ -1641,6 +1641,55 @@ def _build_cross_index_payload(
         return None
 
 
+def _persist_cochange_history_to_plugin_data(repo_root: Path, repo_id: str) -> None:
+    """F7: mine framework-agnostic historical co-change and write it to the PLUGIN
+    DATA DIR (next to drift.db), OFF the trust-hashed profile surface -- advisory-only
+    derived data, mirroring the cross-workspace index's placement. Reads git metadata
+    only: no repo code runs, no network. Kill-switch-gated (CHAMELEON_COCHANGE_HISTORY=0)
+    and fail-open: any error leaves no new file (today's behavior)."""
+    if os.environ.get("CHAMELEON_COCHANGE_HISTORY") == "0":
+        return
+    try:
+        from chameleon_mcp.cochange_history import (
+            COCHANGE_HISTORY_FILENAME,
+            mine_cochange_history,
+        )
+        from chameleon_mcp.hook_helper import _plugin_data_dir
+
+        index = mine_cochange_history(repo_root)
+        if index is None:
+            return
+        out_dir = _plugin_data_dir() / repo_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / COCHANGE_HISTORY_FILENAME).write_text(
+            json.dumps(index, separators=(",", ":")), encoding="utf-8"
+        )
+        # A no-remote repo's first bootstrap wrote under the PATH-HASH id, then a
+        # repo_uuid was stamped; a later refresh resolves to the UUID id and writes
+        # here, orphaning the path-hash copy. Remove that stale file (never the dir)
+        # when the path-hash id differs from the canonical one, so a consumer that
+        # recomputes the id never reads a stale index. Mirrors the cross-index.
+        try:
+            import hashlib
+
+            from chameleon_mcp.repo_id import _fs_is_case_insensitive
+            from chameleon_mcp.worktree import resolve_profile_root
+
+            id_root = resolve_profile_root(Path(repo_root)).resolve()
+            path_key = (
+                str(id_root) if not _fs_is_case_insensitive(id_root) else str(id_root).lower()
+            )
+            path_hash_id = hashlib.sha256(path_key.encode("utf-8")).hexdigest()
+            if path_hash_id != repo_id:
+                orphan = _plugin_data_dir() / path_hash_id / COCHANGE_HISTORY_FILENAME
+                if orphan.is_file():
+                    orphan.unlink()
+        except Exception:
+            pass
+    except Exception:
+        return
+
+
 def _persist_cross_index_to_plugin_data(
     repo_root: Path,
     workspace_reports: list[dict],
@@ -2986,6 +3035,14 @@ def _bootstrap_single(
                 json.dumps(renames_payload, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
+
+    # F7: mine historical co-change to the plugin data dir (post-commit side effect,
+    # off the trust-hashed profile surface). Keyed by target_root -- the user's
+    # CHECKOUT where the Stop consumer runs, NOT the analysis worktree (which for a
+    # production-ref derivation is a temp path removed after bootstrap, so keying by
+    # it would leave the consumer unable to match). The checkout shares the repo's
+    # full history and its current tree is what the consumer's edits live in.
+    _persist_cochange_history_to_plugin_data(target_root, repo_id)
 
     try:
         from chameleon_mcp.drift.observations import record_bootstrap_baseline

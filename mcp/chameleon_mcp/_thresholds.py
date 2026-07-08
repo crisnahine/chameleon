@@ -261,6 +261,19 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # human decision on a review finding). Per-finding, so higher-volume than the
     # per-review ledger; same append-only recency trim.
     "FINDING_FATES_MAX_RECORDS": 20_000,
+    # Historical co-change miner (cochange_history.py), built at bootstrap/refresh
+    # from one bounded `git log --name-only` walk. MAX_COMMITS bounds the walk;
+    # MAX_FILES_PER_COMMIT skips a bulk commit (mass reformat / rename sweep) that
+    # would co-occur everything; MIN_SUPPORT + MIN_RATIO are the strong-partner
+    # floor (B co-changed with A in >= MIN_SUPPORT commits AND >= MIN_RATIO of A's);
+    # the last three cap the artifact size and the walk timeout.
+    "COCHANGE_HISTORY_MAX_COMMITS": 3_000,
+    "COCHANGE_HISTORY_MAX_FILES_PER_COMMIT": 30,
+    "COCHANGE_HISTORY_MIN_SUPPORT": 5,
+    "COCHANGE_HISTORY_MIN_RATIO": 0.5,
+    "COCHANGE_HISTORY_MAX_PARTNERS_PER_FILE": 5,
+    "COCHANGE_HISTORY_MAX_FILES": 5_000,
+    "COCHANGE_HISTORY_GIT_TIMEOUT_SECONDS": 25,
     # Cap on the number of distinct callable names recorded in an archetype's
     # signature consensus. Names are kept most-frequent-first so the cap drops the
     # long tail of one-off helpers, not the methods every sibling shares. Wide
