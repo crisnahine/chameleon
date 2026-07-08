@@ -4,6 +4,28 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.62.0] - 2026-07-08
+
+### Changed
+
+- **Pinned-evidence layer on the turn-end finding (G1').** The correctness
+  judge's `Finding` gains three optional fields: `excerpt_sha` (a hash of the
+  code excerpt it was reviewed against), `evidence_cmds` (pinned outputs of
+  green-lit executable checks, stored by hash, never raw), and `suggested_fix`
+  (read from the reviewer's JSON). The point is honesty across a time gap: a
+  finding reviewed in a detached async pass and delivered a turn later is now
+  re-checked at EXCERPT granularity against the current on-disk code. Previously
+  the async delivery dropped a finding whenever its whole file changed since
+  review — a coarse heuristic that both violated the "only the refuter drops"
+  contract and silently lost findings when the file changed away from the cited
+  lines. Now a finding whose pinned excerpt still matches is delivered clean
+  (recovering the file-changed-elsewhere case), one whose excerpt changed is
+  delivered with a `[stale: code changed since review]` annotation (never
+  dropped), and only a file gone entirely is dropped. Findings without a pinned
+  excerpt keep the conservative whole-file drop. All fields are additive,
+  advisory, and fail-open; `excerpt_sha` is pinned where the VERIFY stage already
+  fetches the excerpt and carried through the async pending file.
+
 ## [2.61.0] - 2026-07-08
 
 ### Added

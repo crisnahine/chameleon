@@ -265,6 +265,18 @@ def verify_stop_findings(
             i: _excerpt_window(repo_root, _field(items[i], "file"), _field(items[i], "line"))
             for i in range(len(items))
         }
+        # Pin each finding's reviewed-excerpt hash so a later render (the async
+        # next-turn delivery) can flag it "[stale]" if the cited code changed
+        # since review, instead of silently dropping it. Only Finding objects
+        # carry the field; dict-shaped items are left untouched. Best-effort.
+        try:
+            from chameleon_mcp.judge import pin_excerpt
+
+            for i, ex in excerpt_by_idx.items():
+                if ex and hasattr(items[i], "excerpt_sha"):
+                    pin_excerpt(items[i], ex)
+        except Exception:
+            pass
         spawnable = [i for i in range(len(items)) if excerpt_by_idx[i]]
         if not spawnable:
             return _passthrough(items, "no verifiable excerpts")

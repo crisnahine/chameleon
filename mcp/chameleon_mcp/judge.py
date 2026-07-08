@@ -97,12 +97,91 @@ class Finding:
     ``confidence`` is the reviewer's self-rated 0..1 score; it is advisory
     metadata only and never gates a block. ``file`` and ``line`` locate the
     finding when the reviewer supplies them.
+
+    Pinned-evidence layer (all optional, additive, advisory):
+    - ``excerpt_sha``: a short hash of the code excerpt this finding was reviewed
+      against, pinned at review time. When the finding surfaces later (a detached
+      async pass delivers it a turn on), a mismatch against the current on-disk
+      excerpt annotates it "[stale: code changed since review]" -- it is never
+      dropped on that basis (the refuter stays the only dropper).
+    - ``evidence_cmds``: pinned outputs of green-lit executable checks, each a
+      ``{"cmd", "output_sha256"}`` -- a converted "unrun" check graduates to
+      "run, with its output pinned by hash" without carrying the raw output.
+    - ``suggested_fix``: an optional one-line fix the reviewer proposed.
     """
 
     message: str
     confidence: float
     file: str | None = None
     line: int | None = None
+    excerpt_sha: str | None = None
+    evidence_cmds: list | None = None
+    suggested_fix: str | None = None
+
+
+def _excerpt_digest(text: str | None) -> str | None:
+    """16-hex digest of an excerpt's edge-trimmed content, or None.
+
+    Leading/trailing whitespace is stripped before hashing so trailing-newline or
+    surrounding-blank churn does not read as a code change; an interior change
+    still does. None AND an empty-after-strip excerpt both return None -- an
+    absent or blank excerpt is "can't tell", never a hashable value, so it can
+    never fabricate a staleness verdict.
+    """
+    if text is None:
+        return None
+    import hashlib
+
+    stripped = str(text).strip()
+    if not stripped:
+        return None
+    return hashlib.sha256(stripped.encode()).hexdigest()[:16]
+
+
+def pin_excerpt(finding: Finding, excerpt_text: str | None) -> None:
+    """Pin ``finding.excerpt_sha`` to the excerpt it was reviewed against."""
+    finding.excerpt_sha = _excerpt_digest(excerpt_text)
+
+
+def _excerpt_sha_stale(pinned_sha: str | None, current_excerpt: str | None) -> bool:
+    """True iff a pinned excerpt hash exists AND the current excerpt hashes
+    differently. Fail-safe: no pin, or an unreadable/empty current excerpt, is
+    NEVER stale -- staleness is never fabricated from data absence. The single
+    source of truth shared by ``excerpt_is_stale`` and the async delivery
+    renderer, so the two can never drift on an edge case.
+    """
+    if not pinned_sha:
+        return False
+    current = _excerpt_digest(current_excerpt)
+    if current is None:
+        return False
+    return current != pinned_sha
+
+
+def excerpt_is_stale(finding: Finding, current_excerpt: str | None) -> bool:
+    """True iff the finding's pinned excerpt no longer matches the current one."""
+    return _excerpt_sha_stale(finding.excerpt_sha, current_excerpt)
+
+
+def stale_suffix(finding: Finding, current_excerpt: str | None) -> str:
+    """The render-time staleness annotation ("  [stale: ...]") or "" when fresh.
+    It only ever ADDS to the message; it never empties or drops the finding.
+    """
+    if excerpt_is_stale(finding, current_excerpt):
+        return "  [stale: code changed since review]"
+    return ""
+
+
+def attach_evidence_cmd(finding: Finding, cmd: str, output: str) -> None:
+    """Pin a green-lit executable check's output onto the finding by hash.
+
+    The raw output is not stored -- only its 16-hex digest -- so a converted
+    "unrun executable check" graduates to "run, output pinned" without carrying
+    the command's stdout into the ledger or the model surface.
+    """
+    if finding.evidence_cmds is None:
+        finding.evidence_cmds = []
+    finding.evidence_cmds.append({"cmd": str(cmd), "output_sha256": _excerpt_digest(output) or ""})
 
 
 @dataclass
@@ -1083,7 +1162,17 @@ def _coerce_findings(arr: list) -> list[Finding]:
         file = item.get("file") if isinstance(item.get("file"), str) else None
         raw_line = item.get("line")
         line = raw_line if isinstance(raw_line, int) and not isinstance(raw_line, bool) else None
-        out.append(Finding(message=message.strip(), confidence=confidence, file=file, line=line))
+        raw_fix = item.get("suggested_fix")
+        suggested_fix = raw_fix.strip() if isinstance(raw_fix, str) and raw_fix.strip() else None
+        out.append(
+            Finding(
+                message=message.strip(),
+                confidence=confidence,
+                file=file,
+                line=line,
+                suggested_fix=suggested_fix,
+            )
+        )
     # Highest-confidence findings first; cap the list so advisory output stays
     # short. Stable sort keeps the model's own ordering among ties.
     out.sort(key=lambda f: f.confidence, reverse=True)

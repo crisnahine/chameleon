@@ -5934,20 +5934,46 @@ def _pending_findings_block(repo_root: Path, repo_data: Path, session_id) -> str
     if not isinstance(data, dict):
         return None
 
+    from chameleon_mcp.judge import _excerpt_sha_stale
+    from chameleon_mcp.stop_verify import _contained_rel, _excerpt_window
+
     recorded = data.get("digests") if isinstance(data.get("digests"), dict) else {}
     live: list[dict] = []
     for finding in data.get("findings") or []:
         if not isinstance(finding, dict):
             continue
         rel = finding.get("file")
-        if isinstance(rel, str) and rel in recorded:
-            try:
-                raw = (repo_root / rel).read_bytes()[:1_000_000]
-            except OSError:
-                continue  # file gone since the review: stale
-            if hashlib.sha256(raw).hexdigest()[:16] != recorded.get(rel):
-                continue  # edited since the review: stale
-        live.append(finding)
+        stale = False
+        if isinstance(rel, str) and rel:
+            # rel is untrusted model output; contain it BEFORE any filesystem touch
+            # (an absolute or ``..`` path must never read an out-of-repo file), and
+            # this runs on the UserPromptSubmit hot path so the touch stays cheap.
+            safe_rel = _contained_rel(repo_root, rel)
+            if safe_rel is None:
+                continue  # escapes the repo: not a reviewable in-repo finding
+            abs_path = Path(repo_root) / safe_rel
+            if not abs_path.is_file():
+                continue  # file gone since review: the cited code no longer exists
+            excerpt_sha = finding.get("excerpt_sha")
+            if isinstance(excerpt_sha, str) and excerpt_sha:
+                # G1' excerpt-level precision: ANNOTATE on change, never drop -- the
+                # refuter is the only dropper (contract §5). A file edited ELSEWHERE
+                # (its cited excerpt unchanged) is recovered clean, which the coarse
+                # whole-file digest wrongly dropped.
+                stale = _excerpt_sha_stale(
+                    excerpt_sha, _excerpt_window(repo_root, safe_rel, finding.get("line"))
+                )
+            elif safe_rel in recorded:
+                # No excerpt pin: keep the conservative whole-file drop, reading only
+                # the first 1MB (not the whole cited file) on this hot path.
+                try:
+                    with open(abs_path, "rb") as fh:
+                        raw = fh.read(1_000_000)
+                except OSError:
+                    continue
+                if hashlib.sha256(raw).hexdigest()[:16] != recorded.get(safe_rel):
+                    continue
+        live.append({**finding, "_stale": stale})
     if not live:
         return None
 
@@ -5979,7 +6005,15 @@ def _pending_findings_block(repo_root: Path, repo_data: Path, session_id) -> str
         message = finding.get("message")
         verdict = finding.get("verify")
         tag = " [confirmed]" if verdict == "confirmed" else ""
-        lines.append(f"- {loc}{tag}: {sanitize_for_chameleon_context(str(message or ''))}")
+        stale_tag = "  [stale: code changed since review]" if finding.get("_stale") else ""
+        entry = f"- {loc}{tag}: {sanitize_for_chameleon_context(str(message or ''))}{stale_tag}"
+        fix = finding.get("suggested_fix")
+        if isinstance(fix, str) and fix.strip():
+            entry += f"  (suggested fix: {sanitize_for_chameleon_context(fix.strip())})"
+        cmds = finding.get("evidence_cmds")
+        if isinstance(cmds, list) and cmds:
+            entry += f"  ({len(cmds)} pinned check{'s' if len(cmds) != 1 else ''})"
+        lines.append(entry)
     return "<chameleon-context>\n" + "\n".join(lines) + "\n</chameleon-context>"
 
 

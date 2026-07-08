@@ -206,15 +206,21 @@ def test_main_writes_pending_marks_judged_clears_inflight(tmp_path):
     assert data["digests"] == {"src/a.ts": "d" * 16}
     # The VERIFY stage ran (refuter neutralized by the conftest guard -> unverified),
     # so each delivered finding carries its verdict and the payload a verify summary.
-    assert data["findings"] == [
-        {
-            "file": "src/a.ts",
-            "line": 3,
-            "message": "dropped await",
-            "confidence": 0.8,
-            "verify": "unverified",
-        }
-    ]
+    assert len(data["findings"]) == 1
+    fd = data["findings"][0]
+    assert fd["file"] == "src/a.ts"
+    assert fd["line"] == 3
+    assert fd["message"] == "dropped await"
+    assert fd["confidence"] == 0.8
+    assert fd["verify"] == "unverified"
+    # G1' pinned-evidence layer: the reviewed excerpt is hashed at review time so a
+    # later delivery can flag staleness; no fix / pinned checks on this finding.
+    from chameleon_mcp.judge import _excerpt_digest
+    from chameleon_mcp.stop_verify import _excerpt_window
+
+    assert fd["excerpt_sha"] == _excerpt_digest(_excerpt_window(repo_root, "src/a.ts", 3))
+    assert fd["suggested_fix"] is None
+    assert fd["evidence_cmds"] is None
     assert data["verify"]["ran"] is True
     assert data["verify"] == {"ran": True, "refuted": 0, "confirmed": 0, "unverified": 1}
     # The reviewed file is judged at its captured digest under the corr namespace.

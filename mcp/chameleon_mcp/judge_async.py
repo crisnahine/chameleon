@@ -374,6 +374,12 @@ def main(argv: list[str] | None = None) -> int:
                             "message": f.message,
                             "confidence": f.confidence,
                             "verify": v,
+                            # G1' pinned-evidence layer: carried so next-turn
+                            # delivery can flag excerpt staleness and surface a
+                            # fix / pinned check output. All optional.
+                            "excerpt_sha": getattr(f, "excerpt_sha", None),
+                            "suggested_fix": getattr(f, "suggested_fix", None),
+                            "evidence_cmds": getattr(f, "evidence_cmds", None),
                         }
                         for f, v in zip(findings, verify.kept_verdicts, strict=False)
                     ],
