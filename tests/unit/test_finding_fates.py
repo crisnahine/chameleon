@@ -83,9 +83,14 @@ def test_fate_synonyms_normalize():
         "agree": "accepted",
         "AGREE": "accepted",
         "push back": "declined",
+        "push-back": "declined",  # hyphen form (the tool docstring's spelling)
+        "push_back": "declined",  # underscore form
+        "pushback": "declined",
         "reject": "declined",
         "convert": "converted",
         "converted-to-check": "converted",
+        "converted to check": "converted",
+        "unrun-check": "converted",
     }
     for raw, canon in cases.items():
         rec = record_finding_fate(REPO, message=f"m-{raw}", fate=raw)

@@ -288,6 +288,35 @@ def test_advisory_no_index_is_silent(tmp_path, monkeypatch):
     )
 
 
+def test_advisory_contains_tampered_traversal_partner(tmp_path, monkeypatch):
+    # The plugin-data index is off the trust surface (not HMAC-signed), so a third
+    # local user could tamper it to inject a ../ traversal partner. The consumer
+    # must contain the path -> never stat or surface an out-of-repo file (which
+    # would be an existence oracle).
+    monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "pd"))
+    repo = tmp_path / "repo"
+    (repo / "app").mkdir(parents=True)
+    (repo / "app" / "a.py").write_text("x")
+    index = {
+        "schema": 2,
+        "root": str(repo),
+        "partners": {
+            "app/a.py": [{"partner": "../../../../../../etc/hosts", "co": 9, "of": 9, "ratio": 1.0}]
+        },
+    }
+    pd = tmp_path / "pd" / _RID
+    pd.mkdir(parents=True)
+    (pd / COCHANGE_HISTORY_FILENAME).write_text(json.dumps(index))
+    lines = hook_helper._cochange_history_advisory_lines(
+        repo_root=repo,
+        repo_id=_RID,
+        state=_state(repo, "app/a.py"),
+        cfg=SimpleNamespace(mode="shadow"),
+    )
+    assert lines == []  # traversal partner contained out; no out-of-repo path surfaced
+    assert not any("etc/hosts" in ln for ln in lines)
+
+
 def test_advisory_skips_partner_deleted_since_bootstrap(tmp_path, monkeypatch):
     # The index is only rebuilt at bootstrap/refresh, so it may still name a partner
     # since deleted. The consumer re-checks existence and never nags to edit a gone

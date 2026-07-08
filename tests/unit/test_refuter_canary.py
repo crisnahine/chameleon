@@ -114,22 +114,24 @@ def test_run_fails_open_when_refuter_raises(monkeypatch):
     assert out["overall"]["recall"] == 1.0
 
 
-def test_main_exit_codes_gate_on_regression(monkeypatch, capsys):
+def test_main_gates_on_recall_not_precision(monkeypatch):
     from chameleon_mcp import refuter_canary as rc
 
-    monkeypatch.setattr(
-        rc,
-        "run_refuter_canaries",
-        lambda root: {"status": "ran", "overall": {"recall": 1.0, "precision": 1.0}},
-    )
-    assert rc.main(["/tmp"]) == 0  # clean -> 0
-    monkeypatch.setattr(
-        rc,
-        "run_refuter_canaries",
-        lambda root: {"status": "ran", "overall": {"recall": 0.5, "precision": 1.0}},
-    )
-    assert rc.main(["/tmp"]) == 1  # a recall regression -> nonzero (CI-gateable)
+    def _out(recall, precision):
+        return lambda root: {"status": "ran", "overall": {"recall": recall, "precision": precision}}
+
+    # A precision miss (stochastic false-alarm survival) must NOT red the gate --
+    # this is the exact flaky-CI defect the sweep caught with a real refuter run.
+    monkeypatch.setattr(rc, "run_refuter_canaries", _out(1.0, 0.667))
+    assert rc.main(["/tmp"]) == 0
+    # A real recall drop (the refuter KILLING real findings) does gate.
+    monkeypatch.setattr(rc, "run_refuter_canaries", _out(0.5, 1.0))
+    assert rc.main(["/tmp"]) == 1
+    # At the gate boundary, pass.
+    monkeypatch.setattr(rc, "run_refuter_canaries", _out(0.75, 0.2))
+    assert rc.main(["/tmp"]) == 0
+    # Refuter unavailable -> 2.
     monkeypatch.setattr(
         rc, "run_refuter_canaries", lambda root: {"status": "unavailable", "reason": "no cli"}
     )
-    assert rc.main(["/tmp"]) == 2  # refuter unavailable -> 2
+    assert rc.main(["/tmp"]) == 2

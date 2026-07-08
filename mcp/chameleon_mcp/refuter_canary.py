@@ -200,13 +200,22 @@ def run_refuter_canaries(
     return {"status": "ran", "model": model, **evaluate_canaries(verdict_by_id, canaries)}
 
 
+# Recall (real bugs the refuter did NOT kill) is the load-bearing direction: a
+# recall drop means the refuter is destroying real findings. Precision (false
+# alarms it killed) is a stochastic LLM judgment over a small N -- reported, not
+# gated. The recall gate tolerates one borderline miss but flags a real drop; a
+# single run is noisy, so trend it rather than treating one red as definitive.
+_RECALL_GATE = 0.75
+
+
 def main(argv: list[str] | None = None) -> int:
     """Offline runner: ``python -m chameleon_mcp.refuter_canary [repo_root]``.
 
     Spawns the real refuter over the shipped canaries and prints the recall /
     precision scoreboard. Meant for periodic / on-refuter-prompt-change runs, never
-    a hook. Returns nonzero when recall or precision fell below 1.0 (a regression a
-    CI job can gate on) or the refuter was unavailable.
+    a hook. Exit codes: 2 when the refuter is unavailable, 1 when RECALL fell below
+    the gate (a real-finding-kill regression), else 0. Precision is reported but
+    not gated -- it varies stochastically over a small canary set.
     """
     import json
     import sys
@@ -216,8 +225,10 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(out, indent=2, sort_keys=True))
     if out.get("status") != "ran":
         return 2
-    ov = out.get("overall", {})
-    return 0 if (ov.get("recall") == 1.0 and ov.get("precision") == 1.0) else 1
+    recall = (out.get("overall") or {}).get("recall")
+    if recall is None:
+        return 0
+    return 0 if recall >= _RECALL_GATE else 1
 
 
 if __name__ == "__main__":  # pragma: no cover

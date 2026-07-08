@@ -73,6 +73,22 @@ def test_future_commit_time_clamps_to_most_recent():
     # test_review_fix_bootstrap_helpers.py.
 
 
+def test_true_half_life_halves_the_boost():
+    # The name/docstring say "half-life": the boost above 1.0 must HALVE every
+    # half_life_days (2**-1), not e-fold (exp gives ~0.37, which would be wrong).
+    now = 1_000_000_000.0
+    hl = 45.0
+    at_1 = _file_recency_weight(
+        Path("x"), now=now, commit_epoch=now - hl * 86400, half_life_days=hl
+    )
+    at_2 = _file_recency_weight(
+        Path("x"), now=now, commit_epoch=now - 2 * hl * 86400, half_life_days=hl
+    )
+    boost = RECENCY_WEIGHT_MULTIPLIER - 1.0
+    assert at_1 == pytest.approx(1.0 + boost * 0.5)  # one half-life -> half the boost
+    assert at_2 == pytest.approx(1.0 + boost * 0.25)  # two half-lives -> a quarter
+
+
 def test_half_life_is_configurable():
     now = 1_000_000_000.0
     fast = _file_recency_weight(

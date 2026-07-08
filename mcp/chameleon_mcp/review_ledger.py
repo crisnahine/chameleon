@@ -605,8 +605,8 @@ _FATE_ALIASES = {
     "push back": "declined",
     "pushback": "declined",
     "convert": "converted",
-    "converted-to-check": "converted",
-    "unrun-check": "converted",
+    "converted to check": "converted",
+    "unrun check": "converted",
 }
 
 
@@ -634,8 +634,13 @@ def finding_digest(message, file, line) -> str:
 
 
 def _normalize_fate(fate) -> str | None:
-    """Canonicalize a fate to accepted / declined / converted, or None if unknown."""
-    s = str(fate or "").strip().lower()
+    """Canonicalize a fate to accepted / declined / converted, or None if unknown.
+
+    Separators are folded (``push-back`` / ``push_back`` / ``push back`` /
+    ``pushback`` all map) so a caller spelling the tool docstring's synonyms with a
+    hyphen or underscore is not silently rejected.
+    """
+    s = " ".join(str(fate or "").strip().lower().replace("-", " ").replace("_", " ").split())
     if s in _FATE_VOCAB:
         return s
     return _FATE_ALIASES.get(s)

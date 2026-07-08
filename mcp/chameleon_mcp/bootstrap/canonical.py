@@ -29,7 +29,6 @@ The recency window, multiplier, and decay half-life are calibration targets.
 
 from __future__ import annotations
 
-import math
 import os
 import re
 import subprocess
@@ -262,7 +261,10 @@ def _file_recency_weight(
             # boost for any past commit) rather than a divide-by-zero.
             return RECENCY_WEIGHT_MULTIPLIER
         age_days = age_seconds / 86400.0
-        boost = (RECENCY_WEIGHT_MULTIPLIER - 1.0) * math.exp(-age_days / hl_days)
+        # A TRUE half-life: the boost above 1.0 halves every ``hl_days`` (2**-1 at
+        # one half-life), matching the CANONICAL_RECENCY_HALF_LIFE_DAYS name -- not
+        # an e-folding exp(-age/hl), which would decay by 1/e (~0.37), not 1/2.
+        boost = (RECENCY_WEIGHT_MULTIPLIER - 1.0) * 2.0 ** (-age_days / hl_days)
         return 1.0 + boost
 
     try:

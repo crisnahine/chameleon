@@ -18,9 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   Canaries are self-contained (excerpt + finding + expectation), so nothing
   touches a repo and no worktree is needed; the scoring is a pure function
   (`evaluate_canaries`), fully unit-tested without spawning. `python -m
-  chameleon_mcp.refuter_canary [repo]` runs it and exits nonzero when recall or
-  precision drops below 1.0 (a CI-gateable regression signal) or the refuter CLI
-  is absent. OFFLINE / periodic only — it spawns `claude -p` and is wired into no
+  chameleon_mcp.refuter_canary [repo]` runs it and exits 1 when RECALL drops below
+  a gate (the load-bearing failure — the refuter killing real findings), 2 when
+  the refuter CLI is absent, else 0. Precision is reported but not gated: a false
+  alarm surviving is a stochastic LLM judgment over a small canary set, so trend
+  it rather than gating a single noisy run. OFFLINE / periodic only — it spawns
+  `claude -p` and is wired into no
   hook or hot path, so it cannot affect the live pipeline; every spawn is
   retry-free and fails open to `unverified`.
 

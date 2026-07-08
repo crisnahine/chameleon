@@ -1875,11 +1875,12 @@ _PROFILE_DEGRADED_BANNER = (
 # artifact. Surfaced at the edit so the silent drop is visible, not just in
 # get_status / doctor.
 _ENFORCEMENT_MALFORMED_BANNER = (
-    "**Enforcement degraded**: chameleon could not parse "
-    "`.chameleon/enforcement.json` (malformed or torn JSON), so the calibrated "
+    "**Enforcement degraded**: chameleon could not read "
+    "`.chameleon/enforcement.json` (missing or malformed), so the calibrated "
     "block rules (import / naming / phantom-import blocking) are OFF for this "
     "edit. The credential / eval deny stays active (calibration-exempt). "
-    "Fix the JSON and run /chameleon-doctor to confirm enforcement is restored.\n\n"
+    "Run /chameleon-refresh to regenerate it (or fix the JSON), then "
+    "/chameleon-doctor to confirm enforcement is restored.\n\n"
 )
 
 # The once-per-session "profile present, untrusted" prompt. Emitted from both the
@@ -7532,12 +7533,20 @@ def _cochange_history_advisory_lines(
         # Re-check each partner still exists in the tree at consume time: the index
         # is only rebuilt at bootstrap/refresh, so a partner deleted since would
         # otherwise be surfaced as an un-actionable false omission (a nudge to edit
-        # a file that no longer exists).
-        items = [
-            it
-            for it in missing_partners(index, changed_rels)
-            if (git_top / it["partner"]).is_file()
-        ]
+        # a file that no longer exists). CONTAIN the partner path first: the
+        # plugin-data index is off the trust surface (not HMAC-signed), so a third
+        # local user tampering it could inject a ``../`` traversal partner, turning
+        # the existence re-check into an out-of-repo existence oracle. A legit miner
+        # only ever writes top-relative paths, so containment drops only tampered
+        # ones -- the same guard the sibling _pending_findings_block applies.
+        from chameleon_mcp.stop_verify import _contained_rel
+
+        items = []
+        for it in missing_partners(index, changed_rels):
+            partner = it.get("partner")
+            safe = _contained_rel(git_top, partner) if isinstance(partner, str) else None
+            if safe is not None and (git_top / safe).is_file():
+                items.append(it)
 
         # Once per session per (source -> partner); reuse the sibling advisory's
         # dedup set with a namespaced key so the same pairing does not re-render
