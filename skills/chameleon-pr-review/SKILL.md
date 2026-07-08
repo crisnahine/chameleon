@@ -29,11 +29,17 @@ removed hunk line — see the grounding loop below.
 /chameleon-pr-review <PR-URL> PROJ-1234   → full review (explicit PR + ticket)
 ```
 
-## The five-phase discipline
+## The six-phase discipline
 
-Every review runs the same pipeline the chameleon engine runs at turn end —
-**SCOPE → EVIDENCE → ATTACK → VERIFY → REPORT**. The steps below are that pipeline;
-each phase gates the next, so a finding never ships until it has survived VERIFY.
+Every review runs the pipeline the chameleon engine runs at turn end, plus a
+RECALL stage —
+**SCOPE → EVIDENCE → ATTACK → RECALL → VERIFY → REPORT**. The steps below are that
+pipeline; each phase gates the next, so a finding never ships until it has
+survived VERIFY. Two of the phases pull in opposite directions and BOTH are
+mandatory: VERIFY only ever REMOVES findings (hunk gate, refuter), so without
+RECALL — the one stage that ADDS what the single ATTACK pass missed — the
+review's recall ceiling is one context's first pass, and a manual "run it again"
+would beat it. RECALL exists so a second manual round finds nothing new.
 
 - **SCOPE** — Step 1 (parse the diff into a per-file hunk map) + Step 2.0 (fan-out
   routing). Fix exactly what changed; the hunk gate depends on precise scoping.
@@ -44,6 +50,11 @@ each phase gates the next, so a finding never ships until it has survived VERIFY
 - **ATTACK** — the adversarial lenses: Step 2.6 security, 2.7 migration-safety,
   2.9a layering, Step 3 logic (edge cases, perf, type safety), 3e change-delta. Hunt
   defects across independent lenses.
+- **RECALL** — Step 3.9 (decorrelated recall lenses over the whole diff, fresh
+  context, no anchoring on the draft findings). Candidates it adds flow through
+  the same VERIFY gates as everything else; the review is not done until a
+  recall round adds zero surviving findings, or the 2-round cap is hit and
+  disclosed in the banner.
 - **VERIFY** — Step 4a hunk gate + Step 4b round-3 `refute_finding`. Every
   model-judgment finding must survive an independent refuter or it is dropped. A
   finding that cannot survive round 3 does not ship.
@@ -83,6 +94,19 @@ Keep this per-file hunk map. Two later steps depend on it:
 
 For very large diffs, cap the removed-line text you feed forward per file (keep the hunk ranges in full; truncate only the removed-line bodies) so the review stays within context. Note in the output when a file's delta was truncated.
 
+#### 1b. Prior-review comparison (same HEAD only)
+
+Call `get_review_history(repo=<repo_id>, limit=5)` once. If a returned record pins
+the SAME commit SHA as this review's HEAD, this is a re-review: print one line
+("prior review of this HEAD: verdict V, N findings") and treat it as a bar to
+clear, not a cache to trust — if this review ends with FEWER findings than the
+prior record without an explanation (findings fixed since, or prior findings
+refuted), that is a coverage gap to close before rendering the verdict. If no
+record matches HEAD (the normal case) or the tool is unavailable, add nothing
+to the review body — the pass-execution manifest row still records the outcome
+("ran — no record pins this HEAD" / "skipped — tool unavailable"). This step
+never seeds findings and never changes the verdict on its own.
+
 ### Step 2.0: Fan-out routing (large diffs only)
 
 Call `get_autopass_verdict(repo=<repo_id>, base_ref=<base>)` and read
@@ -98,7 +122,14 @@ STOP here and continue with Step 2. If `recommended` is true, fan out:
   ONLY the per-file passes for its files: 2a-2f (convention/lint/canonical), 2.6
   (security, including the 2.6d deterministic lint-sink routing — it reads the
   slice's own per-file `lint_file` output), 2.7 (the slice owning a migration),
-  3c, 3e, 3f, 3f-ii. Reviewers are read-only (Read + read-only MCP). Step 2.5
+  3c, 3e, 3f, 3f-ii. Reviewers are read-only (Read + read-only MCP). Fill the
+  template's `{SLICE_HUNKS}` with each slice file's hunk map from Step 1a (added/
+  changed ranges + removed lines): the reviewer has no Bash and cannot re-derive
+  the diff, so without its hunk map it cannot run 3e or hunk-gate anything — a
+  slice dispatched without hunks reviews blind. Each reviewer returns
+  `{manifest, findings}`; at synthesis, reject a slice whose manifest has an
+  unexplained gap (a pass neither run nor covered by a sanctioned skip reason)
+  and re-run that slice's missing passes yourself before merging. Step 2.5
   (dependency-change) is NOT delegated per-slice: it is a whole-diff tool and the
   reviewers are not granted `scan_dependency_changes`, so it runs once at synthesis.
 - Synthesize in two parts: (a) merge + dedup the slice findings with the key
@@ -111,7 +142,10 @@ STOP here and continue with Step 2. If `recommended` is true, fan out:
   2.9d (caller), 2.9e (contract-break), 3a (task context), 3b (completeness), 3c-i (callable-signature drift),
   3f-i (stale paired-test), 3g (coverage), 3h (auto-pass). Any pass not listed runs whole-diff at synthesis.
   These whole-diff passes run once during synthesis, never in a slice.
-- THEN run the 3-round grounding loop (Step 4a/4b) on the merged findings.
+- THEN run the RECALL stage (Step 3.9) over the whole diff and the 3-round
+  grounding loop (Step 4a/4b) on the merged findings — slices partition files;
+  they are not a second perspective on any file, so they never replace the
+  recall lenses.
 - Log that fan-out fired and how files were partitioned.
 
 Fallback: if a reviewer reports it cannot reach the chameleon MCP tools, the
@@ -442,6 +476,12 @@ For each changed file, consider:
 
 Flag genuine risks as FIX. Don't flag hypothetical concerns.
 
+This pass is where a skim is invisible, so it carries a per-file output
+obligation: each file's Per-file details entry must include a `3c:` line naming
+what was actually checked for THAT file (which inputs can be empty/missing and
+how they are handled, or "no new inputs/queries in this hunk") — either findings
+or a specific clean claim, never a bare "ok".
+
 #### 3c-i. Callable signature drift (advisory FIX at most)
 
 When the changed file declares or overrides a function/method whose name the archetype has a consensus shape for, compare its signature against `.chameleon/conventions.json` `conventions.callable_signatures[<archetype>]`. Each entry under `signatures` records, per callable name, the consensus `params` (positional arity and which slots are optional), the `agreement` across the archetype's files, `file_count`, and an optional `overrides_base` (the in-repo base class the name is overridden from, recorded only when that base is itself defined in the repo).
@@ -472,6 +512,14 @@ For each hunk, look at the removed (`-`) lines next to the added (`+`) lines and
 The removed lines are your reference, NOT the canonical witness. The witness shows the archetype's shape (Step 2c); it rarely contains the exact construct this hunk touched, so do not compare the hunk to it here.
 
 Anchor every finding to a specific post-change line inside the hunk. A removed-guard finding points at the line where the guard should be; an inverted-condition finding points at the changed condition. Classify as BLOCK (a removed guard or error branch that can crash or skip authorization) or FIX (a weakened check, a dropped await whose result is awaited elsewhere). These findings go through the Step 4 hunk gate like all logic findings.
+
+Same per-file output obligation as 3c: each file's Per-file details entry must
+include a `3e:` line — "N hunks read; removed guards / early returns / awaits /
+inverted conditions / error branches checked; K findings" or the same with
+"CLEAN" — AND the line must quote ONE actual removed (`-`) line from that
+file's hunks (or say `no removed lines in this file`). The quote is the token a
+skim cannot fake: the fixed vocabulary above is fillable by pattern, a real
+removed line is not.
 
 ### Step 3f: Placeholder-name NIT
 
@@ -545,6 +593,90 @@ The superpowers reviewer asks "are all tests passing?" — that is OUT OF SCOPE 
 
 Read it together with the findings verdict, never instead of it: a change is a credible "no human review needed" candidate only when the findings verdict is APPROVE AND `auto_pass_eligible` is true. A clean findings verdict on a change the router sent to a human (an auth/payment/migration surface, say) is NOT a skip candidate — state that plainly. If the tool is unavailable this session, skip this step and note it in one line, the same as the cross-file passes.
 
+### Step 3.9: RECALL — decorrelated recall lenses (always)
+
+This step is the pipeline's only add-path (the preamble states why):
+independent fresh-context lenses over the same diff — the decorrelated-lens
+design the engine's own turn-end synthesis is built on (~33% single-lens recall
+vs ~72% combined in the literature it cites; see `lens_synthesis.py`). Run it on
+every review, fan-out or not.
+
+**The two lenses.** Dispatch read-only in-session Task agents (Read + read-only
+chameleon MCP, no Bash, no Edit/Write, no nested Task) over the WHOLE diff:
+
+- **Lens A — correctness/delta**: edge cases, removed guards and behavior the
+  `-` lines took out, inverted conditions, error paths, spec/ticket compliance
+  when a ticket exists.
+- **Lens B — consequences**: downstream consumers of the changed values (trace
+  who READS what this diff writes — an asymmetry between two consumers of the
+  same changed quantity is this lens's classic catch), caller blast radius,
+  deploy/rollout safety (in-flight jobs, ordering, backwards compatibility
+  during a rolling deploy), concurrency, cross-file contract drift.
+
+Each lens gets: the unified diff, the per-file hunk map, the repo id, the
+ticket / acceptance criteria and PR description when they exist (requirements
+are input, not anchoring risk — Lens A needs the spec, and Lens B traces
+consumers better knowing what the change is FOR) — and the draft findings'
+(`file:line`, defect-class) pairs ONLY (run the Step 4a hunk gate on the draft
+first so dead anchors don't mask live lines; no reasoning, no messages), framed
+as "these CLAIMS are covered; a DIFFERENT defect class at the same line is fair
+game". Never hand a lens the draft findings' text: an anchored critic
+re-derives the same list. Each
+lens returns findings as JSON (`{file, line, section, rule, severity, message}`)
+plus an `unrun_checks` list (below).
+
+**Depth calibration** (from the Step 2.0/3h `get_autopass_verdict` already in
+hand): `complexity_tier` easy/medium AND `risk` low or elevated → Lens B alone
+suffices (the parent's own pass already covered the Lens A ground inline; B is
+the orthogonal perspective). Tier hard/complex, OR risk high, OR any
+security-surface reason, OR a ticket with acceptance criteria → BOTH lenses are
+mandatory. When the verdict was degraded/unavailable: 3 or fewer changed files
+→ one lens (B); otherwise both.
+
+**Merge + gate.** Dedup lens candidates against the draft findings and each
+other by (file, overlapping line range, defect class). Two lenses independently
+agreeing on a new candidate is a strong signal — note it on the finding. Every
+surviving NEW candidate then goes through the SAME gates as a draft finding:
+the Step 4a hunk gate, and Step 4b refutation for model-judgment claims. Two
+anchoring rules make that composable: (1) a consequence/cross-file candidate
+(consumer asymmetry, blast radius, deploy safety, contract drift) must anchor
+to the DIFF-SIDE line — the changed write/export/signature line inside a hunk —
+with the out-of-diff consumer site cited in the message as corroborating
+evidence (the 3f-i shape: source-side anchor, corroborating file cited),
+because the consumer's own line is outside the diff by construction and the
+hunk gate would drop it; a consequence claim with neither an in-diff anchor nor
+a re-verified tool backing is dropped. (2) A lens claim that cites a tool
+result (a caller list, an importer) is input, not truth: re-verify it yourself
+with the tool before relaying — it then carries the Step 4b tool-grounded
+exemption like any tool-backed finding.
+
+**Loop until dry.** If a recall round contributed at least one BLOCK or FIX
+that SURVIVED the Step 4a/4b gates (a surviving NIT never re-loops), run ONE
+more recall round (fresh lens contexts, updated anchor pairs). Terminate when a
+round contributes zero such survivors. Cap: 2 recall rounds total; if the
+second round still added survivors, say so in the banner ("recall cap hit — a
+further round may find more"). Refutation spent here draws from the review-wide
+`refute_finding` budget (Step 4b's 4-call hard stop is shared, not per-stage),
+and a recall candidate adjudicated in-loop keeps its verdict — never re-send it
+at Step 4b.
+
+**No-dispatch fallback.** When Task dispatch is unavailable (you are yourself a
+subagent), do NOT skip RECALL: run it inline as an exclusion-set re-walk — for
+each changed file, with the draft findings as the exclusion set, answer one
+forced question: "name the worst defect in this hunk that is NOT already a
+finding, or write CLEAN". Same merge/gate/loop rules; log
+`recall-inline: no Task dispatch`.
+
+**Unrun executable checks.** Each lens (and the inline fallback) also names the
+checks it could NOT run because this review is static and offline: the specific
+spec/test file that exercises the changed behavior, a deploy-state or data-shape
+assumption a live query would settle ("does this column ever hold NULL in
+production?"), a migration's real table size. Dedup and render them in the
+"Unrun executable checks" output section — never as findings, never affecting
+the verdict. This is the honest boundary of a static review, made visible so
+the user can green-light exactly those checks instead of asking for "another
+round" to discover them.
+
 ### Step 4: Output
 
 #### 4a. Hunk gate (apply before formatting any logic finding)
@@ -563,12 +695,28 @@ tool flag. Defined by principle, not a hand-list (which drifts as the finding
 taxonomy grows): a finding is model-judgment when it is NOT in the tool-grounded
 exempt set below. Typical members: change-delta logic (removed guard, dropped
 await, inverted condition), canonical divergence, taint/SSRF/path-traversal,
-callable-signature drift, spec-compliance / missing-requirement. Send them in ONE
-call:
+callable-signature drift, spec-compliance / missing-requirement. Send them in
+severity order (BLOCKs first) in batches of at most 8 findings per call — the
+refuter's per-invocation spawn cap is 8, so a single over-cap call silently
+returns "unverified / refuter cap reached" for finding 9 onward, leaving exactly
+the long-tail findings of a big review unadjudicated. Call `refute_finding` once
+per batch until every model-judgment BLOCK/FIX has a real verdict; hard stop
+after 4 calls (32 findings) ACROSS THE WHOLE REVIEW — the Step 3.9 recall
+rounds draw from this same budget, and a recall candidate already adjudicated
+in-loop keeps its verdict and is never re-sent here. Label any remainder
+cap-reached:
 
 `refute_finding(repo=<repo_id>, findings=[{id, kind, severity, file, line, claim, evidence}, ...], base_ref=<base>)`
 
-Two exclusions from the send set:
+Three exclusions from the send set:
+- **Runtime-state findings are never sent — convert them instead.** A finding
+  whose truth depends on runtime, production, or deploy state (a data-shape
+  assumption — "this rule never fires if the column is NULL in production" —
+  deploy order, live config, real table size) cannot be adjudicated by a static
+  refuter that is commanded to refute on cannot-tell; sending it is shredding
+  it. Convert it to an "Unrun executable checks" line carrying the exact
+  query/command that settles it, and note the conversion in the grounding
+  banner.
 - **TOOL-GROUNDED findings are EXEMPT** — never send them; verify inline by
   re-confirming the tool flag still holds (existence-break with `high_confidence`,
   contract-break with a returned caller list (Step 2.9e), duplication with a
@@ -606,7 +754,8 @@ Then apply:
   round 3 unavailable", with downgraded confidence. Never drop and never silently
   confirm.
 
-Banner: report `<b>` refuted-dropped, `<c>` inline-exempt, `<d>` self-verified.
+Banner: report `<b>` refuted-dropped, `<c>` inline-exempt, `<d>` self-verified,
+and `<e>` converted to unrun checks (runtime-state) — omit `<e>` when zero.
 NEVER print "3/3" when round 3 did not adjudicate — that is the `disabled`,
 `unavailable`, or `untrusted` envelope, AND any individual finding the refuter
 returned `unverified` (including a cap-reached tail on an otherwise-`enabled` call).
@@ -621,6 +770,7 @@ Reviewed N files against chameleon conventions + [ticket KEY / branch diff].
 Reasoning: <one or two sentences naming the decisive finding(s) behind the verdict — e.g. "Blocks on a removed nil guard in order.rb:47; otherwise in-pattern." For APPROVE, name what made it clean. This is the superpowers "Ready to merge + reasoning" assessment.>
 
 Grounding: rounds 1-2 self-verified; round 3 independently refuted <b> dropped, <c> inline-exempt, <d> self-verified (round 3 unavailable).
+Recall: <2 lenses x R round(s) | 1 lens (<calibration reason>) | inline (no Task dispatch)> — <K> candidates, <J> survived VERIFY<, <e> converted to unrun checks (runtime-state) when e > 0><; "recall cap hit — a further round may find more" when capped>.
 Review fan-out: <inline | M parallel agents over N files>.
 
 ### Strengths / verified clean
@@ -756,6 +906,59 @@ Typecheck: 3 type error(s) across 2 changed file(s)
 
 First check `status`: a `status == "degraded"` envelope (e.g. an unresolvable `base_ref`) carries only `{auto_pass_eligible, risk, complexity_tier, reasons, reason, fan_out, status}` — it OMITS `typecheck`, `facts`, and `changed_files`. On degraded, render `Auto-pass routing: degraded (<reason>)` plus the fields that ARE present (`Tier`, NEEDS HUMAN, `risk`, `reasons`) and do NOT reference the absent `typecheck`/`facts`/`changed_files`. Otherwise (a non-degraded envelope — the success path sets NO `status` field, so `status` is simply absent, never `"ok"`): render the `complexity_tier` field as `Tier: <easy|medium|hard|complex>` with a short reason drawn from the facts, then `auto_pass_eligible` as ELIGIBLE / NEEDS HUMAN, the `risk`, and the `reasons` list verbatim; render the `typecheck` DICT by its `typecheck.status`: `Typecheck: unavailable (<typecheck.reason>)` when `"unavailable"`, `Typecheck: clean` when `"clean"`, `Typecheck: <typecheck.diagnostics> type error(s) across <len(typecheck.files)> changed file(s)` when `"errors"`. If the tool was entirely unavailable (no envelope), write one line saying the auto-pass routing was skipped. Omit nothing: an ELIGIBLE verdict is only a skip candidate when the findings verdict is APPROVE — state that pairing explicitly. The tier is the change's inherent complexity (structural), independent of whether it is clean: an `easy`/`medium` change that is APPROVE + ELIGIBLE is the review-clean routine slice; `hard`/`complex` changes carry an irreducible human-judgment residual even when the findings verdict is clean.
 
+### Unrun executable checks (advisory)
+
+Present when the RECALL lenses named any (Step 3.9). Each line is a specific
+executable check this static review could not run, so the user can green-light
+it instead of discovering it via "another round". Never a finding; never affects
+the verdict.
+
+```
+- Run `spec/services/prorate_metrics_spec.rb` — the changed proration path has a paired spec this review only read.
+- Query production/staging: does `orders.client_ip` ever hold NULL? The new red-flag rule assumes it is populated.
+- Check deploy state: is the consumer of the renamed field already deployed, or does rollout order matter?
+```
+
+### Pass execution manifest (always rendered)
+
+One row per pass, no omissions — this is the generalization of the lint ledger,
+and it exists because a skipped pass and a clean pass are otherwise
+indistinguishable in the sections above (they render identically as "section
+omitted"). Status is one of: **ran** (with its evidence: N files / K findings),
+**skipped** (ONLY with a sanctioned reason: `no manifest in diff` for 2.5, `no
+db/migrate file` for 2.7, `no added files` for 2.8, `no ticket` for 3a/3b/3d,
+`no test archetypes` for 3g, `tool unavailable: <name>` / `degraded: <reason>`
+for a tool-backed pass, `profile untrusted` for a trust-gated pass, `artifact
+section absent: <layering | test_pairing | callable_signatures |
+error_handling>` for an artifact-keyed pass, `not a source file
+(manifest/lockfile — 2b lint + 2.5 only)` / `file deleted` / `binary` per file
+— or, for any pass, the skip condition that pass's own step text defines,
+named), or **n/a** (the pass ran but its input set was empty this review —
+zero model-judgment findings for 4b, zero lens candidates to gate — with that
+empty set named). A row you cannot fill with evidence or a sanctioned reason
+is a self-evident gap to close before rendering the verdict — the same rule the
+lint ledger already enforces.
+
+```
+| Pass | Status |
+|------|--------|
+| 1b prior-review | ran — no record pins this HEAD |
+| 2a-2f convention (incl. 2b lint N/N) | ran — 6/6 files, 3 findings |
+| 2.5 dependency | skipped — no manifest in diff |
+| 2.6 security (a-d) | ran — 6 files, 1 finding |
+| 2.7 migration | skipped — no db/migrate file |
+| 2.8 co-change | ran — 2 added files, 0 findings |
+| 2.9a-e cross-file | ran — existence/contract/dup/callers/layering, 1 finding |
+| 3a/3b/3d ticket | skipped — no ticket |
+| 3c edge cases + 3c-i signatures | ran — 6/6 files (per-file lines below) |
+| 3e change-delta | ran — 6/6 files (per-file lines below) |
+| 3f/3f-i/3f-ii naming/stale-test/stale-comment | ran — 0 findings |
+| 3g coverage-delta | ran — advisory above |
+| 3h auto-pass | ran — advisory above |
+| 3.9 RECALL | ran — 2 lenses x 1 round, 3 candidates, 1 survived |
+| 4a hunk gate / 4b refuter | ran — 2 dropped / 1 refuted-dropped |
+```
+
 ### Recommendations (advisory)
 
 Optional. The superpowers reviewer ends with improvement suggestions for code quality, architecture, or process. Include this section ONLY when you have a concrete, grounded suggestion that is not already a finding above (e.g. "the new util duplicates the date-format helper the repo already wraps; consolidating would remove the off-pattern import", or "this archetype has no test-pairing convention; consider adding one"). Each recommendation must cite the chameleon data or diff fact it rests on, the same integrity bar as a finding; it never carries a severity and never changes the verdict. Omit the section entirely when you have nothing grounded to add — do not pad it with generic best-practice advice.
@@ -768,6 +971,8 @@ Coverage: lint_file run on N/N changed files. [If under N/N, name the skipped fi
 - Archetype: `name` (confidence: band, match: quality)
 - Canonical witness: `path/to/witness`
 - Violations: N (breakdown by severity)
+- 3c: [what was checked for this file — e.g. "empty result set from the new query handled at :48; params[:id] nil-guarded" — or "no new inputs/queries in this hunk"]
+- 3e: [N hunks read; removed guards / early returns / awaits / inverted conditions / error branches checked; K findings or CLEAN; removed-line quote: `- if user.nil? return`  (or "no removed lines in this file")]
 - [details or "Follows conventions correctly."]
 ```
 
@@ -842,4 +1047,4 @@ This is a best-effort final step. If the tool call fails (no ledger, no signing 
 - The hunk gate answers "PR-introduced vs pre-existing": if the anchor line is not in an added/changed hunk, drop the finding. Don't override the gate by judgment.
 - Run the grounding loop: re-read each finding and drop any the witness / conventions / tool backing or the hunk gate does not support. A finding that cannot survive the round-3 refuter does not ship.
 - Never read an empty `get_callers`/cross-file result as dead code, and never relay a duplication or existence break without its returned candidate / `high_confidence` backing.
-- State what you verified clean, too. Don't pad the review with hypothetical concerns to look thorough.
+- State what you verified clean, too. Don't pad the review with hypothetical concerns to look thorough. This is a REPORT-phase rule, not a generation-phase one: during ATTACK and RECALL, write every candidate down (including borderline ones) and let the hunk gate and the refuter kill the weak ones — a candidate never written down never reaches the gates that exist to adjudicate it. Filter at the end, not at the moment of noticing.

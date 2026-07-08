@@ -31,11 +31,21 @@ to resolve.
 ## Step 1: Gather the feedback
 
 - **Pasted comments** (default): use what the user pasted.
-- **PR URL**: fetch inline + general review comments — `gh` for GitHub
-  (`pulls/{n}/comments` carries `path`, `line`, `original_line`, `body`),
-  `bbcurl` for Bitbucket (inline `path`/`from`/`to`). If `gh`/`bbcurl` is absent,
-  unauthenticated, or returns empty, STOP and ask the user to paste — never invent
-  comments.
+- **PR URL**: fetch EVERY comment source, not just the first endpoint — a
+  reviewer comment this step misses is adjudicated by nobody, and the user
+  should never have to hand-feed a comment URL you failed to enumerate. GitHub
+  has three: `pulls/{n}/comments` (inline; carries `path`, `line`,
+  `original_line`, `body`), `issues/{n}/comments` (general), and
+  `pulls/{n}/reviews` (review-summary bodies, which often carry asks of their
+  own). Bitbucket: the PR `comments` endpoint via `bbcurl` (inline
+  `path`/`from`/`to` and general in one list). EVERY one of these endpoints
+  paginates and defaults to a small page, which silently truncates a busy PR:
+  pass `--paginate` to `gh api` on each GitHub endpoint, and follow `next`
+  until exhausted on Bitbucket. Include outdated and resolved threads: an
+  outdated comment may still be unaddressed. Then render one coverage line — "Comments fetched: N inline +
+  M general + K review-summary (P outdated/resolved included)" — and carry the
+  count into Step 2. If `gh`/`bbcurl` is absent, unauthenticated, or returns
+  empty, STOP and ask the user to paste — never invent comments.
 - **Jira key**: resolve the PR(s), then as above (see multi-PR below).
 
 Also fetch the PR's unified DIFF (`gh pr diff <n>` for GitHub, the Bitbucket diff
@@ -49,6 +59,15 @@ say so: without the diff you cannot prove pre-existing vs introduced, so treat
 each claim as un-scoped and tell the user that caveat.
 
 ## Step 2: Normalize into a checklist
+
+Reconcile the count first: every comment fetched in Step 1 maps to exactly one
+checklist item (a multi-ask comment may split into several items, but no
+comment maps to zero). A comment with NO ask — a bot/CI status note, a bare
+"LGTM" review body, an emoji reaction — still gets an item, closed on the spot
+as `informational — no ask, NO ACTION`; it counts in the reconciliation and
+skips Steps 3-8. Render "Comments: N fetched -> M checklist items (K closed
+informational)"; a fetched comment with no item is a self-evident gap to close
+before Step 3.
 
 Each item: reviewer, `file:line` (nullable), the ask, type, and comment-class:
 `inline-current` (line maps to the file), `inline-outdated` (carry `original_line`
@@ -82,6 +101,29 @@ Open the cited `file:line` and read it. Prefer reading code/tests over executing
 If reproducing a "this breaks" claim needs execution: no installs, no network,
 honor chameleon's refusal posture, and fail open to "I can't verify without
 running X — should I?"
+
+**Fill a verification record per item — the minimum-evidence floor.** Reading
+the one cited line is not verification: the claim is about behavior, and the
+behavior lives in the enclosing function and its callers. Each item's record
+carries four fields, and Step 5 may assign AGREE or PUSH BACK only to an item
+whose record is complete (an incomplete record can only be NEEDS CLARIFICATION):
+
+1. **Read**: the cited line PLUS its enclosing function/method — and, when the
+   claim is about a value's origin or consequence, the caller or consumer that
+   settles it. For a `general` item (no path), this field is the code the claim
+   implicates, located by you — or "n/a: no code implicated", which is a
+   COMPLETE record for a pure-judgment comment, not a gap (Step 2 already
+   routes `general` items to plain judgment).
+2. **Claim trace**: the concrete input or state under which the reviewer's
+   claim is true or false ("empty array from the new query -> the `.first`
+   dereference at :48 raises"), not a restatement of the comment.
+3. **Tools**: the grounding calls made (below) with a one-line result, or the
+   sanctioned "no tool route: general comment / untrusted profile".
+4. **Five confirmations** (code-changing verdicts only): one-line answers to
+   the five questions at the end of this step.
+
+Render a ledger line in the Step 5 output: "Verification records: M/N complete
+(K routed to NEEDS CLARIFICATION on incomplete records)."
 
 Run the cited line through the Step 1 hunk map FIRST. Three outcomes:
 - **The file is not in the PR at all** (no entry in the per-file hunk map for that
@@ -214,10 +256,34 @@ over comfort.
 
 ## Step 6: Ground (3-round loop) — BEFORE drafting
 
-Run rounds 1-2 inline (re-read the evidence; re-apply the Step 3 hunk gate — a
-claim on a pre-existing line is not a PR defect). For surviving MODEL-JUDGMENT
-verdicts that would change code (a PUSH BACK, an AGREE you'd implement), call
-`refute_finding` ONCE with the full finding shape and the PR base:
+Run rounds 1-2 inline, and they are not just subtractive re-reads — each verdict
+must survive its own opposite:
+
+- **Per PUSH BACK, a steelman.** Write the strongest one-sentence version of the
+  reviewer's claim, citing a concrete code path. If the steelman references a
+  line or file NOT in the item's Step 3 verification record, read it and
+  re-adjudicate — a pushback that never engaged the reviewer's best case is a
+  guess with confidence.
+- **Per code-changing AGREE on a convention-silent item, a repo-evidence
+  probe.** The current code may be shaped deliberately: grep/`search_codebase`
+  for BOTH the current shape and the reviewer's proposed shape and record the
+  counts ("proposed: 0 occurrences; current shape: 7 files"). A proposal the
+  repo has zero instances of, replacing a shape it has many of, is a reason to
+  re-adjudicate toward PUSH BACK or NEEDS CLARIFICATION.
+- Re-apply the Step 3 hunk gate (a claim on a pre-existing line is not a PR
+  defect). Repeat rounds 1-2 until a pass changes zero labels (cap 2 passes;
+  labels still churning at the cap → keep the last labels and surface the
+  churn to the user as its own caveat).
+
+For surviving MODEL-JUDGMENT verdicts that would change code (a PUSH BACK, an
+AGREE you'd implement), call `refute_finding` with the full finding shape and
+the PR base — in batches of at most 8 findings per call (the refuter's
+per-invocation spawn cap; an over-cap send returns "unverified" for the tail),
+highest-stakes first, hard stop after 4 calls (findings past it are held
+unverified per the ladder below). Pass each item's Step 3 claim trace VERBATIM
+as the finding's `claim`/`evidence` — the trace is then adjudicated by the
+refuter instead of merely graded "complete", so a lazy or fabricated trace gets
+refuted rather than laundered:
 
 `refute_finding(repo=<repo.id>, findings=[{id, file, line, claim, evidence}, ...], base_ref=<the PR base / merge-base, or the locked production_ref, else "main">)`
 
@@ -284,8 +350,31 @@ the hooks will not block those — rather than trusting the edit "follows
 conventions" because it flowed through a hook. A fix that trades the reviewer's bug
 for a convention violation is not done.
 
-After the last approved item lands, run a final pass to verify no regressions
-across the whole set, distinct from the per-item verify.
+The lint bracket catches convention regressions; it says nothing about whether
+the fix actually RESOLVES the comment. So each item's verify has two more
+parts:
+
+- **Resolution check**: restate the reviewer's original failure scenario from
+  the item's Step 3 verification record and cite the new line(s) proving it no
+  longer holds ("empty array: `.first` is now guarded at :49"). A fix that is
+  lint-clean but leaves the original scenario alive is not done — do not move
+  to the next item on it.
+- **Contract re-check** (signature-changing fixes only): a fix that renamed a
+  symbol or changed an arity re-runs `get_callers` (and `get_contract_breaks`
+  for a narrowed positional contract) on the changed symbol — the reviewer
+  asked for the change, not for its callers to break.
+
+After the last approved item lands, verify no regressions across the whole set,
+distinct from the per-item verify — a defined pass, not a vibe: (a) build the
+combined diff of exactly the applied edits (`git diff` on
+those files); (b) re-run `lint_file` on every touched file and diff against
+each file's ORIGINAL pre-Step-8 baseline (already captured by the first
+bracket), rendering "final lint delta: K new violations across M files";
+(c) for any file edited by MORE than one item, re-run the earlier items'
+resolution checks on the final content (a later fix can undo an earlier one);
+(d) where subagent dispatch is available, hire ONE fresh-context read-only
+reviewer over the combined diff against the original reviewer comments — its
+findings pass through the same Step 3 verification before anything is acted on.
 
 ## Multi-PR (full-stack) branch
 

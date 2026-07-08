@@ -4,6 +4,83 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.59.0] - 2026-07-08
+
+### Added
+
+- **pr-review: RECALL stage (Step 3.9) — the pipeline's add-path.** The review
+  pipeline is now SCOPE → EVIDENCE → ATTACK → RECALL → VERIFY → REPORT. Every
+  verification stage (hunk gate, refuter) could only REMOVE findings, so the
+  review's recall ceiling was one context's first pass — the diagnosed reason
+  users re-ran the skill 2-3 times ("- 2nd round") before trusting it, with
+  round 2 twice flipping APPROVE → NEEDS CHANGES on real bugs in live usage.
+  RECALL dispatches decorrelated fresh-context read-only lenses over the whole
+  diff (correctness/delta + consequences: downstream consumers, blast radius,
+  deploy safety), hands them (file:line, defect-class) anchor pairs instead of
+  the draft findings (anti-anchoring), routes every candidate through the same
+  hunk gate + refuter, and loops until a round adds zero surviving BLOCK/FIX
+  (cap 2, disclosed). Depth is calibrated from the already-fetched
+  `get_autopass_verdict` (easy/medium + low/elevated risk → one lens;
+  hard/complex, high risk, security surface, or a ticket → both). A
+  consequence finding anchors to the diff-side line with the out-of-diff
+  consumer cited as corroboration, so the hunk gate composes instead of
+  killing the class. An inline exclusion-set fallback covers no-dispatch
+  sessions.
+- **pr-review: "Unrun executable checks" disclosure.** A finding whose truth
+  depends on runtime/production state (a data-shape assumption, deploy order)
+  is never sent to the refuter (which is commanded to refute on cannot-tell —
+  sending is shredding); it converts to a named executable check the user can
+  green-light in the same turn, with the conversion counted in the grounding
+  banner.
+- **pr-review: always-rendered pass-execution manifest.** The lint ledger's
+  "N/N" forcing function generalized to every pass: one row per pass, ran with
+  evidence / skipped with a sanctioned reason / n/a with the empty input set
+  named. A skipped pass and a clean pass no longer render identically. The 3c
+  edge-case and 3e change-delta passes gain per-file output obligations, and
+  the 3e line must quote one actual removed line — a token a skim cannot fake.
+- **pr-review: same-HEAD prior-review comparison (Step 1b).** A re-review of a
+  commit `get_review_history` already pins treats the prior findings count as
+  a bar to clear, not a cache to trust.
+- **deep-work: adversarial verification + review-to-convergence (Step 6).**
+  The single-shot fresh reviewer became a bounded convergence loop: a NEW
+  fresh-context reviewer per round over the current diff with a compact
+  declined-findings log, blocking declines independently adjudicated via
+  `refute_finding`, terminate when a round applies zero findings (cap 3,
+  cap-hit disclosed, self-review fallback when dispatch is unavailable).
+  Verification now demands a per-criterion evidence table (exact command,
+  pasted output) and a git-level guard check that a new test FAILS with the
+  source flipped (revert + re-materialize the test; empirically verified
+  mechanics), scaled up to a hired bypass hunt on authz/money/deletion
+  surfaces. The dig (Steps 2-3) now terminates on a fixpoint — a
+  re-enumeration pass that adds zero new unknowns (cap 2) — instead of a
+  self-authored list that only shrinks.
+- **receiving: comment-enumeration completeness + verification records.**
+  Step 1 must fetch every comment source (all three GitHub endpoints with
+  `--paginate`, Bitbucket `next`-until-exhausted, outdated/resolved included)
+  and reconcile the count into checklist items (ask-free comments close as
+  informational/NO ACTION). Each item gets a minimum-evidence verification
+  record (enclosing-context read, concrete claim trace, tools, five
+  confirmations) gating AGREE/PUSH BACK; the claim trace is passed verbatim to
+  the refuter so a lazy trace gets refuted, not graded complete. Every PUSH
+  BACK needs a steelman; convention-silent code-changing AGREEs need a
+  repo-evidence probe. Step 8 fixes now carry a resolution check (prove the
+  reviewer's original scenario no longer holds) and a contract re-check on
+  signature changes, and the final whole-set pass has defined mechanics.
+
+### Fixed
+
+- **pr-review fan-out slices reviewed blind.** `reviewer.md` handed slices only
+  file names and a repo id — no hunk map, and slice reviewers have no Bash —
+  so they could not run the change-delta pass or hunk-gate anything. The
+  template now carries a mandatory `{SLICE_HUNKS}` fill and returns
+  `{manifest, findings}` so an unexplained per-pass gap in a slice is rejected
+  at synthesis instead of silently merged.
+- **Refuter cap starvation.** Both review skills sent all model-judgment
+  findings in ONE `refute_finding` call; the engine's per-invocation spawn cap
+  (8) silently returned "unverified / cap reached" for finding 9 onward on big
+  reviews. Sends are now severity-first batches of ≤8 under a shared 4-call
+  review-wide budget, with any remainder labeled cap-reached.
+
 ## [2.58.0] - 2026-07-07
 
 ### Added

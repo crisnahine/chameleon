@@ -133,6 +133,17 @@ cheapest rungs for yourself, and let the scouts' file:line answers point
 rung 5's reading. Scout claims pass through the same honesty gates below
 before the brief cites them.
 
+**The dig terminates on a fixpoint, not on the original list.** "Remaining
+unknowns are zero" is graded against a list you wrote before you knew
+anything - a list that only ever shrinks is a recall ceiling, and an unknown
+never written down is trivially "resolved". So the dig (Steps 2 AND 3) may end
+only after a re-enumeration pass: walk what the dig itself surfaced - a file
+that referenced a subsystem not on the list, a tool result that contradicted
+an assumption, a collaborator you now know you will touch - and list every NEW
+unknown. Work the new items, then re-enumerate again. The dig ends when a
+re-enumeration adds zero items; cap at 2 re-enumerations, and anything still
+open at the cap enters the brief as a named default or risk, never silently.
+
 Honesty gates on this pass:
 
 - The comprehension tools are trust-gated: the graph and search tools return
@@ -181,6 +192,8 @@ The gate between digging and building. Every box checked, or back to Steps
       mapped, with the update plan for each call site
 - [ ] Every unknown is resolved (with where it was verified) or defaulted
       (with the chosen default and the reason)
+- [ ] The unknowns list survived a re-enumeration audit (the final pass added
+      zero new items, or the cap was hit and the leftovers are named here)
 - [ ] Every expert answer a decision rests on was verified first-hand (the
       cited line read, the cited doc fetched) or is marked unverified in
       the brief
@@ -263,13 +276,61 @@ dependency (contract rule 2c), stated in one line.
   holds); any failure the baseline does not show is yours and blocks done.
 - Drive the change end to end at least once - the real flow, not only the
   unit tests. A feature that has never run is not done.
-- Re-read the whole diff against the brief's acceptance criteria, one final
-  pass, before declaring done: every criterion either demonstrably met or
-  explicitly reported as not met and why.
-- Hire a fresh-context reviewer (read-only, per "Hire experts") over the
-  final diff against the brief's acceptance criteria and the repo's
-  conventions. Verify its load-bearing findings before acting on them;
-  apply or decline each with a reason in the report.
+- **Build the per-criterion evidence table.** One row per acceptance criterion
+  from the brief: criterion | how it was exercised (the exact command run or
+  flow driven that hits THIS criterion) | observed output (pasted, not
+  paraphrased) | met / not met. "Re-read the diff", "covered by the suite",
+  and "should work" are not evidence and may not fill a cell; a criterion
+  whose row you cannot fill is not met yet. This table goes into the Step 7
+  report verbatim.
+- **Verify adversarially, not just affirmatively.** Passing gates prove the
+  change works on the inputs it was built for; now try to BREAK it: drive the
+  changed flow with hostile/edge inputs (empty, missing, oversized, the wrong
+  type, the unauthorized caller), and for any new test, check it actually
+  guards - a test that passes with the change reverted verifies nothing. The
+  guard check is git-level, worktree-only, and it flips the SOURCE while
+  keeping the TEST: with the work committed (Step 5),
+  `git revert --no-commit <the commit(s)>`, then
+  `git checkout HEAD -- <test paths>` to re-materialize the new test the
+  revert just took out (test and code committed together is the normal
+  reviewable unit, so this is the common shape); for uncommitted work,
+  `git stash push -u -- <source paths>` (`-u`, so a brand-new source file
+  stashes too). Run the new test and confirm it FAILS. Then restore - the
+  committed path with `git reset --hard HEAD` plus `git revert --quit` (clears
+  the in-progress revert state), confirming `git status --porcelain` is clean;
+  the stash path with `git stash pop`, confirming the source edits are back
+  and `git stash list` no longer holds them (porcelain is NOT clean here - the
+  restored uncommitted work is the modifications). Use git for the flip, never
+  the editor: the live deny gates watch edits, and re-introducing pre-fix code
+  by hand can be blocked halfway. When the test and the code it guards
+  genuinely cannot be separated (they live in the same file), skip the check
+  with that named reason in the report. Scale to risk: a task
+  touching authorization, money, or data deletion hires adversarial experts
+  (per "Hire experts") for a bypass hunt on the changed surface. This is the
+  evidence a doubting "one more round, just to be sure" exists to demand -
+  produce it in round 1.
+- **Review to convergence, not once.** Round N: hire a NEW fresh-context
+  reviewer (read-only, per "Hire experts" - never the round N-1 reviewer,
+  never yourself) over the CURRENT diff, given the brief's acceptance
+  criteria, the repo's conventions, and the declined-findings log - one
+  (file:line, defect class, one-line decline reason) row per prior decline,
+  not full reasoning - so rounds never relitigate a reasoned decline; a
+  reviewer may re-raise a declined finding only by refuting the recorded
+  reason with new evidence. Verify its load-bearing findings first-hand
+  before acting; apply or decline each with a reason. Declining is not free
+  convergence: a declined finding the reviewer rated blocking goes to the
+  engine's `refute_finding` (independent adjudication of the decline) - a
+  `confirmed` verdict means the decline was wrong: apply the finding, and the
+  round is non-converged. If ANY finding was applied, the diff changed - the
+  fixes are new unreviewed code, so run round N+1; also re-run the specific
+  verification each applied finding's criterion or gate describes. Terminate
+  when a round applies zero findings (converged); cap at 3 rounds, and a
+  cap-hit with findings still being applied is reported as such, never
+  silently. When expert dispatch is unavailable (you are yourself a
+  subagent), run each round as a structured self-review against the brief and
+  the conventions instead - degraded, and disclosed. The Step 7 report
+  carries one line: "Review convergence: N round(s), <converged | cap hit>
+  <, self-reviewed - no dispatch>."
 - Chameleon's turn-end gates have been reviewing each turn; anything they
   surfaced is addressed or consciously carried into the report.
 
@@ -277,8 +338,9 @@ dependency (contract rule 2c), stated in one line.
 
 Report back:
 
-- What was built, against each acceptance criterion - met / not met, with
-  evidence (the command run, the output observed).
+- What was built, against each acceptance criterion - met / not met, as the
+  Step 6 per-criterion evidence table (the command run, the output observed,
+  pasted per row), plus the "Review convergence: N round(s)" line.
 - Every default taken (contract rule 2b), one line each, so any of them can
   be flipped cheaply now.
 - What was verified clean, and what was NOT verified (and why).
