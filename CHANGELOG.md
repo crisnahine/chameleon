@@ -4,6 +4,35 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.61.0] - 2026-07-08
+
+### Added
+
+- **Finding-fate ledger: per-finding adjudication history (G2').** Review
+  findings were emitted and shadow-logged, but how a human adjudicated each one
+  (accepted / declined / converted-to-check) was never persisted, so per-lens
+  precision could not be measured and no calibration signal accrued. A new
+  append-only, HMAC-signed `finding_fates.ndjson` per repo records one signed
+  row per adjudicated finding: a 16-hex digest of the finding (message + file +
+  line — never the prose), the lens/defect-class that raised it, the confidence
+  at emit, the fate, the surface, and the reviewer. It reuses the review
+  ledger's signing + recency-trim machinery and carries the same integrity
+  scope (tamper-evident, not forgery-proof, not CI-verifiable) and privacy
+  posture (digests not raw text). Two model-callable MCP tools:
+  `record_finding_fate` (called per finding by pr-review at verdict time,
+  receiving per AGREE/PUSH BACK, deep-work per convergence-loop decline) and
+  `get_finding_fate_stats` (precision = accepted / (accepted + declined), a
+  converted finding excluded from the denominator). Precision is broken down by
+  SURFACE, not pooled: `accepted` means a different thing at each one (pr-review
+  = survived RECALL + the refuter; deep-work = the author applied it vs declined;
+  receiving = AGREE with an external comment), so only within a surface is a
+  lens's precision one interpretable number. HMAC-unverified rows are excluded
+  from the math and counted separately. Aggregation only — nothing here gates,
+  blocks, or calibrates; it is the raw material a later outcome-calibrated
+  lens-weighting step consumes. The receiving skill's standing "never write the
+  review ledger" contract is unchanged: the fate ledger is a distinct local
+  adjudication record, not the outbound verdict.
+
 ## [2.60.0] - 2026-07-08
 
 ### Changed

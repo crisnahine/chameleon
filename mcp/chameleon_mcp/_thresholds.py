@@ -257,6 +257,10 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # crosses this many lines the oldest are dropped on the next append. One
     # record per review run keeps this small in practice.
     "REVIEW_LEDGER_MAX_RECORDS": 5_000,
+    # Hard cap on records in a repo's finding-fate ledger (one signed record per
+    # human decision on a review finding). Per-finding, so higher-volume than the
+    # per-review ledger; same append-only recency trim.
+    "FINDING_FATES_MAX_RECORDS": 20_000,
     # Cap on the number of distinct callable names recorded in an archetype's
     # signature consensus. Names are kept most-frequent-first so the cap drops the
     # long tail of one-off helpers, not the methods every sibling shares. Wide

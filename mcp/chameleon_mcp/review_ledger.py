@@ -578,6 +578,234 @@ def _repo_root_for(repo_id: str) -> Path | None:
         return None
 
 
+# --- Finding fates ---------------------------------------------------------------
+#
+# A per-finding adjudication ledger: one signed record per human decision on a
+# review finding (accepted / declined / converted-to-check), across every
+# adjudication surface (pr-review verdicts, receiving AGREE/PUSH BACK, deep-work
+# declines). A SEPARATE per-repo NDJSON in the same data dir, reusing the review
+# ledger's signing + trim machinery. It stores NO finding prose, only a 16-hex
+# digest of it (privacy posture: like intent_capture, digests not raw text), plus
+# the lens that raised it and the confidence at emit -- the raw material a later,
+# outcome-calibrated lens-weighting step consumes. Aggregation is precision only
+# and advisory: nothing here gates or blocks.
+
+_FATES_FILENAME = "finding_fates.ndjson"
+_FATE_VOCAB = ("accepted", "declined", "converted")
+# Synonyms the three skills may pass, mapped to the canonical vocabulary. The
+# receiving skill speaks AGREE / PUSH BACK; pr-review speaks accept/decline; a
+# runtime-state finding converts to an executable check.
+_FATE_ALIASES = {
+    "accept": "accepted",
+    "agree": "accepted",
+    "agreed": "accepted",
+    "decline": "declined",
+    "reject": "declined",
+    "rejected": "declined",
+    "push back": "declined",
+    "pushback": "declined",
+    "convert": "converted",
+    "converted-to-check": "converted",
+    "unrun-check": "converted",
+}
+
+
+def _fates_path(repo_id: str) -> Path:
+    from chameleon_mcp.profile.trust import repo_data_dir
+
+    return repo_data_dir(repo_id) / _FATES_FILENAME
+
+
+def finding_digest(message, file, line) -> str:
+    """16-hex digest of a finding's identity (normalized message + file + line).
+
+    The message is lowercased and whitespace-collapsed so a re-render with
+    different spacing hashes the same. No finding prose is ever persisted -- only
+    this digest -- so the ledger carries the finding's identity without its text.
+    """
+    norm_msg = " ".join(str(message or "").lower().split())
+    norm_file = str(file or "")
+    try:
+        norm_line = str(int(line)) if line is not None else ""
+    except (TypeError, ValueError):
+        norm_line = ""
+    payload = f"{norm_msg}\x00{norm_file}\x00{norm_line}".encode()
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
+def _normalize_fate(fate) -> str | None:
+    """Canonicalize a fate to accepted / declined / converted, or None if unknown."""
+    s = str(fate or "").strip().lower()
+    if s in _FATE_VOCAB:
+        return s
+    return _FATE_ALIASES.get(s)
+
+
+def _normalize_confidence(value) -> float | None:
+    try:
+        c = float(value)
+    except (TypeError, ValueError):
+        return None
+    return c if 0.0 <= c <= 1.0 else None
+
+
+def record_finding_fate(
+    repo_id: str,
+    *,
+    message,
+    file=None,
+    line=None,
+    lens: str | None = None,
+    confidence_at_emit=None,
+    fate: str,
+    surface: str | None = None,
+) -> dict:
+    """Append one signed finding-fate record to ``repo_id``'s fate ledger.
+
+    Records how a human adjudicated one review finding: its 16-hex ``finding_digest``
+    (no prose), the ``lens``/rubric that raised it, the ``confidence_at_emit``, the
+    ``fate`` (accepted / declined / converted), and the ``surface`` (pr-review /
+    receiving / deep-work). HMAC-signed like the review ledger; written unsigned
+    (``hmac: null``) rather than dropped on a key failure. Returns the stored record.
+
+    Raises ValueError on an unknown fate so a caller mistake surfaces loudly
+    instead of silently writing a garbage row; raises only if the file write
+    itself fails (the caller treats that as "ledger unavailable, carry on").
+    """
+    canon_fate = _normalize_fate(fate)
+    if canon_fate is None:
+        raise ValueError(f"unknown fate {fate!r}; expected one of {_FATE_VOCAB} or an alias")
+    record: dict = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "finding_digest": finding_digest(message, file, line),
+        "lens": str(lens) if lens else None,
+        "confidence_at_emit": _normalize_confidence(confidence_at_emit),
+        "fate": canon_fate,
+        "surface": str(surface) if surface else None,
+        "reviewer": _reviewer(),
+    }
+    try:
+        record["hmac"] = _sign(record)
+    except Exception:
+        record["hmac"] = None
+
+    line_out = json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+    path = _fates_path(repo_id)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line_out)
+    _trim_ledger(path, threshold_int("FINDING_FATES_MAX_RECORDS"))
+    return record
+
+
+def read_finding_fates(repo_id: str | None, limit: int | None = None) -> dict:
+    """Return recent finding-fate records for ``repo_id``, newest first.
+
+    Each record carries ``verified`` (the HMAC re-check). Fail-open: a missing or
+    unreadable ledger returns an empty result; a corrupt line is skipped.
+    """
+    if limit is None:
+        limit = threshold_int("FINDING_FATES_MAX_RECORDS")
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = threshold_int("FINDING_FATES_MAX_RECORDS")
+    if limit <= 0:
+        limit = threshold_int("FINDING_FATES_MAX_RECORDS")
+
+    empty = {"repo_id": repo_id, "records": [], "total": 0, "unverified": 0}
+    if not repo_id:
+        return empty
+
+    path = _fates_path(repo_id)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            raw_lines = f.readlines()
+    except OSError:
+        return empty
+
+    parsed: list[dict] = []
+    for raw in raw_lines:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            record = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            parsed.append(record)
+
+    total = len(parsed)
+    recent = parsed[-limit:][::-1]
+    unverified = 0
+    out_records: list[dict] = []
+    for record in recent:
+        verified = _verify(record)
+        if not verified:
+            unverified += 1
+        enriched = dict(record)
+        enriched["verified"] = verified
+        out_records.append(enriched)
+
+    return {"repo_id": repo_id, "records": out_records, "total": total, "unverified": unverified}
+
+
+def _empty_fate_bucket() -> dict:
+    return {"accepted": 0, "declined": 0, "converted": 0, "total": 0, "precision": None}
+
+
+def _finalize_fate_bucket(bucket: dict) -> dict:
+    # precision = accepted / (accepted + declined); a converted finding is neither
+    # a confirmation nor a refutation yet, so it is excluded from the denominator.
+    # No decisions -> null, never a fabricated 0.0.
+    denom = bucket["accepted"] + bucket["declined"]
+    bucket["precision"] = (bucket["accepted"] / denom) if denom else None
+    return bucket
+
+
+def per_lens_precision(repo_id: str | None) -> dict:
+    """Aggregate the fate ledger into per-SURFACE, per-lens precision. Aggregation
+    ONLY -- no calibration, no gating; this is a read-back surface for a human
+    (and, later, for an outcome-calibrated weighting step).
+
+    Broken down by ``surface`` because ``accepted`` means different things at each
+    one and pooling them is incoherent: at ``pr-review`` accepted = a finding that
+    survived RECALL + the refuter; at ``deep-work`` accepted = a chameleon-reviewer
+    finding the author applied (vs declined); at ``receiving`` accepted = AGREE with
+    an external reviewer comment. Only WITHIN a surface is a lens's precision a
+    single, interpretable number, so there is deliberately no cross-surface
+    ``overall``. Each surface carries its own ``overall`` and per-lens breakdown.
+
+    HMAC-unverified rows (a line edited by a third local user since it was signed)
+    are EXCLUDED from the math and counted under ``unverified`` -- the tamper
+    evidence every sibling reader surfaces must not silently skew an aggregate.
+    """
+    history = read_finding_fates(repo_id)
+    surfaces: dict[str, dict] = {}
+    unverified = 0
+    for record in history.get("records") or []:
+        if not record.get("verified"):
+            unverified += 1
+            continue
+        fate = record.get("fate")
+        if fate not in _FATE_VOCAB:
+            continue
+        surface = record.get("surface") or "(unlabeled)"
+        lens = record.get("lens") or "(unlabeled)"
+        s = surfaces.setdefault(surface, {"lenses": {}, "overall": _empty_fate_bucket()})
+        bucket = s["lenses"].setdefault(lens, _empty_fate_bucket())
+        for target in (bucket, s["overall"]):
+            target[fate] += 1
+            target["total"] += 1
+
+    for s in surfaces.values():
+        for bucket in s["lenses"].values():
+            _finalize_fate_bucket(bucket)
+        _finalize_fate_bucket(s["overall"])
+
+    return {"repo_id": repo_id, "unverified": unverified, "surfaces": surfaces}
+
+
 # --- Session attestations --------------------------------------------------------
 #
 # A SEPARATE per-repo NDJSON in the same data dir, sharing the review ledger's

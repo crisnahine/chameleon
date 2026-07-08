@@ -452,6 +452,53 @@ def record_review_verdict(
 
 
 @mcp.tool()
+def record_finding_fate(
+    repo: str,
+    fate: str,
+    message: str,
+    file: str | None = None,
+    line: int | None = None,
+    lens: str | None = None,
+    confidence_at_emit: float | None = None,
+    surface: str | None = None,
+) -> dict:
+    """Persist how a human adjudicated one review finding, into the signed
+    finding-fate ledger.
+
+    Call once per adjudicated finding: /chameleon-pr-review at verdict time,
+    /chameleon-receiving-code-review per AGREE / PUSH BACK item, /chameleon-deep-work
+    per declined finding. `fate` is accepted / declined / converted (agree /
+    push-back / convert normalize too). Only a 16-hex digest of `message` +
+    `file` + `line` is stored, never the prose; `lens` and `confidence_at_emit`
+    feed the per-lens precision read-back (get_finding_fate_stats). `surface`
+    labels the origin (pr-review / receiving / deep-work). Best-effort: never
+    blocks the review; tamper-evident, NOT forgery-proof and NOT CI-verifiable.
+    """
+    return tools.record_finding_fate(
+        repo,
+        fate,
+        message,
+        file=file,
+        line=line,
+        lens=lens,
+        confidence_at_emit=confidence_at_emit,
+        surface=surface,
+    )
+
+
+@mcp.tool()
+def get_finding_fate_stats(repo: str) -> dict:
+    """Per-lens precision from the repo's finding-fate ledger (advisory).
+
+    precision = accepted / (accepted + declined) per lens; a converted-to-check
+    finding is pending and excluded from the denominator. Aggregation only,
+    nothing gates or calibrates. Fail-open: a missing ledger returns empty
+    aggregates. Read-back for the fates recorded by record_finding_fate.
+    """
+    return tools.get_finding_fate_stats(repo)
+
+
+@mcp.tool()
 def explain_edit(repo: str, file_path: str) -> dict:
     """Replay what chameleon knew and did the last time a file was edited.
 

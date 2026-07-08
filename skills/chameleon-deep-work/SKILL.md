@@ -331,8 +331,14 @@ dependency (contract rule 2c), stated in one line.
   the conventions instead - degraded, and disclosed. The Step 7 report
   carries one line: "Review convergence: N round(s), <converged | cap hit>
   <, self-reviewed - no dispatch>."
-- Chameleon's turn-end gates have been reviewing each turn; anything they
-  surfaced is addressed or consciously carried into the report.
+- **Persist each finding's fate.** As the convergence loop resolves each
+  reviewer finding, record its outcome to the local finding-fate ledger so
+  per-lens precision accrues over time (`get_finding_fate_stats`): a declined
+  finding (the declined-findings log) is `declined`, an applied one is
+  `accepted`, a runtime-state one converted to a check is `converted`. Call
+  `record_finding_fate(repo=<repo_id>, fate=<accepted | declined | converted>, message=<the finding's one-line gist>, file=<file>, line=<line>, lens=<the finding's defect class>, surface="deep-work")`
+  once per finding. Only a digest of the text is stored, never the prose;
+  best-effort, never blocks - on any failure, skip it.
 
 ## Step 7: Deliver and integrate
 

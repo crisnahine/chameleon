@@ -1016,6 +1016,14 @@ Once review is optional, the skill is the system of record for "this change was 
 
 This is a best-effort final step. If the tool call fails (no ledger, no signing key), the verdict still stands in chat; do not retry or block the review on it.
 
+### Step 5b: Record per-finding fates in the fate ledger
+
+After the verdict, record the verdict-time disposition of each finding so per-lens precision becomes computable over time (`get_finding_fate_stats`). For every surfaced BLOCK/FIX finding, and every finding converted to an "Unrun executable checks" line (Step 4b), call `record_finding_fate` once:
+```
+record_finding_fate(repo=<repo_id>, fate=<accepted | converted>, message=<the finding's one-line message>, file=<file>, line=<line>, lens=<the finding's lens / defect-class, e.g. correctness, consequences, duplication, security>, confidence_at_emit=<the finding's confidence 0..1 if known>, surface="pr-review")
+```
+A finding that survived RECALL + the refuter and is surfaced in the verdict is `accepted` (the review stands by it); a finding routed to an unrun check is `converted`. Only a 16-hex digest of the message+file+line is stored, never the prose. This is best-effort and never blocks the review: on any failure, skip it and move on. It is a distinct ledger from `record_review_verdict` (per-finding disposition vs the aggregate verdict), and like it: tamper-evident, not forgery-proof, not CI-verifiable.
+
 ## Integrity rules
 
 - **Be honest.** If you're unsure about a finding, say so. Don't guess whether something is a violation — verify it against the canonical witness and conventions data. If the data doesn't clearly show a violation, don't flag it.

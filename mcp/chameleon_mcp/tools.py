@@ -6171,6 +6171,104 @@ def record_review_verdict(
     )
 
 
+def record_finding_fate(
+    repo: str,
+    fate: str,
+    message: str,
+    file: str | None = None,
+    line: int | None = None,
+    lens: str | None = None,
+    confidence_at_emit: float | None = None,
+    surface: str | None = None,
+) -> dict:
+    """Persist how a human adjudicated one review finding, into the repo's signed
+    finding-fate ledger.
+
+    Called per adjudicated finding by the review skills: ``/chameleon-pr-review``
+    at verdict time, ``/chameleon-receiving-code-review`` per AGREE / PUSH BACK
+    item, and ``/chameleon-deep-work`` per declined finding. ``fate`` is
+    accepted / declined / converted (the skills' synonyms agree / push-back /
+    convert normalize too). Only a 16-hex digest of ``message`` + ``file`` +
+    ``line`` is stored, never the prose; ``lens`` and ``confidence_at_emit`` let a
+    later read-back compute per-lens precision (``get_finding_fate_stats``).
+
+    Best-effort and never blocks the review: any failure returns
+    ``recorded: False`` rather than raising. Tamper-evident against a third local
+    user, NOT forgery-proof against the reviewer (who holds the signing key) and
+    NOT CI-verifiable.
+    """
+    if not isinstance(repo, str) or not repo:
+        return _envelope({"status": "failed", "error": "expected repo path or repo_id hex digest"})
+    if not isinstance(fate, str) or not fate.strip():
+        return _envelope(
+            {"status": "failed", "error": "expected a fate (accepted / declined / converted)"}
+        )
+    if not isinstance(message, str) or not message.strip():
+        return _envelope(
+            {"status": "failed", "error": "expected the finding message (hashed, never stored)"}
+        )
+
+    _repo_path, repo_id = _resolve_repo_arg(repo)
+    if repo_id is None:
+        return _envelope({"status": "no_repo", "recorded": False})
+
+    try:
+        from chameleon_mcp.review_ledger import record_finding_fate as _record
+
+        record = _record(
+            repo_id,
+            message=message,
+            file=file,
+            line=line,
+            lens=lens,
+            confidence_at_emit=confidence_at_emit,
+            fate=fate,
+            surface=surface,
+        )
+    except ValueError as exc:
+        return _envelope({"status": "failed", "recorded": False, "error": str(exc)})
+    except Exception as exc:
+        return _envelope(
+            {
+                "status": "failed",
+                "recorded": False,
+                "error": f"fate ledger unavailable: {type(exc).__name__}",
+            }
+        )
+
+    return _envelope(
+        {"status": "ok", "recorded": True, "signed": bool(record.get("hmac")), "record": record}
+    )
+
+
+def get_finding_fate_stats(repo: str) -> dict:
+    """Per-surface, per-lens precision from the repo's finding-fate ledger.
+
+    Aggregation only, advisory: precision = accepted / (accepted + declined) per
+    lens (a converted-to-check finding is pending and excluded from the
+    denominator), broken down by ``surface`` because ``accepted`` means different
+    things at pr-review / deep-work / receiving. HMAC-unverified rows are excluded
+    and counted under ``unverified``. Nothing here gates or calibrates; it is the
+    read-back a lead (and, later, an outcome-calibrated lens-weighting step)
+    consults. Fail-open: a missing ledger returns empty aggregates rather than
+    raising.
+    """
+    if not isinstance(repo, str) or not repo:
+        return _envelope({"status": "failed", "error": "expected repo path or repo_id hex digest"})
+    _repo_path, repo_id = _resolve_repo_arg(repo)
+    # Carry the same data keys as the healthy shape (empty) so a consumer parses
+    # one schema regardless of repo existence or a read failure.
+    if repo_id is None:
+        return _envelope({"status": "no_repo", "repo_id": None, "unverified": 0, "surfaces": {}})
+    try:
+        from chameleon_mcp.review_ledger import per_lens_precision
+
+        stats = per_lens_precision(repo_id)
+    except Exception:
+        stats = {"repo_id": repo_id, "unverified": 0, "surfaces": {}}
+    return _envelope(stats)
+
+
 def _normalize_decision_rel_path(repo_path: Path | None, file_path: str) -> str:
     """Repo-relative posix path for a decision_log lookup.
 
