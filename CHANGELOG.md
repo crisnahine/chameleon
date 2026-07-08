@@ -4,6 +4,49 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.67.0] - 2026-07-08
+
+### Fixed
+
+- **SessionStart no longer injects conventions from an unloadable profile.** A
+  profile written by a newer engine or an unsupported schema is refused by the
+  loader, `get_status`, and PreToolUse (`profile_too_new` / `unsupported_schema`),
+  but the SessionStart conventions read went straight to disk and skipped that
+  check, serving guidance the rest of the engine rejects. It now gates on
+  `_ss_profile_loadable`, so an unloadable profile injects nothing while a healthy
+  one still injects (fail-safe).
+- **Include-anchored archetypes now get a per-edit class-contract directive.** A
+  Ruby Sidekiq worker (`include Sidekiq::Worker`) or a Python mixin carries
+  `dominant_include` / `include_frequency` rather than `dominant_base`, and the
+  archetype-facts base fallback only read `dominant_base`. The sole class-heavy
+  archetype at ~99% include consistency was dropped; it now falls back to the
+  dominant include ("includes X").
+
+## [2.66.0] - 2026-07-08
+
+### Fixed
+
+- **Finding-fate ledger normalizes hyphenated fates.** `push-back` failed to
+  normalize though the tool docstring promises it, silently dropping the record
+  and inflating a lens's precision. Separators are now folded so `push-back` /
+  `push_back` / `push back` / `pushback` all map.
+- **Historical co-change advisory contains the partner path.** The partner path
+  was stat-ed and rendered without containment, so a tampered
+  `cochange_history.json` (which lives off the trust surface) could inject a `../`
+  traversal partner and turn the existence re-check into an out-of-repo existence
+  oracle. The partner is now contained via `_contained_rel` first.
+- **Canonical recency decay is a true half-life.** The decay was `exp(-age/HL)`
+  (e-folding, ~1/e per window) while the `CANONICAL_RECENCY_HALF_LIFE_DAYS` name
+  and docs say "half-life". The math is now `2**-age/HL`, so the boost halves
+  every window.
+- **Refuter canary gate keys on recall only.** The hard 1.0/1.0 exit gate
+  red-failed on clean runs because refuter precision varies stochastically over a
+  small canary set. It now gates on recall (the load-bearing "real findings
+  killed" direction) and reports precision without gating.
+- **Enforcement-degraded banner distinguishes missing from malformed.** It said
+  "malformed or torn JSON" when `enforcement.json` is merely absent; it now says
+  "missing or malformed" and points at `/chameleon-refresh`.
+
 ## [2.65.0] - 2026-07-08
 
 ### Added
