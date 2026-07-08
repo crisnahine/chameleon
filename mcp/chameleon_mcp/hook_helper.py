@@ -1469,6 +1469,29 @@ def _seed_archetype_seen(repo_id: str | None, session_id: str | None, archetype:
         pass
 
 
+def _ss_profile_loadable(profile_dir: Path) -> bool:
+    """True when SessionStart may inject a profile's conventions: it is not written
+    by a newer engine and not an unsupported schema version -- the same refusal the
+    loader (load_profile_dir) and get_status apply. Keeps SessionStart from serving
+    conventions the rest of the engine rejects. Fail-safe: any read error, a
+    too-new engine_min_version, or an over-cap schema_version returns False (do not
+    inject); a healthy profile returns True.
+    """
+    try:
+        from chameleon_mcp.profile.loader import MAX_SUPPORTED_SCHEMA_VERSION
+        from chameleon_mcp.tools import _profile_requires_newer_engine
+
+        if _profile_requires_newer_engine(profile_dir) is not None:
+            return False
+        peek = json.loads((profile_dir / "profile.json").read_text(encoding="utf-8"))
+        sv = peek.get("schema_version") if isinstance(peek, dict) else None
+        if isinstance(sv, int) and not isinstance(sv, bool) and sv > MAX_SUPPORTED_SCHEMA_VERSION:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def session_start() -> int:
     """SessionStart: inject using-chameleon SKILL.md + profile primer."""
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
@@ -1684,7 +1707,18 @@ def session_start() -> int:
             from chameleon_mcp.tools import _compute_repo_id
 
             _ss_rec = trust_state_for(_compute_repo_id(repo_root))
-            if _ss_rec is not None and _ss_rec.grants_root(repo_root):
+            # Loadability gate: this path reads conventions.json straight from disk,
+            # NOT via load_profile_dir, so it historically injected a profile written
+            # by a newer engine or an unsupported schema -- exactly what the loader
+            # (and get_status / PreToolUse) REFUSE with profile_too_new /
+            # unsupported_schema. Gate it so SessionStart never serves conventions
+            # the rest of the engine rejects; the PreToolUse upgrade banner covers
+            # the user. A healthy profile passes (fail-safe: any doubt -> no inject).
+            if (
+                _ss_rec is not None
+                and _ss_rec.grants_root(repo_root)
+                and _ss_profile_loadable(_prof_root / ".chameleon")
+            ):
                 import json as _conv_json
 
                 # This path reads conventions.json straight from disk (not via
@@ -2388,6 +2422,7 @@ def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> s
         cc = cc_map.get(archetype) if isinstance(cc_map, dict) else None
         parts: list[str] = []
         base = cc.get("base") if isinstance(cc, dict) else None
+        include_anchor: str | None = None
         if not (isinstance(base, str) and base):
             # A base-only contract (DRF serializer -> BaseSerializer, Django model
             # -> models.Model, AppConfig) is dropped from class_contract upstream
@@ -2401,10 +2436,27 @@ def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> s
                 db = inh.get("dominant_base")
                 if isinstance(db, str) and db:
                     base = db
+            # An INCLUDE-anchored archetype (a Ruby Sidekiq worker `include
+            # Sidekiq::Worker`, a Python mixin) carries no dominant_base -- its class
+            # contract IS the mixin, recorded as dominant_include/include_frequency.
+            # Without this it was the sole class-heavy archetype left with no contract
+            # directive even at 99% include consistency.
+            if not (isinstance(base, str) and base) and isinstance(inh, dict):
+                di = inh.get("dominant_include")
+                if (
+                    isinstance(di, str)
+                    and di
+                    and inh.get("include_frequency", 0) >= _ARCH_FACTS_STRONG_BASE_FREQ
+                ):
+                    include_anchor = di
         if isinstance(base, str) and base:
             safe_base = _safe(base)
             if safe_base:
                 parts.append(f"extends {safe_base}")
+        if include_anchor:
+            safe_inc = _safe(include_anchor)
+            if safe_inc:
+                parts.append(f"includes {safe_inc}")
         if isinstance(cc, dict):
             # Decorator-anchored archetypes (NestJS @Controller/@Injectable, DRF /
             # FastAPI) carry their contract in `decorators` with no base/methods, so

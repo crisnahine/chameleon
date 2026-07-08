@@ -601,6 +601,39 @@ def test_archetype_facts_exports_only_when_no_contract(tmp_path, monkeypatch):
     assert "reuse these before creating a new one: Foo, Bar." in out
 
 
+def test_archetype_facts_include_anchored_worker_gets_contract(tmp_path, monkeypatch):
+    # A Sidekiq worker is INCLUDE-anchored (include Sidekiq::Worker, no base), so it
+    # carries dominant_include/include_frequency but no dominant_base and a null
+    # class_contract. It must still get a "Class contract ... includes X" directive
+    # (previously the sole class-heavy archetype dropped, at 99% include consistency).
+    monkeypatch.delenv("CHAMELEON_ARCHETYPE_FACTS", raising=False)
+    repo = _repo_with_conventions(
+        tmp_path,
+        {
+            "inheritance": {
+                "worker": {"dominant_include": "Sidekiq::Worker", "include_frequency": 0.99}
+            }
+        },
+    )
+    out = hook_helper._archetype_facts_section("worker", repo)
+    assert "Class contract for this archetype: includes Sidekiq::Worker" in out
+
+
+def test_archetype_facts_weak_include_not_surfaced(tmp_path, monkeypatch):
+    # A minority include (below the strong-base frequency floor) is not asserted.
+    monkeypatch.delenv("CHAMELEON_ARCHETYPE_FACTS", raising=False)
+    repo = _repo_with_conventions(
+        tmp_path,
+        {
+            "inheritance": {
+                "worker": {"dominant_include": "Sidekiq::Worker", "include_frequency": 0.3}
+            }
+        },
+    )
+    out = hook_helper._archetype_facts_section("worker", repo)
+    assert "includes" not in out
+
+
 def test_archetype_facts_scoped_to_edited_archetype(tmp_path, monkeypatch):
     # Only the edited archetype's exports appear, not another archetype's.
     monkeypatch.delenv("CHAMELEON_ARCHETYPE_FACTS", raising=False)

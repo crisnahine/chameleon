@@ -275,3 +275,84 @@ def test_daemon_stopped_on_upgrade_without_root_profile(tmp_path, monkeypatch):
 
     assert rc == 0
     assert stop_called.called, "stale daemon must be stopped on code upgrade"
+
+
+# --- SessionStart loadability gate: never inject conventions from a profile the
+# --- loader (get_status / PreToolUse) would refuse as too-new / unsupported-schema.
+
+
+def _trusted_rec():
+    rec = MagicMock()
+    rec.grants_root = lambda root: True
+    return rec
+
+
+def _write_profile(repo: Path, *, schema: int = 8, engine_min: str | None = None) -> None:
+    ch = repo / ".chameleon"
+    ch.mkdir(parents=True, exist_ok=True)
+    prof: dict = {"schema_version": schema}
+    if engine_min is not None:
+        prof["engine_min_version"] = engine_min
+    (ch / "profile.json").write_text(json.dumps(prof), encoding="utf-8")
+    # Real content so format_conventions_for_session actually emits the block (an
+    # empty conventions set renders nothing, which would make the skip-tests
+    # vacuous). A dominant preferred import + inheritance each render a line.
+    (ch / "conventions.json").write_text(
+        json.dumps(
+            {
+                "conventions": {
+                    "imports": {
+                        "service": {"preferred": [{"module": "lodash", "frequency": 0.95}]}
+                    },
+                    "inheritance": {
+                        "model": {"dominant_base": "ApplicationRecord", "frequency": 0.96}
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (ch / "principles.md").write_text("# principles\n- keep it consistent\n", encoding="utf-8")
+
+
+def test_session_start_injects_conventions_for_healthy_profile(tmp_path, monkeypatch):
+    # Regression guard: the common case (healthy, trusted) MUST still inject.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_profile(repo, schema=8)
+    _rc, out = _run_session_start(
+        cwd=repo,
+        repo_root=repo,
+        home=tmp_path / "home",
+        monkeypatch=monkeypatch,
+        trust_for=_trusted_rec(),
+    )
+    assert "<chameleon-conventions>" in out
+
+
+def test_session_start_skips_conventions_for_too_new_profile(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_profile(repo, engine_min="99.0.0")  # requires a newer engine
+    _rc, out = _run_session_start(
+        cwd=repo,
+        repo_root=repo,
+        home=tmp_path / "home",
+        monkeypatch=monkeypatch,
+        trust_for=_trusted_rec(),
+    )
+    assert "<chameleon-conventions>" not in out  # the loader refuses it; so must SessionStart
+
+
+def test_session_start_skips_conventions_for_unsupported_schema(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write_profile(repo, schema=99)  # over MAX_SUPPORTED_SCHEMA_VERSION
+    _rc, out = _run_session_start(
+        cwd=repo,
+        repo_root=repo,
+        home=tmp_path / "home",
+        monkeypatch=monkeypatch,
+        trust_for=_trusted_rec(),
+    )
+    assert "<chameleon-conventions>" not in out
