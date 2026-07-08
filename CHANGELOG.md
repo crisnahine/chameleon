@@ -4,6 +4,23 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.63.0] - 2026-07-08
+
+### Changed
+
+- **Multi-lens turn-end review discloses sub-gate findings instead of dropping
+  them silently (G8b).** `lens_synthesis` annotates a lone-lens finding that
+  scored below the agreement gate with `surface=False` rather than dropping it,
+  but the Stop consumer filtered those out with no trace — a "skipped == clean"
+  violation of the manifest doctrine (a review that saw low-confidence signals
+  read identically to one that found nothing). The multi-lens block now discloses
+  the count: it appends "(N additional low-confidence findings below the
+  agreement gate, not shown)" next to the surfaced findings, and a review that
+  produced ONLY sub-gate findings now renders a one-line disclosure instead of
+  silence. The sub-gate claims themselves are never shown verbatim (they are
+  exactly the low-confidence ones not worth surfacing); a genuinely empty review
+  stays silent.
+
 ## [2.62.0] - 2026-07-08
 
 ### Changed

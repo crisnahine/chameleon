@@ -124,7 +124,9 @@ def test_surfaces_only_surface_true_findings(tmp_path, monkeypatch):
     assert "weak" not in body
 
 
-def test_no_surfaced_findings_returns_empty(tmp_path, monkeypatch):
+def test_sub_gate_only_review_discloses_not_silent(tmp_path, monkeypatch):
+    # G8(b): a review that produced only sub-gate findings is NOT silent -- it
+    # discloses the count (skipped != clean), and never shows the weak claim.
     _surfaced(
         monkeypatch,
         [
@@ -137,7 +139,9 @@ def test_no_surfaced_findings_returns_empty(tmp_path, monkeypatch):
             }
         ],
     )
-    assert _call(tmp_path, cfg=_cfg(), route=_route()) == []
+    text = "\n".join(_call(tmp_path, cfg=_cfg(), route=_route()))
+    assert "1 low-confidence finding below it was not surfaced" in text
+    assert "weak" not in text
 
 
 def test_spawn_budget_incremented(tmp_path, monkeypatch):
@@ -385,3 +389,47 @@ def test_duplication_spawn_counter_incremented_when_dup_lens_runs(tmp_path, monk
     _call(tmp_path, cfg=_cfg(), route=_route(), state=state)
     assert state.duplication_spawns == dup_before + 1
     assert state.correctness_spawns == corr_before + 1
+
+
+def test_below_gate_findings_are_disclosed_as_a_count(tmp_path, monkeypatch):
+    # G8(b): a lone-lens finding below the agreement gate is annotated surface=False
+    # by synthesis, not dropped. It must be disclosed as a bare count next to the
+    # surfaced findings -- a silent death is a disclosed death -- but its claim is
+    # never shown verbatim (it is exactly the low-confidence one not worth showing).
+    _surfaced(
+        monkeypatch,
+        [
+            {
+                "file": "x",
+                "line": 1,
+                "claim": "real",
+                "lenses": ["correctness", "consequences"],
+                "surface": True,
+            },
+            {
+                "file": "y",
+                "line": 2,
+                "claim": "weakone",
+                "lenses": ["correctness"],
+                "surface": False,
+            },
+            {
+                "file": "z",
+                "line": 3,
+                "claim": "weaktwo",
+                "lenses": ["correctness"],
+                "surface": False,
+            },
+        ],
+    )
+    text = "\n".join(_call(tmp_path, cfg=_cfg(), route=_route()))
+    assert "real" in text
+    assert "weakone" not in text and "weaktwo" not in text  # sub-gate claims not shown
+    assert "2 additional low-confidence finding" in text
+
+
+def test_no_findings_at_all_stays_silent(tmp_path, monkeypatch):
+    # Truly empty (not even sub-gate signals) stays silent -- disclosure fires only
+    # when the review actually saw something below the gate.
+    _surfaced(monkeypatch, [])
+    assert _call(tmp_path, cfg=_cfg(), route=_route()) == []

@@ -9576,6 +9576,13 @@ def _multi_lens_review_lines(
             )
 
         surfaced = [f for f in synthesized if f.get("surface")]
+        # A finding the synthesis kept but scored below the agreement gate
+        # (a lone lens under the confidence floor) is annotated surface=False, not
+        # dropped -- disclose the count so a silent death becomes a disclosed one
+        # (the manifest's skipped != clean doctrine). Kept as a bare count, never
+        # the sub-gate claims themselves (those are exactly the low-confidence ones
+        # not worth surfacing verbatim).
+        below_gate = len(synthesized) - len(surfaced)
 
         # VERIFY stage: independently refute the lone-correctness-lens findings
         # before REPORT (the default-config counterpart of the single-lens gate's
@@ -9613,6 +9620,16 @@ def _multi_lens_review_lines(
         # turn.
         _ledger_persist(repo_id, session_id, repo_root, "multi_lens", surfaced)
         if not surfaced:
+            # Nothing cleared the gate -- but the review is not "clean" if it saw
+            # sub-gate signals. Disclose the count so a silent death reads
+            # differently from a genuinely empty review.
+            if below_gate > 0:
+                return [
+                    "[🦎 chameleon: multi-lens review]",
+                    f"No finding cleared the agreement gate; {below_gate} low-confidence "
+                    f"finding{'s' if below_gate != 1 else ''} below it "
+                    f"{'were' if below_gate != 1 else 'was'} not surfaced.",
+                ]
             return []
 
         # The findings are about to be rendered: mark the duplication pairs
@@ -9635,6 +9652,11 @@ def _multi_lens_review_lines(
                 f"Independently verified: {verify.refuted} refuted and dropped, "
                 f"{verify.confirmed} confirmed. A '[confirmed]' finding survived a "
                 "second reviewer."
+            )
+        if below_gate > 0:
+            lines.append(
+                f"({below_gate} additional low-confidence finding"
+                f"{'s' if below_gate != 1 else ''} below the agreement gate, not shown.)"
             )
         for f in surfaced:
             loc = sanitize_for_chameleon_context(str(f.get("file"))) if f.get("file") else "?"
