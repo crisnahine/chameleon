@@ -224,7 +224,9 @@ def read_tool_configs(repo_root: Path) -> ToolConfigResult:
     return result
 
 
-def _read_python_format(repo_root: Path) -> tuple[dict | None, str | None]:
+def _read_python_format(
+    repo_root: Path, *, scan_subdirs: bool = True
+) -> tuple[dict | None, str | None]:
     """Declared Python line-length + quote-style from black / ruff / flake8.
 
     Pure TOML/INI parse (no repo-code execution). Precedence for line length:
@@ -233,6 +235,13 @@ def _read_python_format(repo_root: Path) -> tuple[dict | None, str | None]:
     skipped). Returns ``({line_length?, quote_style?}, source)`` or ``(None,
     None)`` when nothing is declared. Fails open: a malformed config contributes
     nothing rather than raising.
+
+    When the root declares nothing at all, a bounded subdirectory fallback
+    probes conventional sub-project dirs (a monorepo-style ``backend/``
+    holding the ruff config in its own pyproject.toml) — the Python
+    counterpart of the TS workspace-config fallback. Root config, even
+    partial, always wins outright: the fallback never merges. ``scan_subdirs``
+    exists so the fallback's own probes never recurse another level down.
 
     Ruff config discovery mirrors ruff's own: a standalone ``.ruff.toml`` or
     ``ruff.toml`` takes precedence over ``pyproject.toml``'s ``[tool.ruff]`` and
@@ -326,7 +335,73 @@ def _read_python_format(repo_root: Path) -> tuple[dict | None, str | None]:
             if "line_length" in fmt:
                 break
 
-    return (fmt or None), source
+    if fmt:
+        return fmt, source
+    if scan_subdirs:
+        return _read_python_format_from_subdirs(repo_root)
+    return None, None
+
+
+# Vendored / build-output dirs the subdirectory config fallback must never
+# treat as a sub-project (their configs belong to dependencies, not the repo).
+# Dot-prefixed dirs (.venv, .tox, .git, ...) are skipped by name prefix.
+_PY_SUBDIR_SKIP = frozenset(
+    {"node_modules", "venv", "site-packages", "dist", "build", "__pycache__", "vendor"}
+)
+
+# Conventional monorepo parent dirs whose children may hold a sub-project's
+# linter config — the same set the TS workspace-config fallback scans.
+_PY_SUBDIR_PARENT_DIRS = ("apps", "packages", "services", "workspaces")
+
+
+def _python_config_subdir_candidates(repo_root: Path) -> list[Path]:
+    """Bounded, deterministic candidate dirs for the Python-config fallback.
+
+    First-level child dirs (a FastAPI-style ``backend/`` sub-project) plus the
+    children of the conventional monorepo parent dirs the TS workspace-config
+    fallback already scans. Each directory listing is sorted (stable first-hit)
+    and bounded by the ``WORKSPACE_FANOUT_CAP`` threshold — the same cap the TS
+    fallback uses — so a pathological tree can't balloon the scan.
+    """
+    from chameleon_mcp import _thresholds
+
+    cap = _thresholds.threshold_int("WORKSPACE_FANOUT_CAP")
+    candidates: list[Path] = []
+    parents = [repo_root] + [repo_root / name for name in _PY_SUBDIR_PARENT_DIRS]
+    for parent in parents:
+        if not parent.is_dir():
+            continue
+        try:
+            entries = sorted(p for p in parent.iterdir() if p.is_dir())
+        except OSError:
+            continue
+        for entry in entries[:cap]:
+            if entry.name.startswith(".") or entry.name in _PY_SUBDIR_SKIP:
+                continue
+            candidates.append(entry)
+    return candidates
+
+
+def _read_python_format_from_subdirs(repo_root: Path) -> tuple[dict | None, str | None]:
+    """Root-declared-nothing fallback: probe bounded sub-project dirs.
+
+    Monorepo-style Python layouts (the FastAPI full-stack template's
+    ``backend/pyproject.toml``, a ``packages/<pkg>/setup.cfg``) keep the
+    ruff/black/flake8 config in a sub-project, so a root-only read derives no
+    format conventions at all. Mirrors the TS workspace-config fallback: the
+    first candidate that declares anything wins, its source is re-prefixed
+    repo-relative, and a broken candidate config contributes nothing (every
+    probe fails open).
+    """
+    for child in _python_config_subdir_candidates(repo_root):
+        fmt, src = _read_python_format(child, scan_subdirs=False)
+        if fmt:
+            try:
+                rel = child.relative_to(repo_root).as_posix()
+            except ValueError:  # pragma: no cover — candidates are built under repo_root
+                rel = child.name
+            return fmt, f"{rel}/{src}" if src else rel
+    return None, None
 
 
 def _coerce_positive_int(value) -> int | None:

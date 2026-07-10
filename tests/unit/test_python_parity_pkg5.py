@@ -77,6 +77,87 @@ def test_ruff_indent_space_default_width(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# subdirectory fallback — monorepo-style Python layouts (backend/pyproject.toml)
+# --------------------------------------------------------------------------- #
+
+
+def test_subdir_pyproject_found_when_root_has_no_python_config(tmp_path):
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "pyproject.toml").write_text(
+        '[tool.ruff]\nline-length = 100\n\n[tool.ruff.format]\nquote-style = "single"\n',
+        encoding="utf-8",
+    )
+    res = read_tool_configs(tmp_path)
+    assert res.python_format == {"line_length": 100, "quote_style": "single"}
+    assert res.sources["python_format"] == "backend/pyproject.toml"
+
+
+def test_subdir_found_when_root_pyproject_declares_no_format(tmp_path):
+    # A root pyproject.toml that is only a workspace manifest (no
+    # [tool.ruff]/[tool.black]) must not mask the sub-project config.
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.uv.workspace]\nmembers = ["backend"]\n', encoding="utf-8"
+    )
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "pyproject.toml").write_text("[tool.black]\nline-length = 100\n", encoding="utf-8")
+    res = read_tool_configs(tmp_path)
+    assert res.python_format["line_length"] == 100
+    assert res.sources["python_format"] == "backend/pyproject.toml"
+
+
+def test_root_python_config_still_wins_over_subdir(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 88\n", encoding="utf-8")
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n", encoding="utf-8")
+    res = read_tool_configs(tmp_path)
+    assert res.python_format["line_length"] == 88
+    assert res.sources["python_format"] == "pyproject.toml"
+
+
+def test_subdir_setup_cfg_flake8_found(tmp_path):
+    api = tmp_path / "api"
+    api.mkdir()
+    (api / "setup.cfg").write_text("[flake8]\nmax-line-length = 120\n", encoding="utf-8")
+    res = read_tool_configs(tmp_path)
+    assert res.python_format == {"line_length": 120}
+    assert res.sources["python_format"] == "api/setup.cfg"
+
+
+def test_workspace_parent_child_subdir_found(tmp_path):
+    core = tmp_path / "packages" / "core"
+    core.mkdir(parents=True)
+    (core / "pyproject.toml").write_text("[tool.ruff]\nline-length = 90\n", encoding="utf-8")
+    res = read_tool_configs(tmp_path)
+    assert res.python_format["line_length"] == 90
+    assert res.sources["python_format"] == "packages/core/pyproject.toml"
+
+
+def test_subdir_scan_does_not_recurse_below_the_bounded_set(tmp_path):
+    nested = tmp_path / "backend" / "inner"
+    nested.mkdir(parents=True)
+    (nested / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n", encoding="utf-8")
+    assert read_tool_configs(tmp_path).python_format is None
+
+
+def test_broken_subdir_config_fails_open(tmp_path):
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    (backend / "pyproject.toml").write_text("[tool.ruff\nline-length = ", encoding="utf-8")
+    assert read_tool_configs(tmp_path).python_format is None
+
+
+def test_vendor_and_hidden_subdirs_skipped(tmp_path):
+    for name in ("node_modules", ".venv", "build"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "pyproject.toml").write_text("[tool.ruff]\nline-length = 60\n", encoding="utf-8")
+    assert read_tool_configs(tmp_path).python_format is None
+
+
+# --------------------------------------------------------------------------- #
 # _declared_* read the python_format section
 # --------------------------------------------------------------------------- #
 
