@@ -436,6 +436,12 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # section (G-025) lists on one edit — bounded so a broad content edit that
     # happens to redefine several existing names cannot flood the block.
     "PREWRITE_DEDUP_MAX_HITS": 5,
+    # Domain tokens a DIFFERENT-name candidate must share with the pending
+    # function for the pre-write SEMANTIC pass (G-026) to surface it. Higher
+    # than the turn-end pass's 1 because pre-write has no LLM judge behind it —
+    # 2 keeps the no-judge nudge precise (formatMoney/formatCurrency share
+    # {format}+{money|currency}? no; formatDate/toDisplayDate share {date}+... ).
+    "PREWRITE_DEDUP_MIN_SHARED_TOKENS": 2,
     # Precision bar for the turn-end SEMANTIC duplication pass (different-body,
     # same-intent candidates from select_candidates). Turn-end nags mid-edit, so
     # it needs higher precision than the pr-review prefilter: a body-identical

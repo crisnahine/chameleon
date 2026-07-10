@@ -2492,10 +2492,33 @@ def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> s
 # re-implementation, so they never fire the pre-write nudge.
 _DEDUP_STOPWORDS = frozenset(
     {
-        "index", "render", "main", "init", "setup", "teardown", "start", "stop",
-        "build", "create", "update", "destroy", "show", "value", "result",
-        "handler", "process", "execute", "perform", "apply", "parse", "format",
-        "validate", "inspect", "serialize", "normalize", "initialize",
+        "index",
+        "render",
+        "main",
+        "init",
+        "setup",
+        "teardown",
+        "start",
+        "stop",
+        "build",
+        "create",
+        "update",
+        "destroy",
+        "show",
+        "value",
+        "result",
+        "handler",
+        "process",
+        "execute",
+        "perform",
+        "apply",
+        "parse",
+        "format",
+        "validate",
+        "inspect",
+        "serialize",
+        "normalize",
+        "initialize",
     }
 )
 
@@ -2532,18 +2555,104 @@ def _extract_defined_names(content: str, file_path: str) -> set[str]:
     return set()
 
 
+# Capture a function's name AND its parameter-list text, so the semantic pass
+# can estimate arity (a re-implementation keeps roughly the same call shape).
+_PY_DEFP_RE = re.compile(r"^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_]\w*)[ \t]*\(([^)]*)\)", re.M)
+_RB_DEFP_RE = re.compile(r"^[ \t]*def[ \t]+(?:self\.)?([A-Za-z_]\w*)[ \t]*(?:\(([^)]*)\))?", re.M)
+_TS_DEFP_RE = re.compile(
+    r"(?:\bfunction[ \t]+([A-Za-z_$][\w$]*)[ \t]*\(([^)]*)\))"
+    r"|(?:\b(?:const|let|var)[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*"
+    r"(?:async[ \t]*)?\(([^)]*)\)[ \t]*(?::[^=;{]+)?=>)",
+    re.M,
+)
+
+
+def _rough_arity(params_text: str, drop_self: bool) -> int:
+    """Estimate positional arity from a parameter-list string without an AST.
+
+    Splits on top-level commas (ignoring nested parens/brackets/braces from
+    default values and type annotations). Close enough for the shape filter,
+    which tolerates a difference of one; a bad estimate just misses a candidate.
+    """
+    if not params_text or not params_text.strip():
+        return 0
+    depth = 0
+    count = 1
+    for ch in params_text:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            count += 1
+    parts = [p.strip() for p in _split_top_level(params_text)]
+    parts = [p for p in parts if p]
+    n = len(parts) if parts else count
+    if drop_self and parts and parts[0].split(":")[0].strip() in ("self", "cls"):
+        n -= 1
+    return max(0, n)
+
+
+def _split_top_level(s: str) -> list[str]:
+    out: list[str] = []
+    depth = 0
+    cur: list[str] = []
+    for ch in s:
+        if ch in "([{":
+            depth += 1
+            cur.append(ch)
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+            cur.append(ch)
+        elif ch == "," and depth == 0:
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        out.append("".join(cur))
+    return out
+
+
+def _extract_defined_functions(content: str, file_path: str) -> list[tuple[str, int]]:
+    """(name, rough_arity) for each function the pending content defines — the
+    arity-aware companion to ``_extract_defined_names``, feeding the semantic
+    (token-overlap + shape) pre-write pass. Cheap regex, no AST spawn."""
+    ext = Path(file_path).suffix.lower()
+    out: list[tuple[str, int]] = []
+    if ext in (".py", ".pyi"):
+        for name, params in _PY_DEFP_RE.findall(content):
+            out.append((name, _rough_arity(params, drop_self=True)))
+    elif ext == ".rb":
+        for name, params in _RB_DEFP_RE.findall(content):
+            out.append((name, _rough_arity(params, drop_self=False)))
+    elif ext in _TS_EXTS:
+        for a, ap, b, bp in _TS_DEFP_RE.findall(content):
+            if a:
+                out.append((a, _rough_arity(ap, drop_self=False)))
+            if b:
+                out.append((b, _rough_arity(bp, drop_self=False)))
+    return out
+
+
 def _prewrite_dedup_section(
     proposed_content: str | None, file_path: str | None, repo_root: Path | None
 ) -> str:
-    """Pre-write reuse nudge (G-025): if the content the model is about to write
-    defines a function whose name already exists in ANOTHER file, surface that
-    before the write so the model reuses it instead of creating a duplicate.
+    """Pre-write reuse nudge: if the content the model is about to write
+    re-implements a function that already exists elsewhere, surface it BEFORE
+    the write so the model reuses it instead of creating a duplicate. Two
+    passes, both deterministic (no LLM, no extractor spawn — cheap regex over
+    the pending content + the process-cached function catalog):
 
-    Moves chameleon's dedup signal from turn-end (too late for one-shot
-    generation — the duplicate is already written) to pre-write. Deterministic
-    (exact cross-file name match against the cached function catalog, no LLM, no
-    extractor spawn), bounded, high-precision (length + stopword filtered,
-    cross-file only). Kill switch ``CHAMELEON_PREWRITE_DEDUP=0``; fails open.
+    - G-025 exact-name: a defined name equal to an existing cross-file function.
+    - G-026 semantic: a DIFFERENT name that shares >= 2 domain tokens and a close
+      signature shape with an existing function (``toDisplayDate`` vs
+      ``formatDate``), via the same ``select_candidates`` prefilter the turn-end
+      pass uses. The >= 2-token bar (vs the turn-end pass's 1, which has an LLM
+      judge behind it) keeps this no-judge pre-write nudge high-precision.
+
+    Bounded, cross-file only, length+stopword filtered. Kill switch
+    ``CHAMELEON_PREWRITE_DEDUP=0``; fails open.
     """
     if os.environ.get("CHAMELEON_PREWRITE_DEDUP") == "0":
         return ""
@@ -2551,15 +2660,20 @@ def _prewrite_dedup_section(
         return ""
     try:
         from chameleon_mcp._thresholds import threshold_int
-        from chameleon_mcp.function_catalog import load_function_catalog
+        from chameleon_mcp.function_catalog import (
+            NewFunction,
+            load_function_catalog,
+            name_tokens,
+            select_candidates,
+        )
         from chameleon_mcp.sanitization import sanitize_for_chameleon_context
 
-        names = {
-            n
-            for n in _extract_defined_names(proposed_content, file_path)
+        defined = [
+            (n, arity)
+            for (n, arity) in _extract_defined_functions(proposed_content, file_path)
             if len(n) >= 5 and n.lower() not in _DEDUP_STOPWORDS
-        }
-        if not names:
+        ]
+        if not defined:
             return ""
         catalog = load_function_catalog(repo_root)
         if catalog is None:
@@ -2569,25 +2683,45 @@ def _prewrite_dedup_section(
         except (ValueError, OSError):
             edited_rel = file_path
         cap = threshold_int("PREWRITE_DEDUP_MAX_HITS")
-        seen: set[str] = set()
-        hits: list[tuple[str, str]] = []
+        names = {n for n, _ in defined}
+
+        # Pass 1 — exact-name cross-file collisions.
+        exact: list[tuple[str, str]] = []
+        seen_names: set[str] = set()
         for fn in catalog.functions:
-            if fn.name in names and fn.file != edited_rel and fn.name not in seen:
-                seen.add(fn.name)
-                hits.append((fn.name, fn.file))
-                if len(hits) >= cap:
-                    break
-        if not hits:
-            return ""
-        lines = [
-            "[🦎 chameleon: reuse-before-create]",
-            "A function with this name already exists elsewhere in the repo — "
-            "import and reuse it instead of re-implementing:",
+            if fn.name in names and fn.file != edited_rel and fn.name not in seen_names:
+                seen_names.add(fn.name)
+                exact.append((fn.name, fn.file))
+
+        # Pass 2 — semantic (different-name, shared-token) candidates.
+        min_tokens = threshold_int("PREWRITE_DEDUP_MIN_SHARED_TOKENS")
+        new_fns = [
+            NewFunction(name=n, kind="function", arity=a, required=a)
+            for (n, a) in defined
+            if len(name_tokens(n)) >= min_tokens
         ]
-        for name, f in hits:
+        semantic: list[tuple[str, str, str]] = []
+        if new_fns:
+            for entry in select_candidates(catalog, new_fns, exclude_file=edited_rel):
+                src = entry.get("function", {}).get("name", "")
+                for cand in entry.get("candidates", []):
+                    if len(cand.get("shared_tokens") or []) >= min_tokens:
+                        semantic.append((src, cand.get("name", ""), cand.get("file", "")))
+                        break  # one best candidate per new function
+
+        if not exact and not semantic:
+            return ""
+        lines = ["[🦎 chameleon: reuse-before-create]"]
+        for name, f in exact[:cap]:
             lines.append(
-                f"- `{sanitize_for_chameleon_context(name)}` "
-                f"in {sanitize_for_chameleon_context(f)}"
+                f"- `{sanitize_for_chameleon_context(name)}` already exists in "
+                f"{sanitize_for_chameleon_context(f)} — import and reuse it."
+            )
+        for src, cand_name, cand_file in semantic[: max(0, cap - len(exact))]:
+            lines.append(
+                f"- `{sanitize_for_chameleon_context(src)}` looks like the existing "
+                f"`{sanitize_for_chameleon_context(cand_name)}` in "
+                f"{sanitize_for_chameleon_context(cand_file)} — reuse it if the intent matches."
             )
         lines.append(
             "If your intent is genuinely different, use a distinct name; "
