@@ -119,12 +119,19 @@ STOP here and continue with Step 2. If `recommended` is true, fan out:
 - **If you cannot dispatch in-session Task reviewers** (no Task tool is available in this context — e.g. you are yourself running as a subagent), do NOT skip the review and do NOT rationalize a bypass: run the review single-pass inline exactly as the `recommended=false` path (every pass yourself, over the whole diff), and log `fan-out-recommended-but-unavailable`. The inline run is the correct, complete outcome; fan-out is only a parallelism optimization, never a precondition for reviewing.
 - Partition the changed files (from your Step 1a hunk map) into ~4-6 slices,
   MULTIPLE files per slice — never one slice per file.
-- Dispatch one in-session Task reviewer per slice using `reviewer.md`. Each runs
+- Dispatch one in-session Task reviewer per slice as the packaged
+  `chameleon:pattern-reviewer` plugin agent (Task tool
+  `subagent_type: "chameleon:pattern-reviewer"`), filling the per-slice prompt
+  in `reviewer.md` — that file also carries the fallback for a harness that
+  does not expose the agent type. The role itself (passes, tool limits, output
+  schema) lives in the agent definition (`agents/pattern-reviewer.md`); do not
+  restate it in the prompt. Each reviewer runs
   ONLY the per-file passes for its files: 2a-2f (convention/lint/canonical), 2.6
   (security, including the 2.6d deterministic lint-sink routing — it reads the
   slice's own per-file `lint_file` output), 2.7 (the slice owning a migration),
-  3c, 3e, 3f, 3f-ii. Reviewers are read-only (Read + read-only MCP). Fill the
-  template's `{SLICE_HUNKS}` with each slice file's hunk map from Step 1a (added/
+  3c, 3e, 3f, 3f-ii. Reviewers are read-only (Read/Grep/Glob + read-only MCP;
+  the agent definition disallows every mutating tool). Fill the
+  prompt's `{SLICE_HUNKS}` with each slice file's hunk map from Step 1a (added/
   changed ranges + removed lines): the reviewer has no Bash and cannot re-derive
   the diff, so without its hunk map it cannot run 3e or hunk-gate anything — a
   slice dispatched without hunks reviews blind. Each reviewer returns

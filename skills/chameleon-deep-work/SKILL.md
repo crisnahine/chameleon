@@ -77,14 +77,24 @@ while they run. Three kinds of expert, matched to the work:
 
 - **Code scouts** (read-only): "map every call path into the gateway
   wrapper", "find how this repo does soft-deletion everywhere", "list every
-  file the checkout flow touches". Use the harness's read-only explore agent
-  type when one exists; a digging expert never edits anything.
+  file the checkout flow touches". Dispatch the packaged `chameleon:code-scout`
+  plugin agent (Task tool `subagent_type: "chameleon:code-scout"`); its
+  definition carries the role and the read-only tool limits, so the dispatch
+  prompt carries only the one question, the context, and the answer shape.
+  When the harness does not expose that agent type, use its read-only explore
+  agent type instead; a digging expert never edits anything.
 - **Web researchers**: "what changed in this library between the lockfile's
   version and the latest docs", "the exact contract of this API at the
-  pinned version" - resolved per Step 3's rules, never from memory.
+  pinned version" - resolved per Step 3's rules, never from memory. Dispatch
+  the packaged `chameleon:web-researcher` plugin agent
+  (`subagent_type: "chameleon:web-researcher"`; WebSearch/WebFetch only -
+  include the pinned version in the prompt, the researcher cannot read the
+  repo). When the harness does not expose it, dispatch a general-purpose
+  subagent under the same rules.
 - **Reviewers** (Step 6): a fresh-context, read-only pass over the finished
   diff against the brief. Fresh eyes catch what the author's context has
-  gone blind to.
+  gone blind to. No packaged agent here: the reviewer's prompt is composed
+  per round from THIS task's brief, diff, and declined-findings log.
 
 The dispatch recipe - every expert prompt carries three things:
 
