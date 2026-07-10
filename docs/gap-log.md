@@ -585,3 +585,21 @@ Verified the concrete recipe so the future effectiveness study is ready, not vag
 This closes the effectiveness investigation: "not established" is a proven property of one-shot
 small-fixture measurement against a strong baseline, and the path to a fair measurement is
 scoped and de-risked here for a dedicated future effort.
+
+## Addendum — 2026-07-11 (weaker-baseline hypothesis tested — NULL; the battery is the limit, not the model)
+
+Ran the powered dup battery a SECOND time on HAIKU (the pre-registration's required 2nd worker
+model, and a direct test of "a weaker model infers conventions less, so chameleon should help
+more"). The run completed all 92 cells ($29) but was killed by infra at the panel phase before
+run.json persisted; recovered the DETERMINISTIC convention signal from the 78 diffs (apply +
+lint_file re-score, 31 paired tasks): off 0.35 vs shadow 0.32 mean violations, 24/31 TIES,
+shadow fewer on 3 / more on 4. **NULL — no chameleon benefit even on the weaker baseline.**
+
+This falsifies the weaker-baseline explanation and pins the real one: the DUPLICATION battery
+has almost no convention surface (small helper functions), so there are barely any convention
+violations for chameleon to reduce, on ANY model. It's the BATTERY, not the baseline. Confirms
+(now on both sonnet AND haiku) that the dup battery cannot measure chameleon's convention value
+(no surface) or its dedup value (turn-end). The ONLY test that could establish chameleon's core
+value is a purpose-built POWERED CONVENTION battery (30+ tasks that stress archetype/idiom
+conformance) — which does not exist and is the genuine, now-fully-scoped future research. Every
+cheap hypothesis has now been empirically tested and exhausted.
