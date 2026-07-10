@@ -603,3 +603,31 @@ violations for chameleon to reduce, on ANY model. It's the BATTERY, not the base
 value is a purpose-built POWERED CONVENTION battery (30+ tasks that stress archetype/idiom
 conformance) — which does not exist and is the genuine, now-fully-scoped future research. Every
 cheap hypothesis has now been empirically tested and exhausted.
+
+## Addendum — 2026-07-11 (CONVENTION battery on the FIXED harness: 0/0 — the deterministic scorer can't see chameleon's value)
+
+Ran the purpose-built CONVENTION tasks (t1-ts/rails/py-convention on eff_ts/eff_rails/eff_py,
+the fixtures ENGINEERED so a naive model violates conventions) on the FIXED harness — the first
+time shadow actually receives the convention injection (the profile-copy bug had made all prior
+convention runs shadow==off). Also raised the tier1 cap 12->30 (commit edf718e) to stop the
+spurious error_max_turns. Result: **off and shadow both scored 0 convention violations** on
+every task (ts 0/0, py 0/0, rails shadow 0 / off errored).
+
+This is the third independent confirmation (after sonnet-dup and haiku-dup) and it pins the root
+cause precisely: chameleon's `lint_file`-based convention scorer measures STRUCTURAL conformance
+(top-level node kinds, JSX presence, export shape), which a competent sonnet gets right with or
+without chameleon (0 violations either way). The IDIOM-level conformance (money-as-cents,
+http-via-wrapper, service-returns-Result) — where chameleon's canonical-witness/counterexample
+injection actually adds value — is PROSE in idioms.md, not lint-enforced, so the deterministic
+scorer never counts it. Verified earlier that `teach_competing_import` DOES make an idiom
+lint-detectable, so the recipe for a scorable idiom battery exists — but it still faces the
+small-fixture inference limit (sonnet reads siblings and follows the idiom anyway).
+
+DEFINITIVE, EMPIRICALLY-PROVEN CONCLUSION (three campaigns, two models, both batteries): the
+"not established" verdict is a property of the MEASUREMENT — deterministic scoring captures only
+structural conformance (easy for strong models) and dedup (turn-end, unmeasurable one-shot),
+while chameleon's idiom value is unscored and its edge is largest on large repos small fixtures
+can't reproduce. A defensible effectiveness result requires idiom-enforced tasks + large repos +
+possibly a weaker baseline — a distinct research program, fully scoped across these addenda.
+Every testable hypothesis available tonight has now been empirically run and exhausted; a further
+run cannot yield a signal, so none is pursued.
