@@ -560,3 +560,28 @@ scorer sees idiom conformance) + tasks that stress those idioms + likely a weake
 model and/or a multi-turn variant. That is genuine future research, precisely scoped here, not a
 roadmap item skipped. No further build/run is pursued tonight: no feasible action produces an
 "established" verdict, and forcing one would be eval-gaming.
+
+## Addendum — 2026-07-11 (the effectiveness-research path, fully de-risked and scoped)
+
+Verified the concrete recipe so the future effectiveness study is ready, not vague:
+- **Idioms CAN be made scorable.** `teach_competing_import(repo, archetype=, preferred=, over=)`
+  turns a prose idiom into a lint-enforced `import-preference-violation` that `lint_file` (the
+  convention scorer's engine) flags — confirmed live on eff_ts (axios -> `@/api/client`). So an
+  idiom-enforced convention battery is buildable: bake the teach into each fixture's bootstrap,
+  author tasks that trigger the model's default toward the banned pattern, run off vs shadow,
+  score `import-preference-violation` deltas.
+- **The remaining structural blocker (proven from four angles):** on SMALL hermetic fixtures a
+  strong baseline (sonnet) reads the sibling files and INFERS the very convention chameleon
+  would inject, so the measured delta stays marginal regardless of enforcement. Chameleon's edge
+  is largest where the convention is NOT inferable from what the model reads — i.e. LARGE repos
+  it cannot fully load. Small fixtures (chosen for cost + hermeticity) structurally understate
+  the tool.
+- **Definitive path to a defensible effectiveness verdict (genuine research, user-authorized):**
+  (a) a large-repo A/B (non-hermetic, expensive) where conventions are not sibling-inferable, or
+  (b) a real-world before/after dogfood measurement (chameleon-guided vs unguided PRs on ef-api/
+  ef-client, over time), or (c) a weaker/older baseline model that does not infer conventions as
+  readily. Any of these is a distinct study; none is a roadmap item that was skipped.
+
+This closes the effectiveness investigation: "not established" is a proven property of one-shot
+small-fixture measurement against a strong baseline, and the path to a fair measurement is
+scoped and de-risked here for a dedicated future effort.
