@@ -27,8 +27,13 @@ FIX-STAGED (code/skill landed this campaign, human re-sign-off pending):
   bug · py-fastapi/Django · `python_role_for_path('tests/api/routes/test_x.py')`→`'route'` ·
   gated on `_is_test_path(language=python)` before role lookup (commit 1cf94d5).
 - **G-022 — Python subdir linter-config unread** · bootstrap tool-config · missing-step ·
-  FastAPI `backend/pyproject.toml [tool.ruff]` · `rules_extracted=0` on the official
-  full-stack layout; TS monorepo had the subdir fallback, Python did not · IN PROGRESS.
+  FastAPI `backend/pyproject.toml [tool.ruff]` · Python config discovery read only the
+  repo root; TS had the workspace-config subdir fallback, Python did not · mirrored the TS
+  fallback (bounded, `WORKSPACE_FANOUT_CAP`, root-wins-outright) in `tool_config.py`
+  (commit e624a25). Nuance: the original evidence (`rules_extracted=0` on the template)
+  is only partly this gap — the template's own `[tool.ruff]` sets no `line-length`/
+  `quote-style` (E501 ignored), so its count is unchanged; the parity fix is proven by a
+  subdir config that declares a length now extracting.
 - **G-023 — refresh skill re-lock call omitted `path`** · skills · bug · the documented
   `chameleon_lifecycle(action="bootstrap_repo")` could not bind · added `path` (d282204).
 - **G-024 — receiving-code-review had no argument-hint; pr-review claimed a tool grant
@@ -61,6 +66,11 @@ OPEN (real P3 hardening, deferred past v3 — none block the release):
   docstring as the structural exemplar) — canonical-selection quality.
 - **Downgraded engine silently rebuilds a newer-schema profile down** and reports success
   with no downgrade notice.
+- **Linter-config distillate extracts only a fixed key set** (`line_length`, `quote_style`,
+  `indent`), so a repo that configures ruff/black richly but sets none of those (the FastAPI
+  template: only `select`/`ignore`) yields zero format conventions. Capturing the linter's
+  own rule set verbatim as a rules section (as rubocop/eslint are) is a separate artifact
+  contract, surfaced by G-022.
 
 Completeness note: the QA matrix drove batteries + hostile depth but not the `/chameleon-*`
 slash-command flows at runtime (that is the Wave-5 journey harness's job) — and the journey
