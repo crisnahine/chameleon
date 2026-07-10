@@ -40,15 +40,29 @@ FIX-STAGED (code/skill landed this campaign, human re-sign-off pending):
   restriction the harness can't enforce** · skills · inconsistency · hint added, reviewer
   directed in-prompt not to call the review/lifecycle dispatchers (d282204).
 
-WONT-FIX / by-design (accepted, rationale):
-- **Next.js singleton `app/layout.tsx` resolves archetype=None.** A lone layout file has
-  no cluster siblings, so no convention exists to derive; the tool is honest
-  (`confidence=low, match_quality=none`) and fails open. Not a regression.
+BY-DESIGN — product correct, but the QA expectation was wrong (test fixed):
+- **Next.js singleton `app/layout.tsx` resolves archetype=None.** Grounded: the fixture has
+  1 layout vs 5 pages, so the pages cluster and the lone layout has no siblings — one file
+  cannot yield a convention (n=1), and a real multi-layout app clusters layouts fine.
+  Matching it to a page archetype would inject a misleading witness, so the honest
+  `match_quality=none, confidence=low` is correct. The defect was the QA battery asserting
+  every file must resolve; fixed to forgive the honest-no-cluster signal (commit 165732d).
+
+NOT A PLUGIN DEFECT — maintenance / measurement:
 - **Stale committed test-fixture profiles (`calls_index` schema v1) fail cross-file tools.**
-  Fixture-maintenance, not a plugin defect: the engine correctly rejects the old schema and
-  `doctor`/`get_drift_status` say "run /chameleon-refresh". Refresh the test bed.
-- **Daemon slowloris 5s wedge; bench single-shot cold 92ms.** Both fail-open/latency-only;
-  multi-cold p50 (27ms) meets the budget. First-call overhead, not a regression.
+  The engine correctly rejects the old schema and `doctor`/`get_drift_status` say "run
+  /chameleon-refresh". Action is a one-command bed refresh per repo, not a code change;
+  does not affect the shipped plugin.
+- **Bench single-shot cold 92ms.** Measurement artifact (first-call import overhead); the
+  robust multi-cold p50 (27ms) meets the budget. Not a regression.
+
+BY-DESIGN with a noted P3 hardening backlog:
+- **Daemon slowloris 5s wedge.** A half-sent frame stalls the single-threaded accept loop
+  up to 5s; concurrent calls return None and hooks fall back in-process (no user-visible
+  break), self-recovering when the recv timeout reaps the connection. Fail-open by design
+  (the daemon is a latency layer, never correctness). Hardening the accept loop
+  (non-blocking accept / per-connection recv deadline) is a legit low-value P3, not a v3
+  blocker — it needs a hostile local actor writing half-frames to your own daemon socket.
 
 OPEN (real P3 hardening, deferred past v3 — none block the release):
 - **query_symbol_importers accepts a bare symbol name silently** (`found:true, importers:[]`
