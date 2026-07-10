@@ -19,16 +19,24 @@ PHASE 12 - auto_refresh subprocess discipline:
   Trigger drift past the threshold: copy 30 unconventional files into src/services/:
     mkdir -p src/services
     for i in $(seq 1 30); do cp src/utils/format_date.ts "src/services/DRIFT-FILE-${i}.ts"; done
-  Now fire a PreToolUse event by editing any tracked file (e.g. src/utils/format_date.ts,
-  add a comment). The auto_refresh mechanism should spawn a detached background subprocess
+  Auto-refresh is a SessionStart feature (the per-edit PreToolUse hook never
+  triggers it - the hot path stays refresh-free by design). Trigger it the way
+  a new session would: invoke the session-start hook directly via Bash:
+    echo '{"session_id":"act04-ar"}' | CLAUDE_PLUGIN_ROOT=<plugin root> <plugin root>/hooks/session-start
+  (find <plugin root> from $CLAUDE_PLUGIN_ROOT, or the chameleon repo's plugin/ dir).
+  The auto_refresh mechanism should spawn a detached background subprocess
   (Popen with start_new_session=True).
-  After the edit, use Bash to verify:
+  After that invocation, use Bash to verify:
     - An auto_refresh.log file was written under the chameleon plugin data directory.
       The path is: $CHAMELEON_PLUGIN_DATA/<repo_id>/auto_refresh.log
       where <repo_id> is the repo identifier. Check by listing $CHAMELEON_PLUGIN_DATA.
     - A .auto_refresh_cooldown file exists in the same repo_id directory.
-  Then fire another edit immediately on a second file. Verify the cooldown blocks
-  re-triggering (no duplicate auto_refresh subprocess).
+  Then invoke the session-start hook again immediately. Verify the cooldown blocks
+  re-triggering (auto_refresh.log and the cooldown file both unchanged - compare
+  mtimes or contents before/after).
+  Also confirm the negative: a PreToolUse edit (edit src/utils/format_date.ts via
+  the Edit tool) does NOT touch auto_refresh.log - per-edit hooks never spawn a
+  refresh.
   emit checkpoint completed phase 12
 
 Reminder: emit checkpoints as plain Bash echo lines outside any code fences.

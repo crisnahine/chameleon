@@ -152,7 +152,10 @@ def run(ctx: JourneyContext) -> ActResult:
             "CHAMELEON_JOURNEY_CHECKPOINT": str(ctx.current_checkpoint_file),
         },
         transcript_path=transcript,
-        max_turns=50,
+        # Runaway guard, not a fairness device: the v3 review flow pays extra
+        # turns for lazy reference Reads and deferred dispatcher ToolSearch; a
+        # session killed at the cap verifies nothing.
+        max_turns=80,
         allowed_tools=[
             "Bash",
             "Read",
