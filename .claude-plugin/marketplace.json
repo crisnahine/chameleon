@@ -1,5 +1,6 @@
 {
   "name": "chameleon",
+  "description": "Marketplace for chameleon - the convention-conformance and codebase-comprehension plugin for Claude Code.",
   "owner": {
     "name": "Cris Nahine",
     "email": "crisjosephnahine@gmail.com"
