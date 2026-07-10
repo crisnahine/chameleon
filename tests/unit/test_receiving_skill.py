@@ -80,7 +80,9 @@ def test_refute_finding_call_specifies_shape_baseref_and_disabled_envelope():
     back and the excerpt scopes), base_ref (non-main PRs), and the disabled-envelope
     handling (empty verdicts list -> treat as unverified)."""
     t = _t()
-    assert "base_ref=" in t
+    # Direct kwarg form (base_ref=...) or the chameleon_review dispatcher form
+    # ("base_ref": ... inside params) — either carries the base to the refuter.
+    assert "base_ref=" in t or '"base_ref"' in t
     for field in ("id", "file", "line", "claim", "evidence"):
         assert field in t
     # The disabled envelope returns an EMPTY verdicts list -> read the refuter field.

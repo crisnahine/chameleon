@@ -175,7 +175,7 @@ In a Claude Code session, ask:
 
 > What chameleon tools do you have?
 
-The model should list tools like `detect_repo`, `get_archetype`, `bootstrap_repo`. If it lists nothing, see [Slash commands or tools do not show up](#slash-commands-or-tools-do-not-show-up).
+The model should list tools like `detect_repo`, `get_archetype`, and the `chameleon_lifecycle` dispatcher (which carries `bootstrap_repo` and the other operator actions). If it lists nothing, see [Slash commands or tools do not show up](#slash-commands-or-tools-do-not-show-up).
 
 The very first time the server starts it builds a Python environment (about 5 to 10 seconds). That is one-time. Later starts are instant.
 

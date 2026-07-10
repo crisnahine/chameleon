@@ -44,18 +44,20 @@ PHASE 23 - HMAC tampering + disable_session security:
     downgrade attack defense working).
 
   STEP 2 - disable_session security:
-    Call chameleon-mcp::disable_session with an UNKNOWN session_id (use a random
-    string like "unknown-session-xyz-999") and WITHOUT force=True. Expect a refusal
+    Call chameleon-mcp::chameleon_lifecycle with action="disable_session" and
+    an UNKNOWN session_id in params (use a random string like
+    "unknown-session-xyz-999") and WITHOUT force=true. Expect a refusal
     (error response indicating unknown session).
-    Retry the same unknown session_id WITH force=True. Expect success.
+    Retry the same unknown session_id WITH "force": true in params. Expect success.
 
   STEP 3 - summarize:
     Summarize what was verified in STEP 1 and STEP 2:
       - forged HMAC marker was rejected (downgrade defense confirmed)
       - force= flag behavior confirmed
       - unknown session refusal confirmed
-    Run chameleon-mcp::disable_session one more time with force=True on the ts_basic path
-    to confirm the force= path still works cleanly.
+    Run the chameleon_lifecycle disable_session action one more time with
+    "force": true on the ts_basic path to confirm the force path still works
+    cleanly.
   emit checkpoint completed phase 23
 
 Reminder: emit checkpoints as plain Bash echo lines outside any code fences.
@@ -80,13 +82,12 @@ def run(ctx: JourneyContext) -> ActResult:
             "Edit",
             "Write",
             "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
-            "mcp__plugin_chameleon_chameleon-mcp__disable_session",
-            "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
             "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__pause_session",
-            "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
+            # disable_session / list_profiles / pause_session / trust_profile
+            # route via the lifecycle dispatcher; get_drift_status via telemetry.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
         ],
         plugin_root=ctx.plugin_root,
         permission_mode="bypassPermissions",

@@ -42,7 +42,7 @@ PHASE 33 - daemon lifecycle + serial queue + idle shutdown:
         cat "$CHAMELEON_PLUGIN_DATA"/.daemon.pid || echo "no pidfile found"
 
   STEP 3 - call daemon_status:
-    Call chameleon-mcp::daemon_status.
+    Call chameleon-mcp::chameleon_telemetry with action="daemon_status".
     Verify the response contains the expected fields:
       - alive (boolean true)
       - pid (integer, matches the running daemon PID)
@@ -51,7 +51,8 @@ PHASE 33 - daemon lifecycle + serial queue + idle shutdown:
     Report what fields are present in the response.
 
   STEP 4 - serial calls and latency:
-    Use Bash to make 3 serial calls to chameleon-mcp::list_profiles (or another
+    Use Bash to make 3 serial calls to chameleon-mcp::chameleon_lifecycle
+    with action="list_profiles" (or another
     fast read tool) and measure the total time. Since the v0.5 daemon is
     single-threaded, serial calls should queue. The 3 calls should take roughly
     3x the time of a single call:
@@ -62,7 +63,8 @@ PHASE 33 - daemon lifecycle + serial queue + idle shutdown:
       # (placeholder - the actual calls happen via MCP tool use above)
       print('Use MCP tool calls above to measure latency')
       "
-    Call chameleon-mcp::list_profiles three times in sequence (not concurrently).
+    Call chameleon-mcp::chameleon_lifecycle (action="list_profiles") three
+    times in sequence (not concurrently).
     Report the approximate elapsed time for all three calls combined.
 
   STEP 5 - listen backlog flood test (50 connections):
@@ -223,14 +225,14 @@ def run(ctx: JourneyContext) -> ActResult:
             "Read",
             "Edit",
             "Write",
-            "mcp__plugin_chameleon_chameleon-mcp__daemon_status",
             "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
             "mcp__plugin_chameleon_chameleon-mcp__get_archetype",
-            "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
             "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__refresh_repo",
+            # daemon_status / get_drift_status route via the telemetry
+            # dispatcher; list_profiles / refresh_repo via lifecycle.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
         ],
         plugin_root=ctx.plugin_root,
         timeout_s=900,

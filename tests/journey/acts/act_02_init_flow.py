@@ -46,14 +46,17 @@ PHASE 6 - cold-start init auto_rename:
 
 PHASE 7 - trust security:
   emit checkpoint started phase 7
-  Back in working/ts_basic: grant trust by calling the MCP tool directly:
-    chameleon-mcp::trust_profile(repo=<absolute path to ts_basic>, confirmation_token="ts_basic")
+  Back in working/ts_basic: grant trust by calling the MCP dispatcher directly:
+    chameleon-mcp::chameleon_lifecycle with action="trust_profile" and
+    params={"repo": <absolute path to ts_basic>, "confirmation_token": "ts_basic"}
   Verify the response has status "success" and a trusted_at timestamp.
   Do NOT use the /chameleon-trust skill (it costs extra turns). Call the tool directly.
   Then test the force=True overwrite path:
-    Call chameleon-mcp::bootstrap_repo with path set to the ts_basic fixture
-    path and no force flag. Expect status "already_bootstrapped".
-    Then call chameleon-mcp::bootstrap_repo again with force=True.
+    Call chameleon-mcp::chameleon_lifecycle with action="bootstrap_repo" and
+    params={"path": <the ts_basic fixture path>} (no force flag). Expect
+    status "already_bootstrapped".
+    Then call chameleon-mcp::chameleon_lifecycle again with
+    action="bootstrap_repo" and params={"path": <same path>, "force": true}.
     Expect successful overwrite (status "ok" or "bootstrapped").
     After the force overwrite, verify trust state REMAINS "trusted": trust is
     one-time and persists across any profile change (a fresh bootstrap
@@ -142,19 +145,16 @@ def run(ctx: JourneyContext) -> ActResult:
             "Read",
             "Edit",
             "Write",
-            "mcp__plugin_chameleon_chameleon-mcp__bootstrap_repo",
             "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
             "mcp__plugin_chameleon_chameleon-mcp__get_archetype",
             "mcp__plugin_chameleon_chameleon-mcp__get_canonical_excerpt",
-            "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
             "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__propose_archetype_renames",
-            "mcp__plugin_chameleon_chameleon-mcp__apply_archetype_renames",
-            "mcp__plugin_chameleon_chameleon-mcp__refresh_repo",
-            "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
-            "mcp__plugin_chameleon_chameleon-mcp__doctor",
+            # bootstrap_repo / list_profiles / propose+apply_archetype_renames /
+            # refresh_repo / trust_profile route via the lifecycle dispatcher;
+            # get_drift_status / doctor via the telemetry dispatcher.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
         ],
         plugin_root=ctx.plugin_root,
         timeout_s=900,

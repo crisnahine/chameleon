@@ -47,24 +47,32 @@ def _skill_text() -> str:
 def test_ledger_final_step_calls_record_review_verdict():
     text = _skill_text()
     assert "Step 5: Record the verdict in the review ledger" in text
-    # The pinned tool name and its argument shape, called AFTER the verdict.
+    # The pinned operation name and its argument shape, called AFTER the verdict.
     assert "record_review_verdict" in text
     assert "After the verdict is rendered" in text
-    for arg in ("verdict=", "findings_count=", "commit_sha="):
-        assert arg in text, f"ledger call omits {arg!r}"
+    for arg in ("verdict", "findings_count", "commit_sha"):
+        # Direct kwarg form (arg=...) or the chameleon_review dispatcher form
+        # ("arg": ... inside params) — either pins the ledger call's shape.
+        assert f"{arg}=" in text or f'"{arg}"' in text, f"ledger call omits {arg!r}"
 
 
-# The chameleon MCP tools the two review skills + reviewer.md are expected to
-# call. Driven from a list so a newly-cited tool is added in one place.
-_REVIEW_TOOLS = (
+# The chameleon MCP operations the two review skills + reviewer.md are expected
+# to use. Under the v3 surface split the first group stays top-level registered
+# tools; the second group routes through the chameleon_review dispatcher as
+# actions, so the registry check differs per group. Driven from lists so a
+# newly-cited operation is added in one place.
+_REVIEW_TOP_LEVEL_TOOLS = (
     "get_pattern_context",
     "lint_file",
-    "scan_dependency_changes",
-    "get_autopass_verdict",
     "get_duplication_candidates",
     "get_crossfile_context",
     "get_callers",
     "get_contract_breaks",
+)
+
+_REVIEW_DISPATCHER_ACTIONS = (
+    "scan_dependency_changes",
+    "get_autopass_verdict",
     "refute_finding",
     "record_review_verdict",
     "get_review_history",
@@ -89,20 +97,85 @@ def _registered_tools_by_name() -> dict[str, set[str]]:
     }
 
 
-def test_all_skill_cited_tool_calls_match_real_signatures():
-    """Every chameleon tool CALL in either review skill or reviewer.md must hit a
-    real registered tool with real kwargs.
+def _real_params(name: str) -> set[str]:
+    """Real parameter names of the UNDERLYING tools.py function.
 
-    Generalized from the old record_review_verdict-only check: it parses every
-    ``tool(...)`` call site out of BOTH SKILL.md files AND reviewer.md and asserts
-    (a) the tool is registered and (b) each kwarg shown is a real parameter. A
-    drifted arg name (``base_ref`` vs ``ref``, ``repo`` vs ``repo_id``) or a
-    phantom tool now fails here instead of silently at model runtime. This is the
-    "works 100%" contract seam; it would have caught the fan-out gap where
-    reviewer.md delegated a pass whose tool it never granted.
+    The dispatcher fold removed the per-operation MCP registrations, but the
+    in-process functions (and their signatures, which the dispatchers bind
+    `params` against) are unchanged — so they stay the source of truth the
+    skills' call shapes must match.
+    """
+    import inspect
+
+    from chameleon_mcp import tools
+
+    return set(inspect.signature(getattr(tools, name)).parameters)
+
+
+def _call_site_kwargs(name: str, text: str) -> list[set[str]]:
+    """Every kwarg-set the text shows for operation `name`, in either form.
+
+    Direct form:      name(repo=..., base_ref=...)
+    Dispatcher form:  chameleon_review(action="name", params={"repo": ..., ...})
+                      (top-level `k=` kwargs besides action/params count too)
     """
     import re
 
+    sites: list[set[str]] = []
+    # Direct call form.
+    for m in re.finditer(rf"\b{re.escape(name)}\(([^)]*)\)", text):
+        kwargs = {
+            part.split("=", 1)[0].strip().lstrip("*")
+            for part in m.group(1).split(",")
+            if "=" in part
+        }
+        kwargs = {k for k in kwargs if k.isidentifier()}
+        if kwargs:
+            sites.append(kwargs)
+    # Dispatcher call form: find each action="name" inside a chameleon_* call
+    # and read the params dict's quoted keys (brace-balanced window).
+    for m in re.finditer(
+        rf"chameleon_(?:lifecycle|review|telemetry)\(\s*action\s*=\s*[\"']{re.escape(name)}[\"']",
+        text,
+    ):
+        window = text[m.end() : m.end() + 800]
+        brace_at = window.find("params")
+        if brace_at == -1:
+            continue
+        open_at = window.find("{", brace_at)
+        if open_at == -1:
+            continue
+        depth = 0
+        end_at = None
+        for i, ch in enumerate(window[open_at:], start=open_at):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end_at = i
+                    break
+        if end_at is None:
+            continue
+        params_src = window[open_at : end_at + 1]
+        keys = set(re.findall(r"[\"']([A-Za-z_][A-Za-z0-9_]*)[\"']\s*:", params_src))
+        if keys:
+            sites.append(keys)
+    return sites
+
+
+def test_all_skill_cited_tool_calls_match_real_signatures():
+    """Every chameleon tool CALL in either review skill or reviewer.md must hit a
+    real operation with real kwargs.
+
+    Parses every call site out of BOTH SKILL.md files AND reviewer.md — the
+    direct `tool(...)` form AND the dispatcher `chameleon_review(action=...,
+    params={...})` form — and asserts each kwarg shown is a real parameter of
+    the UNDERLYING tools.py function (the dispatcher binds `params` against
+    exactly that signature). A drifted arg name (``base_ref`` vs ``ref``,
+    ``repo`` vs ``repo_id``) or a phantom operation fails here instead of
+    silently at model runtime.
+    """
     tools_by_name = _registered_tools_by_name()
     texts = {
         "pr-review/SKILL.md": _skill_text(),
@@ -110,24 +183,27 @@ def test_all_skill_cited_tool_calls_match_real_signatures():
         "pr-review/reviewer.md": _REVIEWER_MD.read_text(encoding="utf-8"),
     }
 
-    # (a) Every named review tool is a real registered MCP tool.
-    for name in _REVIEW_TOOLS:
+    # (a) The top-level review tools stay registered by name; the folded
+    # operations must be routable actions of the registered chameleon_review
+    # dispatcher (its docstring is the model-facing action list).
+    for name in _REVIEW_TOP_LEVEL_TOOLS:
         assert name in tools_by_name, (
             f"review skills cite {name!r} but it is not a registered MCP tool"
         )
+    assert "chameleon_review" in tools_by_name, "chameleon_review dispatcher not registered"
+    from chameleon_mcp import server
 
-    # (b) Every call-shape's kwargs map to real parameters of that tool.
+    review_doc = server.chameleon_review.__doc__ or ""
+    for name in _REVIEW_DISPATCHER_ACTIONS:
+        assert name in server._REVIEW_ACTIONS, f"{name!r} is not a routable chameleon_review action"
+        assert name in review_doc, f"chameleon_review docstring omits action {name!r}"
+
+    # (b) Every call-shape's kwargs map to real parameters of that operation.
     problems: list[str] = []
-    for name in _REVIEW_TOOLS:
-        real = tools_by_name[name]
+    for name in _REVIEW_TOP_LEVEL_TOOLS + _REVIEW_DISPATCHER_ACTIONS:
+        real = _real_params(name)
         for label, text in texts.items():
-            for m in re.finditer(rf"{re.escape(name)}\(([^)]*)\)", text):
-                kwargs = {
-                    part.split("=", 1)[0].strip().lstrip("*")
-                    for part in m.group(1).split(",")
-                    if "=" in part
-                }
-                kwargs = {k for k in kwargs if k.isidentifier()}
+            for kwargs in _call_site_kwargs(name, text):
                 unknown = kwargs - real
                 if unknown:
                     problems.append(
@@ -141,15 +217,15 @@ def test_all_skill_cited_tool_calls_match_real_signatures():
 
 def test_record_review_verdict_call_kwargs_are_real():
     """Keep the focused ledger-call check (subset of the generalized test)."""
-    import re
-
-    tools_by_name = _registered_tools_by_name()
-    params = tools_by_name["record_review_verdict"]
-    call = re.search(r"record_review_verdict\(([^)]*)\)", _skill_text())
-    assert call is not None, "skill no longer shows a record_review_verdict call"
-    skill_kwargs = {a.split("=", 1)[0].strip() for a in call.group(1).split(",") if "=" in a}
-    unknown = skill_kwargs - params
-    assert not unknown, f"skill passes unknown kwargs to record_review_verdict: {sorted(unknown)}"
+    text = _skill_text()
+    assert "record_review_verdict" in text, "skill no longer records the verdict"
+    sites = _call_site_kwargs("record_review_verdict", text)
+    params = _real_params("record_review_verdict")
+    for skill_kwargs in sites:
+        unknown = skill_kwargs - params
+        assert not unknown, (
+            f"skill passes unknown kwargs to record_review_verdict: {sorted(unknown)}"
+        )
 
 
 def test_record_review_verdict_tool_roundtrips_to_get_review_history(tmp_path, monkeypatch):

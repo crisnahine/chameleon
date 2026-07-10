@@ -131,18 +131,23 @@ def test_source_newline_injection_is_collapsed(tmp_path, monkeypatch):
 
 
 def test_server_wrapper_forwards_source(tmp_path, monkeypatch):
-    # Regression: the MCP-exposed wrapper must forward ``source`` to the tools
-    # impl. It previously omitted the param, leaving the documented source= path
-    # unreachable over MCP even though the impl rendered it.
+    # Regression: the MCP surface must forward ``source`` to the tools impl. The
+    # flat wrapper previously omitted the param, leaving the documented source=
+    # path unreachable over MCP even though the impl rendered it. The operation
+    # now routes through the chameleon_lifecycle dispatcher, whose params dict
+    # must carry source through intact.
     from chameleon_mcp import server
 
     repo = _setup_repo(tmp_path, monkeypatch)
     res = _data(
-        server.teach_profile_structured(
-            str(repo),
-            slug="wrapper-prov",
-            rationale="use the wrapper",
-            source="src/lib/http.ts @ abc1234",
+        server.chameleon_lifecycle(
+            action="teach_profile_structured",
+            params={
+                "repo": str(repo),
+                "slug": "wrapper-prov",
+                "rationale": "use the wrapper",
+                "source": "src/lib/http.ts @ abc1234",
+            },
         )
     )
     assert res["status"] == "success"

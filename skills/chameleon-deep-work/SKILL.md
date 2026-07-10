@@ -330,7 +330,8 @@ dependency (contract rule 2c), stated in one line.
   reason with new evidence. Verify its load-bearing findings first-hand
   before acting; apply or decline each with a reason. Declining is not free
   convergence: a declined finding the reviewer rated blocking goes to the
-  engine's `refute_finding` (independent adjudication of the decline) - a
+  engine's `chameleon_review(action="refute_finding", ...)` (independent
+  adjudication of the decline) - a
   `confirmed` verdict means the decline was wrong: apply the finding, and the
   round is non-converged. If ANY finding was applied, the diff changed - the
   fixes are new unreviewed code, so run round N+1; also re-run the specific
@@ -347,7 +348,7 @@ dependency (contract rule 2c), stated in one line.
   per-lens precision accrues over time (`get_finding_fate_stats`): a declined
   finding (the declined-findings log) is `declined`, an applied one is
   `accepted`, a runtime-state one converted to a check is `converted`. Call
-  `record_finding_fate(repo=<repo_id>, fate=<accepted | declined | converted>, message=<the finding's one-line gist>, file=<file>, line=<line>, lens=<the finding's defect class>, surface="deep-work")`
+  `chameleon_review(action="record_finding_fate", params={"repo": <repo_id>, "fate": <accepted | declined | converted>, "message": <the finding's one-line gist>, "file": <file>, "line": <line>, "lens": <the finding's defect class>, "surface": "deep-work"})`
   once per finding. Only a digest of the text is stored, never the prose;
   best-effort, never blocks - on any failure, skip it.
 

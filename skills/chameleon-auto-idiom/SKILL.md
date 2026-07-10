@@ -21,7 +21,7 @@ by `check_idiom_candidates`.
    conflict and ASK the user whether the old idiom should be deprecated. Only
    an explicit "yes, deprecate it" authorizes a deprecation. Note the
    mechanics so you don't destroy guidance: calling
-   `teach_profile_structured(slug=<existing active slug>, status="deprecated")`
+   `chameleon_lifecycle(action="teach_profile_structured", params={"slug": <existing active slug>, "status": "deprecated", ...})`
    does NOT just flip a status flag — it OVERWRITES that idiom's body with
    whatever rationale/example/counterexample you pass. To deprecate without
    losing the original guidance, re-pass the original body (read it from
@@ -56,7 +56,7 @@ by `check_idiom_candidates`.
 1. **Resolve + precheck.** Confirm `.chameleon/profile.json` exists in the
    repo root. If missing, suggest `/chameleon-init` and stop.
 2. **Read the coverage map.** Call
-   `chameleon-mcp::get_idiom_coverage(repo=<abs-repo-path>)`. From `data`:
+   `chameleon-mcp::chameleon_telemetry(action="get_idiom_coverage", params={"repo": <abs-repo-path>})`. From `data`:
    - `existing_idioms.active` — slugs + summaries already taught. Do not
      re-derive these.
    - `covered.principles` — auto-derived principles. Do not restate them.
@@ -106,7 +106,7 @@ by `check_idiom_candidates`.
    contract it implies usually is not. Cite the macro/method names and the grep
    count as evidence.
 3b. **Pull drift-derived anti-patterns.** Call
-   `chameleon-mcp::get_drift_antipatterns(repo=<abs-repo-path>)`. For each
+   `chameleon-mcp::chameleon_telemetry(action="get_drift_antipatterns", params={"repo": <abs-repo-path>})`. For each
    archetype it returns, the listed rules are conventions edits there repeatedly
    bumped against (`count` is how often), and `violation_edits` is how often edits
    drifted off-pattern. **Skip the security / enforcement rules in this list**
@@ -133,7 +133,7 @@ by `check_idiom_candidates`.
    - `archetype` — set when the idiom is scoped to one archetype; OMIT the
      field entirely for repo-wide idioms.
 5. **Gate the batch.** Call
-   `chameleon-mcp::check_idiom_candidates(repo=<abs-repo-path>, candidates=[...])`.
+   `chameleon-mcp::chameleon_telemetry(action="check_idiom_candidates", params={"repo": <abs-repo-path>, "candidates": [...]})`.
    - `duplicate` / `covered` → drop, and report each with its reasons. Never
      reword a `duplicate`/`covered` candidate just to slip it past the gate —
      that reintroduces the redundancy the gate exists to prevent.
@@ -155,9 +155,10 @@ by `check_idiom_candidates`.
    survive, drop the one with the most overlap with a stronger sibling, then
    the one with the narrowest evidence base, until 5 remain (tell the user
    what was held back — they can re-run later). For each kept candidate call
-   `chameleon-mcp::teach_profile_structured(repo=..., slug=..., rationale=...,
-   example=..., counterexample=..., archetype=..., status="active",
-   source=...)`. Pass `source` as the provenance string: the 2-3 evidence file
+   `chameleon-mcp::chameleon_lifecycle(action="teach_profile_structured",
+   params={"repo": ..., "slug": ..., "rationale": ..., "example": ...,
+   "counterexample": ..., "archetype": ..., "status": "active",
+   "source": ...})`. Pass `source` as the provenance string: the 2-3 evidence file
    paths you verified the occurrences in, plus the ref they were derived from
    when known (e.g. `"src/lib/api.ts, src/services/http.ts @ <production-ref-sha>"`).
    This records where an auto-derived idiom came from so a poisoned one is

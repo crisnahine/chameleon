@@ -40,13 +40,14 @@ running init twice would overwrite the existing profile.
      from the origin default; will be locked)". Do NOT ask.
    - `conflict: true` — ask ONE short question: "Which branch is
      production? (detected: `<branch>`, also found: `<candidates>`)". Pass
-     the answer as `bootstrap_repo(production_ref=<answer>)`.
+     the answer as `"production_ref": <answer>` in the bootstrap call's
+     `params` (step 3).
    - no branch / `from_origin: false` — local-only or unrecognized layout.
      Ask once: "Which branch should chameleon treat as production? (Enter
      to skip — the working tree will be analyzed instead)". Pass a
      non-empty answer via `production_ref`; on skip just proceed.
-3. Call `chameleon-mcp::bootstrap_repo(path=<repo_root>)` (plus
-   `production_ref=<answer>` when step 2 asked). With a lock, the pipeline
+3. Call `chameleon-mcp::chameleon_lifecycle(action="bootstrap_repo", params={"path": <repo_root>})`
+   (plus `"production_ref": <answer>` in `params` when step 2 asked). With a lock, the pipeline
    analyzes the production branch's tree — a detached materialization of
    the locked ref — NOT the current checkout; feature-branch noise never
    shapes the profile. Without one it analyzes the working tree as before.
@@ -73,7 +74,7 @@ asking.
 
 ### Auto-apply algorithm
 
-1. Call `propose_archetype_renames(repo=<abs-repo-path>, top_n=16)`.
+1. Call `chameleon-mcp::chameleon_lifecycle(action="propose_archetype_renames", params={"repo": <abs-repo-path>, "top_n": 16})`.
 2. For each proposal, decide whether to rename:
    - **Always rename** when the current name is a low-information
      fallback: starts with `cluster-` (raw hash), starts with `class-`
@@ -98,7 +99,7 @@ asking.
    an existing archetype name); the first claimant keeps the name, the later
    collider keeps its original. Only then build the `{old: new}` map.
 4. Apply the resulting `{old: new}` map via
-   `apply_archetype_renames(repo=<abs-repo-path>, renames=...)`.
+   `chameleon-mcp::chameleon_lifecycle(action="apply_archetype_renames", params={"repo": <abs-repo-path>, "renames": ...})`.
 5. Report what got renamed in the BootstrapReport summary (e.g.
    "renamed 3 archetypes: cluster-25874012 → test-models-spec,
    class-foo → service-foo, controller-2 → admin-controller").
@@ -120,7 +121,8 @@ run the interactive interview:
 - Prompt 1: list top-8 archetypes, ask "any to override?"
 - Prompt 2: per picked archetype, show `suggested_alternatives` and
   let the user pick a number, type a custom name, or "keep".
-- Prompt 3: confirm the final mapping, then `apply_archetype_renames`.
+- Prompt 3: confirm the final mapping, then apply it via
+  `chameleon_lifecycle(action="apply_archetype_renames", ...)`.
 
 Invalid names get one re-ask with the regex hint
 (`\A[a-z][a-z0-9-]{0,63}\Z`). The interview is strictly ≤3 prompts.

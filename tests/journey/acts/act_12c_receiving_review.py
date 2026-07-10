@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import re
 
-from tests.journey.acts.act_base import ActResult, build_act_prompt
+from tests.journey.acts.act_base import ActResult, build_act_prompt, dispatcher_actions
 from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
@@ -81,11 +81,12 @@ PHASE 42 - receiving review adjudicates planted comments with grounding:
 
   The skill MUST, before drafting any reply: call get_pattern_context on the
   changed file (to get repo.id + trust_state + the canonical), build a hunk map
-  from `git -C "$TS" diff main...HEAD`, and run the refute_finding grounding loop
-  BEFORE drafting on any PUSH BACK or AGREE-you'd-implement verdict (per the
+  from `git -C "$TS" diff main...HEAD`, and run the refute_finding grounding
+  loop (chameleon-mcp::chameleon_review with action="refute_finding") BEFORE
+  drafting on any PUSH BACK or AGREE-you'd-implement verdict (per the
   skill's Step 6) — the canonical-backed pushback on comment [1] is a
-  model-judgment verdict and MUST be sent through refute_finding. It MUST NOT call
-  record_review_verdict (that is
+  model-judgment verdict and MUST be sent through the refute_finding action.
+  It MUST NOT call the record_review_verdict action (that is
   the outbound ledger). It MUST NOT auto-post and MUST NOT edit any source file
   (drafts only; implementation happens one at a time only AFTER approval, which is
   not given here).
@@ -145,11 +146,12 @@ def run(ctx: JourneyContext) -> ActResult:
             "mcp__plugin_chameleon_chameleon-mcp__get_callers",
             "mcp__plugin_chameleon_chameleon-mcp__get_crossfile_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_duplication_candidates",
-            "mcp__plugin_chameleon_chameleon-mcp__refute_finding",
-            # Offered ONLY so the "inbound side never calls the outbound ledger"
-            # negative check is meaningful (a regression that calls it surfaces as a
-            # tool_use); the skill must never invoke it.
-            "mcp__plugin_chameleon_chameleon-mcp__record_review_verdict",
+            # The review dispatcher carries refute_finding (required) AND
+            # record_review_verdict — the latter deliberately reachable so the
+            # "inbound side never calls the outbound ledger" negative check is
+            # meaningful (a regression surfaces as a tool_use action); the
+            # skill must never invoke that action.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_review",
         ],
         plugin_root=ctx.plugin_root,
         permission_mode="bypassPermissions",
@@ -177,12 +179,17 @@ def run(ctx: JourneyContext) -> ActResult:
         problems: list[str] = []
         if not any("get_pattern_context" in n for n in tool_uses):
             problems.append("no get_pattern_context tool_use (adjudication ungrounded)")
-        if not any("refute_finding" in n for n in tool_uses):
+        # refute_finding / record_review_verdict route through the review
+        # dispatcher, so their evidence is the tool_use block's `action`
+        # input, not its name.
+        review_actions = dispatcher_actions(session, "chameleon_review")
+        if "refute_finding" not in review_actions:
             problems.append(
-                "no refute_finding tool_use (grounding loop did not run before drafting)"
+                "no chameleon_review tool_use with action='refute_finding' "
+                "(grounding loop did not run before drafting)"
             )
         # The inbound side must NEVER write the outbound ledger.
-        if any("record_review_verdict" in n for n in tool_uses):
+        if "record_review_verdict" in review_actions:
             problems.append("record_review_verdict was called on the inbound side (forbidden)")
 
         if not review_span:

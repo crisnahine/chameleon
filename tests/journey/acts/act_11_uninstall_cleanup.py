@@ -57,7 +57,8 @@ PHASE 37 - uninstall + cleanup + isolation verify:
     Report whether any processes are found. If any are, kill them and report.
 
   STEP 4 - attempt list_profiles after wipe:
-    Call chameleon-mcp::list_profiles. Since the plugin data was wiped, this
+    Call chameleon-mcp::chameleon_lifecycle with action="list_profiles".
+    Since the plugin data was wiped, this
     may fail (MCP server unreachable or returns empty). Report whatever
     response you get - an empty list, an error, or a connection failure are
     all acceptable outcomes. The key verification is that no stale state
@@ -121,8 +122,10 @@ def run(ctx: JourneyContext) -> ActResult:
         allowed_tools=[
             "Bash",
             "Read",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__daemon_status",
+            # list_profiles routes via the lifecycle dispatcher; daemon_status
+            # via telemetry.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
         ],
         plugin_root=ctx.plugin_root,
         timeout_s=900,

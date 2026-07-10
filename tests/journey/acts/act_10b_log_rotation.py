@@ -121,11 +121,12 @@ def run(ctx: JourneyContext) -> ActResult:
             "Edit",
             "Write",
             "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
-            "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
             "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__refresh_repo",
+            # get_drift_status routes via the telemetry dispatcher;
+            # list_profiles / refresh_repo via lifecycle.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
         ],
         plugin_root=ctx.plugin_root,
         permission_mode="bypassPermissions",

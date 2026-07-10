@@ -25,7 +25,8 @@ PHASE 13 - canonical_ref lifecycle:
   version), not from the modified working tree version.
   Next, verify trust state uses the WORKING-tree profile hash (v0.6.1 fix):
   bump a value in working-tree .chameleon/profile.json (minor field change via Bash),
-  then call chameleon-mcp::get_drift_status and verify trust was invalidated (stale)
+  then call chameleon-mcp::chameleon_telemetry with action="get_drift_status"
+  and verify trust was invalidated (stale)
   because the working-tree hash changed - NOT because the canonical cache changed.
   Then test gc_stale_caches: bump origin/main HEAD by making a new commit to the
   loopback origin (use Bash: cd to the origin dir, add a commit there). Then call
@@ -51,11 +52,14 @@ PHASE 14 - trust.auto_preserve_when (structural equality + git author + timeout)
     echo '{}' >> <some temp file in origin>
     git add -A && git commit -m "teammate update"
   Then in working/ts_basic, pull from origin (git pull origin main).
-  Call chameleon-mcp::refresh_repo. Verify the response envelope has
-  trust_preserved: true or similar indication that auto-preservation fired.
+  Call chameleon-mcp::chameleon_lifecycle with action="refresh_repo" and
+  params={"repo": <abs path to working/ts_basic>}. Verify the response
+  envelope has trust_preserved: true or similar indication that
+  auto-preservation fired.
   Then simulate a local (same-author) change:
   Edit .chameleon/profile.json in working/ts_basic as the local user, commit it.
-  Call refresh_repo again. Verify trust is NOT auto-preserved (requires manual trust).
+  Call the refresh_repo action again. Verify trust is NOT auto-preserved
+  (requires manual trust).
   Report both outcomes via Bash.
   The runner will verify the git-log timeout behavior separately via a shim.
   emit checkpoint completed phase 14
@@ -84,12 +88,12 @@ def run(ctx: JourneyContext) -> ActResult:
             "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
             "mcp__plugin_chameleon_chameleon-mcp__get_archetype",
             "mcp__plugin_chameleon_chameleon-mcp__get_canonical_excerpt",
-            "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
             "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__refresh_repo",
-            "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
+            # get_drift_status routes via the telemetry dispatcher;
+            # list_profiles / refresh_repo / trust_profile via lifecycle.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
         ],
         plugin_root=ctx.plugin_root,
         permission_mode="bypassPermissions",

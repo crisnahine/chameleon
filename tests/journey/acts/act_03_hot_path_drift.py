@@ -18,10 +18,11 @@ PHASE 8 - MCP read sweep (all read-only tools):
     chameleon-mcp::detect_repo (on the current fixture path)
     chameleon-mcp::get_archetype (pick any archetype from the profile)
     chameleon-mcp::get_canonical_excerpt (pick the util or component archetype)
-    chameleon-mcp::get_drift_status
+    chameleon-mcp::chameleon_telemetry with action="get_drift_status" and
+      params={"repo": <fixture path>}
     chameleon-mcp::get_pattern_context (file_path=src/utils/format_date.ts)
     chameleon-mcp::get_rules
-    chameleon-mcp::list_profiles
+    chameleon-mcp::chameleon_lifecycle with action="list_profiles"
   For get_pattern_context, confirm the envelope contains match_quality set to one
   of: ast, exact, fallback, none. Record the archetype name returned.
   emit checkpoint completed phase 8
@@ -66,12 +67,12 @@ def run(ctx: JourneyContext) -> ActResult:
             "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
             "mcp__plugin_chameleon_chameleon-mcp__get_archetype",
             "mcp__plugin_chameleon_chameleon-mcp__get_canonical_excerpt",
-            "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
             "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__refresh_repo",
-            "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
+            # get_drift_status routes via the telemetry dispatcher;
+            # list_profiles / refresh_repo / trust_profile via lifecycle.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
         ],
         plugin_root=ctx.plugin_root,
         timeout_s=900,

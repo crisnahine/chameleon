@@ -36,8 +36,8 @@ Use the most-temporary option that solves the immediate need. Revert by:
 ## The flow
 
 1. Confirm chameleon is currently active in this session.
-2. Call `chameleon-mcp::disable_session(repo=<repo_root>, session_id=<current session_id>)`.
-   - If the tool returns `session_unknown_to_chameleon: true`, it means this session has never invoked another chameleon tool. Retry with `force=True` if the user explicitly asked for disable.
+2. Call `chameleon-mcp::chameleon_lifecycle(action="disable_session", params={"repo": <repo_root>, "session_id": <current session_id>})`.
+   - If the tool returns `session_unknown_to_chameleon: true`, it means this session has never invoked another chameleon tool. Retry with `"force": true` in `params` if the user explicitly asked for disable.
 3. The PreToolUse hook checks for the resulting `.session_disabled.<sha256(session_id)[:16]>` marker before injecting; if present, skips.
 4. Confirm to user: "chameleon disabled for this session. SessionStart primer will re-enable on next session unless you set CHAMELEON_DISABLE=1 globally or `.chameleon/.skip` in this repo."
 

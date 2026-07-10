@@ -328,11 +328,11 @@ identically regardless of language.
 
 | Capability | TS | Ruby | Py | Notes |
 |---|:--:|:--:|:--:|---|
-| teach_profile (free-form idiom capture) | ✅ | ✅ | ✅ |  |
-| teach_profile_structured (structured idiom capture) | ✅ | ✅ | ✅ |  |
-| teach_competing_import (wrapper-preference convention) | ✅ | ✅ | ✅ |  |
-| unteach_competing_import | ✅ | ✅ | ✅ |  |
-| get_prose_rule_candidates (offline prose-rule miner) | ✅ | ✅ | ✅ | Mines repo docs (README, docs/) for a stated 'use X not Y' import rule and corroborates each candidate against the repo's ACTUAL imports before proposing it as a teachable idiom (prose_rules.py, server.py). Text + import scan, language-agnostic across the three. Offline, no repo-code execution. Full parity. |
+| `chameleon_lifecycle(action="teach_profile")` (free-form idiom capture) | ✅ | ✅ | ✅ |  |
+| `chameleon_lifecycle(action="teach_profile_structured")` (structured idiom capture) | ✅ | ✅ | ✅ |  |
+| `chameleon_lifecycle(action="teach_competing_import")` (wrapper-preference convention) | ✅ | ✅ | ✅ |  |
+| `chameleon_lifecycle(action="unteach_competing_import")` | ✅ | ✅ | ✅ |  |
+| `chameleon_telemetry(action="get_prose_rule_candidates")` (offline prose-rule miner) | ✅ | ✅ | ✅ | Mines repo docs (README, docs/) for a stated 'use X not Y' import rule and corroborates each candidate against the repo's ACTUAL imports before proposing it as a teachable idiom (prose_rules.py, server.py). Text + import scan, language-agnostic across the three. Offline, no repo-code execution. Full parity. |
 | Per-edit counterexample capture (build counterexamples.json from a re... | ✅ | ✅ | ✅ | Implemented (PKG-8). `_import_of` has a Python unquoted-import branch (counterexamples.py) and the repo scan resolves detect_language per file (`capture_counterexamples_in_repo`), so a taught competing import captures the real off-pattern line; the unquoted form is gated off non-Python. Full parity. |
 | Per-edit counterexample render ('do NOT write it this way' paired wit... | ✅ | ✅ | ✅ | Implemented. Render emits from stored data (`_counterexample_section`, hook_helper.py) and the edited file's language threads into the witness-vs-counterexample suppression (the `language` kwarg of `_counterexample_section`); with PKG-8 capture storing Python off-patterns, render works. Full parity. |
 | Multi-off-pattern-per-archetype counterexamples (schema v2 list) | ✅ | ✅ | ✅ | Implemented by composition. The v2 per-archetype list machinery (normalize/capture/render) has no language branch and keys only on the `over` module string (`capture_counterexamples_in_repo`, counterexamples.py), so a Python archetype taught several competing imports keeps every off-pattern. Full parity. |

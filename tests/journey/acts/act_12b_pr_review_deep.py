@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import re
 
-from tests.journey.acts.act_base import ActResult, build_act_prompt
+from tests.journey.acts.act_base import ActResult, build_act_prompt, dispatcher_actions
 from tests.journey.harness.checkpoints import parse_checkpoint_file
 from tests.journey.harness.claude import spawn_claude
 from tests.journey.harness.context import JourneyContext
@@ -104,8 +104,9 @@ PHASE 40 - pr-review surfaces the deterministic BLOCK paths:
   STEP 2 - run the review:
     From inside working/rails_basic, run /chameleon-pr-review with NO arguments.
     It MUST call chameleon-mcp::lint_file on the changed source files,
-    chameleon-mcp::scan_dependency_changes for the Gemfile change, and
-    chameleon-mcp::get_autopass_verdict once. Let it produce the full review.
+    chameleon-mcp::chameleon_review with action="scan_dependency_changes" for
+    the Gemfile change, and chameleon-mcp::chameleon_review with
+    action="get_autopass_verdict" once. Let it produce the full review.
 
   STEP 3 - re-emit the FULL review ONCE between these exact sentinel lines (each
   on its own line, OUTSIDE any code fence):
@@ -160,11 +161,11 @@ def run(ctx: JourneyContext) -> ActResult:
             "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
             "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
             "mcp__plugin_chameleon_chameleon-mcp__lint_file",
-            "mcp__plugin_chameleon_chameleon-mcp__scan_dependency_changes",
-            "mcp__plugin_chameleon_chameleon-mcp__get_autopass_verdict",
             "mcp__plugin_chameleon_chameleon-mcp__get_crossfile_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_contract_breaks",
-            "mcp__plugin_chameleon_chameleon-mcp__record_review_verdict",
+            # scan_dependency_changes / get_autopass_verdict /
+            # record_review_verdict route via the review dispatcher.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_review",
         ],
         plugin_root=ctx.plugin_root,
         permission_mode="bypassPermissions",
@@ -190,10 +191,19 @@ def run(ctx: JourneyContext) -> ActResult:
     try:
         problems: list[str] = []
         tool_uses = session.tool_uses
-        for needed in ("lint_file", "scan_dependency_changes", "get_autopass_verdict"):
-            if not any(needed in name for name in tool_uses):
+        # lint_file is still a top-level tool (name-matched); the two review
+        # operations route through the chameleon_review dispatcher, so their
+        # evidence is the tool_use block's `action` input, not its name.
+        if not any("lint_file" in name for name in tool_uses):
+            problems.append(
+                f"no real lint_file tool_use observed (seen: {sorted(set(tool_uses))!r})"
+            )
+        review_actions = dispatcher_actions(session, "chameleon_review")
+        for needed in ("scan_dependency_changes", "get_autopass_verdict"):
+            if needed not in review_actions:
                 problems.append(
-                    f"no real {needed} tool_use observed (seen: {sorted(set(tool_uses))!r})"
+                    f"no real chameleon_review tool_use with action={needed!r} "
+                    f"observed (actions seen: {sorted(set(review_actions))!r})"
                 )
 
         if not review_span:

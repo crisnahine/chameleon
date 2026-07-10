@@ -47,9 +47,11 @@ def run(ctx: JourneyContext) -> ActResult:
             "Bash",
             "Read",
             "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
-            "mcp__plugin_chameleon_chameleon-mcp__doctor",
             "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
+            # doctor routes via the telemetry dispatcher; list_profiles via
+            # lifecycle.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
         ],
         plugin_root=ctx.plugin_root,
         permission_mode="bypassPermissions",
@@ -73,10 +75,11 @@ def run(ctx: JourneyContext) -> ActResult:
             ctx.fast_forward_marker(hook_error_log, age_seconds=4 * 24 * 3600)
             try:
                 doctor_result = mcp.call_mcp_tool(
-                    tool_name="doctor",
+                    tool_name="chameleon_telemetry",
                     plugin_root=ctx.plugin_root,
                     env={**ctx.env, "CHAMELEON_PLUGIN_DATA": str(ctx.plugin_data_dir)},
                     timeout_s=30,
+                    action="doctor",
                 )
 
                 recent_errors = doctor_result.get("recent_errors", {})

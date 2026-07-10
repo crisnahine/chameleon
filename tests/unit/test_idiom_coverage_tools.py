@@ -1424,12 +1424,17 @@ def test_merge_profiles_declines_idiom_bearing_summary(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_server_registers_idiom_coverage_tools():
+def test_server_routes_idiom_coverage_tools_via_telemetry_dispatcher():
+    # The two idiom-coverage operations folded into the chameleon_telemetry
+    # dispatcher: they must be routable actions AND named in its model-facing
+    # docstring (the action list is the only discovery surface now).
     from chameleon_mcp import server
 
+    assert callable(server.chameleon_telemetry)
+    doc = server.chameleon_telemetry.__doc__ or ""
     for name in ("get_idiom_coverage", "check_idiom_candidates"):
-        assert hasattr(server, name), f"server.py does not register {name!r}"
-        assert callable(getattr(server, name))
+        assert name in server._TELEMETRY_ACTIONS, f"{name!r} not a telemetry action"
+        assert name in doc, f"chameleon_telemetry docstring omits {name!r}"
 
 
 class TestLooksLikeIdiomsMarkdown:

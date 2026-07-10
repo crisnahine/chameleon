@@ -4,6 +4,59 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking (v3)
+
+- **MCP surface folded from 48 tools to 19.** The 16 comprehension/conformance
+  tools stay top-level (`detect_repo`, `get_pattern_context`, `get_archetype`,
+  `get_canonical_excerpt`, `get_rules`, `lint_file`, `search_codebase`,
+  `describe_codebase`, `get_callers`, `get_callees`, `get_blast_radius`,
+  `query_symbol_importers`, `get_crossfile_context`, `get_contract_breaks`,
+  `get_duplication_candidates`, `explain_edit`); the remaining 32 operator
+  tools become actions on three dispatchers, called as
+  `<dispatcher>(action="<old tool name>", params={...original arguments,
+  names and values unchanged...})`:
+
+  | Old top-level tool | New dispatcher / action |
+  |---|---|
+  | `bootstrap_repo` | `chameleon_lifecycle(action="bootstrap_repo")` |
+  | `refresh_repo` | `chameleon_lifecycle(action="refresh_repo")` |
+  | `trust_profile` | `chameleon_lifecycle(action="trust_profile")` |
+  | `list_profiles` | `chameleon_lifecycle(action="list_profiles")` |
+  | `merge_profiles` | `chameleon_lifecycle(action="merge_profiles")` |
+  | `teach_profile` | `chameleon_lifecycle(action="teach_profile")` |
+  | `teach_profile_structured` | `chameleon_lifecycle(action="teach_profile_structured")` |
+  | `teach_competing_import` | `chameleon_lifecycle(action="teach_competing_import")` |
+  | `unteach_competing_import` | `chameleon_lifecycle(action="unteach_competing_import")` |
+  | `propose_archetype_renames` | `chameleon_lifecycle(action="propose_archetype_renames")` |
+  | `apply_archetype_renames` | `chameleon_lifecycle(action="apply_archetype_renames")` |
+  | `disable_session` | `chameleon_lifecycle(action="disable_session")` |
+  | `pause_session` | `chameleon_lifecycle(action="pause_session")` |
+  | `get_autopass_verdict` | `chameleon_review(action="get_autopass_verdict")` |
+  | `refute_finding` | `chameleon_review(action="refute_finding")` |
+  | `record_review_verdict` | `chameleon_review(action="record_review_verdict")` |
+  | `record_finding_fate` | `chameleon_review(action="record_finding_fate")` |
+  | `get_review_history` | `chameleon_review(action="get_review_history")` |
+  | `scan_dependency_changes` | `chameleon_review(action="scan_dependency_changes")` |
+  | `dep_audit` | `chameleon_review(action="dep_audit")` |
+  | `get_status` | `chameleon_telemetry(action="get_status")` |
+  | `get_drift_status` | `chameleon_telemetry(action="get_drift_status")` |
+  | `get_drift_antipatterns` | `chameleon_telemetry(action="get_drift_antipatterns")` |
+  | `get_shadow_report` | `chameleon_telemetry(action="get_shadow_report")` |
+  | `get_override_audit` | `chameleon_telemetry(action="get_override_audit")` |
+  | `get_longitudinal_signals` | `chameleon_telemetry(action="get_longitudinal_signals")` |
+  | `get_finding_fate_stats` | `chameleon_telemetry(action="get_finding_fate_stats")` |
+  | `get_idiom_coverage` | `chameleon_telemetry(action="get_idiom_coverage")` |
+  | `check_idiom_candidates` | `chameleon_telemetry(action="check_idiom_candidates")` |
+  | `get_prose_rule_candidates` | `chameleon_telemetry(action="get_prose_rule_candidates")` |
+  | `daemon_status` | `chameleon_telemetry(action="daemon_status")` |
+  | `doctor` | `chameleon_telemetry(action="doctor")` |
+
+  Rationale: a context-lean tool surface — a session now loads 19 tool schemas
+  instead of 48; the underlying Python functions keep their names and
+  signatures, so direct imports (tests, QA batteries) are unaffected.
+
 ## [2.69.0] - 2026-07-10
 
 ### Changed

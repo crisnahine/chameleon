@@ -22,7 +22,7 @@ Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Whe
 ## The flow
 
 1. Confirm `.chameleon/profile.json` exists. If missing, suggest `/chameleon-init`.
-2. Call `chameleon-mcp::refresh_repo(repo=<absolute path>)`.
+2. Call `chameleon-mcp::chameleon_lifecycle(action="refresh_repo", params={"repo": <absolute path>})`.
 3. The tool acquires an OS-level flock on `.chameleon/.refresh.lock` (per-PID + start timestamp; concurrent invocations fail with stale-lock detection at 1 hour).
 4. **Production-pinned repos** (`production_ref` in `.chameleon/config.json`,
    set at init or migrated below): staleness is the locked ref's TIP SHA,
@@ -55,7 +55,7 @@ Re-analyze the current repo, detect drift, update `.chameleon/profile.json`. Whe
    never re-locks over it. If the block
    instead carries `conflict: true` or a non-origin candidate, surface the
    note and offer to set the lock: re-run with the user's answer via
-   `bootstrap_repo(production_ref=..., force=true)`.
+   `chameleon-mcp::chameleon_lifecycle(action="bootstrap_repo", params={"production_ref": ..., "force": true})`.
 5. **Unpinned repos**: re-discovers files (with same exclusions as init), re-parses changed files via cached `file_clusters` in `index.db`.
 6. Re-clusters from current signatures. New archetypes may appear; old ones may disappear.
 7. Atomic profile commit — old profile remains valid until `COMMITTED` sentinel is rolled in.
@@ -86,7 +86,7 @@ When <= 10% of files changed since the last run, `refresh_repo` uses partial ref
 
 Refresh preserves `idioms.md` verbatim, but many profiles never got idioms in
 the first place. After reporting the refresh diff, call
-`chameleon-mcp::get_idiom_coverage(repo=<abs-repo-path>)` and branch on
+`chameleon-mcp::chameleon_telemetry(action="get_idiom_coverage", params={"repo": <abs-repo-path>})` and branch on
 `data.status` FIRST, then `data.existing_idioms.active_count`:
 
 - `status == "untrusted"` → do NOT make the offer. An untrusted profile

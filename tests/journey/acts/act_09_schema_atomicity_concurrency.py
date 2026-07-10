@@ -89,7 +89,8 @@ PHASE 28 - atomic-txn recovery:
       (tmp / 'profile.json').write_text(json.dumps({'schema_version': 7, 'partial': True}))
       print('planted orphan txn abc123 (no PID prefix - legacy format, cleaned unconditionally)')
       "
-    Call chameleon-mcp::bootstrap_repo with path=working/ts_basic (no force flag).
+    Call chameleon-mcp::chameleon_lifecycle with action="bootstrap_repo" and
+    params={"path": <abs path to working/ts_basic>} (no force flag).
     Verify the orphan transaction abc123 was cleaned up: after the call, check
     that working/ts_basic/.chameleon.tmp/abc123 no longer exists.
     Report the bootstrap result (expect already_bootstrapped or ok).
@@ -109,7 +110,8 @@ PHASE 28 - atomic-txn recovery:
       # Write txn_id for cleanup step
       pathlib.Path('/tmp/alive_txn_id.txt').write_text(txn_id)
       "
-    Call chameleon-mcp::bootstrap_repo with path=working/ts_basic (no force flag).
+    Call chameleon-mcp::chameleon_lifecycle with action="bootstrap_repo" and
+    params={"path": <abs path to working/ts_basic>} (no force flag).
     Read /tmp/alive_txn_id.txt to get the txn_id, then verify
     working/ts_basic/.chameleon.tmp/<txn_id> STILL EXISTS after the call
     (alive PID means in-progress - should not be cleaned up).
@@ -184,7 +186,8 @@ PHASE 30 - glob brace expansion:
       p.write_text(json.dumps(data, indent=2))
       print('updated paths_glob to brace pattern')
       "
-    Call chameleon-mcp::refresh_repo with path=working/ts_basic.
+    Call chameleon-mcp::chameleon_lifecycle with action="refresh_repo" and
+    params={"repo": <abs path to working/ts_basic>}.
     Verify the refresh completed without error. Report whether the response
     mentions glob expansion or the 4 expanded patterns (components/ts,
     components/tsx, hooks/ts, hooks/tsx).
@@ -209,7 +212,8 @@ PHASE 30 - glob brace expansion:
       p.write_text(json.dumps(data, indent=2))
       print('planted pathological glob')
       "
-    Call chameleon-mcp::refresh_repo with path=working/ts_basic.
+    Call chameleon-mcp::chameleon_lifecycle with action="refresh_repo" and
+    params={"repo": <abs path to working/ts_basic>}.
     Verify the call returns an error or warning indicating the 512-pattern cap
     was enforced (no silent truncation or crash). Report the response.
 
@@ -267,7 +271,8 @@ PHASE 31 - git merge driver:
   STEP 2 - run the merge driver:
     Use Bash to run the chameleon merge driver on the two divergent profile files.
     The merge driver lives at scripts/chameleon-merge-driver.sh. Call it directly
-    or call chameleon-mcp::merge_profiles with both branch versions as input:
+    or call chameleon-mcp::chameleon_lifecycle with action="merge_profiles"
+    and both branch versions in params:
 
     python3 -c "
     import subprocess, os, json, pathlib, tempfile
@@ -292,7 +297,9 @@ PHASE 31 - git merge driver:
     print('Ready for merge_profiles call')
     "
 
-    Call chameleon-mcp::merge_profiles with the two branch versions.
+    Call chameleon-mcp::chameleon_lifecycle with action="merge_profiles" and
+    the two branch versions in params ({"repo": ..., "base": <base file>,
+    "ours": <branch-a file>, "theirs": <branch-b file>}).
     Verify the merge result is a clean union containing both markers
     (_branch_a_marker and _branch_b_marker) with no conflict markers (<<<<,
     ====, >>>>).
@@ -309,7 +316,8 @@ PHASE 32 - monorepo aggregation:
 
   STEP 1 - init the monorepo:
     Switch to working/ts_monorepo. If .chameleon/profile.json already exists
-    (from Act 2), call chameleon-mcp::refresh_repo to update it. Otherwise
+    (from Act 2), call chameleon-mcp::chameleon_lifecycle with
+    action="refresh_repo" to update it. Otherwise
     run /chameleon-init to bootstrap.
     After init/refresh, verify:
       - working/ts_monorepo/.chameleon/profile.json exists
@@ -370,17 +378,16 @@ def run(ctx: JourneyContext) -> ActResult:
             "Read",
             "Edit",
             "Write",
-            "mcp__plugin_chameleon_chameleon-mcp__bootstrap_repo",
             "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
             "mcp__plugin_chameleon_chameleon-mcp__get_archetype",
             "mcp__plugin_chameleon_chameleon-mcp__get_canonical_excerpt",
-            "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
             "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__merge_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__refresh_repo",
-            "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
+            # bootstrap_repo / list_profiles / merge_profiles / refresh_repo /
+            # trust_profile route via the lifecycle dispatcher;
+            # get_drift_status via telemetry.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
         ],
         plugin_root=ctx.plugin_root,
         timeout_s=1200,

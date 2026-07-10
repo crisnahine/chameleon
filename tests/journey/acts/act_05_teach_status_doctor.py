@@ -25,16 +25,14 @@ _TEACH_TOOLS = [
     "Edit",
     "Write",
     "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
-    "mcp__plugin_chameleon_chameleon-mcp__doctor",
     "mcp__plugin_chameleon_chameleon-mcp__get_archetype",
-    "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
     "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
     "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-    "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-    "mcp__plugin_chameleon_chameleon-mcp__refresh_repo",
-    "mcp__plugin_chameleon_chameleon-mcp__teach_profile",
-    "mcp__plugin_chameleon_chameleon-mcp__teach_profile_structured",
-    "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
+    # list_profiles / refresh_repo / teach_profile / teach_profile_structured /
+    # trust_profile route via the lifecycle dispatcher; doctor /
+    # get_drift_status via the telemetry dispatcher.
+    "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+    "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
 ]
 
 

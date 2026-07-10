@@ -21,13 +21,15 @@ PHASE 19 - pause, disable, and 4-level precedence:
 
   STEP 2 - /chameleon-disable:
     Run /chameleon-disable in the current session. Verify the command succeeds.
-    Call chameleon-mcp::disable_session again for the same session_id (idempotent
-    re-call). Expect either "ok" or a clear idempotent-ok response.
-    Now call chameleon-mcp::disable_session with an UNKNOWN session_id (use a random
-    string like "unknown-session-xyz-999") and WITHOUT force=True. Expect a refusal
+    Call chameleon-mcp::chameleon_lifecycle with action="disable_session" again
+    for the same session_id (idempotent re-call). Expect either "ok" or a clear
+    idempotent-ok response.
+    Now call chameleon-mcp::chameleon_lifecycle with action="disable_session"
+    and an UNKNOWN session_id in params (use a random string like
+    "unknown-session-xyz-999") and WITHOUT force=true. Expect a refusal
     (error response indicating unknown session).
-    Retry the same unknown session_id WITH force=True. Expect success.
-    Now call chameleon-mcp::disable_session on an UNTRUSTED fixture: use a path
+    Retry the same unknown session_id WITH "force": true in params. Expect success.
+    Now call the disable_session action on an UNTRUSTED fixture: use a path
     pointing to working/rails_basic (which has not been bootstrapped or trusted yet).
     Expect an error response matching "not trusted" or similar.
 
@@ -88,13 +90,12 @@ def run(ctx: JourneyContext) -> ActResult:
             "Edit",
             "Write",
             "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
-            "mcp__plugin_chameleon_chameleon-mcp__disable_session",
-            "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
             "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__pause_session",
-            "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
+            # disable_session / list_profiles / pause_session / trust_profile
+            # route via the lifecycle dispatcher; get_drift_status via telemetry.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
         ],
         plugin_root=ctx.plugin_root,
         timeout_s=900,

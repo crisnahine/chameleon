@@ -113,6 +113,9 @@ def test_tool_untrusted(trusted_repo):
     assert res["data"].get("status") == "untrusted"
 
 
-def test_tool_registered_in_server():
-    assert hasattr(server, "get_prose_rule_candidates")
-    assert callable(server.get_prose_rule_candidates)
+def test_tool_routed_via_telemetry_dispatcher():
+    # get_prose_rule_candidates folded into the chameleon_telemetry dispatcher:
+    # it must be a routable action AND named in the model-facing docstring.
+    assert callable(server.chameleon_telemetry)
+    assert "get_prose_rule_candidates" in server._TELEMETRY_ACTIONS
+    assert "get_prose_rule_candidates" in (server.chameleon_telemetry.__doc__ or "")

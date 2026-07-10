@@ -9,7 +9,7 @@ Pause chameleon's per-edit layer for 15 minutes by default. Auto-resumes after t
 
 Like `/chameleon-disable`, a pause is a FULL per-edit opt-out for its window: while paused the PreToolUse hook early-returns, so no `<chameleon-context>` is injected AND the PreToolUse enforcement denies (`secret-detected-in-content`, `eval-call`, `import-preference-violation`) do NOT fire. If the goal is to keep advisory guidance but stop only the blocking, use `CHAMELEON_ENFORCE=0` instead — pause turns everything off, `CHAMELEON_ENFORCE=0` keeps advisory ON and blocking OFF.
 
-The underlying `pause_session` MCP tool accepts any integer in `[1, 240]` minutes; the `-15m` slash command alias is the default convenience. If a different duration is needed, call `pause_session(repo, minutes=N)` directly.
+The underlying `pause_session` action accepts any integer in `[1, 240]` minutes; the `-15m` slash command alias is the default convenience. If a different duration is needed, call `chameleon-mcp::chameleon_lifecycle(action="pause_session", params={"repo": <repo>, "minutes": N})` directly.
 
 ## When to use
 
@@ -29,7 +29,7 @@ The underlying `pause_session` MCP tool accepts any integer in `[1, 240]` minute
 
 ## The flow
 
-1. Call `chameleon-mcp::pause_session(repo=<repo_root>, minutes=15)`.
+1. Call `chameleon-mcp::chameleon_lifecycle(action="pause_session", params={"repo": <repo_root>, "minutes": 15})`.
 2. The tool writes `${PLUGIN_DATA}/<repo_id>/.pause_until` with the ISO 8601 expiry.
 3. PreToolUse hook checks `.pause_until`:
    - If file missing or expired → inject normally (auto-cleans expired markers)
@@ -46,4 +46,4 @@ Hook integration is wired: preflight-and-advise calls `is_chameleon_suppressed` 
 
 ## Future variants
 
-If `15m` is the wrong duration for some users, future versions may add `/chameleon-pause-1h` and `/chameleon-pause-until-restart`. The `pause_session` MCP tool already accepts a `minutes` arg up to 240 (4 hours).
+If `15m` is the wrong duration for some users, future versions may add `/chameleon-pause-1h` and `/chameleon-pause-until-restart`. The `pause_session` action already accepts a `minutes` arg up to 240 (4 hours).

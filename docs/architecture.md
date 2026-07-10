@@ -125,7 +125,7 @@ no repo-specific knowledge; the profile carries no code.
 |  - stop-backstop         (Stop / SubagentStop)                          |
 |                              |                                           |
 |                              v                                           |
-|  MCP server (chameleon-mcp, FastMCP, stdio) -- 46 tools                  |
+|  MCP server (chameleon-mcp, FastMCP, stdio) -- 19 tools                  |
 |                              |                                           |
 |              +---------------+----------------+                          |
 |              v                                v                          |
@@ -267,8 +267,9 @@ The Bash exec log lives separately under `${TMPDIR:-/tmp}/.chameleon_exec_log/<r
 
 ## Bootstrap and refresh pipeline
 
-`/chameleon-init` calls `bootstrap_repo`; `/chameleon-refresh` calls
-`refresh_repo`. Both delegate to the same orchestrator, which runs once for the
+`/chameleon-init` calls `chameleon_lifecycle(action="bootstrap_repo", ...)`;
+`/chameleon-refresh` calls `chameleon_lifecycle(action="refresh_repo", ...)`.
+Both delegate to the same orchestrator, which runs once for the
 repo root and once per detected monorepo workspace.
 
 Before the pipeline runs, the tool wrapper applies three guards: it refuses an
@@ -358,8 +359,8 @@ production line no matter which feature branch a teammate has checked out.
 
 Lock precedence, highest first:
 
-1. **Explicit** `bootstrap_repo(production_ref=...)`, the init skill's confirmed
-   answer. Always wins, always persisted.
+1. **Explicit** `chameleon_lifecycle(action="bootstrap_repo", params={"production_ref": ...})`,
+   the init skill's confirmed answer. Always wins, always persisted.
 2. **Persisted** `production_ref` in `config.json`.
 3. **Auto-detection** (init and the refresh migration): the remote's declared
    default branch (`refs/remotes/origin/HEAD`), then an origin branch named
@@ -753,9 +754,15 @@ Every tool is a `@mcp.tool()`-decorated function in `server.py` that delegates t
 `tools.py`. Every file-reading tool goes through `safe_open` (lstat first,
 realpath, repo-boundary prefix match) and re-checks artifact mtimes per call so
 a `/chameleon-teach` or `/chameleon-refresh` is picked up without a stale cache.
-The server exposes **46 tools**:
+The server exposes **19 tools**: the 16 comprehension/conformance tools an
+agent needs mid-edit stay top-level, and every operator/workflow function is
+folded behind three dispatchers (`chameleon_lifecycle`, `chameleon_review`,
+`chameleon_telemetry`). A dispatcher call is
+`chameleon_lifecycle(action="bootstrap_repo", params={...})` — `action` names
+the folded function and `params` carries its original arguments, names and
+values unchanged.
 
-### Detection and context
+### Kept top-level (16 tools)
 
 | Tool | Purpose |
 |---|---|
@@ -765,74 +772,71 @@ The server exposes **46 tools**:
 | `get_canonical_excerpt` | The canonical witness source for an archetype. |
 | `get_rules` | Repo-global rules keyed by source. |
 | `lint_file` | Validate file content against an archetype; returns violations and confidence. |
+| `search_codebase` | Find symbols by name or file from the committed index, ranked. Comprehension. |
+| `describe_codebase` | Structural overview: language, framework, archetypes, totals, god symbols. Comprehension. |
+| `get_callers` | Deterministic committed callers of a function. |
+| `get_callees` | What a function calls (forward edges), inverting the reverse calls index. Comprehension. |
+| `get_blast_radius` | Bounded transitive callers of a function (multi-hop change reach); the judge's own walk, surfaced as a tool. |
+| `query_symbol_importers` | Importers of a module's exports plus which break on rename. TS/JS + Python; Ruby via the constant graph. |
+| `get_crossfile_context` | Cross-file existence breaks (removed/renamed exports still imported). TS/JS + Python; Ruby via the constant graph. |
+| `get_contract_breaks` | Deterministic caller-contract (positional narrowing) breaks for a diff. |
+| `get_duplication_candidates` | Existing functions a file's new functions may re-implement. |
+| `explain_edit` | Replay what chameleon knew and did at a file's last edit. |
 
-### Lifecycle
+### `chameleon_lifecycle` dispatcher
 
-| Tool | Purpose |
+Profile lifecycle, teaching, trust, and opt-out — 13 actions.
+
+| Action | Purpose |
 |---|---|
 | `bootstrap_repo` | First-time analysis and atomic profile commit (`force` overwrites). |
 | `refresh_repo` | Re-analyze, detect drift, update the profile (flock-locked). |
+| `trust_profile` | Mark a committed profile trusted (requires a confirmation token). |
 | `list_profiles` | Cursor-paginated list of every repo this user has touched. |
 | `merge_profiles` | Three-way profile merge (re-cluster from the union); used by the merge driver. |
-| `propose_archetype_renames` | Suggest better names for the largest archetypes. |
-| `apply_archetype_renames` | Atomically apply a rename mapping. |
-
-### Teaching
-
-| Tool | Purpose |
-|---|---|
 | `teach_profile` | Apply a free-form correction (idiom, banned import, wrapper). |
 | `teach_profile_structured` | Structured idiom capture (slug, rationale, example, counterexample, archetype, status, and a `source` provenance line). |
 | `teach_competing_import` | Capture a wrapper preference ("use X, not Y"). |
 | `unteach_competing_import` | Remove a taught wrapper preference. |
-| `get_idiom_coverage` | Read-only map of guidance already captured. |
-| `check_idiom_candidates` | Novelty gate (novel/duplicate/covered/invalid) before teaching. |
-| `get_prose_rule_candidates` | Doc-stated "use X not Y" rules, corroborated against the repo's imports. Propose-only. |
-| `get_drift_antipatterns` | Recurring-violation signals from drift history; drives auto-idiom. |
-
-### Trust and opt-out
-
-| Tool | Purpose |
-|---|---|
-| `trust_profile` | Mark a committed profile trusted (requires a confirmation token). |
+| `propose_archetype_renames` | Suggest better names for the largest archetypes. |
+| `apply_archetype_renames` | Atomically apply a rename mapping. |
 | `disable_session` | Suppress injections for a session (HMAC-signed marker). |
 | `pause_session` | Pause injections for N minutes (default 15). |
 
-### Observability
+### `chameleon_review` dispatcher
 
-| Tool | Purpose |
+The review-gate workflow — 7 actions. All read-only except
+`record_review_verdict` / `record_finding_fate` (ledger appends) and
+`dep_audit` (spawns the user's own auditor, gated).
+
+| Action | Purpose |
+|---|---|
+| `get_autopass_verdict` | Advisory: is a branch diff safe to auto-pass, or needs human? Never gates. |
+| `refute_finding` | Round-3: independently refute review findings via spawned no-tools refuters. |
+| `record_review_verdict` | Append an HMAC-signed pr-review verdict to the ledger. |
+| `record_finding_fate` | Append a per-finding disposition (accepted/declined/converted) to the fate ledger. |
+| `get_review_history` | Recent ledger verdicts, newest first, HMAC-verified. |
+| `scan_dependency_changes` | No-network supply-chain review of a manifest/lockfile diff. |
+| `dep_audit` | Opt-in `npm audit`/`bundler-audit`; the only network action. |
+
+### `chameleon_telemetry` dispatcher
+
+Observability and health — 12 actions, all read-only.
+
+| Action | Purpose |
 |---|---|
 | `get_status` | Enforcement mode plus active and demoted block rules. |
 | `get_drift_status` | Freshness, days since refresh, drift score, production-ref block. |
+| `get_drift_antipatterns` | Recurring-violation signals from drift history; drives auto-idiom. |
 | `get_shadow_report` | Per-rule would-block counts for the shadow-to-enforce decision. |
 | `get_override_audit` | Per-rule inline-override rate and blanket share. |
 | `get_longitudinal_signals` | Structural-conformance and enforcement-outcome tracks, kept separate. |
+| `get_finding_fate_stats` | Per-lens precision (accepted vs declined) from the finding-fate ledger. |
+| `get_idiom_coverage` | Read-only map of guidance already captured. |
+| `check_idiom_candidates` | Novelty gate (novel/duplicate/covered/invalid) before teaching. |
+| `get_prose_rule_candidates` | Doc-stated "use X not Y" rules, corroborated against the repo's imports. Propose-only. |
 | `daemon_status` | Advisor daemon liveness and version. |
 | `doctor` | Installation health triage. |
-| `explain_edit` | Replay what chameleon knew and did at a file's last edit. |
-
-### Review gate
-
-All read-only except `record_review_verdict` (ledger append) and `dep_audit`
-(spawns the user's own auditor, gated).
-
-| Tool | Purpose |
-|---|---|
-| `get_autopass_verdict` | Advisory: is a branch diff safe to auto-pass, or needs human? Never gates. |
-| `get_crossfile_context` | Cross-file existence breaks (removed/renamed exports still imported). TS/JS + Python; Ruby via the constant graph. |
-| `query_symbol_importers` | Importers of a module's exports plus which break on rename. TS/JS + Python; Ruby via the constant graph. |
-| `get_callers` | Deterministic committed callers of a function. |
-| `get_blast_radius` | Bounded transitive callers of a function (multi-hop change reach); the judge's own walk, surfaced as a tool. |
-| `get_callees` | What a function calls (forward edges), inverting the reverse calls index. Comprehension. |
-| `search_codebase` | Find symbols by name or file from the committed index, ranked. Comprehension. |
-| `describe_codebase` | Structural overview: language, framework, archetypes, totals, god symbols. Comprehension. |
-| `get_contract_breaks` | Deterministic caller-contract (positional narrowing) breaks for a diff. |
-| `get_duplication_candidates` | Existing functions a file's new functions may re-implement. |
-| `scan_dependency_changes` | No-network supply-chain review of a manifest/lockfile diff. |
-| `dep_audit` | Opt-in `npm audit`/`bundler-audit`; the only network tool. |
-| `refute_finding` | Round-3: independently refute review findings via spawned no-tools refuters. |
-| `record_review_verdict` | Append an HMAC-signed pr-review verdict to the ledger. |
-| `get_review_history` | Recent ledger verdicts, newest first, HMAC-verified. |
 
 ---
 
@@ -1481,7 +1485,7 @@ flag:
 | Flag | Default | What it enables |
 |---|---|---|
 | `CHAMELEON_ALLOW_ESLINT_EVAL=1` | off | Load JS ESLint configs via Node `require`/`import` during bootstrap (executes repo code). |
-| `CHAMELEON_ALLOW_DEP_AUDIT=1` | off | The `dep_audit` tool shelling `npm audit`/`bundler-audit` (the only network path). |
+| `CHAMELEON_ALLOW_DEP_AUDIT=1` | off | The `dep_audit` action shelling `npm audit`/`bundler-audit` (the only network path). |
 | `CHAMELEON_ALLOW_TSC=1` | off | The auto-pass router's `tsc --noEmit` grounding run (repo tsc from `node_modules/.bin`). |
 | `CHAMELEON_ALLOW_TESTS=1` | off | The auto-pass router's repo-local test run (vitest/jest from `node_modules/.bin`). |
 
@@ -1599,7 +1603,14 @@ additively).
 **MCP tool surface** is a public API. Adding a tool, an optional field, or
 loosening a validation is non-breaking. Renaming or removing a tool, reordering
 positional arguments, tightening a validation, or changing a field's meaning
-requires a major bump and a `### Breaking` CHANGELOG entry.
+requires a major bump and a `### Breaking` CHANGELOG entry. v3 exercised
+exactly this clause: 32 operator tools were folded into the three dispatchers
+(`chameleon_lifecycle`, `chameleon_review`, `chameleon_telemetry`) with the
+tool name becoming the `action` and the original arguments becoming `params`,
+unchanged in name and value (the full mapping is the dispatcher tables in the
+MCP server section and the v3 CHANGELOG entry); the 16 comprehension and
+conformance tools stayed top-level, and the underlying Python functions kept
+their signatures, so direct imports were unaffected.
 
 ---
 

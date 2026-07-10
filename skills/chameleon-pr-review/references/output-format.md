@@ -27,7 +27,7 @@ rounds draw from this same budget, and a recall candidate already adjudicated
 in-loop keeps its verdict and is never re-sent here. Label any remainder
 cap-reached:
 
-`refute_finding(repo=<repo_id>, findings=[{id, kind, severity, file, line, claim, evidence}, ...], base_ref=<base>)`
+`chameleon_review(action="refute_finding", params={"repo": <repo_id>, "findings": [{id, kind, severity, file, line, claim, evidence}, ...], "base_ref": <base>})`
 
 Three exclusions from the send set:
 - **Runtime-state findings are never sent — convert them instead.** A finding
@@ -327,9 +327,9 @@ The cross-file findings (Step 2.8 co-change, Step 2.9 layering/duplication/exist
 
 ### Step 5: Record the verdict in the review ledger
 
-After the verdict is rendered and shown to the user, append it to the review ledger by calling the `record_review_verdict` MCP tool:
+After the verdict is rendered and shown to the user, append it to the review ledger by calling the `record_review_verdict` action:
 ```
-record_review_verdict(repo=<repo_id>, verdict=<the verdict string>, findings_count=<total BLOCK+FIX+NIT count>, commit_sha=<reviewed HEAD sha>, complexity_tier=<the complexity_tier from get_autopass_verdict in Step 3h, or omit if that step was skipped>)
+chameleon_review(action="record_review_verdict", params={"repo": <repo_id>, "verdict": <the verdict string>, "findings_count": <total BLOCK+FIX+NIT count>, "commit_sha": <reviewed HEAD sha>, "complexity_tier": <the complexity_tier from get_autopass_verdict in Step 3h, or omit if that step was skipped>})
 ```
 Pass the verdict exactly as rendered (`APPROVE`, `APPROVE WITH NITS`, `NEEDS CHANGES`, or `BLOCK`), the total finding count across all severities, the commit SHA the review covered (the branch HEAD for the no-args case, or the PR head commit), and the `complexity_tier` from Step 3h's auto-pass routing (so a lead can later read the review-clean rate per tier — the routine easy/medium slice versus the hard/complex residual). The ledger stamps the rest of the provenance itself (the profile that reviewed it, the trust state, the engine version, the reviewer, a UTC timestamp).
 
@@ -339,8 +339,8 @@ This is a best-effort final step. If the tool call fails (no ledger, no signing 
 
 ### Step 5b: Record per-finding fates in the fate ledger
 
-After the verdict, record the verdict-time disposition of each finding so per-lens precision becomes computable over time (`get_finding_fate_stats`). For every surfaced BLOCK/FIX finding, and every finding converted to an "Unrun executable checks" line (Step 4b), call `record_finding_fate` once:
+After the verdict, record the verdict-time disposition of each finding so per-lens precision becomes computable over time (`chameleon_telemetry(action="get_finding_fate_stats", ...)`). For every surfaced BLOCK/FIX finding, and every finding converted to an "Unrun executable checks" line (Step 4b), call `record_finding_fate` once:
 ```
-record_finding_fate(repo=<repo_id>, fate=<accepted | converted>, message=<the finding's one-line message>, file=<file>, line=<line>, lens=<the finding's lens / defect-class, e.g. correctness, consequences, duplication, security>, confidence_at_emit=<the finding's confidence 0..1 if known>, surface="pr-review")
+chameleon_review(action="record_finding_fate", params={"repo": <repo_id>, "fate": <accepted | converted>, "message": <the finding's one-line message>, "file": <file>, "line": <line>, "lens": <the finding's lens / defect-class, e.g. correctness, consequences, duplication, security>, "confidence_at_emit": <the finding's confidence 0..1 if known>, "surface": "pr-review"})
 ```
 A finding that survived RECALL + the refuter and is surfaced in the verdict is `accepted` (the review stands by it); a finding routed to an unrun check is `converted`. Only a 16-hex digest of the message+file+line is stored, never the prose. This is best-effort and never blocks the review: on any failure, skip it and move on. It is a distinct ledger from `record_review_verdict` (per-finding disposition vs the aggregate verdict), and like it: tamper-evident, not forgery-proof, not CI-verifiable.

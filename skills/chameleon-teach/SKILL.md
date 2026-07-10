@@ -75,7 +75,7 @@ Each field is one line (or a fenced code block for example/counterexample).
    Reason: <why; one sentence>
    ```
 
-4. Call `chameleon-mcp::teach_profile(repo=<repo_path>, feedback=<formatted idiom>)`.
+4. Call `chameleon-mcp::chameleon_lifecycle(action="teach_profile", params={"repo": <repo_path>, "feedback": <formatted idiom>})`.
 5. The tool sanitizes input (strips ANSI/zero-width), enforces 50KB cap,
    appends under `## active` header.
 6. Confirm to user: idiom added; will surface in next `/chameleon-status`.
@@ -90,14 +90,17 @@ Each field is one line (or a fenced code block for example/counterexample).
 3. Call:
 
    ```
-   chameleon-mcp::teach_profile_structured(
-     repo=<abs-repo-path>,
-     slug=<slug>,
-     rationale=<rationale>,
-     example=<example or None>,
-     counterexample=<counterexample or None>,
-     archetype=<archetype or None>,
-     status=<status or "active">,
+   chameleon-mcp::chameleon_lifecycle(
+     action="teach_profile_structured",
+     params={
+       "repo": <abs-repo-path>,
+       "slug": <slug>,
+       "rationale": <rationale>,
+       "example": <example or None>,
+       "counterexample": <counterexample or None>,
+       "archetype": <archetype or None>,
+       "status": <status or "active">,
+     },
    )
    ```
 
@@ -134,11 +137,14 @@ archetype ("use `@/lib/http`, not `axios`"), capture it as a structured
 `import-preference` lint rule and the "use the project's wrapper" principle:
 
 ```
-chameleon-mcp::teach_competing_import(
-  repo=<abs-repo-path>,
-  archetype=<archetype name>,
-  preferred=<the wrapper/module to use>,
-  over=<the raw module to avoid>,
+chameleon-mcp::chameleon_lifecycle(
+  action="teach_competing_import",
+  params={
+    "repo": <abs-repo-path>,
+    "archetype": <archetype name>,
+    "preferred": <the wrapper/module to use>,
+    "over": <the raw module to avoid>,
+  },
 )
 ```
 
@@ -241,5 +247,5 @@ rationale), rather than passing only a short "replaced by X" line.
 
 - Capture only a real rule: one observed in the repo or stated by the user. Never invent an archetype name, a wrapper, or a banned import that does not exist; grep or read before naming it.
 - Record the rationale truthfully and the `source` provenance where the rule came from; don't dress up a guess as a derived convention.
-- Teaching a NEW idiom is append-only, and it never SILENTLY edits an existing one: re-teaching a live slug is rejected (`already exists in '## active'`), not an overwrite. The one path that rewrites an existing block is an explicit `status="deprecated"` on an active slug, which moves it to `## deprecated` AND replaces its body with whatever you pass (see Deprecation) — a deliberate, user-driven action, never an accident. Run `check_idiom_candidates` to avoid duplicating or contradicting one already captured.
+- Teaching a NEW idiom is append-only, and it never SILENTLY edits an existing one: re-teaching a live slug is rejected (`already exists in '## active'`), not an overwrite. The one path that rewrites an existing block is an explicit `status="deprecated"` on an active slug, which moves it to `## deprecated` AND replaces its body with whatever you pass (see Deprecation) — a deliberate, user-driven action, never an accident. Run `chameleon_telemetry(action="check_idiom_candidates", ...)` to avoid duplicating or contradicting one already captured.
 - Don't claim a taught rule is enforced: a captured idiom shapes guidance and review; only calibrated block rules deny an edit.

@@ -241,7 +241,8 @@ def run(ctx: JourneyContext) -> ActResult:
             "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_rules",
             "mcp__plugin_chameleon_chameleon-mcp__lint_file",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
+            # list_profiles routes via the lifecycle dispatcher.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
         ],
         plugin_root=ctx.plugin_root,
         permission_mode="bypassPermissions",

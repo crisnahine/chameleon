@@ -285,7 +285,7 @@ as the finding's `claim`/`evidence` — the trace is then adjudicated by the
 refuter instead of merely graded "complete", so a lazy or fabricated trace gets
 refuted rather than laundered:
 
-`refute_finding(repo=<repo.id>, findings=[{id, file, line, claim, evidence}, ...], base_ref=<the PR base / merge-base, or the locked production_ref, else "main">)`
+`chameleon_review(action="refute_finding", params={"repo": <repo.id>, "findings": [{id, file, line, claim, evidence}, ...], "base_ref": <the PR base / merge-base, or the locked production_ref, else "main">})`
 
 Each finding MUST carry a unique `id` (verdicts map back by `id`) and `file`/`line`
 (the refuter prefetches that excerpt; omit them and it silently degrades to the
@@ -398,7 +398,7 @@ runs the same flow and gets its own refuter budget.
 - DOES record per-item fates to the local finding-fate ledger (a distinct, local
   adjudication ledger, NOT the outbound verdict). After Step 5 assigns each item a
   verdict, call `record_finding_fate` once per adjudicated item:
-  `record_finding_fate(repo=<repo_id>, fate=<accepted for AGREE | declined for PUSH BACK | converted for a runtime check>, message=<the reviewer comment's one-line gist>, file=<file>, line=<line>, lens=<the comment's category, e.g. correctness, style, security>, surface="receiving")`.
+  `chameleon_review(action="record_finding_fate", params={"repo": <repo_id>, "fate": <accepted for AGREE | declined for PUSH BACK | converted for a runtime check>, "message": <the reviewer comment's one-line gist>, "file": <file>, "line": <line>, "lens": <the comment's category, e.g. correctness, style, security>, "surface": "receiving"})`.
   Skip NEEDS CLARIFICATION / YAGNI items (no fate yet). Only a digest of the text
   is stored, never the prose. Best-effort: on any failure, skip it. This is a
   local write, not a post — it does not touch the PR.

@@ -244,15 +244,14 @@ def test_comprehension_tools_untrusted(profiled_repo):
     )
 
 
-def test_bootstrap_repo_server_wrapper_forwards_production_ref(monkeypatch):
-    # Regression: the MCP wrapper must EXPOSE and FORWARD production_ref, else the
-    # init/refresh skills' explicit production-branch answer is silently dropped
-    # (FastMCP ignores an extra kwarg the wrapper doesn't declare).
-    import inspect
-
+def test_bootstrap_repo_dispatcher_forwards_production_ref(monkeypatch):
+    # Regression: the MCP surface must EXPOSE and FORWARD production_ref, else the
+    # init/refresh skills' explicit production-branch answer is silently dropped.
+    # bootstrap_repo now routes through the chameleon_lifecycle dispatcher, whose
+    # params dict must reach tools.bootstrap_repo intact.
     from chameleon_mcp import server
 
-    assert "production_ref" in inspect.signature(server.bootstrap_repo).parameters
+    assert "bootstrap_repo" in server._LIFECYCLE_ACTIONS
     captured = {}
 
     def fake(path, paths_glob=None, force=False, production_ref=None, now=None):
@@ -260,5 +259,7 @@ def test_bootstrap_repo_server_wrapper_forwards_production_ref(monkeypatch):
         return {"data": {"status": "ok"}}
 
     monkeypatch.setattr(tools, "bootstrap_repo", fake)
-    server.bootstrap_repo(path="/x", production_ref="release-1")
+    server.chameleon_lifecycle(
+        action="bootstrap_repo", params={"path": "/x", "production_ref": "release-1"}
+    )
     assert captured["production_ref"] == "release-1"

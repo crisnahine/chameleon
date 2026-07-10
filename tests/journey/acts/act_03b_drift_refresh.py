@@ -34,7 +34,7 @@ PHASE 11 - Drift injection + banner + refresh recovery:
   Use the Bash tool to inject drift: copy 50 files with unconventional naming into src/utils/:
     for i in $(seq 1 50); do cp src/utils/format_date.ts "src/utils/UNCONVENTIONAL-FILE-${i}.ts"; done
   Then start a fresh sub-session to observe the drift banner. Use Bash to run:
-    claude -p "Run chameleon-mcp::get_drift_status and report the result" \\
+    claude -p "Run chameleon-mcp::chameleon_telemetry with action=get_drift_status and report the result" \\
       --output-format stream-json --max-turns 3 \\
       --permission-mode acceptEdits 2>&1 | head -50
   If the drift score is above threshold, a drift banner should appear in the fresh session.
@@ -44,7 +44,8 @@ PHASE 11 - Drift injection + banner + refresh recovery:
     - working/ts_basic/.chameleon/COMMITTED still exists.
     - The trust state is preserved (structural-equality path: no renames, no idiom
       changes, only cluster size shifts from the 50 new files).
-    - chameleon-mcp::get_drift_status now returns a lower score or "ok" status.
+    - chameleon-mcp::chameleon_telemetry (action="get_drift_status") now
+      returns a lower score or "ok" status.
   emit checkpoint completed phase 11
 
 Reminder: emit checkpoints as plain Bash echo lines outside any code fences.
@@ -71,12 +72,12 @@ def run(ctx: JourneyContext) -> ActResult:
             "mcp__plugin_chameleon_chameleon-mcp__detect_repo",
             "mcp__plugin_chameleon_chameleon-mcp__get_archetype",
             "mcp__plugin_chameleon_chameleon-mcp__get_canonical_excerpt",
-            "mcp__plugin_chameleon_chameleon-mcp__get_drift_status",
             "mcp__plugin_chameleon_chameleon-mcp__get_pattern_context",
             "mcp__plugin_chameleon_chameleon-mcp__get_rules",
-            "mcp__plugin_chameleon_chameleon-mcp__list_profiles",
-            "mcp__plugin_chameleon_chameleon-mcp__refresh_repo",
-            "mcp__plugin_chameleon_chameleon-mcp__trust_profile",
+            # get_drift_status routes via the telemetry dispatcher;
+            # list_profiles / refresh_repo / trust_profile via lifecycle.
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_lifecycle",
+            "mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry",
         ],
         plugin_root=ctx.plugin_root,
         permission_mode="bypassPermissions",

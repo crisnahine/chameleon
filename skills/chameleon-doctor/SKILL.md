@@ -5,7 +5,7 @@ description: Use when the user explicitly invokes /chameleon-doctor to get a tri
 
 # /chameleon-doctor
 
-Run the chameleon-mcp `doctor` MCP tool. It returns a structured envelope:
+Run the chameleon-mcp `doctor` action (via the `chameleon_telemetry` dispatcher). It returns a structured envelope:
 
 - `overall`: ok | warn | error
 - `checks`: a list of subsystem checks (python version, `hook_interpreter_deps` (a dep-capable Python >= 3.11 resolves for the hooks — when this errors, hook enforcement and guidance are OFF), `mcp_server_launcher` (`uvx` resolves so the bundled MCP server can launch — when this errors, the MCP tools like `/chameleon-init`/`refresh`/`status` are unavailable), bash on PATH, timeout(1) on PATH, plugin data writable, hook scripts present and executable, HMAC key sane, daemon liveness, recent hook errors, per-repo profile/trust state, config_json validation, production_ref resolvability when a lock is set, plus three dead-install detectors for the current repo: `profile_artifacts` (generated artifacts exist and parse), `judge_spawn_health` (turn-end reviewer spawns are not all failing), `advisory_emission` (trusted edits actually resolve archetypes))
@@ -13,7 +13,7 @@ Run the chameleon-mcp `doctor` MCP tool. It returns a structured envelope:
 
 ## The flow
 
-1. Call `mcp__plugin_chameleon_chameleon-mcp__doctor` (no arguments).
+1. Call `mcp__plugin_chameleon_chameleon-mcp__chameleon_telemetry` with `action="doctor"` (no `params`).
 2. Display the result to the user as a compact table, highlighting any check with status != ok.
    Include the actionable detail text for each non-ok check.
 3. Roll-up interpretation:

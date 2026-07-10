@@ -115,7 +115,7 @@ Chameleon inverts all three. Conventions are derived by parsing the code itself:
 
 ## The full surface
 
-Six hooks across six lifecycle events, 46 MCP tools, 15 skills. You will call almost none of it directly; it works behind two moments, before the model writes and after the turn ends.
+Six hooks across six lifecycle events, 19 MCP tools (16 comprehension/conformance + 3 operator dispatchers), 15 skills. You will call almost none of it directly; it works behind two moments, before the model writes and after the turn ends.
 
 | When | What runs |
 |---|---|

@@ -97,7 +97,7 @@ For very large diffs, cap the removed-line text you feed forward per file (keep 
 
 #### 1b. Prior-review comparison (same HEAD only)
 
-Call `get_review_history(repo=<repo_id>, limit=5)` once. If a returned record pins
+Call `chameleon_review(action="get_review_history", params={"repo": <repo_id>, "limit": 5})` once. If a returned record pins
 the SAME commit SHA as this review's HEAD, this is a re-review: print one line
 ("prior review of this HEAD: verdict V, N findings") and treat it as a bar to
 clear, not a cache to trust — if this review ends with FEWER findings than the
@@ -110,7 +110,7 @@ never seeds findings and never changes the verdict on its own.
 
 ### Step 2.0: Fan-out routing (large diffs only)
 
-Call `get_autopass_verdict(repo=<repo_id>, base_ref=<base>)` and read
+Call `chameleon_review(action="get_autopass_verdict", params={"repo": <repo_id>, "base_ref": <base>})` and read
 `data.fan_out`. The engine decides; you never read env yourself. If `recommended`
 is false (the diff is under the threshold, or the engine saw `CHAMELEON_REVIEW_FANOUT=0`
 when it computed the verdict), run the review single-pass inline exactly as today —
@@ -138,8 +138,9 @@ STOP here and continue with Step 2. If `recommended` is true, fan out:
   `{manifest, findings}`; at synthesis, reject a slice whose manifest has an
   unexplained gap (a pass neither run nor covered by a sanctioned skip reason)
   and re-run that slice's missing passes yourself before merging. Step 2.5
-  (dependency-change) is NOT delegated per-slice: it is a whole-diff tool and the
-  reviewers are not granted `scan_dependency_changes`, so it runs once at synthesis.
+  (dependency-change) is NOT delegated per-slice: it is a whole-diff pass and the
+  reviewers are not granted the `chameleon_review` dispatcher (which carries
+  `scan_dependency_changes`), so it runs once at synthesis.
 - Synthesize in two parts: (a) merge + dedup the slice findings with the key
   `(file, section, rule, message-fingerprint)` — a `(file, line, rule)` key would
   mis-merge the file-anchored and missing-requirement findings that have no line;
@@ -423,10 +424,10 @@ Emit the result in the verdict block as an advisory summary line (the Coverage-d
 
 ### Step 3h: Auto-pass routing (always, advisory only)
 
-The findings sections answer "is anything wrong with this change?" This step answers the different question they cannot: "is this change *routine* enough that, with a clean review, a human can skip it?" Call the `get_autopass_verdict` MCP tool once for the whole diff:
+The findings sections answer "is anything wrong with this change?" This step answers the different question they cannot: "is this change *routine* enough that, with a clean review, a human can skip it?" Call the `get_autopass_verdict` action once for the whole diff:
 
 ```
-get_autopass_verdict(repo=<repo_id>, base_ref=<the PR base branch, or the branch's merge base; use the locked production_ref from .chameleon/config.json when no PR base is known; default "main">)
+chameleon_review(action="get_autopass_verdict", params={"repo": <repo_id>, "base_ref": <the PR base branch, or the branch's merge base; use the locked production_ref from .chameleon/config.json when no PR base is known; default "main">})
 ```
 
 It returns `{auto_pass_eligible, risk, complexity_tier, reasons, facts, changed_files}`. Report it verbatim as an advisory line (the Auto-pass routing section in Step 4). It is ADVISORY only: it never produces a BLOCK, FIX, or NIT and never changes the verdict. Its job is to mark the safe-to-skip slice, grade the change's inherent complexity (`complexity_tier`: easy / medium / hard / complex — structural, independent of cleanliness), and name why a change is NOT in the skip slice (a security-sensitive surface, too large, high cross-file blast radius, a file outside the profiled archetypes, or a grounded block finding).

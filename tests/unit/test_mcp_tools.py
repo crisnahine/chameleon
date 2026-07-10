@@ -24,34 +24,29 @@ ARCH = "service"
 WITNESS = "service.ts"
 
 # Every tool name registered in server.py, asserted present so a dropped/renamed
-# registration is caught.
+# registration is caught. The v3 surface split keeps exactly 16 top-level
+# conformance/comprehension tools plus the three dispatchers that route every
+# lifecycle / review / telemetry action to the (unchanged) tools.py functions.
 REGISTERED_TOOLS = [
     "detect_repo",
-    "get_archetype",
     "get_pattern_context",
+    "get_archetype",
     "get_canonical_excerpt",
     "get_rules",
     "lint_file",
-    "query_symbol_importers",
+    "search_codebase",
+    "describe_codebase",
     "get_callers",
+    "get_callees",
+    "get_blast_radius",
+    "query_symbol_importers",
     "get_crossfile_context",
+    "get_contract_breaks",
     "get_duplication_candidates",
-    "get_drift_status",
-    "refresh_repo",
-    "bootstrap_repo",
-    "list_profiles",
-    "merge_profiles",
-    "teach_profile",
-    "trust_profile",
-    "disable_session",
-    "pause_session",
-    "propose_archetype_renames",
-    "apply_archetype_renames",
-    "teach_profile_structured",
-    "get_idiom_coverage",
-    "check_idiom_candidates",
-    "daemon_status",
-    "doctor",
+    "explain_edit",
+    "chameleon_lifecycle",
+    "chameleon_review",
+    "chameleon_telemetry",
 ]
 
 
@@ -95,6 +90,158 @@ def test_server_imports_and_registers_every_tool():
     for name in REGISTERED_TOOLS:
         assert hasattr(server, name), f"server.py no longer defines tool {name!r}"
         assert callable(getattr(server, name))
+
+
+def test_registered_tool_count_is_pinned_at_19():
+    """The live FastMCP registry carries EXACTLY the 19-tool v3 surface: a
+    dropped registration, a renamed dispatcher, or a stray extra @mcp.tool all
+    fail here."""
+    live = {t.name for t in server.mcp._tool_manager.list_tools()}
+    assert live == set(REGISTERED_TOOLS)
+    assert len(live) == 19
+
+
+class TestDispatchers:
+    """The three dispatcher tools route to tools.<action> and fail structured."""
+
+    def test_lifecycle_unknown_action_lists_valid_actions(self):
+        res = server.chameleon_lifecycle(action="not_a_real_action")
+        _assert_envelope(res)
+        data = res["data"]
+        assert data["status"] == "failed"
+        assert "unknown action" in data["error"]
+        assert "bootstrap_repo" in data["error"]
+        assert set(data["valid_actions"]) == set(server._LIFECYCLE_ACTIONS)
+
+    def test_review_unknown_action_lists_valid_actions(self):
+        data = server.chameleon_review(action="bootstrap_repo")["data"]
+        assert data["status"] == "failed"
+        # A lifecycle action against the review dispatcher is still unknown HERE.
+        assert "record_review_verdict" in data["error"]
+        assert set(data["valid_actions"]) == set(server._REVIEW_ACTIONS)
+
+    def test_telemetry_unknown_action_lists_valid_actions(self):
+        data = server.chameleon_telemetry(action="")["data"]
+        assert data["status"] == "failed"
+        assert set(data["valid_actions"]) == set(server._TELEMETRY_ACTIONS)
+
+    def test_wrong_params_returns_signature_not_crash(self):
+        res = server.chameleon_review(action="record_review_verdict", params={"bogus_kwarg": 1})
+        _assert_envelope(res)
+        data = res["data"]
+        assert data["status"] == "failed"
+        assert "invalid params" in data["error"]
+        # The structured error names the action's REAL signature.
+        assert "record_review_verdict(repo" in data["error"]
+
+    def test_non_dict_params_fails_structured(self):
+        data = server.chameleon_lifecycle(action="pause_session", params="oops")["data"]
+        assert data["status"] == "failed"
+        assert "keyword arguments" in data["error"]
+
+    def test_telemetry_routes_daemon_status(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+        res = server.chameleon_telemetry(action="daemon_status")
+        _assert_envelope(res)
+        assert "alive" in res["data"]
+
+    def test_telemetry_routes_doctor_with_params(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(tmp_path / "data"))
+        res = server.chameleon_telemetry(action="doctor", params={"repo": None})
+        _assert_envelope(res)
+
+    def test_lifecycle_routes_list_profiles(self, trusted_repo):
+        res = server.chameleon_lifecycle(action="list_profiles", params={"limit": 5})
+        _assert_envelope(res)
+
+    def test_dispatcher_resolves_tools_fn_at_call_time(self, monkeypatch):
+        # Monkeypatching tools.<fn> must keep working exactly as it did with the
+        # flat per-tool wrappers (the dispatcher resolves by name at call time).
+        captured = {}
+
+        def fake(repo, force=False):
+            captured["repo"] = repo
+            captured["force"] = force
+            return {"api_version": "1", "data": {"status": "ok"}}
+
+        monkeypatch.setattr(tools, "refresh_repo", fake)
+        res = server.chameleon_lifecycle(
+            action="refresh_repo", params={"repo": "/x", "force": True}
+        )
+        assert res["data"]["status"] == "ok"
+        assert captured == {"repo": "/x", "force": True}
+
+    def test_every_action_maps_to_a_real_tools_function(self):
+        for action in (
+            *server._LIFECYCLE_ACTIONS,
+            *server._REVIEW_ACTIONS,
+            *server._TELEMETRY_ACTIONS,
+        ):
+            fn = getattr(tools, action, None)
+            assert callable(fn), f"dispatcher action {action!r} has no tools.{action}"
+
+    def test_action_sets_are_disjoint_and_total_32(self):
+        all_actions = (
+            list(server._LIFECYCLE_ACTIONS)
+            + list(server._REVIEW_ACTIONS)
+            + list(server._TELEMETRY_ACTIONS)
+        )
+        assert len(all_actions) == len(set(all_actions)) == 32
+
+    def test_dispatcher_docstrings_name_every_action(self):
+        for tool_fn, actions in (
+            (server.chameleon_lifecycle, server._LIFECYCLE_ACTIONS),
+            (server.chameleon_review, server._REVIEW_ACTIONS),
+            (server.chameleon_telemetry, server._TELEMETRY_ACTIONS),
+        ):
+            doc = tool_fn.__doc__ or ""
+            for action in actions:
+                assert action in doc, f"{tool_fn.__name__} docstring omits {action!r}"
+
+    def test_load_bearing_docstring_semantics_survive_the_fold(self):
+        """Six folded tools carried body semantics the model needs; the
+        dispatcher docstrings must keep them. Whitespace-normalized so the
+        docstrings' hard wrapping cannot split a pinned phrase."""
+
+        def _flat(doc):
+            return " ".join((doc or "").split())
+
+        lifecycle_doc = _flat(server.chameleon_lifecycle.__doc__)
+        review_doc = _flat(server.chameleon_review.__doc__)
+        telemetry_doc = _flat(server.chameleon_telemetry.__doc__)
+        # disable_session: force / first-session trust gate + HMAC note.
+        assert "HMAC-signed" in lifecycle_doc
+        assert "REFUSED by default" in lifecycle_doc
+        assert "trust grant" in lifecycle_doc
+        # teach_profile_structured: slug regex + 50KB cap.
+        assert "^[a-z][a-z0-9-]{2,63}$" in lifecycle_doc
+        assert "50KB cap" in lifecycle_doc
+        # record_review_verdict: all 6 args named.
+        for arg in (
+            "verdict",
+            "findings_count",
+            "commit_sha",
+            "pr_id",
+            "complexity_tier",
+        ):
+            assert arg in review_doc, f"record_review_verdict arg {arg!r} lost"
+        # record_finding_fate: fate enum + digest-only privacy.
+        assert "accepted / declined / converted" in review_doc
+        assert "16-hex digest" in review_doc
+        assert "never the prose" in review_doc
+        # get_autopass_verdict: the needs-human reason list, condensed.
+        for reason_bit in (
+            "security-sensitive",
+            "blast radius",
+            "chameleon-ignore",
+            "test weakening",
+        ):
+            assert reason_bit in review_doc, f"needs-human reason {reason_bit!r} lost"
+        assert "Never gates" in review_doc
+        # check_idiom_candidates: verdict taxonomy + the 32-per-call cap.
+        for verdict in ("`novel`", "`duplicate`", "`covered`", "`invalid`"):
+            assert verdict in telemetry_doc
+        assert "32" in telemetry_doc
 
 
 def test_detect_repo(trusted_repo):
