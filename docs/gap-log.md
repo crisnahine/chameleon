@@ -655,3 +655,25 @@ injection is the only source of it. A defensible effectiveness verdict therefore
 large-repo or real-world before/after study (scoped across these addenda) — genuine research,
 not a roadmap item skipped. Every hypothesis testable on the existing infrastructure has now
 been run and exhausted.
+
+## Addendum — 2026-07-11 (direct large-repo test: confounded — clean effectiveness needs rigorous controls, not ad-hoc runs)
+
+Tested my own claim ("chameleon helps on LARGE repos where conventions aren't inferable")
+directly: rw-rails (large Rails copy), task = "add a service that computes a discounted price and
+handles the out-of-range error, follow the codebase's service/money conventions." OFF arm
+(chameleon disabled) RAISED a custom error (violating the idioms.md "services-return-Result-never-
+raise" idiom). But the SHADOW arm ALSO raised — and justified it by citing REAL existing classes
+in the repo (`Money::ConversionError`, `Period::InvalidKeyError`, `Holding::PortfolioCache::
+SecurityNotFound`), i.e. maybe's codebase genuinely contains BOTH raise-AND-Result patterns, so
+"never raise" is not a uniform convention there — my premise was wrong. The shadow session also
+stopped at a plan and asked "implement?" (session behavioral variance), writing no file.
+
+CONCLUSION: even direct large-repo testing is CONFOUNDED without rigorous controls — the chosen
+"convention" turned out non-uniform in the repo, and one-shot session behavior varies (plan-and-
+ask vs do). A clean positive effectiveness signal requires a properly-designed powered study:
+verified-uniform conventions, many repeats to average out session variance, matched task
+framing, and a deterministic idiom-level scorer (via taught competing imports). This is the fifth
+independent confirmation that a defensible effectiveness verdict is a rigorous research program,
+not obtainable from small fixtures or ad-hoc large-repo runs tonight. The effectiveness
+investigation is empirically complete and exhausted; the path forward is fully scoped across
+these addenda for a dedicated study.
