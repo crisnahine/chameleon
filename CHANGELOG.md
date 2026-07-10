@@ -4,7 +4,7 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.0.0] - 2026-07-10
 
 ### Breaking (v3)
 
@@ -69,6 +69,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   stay outside the installed plugin; the release tarball likewise now packs
   `plugin/` + README/LICENSE/CHANGELOG only. No runtime behavior change —
   everything in-plugin resolves via `CLAUDE_PLUGIN_ROOT` as before.
+- **Interpreter resolution is cached and the per-edit ladder is bounded.** The
+  resolved interpreter argv persists to a version-keyed cache (validated on
+  read), and per-edit hooks cap the uv probe at 5s — bounded even where
+  `timeout(1)` is absent (Git Bash, coreutils-less macOS), previously uncapped.
+  Kill switch `CHAMELEON_INTERP_CACHE=0`.
+- **pr-review skill split for progressive disclosure**: a lean SKILL.md plus
+  lazy `references/*.md`, and the fixed reviewer/scout roles are now packaged
+  `agents/` (`chameleon:pattern-reviewer`, `code-scout`, `web-researcher`).
+
+### Fixed
+
+- **Python test files no longer bucket into production role archetypes.**
+  `python_role_for_path` routed `tests/api/routes/test_x.py` to `route`, so the
+  per-edit hook injected a production route canonical when editing a test; it now
+  gates on the canonical test-path detector first.
+- **Python linter config is read from sub-project dirs** (a monorepo `backend/
+  pyproject.toml`), matching the TypeScript workspace-config fallback.
+- **Skill-surface fixes**: the refresh skill's re-lock call now passes the
+  required `path`; receiving-code-review gained an `argument-hint`; the
+  pr-review fan-out claim about reviewer tool grants is now an enforced in-agent
+  directive rather than an unenforceable grant statement.
 
 ## [2.69.0] - 2026-07-10
 

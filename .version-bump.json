@@ -1,11 +1,29 @@
 {
   "files": [
-    { "path": "plugin/.claude-plugin/plugin.json", "field": "version" },
-    { "path": ".claude-plugin/marketplace.json", "field": "plugins.0.version" },
-    { "path": "package.json", "field": "version" },
-    { "path": "plugin/mcp/package.json", "field": "version" },
-    { "path": "plugin/mcp/pyproject.toml", "field": "project.version" },
-    { "path": "plugin/mcp/chameleon_mcp/__init__.py", "field": "__version__" }
+    {
+      "path": "plugin/.claude-plugin/plugin.json",
+      "field": "version"
+    },
+    {
+      "path": ".claude-plugin/marketplace.json",
+      "field": "plugins.0.version"
+    },
+    {
+      "path": "package.json",
+      "field": "version"
+    },
+    {
+      "path": "plugin/mcp/package.json",
+      "field": "version"
+    },
+    {
+      "path": "plugin/mcp/pyproject.toml",
+      "field": "project.version"
+    },
+    {
+      "path": "plugin/mcp/chameleon_mcp/__init__.py",
+      "field": "__version__"
+    }
   ],
   "audit": {
     "exclude": [
@@ -19,7 +37,9 @@
       "uv.lock",
       "package-lock.json",
       "gap-log.md",
-      "verification-runbook.md"
+      "verification-runbook.md",
+      "tests/effectiveness/results",
+      ".claude/worktrees"
     ]
   }
 }
