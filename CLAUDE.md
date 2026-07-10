@@ -172,6 +172,7 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 - Verify load-bearing claims yourself before relaying them.
 - After any fix: 2-3 rounds of review (read-only `Explore` agents, or back up first — review subagents can mutate the working tree), THEN run the matrix.
 - Always bump the version (`scripts/bump-version.sh <ver>`); the plugin cache is version-keyed. Run `ruff check` AND `ruff format --check` from `mcp/` over `chameleon_mcp/ ../tests/unit/` before pushing.
+- At each release: refresh the real-PR outcome aggregate (`tests/measure_pr_review_outcomes.py`) and the published eval artifacts + `baselines.json` per `tests/effectiveness/results-published/README.md`.
 - Do NOT claim "I tested everything" until Pass 2 ran.
 
 ## Environment variables
