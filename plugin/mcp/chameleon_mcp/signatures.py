@@ -37,6 +37,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from chameleon_mcp._thresholds import threshold_int
+from chameleon_mcp.conventions import _is_test_path
 
 
 @dataclass(frozen=True)
@@ -200,6 +201,12 @@ def python_role_for_path(file_path: str) -> str | None:
     elif last.endswith(".pyi"):
         stem = last[:-4]
     else:
+        return None
+
+    # A test file routes to the test archetype, never the production role of
+    # its basename or an enclosing role dir (tests/models.py is a test, not a
+    # model; tests/api/routes/test_users.py is a test, not a route).
+    if _is_test_path(file_path, language="python"):
         return None
 
     role = _PY_ROLE_NAMES.get(stem)

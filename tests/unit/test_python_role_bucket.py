@@ -70,6 +70,32 @@ def test_tests_not_treated_as_role():
     assert python_role_for_path("app/test_views.py") is None
 
 
+def test_tests_under_role_dirs_not_treated_as_role():
+    # A test file whose path runs through a role-named dir (routes/, models/,
+    # views/) is still a test, not the production role of that dir.
+    assert python_role_for_path("backend/tests/api/routes/test_users.py") is None
+    assert python_role_for_path("app/tests/models/test_user.py") is None
+
+
+def test_role_basenames_under_test_trees_not_treated_as_role():
+    # A role-named basename inside a test tree (tests/views.py, tests/models.py)
+    # is test scaffolding, not a view/model.
+    assert python_role_for_path("tests/views.py") is None
+    assert python_role_for_path("tests/models.py") is None
+
+
+def test_production_role_files_unaffected_by_test_exclusion():
+    assert python_role_for_path("backend/app/api/routes/login.py") == "route"
+    assert python_role_for_path("app/models/user.py") == "model"
+    assert python_role_for_path("shop/models/base.py") == "model"
+    assert python_role_for_path("utils.py") is None
+
+
+def test_alembic_versions_still_roled_as_migration():
+    assert python_role_for_path("alembic/versions/9c0a54914c78_add_max_apples.py") == "migration"
+    assert python_role_for_path("migrations/versions/0002_widen_scope.py") == "migration"
+
+
 # --------------------------------------------------------------------------- #
 # path_pattern_bucket_for — role bucket + empty sub_bucket (split survival)
 # --------------------------------------------------------------------------- #
