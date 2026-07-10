@@ -17,6 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from tests.effectiveness.arms import ArmSpec, apply_arm_config
+from tests.effectiveness.static_conventions import render_static_conventions
 from tests.journey.harness.bash import run_bash
 
 _GIT_ID = "-c user.name=effectiveness -c user.email=eff@local"
@@ -49,6 +50,13 @@ def prepare_cell(
     """
     _git(fixture_repo, f'worktree add --detach "{dest}" HEAD')
     apply_arm_config(arm, dest)
+    if arm.static_conventions:
+        # The static control arm's one-shot CLAUDE.md, rendered from the
+        # worktree's own committed profile. Part of arm setup (committed below,
+        # before the baseline) so it never reads as task output in the session
+        # diff — and fail-loud: a broken profile errors the cell rather than
+        # silently running an empty control.
+        render_static_conventions(dest)
     if setup_fn is not None:
         setup_fn(dest)
     _git(dest, f"{_GIT_ID} add -A")

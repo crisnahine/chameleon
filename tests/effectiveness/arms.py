@@ -11,16 +11,20 @@ class ArmError(Exception):
     pass
 
 
-VALID_ARM_NAMES = ("off", "shadow", "enforce")
+VALID_ARM_NAMES = ("off", "static", "shadow", "enforce")
 
 
 @dataclasses.dataclass(frozen=True)
 class ArmSpec:
     name: str
     base_mode: str  # enforcement.mode written to the worktree config
-    disable_env: bool  # True only for the "off" arm
+    disable_env: bool  # True for the disabled-plugin arms ("off" and "static")
     toggle_key: str | None = None
     toggle_value: bool | None = None
+    # The "static" control arm: plugin disabled (disable_env), but the worktree
+    # gets a one-shot CLAUDE.md rendered from its own committed profile, so the
+    # A/B isolates chameleon's per-edit delivery from its derived content.
+    static_conventions: bool = False
     env_key: str | None = None  # env var set for this arm (env-flag toggle)
     env_value: str | None = None  # the value env_key is set to ("1" or "0")
     # Per-arm worker model. None means "use the run-level --model default", so a
@@ -104,8 +108,11 @@ def parse_arms(
     specs = [
         ArmSpec(
             name=n,
-            base_mode=("shadow" if n == "off" else n),
-            disable_env=(n == "off"),
+            # Disabled arms keep the off-arm convention: mode is irrelevant
+            # under CHAMELEON_DISABLE, but the config write stays uniform.
+            base_mode=("shadow" if n in ("off", "static") else n),
+            disable_env=(n in ("off", "static")),
+            static_conventions=(n == "static"),
             model=models.get(n),
         )
         for n in names
@@ -161,8 +168,8 @@ def arm_model(spec: ArmSpec, run_model: str) -> str:
 
 
 def arm_env(spec: ArmSpec, base_env: dict[str, str]) -> dict[str, str]:
-    """Per-arm session env: copy of the run env, plus the off arm's kill switch
-    and any env-flag toggle this arm turns on."""
+    """Per-arm session env: copy of the run env, plus the kill switch for the
+    disabled arms (off, static) and any env-flag toggle this arm turns on."""
     env = dict(base_env)
     if spec.disable_env:
         env["CHAMELEON_DISABLE"] = "1"

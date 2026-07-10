@@ -101,6 +101,92 @@ def aggregate(cells: list[dict]) -> dict[str, dict]:
     return out
 
 
+def arm_overhead(cells: list[dict]) -> dict[str, dict]:
+    """Per-arm turn/cost/wall rollup across every category. Informational.
+
+    turns_mean / cost_usd_mean / wall_seconds_mean average over ok cells (the
+    same population as the other aggregates; a legacy cell without a recorded
+    num_turns is skipped, never counted as zero). error_max_turns counts every
+    cell whose session died at the turn cap regardless of status: a truncated
+    cell measures nothing, so the count itself is the signal.
+    """
+    out: dict[str, dict] = {}
+    for arm in sorted({c["arm"] for c in cells if c.get("arm")}):
+        group = [c for c in cells if c.get("arm") == arm]
+        ok = [c for c in group if c.get("status") == "ok"]
+        turns: list[float] = []
+        cost: list[float] = []
+        wall: list[float] = []
+        for c in ok:
+            s = c.get("session") or {}
+            if isinstance(s.get("num_turns"), (int, float)):
+                turns.append(float(s["num_turns"]))
+            if isinstance(s.get("cost_usd"), (int, float)):
+                cost.append(float(s["cost_usd"]))
+            if isinstance(s.get("wall_seconds"), (int, float)):
+                wall.append(float(s["wall_seconds"]))
+        capped = sum(
+            1
+            for c in group
+            if (c.get("session") or {}).get("result_subtype") == "error_max_turns"
+            or "error_max_turns" in (c.get("reason") or "")
+        )
+        out[arm] = {
+            "cells": len(group),
+            "ok_cells": len(ok),
+            "turns_mean": _mean(turns),
+            "error_max_turns": capped,
+            "cost_usd_mean": _mean(cost),
+            "wall_seconds_mean": _mean(wall),
+        }
+    return out
+
+
+def cost_adjusted_rows(preference_rows: list[dict], overhead: dict[str, dict]) -> list[dict]:
+    """Per compared arm pair, the judged lift netted against extra spend.
+
+    lift_per_dollar = (preference - 0.5) / (cost_usd_mean_treatment -
+    cost_usd_mean_control); lift_per_wall_minute divides by the wall-time
+    delta in minutes. A denominator <= 0 (treatment not costlier) yields None;
+    the raw preference already answers that case. Informational only.
+    """
+
+    def _lift(pref: float, delta: float | None) -> float | None:
+        if delta is None or delta <= 0:
+            return None
+        return round((pref - 0.5) / delta, 4)
+
+    def _delta(a: str, b: str, key: str) -> float | None:
+        va = (overhead.get(a) or {}).get(key)
+        vb = (overhead.get(b) or {}).get(key)
+        if not isinstance(va, (int, float)) or not isinstance(vb, (int, float)):
+            return None
+        return vb - va
+
+    rows: list[dict] = []
+    for p in preference_rows:
+        control, treatment = p.get("control"), p.get("treatment")
+        pref = p.get("rate")
+        if not control or not treatment or not isinstance(pref, (int, float)):
+            continue
+        cost_delta = _delta(control, treatment, "cost_usd_mean")
+        wall_delta = _delta(control, treatment, "wall_seconds_mean")
+        rows.append(
+            {
+                "control": control,
+                "treatment": treatment,
+                "preference": pref,
+                "cost_usd_delta": cost_delta,
+                "wall_seconds_delta": wall_delta,
+                "lift_per_dollar": _lift(pref, cost_delta),
+                "lift_per_wall_minute": _lift(
+                    pref, wall_delta / 60.0 if wall_delta is not None else None
+                ),
+            }
+        )
+    return rows
+
+
 def paired_preference_cis(panel_rows: list[dict]) -> list[dict]:
     """Per arm-pair, the paired cluster-bootstrap CI on the judge's preference for
     the non-'off' (treatment) arm. winner==treatment -> 1, ==control -> 0,
@@ -249,6 +335,30 @@ def render_run_md(
             f"{fmt(m['verification_rate'])} | {fmt(m['duplication_rate'])} | "
             f"{fmt(m['cost_usd_mean'])} | {fmt(m['wall_seconds_mean'])} |"
         )
+    overhead = arm_overhead(cells)
+    if overhead:
+        lines += [
+            "",
+            "## Per-arm turn overhead (advisory, never blocking)",
+            "",
+            "turns_mean charges the arm's real turn overhead over ok cells; "
+            "error_max_turns counts cells that died at the turn cap (a "
+            "truncated cell measures nothing, so the count is the signal).",
+            "",
+            "| arm | ok cells | turns_mean | error_max_turns | $ mean | wall s mean |",
+            "|---|---|---|---|---|---|",
+        ]
+        for arm, o in sorted(overhead.items()):
+
+            def fmt(v):
+                return "-" if v is None else f"{v}"
+
+            lines.append(
+                f"| {arm} | {o['ok_cells']} | {fmt(o['turns_mean'])} | "
+                f"{o['error_max_turns']} | {fmt(o['cost_usd_mean'])} | "
+                f"{fmt(o['wall_seconds_mean'])} |"
+            )
+    cis = paired_preference_cis(panel_rows) if panel_rows else []
     if panel_rows:
         lines += [
             "",
@@ -263,7 +373,6 @@ def render_run_md(
                 f"{p.get('panel_winner', 'unscored')} | "
                 f"{p.get('panel_votes_valid', 0)} | {p.get('panel_cost_usd', 0.0)} |"
             )
-        cis = paired_preference_cis(panel_rows)
         if cis:
             lines += [
                 "",
@@ -285,6 +394,33 @@ def render_run_md(
                     f"| {c['control']} | {c['treatment']} | {rate} | {ci} | "
                     f"{c['n_tasks']} | {verdict} |"
                 )
+    lines += [
+        "",
+        "## Cost-adjusted lift (advisory, never blocking)",
+        "",
+        "Nets the judged preference against the treatment arm's extra spend: "
+        "lift_per_dollar = (preference - 0.5) / ($ mean treatment - $ mean "
+        "control); lift_per_wall_minute divides by the wall-time delta in "
+        "minutes.",
+        "",
+    ]
+    ca_rows = cost_adjusted_rows(cis, overhead)
+    if ca_rows:
+        lines += [
+            "| control | treatment | preference | lift_per_dollar | lift_per_wall_minute |",
+            "|---|---|---|---|---|",
+        ]
+        for r in ca_rows:
+
+            def lift(v):
+                return "n/a (arm B not costlier)" if v is None else f"{v:.4f}"
+
+            lines.append(
+                f"| {r['control']} | {r['treatment']} | {r['preference']:.3f} | "
+                f"{lift(r['lift_per_dollar'])} | {lift(r['lift_per_wall_minute'])} |"
+            )
+    else:
+        lines.append("n/a (no judged preference)")
     if deltas:
         lines += [
             "",

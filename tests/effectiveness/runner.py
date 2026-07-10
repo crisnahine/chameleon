@@ -21,6 +21,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import json  # noqa: E402
 import time  # noqa: E402
 
 from tests.effectiveness import report  # noqa: E402
@@ -77,7 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true", help="Print the cell plan; no spawn")
     p.add_argument("--tier", choices=["ci", "full", "dup"], default="ci")
     p.add_argument("--tasks", default="", help="Comma-separated task ids (default: whole tier)")
-    p.add_argument("--arms", default="off,shadow", help="Comma-separated: off,shadow,enforce")
+    p.add_argument(
+        "--arms", default="off,shadow", help="Comma-separated: off,static,shadow,enforce"
+    )
     p.add_argument(
         "--toggle", default=None, help="enforcement.<key> to pair-flip from the base arm"
     )
@@ -380,6 +383,38 @@ def _cell_row(task, arm, rep, status, reason=None, session=None, scores=None, mo
     }
 
 
+def _result_meta(transcript: Path) -> dict:
+    """num_turns / result subtype from the transcript's terminal result event.
+
+    The spawn layer surfaces cost but not turn count or the result subtype
+    (e.g. error_max_turns), so read them back from the stream-json transcript
+    it just wrote. Fail-open: a missing or unparsable transcript yields {} and
+    the cell still records cost and wall time.
+    """
+    try:
+        lines = transcript.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    for line in reversed(lines):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if obj.get("type") != "result":
+            continue
+        meta: dict = {}
+        if isinstance(obj.get("num_turns"), int):
+            meta["num_turns"] = obj["num_turns"]
+        subtype = obj.get("subtype")
+        if isinstance(subtype, str) and subtype:
+            meta["result_subtype"] = subtype
+        return meta
+    return {}
+
+
 def _resolve_prompt(task, pack, repo_root) -> tuple[str | None, str | None]:
     """(prompt, skip_reason). Tier-full crossfile tasks resolve targets at run time."""
     resolver = pack.runtime_target_resolvers.get(task.task_id)
@@ -427,6 +462,7 @@ def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
             plugin_root=ctx.plugin_root,
         )
         wall = round(time.monotonic() - t0, 2)
+        result_meta = _result_meta(transcript)
         session_meta = {
             "session_id": session.session_id,
             "cost_usd": session.cost_usd,
@@ -435,14 +471,19 @@ def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
             "transcript": str(transcript),
             "baseline_sha": baseline_sha,
             "model": cell_model,
+            **result_meta,
         }
         if session.returncode != 0:
+            reason = f"session returncode {session.returncode}"
+            subtype = result_meta.get("result_subtype")
+            if subtype and subtype != "success":
+                reason += f" ({subtype})"
             return _cell_row(
                 task,
                 arm,
                 rep,
                 "error",
-                f"session returncode {session.returncode}",
+                reason,
                 session=session_meta,
                 model=cell_model,
             )

@@ -14,6 +14,13 @@ from pathlib import Path
 
 from tests.effectiveness.tasks import EffTask
 
+# max_turns is a runaway guard, not a fairness device: a cell that dies
+# mid-task (error_max_turns) measures nothing, and the shadow arm's real
+# turn overhead is charged by the per-arm turns_mean metric instead. 60 is
+# roughly double the worst observed completion, so only a genuinely stuck
+# session hits it.
+MAX_TURNS = 60
+
 TASKS = [
     EffTask(
         task_id="t2-ts-convention-feature-slice",
@@ -28,7 +35,7 @@ TASKS = [
         ),
         category="convention",
         scorers=("convention", "duplication", "verification", "cost"),
-        max_turns=30,
+        max_turns=MAX_TURNS,
     ),
     EffTask(
         task_id="t2-ts-crossfile-rename",
@@ -42,7 +49,7 @@ TASKS = [
         ),
         category="crossfile",
         scorers=("crossfile", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=MAX_TURNS,
     ),
     EffTask(
         task_id="t2-ts-duplication-helper",
@@ -57,7 +64,7 @@ TASKS = [
         ),
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=MAX_TURNS,
     ),
     EffTask(
         task_id="t2-ts-verification-regression",
@@ -71,7 +78,7 @@ TASKS = [
         ),
         category="verification",
         scorers=("verification", "convention", "cost"),
-        max_turns=30,
+        max_turns=MAX_TURNS,
     ),
 ]
 
