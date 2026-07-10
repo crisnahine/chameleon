@@ -172,7 +172,7 @@ def run(ctx: JourneyContext) -> ActResult:
         ],
         plugin_root=ctx.plugin_root,
         permission_mode="bypassPermissions",
-        timeout_s=1200,
+        timeout_s=2400,
         add_dirs=[ctx.run_dir],
     )
 

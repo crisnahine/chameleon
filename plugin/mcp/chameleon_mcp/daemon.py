@@ -212,13 +212,32 @@ def _socket_tmp_base() -> Path | None:
     socket path stays under the sun_path cap even when the plugin data dir
     resolves deep. Returns None when the platform has no uid (Windows — the
     daemon is AF_UNIX-only and disabled there anyway)."""
+    bases = _socket_tmp_bases()
+    return bases[0] if bases else None
+
+
+def _socket_tmp_bases() -> list[Path]:
+    """Candidate socket base dirs, preferred first.
+
+    `tempfile.gettempdir()` honors TMPDIR, which can itself be deep (test
+    harnesses point it inside an isolated run dir) — deep enough that even the
+    relocated socket blows the sun_path cap. Literal `/tmp` is the classic
+    POSIX fallback for exactly this (ssh-agent, postgres); our per-user
+    subdir is 0700-hardened against the shared-tmp risks. Deduplicated, so on
+    a default macOS/Linux setup this is usually a single entry."""
     getuid = getattr(os, "getuid", None)
     if getuid is None:
-        return None
+        return []
+    bases: list[Path] = []
     try:
-        return Path(tempfile.gettempdir()) / f"chameleon-{getuid()}"
+        uid = getuid()
+        bases.append(Path(tempfile.gettempdir()) / f"chameleon-{uid}")
+        fallback = Path("/tmp") / f"chameleon-{uid}"
+        if fallback not in bases and Path("/tmp").is_dir():
+            bases.append(fallback)
     except Exception:  # noqa: BLE001 - path resolution must never break daemon paths
-        return None
+        pass
+    return bases
 
 
 def _ensure_private_socket_dir(d: Path) -> bool:
@@ -295,10 +314,17 @@ def socket_path() -> Path:
     path is length-limited)."""
     d = _plugin_data()
     d.mkdir(parents=True, exist_ok=True)
-    p = socket_path_for(d, _version_tag(), _socket_tmp_base())
-    if p.parent != d and not _ensure_private_socket_dir(p.parent):
-        return d / f".daemon-{_version_tag()}.sock"
-    return p
+    tag = _version_tag()
+    # First candidate base whose socket path fits the sun_path budget AND
+    # whose dir can be secured wins; the client runs the same deterministic
+    # walk, so both sides of the wire agree.
+    for base in _socket_tmp_bases():
+        p = socket_path_for(d, tag, base)
+        if p.parent == d:
+            continue  # this base overflows the budget; try the next
+        if _ensure_private_socket_dir(p.parent):
+            return p
+    return d / f".daemon-{tag}.sock"
 
 
 def pid_path() -> Path:

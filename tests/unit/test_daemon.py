@@ -360,7 +360,7 @@ def test_socket_path_creates_private_socket_dir(tmp_path: Path):
     try:
         with (
             patch("chameleon_mcp.daemon._plugin_data", return_value=fake_data),
-            patch("chameleon_mcp.daemon._socket_tmp_base", return_value=base),
+            patch("chameleon_mcp.daemon._socket_tmp_bases", return_value=[base]),
         ):
             sp = socket_path()
         assert sp.parent == base
