@@ -94,6 +94,8 @@ def _resolve_py_crossfile_target(repo_root: Path) -> dict | None:
         data = json.loads(artifact.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    if not isinstance(data, dict):
+        return None
     callees = data.get("callees")
     if not isinstance(callees, dict):
         return None
