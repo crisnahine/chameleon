@@ -56,7 +56,11 @@ class EffTask:
     category: str  # convention | crossfile | duplication | verification
     scorers: tuple[str, ...]  # scorer names from the registry
     repeats: int = 1
-    max_turns: int = 12
+    # tier1 tasks (which take this default) legitimately run ~20 turns — add a
+    # convention-following feature AND run the repo's checks — so 12 spuriously
+    # error_max_turns'd real work; a killed cell measures nothing. tier2/tier3
+    # override with their own higher caps.
+    max_turns: int = 30
     setup: str | None = None  # optional callable name: pre-task repo mutation
 
 
