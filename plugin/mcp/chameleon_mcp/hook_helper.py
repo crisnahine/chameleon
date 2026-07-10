@@ -2487,6 +2487,117 @@ def _archetype_facts_section(archetype: str | None, repo_root: Path | None) -> s
         return ""
 
 
+# Names too generic to be a meaningful cross-file duplication signal: an
+# exact-name match on these is almost always coincidence, not a
+# re-implementation, so they never fire the pre-write nudge.
+_DEDUP_STOPWORDS = frozenset(
+    {
+        "index", "render", "main", "init", "setup", "teardown", "start", "stop",
+        "build", "create", "update", "destroy", "show", "value", "result",
+        "handler", "process", "execute", "perform", "apply", "parse", "format",
+        "validate", "inspect", "serialize", "normalize", "initialize",
+    }
+)
+
+_PY_DEF_RE = re.compile(r"^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_]\w*)", re.M)
+_RB_DEF_RE = re.compile(r"^[ \t]*def[ \t]+(?:self\.)?([A-Za-z_]\w*)", re.M)
+_TS_FN_RE = re.compile(
+    r"(?:\bfunction[ \t]+([A-Za-z_$][\w$]*))"
+    r"|(?:\b(?:const|let|var)[ \t]+([A-Za-z_$][\w$]*)[ \t]*=[ \t]*"
+    r"(?:async[ \t]*)?(?:function\b|\([^)]*\)[ \t]*(?::[^=;{]+)?=>))",
+    re.M,
+)
+_TS_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
+
+
+def _extract_defined_names(content: str, file_path: str) -> set[str]:
+    """Names of functions the pending content DEFINES, by a cheap per-language
+    regex — never a full AST parse, so it stays on the per-edit hot path
+    without an extractor spawn. Over-inclusive is fine (the catalog match and
+    stopword filter downstream keep precision high); a miss just means no nudge.
+    """
+    ext = Path(file_path).suffix.lower()
+    if ext in (".py", ".pyi"):
+        return set(_PY_DEF_RE.findall(content))
+    if ext == ".rb":
+        return set(_RB_DEF_RE.findall(content))
+    if ext in _TS_EXTS:
+        out: set[str] = set()
+        for a, b in _TS_FN_RE.findall(content):
+            if a:
+                out.add(a)
+            if b:
+                out.add(b)
+        return out
+    return set()
+
+
+def _prewrite_dedup_section(
+    proposed_content: str | None, file_path: str | None, repo_root: Path | None
+) -> str:
+    """Pre-write reuse nudge (G-025): if the content the model is about to write
+    defines a function whose name already exists in ANOTHER file, surface that
+    before the write so the model reuses it instead of creating a duplicate.
+
+    Moves chameleon's dedup signal from turn-end (too late for one-shot
+    generation — the duplicate is already written) to pre-write. Deterministic
+    (exact cross-file name match against the cached function catalog, no LLM, no
+    extractor spawn), bounded, high-precision (length + stopword filtered,
+    cross-file only). Kill switch ``CHAMELEON_PREWRITE_DEDUP=0``; fails open.
+    """
+    if os.environ.get("CHAMELEON_PREWRITE_DEDUP") == "0":
+        return ""
+    if not proposed_content or not file_path or repo_root is None:
+        return ""
+    try:
+        from chameleon_mcp._thresholds import threshold_int
+        from chameleon_mcp.function_catalog import load_function_catalog
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        names = {
+            n
+            for n in _extract_defined_names(proposed_content, file_path)
+            if len(n) >= 5 and n.lower() not in _DEDUP_STOPWORDS
+        }
+        if not names:
+            return ""
+        catalog = load_function_catalog(repo_root)
+        if catalog is None:
+            return ""
+        try:
+            edited_rel = str(Path(file_path).resolve().relative_to(Path(repo_root).resolve()))
+        except (ValueError, OSError):
+            edited_rel = file_path
+        cap = threshold_int("PREWRITE_DEDUP_MAX_HITS")
+        seen: set[str] = set()
+        hits: list[tuple[str, str]] = []
+        for fn in catalog.functions:
+            if fn.name in names and fn.file != edited_rel and fn.name not in seen:
+                seen.add(fn.name)
+                hits.append((fn.name, fn.file))
+                if len(hits) >= cap:
+                    break
+        if not hits:
+            return ""
+        lines = [
+            "[🦎 chameleon: reuse-before-create]",
+            "A function with this name already exists elsewhere in the repo — "
+            "import and reuse it instead of re-implementing:",
+        ]
+        for name, f in hits:
+            lines.append(
+                f"- `{sanitize_for_chameleon_context(name)}` "
+                f"in {sanitize_for_chameleon_context(f)}"
+            )
+        lines.append(
+            "If your intent is genuinely different, use a distinct name; "
+            "otherwise reuse the existing one."
+        )
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def _match_quality_lead(match_quality: str, archetype_name: str = "", sub_buckets: int = 0) -> str:
     """Match-quality-calibrated directive that leads the witness region.
 
@@ -3645,6 +3756,16 @@ def preflight_and_advise() -> int:
     inbound = _inbound_contracts_section(file_path, repo_root_path)
     if inbound:
         block += inbound + "\n\n"
+    # Pre-write reuse nudge (G-025): if the content the model is about to write
+    # redefines a function that already exists in another file, say so BEFORE the
+    # write — the turn-end duplication catch fires too late for one-shot
+    # generation. A chameleon directive over repo-derived facts, so like the
+    # counterexample it stays outside the imitate-spotlight; names/paths sanitized
+    # in the section. Deterministic, fails open.
+    _pw_content = _proposed_content_for_tool(str(payload.get("tool_name") or ""), tool_input)
+    prewrite_dedup = _prewrite_dedup_section(_pw_content, file_path, repo_root_path)
+    if prewrite_dedup:
+        block += prewrite_dedup + "\n\n"
     if canonical.get("missing"):
         block += (
             f"(canonical witness {sanitize_for_chameleon_context(str(canonical.get('witness_path')))} is "

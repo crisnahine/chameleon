@@ -432,6 +432,10 @@ DEFAULTS: Final[dict[str, int | float]] = {
     # always match against an index at least as wide; the caller passes files
     # most-recent-first, so over-cap the freshest working set is kept.
     "DUPLICATION_INDEX_MAX_FILES": 40,
+    # Max cross-file name-collision nudges the pre-write reuse-before-create
+    # section (G-025) lists on one edit — bounded so a broad content edit that
+    # happens to redefine several existing names cannot flood the block.
+    "PREWRITE_DEDUP_MAX_HITS": 5,
     # Precision bar for the turn-end SEMANTIC duplication pass (different-body,
     # same-intent candidates from select_candidates). Turn-end nags mid-edit, so
     # it needs higher precision than the pr-review prefilter: a body-identical
