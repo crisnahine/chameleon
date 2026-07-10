@@ -91,6 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(_REPO_ROOT / "tests" / "journey" / "results"),
         help="Where to write per-run output",
     )
+    p.add_argument(
+        "--acts",
+        default="",
+        help=(
+            "Comma-separated act ids to run (default: all). Dependencies are NOT "
+            "auto-added: acts that reuse a bootstrapped+trusted fixture need their "
+            "provider in the list too (ts_basic: 02_init_flow; rails_basic: "
+            "07_rails_parity). See each act's docstring."
+        ),
+    )
     return p
 
 
@@ -107,7 +117,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         return cmd_list()
 
-    total_estimated = sum(a[2] for a in _ACTS)
+    if args.acts:
+        wanted = [a.strip() for a in args.acts.split(",") if a.strip()]
+        known = {a[0] for a in _ACTS}
+        unknown = [w for w in wanted if w not in known]
+        if unknown:
+            print(f"ERROR: unknown act id(s) {unknown}; see --list", file=sys.stderr)
+            return 1
+        # Keep registry order regardless of the order given on the CLI.
+        selected = [a for a in _ACTS if a[0] in set(wanted)]
+        print(f"act filter: running {[a[0] for a in selected]}", file=sys.stderr)
+    else:
+        selected = _ACTS
+
+    total_estimated = sum(a[2] for a in selected)
     if total_estimated > args.max_budget_usd:
         print(
             f"ERROR: estimated total cost ${total_estimated:.2f} > --max-budget-usd ${args.max_budget_usd:.2f}",
@@ -142,25 +165,26 @@ def main(argv: list[str] | None = None) -> int:
         print("DRY RUN complete (no acts executed)", file=sys.stderr)
         return 0
 
-    return _run_acts(ctx, args)
+    return _run_acts(ctx, args, selected)
 
 
-def _run_acts(ctx: JourneyContext, args: argparse.Namespace) -> int:
+def _run_acts(ctx: JourneyContext, args: argparse.Namespace, acts: list | None = None) -> int:
     """Sequentially run each act, applying mid-run abort budget check."""
     all_results: list[dict] = []
     any_failed = False
+    acts = _ACTS if acts is None else acts
 
-    for idx, (act_id, name, ceiling, phases) in enumerate(_ACTS):
-        remaining_ceilings = [a[2] for a in _ACTS[idx:]]
+    for idx, (act_id, name, ceiling, phases) in enumerate(acts):
+        remaining_ceilings = [a[2] for a in acts[idx:]]
         projected = ctx.cost_so_far_usd + sum(remaining_ceilings)
         if projected > args.max_budget_usd:
             print(
                 f"BUDGET ABORT before {act_id}: projected ${projected:.2f} > ${args.max_budget_usd:.2f}",
                 file=sys.stderr,
             )
-            for skipped_idx in range(idx, len(_ACTS)):
-                skip_act_id = _ACTS[skipped_idx][0]
-                skip_phases = _ACTS[skipped_idx][3]
+            for skipped_idx in range(idx, len(acts)):
+                skip_act_id = acts[skipped_idx][0]
+                skip_phases = acts[skipped_idx][3]
                 for ph in skip_phases:
                     all_results.append(
                         {
