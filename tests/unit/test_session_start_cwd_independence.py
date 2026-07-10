@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import chameleon_mcp.hook_helper as hh
 
-_PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "plugin"
 
 
 def _run_session_start(*, cwd: Path, repo_root, home: Path, monkeypatch, trust_for=None):

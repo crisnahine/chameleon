@@ -12,8 +12,8 @@
 `get_pattern_context` exists twice, and only one is the enforced hot path:
 
 - **Enforced hook path (budgeted).** PreToolUse `Edit|Write|NotebookEdit` →
-  `hooks/preflight-and-advise` → `preflight_and_advise()` in
-  `mcp/chameleon_mcp/hook_helper.py`, which calls `get_pattern_context` via the
+  `plugin/hooks/preflight-and-advise` → `preflight_and_advise()` in
+  `plugin/mcp/chameleon_mcp/hook_helper.py`, which calls `get_pattern_context` via the
   daemon first, then the in-process fallback (both inside that function). The
   daemon is a latency layer, not a correctness layer: a negative daemon answer
   (`no_repo` / `no_profile` / `profile_corrupted` /
@@ -25,7 +25,7 @@
   edit. The user cannot opt out per call; it is bound by the shell `timeout`
   ceiling below.
 - **Optional MCP tool (not the budget).** `get_pattern_context` is also registered
-  as an MCP tool (the `@mcp.tool()` wrapper in `mcp/chameleon_mcp/server.py`,
+  as an MCP tool (the `@mcp.tool()` wrapper in `plugin/mcp/chameleon_mcp/server.py`,
   delegating to `tools.get_pattern_context`). This is a discretionary surface
   Claude may call during a task. Item 15's caveat is exactly this: verify the
   **hook** invocation specifically, because that is the enforced, budget-bound
@@ -39,12 +39,12 @@ deliberately and added here, not back-derived from a benchmark run.
 
 | Ceiling | Value | Where | Behavior on breach |
 |---|---|---|---|
-| Claude Code hook timeout (outer) | **45 s** fast hooks / **60 s** Stop+SubagentStop | `hooks/hooks.json` (`"timeout": 45` on the five fast hooks, `"timeout": 60` on Stop/SubagentStop) | Claude Code kills the hook; fails open |
-| Fast-hook hard timeout | **3 s** | `hooks/preflight-and-advise:75` (`timeout 3`); same for `session-start`, `posttool-verify`, `posttool-recorder`, `callout-detector` | Process killed; hook **fails open** (edit proceeds without chameleon) |
-| Daemon per-call deadline | **1.5 s** | `DEFAULT_TIMEOUT_S` in `mcp/chameleon_mcp/daemon_client.py` | `call()` returns `None`; the hook falls back in-process, still inside the 3 s cap — a wedged daemon cannot eat the budget |
-| Interpreter-resolver uv probe | **5 s** fast hooks / **30 s** SessionStart+doctor | `_cham_uv_ge_311` in `hooks/_resolve-python.sh`; the five per-edit/per-turn hooks set `CHAMELEON_RESOLVE_FAST=1` | Probe killed (`timeout(1)`, or the background poll loop where no timeout binary exists — the probe is bounded in fast mode even on Git Bash / coreutils-less macOS); ladder falls through; hook fails open. Warm sessions skip the ladder entirely: SessionStart's generous resolve writes `interp.cache` and each later resolve is a builtins-only cache hit |
-| Stop/SubagentStop backstop | **55 s** | `hooks/stop-backstop:85` (`timeout 55`); wraps the ~45 s turn-end correctness judge | Killed; fails open |
-| Statusline render | **< 100 ms** | `bin/chameleon-statusline.sh` — a design budget, not a runtime check. What the script bounds: the stdin read (256 KB, `head -c` at line 8) and the process count (one single-pass `jq` render, constant regardless of profile count) | No latency measurement or truncation; on any render failure it degrades to a `.chameleon` walk-up or a silent `exit 0` |
+| Claude Code hook timeout (outer) | **45 s** fast hooks / **60 s** Stop+SubagentStop | `plugin/hooks/hooks.json` (`"timeout": 45` on the five fast hooks, `"timeout": 60` on Stop/SubagentStop) | Claude Code kills the hook; fails open |
+| Fast-hook hard timeout | **3 s** | `plugin/hooks/preflight-and-advise:75` (`timeout 3`); same for `session-start`, `posttool-verify`, `posttool-recorder`, `callout-detector` | Process killed; hook **fails open** (edit proceeds without chameleon) |
+| Daemon per-call deadline | **1.5 s** | `DEFAULT_TIMEOUT_S` in `plugin/mcp/chameleon_mcp/daemon_client.py` | `call()` returns `None`; the hook falls back in-process, still inside the 3 s cap — a wedged daemon cannot eat the budget |
+| Interpreter-resolver uv probe | **5 s** fast hooks / **30 s** SessionStart+doctor | `_cham_uv_ge_311` in `plugin/hooks/_resolve-python.sh`; the five per-edit/per-turn hooks set `CHAMELEON_RESOLVE_FAST=1` | Probe killed (`timeout(1)`, or the background poll loop where no timeout binary exists — the probe is bounded in fast mode even on Git Bash / coreutils-less macOS); ladder falls through; hook fails open. Warm sessions skip the ladder entirely: SessionStart's generous resolve writes `interp.cache` and each later resolve is a builtins-only cache hit |
+| Stop/SubagentStop backstop | **55 s** | `plugin/hooks/stop-backstop:85` (`timeout 55`); wraps the ~45 s turn-end correctness judge | Killed; fails open |
+| Statusline render | **< 100 ms** | `plugin/bin/chameleon-statusline.sh` — a design budget, not a runtime check. What the script bounds: the stdin read (256 KB, `head -c` at line 8) and the process count (one single-pass `jq` render, constant regardless of profile count) | No latency measurement or truncation; on any render failure it degrades to a `.chameleon` walk-up or a silent `exit 0` |
 
 Notes:
 - Each fast hook is capped twice: the hooks.json `timeout: 45` (outer) and the
@@ -52,7 +52,7 @@ Notes:
   a broken shell wrapper still cannot hang the session. Stop/SubagentStop follow
   the same two-layer shape with more headroom: the shell's 55 s is the binding cap
   and the hooks.json `timeout: 60` is the outer safety net (per the comment in
-  `hooks/stop-backstop` — a shorter inner cap would SIGKILL the judge mid-review).
+  `plugin/hooks/stop-backstop` — a shorter inner cap would SIGKILL the judge mid-review).
 - The 3 s cap is a *hard ceiling and a safety net*, not a target. The fast hooks
   degrade to uncapped when no usable `timeout`/`gtimeout` exists: missing from
   PATH (minimal environments), or Git Bash on Windows, where the wrapper skips
@@ -86,7 +86,7 @@ only — it enforces no ceiling**; the ceilings above are the contract, the
 benchmark is the instrument.
 
 ```bash
-PYTHONPATH=. mcp/.venv/bin/python tests/bench_hot_path.py
+PYTHONPATH=. plugin/mcp/.venv/bin/python tests/bench_hot_path.py
 ```
 
 The heaviest Tier-1 cell (per `docs/verification-matrix.md`) is the size check on

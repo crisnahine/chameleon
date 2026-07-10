@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-SKILLS = Path(__file__).resolve().parents[2] / "skills"
+SKILLS = Path(__file__).resolve().parents[2] / "plugin" / "skills"
 
 # skill name -> a rule phrase that must appear inside its Honesty Rules and is
 # specific to that skill's purpose (not a generic copy).

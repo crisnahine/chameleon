@@ -235,7 +235,7 @@ cmd_audit() {
 # Read MAX_SUPPORTED_SCHEMA_VERSION from the profile loader so the check tracks
 # the engine without a second source of truth.
 engine_max_schema() {
-  local loader="$REPO_ROOT/mcp/chameleon_mcp/profile/loader.py"
+  local loader="$REPO_ROOT/plugin/mcp/chameleon_mcp/profile/loader.py"
   [[ -f "$loader" ]] || return 1
   awk '
     /^MAX_SUPPORTED_SCHEMA_VERSION[[:space:]]*=/ {
@@ -313,7 +313,7 @@ cmd_bump() {
     printf "  %-45s  %s -> %s\n" "$path ($field)" "$old_ver" "$new_version"
   done < <(declared_files)
 
-  local venv_site="$REPO_ROOT/mcp/.venv/lib"
+  local venv_site="$REPO_ROOT/plugin/mcp/.venv/lib"
   if [[ -d "$venv_site" ]]; then
     local cleaned=0
     while IFS= read -r -d '' stale_dir; do
@@ -332,22 +332,22 @@ cmd_bump() {
   # after a version bump. Non-fatal: warn and continue if a tool is absent or
   # offline, so a bump never hard-fails on lock regeneration.
   if command -v uv >/dev/null 2>&1; then
-    if (cd "$REPO_ROOT/mcp" && uv lock >/dev/null 2>&1); then
-      echo "Regenerated mcp/uv.lock"
+    if (cd "$REPO_ROOT/plugin/mcp" && uv lock >/dev/null 2>&1); then
+      echo "Regenerated plugin/mcp/uv.lock"
     else
-      echo "WARN: 'uv lock' failed; run it in mcp/ before pushing (CI uses --frozen)" >&2
+      echo "WARN: 'uv lock' failed; run it in plugin/mcp/ before pushing (CI uses --frozen)" >&2
     fi
   else
-    echo "WARN: uv not found; mcp/uv.lock not regenerated (CI uses --frozen)" >&2
+    echo "WARN: uv not found; plugin/mcp/uv.lock not regenerated (CI uses --frozen)" >&2
   fi
   if command -v npm >/dev/null 2>&1; then
-    if (cd "$REPO_ROOT/mcp" && npm install --package-lock-only --silent >/dev/null 2>&1); then
-      echo "Regenerated mcp/package-lock.json"
+    if (cd "$REPO_ROOT/plugin/mcp" && npm install --package-lock-only --silent >/dev/null 2>&1); then
+      echo "Regenerated plugin/mcp/package-lock.json"
     else
-      echo "WARN: 'npm install --package-lock-only' failed; regenerate mcp/package-lock.json before pushing" >&2
+      echo "WARN: 'npm install --package-lock-only' failed; regenerate plugin/mcp/package-lock.json before pushing" >&2
     fi
   else
-    echo "WARN: npm not found; mcp/package-lock.json not regenerated" >&2
+    echo "WARN: npm not found; plugin/mcp/package-lock.json not regenerated" >&2
   fi
 
   echo ""

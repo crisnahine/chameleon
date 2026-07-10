@@ -19,7 +19,9 @@ import pytest
 from chameleon_mcp.extractors.ruby import RubyExtractor
 from chameleon_mcp.extractors.typescript import TypeScriptExtractor
 
-_NODE_MODULES = Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "typescript"
+_NODE_MODULES = (
+    Path(__file__).resolve().parents[2] / "plugin" / "mcp" / "node_modules" / "typescript"
+)
 _HAVE_TS = shutil.which("node") is not None and _NODE_MODULES.is_dir()
 
 

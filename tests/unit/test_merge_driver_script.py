@@ -1,6 +1,6 @@
 """The git merge driver must pass file paths to Python safely.
 
-``scripts/chameleon-merge-driver.sh`` previously interpolated the BASE/OURS/
+``plugin/scripts/chameleon-merge-driver.sh`` previously interpolated the BASE/OURS/
 THEIRS paths straight into a ``python -c`` string literal. A path containing a
 single quote broke the literal (SyntaxError, the merge aborted) and was a code
 injection sink. The driver must merge correctly even when a path contains a
@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DRIVER = REPO_ROOT / "scripts" / "chameleon-merge-driver.sh"
+DRIVER = REPO_ROOT / "plugin" / "scripts" / "chameleon-merge-driver.sh"
 
 
 def _archetypes(gen: int, names: list[str]) -> str:
@@ -45,7 +45,7 @@ def test_merge_driver_handles_single_quote_in_path(tmp_path):
     theirs.write_text(_archetypes(2, ["bar"]))
 
     env = dict(os.environ)
-    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
+    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT / "plugin")
     proc = subprocess.run(
         [str(DRIVER), str(base), str(ours), str(theirs)],
         capture_output=True,

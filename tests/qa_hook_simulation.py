@@ -16,8 +16,9 @@ import time
 from pathlib import Path
 
 CHAMELEON_ROOT = Path(__file__).resolve().parent.parent
-HOOK_DIR = CHAMELEON_ROOT / "hooks"
-MCP_DIR = CHAMELEON_ROOT / "mcp"
+PLUGIN_DIR = CHAMELEON_ROOT / "plugin"
+HOOK_DIR = PLUGIN_DIR / "hooks"
+MCP_DIR = PLUGIN_DIR / "mcp"
 TS_REPO = os.environ.get("CHAMELEON_TEST_TS_REPO", "")
 RUBY_REPO = os.environ.get("CHAMELEON_TEST_RUBY_REPO", "")
 
@@ -78,7 +79,7 @@ def run_hook(hook_name: str, payload: dict, cwd: str) -> dict:
     env = {
         **os.environ,
         "CLAUDE_CWD": cwd,
-        "CLAUDE_PLUGIN_ROOT": str(CHAMELEON_ROOT),
+        "CLAUDE_PLUGIN_ROOT": str(PLUGIN_DIR),
         "PYTHONPATH": str(MCP_DIR),
     }
     try:

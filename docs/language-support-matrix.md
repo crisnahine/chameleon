@@ -97,7 +97,7 @@ identically regardless of language.
 | Default file glob | ✅ | ✅ | ✅ | Only TS needs brace-expansion (_expand_glob, typescript.py:419) because it covers 6 extensions; Ruby/Python are single-extension. Fine. |
 | Subprocess hardening (env scrub + neutral cwd) | ✅ | ✅ | ✅ | Implemented for all three. The TS extractor now drops `NODE_OPTIONS` and `NODE_REPL_EXTERNAL_MODULE` (the Node analogues of RUBYOPT / PYTHONSTARTUP) before spawning ts_dump.mjs, alongside its existing neutral cwd; `NODE_PATH` stays (load-bearing, points Node at the bundled node_modules). Matches the Ruby RUBYOPT/RUBYLIB and Python PYTHONPATH/PYTHONSTARTUP scrubs. Full parity. |
 | Pipe-deadlock-safe IO + timeout/exit truncation marking | ✅ | ✅ | ✅ |  |
-| MAX_AST_NODES cap (50000 TS/Ruby; 165000 Py) | ✅ | ✅ | ✅ | All three enforce an AST-node cap under the same MAX_FILE_SIZE bound - full parity on the capability. The value is language-split: TS/Ruby cap at 50000, Python's libcst at 165000 (scripts/libcst_dump.py:42) because CST node counts run ~3.3x the equivalent AST for the same source. |
+| MAX_AST_NODES cap (50000 TS/Ruby; 165000 Py) | ✅ | ✅ | ✅ | All three enforce an AST-node cap under the same MAX_FILE_SIZE bound - full parity on the capability. The value is language-split: TS/Ruby cap at 50000, Python's libcst at 165000 (plugin/scripts/libcst_dump.py:42) because CST node counts run ~3.3x the equivalent AST for the same source. |
 | MAX_FILE_SIZE cap (1MB) + file_too_large | ✅ | ✅ | ✅ |  |
 | MAX_CALLABLE_SIGNATURES cap (200) | ✅ | ✅ | ✅ |  |
 | MAX_CALL_SITES cap (2000) + honest truncation flag | ✅ | ✅ | ✅ |  |

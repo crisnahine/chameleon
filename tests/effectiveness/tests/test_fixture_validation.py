@@ -23,7 +23,7 @@ FIXTURES = REPO_ROOT / "tests" / "effectiveness" / "fixtures"
 
 needs_node = pytest.mark.skipif(
     shutil.which("node") is None
-    or not (REPO_ROOT / "mcp" / "node_modules" / "typescript").is_dir(),
+    or not (REPO_ROOT / "plugin" / "mcp" / "node_modules" / "typescript").is_dir(),
     reason="node + vendored typescript required to bootstrap the TS fixture",
 )
 needs_ruby = pytest.mark.skipif(

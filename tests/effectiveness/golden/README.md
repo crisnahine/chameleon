@@ -41,7 +41,7 @@ byte-identical; it refuses to overwrite an existing `labels.jsonl` sheet's
 pairing without `--force`):
 
 ```bash
-PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.golden_label sample \
+PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.golden_label sample \
   --runs tests/effectiveness/results/effectiveness_20260615T175635Z \
          tests/effectiveness/results/effectiveness_20260616T003421Z \
   --n 40 --seed 7 --out tests/effectiveness/golden/pairs.jsonl
@@ -51,7 +51,7 @@ Compute the gate once labels exist (read-only; partial labels are fine, it
 reports coverage and computes on the labeled subset):
 
 ```bash
-PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.golden_label kappa \
+PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.golden_label kappa \
   --pairs tests/effectiveness/golden/pairs.jsonl \
   --labels tests/effectiveness/golden/labels.jsonl \
   --panel tests/effectiveness/golden/panel_verdicts.jsonl

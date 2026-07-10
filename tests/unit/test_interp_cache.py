@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESOLVER = REPO_ROOT / "hooks" / "_resolve-python.sh"
+RESOLVER = REPO_ROOT / "plugin" / "hooks" / "_resolve-python.sh"
 BASH = shutil.which("bash")
 
 pytestmark = pytest.mark.skipif(BASH is None, reason="bash required for hook-script tests")
@@ -325,12 +325,12 @@ _FAST_HOOKS = (
 @pytest.mark.parametrize("hook", _FAST_HOOKS)
 def test_fast_hooks_set_resolve_fast_for_resolver(hook):
     """Each per-edit/per-turn hook must invoke the resolver in fast mode."""
-    text = (REPO_ROOT / "hooks" / hook).read_text()
+    text = (REPO_ROOT / "plugin" / "hooks" / hook).read_text()
     assert "CHAMELEON_RESOLVE_FAST=1" in text, f"{hook} does not set fast mode"
 
 
 def test_session_start_keeps_generous_resolve():
     """SessionStart deliberately stays on the generous path (it may pay a cold
     uv materialization) and thereby warms the cache for the fast hooks."""
-    text = (REPO_ROOT / "hooks" / "session-start").read_text()
+    text = (REPO_ROOT / "plugin" / "hooks" / "session-start").read_text()
     assert "CHAMELEON_RESOLVE_FAST=1" not in text

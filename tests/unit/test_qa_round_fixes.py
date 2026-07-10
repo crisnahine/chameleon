@@ -29,13 +29,13 @@ def _read(rel: str) -> str:
 def test_trust_skill_documents_single_step_promotion_by_default():
     # Trust persists across changes, so promoting enforcement is a single config
     # edit by default; the two-step (re-trust) path is documented as kill-switch-only.
-    text = _read("skills/chameleon-trust/SKILL.md")
+    text = _read("plugin/skills/chameleon-trust/SKILL.md")
     assert "single edit" in text
     assert "CHAMELEON_TRUST_REVALIDATE=1" in text
 
 
 def test_status_skill_documents_single_step_promotion_by_default():
-    text = _read("skills/chameleon-status/SKILL.md")
+    text = _read("plugin/skills/chameleon-status/SKILL.md")
     assert "single edit" in text
     assert "CHAMELEON_TRUST_REVALIDATE=1" in text
 
@@ -91,7 +91,7 @@ def test_stop_backstop_wrapper_timeout_exceeds_judge_budget():
     # and leaks its throwaway config dir.
     from chameleon_mcp._thresholds import DEFAULTS
 
-    text = _read("hooks/stop-backstop")
+    text = _read("plugin/hooks/stop-backstop")
     import re
 
     m = re.search(r'\$\{TIMEOUT_BIN:\+"\$\{TIMEOUT_BIN\}" (\d+)\}', text)

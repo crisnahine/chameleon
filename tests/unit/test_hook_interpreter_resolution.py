@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RESOLVER = REPO_ROOT / "hooks" / "_resolve-python.sh"
+RESOLVER = REPO_ROOT / "plugin" / "hooks" / "_resolve-python.sh"
 BASH = shutil.which("bash")
 
 pytestmark = pytest.mark.skipif(BASH is None, reason="bash required for hook-script tests")
@@ -180,7 +180,7 @@ def _fake_plugin_root(tmp_path) -> Path:
     root = tmp_path / "plugin"
     (root / "hooks").mkdir(parents=True)
     (root / "mcp").mkdir()
-    for f in (REPO_ROOT / "hooks").iterdir():
+    for f in (REPO_ROOT / "plugin" / "hooks").iterdir():
         if f.is_file():
             dst = root / "hooks" / f.name
             dst.write_text(f.read_text())

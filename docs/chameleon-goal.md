@@ -68,9 +68,9 @@ codebase, not memory.
 - **Languages (the complete supported set — exactly three; there is no open-ended
   universe):**
   - **TypeScript/JavaScript** — `.ts .tsx .js .jsx .mjs .cjs`, AST via the TypeScript
-    Compiler API (`scripts/ts_dump.mjs`).
-  - **Ruby** — `.rb`, AST via Prism (`scripts/prism_dump.rb`).
-  - **Python** — `.py .pyi`, CST via libcst (`scripts/libcst_dump.py`). Nuance: `.pyi`
+    Compiler API (`plugin/scripts/ts_dump.mjs`).
+  - **Ruby** — `.rb`, AST via Prism (`plugin/scripts/prism_dump.rb`).
+  - **Python** — `.py .pyi`, CST via libcst (`plugin/scripts/libcst_dump.py`). Nuance: `.pyi`
     is linted/detected (`_PY_EXTENSIONS`, `lint_engine.py`) but bootstrap discovery
     globs `**/*.py` only (`_glob_for_extractor`, `bootstrap/orchestrator.py`), so
     `.pyi` files are never clustered into the profile — don't assume a `.pyi`-heavy
@@ -78,8 +78,8 @@ codebase, not memory.
 
   No other languages are supported. Go, Rust, Java, and C# have no extractor, dumper, or
   detection signal — `detect_language()` returns only these three
-  (`mcp/chameleon_mcp/lint_engine.py`) and `EXTRACTORS = [TypeScript, Ruby, Python]`
-  (`mcp/chameleon_mcp/extractors/registry.py`) — and MUST NOT appear in the matrix.
+  (`plugin/mcp/chameleon_mcp/lint_engine.py`) and `EXTRACTORS = [TypeScript, Ruby, Python]`
+  (`plugin/mcp/chameleon_mcp/extractors/registry.py`) — and MUST NOT appear in the matrix.
 - **Frameworks / repo shapes:** Chameleon is framework-**agnostic** by default — it learns
   each repo's own conventions, so any framework in a supported language works. The named
   frameworks below add a deeper, framework-aware layer on top:
@@ -94,8 +94,8 @@ codebase, not memory.
   frontend+backend. Source the list from `docs/language-support-matrix.md`, not memory.
 - **Platform (explicitly scoped, not a matrix axis):** the matrix is language ×
   framework; platform is a separate, deliberately-scoped dimension. The code ships
-  native Windows support (`hooks/run-hook.cmd` polyglot dispatch, the `msvcrt` lock
-  fallback in `mcp/chameleon_mcp/locks.py`, `windows-latest` CI jobs in
+  native Windows support (`plugin/hooks/run-hook.cmd` polyglot dispatch, the `msvcrt` lock
+  fallback in `plugin/mcp/chameleon_mcp/locks.py`, `windows-latest` CI jobs in
   `.github/workflows/ci.yml`; the daemon stays POSIX-only). Windows is verified via
   the CI matrix plus manual spot-checks — per this repo's own testing conventions —
   not by multiplying every matrix cell by platform; the human protocol below runs on
@@ -120,8 +120,8 @@ inventing percentiles:
 - **Hook timeout:** the five fast hooks (PreToolUse / PostToolUse / SessionStart /
   UserPromptSubmit) wrap the Python helper in a 3-second hard shell `timeout` and fail
   open; the Stop/SubagentStop backstop uses 55s (it wraps the ~45s turn-end correctness
-  judge). (`hooks/*`, `docs/architecture.md`.)
-- **Statusline render budget:** sub-100ms (`bin/chameleon-statusline.sh`).
+  judge). (`plugin/hooks/*`, `docs/architecture.md`.)
+- **Statusline render budget:** sub-100ms (`plugin/bin/chameleon-statusline.sh`).
 - **Measurement method:** `tests/bench_hot_path.py` reports cold/warm p50/p99 for
   `get_pattern_context` and its sub-steps (repo-detect / profile-load / archetype-resolve)
   — it measures, but enforces no ceiling.
@@ -207,14 +207,14 @@ Each entry: *what correct means in real usage* → *how a human observes it* →
    "<plugin>/scripts/chameleon-merge-driver.sh %O %A %B %P"`. *Observe:* register it the
    documented way, create a genuine conflict in a golden repo, run the merge, and inspect
    the merged file and git state. *Note:* install does NOT auto-register the driver
-   (`scripts/setup.sh` / `docs/install.md` don't touch `.gitattributes`); confirm the documented
+   (`plugin/scripts/setup.sh` / `docs/install.md` don't touch `.gitattributes`); confirm the documented
    manual registration works end to end, or log "install doesn't auto-register" as a gap.
 
 7. **Migrations** — There is no migration framework to exercise
-   (`mcp/chameleon_mcp/profile/migrations/` is a docstring-only stub); what must be
+   (`plugin/mcp/chameleon_mcp/profile/migrations/` is a docstring-only stub); what must be
    verified are the *actual* upgrade mechanisms: refresh forces a full re-derive when
    the engine or profile schema changed (`_engine_version_changed` /
-   `_profile_needs_rederive`, `mcp/chameleon_mcp/tools.py`); the loader loads older
+   `_profile_needs_rederive`, `plugin/mcp/chameleon_mcp/tools.py`); the loader loads older
    profiles (schema_version <= 7 under the current v8) but refuses anything newer than
    `MAX_SUPPORTED_SCHEMA_VERSION` (8) with a clean "upgrade chameleon-mcp" error
    (`profile/loader.py`); drift.db is a drop-and-recreate cache by policy
@@ -274,13 +274,13 @@ Each entry: *what correct means in real usage* → *how a human observes it* →
     `AUTOPASS_ATTESTATION`, `STOP_IDIOM_TERSE`, `JUDGE_TIERING`, `REVIEW_REFUTER`,
     `REVIEW_FANOUT`) — new features ship default-ON with a kill switch, so re-derive
     this list at verification time (grep the `== "0"` / `!= "0"` env reads across
-    `mcp/chameleon_mcp/` + `hooks/`) rather than trusting this enumeration;
+    `plugin/mcp/chameleon_mcp/` + `hooks/`) rather than trusting this enumeration;
     (b) the 4-layer per-repo opt-out hierarchy (`.chameleon/.skip`,
     `CHAMELEON_DISABLE=1`, `.session_disabled.<sid>`, `.pause_until` — `optouts.py`);
     (c) ~7 default-OFF opt-**in** gates (`CHAMELEON_ALLOW_*`, `JUDGE_ASYNC`,
     `TRUST_REVALIDATE`) that are NOT kill switches; (d) the 18 `config.json`
     `enforcement.*` keys — `mode`, `stop_block_cap`, and 16 feature booleans
-    (`EnforcementConfig`, `mcp/chameleon_mcp/profile/config.py`). *Observe:* for each,
+    (`EnforcementConfig`, `plugin/mcp/chameleon_mcp/profile/config.py`). *Observe:* for each,
     use the feature with it ON, then flip it and confirm the feature is genuinely gone
     (not just hidden); test env-vs-config precedence directly. *Note:* the off-state proof is itself a real-usage check — don't skip it.
 
@@ -294,7 +294,7 @@ Each entry: *what correct means in real usage* → *how a human observes it* →
     (`get_pattern_context`, the PreToolUse advise path) stays within the Task-1 budget on
     every required cell, never blocks the user, and is never invoked as a discretionary
     tool/step. *Caveat:* `get_pattern_context` is *also* registered as an MCP tool
-    (`mcp/chameleon_mcp/server.py`), so verify specifically that the **hook** invocation is
+    (`plugin/mcp/chameleon_mcp/server.py`), so verify specifically that the **hook** invocation is
     automatic and budget-bound (the enforced path), distinct from that optional tool
     surface. *Observe:* measure real-session overhead (incl. on the large repo) against the
     ceilings; confirm the hook path runs as an enforced budget, not something Claude can

@@ -12,14 +12,19 @@ See [docs/architecture.md](./docs/architecture.md) for the full design.
 
 ```
 chameleon/
-├── .claude-plugin/    plugin.json + marketplace.json (Claude Code plugin manifest)
-├── hooks/             session-start, preflight-and-advise, posttool-recorder,
-│                      posttool-verify, callout-detector, stop-backstop
-│                      (+ _resolve-python.sh, run-hook.cmd, hooks.json)
-├── skills/            using-chameleon (auto) + 14 user-invocable slash commands
-├── mcp/               chameleon-mcp Python server (FastMCP, stdio transport)
-├── scripts/           ts_dump.mjs, prism_dump.rb, bump-version.sh, merge driver
-├── bin/               chameleon-statusline.sh (status line, <100ms budget)
+├── .claude-plugin/    marketplace.json (points at ./plugin as the plugin source)
+├── plugin/            the installable plugin surface (this is what a marketplace install copies)
+│   ├── .claude-plugin/  plugin.json (plugin manifest)
+│   ├── .mcp.json        MCP server registration (${CLAUDE_PLUGIN_ROOT}-relative)
+│   ├── hooks/           session-start, preflight-and-advise, posttool-recorder,
+│   │                    posttool-verify, callout-detector, stop-backstop
+│   │                    (+ _resolve-python.sh, run-hook.cmd, hooks.json)
+│   ├── skills/          using-chameleon (auto) + 14 user-invocable slash commands
+│   ├── agents/          code-scout, pattern-reviewer, web-researcher
+│   ├── mcp/             chameleon-mcp Python server (FastMCP, stdio transport)
+│   ├── scripts/         ts_dump.mjs, prism_dump.rb, libcst_dump.py, merge driver, setup.sh
+│   └── bin/             chameleon-statusline.sh (status line, <100ms budget)
+├── scripts/           dev-only tooling: bump-version.sh, prune-plugin-cache.sh, ...
 ├── tests/             unit/ + journey/ + effectiveness/ harnesses + qa_*.py real-repo batteries
 └── docs/              architecture.md (design) + install.md + language-support-matrix.md + parity-progress.md + qa-team.md
 ```
@@ -30,28 +35,28 @@ The user-invocable commands: `init`, `refresh`, `status`, `teach`, `auto-idiom`,
 
 - **Language**: all code, comments, docs, error messages, and commit messages MUST be in English.
 - **Versioning**: `bump-version.sh <new-version>` keeps six manifest files in sync (see `.version-bump.json`).
-- **Locks**: `mcp/package-lock.json` and `mcp/uv.lock` are committed.
+- **Locks**: `plugin/mcp/package-lock.json` and `plugin/mcp/uv.lock` are committed.
 - **Atomic transactions**: profile writes use `.chameleon/.tmp/<txn-id>/COMMITTED` sentinel + flock-serialized rename.
-- **Production-ref derivation**: when `.chameleon/config.json` has `production_ref` (auto-locked at init/refresh for origin-backed repos, or set explicitly), bootstrap/refresh analyze a materialized worktree of that ref instead of the checkout; refresh noop/staleness is tip-SHA-keyed. Refresh (manual + auto) first runs a default-ON, non-interactive `git fetch origin <branch>` so the tip it resolves is the latest production, not the user's last fetch (kill: `CHAMELEON_FETCH_PRODUCTION_REF=0` / config `auto_refresh.fetch_production_ref=false`; auto-suppressed under CI; fails open). Local-only repos (most test fixtures) never auto-lock — they keep working-tree derivation. An explicit `"production_ref": null` is a durable opt-out (migration never re-locks over it). See `mcp/chameleon_mcp/production_ref.py` and docs/architecture.md "Production-ref derivation".
+- **Production-ref derivation**: when `.chameleon/config.json` has `production_ref` (auto-locked at init/refresh for origin-backed repos, or set explicitly), bootstrap/refresh analyze a materialized worktree of that ref instead of the checkout; refresh noop/staleness is tip-SHA-keyed. Refresh (manual + auto) first runs a default-ON, non-interactive `git fetch origin <branch>` so the tip it resolves is the latest production, not the user's last fetch (kill: `CHAMELEON_FETCH_PRODUCTION_REF=0` / config `auto_refresh.fetch_production_ref=false`; auto-suppressed under CI; fails open). Local-only repos (most test fixtures) never auto-lock — they keep working-tree derivation. An explicit `"production_ref": null` is a durable opt-out (migration never re-locks over it). See `plugin/mcp/chameleon_mcp/production_ref.py` and docs/architecture.md "Production-ref derivation".
 
 ## Working on this codebase
 
 ### Lint and format
 
-Python is linted with ruff (line-length 100, config in `mcp/pyproject.toml`; `E402` and `E501` are intentionally ignored — see the comments there):
+Python is linted with ruff (line-length 100, config in `plugin/mcp/pyproject.toml`; `E402` and `E501` are intentionally ignored — see the comments there):
 
 ```bash
-mcp/.venv/bin/ruff check .          # lint
-mcp/.venv/bin/ruff format .         # format
+plugin/mcp/.venv/bin/ruff check .          # lint
+plugin/mcp/.venv/bin/ruff format .         # format
 ```
 
 ### Run the journey harness
 
 ```bash
-mcp/.venv/bin/python -m tests.journey.runner               # full run (~$33, ~65 min)
-mcp/.venv/bin/python -m tests.journey.runner --list        # list acts
-mcp/.venv/bin/python -m tests.journey.runner --dry-run     # preflight only, no Claude spawn
-mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 20
+plugin/mcp/.venv/bin/python -m tests.journey.runner               # full run (~$33, ~65 min)
+plugin/mcp/.venv/bin/python -m tests.journey.runner --list        # list acts
+plugin/mcp/.venv/bin/python -m tests.journey.runner --dry-run     # preflight only, no Claude spawn
+plugin/mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 20
 ```
 
 The journey harness drives real `claude -p` subprocesses against committed seed fixtures. Run before each release. All state is isolated to a per-run dir under `tests/journey/results/`; the developer's own `~/.local/share/chameleon/` is never touched.
@@ -59,7 +64,7 @@ The journey harness drives real `claude -p` subprocesses against committed seed 
 ### Run unit tests for chameleon
 
 ```bash
-PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ -v
+PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ -v
 ```
 
 These verify chameleon's hook functions (posttool_verify, etc.) with mocked dependencies.
@@ -67,7 +72,7 @@ These verify chameleon's hook functions (posttool_verify, etc.) with mocked depe
 ### Run unit tests for the harness library
 
 ```bash
-PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/journey/harness/tests/ -v
+PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/journey/harness/tests/ -v
 ```
 
 These verify the harness library itself (context, checkpoints, expect, fixtures setup). They do NOT test chameleon; that's the journey runner's job.
@@ -79,23 +84,23 @@ Faster and free vs the journey harness. These import the MCP tools and call them
 ```bash
 # TypeScript repo battery
 CHAMELEON_TEST_TS_REPO=/abs/path/to/ts-repo \
-  PYTHONPATH=. mcp/.venv/bin/python tests/qa_typescript.py
+  PYTHONPATH=. plugin/mcp/.venv/bin/python tests/qa_typescript.py
 
 # Ruby repo battery (any Ruby repo; Rails repos exercise the Rails-aware layer)
 CHAMELEON_TEST_RUBY_REPO=/abs/path/to/ruby-repo \
-  PYTHONPATH=. mcp/.venv/bin/python tests/qa_ruby.py
+  PYTHONPATH=. plugin/mcp/.venv/bin/python tests/qa_ruby.py
 
 # Python repo battery (Django / Flask / FastAPI)
 CHAMELEON_TEST_PYTHON_REPO=/abs/path/to/python-repo \
-  PYTHONPATH=. mcp/.venv/bin/python tests/qa_python.py
+  PYTHONPATH=. plugin/mcp/.venv/bin/python tests/qa_python.py
 
 # Cross-cutting (security, caching, contract invariants) — needs BOTH repos
 CHAMELEON_TEST_TS_REPO=... CHAMELEON_TEST_RUBY_REPO=... \
-  PYTHONPATH=. mcp/.venv/bin/python tests/qa_crosscutting.py
+  PYTHONPATH=. plugin/mcp/.venv/bin/python tests/qa_crosscutting.py
 
 # Drive 10 simulated tasks through the real PreToolUse + PostToolUse hooks
 CHAMELEON_TEST_TS_REPO=... CHAMELEON_TEST_RUBY_REPO=... \
-  PYTHONPATH=. mcp/.venv/bin/python tests/qa_hook_simulation.py
+  PYTHONPATH=. plugin/mcp/.venv/bin/python tests/qa_hook_simulation.py
 ```
 
 ### Effectiveness eval (A/B: does chameleon improve agent output?)
@@ -104,12 +109,12 @@ Spawns real `claude -p` sessions — local only, never CI. See
 [.claude/rules/effectiveness-eval.md](./.claude/rules/effectiveness-eval.md)
 (lazy-loads when touching `tests/effectiveness/`) for tiers, budgets, toggle
 experiments, and results layout. Unit tests for the eval itself DO run in CI:
-`PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/effectiveness/tests/ -v`
+`PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/effectiveness/tests/ -v`
 
 ### Benchmark the hot path
 
 ```bash
-PYTHONPATH=. mcp/.venv/bin/python tests/bench_hot_path.py
+PYTHONPATH=. plugin/mcp/.venv/bin/python tests/bench_hot_path.py
 ```
 
 Reports cold/warm p50 and p99 for `get_pattern_context` and its sub-steps (repo detection, profile load, archetype resolve).
@@ -118,13 +123,13 @@ Reports cold/warm p50 and p99 for `get_pattern_context` and its sub-steps (repo 
 
 ```bash
 echo '{"tool_name":"Edit","tool_input":{"file_path":"/abs/path/to/file.ts"},"session_id":"test"}' \
-  | CLAUDE_PLUGIN_ROOT="$(pwd)" hooks/preflight-and-advise
+  | CLAUDE_PLUGIN_ROOT="$(pwd)/plugin" plugin/hooks/preflight-and-advise
 ```
 
 ### Run the MCP server directly
 
 ```bash
-cd mcp
+cd plugin/mcp
 .venv/bin/python -m chameleon_mcp.server
 ```
 
@@ -154,10 +159,10 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 
 ### Pass 3 — full surface (beyond tools + hooks)
 - **Slash-command / skill flows**: drive each `/chameleon-*` end-to-end (init, refresh, status, teach, auto-idiom, trust, disable, pause-15m, doctor, pr-review, receiving-code-review, explain) — the skill logic + output, not just the underlying tool.
-- **Statusline**: `bin/chameleon-statusline.sh` with a sample payload — correct format, within the <100ms budget, respects `CHAMELEON_DISABLE`.
+- **Statusline**: `plugin/bin/chameleon-statusline.sh` with a sample payload — correct format, within the <100ms budget, respects `CHAMELEON_DISABLE`.
 - **MCP stdio server**: `python -m chameleon_mcp.server` — call a tool over the real stdio transport, not just in-process.
 - **Daemon**: `daemon.py` / `daemon_client.py` — startup, socket, idle-timeout self-exit, `daemon_status`.
-- **Merge driver**: `scripts/chameleon-merge-driver.sh` on a real `.chameleon` git merge conflict (3-way).
+- **Merge driver**: `plugin/scripts/chameleon-merge-driver.sh` on a real `.chameleon` git merge conflict (3-way).
 - **Hot path**: `tests/bench_hot_path.py` — `get_pattern_context` p50/p99 within budget.
 - **Schema migrations**: load an old-schema-version profile — migrate or reject cleanly (don't crash).
 
@@ -171,7 +176,7 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 - Fix CHAMELEON, not the test, when a test surfaces a gap. Tests enforce the spec.
 - Verify load-bearing claims yourself before relaying them.
 - After any fix: 2-3 rounds of review (read-only `Explore` agents, or back up first — review subagents can mutate the working tree), THEN run the matrix.
-- Always bump the version (`scripts/bump-version.sh <ver>`); the plugin cache is version-keyed. Run `ruff check` AND `ruff format --check` from `mcp/` over `chameleon_mcp/ ../tests/unit/` before pushing.
+- Always bump the version (`scripts/bump-version.sh <ver>`); the plugin cache is version-keyed. Run `ruff check` AND `ruff format --check` from `plugin/mcp/` over `chameleon_mcp/ ../../tests/unit/` before pushing.
 - At each release: refresh the real-PR outcome aggregate (`tests/measure_pr_review_outcomes.py`) and the published eval artifacts + `baselines.json` per `tests/effectiveness/results-published/README.md`.
 - Do NOT claim "I tested everything" until Pass 2 ran.
 
@@ -180,14 +185,14 @@ Exercise each MCP tool + hook once on a healthy profile: the `qa_*.py` batteries
 The flags every session needs; the FULL operator reference (every kill switch,
 model ladder, tuning threshold, and its design contract) lives in
 [.claude/rules/environment-variables.md](./.claude/rules/environment-variables.md),
-which lazy-loads when you touch `mcp/`, `hooks/`, `bin/`, or `tests/`.
+which lazy-loads when you touch `plugin/mcp/`, `plugin/hooks/`, `plugin/bin/`, or `tests/`.
 
 - `CHAMELEON_DISABLE=1` — disable plugin globally for this session
 - `CHAMELEON_VERIFY=0` — disable PostToolUse archetype verification (default ON)
 - `CHAMELEON_ENFORCE=0` — kill all blocking enforcement (advisory-only per-edit hooks, silent Stop); a blocked edit is overridable inline with `// chameleon-ignore <rule>` (`#` form in Ruby/Python)
 - `CHAMELEON_ALLOW_TMP_REPO=1` — allow repos under `/tmp`/`$TMPDIR` to resolve (set for test suites and CI fixture jobs; never in normal use)
 - `CHAMELEON_PLUGIN_DATA` / `CHAMELEON_HMAC_KEY_PATH` / `CHAMELEON_PLUGIN_ROOT` — test-only overrides for data dir, HMAC key, plugin root
-- `CHAMELEON_<THRESHOLD>` — operator override for any tuning threshold in `mcp/chameleon_mcp/_thresholds.py` (see its `DEFAULTS`)
+- `CHAMELEON_<THRESHOLD>` — operator override for any tuning threshold in `plugin/mcp/chameleon_mcp/_thresholds.py` (see its `DEFAULTS`)
 - `CLAUDE_PLUGIN_ROOT` — set by Claude Code; path to installed plugin
 
 Design contract for all flags: offline features ship default-ON with a kill

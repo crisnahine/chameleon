@@ -16,7 +16,7 @@ from pathlib import Path
 from chameleon_mcp.profile.trust import _HASHED_ARTIFACTS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILL = REPO_ROOT / "skills" / "chameleon-trust" / "SKILL.md"
+SKILL = REPO_ROOT / "plugin" / "skills" / "chameleon-trust" / "SKILL.md"
 
 
 def test_trust_skill_lists_every_hashed_artifact():

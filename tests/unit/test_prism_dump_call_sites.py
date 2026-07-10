@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-_PRISM_DUMP = Path(__file__).resolve().parents[2] / "scripts" / "prism_dump.rb"
+_PRISM_DUMP = Path(__file__).resolve().parents[2] / "plugin" / "scripts" / "prism_dump.rb"
 
 
 def _have_prism() -> bool:

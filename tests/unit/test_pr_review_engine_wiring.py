@@ -31,7 +31,7 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILL = REPO_ROOT / "skills" / "chameleon-pr-review" / "SKILL.md"
+SKILL = REPO_ROOT / "plugin" / "skills" / "chameleon-pr-review" / "SKILL.md"
 
 
 def _skill_text() -> str:
@@ -78,8 +78,8 @@ _REVIEW_DISPATCHER_ACTIONS = (
     "get_review_history",
 )
 
-_RECEIVING_SKILL = REPO_ROOT / "skills" / "chameleon-receiving-code-review" / "SKILL.md"
-_REVIEWER_MD = REPO_ROOT / "skills" / "chameleon-pr-review" / "reviewer.md"
+_RECEIVING_SKILL = REPO_ROOT / "plugin" / "skills" / "chameleon-receiving-code-review" / "SKILL.md"
+_REVIEWER_MD = REPO_ROOT / "plugin" / "skills" / "chameleon-pr-review" / "reviewer.md"
 
 
 def _registered_tools_by_name() -> dict[str, set[str]]:

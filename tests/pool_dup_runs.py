@@ -6,7 +6,7 @@ across the given runs (so a second pass tightens the per-task estimate). The
 paired statistic is per-task (off_rate - shadow_rate); a causal reduction is
 established iff the bootstrap 95% CI lower bound > 0.
 
-Usage: PYTHONPATH=. mcp/.venv/bin/python tests/pool_dup_runs.py <run_dir> [<run_dir> ...]
+Usage: PYTHONPATH=. plugin/mcp/.venv/bin/python tests/pool_dup_runs.py <run_dir> [<run_dir> ...]
 """
 
 from __future__ import annotations

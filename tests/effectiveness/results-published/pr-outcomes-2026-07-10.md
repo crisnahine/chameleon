@@ -71,9 +71,9 @@ consumers of these measurements: run `doctor` before trusting a replay.
 
 ```bash
 CHAMELEON_TEST_TS_REPO=/abs/path/ef-client CHAMELEON_TEST_RUBY_REPO=/abs/path/ef-api \
-  PYTHONPATH=. mcp/.venv/bin/python tests/measure_pr_review_outcomes.py 200
+  PYTHONPATH=. plugin/mcp/.venv/bin/python tests/measure_pr_review_outcomes.py 200
 CHAMELEON_TEST_TS_REPO=/abs/path/ef-client CHAMELEON_TEST_RUBY_REPO=/abs/path/ef-api \
-  PYTHONPATH=. mcp/.venv/bin/python tests/measure_pr_tier_distribution.py 200
+  PYTHONPATH=. plugin/mcp/.venv/bin/python tests/measure_pr_tier_distribution.py 200
 ```
 
 Requires `BITBUCKET_USER`/`BITBUCKET_TOKEN` (read scope) and committed,

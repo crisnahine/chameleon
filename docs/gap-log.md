@@ -26,17 +26,17 @@ editing history:
 - **Every staged fix has shipped.** The FIX-STAGED entries — G-001..G-003 (asset
   builds) and G-007..G-019 (code fixes) — all landed in tagged releases and are
   present in current code through `v2.54.0`. Spot-verified against today's tree:
-  G-007 `_python_source_roots` (`mcp/chameleon_mcp/symbol_index.py:336`); G-008
+  G-007 `_python_source_roots` (`plugin/mcp/chameleon_mcp/symbol_index.py:336`); G-008
   read ceiling derived from the build edge cap (`max_read_bytes =
   threshold_int("CALLS_INDEX_MAX_TOTAL_EDGES") * 700`,
-  `mcp/chameleon_mcp/calls_index.py:663`); G-010 non-idioms top-title guard in
-  `looks_like_idioms_markdown` (`mcp/chameleon_mcp/idiom_coverage.py:1176`);
-  G-013 `fanout_clipped` (`mcp/chameleon_mcp/blast_radius.py:45-63`). Statuses
+  `plugin/mcp/chameleon_mcp/calls_index.py:663`); G-010 non-idioms top-title guard in
+  `looks_like_idioms_markdown` (`plugin/mcp/chameleon_mcp/idiom_coverage.py:1176`);
+  G-013 `fanout_clipped` (`plugin/mcp/chameleon_mcp/blast_radius.py:45-63`). Statuses
   stay FIX-STAGED because formal CLOSED still requires human re-sign-off per the
   protocol above — shipping is not sign-off.
 - **G-020 superseded.** Class/module name search shipped in v2.50.0: the
   symbol-signatures artifact now carries an additive `classes` section
-  (`mcp/chameleon_mcp/symbol_signatures.py` — built at :178, `class_items()` at
+  (`plugin/mcp/chameleon_mcp/symbol_signatures.py` — built at :178, `class_items()` at
   :214; a pre-v2.50 artifact simply has no `classes` key until the next refresh)
   and `search_codebase` returns `kind="class"` rows. The WONT-FIX rationale ("no
   committed artifact exposes class shapes in a searchable form") no longer holds;
@@ -300,7 +300,7 @@ Verification note: the report also claimed `doctor` emits an `index_db` check �
 NOT (the 12 real check names were confirmed in code), so that part was a false report and
 no `index_db` reference was added (anti-hallucination on the report itself).
 [Correction, 2026-07-07: this note was itself the false claim. `doctor()` does emit an
-`index_db` check — `{"name": "index_db", ...}` in `mcp/chameleon_mcp/tools.py`, present
+`index_db` check — `{"name": "index_db", ...}` in `plugin/mcp/chameleon_mcp/tools.py`, present
 since v2.6.0 — so the original panel report was right and this note's rebuttal was the
 hallucination. Kept, struck-by-correction, as its own anti-hallucination lesson.]
 

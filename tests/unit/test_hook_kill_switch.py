@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-HOOKS = REPO_ROOT / "hooks"
+HOOKS = REPO_ROOT / "plugin" / "hooks"
 PAYLOAD = (
     '{"tool_name":"Edit","tool_input":{"file_path":"/tmp/x.ts"},"session_id":"s","cwd":"/tmp"}'
 )
@@ -34,7 +34,7 @@ def _run(wrapper: str, env_extra: dict, tmp_path: Path) -> subprocess.CompletedP
         **os.environ,
         "CHAMELEON_PLUGIN_DATA": str(tmp_path / "data"),
         "CHAMELEON_HOOK_ERROR_LOG": str(tmp_path / "err.log"),
-        "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT),
+        "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT / "plugin"),
         **env_extra,
     }
     return subprocess.run(

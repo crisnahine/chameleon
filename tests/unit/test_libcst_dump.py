@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-_LIBCST_DUMP = Path(__file__).resolve().parents[2] / "scripts" / "libcst_dump.py"
+_LIBCST_DUMP = Path(__file__).resolve().parents[2] / "plugin" / "scripts" / "libcst_dump.py"
 
 
 def _have_libcst() -> bool:

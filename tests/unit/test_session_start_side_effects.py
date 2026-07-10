@@ -30,7 +30,7 @@ from unittest.mock import MagicMock, patch
 
 import chameleon_mcp.hook_helper as hh
 
-_PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "plugin"
 
 
 def _reset_drift_conn_cache() -> None:

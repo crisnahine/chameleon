@@ -2,13 +2,14 @@
 #
 # Fires on any tag matching `v*.*.*`. Verifies that:
 #   1. All 6 manifests in .version-bump.json agree on the tagged version.
-#   2. mcp/pyproject.toml's [project] version matches.
-#   3. mcp/chameleon_mcp/__init__.py:__version__ matches.
+#   2. plugin/mcp/pyproject.toml's [project] version matches.
+#   3. plugin/mcp/chameleon_mcp/__init__.py:__version__ matches.
 #   4. CHANGELOG.md has an entry for the tagged version (heading like
 #      `## [0.3.0]`).
 #
 # After verification, runs the full Python test matrix (same suites as
-# ci.yml's test-python job), builds a source tarball, and publishes a
+# ci.yml's test-python job), builds a plugin tarball (plugin/ +
+# README/LICENSE/CHANGELOG), and publishes a
 # GitHub Release with the CHANGELOG entry as the body plus every published
 # effectiveness run's run.md/metrics.json as extra assets (skipped when
 # tests/effectiveness/results-published/ is absent or empty).
@@ -64,36 +65,36 @@ jobs:
         run: |
           # bump-version.sh --check confirms the 6 manifests agree with each
           # OTHER, but not that they agree with the tag. Compare one
-          # manifest (canonical: .claude-plugin/plugin.json) against the
+          # manifest (canonical: plugin/.claude-plugin/plugin.json) against the
           # extracted version.
-          MANIFEST_VERSION=$(jq -r '.version' .claude-plugin/plugin.json)
+          MANIFEST_VERSION=$(jq -r '.version' plugin/.claude-plugin/plugin.json)
           if [ "$MANIFEST_VERSION" != "$VERSION" ]; then
-            echo "ERROR: tag is v$VERSION but .claude-plugin/plugin.json reports $MANIFEST_VERSION" >&2
+            echo "ERROR: tag is v$VERSION but plugin/.claude-plugin/plugin.json reports $MANIFEST_VERSION" >&2
             exit 1
           fi
           echo "Manifest version matches tag: $VERSION"
 
-      - name: Verify mcp/pyproject.toml version matches the tag
+      - name: Verify plugin/mcp/pyproject.toml version matches the tag
         env:
           VERSION: ${{ steps.extract.outputs.version }}
         run: |
-          PY_VERSION=$(grep -E '^version = ' mcp/pyproject.toml | head -n 1 | sed -E 's/version = "(.*)"/\1/')
+          PY_VERSION=$(grep -E '^version = ' plugin/mcp/pyproject.toml | head -n 1 | sed -E 's/version = "(.*)"/\1/')
           if [ "$PY_VERSION" != "$VERSION" ]; then
-            echo "ERROR: tag is v$VERSION but mcp/pyproject.toml reports $PY_VERSION" >&2
+            echo "ERROR: tag is v$VERSION but plugin/mcp/pyproject.toml reports $PY_VERSION" >&2
             exit 1
           fi
-          echo "mcp/pyproject.toml version matches tag: $VERSION"
+          echo "plugin/mcp/pyproject.toml version matches tag: $VERSION"
 
-      - name: Verify mcp/chameleon_mcp/__init__.py __version__ matches the tag
+      - name: Verify plugin/mcp/chameleon_mcp/__init__.py __version__ matches the tag
         env:
           VERSION: ${{ steps.extract.outputs.version }}
         run: |
-          INIT_VERSION=$(grep -E '^__version__ = ' mcp/chameleon_mcp/__init__.py | head -n 1 | sed -E 's/__version__ = "(.*)"/\1/')
+          INIT_VERSION=$(grep -E '^__version__ = ' plugin/mcp/chameleon_mcp/__init__.py | head -n 1 | sed -E 's/__version__ = "(.*)"/\1/')
           if [ "$INIT_VERSION" != "$VERSION" ]; then
-            echo "ERROR: tag is v$VERSION but mcp/chameleon_mcp/__init__.py reports $INIT_VERSION" >&2
+            echo "ERROR: tag is v$VERSION but plugin/mcp/chameleon_mcp/__init__.py reports $INIT_VERSION" >&2
             exit 1
           fi
-          echo "mcp/chameleon_mcp/__init__.py __version__ matches tag: $VERSION"
+          echo "plugin/mcp/chameleon_mcp/__init__.py __version__ matches tag: $VERSION"
 
       - name: Verify CHANGELOG.md has an entry for this version
         env:
@@ -129,14 +130,14 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: 'mcp/uv.lock'
+          cache-dependency-glob: 'plugin/mcp/uv.lock'
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: 'mcp/package-lock.json'
+          cache-dependency-path: 'plugin/mcp/package-lock.json'
 
       - name: Set up Ruby (Ruby extractor golden corpus)
         uses: ruby/setup-ruby@v1
@@ -144,18 +145,18 @@ jobs:
           ruby-version: '3.3'  # 3.3+ bundles prism
 
       - name: Install Python dependencies (uv sync)
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: uv sync --frozen --extra dev
 
       - name: Install Node dependencies (TypeScript extractor)
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: npm ci
 
       - name: Run unit + harness tests
-        working-directory: mcp
+        working-directory: plugin/mcp
         env:
-          PYTHONPATH: '.:..'
-        run: .venv/bin/python -m pytest ../tests/unit/ ../tests/journey/harness/tests/ -v
+          PYTHONPATH: '.:../..'
+        run: .venv/bin/python -m pytest ../../tests/unit/ ../../tests/journey/harness/tests/ -v
 
   build-tarball:
     name: build-tarball
@@ -189,12 +190,12 @@ jobs:
           TARBALL_PATH="${OUT_DIR}/${TARBALL_NAME}"
           echo "tarball-name=${TARBALL_NAME}" >> "$GITHUB_OUTPUT"
           echo "tarball-path=${TARBALL_PATH}" >> "$GITHUB_OUTPUT"
-          # Exclude developer-local artefacts (.venv, node_modules,
-          # .chameleon, dist, __pycache__) from the release tarball.
+          # Archive only the installable surface (plugin/) plus the
+          # top-level README/LICENSE/CHANGELOG, so the release artifact
+          # matches what a marketplace install ships (no tests/, docs/,
+          # or dev scripts). Developer-local artefacts (.venv,
+          # node_modules, __pycache__) are still excluded.
           tar \
-            --exclude='./.venv' \
-            --exclude='./.git' \
-            --exclude='./.github' \
             --exclude='*/.venv' \
             --exclude='*/node_modules' \
             --exclude='*/.chameleon' \
@@ -202,11 +203,10 @@ jobs:
             --exclude='*/__pycache__' \
             --exclude='*/.ruff_cache' \
             --exclude='*.pyc' \
-            --exclude='./.DS_Store' \
             --exclude='*/.DS_Store' \
             -czf "${TARBALL_PATH}" \
-            --transform "s,^\./,chameleon-${VERSION}/," \
-            .
+            --transform "s,^,chameleon-${VERSION}/," \
+            plugin README.md LICENSE CHANGELOG.md
           ls -lh "${TARBALL_PATH}"
 
       - name: Upload tarball artifact

@@ -10,7 +10,7 @@ sessions and costs money.
 
 One task per category, off vs shadow:
 
-    PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner \
+    PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner \
       --tier ci \
       --tasks t1-ts-convention-component,t1-ts-crossfile-rename,t1-rails-duplication-email,t1-ts-verification-clamp \
       --arms off,shadow --repeats 1 --max-budget-usd 5
@@ -39,14 +39,14 @@ fix it before trusting any numbers.
 ## Full tier (ask before spending; ~$25-45)
 
     CHAMELEON_TEST_TS_REPO=...  CHAMELEON_TEST_RUBY_REPO=... \
-    PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner \
+    PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner \
       --tier full --arms off,shadow --max-budget-usd 45
 
 Missing env repos skip that language's tasks with a reason (never an error).
 
 ## Toggle experiments
 
-    PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner \
+    PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner \
       --tier ci --arms off,shadow --toggle judge_crossfile_facts
 
 adds the paired arm `shadow~judge_crossfile_facts=false`. Env-flag features
@@ -56,7 +56,7 @@ key.
 
 ## Model-tier arms
 
-    PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner \
+    PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner \
       --tier dup --arms off,shadow --arm-model shadow=opus
 
 runs each arm on its own worker model (arms not named fall back to `--model`).
@@ -91,5 +91,5 @@ commands per run: `results-published/README.md`.
 
 claude CLI on PATH; git >= 2.28; Node >= 22.6 (the TS fixture's `npm test`
 uses --experimental-strip-types); ruby 3.x (plain, no gems) for the Rails
-fixture; mcp/.venv built. Tier full additionally needs the env repos
+fixture; plugin/mcp/.venv built. Tier full additionally needs the env repos
 bootstrapped (`/chameleon-init`) and committed.

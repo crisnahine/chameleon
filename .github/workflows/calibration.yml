@@ -63,21 +63,21 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: 'mcp/uv.lock'
+          cache-dependency-glob: 'plugin/mcp/uv.lock'
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: 'mcp/package-lock.json'
+          cache-dependency-path: 'plugin/mcp/package-lock.json'
 
       - name: Install Python dependencies (uv sync)
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: uv sync --frozen --extra dev
 
       - name: Install Node dependencies (TypeScript extractor)
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: npm ci
 
       - name: Materialize corpus.json from secret (optional)
@@ -94,10 +94,10 @@ jobs:
       - name: Run calibration harness
         id: harness
         env:
-          PYTHONPATH: 'mcp:tests'
+          PYTHONPATH: 'plugin/mcp:tests'
         run: |
           mkdir -p calibration-artifacts
-          mcp/.venv/bin/python tests/calibration/harness.py \
+          plugin/mcp/.venv/bin/python tests/calibration/harness.py \
             | tee calibration-artifacts/calibration.json
           echo "trigger-notes=${{ github.event.inputs.notes }}" >> calibration-artifacts/run-context.txt
           echo "ref=${{ github.ref }}"                          >> calibration-artifacts/run-context.txt

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-PR = Path(__file__).resolve().parents[2] / "skills" / "chameleon-pr-review" / "SKILL.md"
+PR = Path(__file__).resolve().parents[2] / "plugin" / "skills" / "chameleon-pr-review" / "SKILL.md"
 
 
 def _pr() -> str:

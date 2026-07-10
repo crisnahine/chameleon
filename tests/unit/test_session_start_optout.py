@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-_PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "plugin"
 
 
 def _run_session_start(suppressed_reason, tmp_path) -> tuple[int, str]:

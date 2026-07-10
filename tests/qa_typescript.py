@@ -6,7 +6,7 @@ chameleon profile before running.
 
 Invocation:
     CHAMELEON_TEST_TS_REPO=/path/to/ts-repo \
-    PYTHONPATH=. mcp/.venv/bin/python tests/qa_typescript.py
+    PYTHONPATH=. plugin/mcp/.venv/bin/python tests/qa_typescript.py
 """
 
 from __future__ import annotations

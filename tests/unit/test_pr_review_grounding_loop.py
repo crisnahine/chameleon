@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-SKILL = Path(__file__).resolve().parents[2] / "skills" / "chameleon-pr-review" / "SKILL.md"
+SKILL = (
+    Path(__file__).resolve().parents[2] / "plugin" / "skills" / "chameleon-pr-review" / "SKILL.md"
+)
 
 
 def _t():

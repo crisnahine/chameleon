@@ -42,18 +42,18 @@ project documents a local clone install. Marketplace users follow
 ```bash
 git clone https://github.com/crisnahine/chameleon
 cd chameleon
-scripts/setup.sh --dev    # verify prerequisites + warm Python/Node deps (incl. pytest, ruff)
+plugin/scripts/setup.sh --dev    # verify prerequisites + warm Python/Node deps (incl. pytest, ruff)
 
-# Launch Claude Code with the working tree mounted as a plugin
-claude --plugin-dir "$(pwd)"
+# Launch Claude Code with the working tree's plugin surface mounted as a plugin
+claude --plugin-dir "$(pwd)/plugin"
 ```
 
-`scripts/setup.sh --dev` replaces the older `cd mcp && uv sync && npm install` one-liner. The `--dev` flag matters: a plain `uv sync` installs runtime deps only and prunes the dev extras, leaving you without pytest and ruff. Run `scripts/setup.sh --check` any time to re-verify your toolchain.
+`plugin/scripts/setup.sh --dev` replaces the older `cd plugin/mcp && uv sync && npm install` one-liner. The `--dev` flag matters: a plain `uv sync` installs runtime deps only and prunes the dev extras, leaving you without pytest and ruff. Run `plugin/scripts/setup.sh --check` any time to re-verify your toolchain.
 
 Smoke-check the MCP server resolves cleanly:
 
 ```bash
-cd mcp
+cd plugin/mcp
 .venv/bin/python -c "from chameleon_mcp.server import mcp; print('mcp ok')"
 ```
 
@@ -61,12 +61,12 @@ cd mcp
 
 | Suite | Command | Notes |
 |---|---|---|
-| Unit tests | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ -v` | Fast, no external deps. Run before every PR. |
-| Harness library self-tests | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/journey/harness/tests/ -v` | Verifies the journey harness itself. |
-| Effectiveness eval self-tests | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/effectiveness/tests/ -v` | Verifies the effectiveness eval harness. CI's `test-python` job runs these alongside unit + harness tests. |
-| Journey harness (full) | `mcp/.venv/bin/python -m tests.journey.runner` | Drives real `claude -p` subprocesses. ~$33, ~65 min. |
-| Journey harness (dry-run) | `mcp/.venv/bin/python -m tests.journey.runner --dry-run` | Preflight only, no Claude spawn. |
-| Journey harness (list acts) | `mcp/.venv/bin/python -m tests.journey.runner --list` | Lists available acts. |
+| Unit tests | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ -v` | Fast, no external deps. Run before every PR. |
+| Harness library self-tests | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/journey/harness/tests/ -v` | Verifies the journey harness itself. |
+| Effectiveness eval self-tests | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/effectiveness/tests/ -v` | Verifies the effectiveness eval harness. CI's `test-python` job runs these alongside unit + harness tests. |
+| Journey harness (full) | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.journey.runner` | Drives real `claude -p` subprocesses. ~$33, ~65 min. |
+| Journey harness (dry-run) | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.journey.runner --dry-run` | Preflight only, no Claude spawn. |
+| Journey harness (list acts) | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.journey.runner --list` | Lists available acts. |
 
 All commands run from the repo root.
 
@@ -81,7 +81,7 @@ issue, not the code, before implementation proceeds.
 
 ### Hook stack changes
 
-Hooks live in `hooks/`. Six hook scripts wired across six events:
+Hooks live in `plugin/hooks/`. Six hook scripts wired across six events:
 `session-start` (SessionStart), `preflight-and-advise` (PreToolUse),
 `posttool-recorder` and `posttool-verify` (PostToolUse), `callout-detector`
 (UserPromptSubmit), and `stop-backstop` (Stop and SubagentStop). They are
@@ -92,21 +92,21 @@ subprocess-per-call today.
 - Preserve the per-edit timeout budget in `preflight-and-advise`: the shell
   wrapper caps each hook at 3s and the daemon socket call defaults to 1.5s.
   Raising them slows every edit; lowering them raises the fail-open rate.
-- Run `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ -v`
-  and the journey harness dry-run (`mcp/.venv/bin/python -m tests.journey.runner --dry-run`).
+- Run `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ -v`
+  and the journey harness dry-run (`PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.journey.runner --dry-run`).
 
 Test a hook locally:
 
 ```bash
 echo '{"tool_name":"Edit","tool_input":{"file_path":"/abs/path/to/file.ts"},"session_id":"test"}' \
-  | CLAUDE_PLUGIN_ROOT="$(pwd)" hooks/preflight-and-advise
+  | CLAUDE_PLUGIN_ROOT="$(pwd)/plugin" plugin/hooks/preflight-and-advise
 ```
 
 ### MCP tool changes
 
 MCP tools are a public API surface. The 46 `@mcp.tool()` registrations (the
-public surface) live in `mcp/chameleon_mcp/server.py`;
-`mcp/chameleon_mcp/tools.py` holds the implementations `server.py` wraps.
+public surface) live in `plugin/mcp/chameleon_mcp/server.py`;
+`plugin/mcp/chameleon_mcp/tools.py` holds the implementations `server.py` wraps.
 Compatibility contract per [architecture.md](../docs/architecture.md):
 
 **Non-breaking** (no major version bump):
@@ -129,14 +129,14 @@ under a `### Breaking` heading (mirror the v0.2.0 entry).
 
 Schema files: `archetypes.json`, `rules.json`, `canonicals.json`,
 `profile.json`. Schema version anchors: `PROFILE_SCHEMA_VERSION` in
-`mcp/chameleon_mcp/bootstrap/orchestrator.py` and `CURRENT_SCHEMA_VERSION`
-in `mcp/chameleon_mcp/profile/schema.py`.
+`plugin/mcp/chameleon_mcp/bootstrap/orchestrator.py` and `CURRENT_SCHEMA_VERSION`
+in `plugin/mcp/chameleon_mcp/profile/schema.py`.
 
 - **Non-breaking** (additive only) -> ship.
 - **Breaking** -> bump both version anchors, write a migration at
-  `mcp/chameleon_mcp/profile/migrations/v<old>_to_v<new>.py` with a fixture
+  `plugin/mcp/chameleon_mcp/profile/migrations/v<old>_to_v<new>.py` with a fixture
   pair `(input_v<old>.json, expected_output_v<new>.json)`, bump
-  `MAX_SUPPORTED_SCHEMA_VERSION` in `mcp/chameleon_mcp/profile/loader.py`,
+  `MAX_SUPPORTED_SCHEMA_VERSION` in `plugin/mcp/chameleon_mcp/profile/loader.py`,
   and document the decision in an issue. The
   migration MUST be idempotent, atomic, and no-op when already at target.
 
@@ -190,7 +190,7 @@ before/after eval evidence will be sent back.
 `scripts/bump-version.sh <new-version>` keeps six manifest files in sync
 (see `.version-bump.json` for the full list): `.claude-plugin/plugin.json`,
 `.claude-plugin/marketplace.json`, `package.json`,
-`mcp/package.json`, `mcp/pyproject.toml`, `mcp/chameleon_mcp/__init__.py`.
+`plugin/mcp/package.json`, `plugin/mcp/pyproject.toml`, `plugin/mcp/chameleon_mcp/__init__.py`.
 
 Run `scripts/bump-version.sh --check` before tagging to catch drift.
 

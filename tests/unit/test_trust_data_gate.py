@@ -28,7 +28,7 @@ from chameleon_mcp.tools import (
     lint_file,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[2]  # the chameleon repo (has SKILL.md)
+PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "plugin"  # the installed-plugin surface
 
 ARCH = "service"
 WITNESS = "service.ts"
@@ -138,7 +138,7 @@ BIDI = "‮"  # right-to-left override; the sanitizer strips it
 def _session_start_context(repo: Path, monkeypatch, *, trusted: bool) -> str:
     monkeypatch.setenv("CHAMELEON_PLUGIN_DATA", str(repo.parent / "data"))
     monkeypatch.setenv("CHAMELEON_ALLOW_TMP_REPO", "1")
-    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO_ROOT))
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(PLUGIN_ROOT))
     monkeypatch.setattr("chameleon_mcp.hook_helper._maybe_auto_refresh", lambda *a, **k: None)
     if trusted:
         grant_trust(_compute_repo_id(repo), repo / ".chameleon")

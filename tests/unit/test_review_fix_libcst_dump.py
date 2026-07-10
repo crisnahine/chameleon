@@ -23,7 +23,7 @@ import pytest
 
 cst = pytest.importorskip("libcst")
 
-_LIBCST_DUMP = Path(__file__).resolve().parents[2] / "scripts" / "libcst_dump.py"
+_LIBCST_DUMP = Path(__file__).resolve().parents[2] / "plugin" / "scripts" / "libcst_dump.py"
 
 
 def _load_module():

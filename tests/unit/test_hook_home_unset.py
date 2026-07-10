@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-HOOKS = REPO_ROOT / "hooks"
+HOOKS = REPO_ROOT / "plugin" / "hooks"
 PAYLOAD = (
     '{"tool_name":"Edit","tool_input":{"file_path":"/tmp/x.ts"},"session_id":"s","cwd":"/tmp"}'
 )
@@ -39,7 +39,7 @@ def _run_without_home(wrapper: str, tmp_path: Path) -> subprocess.CompletedProce
     env.update(
         {
             "CHAMELEON_PLUGIN_DATA": str(tmp_path / "data"),
-            "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT),
+            "CLAUDE_PLUGIN_ROOT": str(REPO_ROOT / "plugin"),
             "TMPDIR": str(tmp_path / "tmp"),
         }
     )

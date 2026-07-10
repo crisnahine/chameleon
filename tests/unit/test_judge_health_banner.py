@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
-_PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+_PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "plugin"
 REPO_ID = "jh_repo"
 
 

@@ -6,7 +6,7 @@ for the chameleon (shadow) arm. A causal preference requires the CI lower bound
 > 0.5. Controlled Claude judge (both orderings per vote, 3 votes); the validity
 rests on order-control + the deterministic scorer reported alongside, not family.
 
-Usage: PYTHONPATH=. mcp/.venv/bin/python tests/run_posthoc_panel.py <results_dir>
+Usage: PYTHONPATH=. plugin/mcp/.venv/bin/python tests/run_posthoc_panel.py <results_dir>
 """
 
 from __future__ import annotations

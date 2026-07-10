@@ -7,10 +7,10 @@ sheet from stored effectiveness runs and computes the kappa once labels
 exist. Stdlib only.
 
 Usage:
-  PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.golden_label sample \
+  PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.golden_label sample \
       --runs tests/effectiveness/results/effectiveness_<ts> [...] \
       --n 40 --seed 7 --out tests/effectiveness/golden/pairs.jsonl
-  PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.golden_label kappa \
+  PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.golden_label kappa \
       --pairs tests/effectiveness/golden/pairs.jsonl \
       --labels tests/effectiveness/golden/labels.jsonl \
       --panel tests/effectiveness/golden/panel_verdicts.jsonl

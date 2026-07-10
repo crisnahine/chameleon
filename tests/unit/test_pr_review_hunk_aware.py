@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SKILL = REPO_ROOT / "skills" / "chameleon-pr-review" / "SKILL.md"
+SKILL = REPO_ROOT / "plugin" / "skills" / "chameleon-pr-review" / "SKILL.md"
 
 
 def _skill_text() -> str:

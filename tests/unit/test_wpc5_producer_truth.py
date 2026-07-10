@@ -20,7 +20,9 @@ import pytest
 
 import chameleon_mcp.bootstrap.orchestrator as o
 
-_TS_NODE_MODULES = Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "typescript"
+_TS_NODE_MODULES = (
+    Path(__file__).resolve().parents[2] / "plugin" / "mcp" / "node_modules" / "typescript"
+)
 _HAVE_TS = shutil.which("node") is not None and _TS_NODE_MODULES.is_dir()
 
 pytestmark = pytest.mark.skipif(

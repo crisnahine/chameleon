@@ -59,7 +59,7 @@ def test_imports_without_fcntl_subprocess():
     as on native Windows) and imports the full package.
     """
     repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    mcp_dir = os.path.join(repo_root, "mcp")
+    mcp_dir = os.path.join(repo_root, "plugin", "mcp")
     script = (
         "import sys\n"
         "sys.modules['fcntl'] = None\n"  # next `import fcntl` -> ImportError

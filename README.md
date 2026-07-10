@@ -243,7 +243,7 @@ import axios from "axios"; // chameleon-ignore import-preference-violation
 4. **No made-up efficacy number.** We will not print "writes better code by X%". We ship the measuring instrument instead: an effectiveness harness that runs paired Claude sessions, context off vs on, and reports the delta. Reproducible for about $3-5 at the ci tier:
 
 ```bash
-PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner --tier ci --arms off,shadow
+PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner --tier ci --arms off,shadow
 ```
 
 We'd rather you measure than take our word.
@@ -266,12 +266,12 @@ Every number below is checkable in this repo right now:
 
 | What | Count | Verify yourself |
 |---|---|---|
-| Unit tests | **5,311** | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
+| Unit tests | **5,311** | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
 | Released versions | **182** (v0.1.1 to v2.69.0) | `git tag \| wc -l` |
 | Changelog | **6,500+ lines** | `wc -l CHANGELOG.md` |
 | CI | ubuntu + macos + **native Windows**, Python 3.11-3.13 | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
-| Per-edit hot path | benchmarked cold/warm p50 and p99 | `PYTHONPATH=. mcp/.venv/bin/python tests/bench_hot_path.py` |
-| Effectiveness harness | paired off-vs-on sessions | `PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner --list` |
+| Per-edit hot path | benchmarked cold/warm p50 and p99 | `PYTHONPATH=. plugin/mcp/.venv/bin/python tests/bench_hot_path.py` |
+| Effectiveness harness | paired off-vs-on sessions | `PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner --list` |
 
 Beyond unit tests: real-repo QA batteries per language, hook fuzzing against malformed payloads, and a journey harness that drives real `claude -p` editing sessions against seed fixtures before each release. Profile writes are atomic transactions, `.chameleon` merge conflicts get a dedicated git merge driver, the statusline stays under 100ms, and a warm-path advisor daemon keeps per-edit latency in milliseconds.
 

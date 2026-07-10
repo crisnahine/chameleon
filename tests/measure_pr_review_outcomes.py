@@ -9,7 +9,7 @@ read-only Bitbucket comment counts (bbcurl). This is the outcome the goal names
 
 Usage:
     CHAMELEON_TEST_TS_REPO=/abs/ts-repo CHAMELEON_TEST_RUBY_REPO=/abs/rails-repo \\
-      PYTHONPATH=. mcp/.venv/bin/python tests/measure_pr_review_outcomes.py [N]
+      PYTHONPATH=. plugin/mcp/.venv/bin/python tests/measure_pr_review_outcomes.py [N]
 
 Requires bbcurl (curl -u $BITBUCKET_USER:$BITBUCKET_TOKEN) on PATH. Comment count
 is non-deleted PR comments (inline + general); a PR with >100 comments is flagged

@@ -17,7 +17,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "cd mcp && PYTHONPATH=.:../tests .venv/bin/python ../tests/run_all_orders.py",
+    "test": "PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ -q",
     "version:check": "scripts/bump-version.sh --check",
     "version:bump": "scripts/bump-version.sh"
   }

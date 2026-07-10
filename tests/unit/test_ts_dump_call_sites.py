@@ -9,8 +9,10 @@ from pathlib import Path
 
 import pytest
 
-_NODE_MODULES = Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "typescript"
-_TS_DUMP = Path(__file__).resolve().parents[2] / "scripts" / "ts_dump.mjs"
+_NODE_MODULES = (
+    Path(__file__).resolve().parents[2] / "plugin" / "mcp" / "node_modules" / "typescript"
+)
+_TS_DUMP = Path(__file__).resolve().parents[2] / "plugin" / "scripts" / "ts_dump.mjs"
 _HAVE_TS = shutil.which("node") is not None and _NODE_MODULES.is_dir()
 
 FIXTURE = """

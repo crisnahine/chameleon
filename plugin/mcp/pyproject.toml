@@ -6,7 +6,6 @@ authors = [
     { name = "Cris Nahine", email = "crisjosephnahine@gmail.com" }
 ]
 license = "MIT"
-readme = "../README.md"
 requires-python = ">=3.11"
 
 dependencies = [
@@ -60,9 +59,9 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # Test files can repeat themselves and import where they please.
-# Path is relative to this pyproject.toml; the test suite lives one level
-# above (`../tests/`) when running from `mcp/`.
-"../tests/**" = ["B007"]
+# Path is relative to this pyproject.toml; the test suite lives two levels
+# above (`../../tests/`) when running from `plugin/mcp/`.
+"../../tests/**" = ["B007"]
 "tests/**" = ["B007"]
 
 [tool.pytest.ini_options]

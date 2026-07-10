@@ -4,7 +4,7 @@ Checked:
   - claude CLI on PATH
   - git --version >= 2.28
   - committed seed fixtures present
-  - mcp/.venv/bin/python present
+  - plugin/mcp/.venv/bin/python present
   - no concurrent runner (lockfile in run_dir parent)
 """
 
@@ -30,15 +30,18 @@ def claude_on_path() -> Path:
     return Path(p)
 
 
-def python_venv_present(plugin_root: Path) -> Path:
-    p = plugin_root / "mcp" / ".venv" / "bin" / "python"
+def python_venv_present(plugin_dir: Path) -> Path:
+    """``plugin_dir`` is the installable plugin dir (``<repo>/plugin``)."""
+    p = plugin_dir / "mcp" / ".venv" / "bin" / "python"
     if not p.is_file():
-        raise PreflightError(f"missing {p}; run `cd mcp && uv sync` from the chameleon repo first")
+        raise PreflightError(
+            f"missing {p}; run `cd plugin/mcp && uv sync` from the chameleon repo first"
+        )
     return p
 
 
 def fixtures_present(
-    plugin_root: Path,
+    repo_root: Path,
     fixtures_root: Path | None = None,
     required: list[str] | None = None,
 ) -> dict[str, Path]:
@@ -48,7 +51,7 @@ def fixtures_present(
     own fixtures_root + required list.
     """
     if fixtures_root is None:
-        fixtures_root = plugin_root / "tests" / "journey" / "fixtures"
+        fixtures_root = repo_root / "tests" / "journey" / "fixtures"
     if required is None:
         required = ["ts_basic", "rails_basic", "ts_monorepo", "ts_with_rails_sidecar"]
     found: dict[str, Path] = {}
@@ -73,12 +76,18 @@ def acquire_lock(run_dir: Path) -> Path:
     return lock_path
 
 
-def run_all(plugin_root: Path, run_dir: Path) -> dict:
-    """Run every preflight check. Returns a dict of resolved paths."""
+def run_all(repo_root: Path, run_dir: Path, plugin_dir: Path | None = None) -> dict:
+    """Run every preflight check. Returns a dict of resolved paths.
+
+    ``repo_root`` locates the committed fixtures under tests/; ``plugin_dir``
+    locates the MCP venv and defaults to ``repo_root / "plugin"``.
+    """
+    if plugin_dir is None:
+        plugin_dir = repo_root / "plugin"
     return {
         "claude": claude_on_path(),
         "git_version": check_git_version((2, 28)),
-        "python_venv": python_venv_present(plugin_root),
-        "fixtures": fixtures_present(plugin_root),
+        "python_venv": python_venv_present(plugin_dir),
+        "fixtures": fixtures_present(repo_root),
         "lock_path": acquire_lock(run_dir),
     }

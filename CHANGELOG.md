@@ -57,6 +57,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   instead of 48; the underlying Python functions keep their names and
   signatures, so direct imports (tests, QA batteries) are unaffected.
 
+### Changed
+
+- **Repository restructured around an installable `plugin/` dir.** The
+  marketplace source now points at `./plugin` (plugin.json, .mcp.json, hooks/,
+  skills/, agents/, bin/, mcp/, and the runtime scripts ts_dump.mjs,
+  prism_dump.rb, libcst_dump.py, chameleon-merge-driver.sh, setup.sh), so a
+  marketplace install copies only the runtime surface instead of the whole
+  repo (previously ~4.9MB of tests/ and docs/ shipped with every install).
+  tests/, docs/, and dev tooling (bump-version.sh, prune-plugin-cache.sh, ...)
+  stay outside the installed plugin; the release tarball likewise now packs
+  `plugin/` + README/LICENSE/CHANGELOG only. No runtime behavior change —
+  everything in-plugin resolves via `CLAUDE_PLUGIN_ROOT` as before.
+
 ## [2.69.0] - 2026-07-10
 
 ### Changed

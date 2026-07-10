@@ -1,11 +1,11 @@
 {
   "files": [
-    { "path": ".claude-plugin/plugin.json", "field": "version" },
+    { "path": "plugin/.claude-plugin/plugin.json", "field": "version" },
     { "path": ".claude-plugin/marketplace.json", "field": "plugins.0.version" },
     { "path": "package.json", "field": "version" },
-    { "path": "mcp/package.json", "field": "version" },
-    { "path": "mcp/pyproject.toml", "field": "project.version" },
-    { "path": "mcp/chameleon_mcp/__init__.py", "field": "__version__" }
+    { "path": "plugin/mcp/package.json", "field": "version" },
+    { "path": "plugin/mcp/pyproject.toml", "field": "project.version" },
+    { "path": "plugin/mcp/chameleon_mcp/__init__.py", "field": "__version__" }
   ],
   "audit": {
     "exclude": [

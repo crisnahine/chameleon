@@ -10,7 +10,7 @@ Each is run N times. Reports cold (first call, caches cleared) and warm
 (subsequent calls, caches populated) at p50 and p99.
 
 Usage:
-    PYTHONPATH=. mcp/.venv/bin/python tests/bench_hot_path.py
+    PYTHONPATH=. plugin/mcp/.venv/bin/python tests/bench_hot_path.py
 """
 
 from __future__ import annotations

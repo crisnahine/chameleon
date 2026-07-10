@@ -493,7 +493,7 @@ def test_main_fail_open_when_rotation_raises(tmp_path: Path, monkeypatch):
 def test_hooks_do_not_spawn_log_rotation_interpreter():
     # All six hooks dropped the separate `python -m chameleon_mcp.log_rotation`
     # spawn; rotation now happens in-process inside hook_helper.main.
-    hooks_dir = Path(__file__).resolve().parents[2] / "hooks"
+    hooks_dir = Path(__file__).resolve().parents[2] / "plugin" / "hooks"
     for name in (
         "session-start",
         "preflight-and-advise",

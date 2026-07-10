@@ -23,15 +23,15 @@ negative/off-state check) · `FAIL` (opens a gap in `docs/gap-log.md`) · `N/A`
 The supported-language set is closed at three, verified in code:
 
 - `detect_language()` returns only `typescript` / `ruby` / `python` / `None`
-  (`mcp/chameleon_mcp/lint_engine.py:158`).
+  (`plugin/mcp/chameleon_mcp/lint_engine.py:158`).
 - `EXTRACTORS = [TypeScriptExtractor, RubyExtractor, PythonExtractor]`
-  (`mcp/chameleon_mcp/extractors/registry.py:26`).
+  (`plugin/mcp/chameleon_mcp/extractors/registry.py:26`).
 - Extensions: TS/JS `.ts .tsx .js .jsx .mjs .cjs`; Ruby `.rb`; Python `.py .pyi`
   (`lint_engine.py:78-80`). No Go/Rust/Java/C# extractor, dumper, or detection
   signal exists — they MUST NOT appear here.
 
 The framework-aware families are the discrete returns of `_classify_framework`
-(`mcp/chameleon_mcp/bootstrap/orchestrator.py`): `rails`, `django`, `flask`,
+(`plugin/mcp/chameleon_mcp/bootstrap/orchestrator.py`): `rails`, `django`, `flask`,
 `fastapi`, `nextjs`, `nestjs`, else `None` (agnostic). DRF is **not** a separate
 tag — it is recognized as Django-family plus the dedicated DRF/Django authz-guard
 layer, so it is a sub-cell of Django.
@@ -67,8 +67,8 @@ Edge / robustness:
 Dimension notes (scoping):
 
 - **Windows** is a CI-verified dimension, not a sign-off column. Native Windows
-  support (the `hooks/run-hook.cmd` polyglot launcher, `msvcrt`-based locking in
-  `mcp/chameleon_mcp/locks.py`) is exercised by the CI matrix: the `test-windows`
+  support (the `plugin/hooks/run-hook.cmd` polyglot launcher, `msvcrt`-based locking in
+  `plugin/mcp/chameleon_mcp/locks.py`) is exercised by the CI matrix: the `test-windows`
   job (import smoke + cross-platform locking) and the `runtime-windows` job, which
   drives `run-hook.cmd` → Git Bash → venv python for the five fast hooks plus a
   real bootstrap → trust → refresh (`tests/ci_windows_runtime.py`; the sixth
@@ -78,9 +78,9 @@ Dimension notes (scoping):
 - **Monorepo pure-coordinator root** is part of S2's checklist, not a separate
   cell: a session launched at a workspace root that itself derives no profile
   (bootstrap status `success_workspaces_only`,
-  `mcp/chameleon_mcp/bootstrap/orchestrator.py`) must still gate member-file edits
+  `plugin/mcp/chameleon_mcp/bootstrap/orchestrator.py`) must still gate member-file edits
   at turn end via the multi-root Stop backstop (`_discover_stop_roots` in
-  `mcp/chameleon_mcp/hook_helper.py`; kill switch `CHAMELEON_MULTIROOT_STOP=0`).
+  `plugin/mcp/chameleon_mcp/hook_helper.py`; kill switch `CHAMELEON_MULTIROOT_STOP=0`).
   Drive S2 both from inside a member workspace and from the coordinator root; the
   `qa-coord-shared` / `qa-coord-local` fixtures exercise the profile-less-root case.
 

@@ -17,7 +17,11 @@ from typing import Any
 
 @dataclasses.dataclass
 class JourneyContext:
+    # The installable plugin dir (repo_root/plugin in a development clone):
+    # what --plugin-dir and the MCP venv paths resolve against.
     plugin_root: Path
+    # The repository checkout root: where tests/ (fixtures, results) lives.
+    repo_root: Path
     run_dir: Path
     plugin_data_dir: Path
     hmac_key_path: Path
@@ -53,13 +57,21 @@ class JourneyContext:
 
 
 def build_context(
-    plugin_root: Path, results_root: Path, run_prefix: str = "journey"
+    plugin_root: Path,
+    results_root: Path,
+    run_prefix: str = "journey",
+    repo_root: Path | None = None,
 ) -> JourneyContext:
     """Create a new run_dir with all subdirs and env overrides.
 
     ``run_prefix`` names the run directory (``<prefix>_<ts>``) so non-journey
     runners (the effectiveness eval) can share this isolation builder without
     their runs colliding with or masquerading as journey runs.
+
+    ``plugin_root`` is the installable plugin dir (``<repo>/plugin`` in a
+    development clone). ``repo_root`` is the repository checkout root that
+    holds tests/; it defaults to the plugin dir's parent, which is correct
+    for the standard layout.
     """
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     run_dir = results_root / f"{run_prefix}_{timestamp}"
@@ -87,6 +99,7 @@ def build_context(
 
     return JourneyContext(
         plugin_root=plugin_root,
+        repo_root=repo_root if repo_root is not None else plugin_root.parent,
         run_dir=run_dir,
         plugin_data_dir=plugin_data_dir,
         hmac_key_path=hmac_key_path,

@@ -30,14 +30,14 @@ One floor worth knowing: chameleon's hooks and server need **Python 3.11 or newe
 
 ## One command to check everything
 
-`scripts/setup.sh` verifies every prerequisite at once and prints the exact install command for anything missing, then warms chameleon's Python and Node environments so the first session is instant instead of building mid-edit:
+`plugin/scripts/setup.sh` verifies every prerequisite at once and prints the exact install command for anything missing, then warms chameleon's Python and Node environments so the first session is instant instead of building mid-edit:
 
 ```bash
-scripts/setup.sh           # verify prerequisites, then warm dependencies
-scripts/setup.sh --check   # verify only, no install or warm-up
+plugin/scripts/setup.sh           # verify prerequisites, then warm dependencies
+plugin/scripts/setup.sh --check   # verify only, no install or warm-up
 ```
 
-It exits non-zero if a required tool (`uv`, Node 20+, `npm`) is missing. Ruby and `timeout(1)` are optional, so a missing one warns but does not fail. It installs runtime deps only; contributors who run the tests should use `scripts/setup.sh --dev` (adds pytest and ruff). The script never installs system packages for you, it tells you what to run, so it is safe to run repeatedly. Run it from a clone of the repo, or from the installed plugin folder (`~/.claude/plugins/cache/chameleon/chameleon/<version>/`).
+It exits non-zero if a required tool (`uv`, Node 20+, `npm`) is missing. Ruby and `timeout(1)` are optional, so a missing one warns but does not fail. It installs runtime deps only; contributors who run the tests should use `plugin/scripts/setup.sh --dev` (adds pytest and ruff). The script never installs system packages for you, it tells you what to run, so it is safe to run repeatedly. Run it from a clone of the repo (as `plugin/scripts/setup.sh`), or from the installed plugin folder (`~/.claude/plugins/cache/chameleon/chameleon/<version>/`, where it lives at `scripts/setup.sh`).
 
 The per-OS prerequisite commands below are what the script points you at when something is missing.
 
@@ -135,7 +135,7 @@ On Windows, chameleon serializes its profile writes with a small `.chameleon.win
 
 ### Verify your prerequisites
 
-Shortcut: `scripts/setup.sh --check` runs every check below at once and reports what is missing. To verify by hand instead, run each command. If the version prints, that tool is ready.
+Shortcut: `plugin/scripts/setup.sh --check` runs every check below at once and reports what is missing. To verify by hand instead, run each command. If the version prints, that tool is ready.
 
 ```bash
 uv --version       # expect: uv 0.x.x
@@ -237,6 +237,7 @@ Restart Claude Code. The server is a long-lived process and does not pick up the
 Old versions stay in the plugin cache. To clear them after an update:
 
 ```bash
+# from a clone of this repo (dev utility; not shipped with the installed plugin)
 scripts/prune-plugin-cache.sh           # dry run, shows what would go
 scripts/prune-plugin-cache.sh --apply   # delete every cached version except the current one
 ```

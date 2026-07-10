@@ -9,7 +9,7 @@ route as a review-clean candidate, and where does the human residual sit?
 
 Usage:
     CHAMELEON_TEST_TS_REPO=/abs/ts-repo CHAMELEON_TEST_RUBY_REPO=/abs/rails-repo \\
-      PYTHONPATH=. mcp/.venv/bin/python tests/measure_pr_tier_distribution.py [N]
+      PYTHONPATH=. plugin/mcp/.venv/bin/python tests/measure_pr_tier_distribution.py [N]
 
 Caveat: the archetype / importer / lint adapters read the CURRENT profile and
 file state, so a PR that reshaped a file since merge is scored against today's

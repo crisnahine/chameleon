@@ -43,7 +43,7 @@ paired cluster-bootstrap CI resampled by task. Verdict: preference 0.833,
 
 Reproduce:
 
-    PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner \
+    PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner \
       --tier dup --arms off,shadow --panel --max-budget-usd 120
 
 ### effectiveness_20260616T003421Z (dup tier, causal round 2, replication)
@@ -53,7 +53,7 @@ Same invocation as round 1, fresh sessions. Verdict: preference 0.571,
 
 Reproduce:
 
-    PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner \
+    PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner \
       --tier dup --arms off,shadow --panel --max-budget-usd 120
 
 Reproduction notes: spawns real `claude -p` sessions (each run cost ~$60);

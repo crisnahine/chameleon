@@ -84,7 +84,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: 'mcp/uv.lock'
+          cache-dependency-glob: 'plugin/mcp/uv.lock'
 
       - name: Set up Node.js
         if: steps.secrets-check.outputs.missing == 'false'
@@ -92,16 +92,16 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: 'mcp/package-lock.json'
+          cache-dependency-path: 'plugin/mcp/package-lock.json'
 
       - name: Install Python dependencies (uv sync)
         if: steps.secrets-check.outputs.missing == 'false'
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: uv sync --frozen --extra dev
 
       - name: Install Node dependencies (TypeScript extractor)
         if: steps.secrets-check.outputs.missing == 'false'
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: npm ci
 
       - name: Install Claude Code CLI
@@ -120,9 +120,9 @@ jobs:
 
       - name: Run real-Claude-Code acceptance test
         if: steps.secrets-check.outputs.missing == 'false'
-        working-directory: mcp
+        working-directory: plugin/mcp
         env:
-          PYTHONPATH: '.:../tests'
+          PYTHONPATH: '.:../..'
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CHAMELEON_TEST_TS_REPO: ${{ secrets.CHAMELEON_TEST_TS_REPO }}
           CHAMELEON_TEST_RUBY_REPO: ${{ secrets.CHAMELEON_TEST_RUBY_REPO }}

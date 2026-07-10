@@ -43,9 +43,9 @@ of human involvement will be sent back.
 
 ## Test coverage
 
-- [ ] Unit tests pass: `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ -v`
-- [ ] Harness library self-tests pass: `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/journey/harness/tests/ -v`
-- [ ] If this changes hooks, skills, or MCP tools: journey harness dry-run passes: `mcp/.venv/bin/python -m tests.journey.runner --dry-run`
+- [ ] Unit tests pass: `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/unit/ -v`
+- [ ] Harness library self-tests pass: `PYTHONPATH=. plugin/mcp/.venv/bin/python -m pytest tests/journey/harness/tests/ -v`
+- [ ] If this changes hooks, skills, or MCP tools: journey harness dry-run passes: `PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.journey.runner --dry-run`
 
 ## Environment tested
 

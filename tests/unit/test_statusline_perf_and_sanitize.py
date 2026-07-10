@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = REPO_ROOT / "bin" / "chameleon-statusline.sh"
+SCRIPT = REPO_ROOT / "plugin" / "bin" / "chameleon-statusline.sh"
 
 # A bidi right-to-left override and a zero-width space embedded in a profile
 # name: both survive `tr -d '[:cntrl:]'` because they are multibyte Unicode.

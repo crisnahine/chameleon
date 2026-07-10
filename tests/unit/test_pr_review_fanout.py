@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2] / "skills" / "chameleon-pr-review"
+ROOT = Path(__file__).resolve().parents[2] / "plugin" / "skills" / "chameleon-pr-review"
 SKILL = ROOT / "SKILL.md"
 REVIEWER = ROOT / "reviewer.md"
 

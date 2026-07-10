@@ -1,10 +1,10 @@
 """Journey harness runner.
 
-Usage:
-  mcp/.venv/bin/python -m tests.journey.runner               # full run
-  mcp/.venv/bin/python -m tests.journey.runner --list        # list acts
-  mcp/.venv/bin/python -m tests.journey.runner --dry-run     # preflight only
-  mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 40
+Usage (from the repo root, with PYTHONPATH=.):
+  plugin/mcp/.venv/bin/python -m tests.journey.runner               # full run
+  plugin/mcp/.venv/bin/python -m tests.journey.runner --list        # list acts
+  plugin/mcp/.venv/bin/python -m tests.journey.runner --dry-run     # preflight only
+  plugin/mcp/.venv/bin/python -m tests.journey.runner --max-budget-usd 40
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PLUGIN_DIR = _REPO_ROOT / "plugin"
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -116,11 +117,11 @@ def main(argv: list[str] | None = None) -> int:
 
     results_root = Path(args.results_dir).resolve()
     results_root.mkdir(parents=True, exist_ok=True)
-    ctx = build_context(plugin_root=_REPO_ROOT, results_root=results_root)
+    ctx = build_context(plugin_root=_PLUGIN_DIR, results_root=results_root, repo_root=_REPO_ROOT)
     print(f"run_dir: {ctx.run_dir}", file=sys.stderr)
 
     try:
-        pf = preflight.run_all(plugin_root=_REPO_ROOT, run_dir=ctx.run_dir)
+        pf = preflight.run_all(repo_root=_REPO_ROOT, run_dir=ctx.run_dir, plugin_dir=_PLUGIN_DIR)
     except preflight.PreflightError as e:
         print(f"PREFLIGHT FAILED: {e}", file=sys.stderr)
         return 2

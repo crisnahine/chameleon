@@ -64,14 +64,14 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: 'mcp/uv.lock'
+          cache-dependency-glob: 'plugin/mcp/uv.lock'
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: 'mcp/package-lock.json'
+          cache-dependency-path: 'plugin/mcp/package-lock.json'
 
       - name: Set up Ruby (Ruby extractor golden corpus)
         uses: ruby/setup-ruby@v1
@@ -79,22 +79,22 @@ jobs:
           ruby-version: '3.3'  # 3.3+ bundles prism
 
       - name: Install Python dependencies (uv sync)
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: uv sync --frozen --extra dev
 
       - name: Install Node dependencies (TypeScript extractor)
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: npm ci
 
       - name: Sanity-check the MCP server imports
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: .venv/bin/python -c "from chameleon_mcp.server import mcp; print('mcp ok')"
 
       - name: Run unit + harness tests
-        working-directory: mcp
+        working-directory: plugin/mcp
         env:
-          PYTHONPATH: '.:..'
-        run: .venv/bin/python -m pytest ../tests/unit/ ../tests/journey/harness/tests/ ../tests/effectiveness/tests/ -v
+          PYTHONPATH: '.:../..'
+        run: .venv/bin/python -m pytest ../../tests/unit/ ../../tests/journey/harness/tests/ ../../tests/effectiveness/tests/ -v
 
   test-windows:
     name: test-windows (py${{ matrix.python-version }})
@@ -118,26 +118,26 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: 'mcp/uv.lock'
+          cache-dependency-glob: 'plugin/mcp/uv.lock'
 
       - name: Install Python dependencies (uv sync)
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: uv sync --frozen --extra dev
 
       # The whole point of this job: native Windows has no fcntl, so this import
       # would crash before the cross-platform locking layer landed. No Node/Ruby
       # here -- the extractors aren't exercised by the import smoke or lock tests.
       - name: Import smoke (no fcntl on this platform)
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: uv run python -c "from chameleon_mcp.server import mcp; print('mcp imports on Windows')"
 
       # Runs the simulated branch tests AND the win32-only tests that exercise the
       # real msvcrt / ctypes OpenProcess paths (skipped everywhere else).
       - name: Cross-platform locking tests
-        working-directory: mcp
+        working-directory: plugin/mcp
         env:
-          PYTHONPATH: '.;..'
-        run: uv run python -m pytest ../tests/unit/test_locks_cross_platform.py -v
+          PYTHONPATH: '.;../..'
+        run: uv run python -m pytest ../../tests/unit/test_locks_cross_platform.py -v
 
   runtime-windows:
     name: runtime-windows (hooks + lifecycle)
@@ -157,21 +157,21 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: 'mcp/uv.lock'
+          cache-dependency-glob: 'plugin/mcp/uv.lock'
 
       - name: Set up Node.js (bootstrap's TypeScript extractor)
         uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: 'mcp/package-lock.json'
+          cache-dependency-path: 'plugin/mcp/package-lock.json'
 
       - name: Install Python dependencies (uv sync)
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: uv sync --frozen --extra dev
 
       - name: Install Node dependencies (TypeScript extractor)
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: npm ci
 
       # Drives run-hook.cmd -> Git Bash -> venv python for every hook (asserting
@@ -179,8 +179,8 @@ jobs:
       # trust -> refresh against a throwaway repo. The whole point is the native
       # Windows runtime that import + unit tests can't exercise.
       - name: Hook stack + lifecycle on native Windows
-        working-directory: mcp
-        run: uv run python ../tests/ci_windows_runtime.py
+        working-directory: plugin/mcp
+        run: uv run python ../../tests/ci_windows_runtime.py
 
   lint:
     name: lint (ruff)
@@ -200,22 +200,22 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: 'mcp/uv.lock'
+          cache-dependency-glob: 'plugin/mcp/uv.lock'
 
       - name: Ruff check (MCP package + tests)
-        working-directory: mcp
+        working-directory: plugin/mcp
         # Use uvx so we don't need a full `uv sync` just to lint. Ruff
         # config (line-length, target-version, select) lives in
-        # mcp/pyproject.toml -- uvx picks it up from the working directory.
-        run: uvx ruff@0.15.13 check chameleon_mcp/ ../tests/unit/ ../tests/journey/
+        # plugin/mcp/pyproject.toml -- uvx picks it up from the working directory.
+        run: uvx ruff@0.15.13 check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/
 
       - name: Ruff format check (MCP package + tests)
-        working-directory: mcp
+        working-directory: plugin/mcp
         # Formatter gate, same scope and pinned version as the check above
         # so the local venv (uv.lock pins ruff 0.15.13) and CI agree
-        # byte-for-byte. Run `uvx ruff@0.15.13 format chameleon_mcp/ ../tests/`
+        # byte-for-byte. Run `uvx ruff@0.15.13 format chameleon_mcp/ ../../tests/`
         # to fix locally.
-        run: uvx ruff@0.15.13 format --check chameleon_mcp/ ../tests/unit/ ../tests/journey/
+        run: uvx ruff@0.15.13 format --check chameleon_mcp/ ../../tests/unit/ ../../tests/journey/
 
   version-sync:
     name: version-sync (bump-version.sh --check)
@@ -276,18 +276,18 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-          cache-dependency-glob: 'mcp/uv.lock'
+          cache-dependency-glob: 'plugin/mcp/uv.lock'
 
       - name: Install Python dependencies (uv sync)
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: uv sync --frozen
 
-      - name: Invoke hooks/${{ matrix.hook.name }} with synthetic stdin
+      - name: Invoke plugin/hooks/${{ matrix.hook.name }} with synthetic stdin
         env:
-          CLAUDE_PLUGIN_ROOT: ${{ github.workspace }}
+          CLAUDE_PLUGIN_ROOT: ${{ github.workspace }}/plugin
         run: |
           echo '${{ matrix.hook.stdin }}' \
-            | hooks/${{ matrix.hook.name }} \
+            | plugin/hooks/${{ matrix.hook.name }} \
             | python3 -c "import json,sys; obj=json.loads(sys.stdin.read(), strict=False); assert isinstance(obj, dict), f'expected dict, got {type(obj).__name__}'; print('hook emitted valid JSON object')"
 
   security:
@@ -305,7 +305,7 @@ jobs:
           python-version: '3.12'
 
       - name: pip-audit
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: |
           # pip-audit audits the environment of the interpreter it runs under.
           # Under `pipx run` that is pipx's own throwaway venv — seeded with the
@@ -323,7 +323,7 @@ jobs:
           node-version: '20'
 
       - name: npm audit
-        working-directory: mcp
+        working-directory: plugin/mcp
         run: npm ci --ignore-scripts && npm audit --audit-level=high
 
   shellcheck:
@@ -336,7 +336,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Lint hook scripts
-        run: shellcheck -S warning hooks/_resolve-python.sh hooks/session-start hooks/preflight-and-advise hooks/posttool-recorder hooks/posttool-verify hooks/callout-detector hooks/stop-backstop scripts/*.sh
+        run: shellcheck -S warning plugin/hooks/_resolve-python.sh plugin/hooks/session-start plugin/hooks/preflight-and-advise plugin/hooks/posttool-recorder plugin/hooks/posttool-verify plugin/hooks/callout-detector plugin/hooks/stop-backstop plugin/scripts/*.sh scripts/*.sh
 
   hooks-manifest:
     name: hooks-manifest-check
@@ -352,20 +352,20 @@ jobs:
           python3 << 'PYEOF'
           import json, sys, os
           errors = 0
-          with open('hooks/hooks.json') as f:
+          with open('plugin/hooks/hooks.json') as f:
               manifest = json.load(f)
           for event, entries in manifest.get('hooks', {}).items():
               for entry in entries:
                   for hook in entry.get('hooks', []):
                       cmd = hook.get('command', '')
                       name = cmd.split()[-1] if cmd else ''
-                      path = 'hooks/' + name
+                      path = 'plugin/hooks/' + name
                       if name and not os.path.isfile(path):
                           print(f'ERROR: {path} missing'); errors += 1
                       elif name and not os.access(path, os.X_OK):
                           print(f'ERROR: {path} not executable'); errors += 1
-          for d in os.listdir('skills'):
-              sd = os.path.join('skills', d)
+          for d in os.listdir('plugin/skills'):
+              sd = os.path.join('plugin/skills', d)
               if os.path.isdir(sd) and not os.path.isfile(os.path.join(sd, 'SKILL.md')):
                   print(f'ERROR: {sd}/ missing SKILL.md'); errors += 1
           print(f'Checked hooks + skills: {errors} error(s)')

@@ -25,8 +25,9 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MCP_DIR = REPO_ROOT / "mcp"
-RUN_HOOK = REPO_ROOT / "hooks" / "run-hook.cmd"
+PLUGIN_DIR = REPO_ROOT / "plugin"
+MCP_DIR = PLUGIN_DIR / "mcp"
+RUN_HOOK = PLUGIN_DIR / "hooks" / "run-hook.cmd"
 IS_WINDOWS = sys.platform == "win32"
 
 fails: list[str] = []
@@ -57,7 +58,7 @@ def phase1_hooks() -> None:
     log_file = log_dir / "hook_errors.log"
 
     env = dict(os.environ)
-    env["CLAUDE_PLUGIN_ROOT"] = str(REPO_ROOT)
+    env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN_DIR)
     env["CHAMELEON_HOOK_ERROR_LOG"] = str(log_file)
     env["CHAMELEON_PLUGIN_DATA"] = str(log_dir / "data")
 

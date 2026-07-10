@@ -16,8 +16,8 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PR = REPO_ROOT / "skills" / "chameleon-pr-review" / "SKILL.md"
-RECV = REPO_ROOT / "skills" / "chameleon-receiving-code-review" / "SKILL.md"
+PR = REPO_ROOT / "plugin" / "skills" / "chameleon-pr-review" / "SKILL.md"
+RECV = REPO_ROOT / "plugin" / "skills" / "chameleon-receiving-code-review" / "SKILL.md"
 
 
 def _pr() -> str:

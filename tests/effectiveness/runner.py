@@ -1,9 +1,9 @@
 """Effectiveness eval runner.
 
 Usage:
-  PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner --list
-  PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner --dry-run
-  PYTHONPATH=. mcp/.venv/bin/python -m tests.effectiveness.runner \
+  PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner --list
+  PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner --dry-run
+  PYTHONPATH=. plugin/mcp/.venv/bin/python -m tests.effectiveness.runner \
       --tier ci --arms off,shadow --max-budget-usd 8
 
 Exit codes: 0 = ran (scores may still be bad — advisory by design),
@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+_PLUGIN_DIR = _REPO_ROOT / "plugin"
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -212,7 +213,7 @@ def _preflight(args, tasks, *, require_claude: bool = True) -> None:
     from tests.journey.harness.fixtures import check_git_version
 
     check_git_version((2, 28))
-    journey_preflight.python_venv_present(_REPO_ROOT)
+    journey_preflight.python_venv_present(_PLUGIN_DIR)
     committed = sorted({FIXTURE_SEEDS[t.fixture] for t in tasks if t.fixture in FIXTURE_SEEDS})
     if committed:
         journey_preflight.fixtures_present(
@@ -244,7 +245,10 @@ def _execute(args, tasks, arms, cells) -> int:
     results_root = Path(args.results_dir).resolve()
     results_root.mkdir(parents=True, exist_ok=True)
     ctx = build_context(
-        plugin_root=_REPO_ROOT, results_root=results_root, run_prefix="effectiveness"
+        plugin_root=_PLUGIN_DIR,
+        results_root=results_root,
+        run_prefix="effectiveness",
+        repo_root=_REPO_ROOT,
     )
     print(f"run_dir: {ctx.run_dir}", file=sys.stderr)
     ensure_chameleon_env(ctx.env)

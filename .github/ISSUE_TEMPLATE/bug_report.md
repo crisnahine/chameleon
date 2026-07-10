@@ -45,7 +45,7 @@ paste the relevant excerpt here
 - Claude Code version: <!-- claude --version -->
 - chameleon commit: <!-- git rev-parse --short HEAD -->
 - OS: <!-- macOS / Linux / Windows -->
-- Python venv built: <!-- yes / no, check with `ls mcp/.venv/bin/chameleon-mcp` -->
+- Python venv built: <!-- yes / no, check with `ls plugin/mcp/.venv/bin/chameleon-mcp` -->
 
 ## Additional context
 

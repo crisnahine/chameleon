@@ -537,7 +537,9 @@ def test_config_judge_crossfile_facts_type_validated():
 
 # --- real extractor end-to-end -------------------------------------------------
 
-_NODE_MODULES = Path(__file__).resolve().parents[2] / "mcp" / "node_modules" / "typescript"
+_NODE_MODULES = (
+    Path(__file__).resolve().parents[2] / "plugin" / "mcp" / "node_modules" / "typescript"
+)
 
 
 def _have_ts() -> bool:
