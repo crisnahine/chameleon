@@ -497,3 +497,32 @@ about to write against the full function catalog.
   it is deliberately NOT rushed at the tail of a long session onto the most latency-sensitive
   surface. Even then, whether it flips the verdict is empirical (it depends on the model
   actually changing behavior when nudged) — no build can guarantee a positive A/B.
+
+## Addendum — 2026-07-11 (the effectiveness ceiling is architectural, not a bug)
+
+Built the deterministic pre-write dedup ladder and verified its coverage against the ACTUAL
+campaign failure cases BEFORE any further spend:
+- **G-025** (exact-name, commit 0596ba6) and **G-026** (>= 2-shared-token semantic, commit
+  a5b9c63) are shipped, tested, hot-path-safe (cold <=11ms, warm <=0.56ms). They catch the
+  subset where the name or its domain tokens hint at the duplicate.
+- Replayed both against 3 real shadow-loss diffs (clean-url, titleize, calculate-total-cost):
+  **fired on 0/3**. Root cause, traced precisely: the battery's model writes a
+  DIFFERENTLY-NAMED, DIFFERENTLY-CODED implementation of the same intent (e.g. `clean_domain`
+  for an existing `clean_url`-shaped helper). That shares 0-1 domain tokens AND has a
+  different normalized body — so exact-name (G-025), shared-token (G-026), and even a
+  body-hash pass (the hypothesized G-026b) all miss it. A body-hash matches copies, not
+  re-implementations.
+- **Conclusion (architectural, not a fixable deficiency):** detecting that a new,
+  differently-written function is SEMANTICALLY equivalent to an existing one requires an LLM
+  judge — which is exactly why chameleon's semantic-duplication defense is turn-end
+  (`select_candidates` prefilter -> LLM equivalence judge). It cannot be moved deterministically
+  onto the per-edit hot path (an LLM call per keystroke-edit is architecturally wrong on
+  latency and cost). The one-shot eval cell has no turn boundary and no next turn, so
+  chameleon's semantic dedup structurally cannot influence its final diff. In REAL multi-turn
+  usage the turn-end catch fires and the developer/model revises — the capability the one-shot
+  battery cannot exercise. So the "not established" verdict on one-shot semantic dedup reflects
+  the eval's one-shot design vs chameleon's turn-end-LLM architecture, NOT a bug the pre-write
+  ladder can close. G-025/G-026 remain genuine wins for the name/token-hinted subset; the
+  general case is correctly turn-end. No further pre-write build is pursued; a fair
+  effectiveness measurement of chameleon's dedup would need a MULTI-TURN eval variant (a
+  separate, principled design task — not eval-gaming).
