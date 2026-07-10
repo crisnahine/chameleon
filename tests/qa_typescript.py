@@ -165,7 +165,9 @@ for fpath in TEST_FILES:
             # none, confidence low) — correct behavior, not a resolution failure.
             # The files that SHOULD resolve are pinned by their own rows above.
             ok = True
-            detail = f"archetype=None (honest no-cluster: match_quality=none, confidence=low — {rel})"
+            detail = (
+                f"archetype=None (honest no-cluster: match_quality=none, confidence=low — {rel})"
+            )
         record(
             f"get_archetype({rel}).archetype",
             ok,
@@ -499,11 +501,12 @@ try:
             and isinstance(gd.get("truncated"), bool),
             f"callers={len(gd.get('callers') or [])}, total={gd.get('total')}",
         )
+        from chameleon_mcp.calls_index import VALID_GRADES
+
         record(
             "get_callers.row_grades",
             all(
-                isinstance(r, dict)
-                and r.get("grade") in ("same_file", "import", "constant_receiver")
+                isinstance(r, dict) and r.get("grade") in VALID_GRADES
                 for r in (gd.get("callers") or [])
             ),
             "every row carries a deterministic grade",
