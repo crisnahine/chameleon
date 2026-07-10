@@ -1,5 +1,6 @@
 ---
 name: chameleon-teach
+argument-hint: "[pattern description]"
 description: Use when the user explicitly invokes /chameleon-teach to capture a team idiom, banned import, mandatory wrapper, or pattern that AST analysis cannot infer
 ---
 

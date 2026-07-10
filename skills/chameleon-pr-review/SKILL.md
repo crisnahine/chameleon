@@ -1,5 +1,6 @@
 ---
 name: chameleon-pr-review
+argument-hint: "[PR-URL | ticket-key]"
 description: "Use when the user explicitly invokes /chameleon-pr-review to review a PR or branch diff against the repo's chameleon conventions, principles, and task requirements. Reports convention violations + logic gaps."
 ---
 

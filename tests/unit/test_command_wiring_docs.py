@@ -16,10 +16,14 @@ def test_claude_md_count_and_list_and_env():
     t = (ROOT / "CLAUDE.md").read_text(encoding="utf-8")
     assert "14 user-invocable" in t
     assert "receiving-code-review" in t
+    # The full env-var reference lives in the lazy-loaded rules file; CLAUDE.md
+    # keeps the session-critical flags and a pointer to it.
+    assert ".claude/rules/environment-variables.md" in t
+    rules = (ROOT / ".claude" / "rules" / "environment-variables.md").read_text(encoding="utf-8")
     assert (
-        "CHAMELEON_REVIEW_REFUTER" in t
-        and "CHAMELEON_REVIEW_FANOUT" in t
-        and "CHAMELEON_REFUTER_MODEL" in t
+        "CHAMELEON_REVIEW_REFUTER" in rules
+        and "CHAMELEON_REVIEW_FANOUT" in rules
+        and "CHAMELEON_REFUTER_MODEL" in rules
     )
 
 

@@ -1559,9 +1559,11 @@ under `enforcement` are tolerated for forward compatibility; unknown keys under
 | `enforcement.crossfile_existence_block` | `false` | Opt-in deny: BLOCK a Stop where the turn removed a TS/Python export an indexed importer still uses (live-re-verified, HEAD-scoped, FP-free). Stop-only; `enforce` blocks, `shadow` logs `would_block`. Overridable with `chameleon-ignore removed-export-breaks-importers`. |
 
 The full list of environment variables (kill switches, opt-in gates, model
-selectors, tuning knobs, and test-only overrides) lives in the project
-[CLAUDE.md](../CLAUDE.md#environment-variables). Numeric tuning thresholds live
-in `mcp/chameleon_mcp/_thresholds.py`, each overridable with a
+selectors, tuning knobs, and test-only overrides) lives in
+[.claude/rules/environment-variables.md](../.claude/rules/environment-variables.md);
+[CLAUDE.md](../CLAUDE.md#environment-variables) keeps the session-critical
+subset and points there. Numeric tuning thresholds live in
+`mcp/chameleon_mcp/_thresholds.py`, each overridable with a
 `CHAMELEON_<NAME>` environment variable.
 
 ---

@@ -1,5 +1,6 @@
 ---
 name: chameleon-status
+argument-hint: "[--shadow]"
 description: Use when the user explicitly invokes /chameleon-status to view profile state, drift indicators, and trust state for the current repo
 ---
 

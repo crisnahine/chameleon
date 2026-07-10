@@ -1,5 +1,6 @@
 ---
 name: chameleon-journey
+argument-hint: "[--list | --dry-run | --max-budget-usd N]"
 description: Use when the user explicitly invokes /chameleon-journey to run the comprehensive real-world journey harness against the chameleon plugin
 ---
 

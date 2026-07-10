@@ -50,8 +50,10 @@ docs/dogfood/**/log-*.txt
 tests/dogfood/results/dogfood_*.json
 tests/dogfood/results/dogfood_*.md
 
-# Local Claude Code state (worktrees, session caches, agent transcripts)
-.claude/
+# Local Claude Code state (worktrees, session caches, agent transcripts).
+# .claude/rules/ is the exception: committed rule files that lazy-load by path.
+.claude/*
+!.claude/rules/
 
 # Journey harness run output (per-run ephemeral dirs)
 tests/journey/results/
@@ -63,3 +65,7 @@ tests/journey/harness/tests/__pycache__/
 tests/journey/harness/tests/.pytest_cache/
 docs/superpowers/
 .in_use/
+
+# Local QA scratch + Ruby LSP index
+.qa_scratch/
+.ruby-lsp/

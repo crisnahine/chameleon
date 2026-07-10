@@ -1,5 +1,6 @@
 ---
 name: chameleon-explain
+argument-hint: "[rule | file-path]"
 description: Use when the user explicitly invokes /chameleon-explain to drill down on one enforcement rule (its calibration, would-block frequency, inline-override rate) OR to replay what chameleon knew and did the last time a file was edited (post-incident gap analysis)
 ---
 

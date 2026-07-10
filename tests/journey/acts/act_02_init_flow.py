@@ -55,8 +55,10 @@ PHASE 7 - trust security:
     path and no force flag. Expect status "already_bootstrapped".
     Then call chameleon-mcp::bootstrap_repo again with force=True.
     Expect successful overwrite (status "ok" or "bootstrapped").
-    After the force overwrite, verify trust state has flipped to stale because
-    the profile SHA changed (a fresh bootstrap replaces the profile).
+    After the force overwrite, verify trust state REMAINS "trusted": trust is
+    one-time and persists across any profile change (a fresh bootstrap
+    included); "stale" is unreachable unless CHAMELEON_TRUST_REVALIDATE=1 is
+    set on the MCP server process. A trust_state of "stale" here is a FAIL.
   emit checkpoint completed phase 7
 
 PHASE 15 - auto_rename ledger:

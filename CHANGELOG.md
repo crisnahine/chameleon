@@ -4,6 +4,55 @@ All notable changes to chameleon will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.69.0] - 2026-07-10
+
+### Changed
+
+- **Plugin surface aligned with current Claude Code best practice** (audited
+  against the community best-practice reference at
+  shanraisshan/claude-code-best-practice and Anthropic's official plugin
+  conventions).
+  - Skill frontmatter modernized: the six argument-taking commands
+    (`deep-work`, `explain`, `pr-review`, `status`, `journey`, `teach`) now
+    declare `argument-hint` for slash-menu autocomplete, hinting only flags
+    that exist today (`--shadow` for status; journey's `--list` /
+    `--dry-run` / `--max-budget-usd`; teach's future `--deprecate` is
+    deliberately not hinted).
+  - `using-chameleon` is now marked `user-invocable: false` +
+    `disable-model-invocation: true`: it is background knowledge the
+    SessionStart hook injects verbatim, so listing it in the `/` menu and the
+    model's skill listing duplicated content that was already in context. The
+    injection path reads the raw file and is unaffected. On an older CLI the
+    fields degrade to no-ops; nothing stops loading.
+  - `Stop`/`SubagentStop` hook entries carry an explicit `"timeout": 60`,
+    documenting the contract the stop-backstop's internal 55s SIGKILL budget
+    is designed against instead of relying on the harness default.
+  - `CLAUDE.md` trimmed to under 200 lines (the adherence ceiling the
+    best-practice guide recommends): the full environment-variable operator
+    reference and the effectiveness-eval guide moved verbatim to
+    `.claude/rules/environment-variables.md` and
+    `.claude/rules/effectiveness-eval.md`, lazy-loaded by path (`mcp/**`,
+    `hooks/**`, `bin/**`, `tests/**` and `tests/effectiveness/**`
+    respectively). `.gitignore` narrowed from `.claude/` to `.claude/*` +
+    `!.claude/rules/` so the rules ship while local state (settings,
+    agents, worktrees, caches) stays ignored.
+  - README "Proof, not promises" stats refreshed to measured reality
+    (5,311 unit tests, 181 released versions through v2.68.0, 6,500+
+    changelog lines).
+  - Consistency: exec bit set on `hooks/_resolve-python.sh` and
+    `scripts/libcst_dump.py` (both are interpreter-invoked, so this is
+    hygiene, not a behavior change); `.qa_scratch/` and `.ruby-lsp/` added
+    to `.gitignore`.
+
+### Fixed
+
+- **Two stale journey-harness act assertions** (surfaced by a live journey
+  run): act 01 still expected the pre-v2.13 20-tool MCP registry (now 48,
+  pinned with an update note), and act 02 phase 7 still asserted the
+  pre-trust-persistence behavior where a force re-bootstrap flips trust to
+  `stale` — trust is one-time and persists across profile changes, so the
+  phase now asserts `trusted` remains and treats `stale` as the failure.
+
 ## [2.68.0] - 2026-07-08
 
 ### Fixed

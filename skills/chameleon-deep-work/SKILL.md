@@ -1,5 +1,6 @@
 ---
 name: chameleon-deep-work
+argument-hint: <task or ticket-URL>
 description: "Use when the user explicitly invokes /chameleon-deep-work <task> to execute a substantive coding task with the deep-work discipline: understand the whole task first, ask no clarifying questions (resolve unknowns by digging and by defaulting open decisions), map the code with chameleon's comprehension tools and hired parallel expert subagents (code scouts, web researchers, reviewers) until understanding is complete, present a 100%-understanding brief, then implement in an isolated git worktree under chameleon's per-edit guardrails."
 ---
 

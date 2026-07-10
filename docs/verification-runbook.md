@@ -50,7 +50,7 @@ C7 → a `readthedocs/**/*.py`; E1 → an `app/**/*.rb` (large-repo timing focus
 | 11 | Cross-cutting engines | Ask for blast radius of a widely-used function (esp. E1 gitlabhq) | transitive callers returned; correct at repo scale | a leaf function → empty, no false edges |
 | 12 | Plugin packaging | Clean install from the packaged artifact on a fresh machine (`docs/install.md`); run a full real session; then uninstall | install works end to end; hooks auto-register via `hooks.json`; daemon auto-spawns from session-start; uninstall leaves nothing behind | the merge driver must NOT auto-register (manual — see #6) |
 | FW | Framework awareness | C5 add a controller w/o route; C7 add a model w/o migration | turn-end co-change advisory fires | a complete change-set → no nag |
-| 13 | Config + kill switches | Toggle each `CHAMELEON_*` switch (full list in `CLAUDE.md` "Environment variables" / goal item 13) | feature present ON, gone OFF; env overrides config | default state (nothing set) = intended |
+| 13 | Config + kill switches | Toggle each `CHAMELEON_*` switch (full list in `.claude/rules/environment-variables.md` / goal item 13) | feature present ON, gone OFF; env overrides config | default state (nothing set) = intended |
 | 14 | Version sync + build | `scripts/setup.sh --check`; check manifest versions | all prerequisites OK; 6 manifests aligned | — |
 | 15 | Hot path | Edit on the heaviest cell (E1 gitlabhq); watch responsiveness | no perceptible stall; well under the 3s hook cap | — |
 

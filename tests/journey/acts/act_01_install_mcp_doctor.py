@@ -20,12 +20,13 @@ PHASE 1, manifests:
   Verify each is valid JSON. Verify the chameleon plugin name is present.
   emit checkpoint completed phase 1
 
-PHASE 2, MCP boot + 20 tools:
+PHASE 2, MCP boot + 48 tools:
   emit checkpoint started phase 2
   The MCP server is launched automatically by Claude Code (chameleon-mcp).
   Use the chameleon-mcp::doctor tool (a no-arg tool). Verify the response.
   Also verify the tool registry: count the chameleon-mcp::* tools you have
-  access to via your tool listing. Expected: 20 tools.
+  access to via your tool listing. Expected: 48 tools (pinned; update this
+  count when a tool is added or removed).
   emit checkpoint completed phase 2
 
 PHASE 3, Doctor baseline:
