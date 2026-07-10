@@ -252,6 +252,8 @@ For new files (not modifications), list sibling files in the same directory. Che
 
 This step calls `scan_dependency_changes` once for the whole diff (a pure diff parse: no network, no install), routes its deterministic findings, hand-reviews the ecosystems the scanner does not parse at the same severities, and runs the checks 2.5a (new-dependency ACK), 2.5b (non-registry resolved host), 2.5c (install lifecycle script), 2.5d (non-registry source), and 2.5e (minified manifest).
 
+**A new direct dependency whose ONLY signal is its name is an ACK, never a BLOCK or FIX** — the engine classifies it `new-dependency` / `NIT`, and it goes in the "Acknowledge before merge" channel that does not drive the verdict. This is the single most-baited escalation: a package with an infamous name (`leftpad`, `event-stream`) or a plausible typosquat still ACKs — you flag it for the human to confirm provenance, you do not BLOCK it. Only an accompanying red flag you can read on the added line itself (a non-registry source, an install script, a redirected host — 2.5b/c/d) raises the severity. Escalating a routine add to BLOCK corrupts the review-clean ledger and is the exact mistake 2.5a exists to prevent.
+
 When the trigger fires, read `${CLAUDE_PLUGIN_ROOT}/skills/chameleon-pr-review/references/dependency-review.md` NOW before executing this step. Do not run the checks from memory; the reference carries the tool contract, the uncovered-ecosystem severity routing, and the full check definitions.
 
 ### Step 2.6: Security pass (always, every changed source file)
