@@ -80,6 +80,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **The daemon now starts under deep plugin-data paths.** AF_UNIX caps
+  `sun_path` at ~104 bytes, so a deep `CHAMELEON_PLUGIN_DATA` made every bind
+  fail and the latency daemon silently never engaged (hooks fell back
+  in-process forever). The socket moved to a short user-private
+  `<tmpdir>/chameleon-<uid>/d-<hash>.sock`; pidfile and logs stay in the data
+  dir.
 - **Python test files no longer bucket into production role archetypes.**
   `python_role_for_path` routed `tests/api/routes/test_x.py` to `route`, so the
   per-edit hook injected a production route canonical when editing a test; it now
