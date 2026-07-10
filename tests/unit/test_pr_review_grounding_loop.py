@@ -11,7 +11,10 @@ SKILL = Path(__file__).resolve().parents[2] / "skills" / "chameleon-pr-review" /
 
 
 def _t():
-    return SKILL.read_text(encoding="utf-8")
+    """Body plus lazily-loaded references — the skill's full procedure text."""
+    refs = sorted(SKILL.parent.glob("references/*.md"))
+    parts = [SKILL.read_text(encoding="utf-8")] + [p.read_text(encoding="utf-8") for p in refs]
+    return "\n".join(parts)
 
 
 def test_three_round_loop():

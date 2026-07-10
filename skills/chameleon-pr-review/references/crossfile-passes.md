@@ -1,0 +1,53 @@
+# pr-review reference — Step 2.9: Cross-file passes
+
+### Step 2.9: Cross-file passes (layering, duplication, existence breaks, caller blast radius)
+
+These four passes see across files, which the per-file convention loop cannot. Each is grounded in a concrete chameleon artifact or tool result; a finding with no backing entry is dropped by the integrity rule like any other.
+
+The three tool-backed passes below (2.9b duplication, 2.9c existence breaks, 2.9d caller blast radius) depend on an MCP tool. If a tool is not available in this session, skip that pass and note it in one line ("cross-file existence-break pass skipped: `get_crossfile_context` unavailable") rather than failing the review. A missing cross-file tool removes a signal; it never blocks the rest of the review or forces a verdict.
+
+#### 2.9a. Layering / cycle violations (NIT or FIX, advisory)
+
+Load the `layering` section of `.chameleon/conventions.json` (`conventions.layering`). When present it carries `forbidden_upward_edges` (each a `{from, to, observed_direction}` pair: the engine saw archetype `to` import archetype `from` in N files and never the reverse, so a new `from -> to` import inverts the established direction) and `import_cycles` (the bootstrap static cluster-level cycle report). When the section is empty or absent, skip this pass.
+
+For each file the diff ADDS or changes an import in, resolve the new import's target to its archetype (the same archetype the file would match) and check whether the resulting edge matches a `forbidden_upward_edges` entry. Surface a diff-introduced upward-edge violation as a **FIX** advisory, naming the two archetypes and the `observed_direction` the edge inverts. Reference the bootstrap cycle report: if the new edge appears in or extends an `import_cycles` entry, note it. Keep this advisory (NIT for a borderline edge, FIX for a clear inversion), never BLOCK: the layering data is statistical and a deliberate exception is indistinguishable from a mistake here. Cite the `layering` entry the finding rests on.
+
+#### 2.9b. Semantic duplication of NEW functions (FIX or NIT, advisory)
+
+For each NEW function or method the diff adds, call the `get_duplication_candidates` MCP tool:
+```
+get_duplication_candidates(repo=<repo_id>, file_path=<abs_path_of_changed_file>)
+```
+The tool returns `{found, file, matches}` — the similar-function pairs are under `data.matches`, NOT a top-level `candidates` key (reading `data.candidates` finds nothing). Each entry in `matches` is `{function, candidates}`: `function` is the NEW function the diff defined (`{name, kind, arity, required}`) and `candidates` is the list of existing catalog functions prefiltered as semantically similar by signature shape and name-token overlap. Each candidate is `{name, file, kind, arity, required, shared_tokens, body_excerpt, body_match}` — the identifier is `name` and the location is `file` (there is NO `symbol`/`path` field), and the snippet is `body_excerpt` (not `excerpt`). The tool only PREFILTERS; it does not decide duplication. You are the semantic-equivalence judge: for each `matches` entry, read the new `function` body against each of its `candidates`' `name`, shape (`kind`/`arity`/`required`), and `body_excerpt`, and decide whether the new function re-implements the intent of one of them.
+
+Raise a **FIX** (or NIT for a weak match) only when the new function duplicates the intent of a candidate the tool returned, citing that candidate's `name` and `file`. Never claim duplication without a candidate: if the tool returns no candidates for a function, there is no duplication finding for it, full stop. A re-implemented helper that the catalog did not surface is invisible to this pass, and inventing a "this probably already exists somewhere" finding is exactly the ungrounded claim the integrity rule forbids. Advisory only, never BLOCK.
+
+#### 2.9c. Cross-file existence breaks (FIX)
+
+Call the `get_crossfile_context` MCP tool once for the whole review:
+```
+get_crossfile_context(repo=<repo_id>)
+```
+It returns `{found, findings, low_confidence_dropped}` (with `status`/`reason` on the degraded/untrusted paths below; a trusted success sets NO `status`, so its absence reads as OK) and reports ONLY existence-break findings: an export that the indexed importer set still references by name is now gone from the module that used to export it, so the importer's call site is broken. Each finding is `{symbol, module, count, high_confidence, sites}` — the removed export is `symbol`, the module that no longer exports it is `module`, and the importer file:line list is `finding.sites`, each entry `{path, line}` (there is NO flat importer `file`/`line` on the finding). Each finding carries a `high_confidence` flag.
+
+**Degraded handling (mirror Step 2.9e's contract-break rule).** When the envelope carries `status: "degraded"` (or `found: false` with a `reason` such as `index-unavailable` — the reverse/constant index is corrupt, missing, or an unsupported layout), the scan could NOT run: do NOT read the empty `findings` as a verified "no existence breaks". Skip the pass, note it in one line ("cross-file existence-break pass skipped: `get_crossfile_context` degraded (`<reason>`)"), and rely on the change-delta and per-file review — exactly as you would on an unresolvable `get_contract_breaks`. A `status: "untrusted"` envelope means the profile isn't trusted; suggest `/chameleon-trust` and skip the pass.
+
+The tool scans the WHOLE repo, not the diff, so a returned break is not in this change by construction. Two gates decide relay, and both are mandatory: (1) `high_confidence` is true; (2) diff scope — the finding's `module` (the file that no longer exports the symbol) is in this diff's changed-file set, or the symbol's removal/rename is visible in a changed hunk's `-` lines. Relay a finding as a **FIX** ONLY when both gates pass, citing the removed/renamed symbol, the module that no longer exports it, and the importer file:line the tool reported. A high-confidence break whose module this diff did NOT touch is PRE-EXISTING (the repo was already broken before this change): report it in the "Pre-existing repo hygiene" note exactly like an out-of-hunk secret (Step 2.6a), never in the verdict — on a repo carrying an old break, every unrelated PR would otherwise be verdict-poisoned into NEEDS CHANGES for code it never touched. Drop every finding without `high_confidence=true`: a leaky resolver can produce a finding that cites a real-looking entry but resolved wrong (a barrel re-export, a same-name collision, a dynamic import), and relaying it would launder a wrong inference past the integrity rule. The tool is the witnessed fact here; do not add your own cross-file existence claims on top of what it returns.
+
+#### 2.9d. Caller blast radius for MODIFIED functions (context, not a finding)
+
+For each function the diff modifies, call the `get_callers` MCP tool:
+```
+get_callers(repo=<repo_id>, file_path=<abs_path_of_changed_file>, function_name=<function>)
+```
+List the returned caller sites with their grades as blast-radius context for the finding pass: a signature, contract, or behavior change to a function with recorded callers is judged against those call sites, not in isolation. Each site is `{path, caller, line, grade}` (the calling symbol is `caller`, not `name`; a barrel-chased site also carries a `via` list). Grades are deterministic (`same_file` / `import` / `constant_receiver`, plus `typed_property` for TypeScript dependency-injection edges and `module_attribute` for Python module-attribute calls), read from the committed calls snapshot at profile derivation, so each cited site is a real recorded call, not an inference — treat the grade set as open (a new deterministic edge kind reads as deterministic, never as a non-deterministic name-token guess).
+
+Absence of callers is NOT evidence of dead code: dynamic and unsupported call paths (reflection, metaprogramming, superclass chains) are invisible to the index, as is anything added after the last refresh. Never raise an "unused function" finding from an empty result. Name-token candidates from `get_duplication_candidates` may be listed separately alongside this context, but must be labeled non-deterministic; they never carry the deterministic grades above.
+
+#### 2.9e. Caller-contract signature breaks (FIX)
+
+Call the `get_contract_breaks` MCP tool once for the whole diff:
+```
+get_contract_breaks(repo=<repo_id>, base_ref=<the PR base branch, or the branch's merge base; the locked production_ref when no PR base is known; default "main">)
+```
+It compares each changed TS/Ruby/Python callable's POSITIONAL parameter contract at the merge-base of `base_ref` and HEAD vs HEAD (three-dot semantics, matching the rest of the diff so a divergent base does not read as this branch's change) and returns `findings` only for a callable that NARROWED (a new required positional argument, or an optional positional flipped required) AND has committed callers. Each is a **FIX**: the narrowed callable now mis-matches `caller_total` recorded call sites. Each finding is `{file, name, old_required_positional, new_required_positional, caller_total, callers}` — cite the symbol (`name`), the `old_required_positional`->`new_required_positional` count, and the affected `callers` file:line list the tool returned (each caller `{path, line}`, plus a `via` barrel-chain list when present; a deterministic fact, same bar as 2.9c). This is the deterministic complement to the LLM contract check: a required-positional narrowing in a low-importer file that the size/blast gates miss. The tool flags ONLY positional narrowing — never a removed/reordered param, a new optional/keyword arg, or a return-type change; for those, fall back to the logic review. If `get_contract_breaks` returns `status: degraded` — an unresolvable `base_ref`, a missing/corrupt calls index, or `reason: diff_too_large` (the deterministic pass is capped at `AUTOPASS_MAX_FILES` = 10 changed files, so a larger diff cannot run it) — or is otherwise unavailable, do NOT read the empty `findings` as a verified clean: skip the deterministic pass, note it in one line, and rely on the LLM contract/logic review (Step 3c) to cover narrowings on that diff.

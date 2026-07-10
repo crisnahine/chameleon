@@ -29,7 +29,10 @@ SKILL = REPO_ROOT / "skills" / "chameleon-pr-review" / "SKILL.md"
 
 
 def _skill_text() -> str:
-    return SKILL.read_text(encoding="utf-8")
+    """Body plus lazily-loaded references — the skill's full procedure text."""
+    refs = sorted(SKILL.parent.glob("references/*.md"))
+    parts = [SKILL.read_text(encoding="utf-8")] + [p.read_text(encoding="utf-8") for p in refs]
+    return "\n".join(parts)
 
 
 def test_security_pass_step_present_and_always_runs():

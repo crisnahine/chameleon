@@ -22,7 +22,10 @@ RECV = REPO_ROOT / "skills" / "chameleon-receiving-code-review" / "SKILL.md"
 
 def _pr() -> str:
     # Whitespace-normalized so phrase assertions match regardless of line wrapping.
-    return " ".join(PR.read_text(encoding="utf-8").split())
+    # Includes the lazily-loaded references/*.md — the skill's full procedure text.
+    parts = [PR.read_text(encoding="utf-8")]
+    parts += [p.read_text(encoding="utf-8") for p in sorted(PR.parent.glob("references/*.md"))]
+    return " ".join("\n".join(parts).split())
 
 
 def _recv() -> str:
