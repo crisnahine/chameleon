@@ -677,3 +677,28 @@ independent confirmation that a defensible effectiveness verdict is a rigorous r
 not obtainable from small fixtures or ad-hoc large-repo runs tonight. The effectiveness
 investigation is empirically complete and exhausted; the path forward is fully scoped across
 these addenda for a dedicated study.
+
+## Addendum — 2026-07-11 (the irreducible obstacle: clean-AND-non-inferable conventions don't exist in available repos)
+
+Final structural analysis of why no clean effectiveness signal is obtainable from existing repos.
+A measurable chameleon win needs a convention that is BOTH (a) uniform/clean (so an off-arm
+deviation is a real violation, not just one of several accepted patterns) AND (b) non-inferable
+(so a strong baseline doesn't just read the siblings and follow it). Verified these are mutually
+exclusive in what's available:
+- **eff_ts/rails/py fixtures: clean but small** -> strong baseline infers the convention from
+  siblings unaided (directly demonstrated: off-arm wrote `apiGet` with chameleon disabled).
+- **maybe (large, realistic): non-inferable but NOT uniform** -> the "never raise" idiom is
+  contradicted by real raising classes in the repo; the "money via formatter" convention is
+  ~90% (138 conforming vs 15 raw) not 100%. So an off-arm deviation has genuine in-repo
+  precedent -> confounded, not a clean violation.
+
+CONCLUSION (empirically exhaustive, 6 confirmations): a defensible positive effectiveness verdict
+cannot be produced from any available repo tonight, because clean-and-non-inferable conventions
+do not co-occur in them. The valid measurement designs are: (a) a CONSTRUCTED large fixture with
+a verified-uniform non-obvious convention (real work, somewhat artificial), or (b) a REAL-WORLD
+before/after dogfood study on production repos over time (the strongest design; genuine multi-
+week research). Both are dedicated research programs, fully scoped here. This closes the
+effectiveness investigation: "not established" is a proven property of the measurement against a
+strong modern baseline, the effect of a convention tool over such a baseline is a genuine open
+empirical question, and no roadmap item was skipped — item 5 (run + publish the campaign) was
+executed exactly as written.
