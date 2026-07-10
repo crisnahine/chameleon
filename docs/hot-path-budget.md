@@ -39,7 +39,7 @@ deliberately and added here, not back-derived from a benchmark run.
 
 | Ceiling | Value | Where | Behavior on breach |
 |---|---|---|---|
-| Claude Code hook timeout (outer) | **45 s** | `hooks/hooks.json` (`"timeout": 45` on the five fast hooks; deliberately **no** hooks.json timeout on Stop/SubagentStop) | Claude Code kills the hook; fails open |
+| Claude Code hook timeout (outer) | **45 s** fast hooks / **60 s** Stop+SubagentStop | `hooks/hooks.json` (`"timeout": 45` on the five fast hooks, `"timeout": 60` on Stop/SubagentStop) | Claude Code kills the hook; fails open |
 | Fast-hook hard timeout | **3 s** | `hooks/preflight-and-advise:75` (`timeout 3`); same for `session-start`, `posttool-verify`, `posttool-recorder`, `callout-detector` | Process killed; hook **fails open** (edit proceeds without chameleon) |
 | Daemon per-call deadline | **1.5 s** | `DEFAULT_TIMEOUT_S` in `mcp/chameleon_mcp/daemon_client.py` | `call()` returns `None`; the hook falls back in-process, still inside the 3 s cap — a wedged daemon cannot eat the budget |
 | Stop/SubagentStop backstop | **55 s** | `hooks/stop-backstop:85` (`timeout 55`); wraps the ~45 s turn-end correctness judge | Killed; fails open |
@@ -48,10 +48,10 @@ deliberately and added here, not back-derived from a benchmark run.
 Notes:
 - Each fast hook is capped twice: the hooks.json `timeout: 45` (outer) and the
   shell `timeout 3` (inner). The inner cap is the binding one; the outer exists so
-  a broken shell wrapper still cannot hang the session. Stop/SubagentStop invert
-  this deliberately: no hooks.json timeout, so the shell's 55 s is the binding cap
-  with headroom under Claude Code's own 60 s default (per the comment in
-  `hooks/stop-backstop` — a shorter cap would SIGKILL the judge mid-review).
+  a broken shell wrapper still cannot hang the session. Stop/SubagentStop follow
+  the same two-layer shape with more headroom: the shell's 55 s is the binding cap
+  and the hooks.json `timeout: 60` is the outer safety net (per the comment in
+  `hooks/stop-backstop` — a shorter inner cap would SIGKILL the judge mid-review).
 - The 3 s cap is a *hard ceiling and a safety net*, not a target. The fast hooks
   degrade to uncapped when no usable `timeout`/`gtimeout` exists: missing from
   PATH (minimal environments), or Git Bash on Windows, where the wrapper skips

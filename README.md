@@ -267,7 +267,7 @@ Every number below is checkable in this repo right now:
 | What | Count | Verify yourself |
 |---|---|---|
 | Unit tests | **5,311** | `PYTHONPATH=. mcp/.venv/bin/python -m pytest tests/unit/ --co -q` |
-| Released versions | **181** (v0.1.1 to v2.68.0) | `git tag \| wc -l` |
+| Released versions | **182** (v0.1.1 to v2.69.0) | `git tag \| wc -l` |
 | Changelog | **6,500+ lines** | `wc -l CHANGELOG.md` |
 | CI | ubuntu + macos + **native Windows**, Python 3.11-3.13 | [.github/workflows/ci.yml](.github/workflows/ci.yml) |
 | Per-edit hot path | benchmarked cold/warm p50 and p99 | `PYTHONPATH=. mcp/.venv/bin/python tests/bench_hot_path.py` |

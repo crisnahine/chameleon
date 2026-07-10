@@ -11,6 +11,10 @@ if command -v jq &>/dev/null; then
   project_dir=$(printf '%s' "$input" | jq -r '.workspace.project_dir // empty' 2>/dev/null || true)
 fi
 if [[ -z "$project_dir" ]]; then
+  # Deliberately bare python3, unlike the hooks' _resolve-python.sh ladder: every
+  # python call in this script is stdlib-only JSON that runs fine on 3.9 (the
+  # macOS system python), each call is fail-silent, and the ladder's version
+  # probe alone would blow the <100ms render budget.
   project_dir=$(printf '%s' "$input" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('workspace',{}).get('project_dir') or '')" 2>/dev/null || true)
 fi
 [[ -z "$project_dir" ]] && project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
