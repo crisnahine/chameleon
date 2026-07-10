@@ -148,6 +148,14 @@ def spawn_claude(
         model,
         "--permission-mode",
         permission_mode,
+        # Harness workers must be hermetic plain sessions. A user-level
+        # settings.json can carry multi-agent orchestration directives
+        # (ultracode / workflows), under which a worker delegates its small
+        # task to background agents, idles on wakeups, and dies at the turn
+        # cap — poisoning every arm's cells. Override them per-spawn; the
+        # user's real sessions are unaffected.
+        "--settings",
+        '{"ultracode": false, "enableWorkflows": false}',
     ]
     if plugin_root is not None:
         args += ["--plugin-dir", str(plugin_root)]
