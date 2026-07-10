@@ -17,6 +17,58 @@ Status legend: `OPEN` · `FIX-STAGED` (code landed, awaiting human re-sign-off) 
 
 ---
 
+## Addendum — 2026-07-10 (v3 QA campaign: MCP fold + plugin/ restructure)
+
+A 15-agent QA matrix over the v3 tree (48→19 MCP fold, `plugin/` restructure)
+surfaced 24 findings, all P2/P3, no P0/P1. Recorded here by status.
+
+FIX-STAGED (code/skill landed this campaign, human re-sign-off pending):
+- **G-021 — Python test files bucketed into production role archetypes** · signatures ·
+  bug · py-fastapi/Django · `python_role_for_path('tests/api/routes/test_x.py')`→`'route'` ·
+  gated on `_is_test_path(language=python)` before role lookup (commit 1cf94d5).
+- **G-022 — Python subdir linter-config unread** · bootstrap tool-config · missing-step ·
+  FastAPI `backend/pyproject.toml [tool.ruff]` · `rules_extracted=0` on the official
+  full-stack layout; TS monorepo had the subdir fallback, Python did not · IN PROGRESS.
+- **G-023 — refresh skill re-lock call omitted `path`** · skills · bug · the documented
+  `chameleon_lifecycle(action="bootstrap_repo")` could not bind · added `path` (d282204).
+- **G-024 — receiving-code-review had no argument-hint; pr-review claimed a tool grant
+  restriction the harness can't enforce** · skills · inconsistency · hint added, reviewer
+  directed in-prompt not to call the review/lifecycle dispatchers (d282204).
+
+WONT-FIX / by-design (accepted, rationale):
+- **Next.js singleton `app/layout.tsx` resolves archetype=None.** A lone layout file has
+  no cluster siblings, so no convention exists to derive; the tool is honest
+  (`confidence=low, match_quality=none`) and fails open. Not a regression.
+- **Stale committed test-fixture profiles (`calls_index` schema v1) fail cross-file tools.**
+  Fixture-maintenance, not a plugin defect: the engine correctly rejects the old schema and
+  `doctor`/`get_drift_status` say "run /chameleon-refresh". Refresh the test bed.
+- **Daemon slowloris 5s wedge; bench single-shot cold 92ms.** Both fail-open/latency-only;
+  multi-cold p50 (27ms) meets the budget. First-call overhead, not a regression.
+
+OPEN (real P3 hardening, deferred past v3 — none block the release):
+- **query_symbol_importers accepts a bare symbol name silently** (`found:true, importers:[]`
+  vs the `found:false` sibling tools return on non-path input) — contract-honesty gap.
+- **Turn-end backstop misses a `Bash mv` write vector** (`_extract_bash_write_targets`
+  covers `>`/`>>`/`tee`/`sed -i`; `mv` destinations are not recorded).
+- **Stale-trust sessions get no credential advisory** at PreToolUse (deny needs `trusted`,
+  the untrusted advisory needs `untrusted`; stale falls between — only under the opt-in
+  `CHAMELEON_TRUST_REVALIDATE=1`).
+- **Noop refresh leaves `.chameleon.backup-<txn>` debris** if it crashes mid-swap
+  (orphan sweep runs only in the full bootstrap path).
+- **Silent linter-config parse failure** (broken symlink / malformed TOML → `rules=0`
+  with no warning field on the bootstrap result and no `doctor` check).
+- **Catchall directory clusters can serve a trivial canonical** (a 26-char `__init__.py`
+  docstring as the structural exemplar) — canonical-selection quality.
+- **Downgraded engine silently rebuilds a newer-schema profile down** and reports success
+  with no downgrade notice.
+
+Completeness note: the QA matrix drove batteries + hostile depth but not the `/chameleon-*`
+slash-command flows at runtime (that is the Wave-5 journey harness's job) — and the journey
+fixtures are TS + Rails only, so **Python lifecycle/damage depth needs a dedicated pass
+before v3 ships** (tracked as the campaign's pre-release Python-depth gate).
+
+---
+
 ## Addendum — 2026-07-07 (post-campaign status snapshot)
 
 Everything below this section is the v2.38.x verification-campaign record (newest
