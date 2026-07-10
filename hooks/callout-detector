@@ -47,9 +47,13 @@ if [ -r "${RESOLVER}" ]; then
     # (which would BLOCK the edit under PreToolUse) and `source <missing>` exits
     # 1, neither catchable by `|| true` — so the broken-helper case stays
     # fail-open by reading the resolver's argv over a pipe instead.
+    # CHAMELEON_RESOLVE_FAST=1: this hook is on the per-edit/per-turn budget, so
+    # the resolver's uv probe is capped at 5s (30s on the generous SessionStart/
+    # doctor path) and bounded even where no timeout(1) exists. The common case
+    # is a cache hit warmed by SessionStart — no probe at all.
     while IFS= read -r _tok || [ -n "${_tok}" ]; do
         if [ -n "${_tok}" ]; then CHAMELEON_PY+=("${_tok}"); fi
-    done < <("${BASH:-bash}" "${RESOLVER}" "${MCP_DIR}" 2>/dev/null || true)
+    done < <(CHAMELEON_RESOLVE_FAST=1 "${BASH:-bash}" "${RESOLVER}" "${MCP_DIR}" 2>/dev/null || true)
 fi
 if [ "${#CHAMELEON_PY[@]}" -eq 0 ]; then
     echo "[$(date -u +%FT%TZ)] callout-detector no-interpreter (no Python >=3.11, uv unavailable)" \

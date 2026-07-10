@@ -47,6 +47,9 @@ if [ -r "${RESOLVER}" ]; then
     # (which would BLOCK the edit under PreToolUse) and `source <missing>` exits
     # 1, neither catchable by `|| true` — so the broken-helper case stays
     # fail-open by reading the resolver's argv over a pipe instead.
+    # Deliberately no fast-mode flag on this resolve: SessionStart can afford
+    # the generous 30s uv probe (a cold uv materialization may need it), and it
+    # warms the interp.cache so the per-edit hooks hit it all session.
     while IFS= read -r _tok || [ -n "${_tok}" ]; do
         if [ -n "${_tok}" ]; then CHAMELEON_PY+=("${_tok}"); fi
     done < <("${BASH:-bash}" "${RESOLVER}" "${MCP_DIR}" 2>/dev/null || true)

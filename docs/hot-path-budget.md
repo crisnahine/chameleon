@@ -42,6 +42,7 @@ deliberately and added here, not back-derived from a benchmark run.
 | Claude Code hook timeout (outer) | **45 s** fast hooks / **60 s** Stop+SubagentStop | `hooks/hooks.json` (`"timeout": 45` on the five fast hooks, `"timeout": 60` on Stop/SubagentStop) | Claude Code kills the hook; fails open |
 | Fast-hook hard timeout | **3 s** | `hooks/preflight-and-advise:75` (`timeout 3`); same for `session-start`, `posttool-verify`, `posttool-recorder`, `callout-detector` | Process killed; hook **fails open** (edit proceeds without chameleon) |
 | Daemon per-call deadline | **1.5 s** | `DEFAULT_TIMEOUT_S` in `mcp/chameleon_mcp/daemon_client.py` | `call()` returns `None`; the hook falls back in-process, still inside the 3 s cap — a wedged daemon cannot eat the budget |
+| Interpreter-resolver uv probe | **5 s** fast hooks / **30 s** SessionStart+doctor | `_cham_uv_ge_311` in `hooks/_resolve-python.sh`; the five per-edit/per-turn hooks set `CHAMELEON_RESOLVE_FAST=1` | Probe killed (`timeout(1)`, or the background poll loop where no timeout binary exists — the probe is bounded in fast mode even on Git Bash / coreutils-less macOS); ladder falls through; hook fails open. Warm sessions skip the ladder entirely: SessionStart's generous resolve writes `interp.cache` and each later resolve is a builtins-only cache hit |
 | Stop/SubagentStop backstop | **55 s** | `hooks/stop-backstop:85` (`timeout 55`); wraps the ~45 s turn-end correctness judge | Killed; fails open |
 | Statusline render | **< 100 ms** | `bin/chameleon-statusline.sh` — a design budget, not a runtime check. What the script bounds: the stdin read (256 KB, `head -c` at line 8) and the process count (one single-pass `jq` render, constant regardless of profile count) | No latency measurement or truncation; on any render failure it degrades to a `.chameleon` walk-up or a silent `exit 0` |
 
@@ -58,6 +59,12 @@ Notes:
   the cap unconditionally (the MINGW/MSYS/CYGWIN `uname` branch — Windows'
   `timeout.exe` takes no command, so PATH is never consulted there);
   in-process code still self-limits (git 2 s, sqlite `busy_timeout`).
+- The interpreter resolver does NOT share that degrade-to-uncapped shape on the
+  per-edit path: under `CHAMELEON_RESOLVE_FAST=1` its uv probe is bounded even
+  with no timeout binary (background poll loop, `kill -0` every 0.2 s, hard kill
+  at ~5 s). Only the generous SessionStart/doctor probe keeps the old uncapped
+  fallback, and it runs off the per-edit budget. `CHAMELEON_INTERP_CACHE=0`
+  disables the cache; see `.claude/rules/environment-variables.md` for both flags.
 - Fail-open is the invariant: a slow or broken hot path never blocks the edit and
   never corrupts the session. That is what makes "budget, not tool" safe.
 
