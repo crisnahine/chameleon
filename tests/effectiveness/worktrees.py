@@ -13,6 +13,7 @@ user's own repo.
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -49,6 +50,15 @@ def prepare_cell(
     the trust hash.
     """
     _git(fixture_repo, f'worktree add --detach "{dest}" HEAD')
+    # A detached worktree materializes only COMMITTED files. Env-pointed repos
+    # usually keep their .chameleon profile untracked, so without this copy
+    # every arm runs profile-less — the treatment arm silently loses its
+    # subject and the A/B degenerates to off-vs-off (the static arm's
+    # fail-loud renderer is what exposed exactly that). The profile is input
+    # state, so copying it preserves cell hermeticity.
+    src_profile = fixture_repo / ".chameleon"
+    if src_profile.is_dir() and not (dest / ".chameleon" / "profile.json").is_file():
+        shutil.copytree(src_profile, dest / ".chameleon", dirs_exist_ok=True)
     apply_arm_config(arm, dest)
     if arm.static_conventions:
         # The static control arm's one-shot CLAUDE.md, rendered from the

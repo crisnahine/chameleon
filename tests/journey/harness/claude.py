@@ -127,6 +127,7 @@ def spawn_claude(
     transcript_path: Path,
     max_turns: int = 25,
     allowed_tools: list[str] | None = None,
+    disallowed_tools: list[str] | None = None,
     permission_mode: str = "bypassPermissions",
     timeout_s: int = 900,
     model: str = "sonnet",
@@ -161,6 +162,12 @@ def spawn_claude(
         args += ["--plugin-dir", str(plugin_root)]
     if allowed_tools:
         args += ["--allowedTools", ",".join(allowed_tools)]
+    if disallowed_tools:
+        # --allowedTools only PRE-AUTHORIZES under bypassPermissions; it does
+        # not remove other tools. Orchestration tools (Agent/Task/Skill/
+        # ScheduleWakeup) reached via user-level plugins must be blocked
+        # explicitly or a worker delegates its task instead of doing it.
+        args += ["--disallowedTools", ",".join(disallowed_tools)]
     if add_dirs:
         for d in add_dirs:
             args += ["--add-dir", str(d)]

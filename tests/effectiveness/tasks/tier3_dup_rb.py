@@ -15,7 +15,7 @@ TASKS = [
         prompt="Implement name normalization for user profiles to ensure consistent formatting. Names should have each word capitalized while preserving apostrophes and hyphens (e.g., O'Brien, Jean-Pierre remain intact). The system should also strip any HTML tags from names to prevent XSS issues.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-normalize-domain",
@@ -24,7 +24,7 @@ TASKS = [
         prompt="Build domain normalization logic for a referral tracking system that accepts both bare domains and full URLs. The system should extract just the hostname, convert it to lowercase, and remove the www prefix for consistency. Handle cases where the input might be missing a protocol or have an invalid URI.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-multi-select-sanitizer",
@@ -33,7 +33,7 @@ TASKS = [
         prompt="Create a sanitizer for HubSpot multi-select field values that handles common data issues: removes trailing quote corruption from CSV imports, filters out blank tokens, and eliminates placeholder values like 'null', 'undefined', 'nan', and 'none' (case-insensitive). Ensure the final list is deduplicated.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-extract-reply",
@@ -42,7 +42,7 @@ TASKS = [
         prompt="Implement email reply extraction that separates actual user reply text from quoted messages. The system should detect common email client signature patterns (Apple Mail: '> On [date], at [time], [name] wrote:', Gmail/Outlook: 'On [date], [name] wrote:') and remove everything after the signature. Also clean up trailing whitespace and empty paragraph tags.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-calculate-profit-margin",
@@ -51,7 +51,7 @@ TASKS = [
         prompt="Add a feature to calculate and display profit margin percentages for listings. The calculation should divide average monthly net profit by average monthly gross revenue and express it as a percentage. Handle cases where profit or revenue data might be blank or zero to prevent division errors.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-clean-url",
@@ -60,7 +60,7 @@ TASKS = [
         prompt="Add a method to normalize and display website domain names by removing protocol prefixes (http://, https://) and the www subdomain, so they appear consistently across the application UI",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-formatted-address",
@@ -69,7 +69,7 @@ TASKS = [
         prompt="Create a method to format multi-part address data (street, city, state, postal code, country) into a single readable comma-separated string, handling cases where some address fields may be blank",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-formatted-money",
@@ -78,7 +78,7 @@ TASKS = [
         prompt="Add a helper to format monetary amounts as readable currency strings with support for both abbreviated notation (like $1.25m for millions or $100k for thousands) and full numeric notation with commas",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-calculate-net-profit",
@@ -87,7 +87,7 @@ TASKS = [
         prompt="Implement a calculation to compute net profit from gross revenue and expenses, handling both confirmed financial data and pending/provisional updates separately",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-calculate-total-cost",
@@ -96,7 +96,7 @@ TASKS = [
         prompt="Create a method to calculate the total per-unit cost of Amazon FBA products by combining the base unit cost with additional cost components like packing fees, shipping costs, customs duties, inspection charges, and Amazon label expenses",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-safe-parse-datetime",
@@ -105,7 +105,7 @@ TASKS = [
         prompt="Add a date filter to the admin dashboard that accepts user input for start and end dates. The filter should safely parse various date formats and adjust times to the user's timezone (beginning of day for start dates, end of day for end dates). Handle invalid inputs gracefully by returning nil.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-mask-email",
@@ -114,7 +114,7 @@ TASKS = [
         prompt="Implement email privacy protection in notification previews and debug logs. The system should obfuscate email addresses to show only first and last characters for the username section, plus the domain TLD, with middle portions replaced by asterisks (e.g., 'a****n@h****.com'). Support custom domain structures.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-rate-limit",
@@ -123,7 +123,7 @@ TASKS = [
         prompt="Implement exponential backoff for a new external API service. When rate limits are hit, store a backoff flag in Redis that expires after a configurable duration, and maintain a counter to track how many times the rate limit has been triggered. Provide methods to check if waiting is needed, apply the wait, and clear the limit.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-markdown-to-html",
@@ -132,7 +132,7 @@ TASKS = [
         prompt="Add support for rich text display in a new content area where users can write summaries or descriptions using Markdown. Convert the Markdown to HTML while sanitizing dangerous tags to prevent XSS attacks. Allow formatting like bold, italic, links, headings, code blocks, and lists but restrict to safe elements.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-validate-uuid",
@@ -141,7 +141,7 @@ TASKS = [
         prompt="Add validation for UUID parameters in a new REST API endpoint. The endpoint should accept a UUID identifier and return nil gracefully if the format is invalid. Support both uppercase and lowercase UUID formats, ensuring consistent handling across different API routes that accept optional ID parameters.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-pagination-calculate",
@@ -150,7 +150,7 @@ TASKS = [
         prompt="Add a new API endpoint that returns paginated results for a resource list. The endpoint should accept optional limit and page parameters from the query string, with sensible defaults and maximum constraints to prevent abuse (e.g., maximum 200 items per page). Return the paginated items plus metadata like total count and current page number.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-filters-service",
@@ -159,7 +159,7 @@ TASKS = [
         prompt="Add comprehensive filtering to a resource listing endpoint. Support multiple filter types: exact text match, partial text search, numeric ranges, date ranges, boolean fields, and array fields. Each filter should normalize its corresponding params (e.g., convert strings to numbers, parse dates, validate ranges) and apply appropriate SQL WHERE conditions.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-obscure-string",
@@ -168,7 +168,7 @@ TASKS = [
         prompt="Add a feature to partially mask sensitive user data (like names or account identifiers) in API responses for privacy. The masked version should show only the first character and replace the rest with asterisks (e.g., 'John' becomes 'J***').",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-download-link",
@@ -177,7 +177,7 @@ TASKS = [
         prompt="Add a new API endpoint that returns a list of document files with their download URLs. The endpoint should handle both Amazon S3 and local storage backends, with expiring URLs for S3 files.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-attachment-serializer",
@@ -186,7 +186,7 @@ TASKS = [
         prompt="Build a new API response that includes attached files. Each file should contain its ID, filename, content type, and a download URL that works for both S3-hosted and locally-stored files.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-user-attributes",
@@ -195,7 +195,7 @@ TASKS = [
         prompt="Build a new API serializer for a resource that includes related user information. The user data should show their ID, first and last name, preferred name, and profile picture, but exclude sensitive fields.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-rb-dup-asset-purchase-agreement-url",
@@ -204,7 +204,7 @@ TASKS = [
         prompt="Add functionality to retrieve a legal document URL for a transaction. If a custom agreement document is attached, return its download URL with a 7-day expiration. Otherwise, return a fallback URL to a standard terms document.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
 ]
 

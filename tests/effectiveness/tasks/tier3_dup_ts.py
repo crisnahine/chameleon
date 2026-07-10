@@ -16,7 +16,7 @@ TASKS = [
         prompt="Implement amount validation and parsing for a modal popup that accepts monetary values from users, converting formatted strings like '$1,000.00' to plain numbers for business logic calculations",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-comma-integer-to-number",
@@ -25,7 +25,7 @@ TASKS = [
         prompt="Implement a numeric input field that accepts large numbers with comma thousand separators (e.g., '1,000,000'). The field should parse the formatted string into an actual numeric value for calculations and API requests.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-transform-money-value",
@@ -34,7 +34,7 @@ TASKS = [
         prompt="Add a form field for collecting a payment amount from users. The field should accept formatted currency input and convert it to a number for backend submission. Handle edge cases like empty strings and non-numeric characters gracefully.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-transform-integer-value",
@@ -43,7 +43,7 @@ TASKS = [
         prompt="Create a form field that accepts user input for a count or quantity (like number of employees or products) and transforms it to an integer for database storage, removing any formatting characters",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-validate-date",
@@ -52,7 +52,7 @@ TASKS = [
         prompt="Add date validation to a multi-step form where users can enter business creation date in common date formats. Ensure the validation rejects ambiguous or coerced inputs while accepting valid dates in multiple common formats.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-get-item-with-expiry",
@@ -61,7 +61,7 @@ TASKS = [
         prompt="Add session-based caching for temporary user data that should automatically expire after a set time period. The cache should store data persistently but become unavailable after the expiration time without manual cleanup.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-is-email-valid",
@@ -70,7 +70,7 @@ TASKS = [
         prompt="Build an email validation function that can be used in form fields to check if a user's input is a valid email address before submission. It should handle empty values and return a boolean result.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-get-minimum-commission",
@@ -79,7 +79,7 @@ TASKS = [
         prompt="Implement a commission calculation feature that uses an agreed-upon minimum commission value if provided, but falls back to a default minimum of $10,000 if not specified. The result should always be an integer.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-get-full-name",
@@ -88,7 +88,7 @@ TASKS = [
         prompt="Create a utility to format and display a user's full name in a consistent way. If a preferred name is available, use that in place of the first name. Return an empty string if either the first or last name is missing.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-titleize",
@@ -97,7 +97,7 @@ TASKS = [
         prompt="Build a dynamic form field label generator that converts database column names like 'agreed_upon_commission' into human-readable title case labels like 'Agreed Upon Commission'.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-remove-html-tags",
@@ -106,7 +106,7 @@ TASKS = [
         prompt="Add a text analysis feature to a rich text editor that counts meaningful character content (excluding HTML markup) to enforce a minimum or maximum length requirement for expert analysis content",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-is-blank",
@@ -115,7 +115,7 @@ TASKS = [
         prompt="Add a field validation rule that rejects entries containing only whitespace or being completely empty, allowing for proper empty-field detection in form submissions",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-remove-http-prefix",
@@ -124,7 +124,7 @@ TASKS = [
         prompt="Add a new listing detail view that displays website URLs in a user-friendly format by removing the protocol prefix (http:// or https://) from links before rendering them.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-file-size",
@@ -133,7 +133,7 @@ TASKS = [
         prompt="Create a file upload progress indicator that displays the current file size in human-readable format (e.g., 2.5 MB) as users select documents for credential uploads.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-suffixed-number",
@@ -142,7 +142,7 @@ TASKS = [
         prompt="Add display formatting for large numbers in the analytics dashboard. When showing metrics like view counts and subscriber numbers, render them compactly (e.g., 1200000 becomes 1.2M, 500000 becomes 500K) with consistent decimal precision.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-process-humps",
@@ -151,7 +151,7 @@ TASKS = [
         prompt="Transform incoming API data to match form schema conventions. Convert camelCase field names to snake_case throughout the data structure (handling nested objects and arrays), while preserving UUID patterns and maintaining all-uppercase constant keys unchanged.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-has-filters-raw",
@@ -160,7 +160,7 @@ TASKS = [
         prompt="Implement filter change detection for a form. Compare the current filter values against initial values, ignoring any false boolean entries and empty objects (which represent cleared checkbox selections), returning true if substantive changes exist.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-get-offer-status",
@@ -169,7 +169,7 @@ TASKS = [
         prompt="Create an offer status label for the offer details page. Implement logic that examines offer rejection state, preparation state, and buyer confirmation state to produce a human-friendly status string (e.g., 'Rejection Pending', 'Counter', 'For Approval').",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-use-previous",
@@ -178,7 +178,7 @@ TASKS = [
         prompt="Implement a component that tracks the previous scroll position to detect whether the user is scrolling up or down the page. Return the direction as -1 (up), 0 (no change), or 1 (down).",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-use-debounced-value",
@@ -187,7 +187,7 @@ TASKS = [
         prompt="Add a live search feature to a product list that waits for the user to stop typing for 500ms before making an API request. What hook pattern would you use to debounce the search input?",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-use-window-scroll",
@@ -196,7 +196,7 @@ TASKS = [
         prompt="Create a component that shows a 'back to top' button only when the user has scrolled down more than 300px. How would you track scroll position efficiently?",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-use-document-title",
@@ -205,7 +205,7 @@ TASKS = [
         prompt="Implement a page that displays a dashboard title in the browser tab. The title should show the environment (DEV/STAGING) if not production, and include the company name as a prefix.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-use-query-action",
@@ -214,7 +214,7 @@ TASKS = [
         prompt="Add a feature where clicking a listing opens a 'make offer' popup if the URL contains a ?make-offer query parameter. The query parameter should be removed from the URL after the popup opens.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
     EffTask(
         task_id="t3-ts-dup-use-background-color",
@@ -223,7 +223,7 @@ TASKS = [
         prompt="Create a fullscreen modal component that changes the page background to a dark color while open and restores the original background when closed.",
         category="duplication",
         scorers=("duplication", "convention", "verification", "cost"),
-        max_turns=30,
+        max_turns=45,
     ),
 ]
 

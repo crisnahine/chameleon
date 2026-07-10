@@ -59,6 +59,12 @@ EST_VOTE_USD = 0.05
 FIXTURE_SEEDS = {"ts": "eff_ts", "rails": "eff_rails", "py": "eff_py"}
 SESSION_TOOLS = ["Bash", "Read", "Edit", "Write", "Grep", "Glob"]
 
+# Blocked outright in worker cells: --allowedTools only pre-authorizes under
+# bypassPermissions, so user-level plugins still expose orchestration tools,
+# under which a worker delegates its small task to background agents and
+# idles to the turn cap. Arm-neutral (applied to every cell identically).
+SESSION_DISALLOWED_TOOLS = ["Agent", "Task", "Skill", "ScheduleWakeup", "Workflow"]
+
 # Seams (tests monkeypatch these module attributes).
 _prepare_cell = prepare_cell
 _remove_worktree = remove_cell_worktree
@@ -461,6 +467,7 @@ def _run_one_cell(args, ctx, pack, fixture_repo, task, arm, rep) -> dict:
             transcript_path=transcript,
             max_turns=task.max_turns,
             allowed_tools=SESSION_TOOLS,
+            disallowed_tools=SESSION_DISALLOWED_TOOLS,
             timeout_s=600,
             model=cell_model,
             plugin_root=ctx.plugin_root,
