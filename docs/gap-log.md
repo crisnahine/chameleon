@@ -471,3 +471,29 @@ about to write against the full function catalog.
   clean_url task?), THEN an effectiveness re-run to confirm it moves the number. Deliberately
   NOT rushed: the per-edit hook is the most latency- and correctness-sensitive surface, and a
   hasty change there risks a regression into a currently-clean plugin.
+
+## Addendum — 2026-07-11 (G-025 built; G-026 scoped as the battery's real fix)
+
+- **G-025 (FIX-STAGED) — pre-write reuse-before-create dedup nudge.** Built + unit-tested +
+  hot-path-measured (cold 11ms catalog load, warm 0.15ms; commit 0596ba6): on a PreToolUse
+  Write/Edit whose content defines a function whose name EXACTLY matches an existing catalog
+  entry in ANOTHER file, the pre-edit block surfaces "reuse-before-create: <name> in <file>".
+  Deterministic exact-name cross-file match, no LLM/spawn, stopword+length filtered, bounded,
+  `CHAMELEON_PREWRITE_DEDUP=0` kill switch. Verified firing on the real rw-rails catalog
+  (redefining `report_error` → surfaces its `connection.rb` home). This is a genuine
+  real-world improvement for the common case where a model reaches for a name that exists.
+
+- **G-026 (OPEN) — pre-write SEMANTIC dedup is what the effectiveness battery needs.**
+  Evidence: the tier-3 dup battery tests SEMANTIC duplication — the existing helper has one
+  name and the model invents a DIFFERENT name for the same intent (shadow-loss diffs wrote
+  `clean_domain`/`getFieldLabel`; none of those names exist in the `maybe`/`excalidraw`
+  catalogs). So G-025's exact-name match does NOT fire on the battery's cases, and a re-run
+  with G-025 alone would very likely still read "not established" — verified by diff+catalog
+  inspection BEFORE spending another ~$160. The fix that would move the number is moving the
+  turn-end SEMANTIC matcher (`select_candidates`: name-token overlap + signature shape) to
+  pre-write, driven by a LIGHTWEIGHT signature extraction of the pending content (name +
+  name-tokens + rough arity via regex, NOT a full AST spawn — keeping it hot-path-safe). This
+  is a heavier feature deserving a careful fresh-session build + its own effectiveness re-run;
+  it is deliberately NOT rushed at the tail of a long session onto the most latency-sensitive
+  surface. Even then, whether it flips the verdict is empirical (it depends on the model
+  actually changing behavior when nudged) — no build can guarantee a positive A/B.
