@@ -8,10 +8,7 @@ name collision BEFORE the write, so the model reuses instead of duplicating.
 from __future__ import annotations
 
 import dataclasses
-import json
 from pathlib import Path
-
-import pytest
 
 from chameleon_mcp import hook_helper
 from chameleon_mcp.function_catalog import CatalogedFunction, FunctionCatalog
