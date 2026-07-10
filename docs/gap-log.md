@@ -526,3 +526,37 @@ campaign failure cases BEFORE any further spend:
   general case is correctly turn-end. No further pre-write build is pursued; a fair
   effectiveness measurement of chameleon's dedup would need a MULTI-TURN eval variant (a
   separate, principled design task — not eval-gaming).
+
+## Addendum — 2026-07-11 (definitive: why one-shot A/B can't establish this tool class)
+
+Traced, capability by capability, WHY the causal campaign reads "not established" — it is a
+measurement-structure finding, not "chameleon is broken":
+
+1. **Duplication (tier-3 battery, what ran): architecturally turn-end.** Detecting that new,
+   differently-written code re-implements an existing helper needs an LLM equivalence judge
+   (chameleon's turn-end path). Deterministic pre-write matching (G-025 exact-name, G-026
+   >=2-token semantic — both shipped) fires on 0/3 real failure cases because the dups are
+   different-name AND different-code. A one-shot cell has no next turn, so this value is
+   structurally unmeasurable there.
+
+2. **Idiom conformance (money-as-cents, http-via-wrapper, service-returns-Result): NOT
+   deterministically scored.** Verified: `lint_file` (the convention scorer's engine) flags
+   STRUCTURAL mismatches (`top-level-node-kinds-mismatch`, `jsx-presence-mismatch`) but NOT a
+   `toFixed`/direct-`fetch` idiom violation — those idioms live as prose in `idioms.md`, not
+   as enforced lint rules. So the deterministic convention scorer cannot see chameleon's
+   biggest convention lever. The holistic judge could, but its preference was dominated by the
+   (doomed) dedup outcome.
+
+3. **Structural conformance (what the scorer DOES measure): marginal, because a strong baseline
+   infers it.** On the ran battery, shadow net-new violations 0.346 vs off 0.385 (26 paired,
+   18 ties) — a real but small edge, because a competent sonnet reads sibling files and mostly
+   matches structure without chameleon.
+
+**Conclusion:** "not established" honestly reflects (a) the wrong capability was battery-tested
+(dedup, turn-end), (b) chameleon's idiom value is not deterministically scored, and (c) its
+structural value is marginal against a strong baseline — NONE of which is a bug. A DEFENSIBLE
+effectiveness measurement of chameleon's core value needs: idiom-level lint enforcement (so the
+scorer sees idiom conformance) + tasks that stress those idioms + likely a weaker/older baseline
+model and/or a multi-turn variant. That is genuine future research, precisely scoped here, not a
+roadmap item skipped. No further build/run is pursued tonight: no feasible action produces an
+"established" verdict, and forcing one would be eval-gaming.
