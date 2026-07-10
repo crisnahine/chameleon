@@ -139,8 +139,8 @@ STOP here and continue with Step 2. If `recommended` is true, fan out:
   unexplained gap (a pass neither run nor covered by a sanctioned skip reason)
   and re-run that slice's missing passes yourself before merging. Step 2.5
   (dependency-change) is NOT delegated per-slice: it is a whole-diff pass and the
-  reviewers are not granted the `chameleon_review` dispatcher (which carries
-  `scan_dependency_changes`), so it runs once at synthesis.
+  slice reviewers are directed not to call the `chameleon_review` dispatcher (which
+  carries `scan_dependency_changes`), so it runs once at synthesis.
 - Synthesize in two parts: (a) merge + dedup the slice findings with the key
   `(file, section, rule, message-fingerprint)` — a `(file, line, rule)` key would
   mis-merge the file-anchored and missing-requirement findings that have no line;

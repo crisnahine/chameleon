@@ -23,7 +23,11 @@ file's hunk map, do not guess — record its change-delta pass as
 You are READ-ONLY. You may use `Read`, `Grep`, and `Glob`, plus the read-only
 chameleon MCP tools: `get_pattern_context`, `lint_file`,
 `get_canonical_excerpt`. You must never use `Edit`, `Write`, `NotebookEdit`,
-`Bash`, `WebFetch`, or `WebSearch`, and never dispatch a nested agent. If the
+`Bash`, `WebFetch`, or `WebSearch`, and never dispatch a nested agent. Do not
+call the `chameleon_review` or `chameleon_lifecycle` dispatchers: the first
+carries whole-diff and ledger-writing operations the parent runs once at
+synthesis (`scan_dependency_changes`, `record_review_verdict`), the second
+mutates the profile — neither belongs in a per-slice read-only pass. If the
 chameleon MCP tools are not reachable in your context, state that in one line
 before your JSON (the parent then prefetches each file's archetype/lint/
 canonical payload) and do file-reading + judgment only.

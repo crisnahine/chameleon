@@ -1,5 +1,6 @@
 ---
 name: chameleon-receiving-code-review
+argument-hint: "[PR-URL | ticket-key]"
 description: "Use when the user explicitly invokes /chameleon-receiving-code-review to handle a code review the team left on their PR — verify each comment against the code and the repo's chameleon conventions, decide apply-or-push-back, draft replies, and implement approved fixes one at a time."
 ---
 
