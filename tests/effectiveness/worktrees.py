@@ -14,6 +14,7 @@ user's own repo.
 from __future__ import annotations
 
 import shutil
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -22,6 +23,24 @@ from tests.effectiveness.static_conventions import render_static_conventions
 from tests.journey.harness.bash import run_bash
 
 _GIT_ID = "-c user.name=effectiveness -c user.email=eff@local"
+
+# `git worktree add`/`remove` mutate the shared fixture repo's worktree
+# registry, which is not concurrency-safe: parallel cells on the same repo
+# race on .git/worktrees and the index lock. Serialize just those two ops per
+# fixture repo (the slow session runs OUTSIDE this lock, so parallelism is
+# preserved where the time actually goes).
+_WORKTREE_LOCKS_GUARD = threading.Lock()
+_WORKTREE_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _repo_lock(fixture_repo: Path) -> threading.Lock:
+    key = str(fixture_repo)
+    with _WORKTREE_LOCKS_GUARD:
+        lock = _WORKTREE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _WORKTREE_LOCKS[key] = lock
+        return lock
 
 
 class WorktreeError(Exception):
@@ -49,7 +68,8 @@ def prepare_cell(
     the config flip must precede the grant because config.json is part of
     the trust hash.
     """
-    _git(fixture_repo, f'worktree add --detach "{dest}" HEAD')
+    with _repo_lock(fixture_repo):
+        _git(fixture_repo, f'worktree add --detach "{dest}" HEAD')
     # A detached worktree materializes only COMMITTED files. Env-pointed repos
     # usually keep their .chameleon profile untracked, so without this copy
     # every arm runs profile-less — the treatment arm silently loses its
@@ -82,7 +102,8 @@ def remove_cell_worktree(fixture_repo: Path, dest: Path) -> None:
     Committed-fixture clones never call this — their worktrees are retained
     as the forensic record.
     """
-    _git(fixture_repo, f'worktree remove --force "{dest}"')
+    with _repo_lock(fixture_repo):
+        _git(fixture_repo, f'worktree remove --force "{dest}"')
 
 
 def changed_files(worktree: Path, baseline_sha: str) -> list[str]:

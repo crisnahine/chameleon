@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -92,6 +93,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--toggle", default=None, help="enforcement.<key> to pair-flip from the base arm"
     )
     p.add_argument("--repeats", type=int, default=None, help="Override per-task repeats")
+    p.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help=(
+            "Cells to run concurrently (default 1 = sequential). Each cell is an "
+            "isolated worktree + claude -p; only fixture-repo worktree ops "
+            "serialize. Keep modest (3-5) to respect API rate limits."
+        ),
+    )
     p.add_argument("--model", default="sonnet")
     p.add_argument(
         "--arm-model",
@@ -281,35 +292,61 @@ def _execute(args, tasks, arms, cells) -> int:
     leaked_env_repos: dict[str, Path] = {}
     cost_so_far = 0.0
 
-    for idx, (task, arm, rep) in enumerate(cells):
-        remaining = len(cells) - idx
-        if cost_so_far + remaining * EST_CELL_USD > args.max_budget_usd:
-            for t2, a2, r2 in cells[idx:]:
-                cell_rows.append(_cell_row(t2, a2, r2, "skipped", "budget exhausted"))
-            print(f"BUDGET ABORT before cell {idx + 1}/{len(cells)}", file=sys.stderr)
-            break
+    record_lock = threading.Lock()
 
-        if task.fixture not in fixture_roots:
-            cell_rows.append(
-                _cell_row(task, arm, rep, "skipped", f"fixture {task.fixture} unavailable")
+    def _record(idx, task, arm, rep, row) -> None:
+        # Caller holds no lock; this takes record_lock so the parallel path is
+        # safe and the sequential path (single thread) is unaffected.
+        nonlocal cost_so_far
+        with record_lock:
+            cell_rows.append(row)
+            cost_so_far += (row.get("session") or {}).get("cost_usd") or 0.0
+            if row["status"] == "ok":
+                cells_by_task.setdefault(task.task_id, []).append(row)
+                # Keyed (task, arm): with repeats > 1 the LAST repeat's diff
+                # wins. The panel judges one representative diff per arm, not a
+                # per-repeat census — pinned by test, revisit if repeats grow.
+                diffs_by_task.setdefault(task.task_id, {})[arm.name] = row.pop("_diff", "")
+            _cleanup_env_worktree(ctx, fixture_roots, leaked_env_repos, task, arm, rep, row)
+            done = len(cell_rows)
+            print(
+                f"[{done}/{len(cells)}] {task.task_id} | {arm.name} | r{rep} -> "
+                f"{row['status']} (cumulative ${cost_so_far:.2f})",
+                file=sys.stderr,
             )
-            continue
 
-        row = _run_one_cell(args, ctx, pack, fixture_roots[task.fixture], task, arm, rep)
-        cell_rows.append(row)
-        cost_so_far += (row.get("session") or {}).get("cost_usd") or 0.0
-        if row["status"] == "ok":
-            cells_by_task.setdefault(task.task_id, []).append(row)
-            # Keyed (task, arm): with repeats > 1 the LAST repeat's diff
-            # wins. The panel judges one representative diff per arm, not a
-            # per-repeat census — pinned by test, revisit if repeats grow.
-            diffs_by_task.setdefault(task.task_id, {})[arm.name] = row.pop("_diff", "")
-        _cleanup_env_worktree(ctx, fixture_roots, leaked_env_repos, task, arm, rep, row)
-        print(
-            f"[{idx + 1}/{len(cells)}] {task.task_id} | {arm.name} | r{rep} -> "
-            f"{row['status']} (cumulative ${cost_so_far:.2f})",
-            file=sys.stderr,
-        )
+    def _run_cell(idx, task, arm, rep):
+        if task.fixture not in fixture_roots:
+            return _cell_row(task, arm, rep, "skipped", f"fixture {task.fixture} unavailable")
+        # Budget guard before the expensive spawn. cost_so_far reflects only
+        # COMPLETED cells, so a parallel run can overshoot by at most
+        # (jobs - 1) * EST_CELL_USD past the ceiling — bounded and acceptable
+        # given the ceiling is set with headroom.
+        with record_lock:
+            over = cost_so_far + EST_CELL_USD > args.max_budget_usd
+        if over:
+            return _cell_row(task, arm, rep, "skipped", "budget exhausted")
+        return _run_one_cell(args, ctx, pack, fixture_roots[task.fixture], task, arm, rep)
+
+    jobs = max(1, int(getattr(args, "jobs", 1) or 1))
+    if jobs == 1:
+        for idx, (task, arm, rep) in enumerate(cells):
+            _record(idx, task, arm, rep, _run_cell(idx, task, arm, rep))
+    else:
+        # Each cell is an isolated worktree + its own claude -p subprocess;
+        # only the shared fixture repo's `worktree add`/`remove` needs
+        # serializing (per-repo lock in worktrees.py). The slow session runs
+        # concurrently, so wall time drops toward 1/jobs.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            futs = {
+                pool.submit(_run_cell, idx, task, arm, rep): (idx, task, arm, rep)
+                for idx, (task, arm, rep) in enumerate(cells)
+            }
+            for fut in as_completed(futs):
+                idx, task, arm, rep = futs[fut]
+                _record(idx, task, arm, rep, fut.result())
 
     for root in sorted(set(leaked_env_repos.values())):
         print(
