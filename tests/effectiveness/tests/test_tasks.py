@@ -60,9 +60,10 @@ def test_collect_tasks_returns_validated_registry():
     ids = [t.task_id for t in tasks]
     assert len(ids) == len(set(ids))
     assert all(t.tier in VALID_TIERS for t in tasks)
-    # Tier-ci target from the spec: 8 tasks, 2 per category.
+    # Tier-ci target: 12 tasks, one per category per committed fixture
+    # (ts, rails, py).
     ci = [t for t in tasks if t.tier == "ci"]
-    assert len(ci) == 8
+    assert len(ci) == 12
 
 
 def test_load_packs_setups_resolve():
@@ -73,11 +74,12 @@ def test_load_packs_setups_resolve():
 
 
 def test_tier2_packs_have_four_tasks_each_and_resolvers():
-    from tests.effectiveness.tasks import tier2_rails, tier2_ts
+    from tests.effectiveness.tasks import tier2_python, tier2_rails, tier2_ts
 
     assert len(tier2_ts.TASKS) == 4
     assert len(tier2_rails.TASKS) == 4
-    for mod in (tier2_ts, tier2_rails):
+    assert len(tier2_python.TASKS) == 4
+    for mod in (tier2_ts, tier2_rails, tier2_python):
         crossfile = [t for t in mod.TASKS if t.category == "crossfile"]
         for t in crossfile:
             assert t.task_id in mod.RUNTIME_TARGET_RESOLVERS

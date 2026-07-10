@@ -1,0 +1,4 @@
+__pycache__/
+.chameleon/.tmp/
+.chameleon/.lock
+.chameleon/.skip

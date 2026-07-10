@@ -14,7 +14,11 @@ from pathlib import Path
 
 from tests.journey.harness.bash import run_bash
 
-_ENV_VARS = {"env-ts": "CHAMELEON_TEST_TS_REPO", "env-ruby": "CHAMELEON_TEST_RUBY_REPO"}
+_ENV_VARS = {
+    "env-ts": "CHAMELEON_TEST_TS_REPO",
+    "env-ruby": "CHAMELEON_TEST_RUBY_REPO",
+    "env-py": "CHAMELEON_TEST_PYTHON_REPO",
+}
 _OK_STATUSES = {"success", "already_bootstrapped"}
 
 

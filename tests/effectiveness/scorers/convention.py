@@ -17,7 +17,7 @@ from pathlib import Path
 
 from tests.effectiveness.scorers.base import ScoreContext, unscored
 
-_LINTABLE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".rb")
+_LINTABLE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".rb", ".py")
 
 
 def _pattern_context(path: str) -> dict:

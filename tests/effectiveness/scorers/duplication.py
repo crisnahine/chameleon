@@ -19,7 +19,7 @@ import re
 
 from tests.effectiveness.scorers.base import ScoreContext, unscored
 
-_SOURCE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".rb")
+_SOURCE_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".rb", ".py")
 
 
 def _load_catalog(repo_root):

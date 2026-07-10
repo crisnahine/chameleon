@@ -55,7 +55,7 @@ from tests.journey.harness.fixtures import GitVersionError, setup_fixture  # noq
 EST_CELL_USD = 0.30
 EST_VOTE_USD = 0.05
 
-FIXTURE_SEEDS = {"ts": "eff_ts", "rails": "eff_rails"}
+FIXTURE_SEEDS = {"ts": "eff_ts", "rails": "eff_rails", "py": "eff_py"}
 SESSION_TOOLS = ["Bash", "Read", "Edit", "Write", "Grep", "Glob"]
 
 # Seams (tests monkeypatch these module attributes).

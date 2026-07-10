@@ -9,9 +9,11 @@ and always run on dev machines.
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,10 @@ needs_node = pytest.mark.skipif(
 needs_ruby = pytest.mark.skipif(
     shutil.which("ruby") is None,
     reason="ruby required to bootstrap the Rails fixture",
+)
+needs_libcst = pytest.mark.skipif(
+    importlib.util.find_spec("libcst") is None,
+    reason="libcst required to bootstrap the Python fixture",
 )
 
 
@@ -116,6 +122,35 @@ def test_eff_rails_duplication_bait_in_catalog_and_idioms_survive(tmp_path):
     assert "services-return-result-never-raise" in idioms
 
 
+@needs_libcst
+def test_eff_py_crossfile_targets_have_three_plus_callers(tmp_path):
+    work_dir = _bootstrap(tmp_path, "eff_py")
+    from chameleon_mcp.calls_index import load_calls_index
+
+    idx = load_calls_index(work_dir)
+    assert idx is not None, "bootstrap produced no calls_index.json"
+    from tests.effectiveness.tasks import tier1_python
+
+    for task_id, target in tier1_python.CROSSFILE_TARGETS.items():
+        entry = idx.callers_of(target["module"], target["function"])
+        assert entry is not None, f"{task_id}: target missing from calls_index"
+        assert entry["total"] >= 3, f"{task_id}: only {entry['total']} caller edges"
+
+
+@needs_libcst
+def test_eff_py_duplication_bait_in_catalog_and_idioms_survive(tmp_path):
+    work_dir = _bootstrap(tmp_path, "eff_py")
+    from chameleon_mcp.function_catalog import load_function_catalog
+
+    catalog = load_function_catalog(work_dir)
+    assert catalog is not None
+    names = {(fn.file, fn.name) for fn in catalog.functions}
+    assert ("app/utils/slugs.py", "slugify") in names
+    idioms = (work_dir / ".chameleon" / "idioms.md").read_text(encoding="utf-8")
+    assert "services-via-provider-functions" in idioms
+    assert "money-is-integer-cents" in idioms
+
+
 @needs_strip_types
 def test_ts_setup_mutates_then_fixture_tests_fail(tmp_path):
     """The planted bug must make the fixture's own test command fail —
@@ -145,3 +180,16 @@ def test_rails_setup_mutates_then_fixture_tests_fail(tmp_path):
     tier1_rails.SETUPS["plant_refund_bug"](rails_copy)
     r = subprocess.run(cmd, cwd=rails_copy, capture_output=True, text=True)
     assert r.returncode != 0, "planted refund bug did not fail the fixture tests"
+
+
+def test_py_setup_mutates_then_fixture_tests_fail(tmp_path):
+    from tests.effectiveness.tasks import tier1_python
+
+    py_copy = tmp_path / "eff_py"
+    shutil.copytree(FIXTURES / "eff_py", py_copy)
+    cmd = [sys.executable, "-m", "unittest"]
+    r = subprocess.run(cmd, cwd=py_copy, capture_output=True, text=True)
+    assert r.returncode == 0, f"pristine fixture suite must pass: {r.stdout}{r.stderr}"
+    tier1_python.SETUPS["plant_py_clamp_bug"](py_copy)
+    r = subprocess.run(cmd, cwd=py_copy, capture_output=True, text=True)
+    assert r.returncode != 0, "planted clamp bug did not fail the fixture tests"

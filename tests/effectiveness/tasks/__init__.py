@@ -24,13 +24,13 @@ import importlib
 from collections.abc import Callable
 
 VALID_TIERS = ("ci", "full", "dup")
-VALID_FIXTURES = ("ts", "rails", "env-ts", "env-ruby")
+VALID_FIXTURES = ("ts", "rails", "py", "env-ts", "env-ruby", "env-py")
 # tier "dup" reuses the env-pointed real repos (same fixtures as full); it is a
 # separate tier so the large duplication-reuse corpus runs in isolation from the
-# 8 tier-full tasks for the powered causal A/B.
+# tier-full tasks for the powered causal A/B.
 TIER_FIXTURES = {
-    "ci": ("ts", "rails"),
-    "full": ("env-ts", "env-ruby"),
+    "ci": ("ts", "rails", "py"),
+    "full": ("env-ts", "env-ruby", "env-py"),
     "dup": ("env-ts", "env-ruby"),
 }
 VALID_CATEGORIES = ("convention", "crossfile", "duplication", "verification")
@@ -38,8 +38,10 @@ VALID_CATEGORIES = ("convention", "crossfile", "duplication", "verification")
 _PACK_MODULES = (
     "tests.effectiveness.tasks.tier1_ts",
     "tests.effectiveness.tasks.tier1_rails",
+    "tests.effectiveness.tasks.tier1_python",
     "tests.effectiveness.tasks.tier2_ts",
     "tests.effectiveness.tasks.tier2_rails",
+    "tests.effectiveness.tasks.tier2_python",
     "tests.effectiveness.tasks.tier3_dup_ts",
     "tests.effectiveness.tasks.tier3_dup_rb",
 )
