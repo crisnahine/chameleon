@@ -9,7 +9,9 @@
 #
 # After verification, runs the full Python test matrix (same suites as
 # ci.yml's test-python job), builds a source tarball, and publishes a
-# GitHub Release with the CHANGELOG entry as the body.
+# GitHub Release with the CHANGELOG entry as the body plus every published
+# effectiveness run's run.md/metrics.json as extra assets (skipped when
+# tests/effectiveness/results-published/ is absent or empty).
 #
 # To cut a release:
 #   1. bash scripts/bump-version.sh <new-version>           # 6 manifests
@@ -229,6 +231,35 @@ jobs:
         with:
           name: release-tarball
 
+      - name: Stage published effectiveness artifacts
+        id: eval-assets
+        run: |
+          # Attach every published eval run's run.md + metrics.json as
+          # release assets named <run_id>-run.md / <run_id>-metrics.json
+          # (see tests/effectiveness/results-published/README.md for the
+          # publication policy). Old tags predate results-published/, so an
+          # absent or empty dir stages zero files and the release proceeds
+          # with the tarball alone.
+          SRC="tests/effectiveness/results-published"
+          OUT="${RUNNER_TEMP:-/tmp}/chameleon-eval-assets"
+          mkdir -p "$OUT"
+          COUNT=0
+          if [ -d "$SRC" ]; then
+            for RUN_DIR in "$SRC"/*/; do
+              [ -d "$RUN_DIR" ] || continue
+              RUN_ID=$(basename "$RUN_DIR")
+              for FILE in run.md metrics.json; do
+                if [ -f "${RUN_DIR}${FILE}" ]; then
+                  cp "${RUN_DIR}${FILE}" "${OUT}/${RUN_ID}-${FILE}"
+                  COUNT=$((COUNT + 1))
+                fi
+              done
+            done
+          fi
+          echo "Staged ${COUNT} eval asset(s) in ${OUT}"
+          ls -l "$OUT" || true
+          echo "dir=${OUT}" >> "$GITHUB_OUTPUT"
+
       - name: Extract CHANGELOG entry for this version
         id: changelog
         env:
@@ -261,6 +292,11 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: chameleon ${{ needs.verify-tag.outputs.version }}
           body: ${{ steps.changelog.outputs.body }}
-          files: ${{ needs.build-tarball.outputs.tarball-name }}
+          # The eval-assets glob may match nothing (old tags, empty dir);
+          # fail_on_unmatched_files defaults to false, so that is a warning,
+          # never a failed release.
+          files: |
+            ${{ needs.build-tarball.outputs.tarball-name }}
+            ${{ steps.eval-assets.outputs.dir }}/*
           draft: false
           prerelease: false

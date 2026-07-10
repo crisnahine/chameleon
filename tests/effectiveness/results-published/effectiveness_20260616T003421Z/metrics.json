@@ -1,0 +1,42 @@
+{
+  "run_id": "effectiveness_20260616T003421Z",
+  "tier": "dup",
+  "arms": [
+    "off",
+    "shadow"
+  ],
+  "model": "sonnet",
+  "toggle": null,
+  "cells_total": 92,
+  "cells_ok": 84,
+  "cells_error": 8,
+  "total_cost_usd": 59.9085,
+  "per_arm": {
+    "off": {
+      "category": "duplication",
+      "cells": 44,
+      "cost_usd_mean": 0.5646,
+      "wall_seconds_mean": 202.5686
+    },
+    "shadow": {
+      "category": "duplication",
+      "cells": 40,
+      "cost_usd_mean": 0.6566,
+      "wall_seconds_mean": 248.798
+    }
+  },
+  "causal_preference": [
+    {
+      "control": "off",
+      "treatment": "shadow",
+      "preference": 0.5714,
+      "ci95": [
+        0.1429,
+        0.8571
+      ],
+      "n_tasks": 7,
+      "n_comparisons": 7,
+      "verdict": "not established"
+    }
+  ]
+}

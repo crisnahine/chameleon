@@ -74,6 +74,19 @@ model-aware: a legacy flat entry (`{metric: val}`) answers only the sonnet arm,
 and a model-keyed entry (`{model: {metric: val}}`) is matched per arm's model,
 so a stronger-model arm never regresses against a sonnet baseline.
 
+## Published artifacts
+
+`results/` is gitignored working state; `results-published/` is tracked and
+holds the verifiable core of every headline run (any run whose numbers are
+cited in docs, CHANGELOG, or release notes): the run's `run.md` copied
+verbatim WHATEVER the verdict, plus a compact `metrics.json` (per-arm cost
+and wall-time means, the paired-bootstrap preference + 95% CI, n_tasks).
+Transcripts/diffs/worktrees stay unpublished (fixture-code bulk). The release
+workflow attaches each published `run.md`/`metrics.json` to the GitHub
+release as `<run_id>-run.md` / `<run_id>-metrics.json` assets. `baselines.json`
+is re-seeded from a fresh run at each release, never left to age. Repro
+commands per run: `results-published/README.md`.
+
 ## Requirements
 
 claude CLI on PATH; git >= 2.28; Node >= 22.6 (the TS fixture's `npm test`
