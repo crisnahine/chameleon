@@ -1,0 +1,13 @@
+{"pair_id": "03cdb73574e0", "run_id": "effectiveness_20260615T175635Z", "task_id": "t3-rb-dup-rate-limit", "panel_winner": "A", "side_a_arm": "shadow", "side_b_arm": "off"}
+{"pair_id": "3a59a90e5445", "run_id": "effectiveness_20260615T175635Z", "task_id": "t3-ts-dup-titleize", "panel_winner": "B", "side_a_arm": "shadow", "side_b_arm": "off"}
+{"pair_id": "3d4846387bb3", "run_id": "effectiveness_20260616T003421Z", "task_id": "t3-ts-dup-has-filters-raw", "panel_winner": "B", "side_a_arm": "off", "side_b_arm": "shadow"}
+{"pair_id": "4515469571cf", "run_id": "effectiveness_20260616T003421Z", "task_id": "t3-ts-dup-transform-money-value", "panel_winner": "B", "side_a_arm": "shadow", "side_b_arm": "off"}
+{"pair_id": "618008e38cf1", "run_id": "effectiveness_20260615T175635Z", "task_id": "t3-ts-dup-use-previous", "panel_winner": "B", "side_a_arm": "off", "side_b_arm": "shadow"}
+{"pair_id": "953ea2e8cc2f", "run_id": "effectiveness_20260616T003421Z", "task_id": "t3-ts-dup-use-previous", "panel_winner": "A", "side_a_arm": "off", "side_b_arm": "shadow"}
+{"pair_id": "99643d30f476", "run_id": "effectiveness_20260615T175635Z", "task_id": "t3-ts-dup-suffixed-number", "panel_winner": "B", "side_a_arm": "off", "side_b_arm": "shadow"}
+{"pair_id": "a34c496b78d5", "run_id": "effectiveness_20260615T175635Z", "task_id": "t3-ts-dup-is-blank", "panel_winner": "B", "side_a_arm": "off", "side_b_arm": "shadow"}
+{"pair_id": "b42bb9883800", "run_id": "effectiveness_20260616T003421Z", "task_id": "t3-ts-dup-get-item-with-expiry", "panel_winner": "A", "side_a_arm": "shadow", "side_b_arm": "off"}
+{"pair_id": "c54c6c55790b", "run_id": "effectiveness_20260615T175635Z", "task_id": "t3-ts-dup-get-full-name", "panel_winner": "B", "side_a_arm": "off", "side_b_arm": "shadow"}
+{"pair_id": "d0d37601a737", "run_id": "effectiveness_20260616T003421Z", "task_id": "t3-ts-dup-is-blank", "panel_winner": "A", "side_a_arm": "shadow", "side_b_arm": "off"}
+{"pair_id": "f061296bf154", "run_id": "effectiveness_20260616T003421Z", "task_id": "t3-ts-dup-remove-http-prefix", "panel_winner": "B", "side_a_arm": "shadow", "side_b_arm": "off"}
+{"pair_id": "f47b62880e1c", "run_id": "effectiveness_20260616T003421Z", "task_id": "t3-ts-dup-process-humps", "panel_winner": "B", "side_a_arm": "off", "side_b_arm": "shadow"}
