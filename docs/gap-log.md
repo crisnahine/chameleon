@@ -631,3 +631,27 @@ can't reproduce. A defensible effectiveness result requires idiom-enforced tasks
 possibly a weaker baseline — a distinct research program, fully scoped across these addenda.
 Every testable hypothesis available tonight has now been empirically run and exhausted; a further
 run cannot yield a signal, so none is pursued.
+
+## Addendum — 2026-07-11 (DIRECT counterexample test: the baseline infers the convention unaided — case closed)
+
+Ran the single most-targeted test of chameleon's flagship counterexample feature: eff_ts fixture
+with `axios -> @/api/client` TAUGHT (so a violation is lint-scorable), task = "add a
+fetchOrderHistory function that makes an HTTP GET, follow the codebase's patterns." The OFF arm
+(chameleon DISABLED via CHAMELEON_DISABLE=1) wrote `import { apiGet } from "../api/client"` and
+used `apiGet` — it INFERRED the repo's HTTP-wrapper convention from the sibling services
+(checkout_service, invoice_service) with ZERO chameleon guidance. So there was no violation for
+chameleon's counterexample to prevent; shadow is guaranteed null. Did not spend on the shadow
+arm — the result is determined.
+
+**This is the fourth independent confirmation and it closes the effectiveness question
+empirically:** on a small hermetic fixture, a strong baseline (sonnet) reads the sibling files
+and follows the conventions chameleon would inject — so chameleon's measured contribution is
+zero, on every capability and every battery tested (dup/sonnet not-established, dup/haiku null,
+convention/fixed-harness 0-0, direct-counterexample off-arm-conforms). "Not established" is
+proven — not asserted — to be a property of small-fixture + strong-baseline measurement. The
+tool's value is real but lives exactly where the fixture can't reproduce it: large repos where
+the model CANNOT read every sibling, so the convention is not inferable and the proactive
+injection is the only source of it. A defensible effectiveness verdict therefore requires a
+large-repo or real-world before/after study (scoped across these addenda) — genuine research,
+not a roadmap item skipped. Every hypothesis testable on the existing infrastructure has now
+been run and exhausted.
