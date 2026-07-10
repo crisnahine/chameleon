@@ -16,7 +16,7 @@ Architecture (POSIX-only):
 
   hook subprocess (bash + tiny python launcher)
       │
-      ▼  UNIX domain socket at ${PLUGIN_DATA}/.daemon.sock
+      ▼  UNIX domain socket at <tmpdir>/chameleon-<uid>/d-<hash>.sock
   [chameleon-mcp daemon process]
       └─ in-process dispatch to chameleon_mcp.tools.<method>
 
@@ -63,9 +63,11 @@ import os
 import re
 import signal
 import socket
+import stat as stat_mod
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from collections.abc import Callable
@@ -197,14 +199,106 @@ def _version_tag() -> str:
     return f"{base}-{fp}" if fp and fp != "0" else base
 
 
+# bind() rejects an AF_UNIX path longer than sun_path: ~104 bytes on macOS,
+# ~108 on Linux (including the trailing NUL). Paths at or under this budget
+# are safe on both.
+_SUN_PATH_SAFE_BYTES = 100
+
+
+def _socket_tmp_base() -> Path | None:
+    """Short per-user base dir for the daemon socket, or None where unusable.
+
+    `<tmpdir>/chameleon-<uid>` is short on every mainstream platform, so the
+    socket path stays under the sun_path cap even when the plugin data dir
+    resolves deep. Returns None when the platform has no uid (Windows — the
+    daemon is AF_UNIX-only and disabled there anyway)."""
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return None
+    try:
+        return Path(tempfile.gettempdir()) / f"chameleon-{getuid()}"
+    except Exception:  # noqa: BLE001 - path resolution must never break daemon paths
+        return None
+
+
+def _ensure_private_socket_dir(d: Path) -> bool:
+    """Create/verify the socket dir as user-private. False means: do not use.
+
+    The base lives under a shared, world-writable tmp dir, so another local
+    user can pre-create (squat) the path or plant a symlink there; the sticky
+    bit stops us from removing it. Require a real directory (lstat, so a
+    symlink is seen as itself), owned by this uid, with no group/other bits
+    (tightened to 0700 if the owner check passes). Anything else is refused
+    and the caller falls back to the data-dir path. Never raises."""
+    try:
+        d.mkdir(mode=0o700, exist_ok=True)
+    except OSError:
+        return False
+    except Exception:  # noqa: BLE001 - never break socket resolution
+        return False
+    try:
+        st = os.lstat(str(d))
+    except OSError:
+        return False
+    if not stat_mod.S_ISDIR(st.st_mode):
+        return False
+    if st.st_uid != os.getuid():
+        return False
+    if st.st_mode & 0o077:
+        from chameleon_mcp.plugin_paths import secure_chmod
+
+        # mkdir's mode is masked by umask; tighten explicitly.
+        if not secure_chmod(d, 0o700):
+            return False
+        try:
+            st = os.lstat(str(d))
+        except OSError:
+            return False
+        if st.st_mode & 0o077:
+            return False
+    return True
+
+
+def socket_path_for(data_dir: Path, version_tag: str, tmp_base: Path | None = None) -> Path:
+    """Pure socket-path computation — the single source of truth for both the
+    daemon and daemon_client, so the two sides of the wire always agree.
+
+    The daemon is per-user (shared across all repos this user works on), so
+    its identity is (data dir, version tag): the version tag keeps a newer
+    build off an older build's daemon, and the data dir keeps two
+    CHAMELEON_PLUGIN_DATA universes from cross-talking now that the socket no
+    longer lives inside the data dir itself. Both are folded into a short
+    hash because the full strings would blow the sun_path budget the
+    relocation exists to respect.
+
+    Falls back to the legacy `<data>/.daemon-<version_tag>.sock` when there is
+    no usable tmp base or when even the tmp-based path would exceed the
+    sun_path budget (pathologically deep TMPDIR); bind() then fails with the
+    existing fail-open diagnostics instead of crashing here."""
+    legacy = data_dir / f".daemon-{version_tag}.sock"
+    if tmp_base is None:
+        return legacy
+    digest = hashlib.sha256(os.fsencode(str(data_dir)) + b"\0" + version_tag.encode("utf-8"))
+    candidate = tmp_base / f"d-{digest.hexdigest()[:12]}.sock"
+    if len(os.fsencode(str(candidate))) > _SUN_PATH_SAFE_BYTES:
+        return legacy
+    return candidate
+
+
 def socket_path() -> Path:
-    """UNIX socket path. Lives at the plugin data root so it's shared
-    across all repos this user works on (the daemon is per-user, not
-    per-repo) but scoped by plugin version. Created on demand by
-    `start_daemon()`."""
+    """UNIX socket path. The daemon is per-user, not per-repo, so one socket
+    serves every repo; the name is keyed on plugin version + data dir. The
+    socket lives under a short per-user tmp dir — not the plugin data dir —
+    because AF_UNIX caps sun_path at ~104 bytes and a deep data dir would make
+    every bind fail, silently disabling the fast path. Created on demand by
+    `start_daemon()`; pidfile and log stay in the data dir (only the socket
+    path is length-limited)."""
     d = _plugin_data()
     d.mkdir(parents=True, exist_ok=True)
-    return d / f".daemon-{_version_tag()}.sock"
+    p = socket_path_for(d, _version_tag(), _socket_tmp_base())
+    if p.parent != d and not _ensure_private_socket_dir(p.parent):
+        return d / f".daemon-{_version_tag()}.sock"
+    return p
 
 
 def pid_path() -> Path:
@@ -375,6 +469,7 @@ def _sweep_orphan_version_files() -> None:
     except OSError:
         return
     for pf in pidfiles:
+        raw: list[str] = []
         try:
             raw = pf.read_text(encoding="utf-8").strip().splitlines()
             pid = int(raw[0]) if raw else None
@@ -386,8 +481,13 @@ def _sweep_orphan_version_files() -> None:
         # in that window.
         if pid is None or _pid_alive(pid):
             continue
-        sock_file = pf.with_suffix(".sock")
-        for p in (pf, sock_file):
+        # The socket normally lives in the per-user tmp dir at the path the
+        # pidfile records; the data-dir sibling covers daemons from builds
+        # that kept the socket next to the pidfile.
+        targets = [pf, pf.with_suffix(".sock")]
+        if len(raw) > 1 and raw[1]:
+            targets.append(Path(raw[1]))
+        for p in targets:
             try:
                 p.unlink()
             except (FileNotFoundError, OSError):
@@ -775,8 +875,8 @@ def run_daemon() -> int:
         sys.stderr.write(
             f"[chameleon-daemon] cannot bind socket ({e}); path is "
             f"{len(str(sock_path).encode())} bytes (AF_UNIX limit ~104). Set "
-            "CHAMELEON_PLUGIN_DATA to a shorter path to enable the daemon; hooks "
-            "use the in-process path meanwhile\n"
+            "TMPDIR (or CHAMELEON_PLUGIN_DATA) to a shorter path to enable the "
+            "daemon; hooks use the in-process path meanwhile\n"
         )
         return 1
     from chameleon_mcp.plugin_paths import secure_chmod

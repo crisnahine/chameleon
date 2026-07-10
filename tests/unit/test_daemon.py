@@ -17,8 +17,10 @@ from chameleon_mcp.daemon import (
     _af_unix_available,
     _code_fingerprint,
     _DaemonState,
+    _ensure_private_socket_dir,
     _flock_reliable,
     _idle_timeout_from_env,
+    _socket_tmp_base,
     _sweep_orphan_version_files,
     _version_tag,
     daemon_info,
@@ -28,6 +30,7 @@ from chameleon_mcp.daemon import (
     send_frame,
     serve_forever,
     socket_path,
+    socket_path_for,
     start_daemon,
 )
 
@@ -278,8 +281,10 @@ def test_socket_and_pid_paths_are_version_scoped(tmp_path: Path):
         pp = pid_path()
     tag = _version_tag()
     assert tag and "/" not in tag
-    assert sp.name == f".daemon-{tag}.sock"
+    # The pidfile stays in the data dir, version-scoped by name. The socket
+    # name carries the same identity folded into a short hash (sun_path cap).
     assert pp.name == f".daemon-{tag}.pid"
+    assert sp == socket_path_for(fake, tag, _socket_tmp_base())
 
 
 def test_socket_path_differs_across_versions(tmp_path: Path):
@@ -294,8 +299,121 @@ def test_socket_path_differs_across_versions(tmp_path: Path):
         with patch("chameleon_mcp.daemon._version_tag", return_value="1.2.4"):
             b = socket_path()
     assert a != b
-    assert a.name == ".daemon-1.2.3.sock"
-    assert b.name == ".daemon-1.2.4.sock"
+
+
+# ---------------------------------------------------------------------------
+# Socket relocation: AF_UNIX sun_path is capped (~104 bytes on macOS, ~108 on
+# Linux). The socket must resolve to a short per-user tmp dir so a deep
+# CHAMELEON_PLUGIN_DATA cannot push bind() past the cap and silently kill the
+# daemon fast path forever. Pidfile and log stay in the data dir.
+# ---------------------------------------------------------------------------
+
+
+def test_socket_path_for_deep_data_dir_stays_under_sun_path_limit():
+    # A 200-char data dir used to produce an unbindable socket path.
+    deep = Path("/" + "x" * 100 + "/" + "y" * 99)
+    assert len(str(deep)) >= 200
+    tmp_base = Path("/tmp/chameleon-501")
+    sp = socket_path_for(deep, "2.69.0-abcd1234", tmp_base)
+    assert sp.parent == tmp_base
+    assert len(os.fsencode(str(sp))) <= 100
+
+
+def test_socket_path_for_different_data_dirs_differ():
+    # Two CHAMELEON_PLUGIN_DATA universes must never share a socket: the name
+    # hash has to include the data dir, not just the version.
+    tmp_base = Path("/tmp/chameleon-501")
+    a = socket_path_for(Path("/universe/a"), "1.2.3", tmp_base)
+    b = socket_path_for(Path("/universe/b"), "1.2.3", tmp_base)
+    assert a != b
+
+
+def test_socket_path_for_different_versions_differ():
+    tmp_base = Path("/tmp/chameleon-501")
+    a = socket_path_for(Path("/data"), "1.2.3-aaaa1111", tmp_base)
+    b = socket_path_for(Path("/data"), "1.2.4-bbbb2222", tmp_base)
+    assert a != b
+
+
+def test_socket_path_for_no_tmp_base_uses_data_dir():
+    # Windows (no getuid) resolves tmp_base=None: keep the legacy in-data-dir
+    # path; the AF_UNIX guards make the daemon a no-op there anyway.
+    sp = socket_path_for(Path("/data"), "1.2.3", None)
+    assert sp == Path("/data/.daemon-1.2.3.sock")
+
+
+def test_socket_path_for_pathological_tmp_base_falls_back_to_data_dir():
+    # A TMPDIR so deep that even the relocated path overruns sun_path: fall
+    # back to the legacy data-dir path and let run_daemon's existing
+    # fail-open bind diagnostics fire. Never crash.
+    long_tmp = Path("/" + "t" * 120)
+    sp = socket_path_for(Path("/data"), "1.2.3", long_tmp / "chameleon-501")
+    assert sp == Path("/data/.daemon-1.2.3.sock")
+
+
+def test_socket_path_creates_private_socket_dir(tmp_path: Path):
+    import tempfile as _tempfile
+
+    fake_data = tmp_path / "data"
+    fake_data.mkdir()
+    base = Path(_tempfile.mkdtemp(prefix="cdt", dir="/tmp")) / "sockdir"
+    try:
+        with (
+            patch("chameleon_mcp.daemon._plugin_data", return_value=fake_data),
+            patch("chameleon_mcp.daemon._socket_tmp_base", return_value=base),
+        ):
+            sp = socket_path()
+        assert sp.parent == base
+        assert base.is_dir()
+        assert (base.stat().st_mode & 0o777) == 0o700
+        assert base.stat().st_uid == os.getuid()
+    finally:
+        import shutil
+
+        shutil.rmtree(base.parent, ignore_errors=True)
+
+
+def test_socket_path_falls_back_when_socket_dir_not_private(tmp_path: Path):
+    # A squatted /tmp/chameleon-<uid> (another uid owns it, sticky bit blocks
+    # removal) must not be used for the socket: fall back to the data dir.
+    fake_data = tmp_path / "data"
+    fake_data.mkdir()
+    with (
+        patch("chameleon_mcp.daemon._plugin_data", return_value=fake_data),
+        patch("chameleon_mcp.daemon._ensure_private_socket_dir", return_value=False),
+    ):
+        sp = socket_path()
+    assert sp == fake_data / f".daemon-{_version_tag()}.sock"
+
+
+def test_ensure_private_socket_dir_refuses_symlink(tmp_path: Path):
+    # A symlink planted at the socket-dir path redirects the bind elsewhere;
+    # lstat must see the link itself and refuse.
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    assert _ensure_private_socket_dir(link) is False
+    assert _ensure_private_socket_dir(real) is True
+
+
+def test_ensure_private_socket_dir_tightens_loose_mode(tmp_path: Path):
+    d = tmp_path / "loose"
+    d.mkdir(mode=0o755)
+    os.chmod(d, 0o755)
+    assert _ensure_private_socket_dir(d) is True
+    assert (d.stat().st_mode & 0o777) == 0o700
+
+
+def test_client_and_daemon_resolve_the_same_socket_path(tmp_path: Path):
+    # One source of truth: daemon_client imports daemon.socket_path, so both
+    # sides of the wire must agree byte-for-byte.
+    from chameleon_mcp import daemon_client as dc
+
+    fake_data = tmp_path / "data"
+    fake_data.mkdir()
+    with patch("chameleon_mcp.daemon._plugin_data", return_value=fake_data):
+        assert dc.socket_path() == socket_path()
 
 
 def test_sweep_orphan_version_files_drops_dead_keeps_live(tmp_path: Path):

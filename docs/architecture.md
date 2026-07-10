@@ -1435,9 +1435,14 @@ in memory and answers hot-path lookups over a unix socket. It is **POSIX only**
 (it uses `AF_UNIX`; on Windows the hooks always run in-process) and never
 load-bearing: a missing daemon means an in-process lookup, never a failure.
 
-The socket is `<data>/.daemon-<version_tag>.sock`, per-user and version-scoped
-(the tag includes a content fingerprint of the source, so a code-only upgrade
-rotates the socket). SessionStart fires `ensure_daemon_async` as a best-effort
+The socket is `<tmpdir>/chameleon-<uid>/d-<hash>.sock`, per-user, the hash
+folding the plugin data dir + version tag (the tag includes a content
+fingerprint of the source, so a code-only upgrade rotates the socket, and two
+`CHAMELEON_PLUGIN_DATA` universes never cross-talk). It lives under a short
+user-private tmp dir rather than the data dir because `AF_UNIX` caps
+`sun_path` at ~104 bytes and a deep data dir made every bind fail; pidfile
+and logs stay in the data dir. SessionStart fires
+`ensure_daemon_async` as a best-effort
 background spawn (and stops a stale daemon on an upgrade), so a warm daemon is
 usually ready by the first edit. The hot path also self-heals: if the daemon is
 absent, `get_pattern_context` fires `ensure_daemon_async` and falls back to an

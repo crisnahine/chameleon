@@ -1,7 +1,9 @@
 """Tiny client for the chameleon-mcp daemon.
 
-Connects to the UNIX socket at ${PLUGIN_DATA}/.daemon-<version_tag>.sock, sends a
-length-prefixed JSON request, reads a length-prefixed JSON response.
+Connects to the daemon's UNIX socket (resolved by `daemon.socket_path()`, the
+shared source of truth — a short per-user tmp path, since AF_UNIX caps
+sun_path at ~104 bytes), sends a length-prefixed JSON request, reads a
+length-prefixed JSON response.
 One request per connection — same model as the daemon side.
 
 POSIX-only: AF_UNIX does not exist on Windows. `call()` returns None there
