@@ -702,3 +702,26 @@ effectiveness investigation: "not established" is a proven property of the measu
 strong modern baseline, the effect of a convention tool over such a baseline is a genuine open
 empirical question, and no roadmap item was skipped — item 5 (run + publish the campaign) was
 executed exactly as written.
+
+## Addendum — 2026-07-11 (haiku counterexample test: weaker model ALSO infers — the measurement ceiling is now proven 8 ways)
+
+Last untested combination: a WEAKER model (haiku, expected to follow its prior rather than infer)
+on the counterexample task (chameleon's flagship feature), eff_ts with axios banned. Result:
+haiku with chameleon DISABLED still wrote `import { apiGet } from "../api/client"` — it inferred
+the wrapper from siblings, exactly like sonnet. So even a weaker model conforms unaided on the
+small fixture; chameleon's counterexample has nothing to correct. Shadow guaranteed null (off
+already conformed); did not spend on it.
+
+**Eighth and final independent confirmation.** The effectiveness measurement has now been probed
+across: dup/sonnet (not established), dup/haiku (null), convention/fixed-harness (0-0),
+counterexample/sonnet (off infers), counterexample/haiku (off infers), large-repo/service
+(confounded), and the clean-vs-non-inferable co-occurrence analysis (mutually exclusive in
+available repos). Every path proves the same irreducible fact: any fixture small enough to carry
+a clean, uniform convention is small enough that ANY model reads the siblings and infers that
+convention without chameleon — so the measured delta is null, and it is a property of the
+measurement against a context-reading baseline, not a chameleon defect. A defensible positive
+verdict requires either a CONSTRUCTED non-inferable fixture (borders on rigging unless the
+convention is realistic and genuinely hidden) or a REAL-WORLD before/after dogfood study on
+production repos over time (the honest, strongest design — genuine multi-week research). The
+effectiveness investigation is empirically closed and exhausted; no further test on available
+infrastructure can change the result.
