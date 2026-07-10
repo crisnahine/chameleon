@@ -444,3 +444,30 @@ not chameleon bugs — each was re-tested against the real artifact shape and pa
 ## Closed gaps
 
 _(none yet — closing requires human re-sign-off per the protocol)_
+
+## Addendum — 2026-07-11 (effectiveness campaign finding → next-feature spec)
+
+The first real-harness causal campaign (results-published/effectiveness_20260710T184905Z)
+returned "not established, directionally negative" for shadow vs off on one-shot tier-3
+duplication tasks (preference 0.350, CI [0.175, 0.550], n=20). Diagnosed mechanistically:
+chameleon's semantic dedup defense is TURN-END (`duplication_review`), which fires a Stop
+advisory AFTER the model writes; a one-shot `claude -p` cell has no next turn to act on it,
+so the final diff cannot reflect the help. The pre-edit reuse directive
+(`_archetype_facts_section` "Check before creating") is NAME-BASED and CLUSTER-SCOPED (the
+edited archetype's own key_exports) — it does not match the SPECIFIC function the model is
+about to write against the full function catalog.
+
+- **G-025 (OPEN, next build) — pre-write content-matched dedup nudge.** On a PreToolUse
+  Write whose content defines a function, deterministically prefilter the new function's
+  name-token + signature shape against `function_catalog.json` (the same fast, no-LLM
+  prefilter `get_duplication_candidates` already uses) and, when a strong CROSS-FILE
+  candidate exists, inject a bounded pre-write nudge ("`clean_url` may already exist at
+  app/helpers/url_helper.rb:12 — reuse it before creating a new one"). This moves the dedup
+  signal from turn-end (too late for one-shot generation) to pre-write (actionable before
+  the duplicate is written). Kill switch `CHAMELEON_PREWRITE_DEDUP=0`, hot-path latency
+  budget, per-language name extraction (TS/Ruby/Python), FP handling, fail-open. Scope: a
+  real hot-path feature deserving careful implementation + its own functional tests on the
+  exact failure case (does the pre-write hook now surface the existing helper for the
+  clean_url task?), THEN an effectiveness re-run to confirm it moves the number. Deliberately
+  NOT rushed: the per-edit hook is the most latency- and correctness-sensitive surface, and a
+  hasty change there risks a regression into a currently-clean plugin.
