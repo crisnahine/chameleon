@@ -1,0 +1,29 @@
+{
+  "run_id": "effectiveness_20260710T184905Z",
+  "tier": "dup",
+  "arms": [
+    "off",
+    "shadow"
+  ],
+  "model": "sonnet",
+  "harness": "FIXED (post f710af3: profile-copy + hermetic workers)",
+  "cells_total": 92,
+  "cost_usd": 157.63,
+  "off": {
+    "ok_cells": 32,
+    "error_cells": 14
+  },
+  "shadow": {
+    "ok_cells": 29,
+    "error_cells": 17
+  },
+  "causal_preference_off_vs_shadow": 0.35,
+  "ci_95": [
+    0.175,
+    0.55
+  ],
+  "n_tasks_scored": 20,
+  "verdict": "not established (directionally negative; CI lower bound 0.175 < 0.5)",
+  "mechanism": "chameleon dedup defense is turn-end/next-turn; one-shot eval cells have no next turn, so the final diff cannot reflect the dedup advisory",
+  "scope": "shadow-mode advisory on ONE-SHOT tier-3 duplication tasks only; not a verdict on conformance-adherence, enforce mode, pr-review, comprehension tools, or multi-turn usage"
+}
