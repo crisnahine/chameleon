@@ -196,7 +196,9 @@ def test_conventions_section_equals_sessionstart_block(tmp_path):
     assert expected  # fixture must produce a non-empty session block
     assert expected in text
     for header in (
-        "IMPORTS (enforce):",
+        # the imports header carries the anti-majority migration framing since
+        # the 2026-07-11 authority upgrade; match its stable prefix
+        "IMPORTS (enforce",
         "NAMING:",
         "INHERITANCE:",
         "CONTRACT:",

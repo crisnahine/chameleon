@@ -1756,17 +1756,21 @@ def session_start() -> int:
     except Exception:
         pass
 
+    # Conventions render FIRST, before the (long) skill text: an instruction
+    # block buried after ~14k chars of mechanics measurably loses authority —
+    # models followed the identical rule at ~100% when it led the context and
+    # ~10% when it trailed the skill dump (migration-scenario A/B, 2026-07-11).
     wrapped_parts = [
         "<chameleon-context>",
         "You have chameleon, a profile-aware coding assistant.",
         "",
-        "Below is the full content of your `using-chameleon` skill. Follow it.",
-        "",
-        skill_content,
     ]
     if conventions_block:
-        wrapped_parts.append("")
         wrapped_parts.append(conventions_block)
+        wrapped_parts.append("")
+    wrapped_parts.append("Below is the full content of your `using-chameleon` skill. Follow it.")
+    wrapped_parts.append("")
+    wrapped_parts.append(skill_content)
     if drift_banner:
         wrapped_parts.append("")
         wrapped_parts.append(drift_banner)
@@ -3648,9 +3652,12 @@ def preflight_and_advise() -> int:
                             # first-in-archetype advisory.
                             _seed_archetype_seen(repo_id, session_id, archetype_name)
                             _emit_pretool_deny(
-                                f"chameleon: {msg}. Use the preferred import, or add "
-                                f"{_ignore_hint(file_path, 'import-preference-violation')} "
-                                "if intentional."
+                                f"chameleon: {msg}. This is a recorded team decision; "
+                                "files still importing the old module are mid-migration — "
+                                "do not imitate them. Use the preferred import. Override "
+                                f"({_ignore_hint(file_path, 'import-preference-violation')}) "
+                                "only if your human partner explicitly approved keeping the "
+                                "old import; never because existing files still use it."
                             )
                             return 0
                         if mode == "shadow":

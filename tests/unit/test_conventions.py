@@ -326,7 +326,10 @@ class TestFormatConventionsForSession:
         text = format_conventions_for_session(conventions)
         assert "useCustomQuery" in text
         assert "not useQuery" in text
-        assert "Follow these on every edit" in text
+        # authoritative header: the block must claim CLAUDE.md-grade authority and
+        # preempt the majority-inference rationalization (migration-A/B finding)
+        assert "authoritative" in text
+        assert "mid-migration" in text
 
     def test_formats_naming_enforced(self):
         conventions = empty_conventions(generation=1)

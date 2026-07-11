@@ -203,6 +203,41 @@ offer in step 3 is unconditional: ask the user whether to run it now. If they
 accept, invoke the `chameleon-auto-idiom` skill in this same session. It is
 append-only — it never touches idioms the team later adds.
 
+### Offer the conventions memory wiring
+
+When the bootstrap produced `.chameleon/conventions.md` (it exists whenever the
+repo derived or taught renderable conventions), offer to wire it into Claude's
+memory channel. Explain why in one sentence: conventions delivered through the
+memory channel carry materially more instruction authority for coding agents
+than hook-injected context (measured: the identical rules were followed 100%
+via this channel vs 40% as a hook advisory, across TS/Ruby/Python), and
+chameleon keeps the file fresh on every refresh/teach.
+
+Offer the options in this order (all verified equivalent at 100%; all
+consent-gated — create/edit only on an explicit yes, never re-ask in the same
+session if declined):
+
+1. **`.claude/rules/chameleon-conventions.md`** (default suggestion) — create
+   this one-line file:
+
+   ```
+   @../../.chameleon/conventions.md
+   ```
+
+   `.claude/rules/*.md` auto-loads at session start (official memory feature),
+   so the whole team is covered once it is committed, and NO existing file —
+   including the repo's `CLAUDE.md` — is ever modified.
+
+2. **`CLAUDE.local.md`** — same one-line import (`@.chameleon/conventions.md`),
+   for a user who wants the wiring personal and untracked (add it to
+   `.gitignore` if not already ignored). Nothing shared changes.
+
+3. **`CLAUDE.md` import** — append `@.chameleon/conventions.md` to the repo's
+   `CLAUDE.md` only if the user explicitly prefers it there. This edits the
+   team's file, so make that consequence explicit before doing it.
+
+If any of the three wirings is already present, say nothing — it is wired.
+
 ## Out of scope (current release)
 
 - Languages other than TypeScript/JavaScript, Ruby, and Python — `failed_unsupported_language`.

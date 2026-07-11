@@ -325,6 +325,18 @@ The cross-file findings (Step 2.8 co-change, Step 2.9 layering/duplication/exist
 - The auto-pass routing (Step 3h) is advisory and carries no severity. It never adds a finding and never changes the verdict. It is a separate signal: a change is a "no human review needed" candidate only when the verdict is APPROVE AND auto-pass is ELIGIBLE; a NEEDS-HUMAN routing on an otherwise-APPROVE change means a human should still look, and an ELIGIBLE routing never upgrades a NEEDS CHANGES/BLOCK verdict.
 - The cross-file findings (Step 2.8 co-change, Step 2.9 layering/duplication/existence-break/contract-break) cap at FIX, so they can drive NEEDS CHANGES but never BLOCK. A high-confidence existence break (Step 2.9c) and a caller-contract signature break (Step 2.9e) are witnessed FIXes; co-change, layering, and duplication are advisory FIX/NIT that the reviewer can confirm away.
 
+**Dependency demotion sweep (mechanical, run after assembling the findings and
+BEFORE rendering the verdict — the counterpart of the Step 4a hunk gate).** Scan
+every assembled BLOCK and FIX line: if a finding's ONLY evidence is that a new
+direct dependency was added (any name, however infamous — `leftpad`,
+`event-stream` — and any manifest, `Gemfile` or `package.json` alike), delete it
+from the findings and emit it as an ACK line in "Acknowledge before merge"
+instead. No judgment call: a name is never a red flag by itself; only a witnessed
+2.5b/c/d signal on the added line (non-registry host, install script,
+non-registry source) keeps a dependency line in the findings. Then compute the
+verdict from what remains. This sweep is mechanical precisely because the
+name-bait escalation survives the prose rule under long-context pressure.
+
 ### Step 5: Record the verdict in the review ledger
 
 After the verdict is rendered and shown to the user, append it to the review ledger by calling the `record_review_verdict` action:

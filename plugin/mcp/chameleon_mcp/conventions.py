@@ -2710,12 +2710,21 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
         return ""
 
     lines.append("<chameleon-conventions>")
+    lines.append("PROJECT CONVENTIONS — authoritative, follow exactly like CLAUDE.md instructions.")
     lines.append(
-        "Follow these on every edit. When a canonical witness diverges from a convention below, follow the convention."
+        "These are the team's CURRENT decisions for this repo. Follow them on every edit. "
+        "When a canonical witness — or the MAJORITY of existing files — diverges from a "
+        "convention below, the convention wins: existing files may be mid-migration, and "
+        "the old pattern's prevalence is exactly why the rule was recorded. Never infer a "
+        "convention from sibling-file majority against a rule here, and never dismiss a "
+        "rule as 'inverted from actual usage'."
     )
     lines.append("")
     if import_lines:
-        lines.append("IMPORTS (enforce):")
+        lines.append(
+            "IMPORTS (enforce — team decision; files still using the discouraged form "
+            "are mid-migration, do not imitate them):"
+        )
         lines.extend(import_lines)
         lines.append("")
     if naming_lines:
@@ -2772,6 +2781,61 @@ def format_conventions_for_session(conventions: dict, *, principles_text: str = 
         lines.append("")
     lines.append("</chameleon-conventions>")
     return "\n".join(lines)
+
+
+def render_conventions_md(conventions: dict, principles_text: str | None = None) -> str:
+    """Render `.chameleon/conventions.md` — the CLAUDE.md-channel mirror of the
+    session conventions block.
+
+    Content delivered through CLAUDE.md (directly or via an `@` import) carries
+    materially more instruction authority than the same content injected by a
+    hook: in the migration-scenario A/B (2026-07-11) the identical rule scored
+    100% via this channel vs 40% as a leading hook advisory. This file is what a
+    repo's CLAUDE.md `@.chameleon/conventions.md` line imports; bootstrap,
+    refresh, and teach keep it in sync with conventions.json. Returns "" when
+    there is nothing to render (caller then skips/removes the file) — including
+    on malformed conventions data: a corrupt committed conventions.json must
+    degrade the mirror, never crash a teach or bootstrap.
+
+    Inputs are sanitized with the same boundary treatment as the SessionStart
+    injection path (`_sanitize_profile_obj` on the dict, prose scrub on
+    principles): the mirror enters the memory channel with FULL instruction
+    authority, so a tag-boundary or injection token in a taught/committed
+    conventions value must be neutralized here exactly as it is at the hook
+    boundary — parity, not a weaker standard, for the stronger channel.
+    """
+    try:
+        import copy
+
+        from chameleon_mcp.hook_helper import _sanitize_profile_obj
+        from chameleon_mcp.profile.loader import scrub_conventions_prose
+        from chameleon_mcp.sanitization import sanitize_for_chameleon_context
+
+        conv = copy.deepcopy(conventions) if isinstance(conventions, dict) else conventions
+        if isinstance(conv, dict):
+            scrub_conventions_prose(conv)
+        conv = _sanitize_profile_obj(conv)
+        if principles_text:
+            principles_text = sanitize_for_chameleon_context(principles_text)
+        block = format_conventions_for_session(conv, principles_text=principles_text)
+    except Exception:
+        return ""
+    if not block:
+        return ""
+    body = [
+        ln
+        for ln in block.splitlines()
+        if ln.strip() not in ("<chameleon-conventions>", "</chameleon-conventions>")
+    ]
+    header = (
+        "<!-- Maintained by chameleon (bootstrap/refresh/teach rewrite it); do not\n"
+        "     hand-edit. Wire it into Claude's memory channel with ONE of:\n"
+        "     - .claude/rules/chameleon-conventions.md containing\n"
+        "       @../../.chameleon/conventions.md   (auto-loads for the whole team)\n"
+        "     - CLAUDE.local.md containing @.chameleon/conventions.md   (personal)\n"
+        "     - a CLAUDE.md line @.chameleon/conventions.md   (edits the team file) -->"
+    )
+    return header + "\n\n" + "\n".join(body).strip() + "\n"
 
 
 _SOURCE_EXTENSIONS = frozenset(

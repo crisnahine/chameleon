@@ -2868,6 +2868,19 @@ def _bootstrap_single(
             )
         except Exception:
             pass
+        # conventions.md: the CLAUDE.md-channel mirror of the conventions block
+        # (a repo's CLAUDE.md imports it via @.chameleon/conventions.md). Local
+        # file write only -> default-ON with a kill switch. Best-effort like
+        # principles.md: a render failure must not abort the profile commit.
+        if os.environ.get("CHAMELEON_CONVENTIONS_MD") != "0":
+            try:
+                from chameleon_mcp.conventions import render_conventions_md
+
+                _conv_md = render_conventions_md(conventions_data)
+                if _conv_md:
+                    (txn_dir / "conventions.md").write_text(_conv_md, encoding="utf-8")
+            except Exception:
+                pass
         (txn_dir / "rules.json").write_text(
             json.dumps(rules_data, indent=2, sort_keys=True), encoding="utf-8"
         )

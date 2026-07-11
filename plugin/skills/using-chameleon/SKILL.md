@@ -59,7 +59,7 @@ Only block rules with a near-zero false-positive rate against the repo's own com
 
 **Escape hatch:** a blocked edit is overridable inline with `// chameleon-ignore <rule>` (`# chameleon-ignore <rule>` in Ruby), or a bare `// chameleon-ignore` to suppress all chameleon blocks on that line. Exception: hard-class deterministic security facts — hardcoded credentials of a deterministic kind and error-severity `eval()` calls — are never covered by the bare form and must be named explicitly (`// chameleon-ignore secret-detected-in-content`, `// chameleon-ignore eval-call`); advisory-grade variants (entropy-based secret hits, warning-severity dynamic-eval idioms like `class_eval`) remain bare-suppressible. Place the directive ON the offending line, or alone on the line directly above it; `// chameleon-ignore-file <rule>` suppresses the rule for the whole file. The directive must end its line (trailing prose deactivates it) and directives inside string literals do not count. `CHAMELEON_ENFORCE=0` disables all blocking for the session regardless of mode.
 
-When you hit a block, fix the violation or add the ignore directive if it is intentional - don't silently work around it.
+When you hit a block, fix the violation. The ignore directive exists for exceptions your human partner has explicitly approved — never add it on your own judgment, and never because existing files still use the blocked pattern (those files may be mid-migration; the block encodes the team's current decision). If you believe a block is wrong, say so to your human partner and let them decide - don't silently work around it.
 
 ## Canonical as witness
 

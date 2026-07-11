@@ -7637,6 +7637,8 @@ def _profile_needs_rederive(profile_dir) -> bool:
       also repair; a Ruby profile never writes them, so their absence must not
       force a rebuild), and ``constant_index.json`` (Ruby's analogue) when present;
     - ``profile.summary.md`` must exist and be non-empty;
+    - ``conventions.md`` (the CLAUDE.md-channel mirror) must exist whenever the
+      profile's conventions render non-empty (kill switch honored);
     - ``principles.md`` must carry the anti-hallucination protocol.
 
     ``enforcement.json`` matters most: ``active_block_rules`` drops every
@@ -7791,6 +7793,25 @@ def _profile_needs_rederive(profile_dir) -> bool:
         return True
     if not summary_text.strip():
         return True
+    # conventions.md (the CLAUDE.md-channel mirror) is generated content the
+    # noop path preserves-by-absence: a profile whose conventions RENDER
+    # non-empty but whose mirror file is missing (pre-mirror profile that
+    # somehow kept this engine's version stamp, or a deleted/lost file) would
+    # otherwise never regain it. Only forces when the render is non-empty —
+    # a repo with nothing renderable legitimately has no mirror — and honors
+    # the mirror's kill switch.
+    if os.environ.get("CHAMELEON_CONVENTIONS_MD") != "0":
+        if not (profile_dir / "conventions.md").exists():
+            try:
+                from chameleon_mcp.conventions import render_conventions_md
+
+                conv_obj = _json.loads(
+                    (profile_dir / "conventions.json").read_text(encoding="utf-8")
+                )
+                if render_conventions_md(conv_obj):
+                    return True
+            except (OSError, ValueError):
+                pass
     return _principles_incomplete(profile_dir)
 
 
@@ -11582,6 +11603,29 @@ def _package_json_dependency_names(repo_path: Path) -> set[str] | None:
     return names
 
 
+def _sync_conventions_md(profile_dir: Path, conv: dict) -> None:
+    """Keep `.chameleon/conventions.md` (the CLAUDE.md-channel mirror) in sync
+    after a conventions.json mutation. Best-effort: the teach/unteach must
+    succeed even if the mirror render fails. Honors the same kill switch as the
+    bootstrap write; an empty render removes a stale mirror rather than leaving
+    it lying about the profile."""
+    if os.environ.get("CHAMELEON_CONVENTIONS_MD") == "0":
+        return
+    try:
+        from chameleon_mcp.conventions import render_conventions_md
+
+        md_path = profile_dir / "conventions.md"
+        text = render_conventions_md(conv)
+        if not text:
+            md_path.unlink(missing_ok=True)
+            return
+        _tmp = md_path.with_suffix(".md.tmp")
+        _tmp.write_text(text, encoding="utf-8")
+        _tmp.replace(md_path)
+    except Exception:
+        pass
+
+
 def teach_competing_import(
     repo: str,
     *,
@@ -11716,6 +11760,7 @@ def teach_competing_import(
             _tmp = conv_path.with_suffix(".json.tmp")
             _tmp.write_text(json.dumps(conv, indent=2, sort_keys=True), encoding="utf-8")
             _tmp.replace(conv_path)
+            _sync_conventions_md(profile_dir, conv)
     except LockHeldError as e:
         return _envelope(
             {
@@ -11970,6 +12015,7 @@ def unteach_competing_import(
                 _tmp = conv_path.with_suffix(".json.tmp")
                 _tmp.write_text(json.dumps(conv, indent=2, sort_keys=True), encoding="utf-8")
                 _tmp.replace(conv_path)
+                _sync_conventions_md(profile_dir, conv)
     except LockHeldError as e:
         return _envelope(
             {"status": "failed", "error": f"another conventions write is in progress: {e}"}
