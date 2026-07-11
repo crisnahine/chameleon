@@ -60,6 +60,8 @@ tests/journey/results/
 
 # Effectiveness eval run output (per-run ephemeral dirs)
 tests/effectiveness/results/
+# Dogfood study PR-comment cache (network-fetched, re-derivable)
+tests/effectiveness/.study_cache/
 # Pytest cache for harness library tests
 tests/journey/harness/tests/__pycache__/
 tests/journey/harness/tests/.pytest_cache/
