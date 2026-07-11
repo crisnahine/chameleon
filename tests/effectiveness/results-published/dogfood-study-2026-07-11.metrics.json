@@ -62,7 +62,7 @@
  ],
  "D2_governed_vs_ungoverned": [
   {
-   "repo": "/Users/crisn/Documents/Projects/Testing Apps/ef-client",
+   "repo": "~/Testing Apps/ef-client",
    "ref": "origin/production",
    "governed_merged_files": 3,
    "ungoverned_merged_files": 177,
@@ -77,7 +77,7 @@
    "label": "ef-client (TS)"
   },
   {
-   "repo": "/Users/crisn/Documents/Projects/Testing Apps/ef-api",
+   "repo": "~/Testing Apps/ef-api",
    "ref": "origin/production",
    "governed_merged_files": 102,
    "ungoverned_merged_files": 844,
